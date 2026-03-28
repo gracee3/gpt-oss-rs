@@ -682,6 +682,13 @@ impl GpuWorker {
                 self.graph_runner.pool_mut().disable();
             }
 
+            if self.config.architecture == "GptOssForCausalLM" {
+                info!(
+                    "disabling CUDA graph replay for GPT-OSS: decode still uses host-side MoE fallback"
+                );
+                self.graph_runner.disable();
+            }
+
 
             self.gpu_model_runner = Some(runner);
             info!(
