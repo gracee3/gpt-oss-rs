@@ -1181,6 +1181,7 @@ mod inner {
             let p_sliding_window = sliding_window.unwrap_or(0) as i32;
 
             // FA2 prefill kernel: sink-aware sliding-window attention.
+            // Keep this launch order in lockstep with flash_attention_2_f16kv_kernel.
             unsafe {
                 stream
                     .launch_builder(&kernel)
@@ -1191,6 +1192,9 @@ mod inner {
                     .arg(block_tables)
                     .arg(context_lens)
                     .arg(seq_start_pos)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .arg(&scale)
                     .arg(&p_num_heads)
                     .arg(&p_num_kv)
@@ -1200,9 +1204,6 @@ mod inner {
                     .arg(&max_blocks_per_seq)
                     .arg(&p_num_tokens)
                     .arg(&p_causal)
-                    .arg(sinks)
-                    .arg(&p_use_sinks)
-                    .arg(&p_sliding_window)
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("prefill FA2 launch: {e}")))?;
             }
@@ -1280,6 +1281,7 @@ mod inner {
             // block_tables: [num_seqs, max_blocks_per_seq]
             // context_lens: [num_seqs]
             // Scalar int args cast from usize; all values fit in i32 range.
+            // Keep this launch order in lockstep with flash_attention_2_decode_f16kv_kernel.
             unsafe {
                 stream
                     .launch_builder(&kernel)
@@ -1289,15 +1291,15 @@ mod inner {
                     .arg(value_cache)
                     .arg(block_tables)
                     .arg(context_lens)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .arg(&scale)
                     .arg(&p_num_heads)
                     .arg(&p_num_kv_heads)
                     .arg(&p_head_dim)
                     .arg(&p_block_size)
                     .arg(&p_max_blocks)
-                    .arg(sinks)
-                    .arg(&p_use_sinks)
-                    .arg(&p_sliding_window)
                     .launch(cfg)
                     .map_err(|e| {
                         LLMError::GpuError(format!("flash_attention_2_decode launch failed: {e}"))
