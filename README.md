@@ -146,14 +146,14 @@ cargo build --release -p rvllm-server
 # Linux + NVIDIA GPU (requires CUDA toolkit)
 cargo build --release --features cuda -p rvllm-server
 
-# Compile CUDA kernels (only needed for GPU inference)
+# Optional: emit PTX files into kernels/ for local inspection/debugging
 cd kernels && bash build.sh
 ```
 
 ### Serve a model
 
 ```bash
-# Start serving (downloads model from HuggingFace automatically)
+# Start serving from a HuggingFace repo ID
 ./target/release/rvLLM serve --model Qwen/Qwen2.5-1.5B
 
 # With options
@@ -189,13 +189,23 @@ curl http://localhost:8000/v1/completions \
 # Build image
 make docker
 
-# Run with GPU
+# Build for a specific GPU architecture
+CUDA_ARCH=sm_90 make docker
+
+# Run with GPU and a local model bind mount
+docker run --gpus all -p 8000:8000 \
+  -v /data/models/Qwen2.5-1.5B:/models/Qwen2.5-1.5B \
+  rvllm:latest serve --model /models/Qwen2.5-1.5B
+
+# Or let it download from HuggingFace
 docker run --gpus all -p 8000:8000 rvllm:latest \
   serve --model Qwen/Qwen2.5-1.5B
 
 # Docker Compose (starts both Rust and Python vLLM for comparison)
 MODEL_NAME=Qwen/Qwen2.5-1.5B docker compose up
 ```
+
+The Docker build compiles CUDA kernels inside the builder image and copies the generated PTX into the runtime image. Host-side `kernels/*.ptx` files are not required. The `--model` argument accepts either a HuggingFace repo ID or a local model directory.
 
 ## API Compatibility
 

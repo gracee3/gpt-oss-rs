@@ -1,6 +1,5 @@
 target/
 *.ptx
-!kernels/*.ptx
 *.o
 *.so
 *.dylib
