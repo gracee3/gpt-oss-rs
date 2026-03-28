@@ -9,9 +9,9 @@ pub use rvllm_sequence::{SequenceData, SequenceGroupMetadata};
 
 /// Prepare batched model input from a list of sequence group metadata.
 ///
-/// Dispatches to `prepare_prefill` or `prepare_decode` based on whether
-/// all groups are in prompt phase or decode phase. Mixed batches are not
-/// supported (vLLM separates them at the scheduler level).
+/// Handles pure prefill, pure decode, and mixed prefill+decode batches.
+/// For mixed batches, prefill groups are processed first, then decode groups,
+/// and the results are merged into a single `ModelInput`.
 pub fn prepare_input(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
     if metadata.is_empty() {
         return Ok(ModelInput {
@@ -27,11 +27,21 @@ pub fn prepare_input(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
         });
     }
 
-    let is_prefill = metadata[0].is_prompt;
-    if is_prefill {
-        prepare_prefill(metadata)
-    } else {
-        prepare_decode(metadata)
+    let prefill_groups: Vec<&SequenceGroupMetadata> =
+        metadata.iter().filter(|g| g.is_prompt).collect();
+    let decode_groups: Vec<&SequenceGroupMetadata> =
+        metadata.iter().filter(|g| !g.is_prompt).collect();
+
+    match (prefill_groups.is_empty(), decode_groups.is_empty()) {
+        (false, true) => prepare_prefill(metadata),
+        (true, false) => prepare_decode(metadata),
+        (false, false) => {
+            let prefill = prepare_prefill_refs(&prefill_groups)?;
+            let decode = prepare_decode_refs(&decode_groups)?;
+            Ok(merge_inputs(prefill, decode))
+        }
+        // Both empty is unreachable since metadata is non-empty, but handle gracefully.
+        (true, true) => unreachable!(),
     }
 }
 
@@ -150,6 +160,149 @@ fn prepare_decode(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
         },
         is_prefill: false,
     })
+}
+
+/// Like `prepare_prefill` but accepts `&[&SequenceGroupMetadata]` for mixed-batch use.
+fn prepare_prefill_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInput> {
+    let mut token_ids = Vec::new();
+    let mut position_ids = Vec::new();
+    let mut slot_mapping = Vec::new();
+    let mut context_lens = Vec::new();
+    let mut block_tables_out = Vec::new();
+
+    for group in metadata {
+        for (seq_id, seq_data) in &group.seq_data {
+            let prompt_tokens = &seq_data.prompt_token_ids;
+            let seq_len = prompt_tokens.len();
+
+            token_ids.extend_from_slice(prompt_tokens);
+            position_ids.extend((0..seq_len as u32).collect::<Vec<_>>());
+            context_lens.push(seq_len as u32);
+
+            let bt = group
+                .block_tables
+                .get(seq_id)
+                .map(|t| t.as_slice())
+                .unwrap_or(&[]);
+
+            let block_size: usize = 16;
+            for pos in 0..seq_len {
+                let block_idx = pos / block_size;
+                let block_offset = pos % block_size;
+                if block_idx < bt.len() {
+                    let physical_block = bt[block_idx].0;
+                    slot_mapping.push(physical_block * block_size as u32 + block_offset as u32);
+                } else {
+                    slot_mapping.push(0);
+                }
+            }
+
+            block_tables_out.push(bt.iter().map(|b| b.0).collect());
+        }
+    }
+
+    let max_context_len = context_lens.iter().copied().max().unwrap_or(0);
+
+    Ok(ModelInput {
+        token_ids,
+        position_ids,
+        attention_metadata: AttentionMetadata {
+            slot_mapping,
+            context_lens,
+            block_tables: block_tables_out,
+            max_context_len,
+        },
+        is_prefill: true,
+    })
+}
+
+/// Like `prepare_decode` but accepts `&[&SequenceGroupMetadata]` for mixed-batch use.
+fn prepare_decode_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInput> {
+    let mut token_ids = Vec::new();
+    let mut position_ids = Vec::new();
+    let mut slot_mapping = Vec::new();
+    let mut context_lens = Vec::new();
+    let mut block_tables_out = Vec::new();
+
+    for group in metadata {
+        for (seq_id, seq_data) in &group.seq_data {
+            let all_tokens = all_token_ids(seq_data);
+            let last_token = all_tokens.last().copied().unwrap_or(0);
+            token_ids.push(last_token);
+
+            let seq_len = all_tokens.len();
+            position_ids.push((seq_len - 1) as u32);
+            context_lens.push(seq_len as u32);
+
+            let bt = group
+                .block_tables
+                .get(seq_id)
+                .map(|t| t.as_slice())
+                .unwrap_or(&[]);
+
+            let block_size: usize = 16;
+            let block_idx = (seq_len - 1) / block_size;
+            let block_offset = (seq_len - 1) % block_size;
+            if block_idx < bt.len() {
+                let physical_block = bt[block_idx].0;
+                slot_mapping.push(physical_block * block_size as u32 + block_offset as u32);
+            } else {
+                slot_mapping.push(0);
+            }
+
+            block_tables_out.push(bt.iter().map(|b| b.0).collect());
+        }
+    }
+
+    let max_context_len = context_lens.iter().copied().max().unwrap_or(0);
+
+    Ok(ModelInput {
+        token_ids,
+        position_ids,
+        attention_metadata: AttentionMetadata {
+            slot_mapping,
+            context_lens,
+            block_tables: block_tables_out,
+            max_context_len,
+        },
+        is_prefill: false,
+    })
+}
+
+/// Merge prefill and decode `ModelInput`s into a single mixed batch.
+/// Prefill tokens come first, then decode tokens.
+fn merge_inputs(prefill: ModelInput, decode: ModelInput) -> ModelInput {
+    let mut token_ids = prefill.token_ids;
+    token_ids.extend(decode.token_ids);
+
+    let mut position_ids = prefill.position_ids;
+    position_ids.extend(decode.position_ids);
+
+    let mut slot_mapping = prefill.attention_metadata.slot_mapping;
+    slot_mapping.extend(decode.attention_metadata.slot_mapping);
+
+    let mut context_lens = prefill.attention_metadata.context_lens;
+    context_lens.extend(decode.attention_metadata.context_lens);
+
+    let mut block_tables = prefill.attention_metadata.block_tables;
+    block_tables.extend(decode.attention_metadata.block_tables);
+
+    let max_context_len = std::cmp::max(
+        prefill.attention_metadata.max_context_len,
+        decode.attention_metadata.max_context_len,
+    );
+
+    ModelInput {
+        token_ids,
+        position_ids,
+        attention_metadata: AttentionMetadata {
+            slot_mapping,
+            context_lens,
+            block_tables,
+            max_context_len,
+        },
+        is_prefill: true,
+    }
 }
 
 /// Helper: get all token IDs (prompt + output) from SequenceData.

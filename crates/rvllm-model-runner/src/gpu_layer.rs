@@ -228,22 +228,25 @@ mod inner {
             info!(layer = cfg.layer_idx, "gpu_layer: cache_write done");
 
             let attn_out = if input.is_prefill {
-                // Prefill: use naive cuBLAS attention (Q@K^T -> softmax -> @V)
-                // FA2 prefill kernel has a multi-token bug; bypass it.
+                // Prefill: use FA2 prefill kernel reading from paged cache
                 info!(
                     layer = cfg.layer_idx,
-                    "gpu_layer: naive_prefill_attention start"
+                    "gpu_layer: prefill_attention start"
                 );
-                Self::naive_prefill_attention(
+                Self::prefill_attention(
                     &self.device,
-                    blas,
                     &q_rot,
-                    &k_rot,
-                    &v,
+                    input.key_cache,
+                    input.value_cache,
+                    input.block_tables,
+                    input.context_lens,
                     num_tokens,
+                    input.num_seqs,
                     num_heads,
                     num_kv_heads,
                     head_dim,
+                    input.max_context_len,
+                    input.block_size,
                 )?
             } else {
                 // Decode: read from paged cache
@@ -571,6 +574,7 @@ mod inner {
         /// reading from the paged cache with real block_tables.
         /// Naive prefill attention: per-head Q@K^T -> softmax -> @V via cuBLAS.
         /// Bypasses FA2 kernel for correctness. Used only during prefill (once per request).
+        #[allow(dead_code)]
         fn naive_prefill_attention(
             device: &Arc<CudaDevice>,
             blas: &CublasHandle,
@@ -682,8 +686,7 @@ mod inner {
             Ok(output)
         }
 
-        /// FA2 prefill attention (currently buggy for multi-token, kept for reference).
-        #[allow(dead_code)]
+        /// FA2 prefill attention reading from paged cache with real block_tables.
         fn prefill_attention(
             device: &Arc<CudaDevice>,
             q: &CudaSlice<f32>,

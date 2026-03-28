@@ -231,13 +231,8 @@ __global__ void flash_attention_2_kernel(
                 dot = block_reduce_sum(dot, s_reduce, tid, FA2_THREADS);
 
                 if (tid == 0) {
-                    // Apply causal mask: if q_pos < kv_pos, mask out
                     int kv_pos = tile_start + t;
-                    if (causal && kv_pos > (q_global_pos - (context_len - q_len) + qi)) {
-                        // For prefill: q position in the sequence is qi,
-                        // kv position is kv_pos. Causal means qi < kv_pos => mask.
-                        // The absolute position of query token qi is:
-                        //   (context_len - q_len) + qi  [offset of first query token + qi]
+                    if (causal && kv_pos > (context_len - q_len + qi)) {
                         s_score[t] = -FLT_MAX;
                     } else {
                         s_score[t] = dot;

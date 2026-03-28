@@ -2,7 +2,7 @@
 
 A from-scratch Rust rewrite of [vLLM](https://github.com/vllm-project/vllm) -- the most popular open-source LLM serving engine. Drop-in replacement for the OpenAI-compatible API with dramatically better resource efficiency.
 
-**22 Rust crates. 14 CUDA PTX kernels. 15MB binary. 72 tok/s on A100. Real GPU inference with coherent output.**
+**22 Rust crates. 14 CUDA PTX kernels. 16MB binary. 86 tok/s on A100. Real GPU inference with coherent output.**
 
 ## Install
 
@@ -18,17 +18,15 @@ Or build from source -- see [Quick Start](#quick-start) below.
 
 ## Verified Measurements (A100 80GB SXM4, Qwen2.5-1.5B)
 
-Coherent text output verified on 5 diverse prompts. Full throughput comparison against Python vLLM is being refreshed -- see `bench/run.sh` to reproduce.
+Coherent text output verified on 5 diverse prompts. See `bench/run.sh` to reproduce.
 
-| Metric | rvLLM |
-|---|---:|
-| Startup time | ~7 sec |
-| Binary size | 15 MB |
-| CPU memory (RSS) | 333 MB |
-| GPU VRAM | 6,357 MiB |
-| Output quality | Coherent (5/5 prompts) |
-| Throughput | *Pending -- benchmark refresh in progress* |
-| P50/P95 Latency | *Pending* |
+| Metric | rvLLM | Python vLLM | Comparison |
+|---|---:|---:|---|
+| Throughput | 86 tok/s | 200 tok/s | Python vLLM 2.3x higher (continuous batching + CUDA graphs -- in progress for rvLLM) |
+| Startup time | 8 sec | 121 sec | **15x faster** |
+| Binary / install size | 16 MB | ~500 MB | **31x smaller** |
+| CPU memory (RSS) | 348 MB | 1,033 MB | **3x less** |
+| Output quality | Coherent (5/5 prompts) | Coherent | -- |
 
 ### CPU Component Benchmarks (sampling, logit processing)
 

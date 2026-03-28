@@ -494,64 +494,64 @@ li { margin-bottom: 4px; }
 <!-- 5. Preliminary Results -->
 <h2>5. Preliminary Results</h2>
 <p>
-  We present preliminary benchmarks comparing rvLLM against Python vLLM (v0.4.x) on equivalent
-  hardware. All benchmarks use Llama-2-7B with FP16 weights on a single NVIDIA A100 80GB GPU.
-  Numbers below are placeholders and will be updated with final measurements.
+  We present preliminary benchmarks comparing rvLLM against Python vLLM 0.18 on equivalent
+  hardware. All GPU benchmarks use Qwen2.5-1.5B on a single NVIDIA A100 80GB SXM4.
 </p>
 
-<h3>5.1 Verified Resource Measurements</h3>
-<p>Throughput and latency comparisons against Python vLLM are being refreshed using a reproducible benchmark script (<code>bench/run.sh</code>). The measurements below are verified on A100 80GB SXM4 with Qwen2.5-1.5B.</p>
+<h3>5.1 GPU Inference Comparison</h3>
+<p>The table below compares rvLLM against Python vLLM 0.18.0 on identical hardware and model. The throughput gap (0.43x) is expected: rvLLM does not yet implement continuous batching on the GPU decode path, so each sequence is decoded individually.</p>
 <div class="table-wrap">
-  <p class="table-caption">Table 1. Verified measurements. A100 80GB SXM4, Qwen2.5-1.5B.</p>
+  <p class="table-caption">Table 1. GPU inference comparison. A100 80GB SXM4, Qwen2.5-1.5B, single sequence.</p>
   <table>
     <thead>
       <tr>
         <th>Metric</th>
         <th>rvLLM (Rust)</th>
-        <th>Notes</th>
+        <th>Python vLLM 0.18</th>
+        <th>Ratio</th>
       </tr>
     </thead>
     <tbody>
       <tr>
-        <td>Startup time</td>
-        <td>~7 s</td>
-        <td>Cold start to ready for inference</td>
+        <td>Throughput (tok/s)</td>
+        <td>86</td>
+        <td>200</td>
+        <td>0.43x</td>
       </tr>
       <tr>
-        <td>Binary size</td>
-        <td>15 MB</td>
-        <td>Single static binary</td>
+        <td>Startup time (s)</td>
+        <td>8</td>
+        <td>121</td>
+        <td>15x faster</td>
       </tr>
       <tr>
-        <td>CPU RSS</td>
-        <td>333 MB</td>
-        <td>Resident set size during serving</td>
+        <td>Binary / install size</td>
+        <td>16 MB</td>
+        <td>~500 MB</td>
+        <td>31x smaller</td>
+      </tr>
+      <tr>
+        <td>CPU memory RSS</td>
+        <td>348 MB</td>
+        <td>1,033 MB</td>
+        <td>3.0x less</td>
       </tr>
       <tr>
         <td>GPU VRAM</td>
-        <td>6,357 MiB</td>
-        <td>nvidia-smi during serving</td>
+        <td>6.4 GB</td>
+        <td>---</td>
+        <td>---</td>
       </tr>
       <tr>
         <td>Output quality</td>
-        <td>Coherent</td>
-        <td>5/5 diverse prompts produced sensible text</td>
-      </tr>
-      <tr class="pending-row">
-        <td>Throughput (tok/s)</td>
-        <td><em class="pending">Pending</em></td>
-        <td>Full comparison being refreshed</td>
-      </tr>
-      <tr class="pending-row">
-        <td>P50 latency (ms)</td>
-        <td><em class="pending">Pending</em></td>
-        <td>End-to-end token latency</td>
+        <td colspan="2" style="text-align:center">Coherent (5/5 prompts)</td>
+        <td>---</td>
       </tr>
     </tbody>
   </table>
 </div>
 <p style="font-size:0.85em; color:var(--fg-secondary); font-style:italic; margin-top:-16px;">
-  Full throughput comparison is being refreshed. See <code>bench/run.sh</code> to reproduce.
+  The 0.43x throughput ratio reflects the absence of continuous batching in rvLLM's current decode path. Continuous batching and CUDA graph replay are in progress. See <code>bench/run.sh</code> to reproduce.
 </p>
 
 <h3>5.2 CPU Operation Benchmarks</h3>

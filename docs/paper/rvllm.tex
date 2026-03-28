@@ -75,13 +75,14 @@
 We present rvLLM, a from-scratch Rust implementation of the vLLM inference engine
 targeting OpenAI-compatible API serving with CUDA GPU acceleration. The system
 comprises 22~Rust crates and pre-compiled CUDA PTX kernels, compiling to a single
-15\,MB static binary. We describe the modular crate architecture, CUDA integration
+16\,MB static binary. We describe the modular crate architecture, CUDA integration
 strategy via PTX kernels loaded through \texttt{cudarc}, and key design decisions
 including a mock-GPU feature for hardware-free development, CPU attention fallback,
 and PyTorch weight-layout compatibility. The merged main branch produces coherent
-inference output on NVIDIA A100 with a $\sim$7\,s startup time and 333\,MB resident
-memory. Full throughput benchmarks against Python vLLM are being refreshed in a
-follow-up pass. rvLLM is open-source under the Apache-2.0 license.
+inference output on NVIDIA A100 at 86~tok/s with an 8\,s startup time, 348\,MB
+resident memory, and 6.4\,GB VRAM---compared to Python vLLM~0.18's 200~tok/s with
+121\,s startup and 1{,}033\,MB RSS. The throughput gap is primarily due to continuous
+batching not yet being enabled. rvLLM is open-source under the Apache-2.0 license.
 \end{abstract}
 
 % ============================================================================
@@ -406,32 +407,38 @@ were measured on both Apple M5 (10 cores) and the A100 host Xeon using
 
 \subsection{GPU Inference}
 
-Table~\ref{tab:gpu_bench} presents verified resource measurements. Throughput and
-latency comparisons against Python vLLM are being refreshed in a follow-up
-benchmark pass using a reproducible script (\texttt{bench/run.sh}).
+Table~\ref{tab:gpu_bench} compares rvLLM against Python vLLM~0.18.0 on identical
+hardware and model. The throughput gap (0.43$\times$) is expected: rvLLM does not
+yet implement continuous batching on the GPU decode path, so each sequence is decoded
+individually. Continuous batching and CUDA graph replay are the primary targets for
+closing this gap.
 
 \begin{table}[t]
   \centering
-  \caption{Verified resource measurements. A100 80\,GB SXM4, Qwen2.5-1.5B.}
+  \caption{GPU inference comparison. A100 80\,GB SXM4, Qwen2.5-1.5B, single sequence.}
   \label{tab:gpu_bench}
   \small
-  \begin{tabular}{@{}lr@{}}
+  \begin{tabular}{@{}lrrr@{}}
     \toprule
-    \rowcolor{HeaderBlue} \thead{Metric} & \thead{rvLLM (Rust)} \\
+    \rowcolor{HeaderBlue} \thead{Metric} & \thead{rvLLM (Rust)} & \thead{Python vLLM 0.18} & \thead{Ratio} \\
     \midrule
-    Startup time (s)         & $\sim$7 \\
+    Throughput (tok/s)       & 86            & 200           & 0.43$\times$ \\
     \rowcolor{gray!8}
-    Binary size              & 15\,MB \\
-    CPU memory RSS           & 333\,MB \\
+    Startup time (s)         & 8             & 121           & 15$\times$ faster \\
+    Binary / install size    & 16\,MB        & $\sim$500\,MB & 31$\times$ smaller \\
     \rowcolor{gray!8}
-    GPU VRAM                 & 6{,}357\,MiB \\
-    Output quality           & Coherent (5/5 prompts) \\
+    CPU memory RSS           & 348\,MB       & 1{,}033\,MB   & 3.0$\times$ less \\
+    GPU VRAM                 & 6.4\,GB       & ---           & --- \\
     \rowcolor{gray!8}
-    Throughput (tok/s)       & \emph{Pending} \\
-    P50/P95 latency          & \emph{Pending} \\
+    Output quality           & \multicolumn{2}{c}{Coherent (5/5 prompts)} & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+\smallskip\noindent\textit{Note:} The 0.43$\times$ throughput ratio reflects the
+absence of continuous batching in rvLLM's current decode path. Each sequence is
+decoded individually rather than batched, leaving significant GPU utilisation on the
+table. Continuous batching implementation is in progress.
 
 \subsection{CPU Component Benchmarks}
 
@@ -476,10 +483,8 @@ Several factors should be considered when interpreting these results:
         that are more impactful at high concurrency. Our benchmarks do not yet cover
         high-concurrency regimes thoroughly.
   \item rvLLM does not yet implement the full set of optimisations present in mature
-        Python vLLM (e.g., prefix caching is implemented but not yet benchmarked;
-        CUDA graph replay is feature-gated).
-  \item Throughput ratios marked ``TBD'' in Table~\ref{tab:gpu_bench} are pending
-        verification by an independent benchmark agent.
+        Python vLLM (e.g., continuous batching on the decode path, CUDA graph replay).
+        These account for the majority of the throughput gap.
 \end{itemize}
 
 % ============================================================================
@@ -525,9 +530,9 @@ use.
 % ============================================================================
 
 rvLLM demonstrates that a systems-language reimplementation of LLM serving
-infrastructure can yield practical benefits in deployment size (15\,MB binary),
-startup time ($\sim$7\,s), and memory footprint (333\,MB RSS), while maintaining
-API compatibility with the existing vLLM ecosystem. The 22-crate modular architecture
+infrastructure can yield practical benefits in deployment size (16\,MB binary),
+startup time (8\,s vs.\ 121\,s), and memory footprint (348\,MB vs.\ 1{,}033\,MB RSS),
+while maintaining API compatibility with the existing vLLM ecosystem. The 22-crate modular architecture
 enables independent development and testing of each layer, and the mock-GPU feature
 makes the entire non-GPU stack accessible to developers without NVIDIA hardware.
 
