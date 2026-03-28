@@ -490,6 +490,7 @@ Same CLI flags:
 | GPTNeoXForCausalLM | Pythia, GPT-NeoX-20B | Implemented |
 | StableLmForCausalLM | StableLM-3B, StableLM-2 | Implemented |
 | CohereForCausalLM | Command-R, Command-R+ | Implemented |
+| GptOssForCausalLM | OpenAI GPT-OSS 20B | Working (eager decode) |
 
 **Want to add a model?** See [CONTRIBUTING.md](CONTRIBUTING.md#1-adding-a-model-architecture) -- it's a single file implementing the `Architecture` trait. We're tracking community-requested architectures in [issues](https://github.com/m0at/hermes-lite/issues).
 
@@ -552,7 +553,7 @@ rvLLM benchmark --model <MODEL>   Run offline throughput benchmark
 - Beam search and best-of-N sampling
 - Logprobs in GPU path
 - OpenAI-compatible API (completions, chat, streaming, embeddings, batch)
-- 10 model architectures (Llama, Mistral, Qwen2, Phi, Gemma, GPT-NeoX, StableLM, Cohere, Mixtral MoE, DeepSeek MoE)
+- 11 model architectures (Llama, Mistral, Qwen2, Phi, Gemma, GPT-NeoX, StableLM, Cohere, Mixtral MoE, DeepSeek MoE, GPT-OSS)
 - FlashAttention-2 (CPU reference + CUDA kernel)
 - CUDA graph capture/replay (working end-to-end on A100)
 - FP8 KV cache (E4M3 quantization with per-head scaling)
