@@ -28,6 +28,7 @@ use rvllm_sequence::{SequenceData, SequenceGroupMetadata};
 use rvllm_core::prelude::ResponseFormat;
 
 use crate::config::WorkerConfig;
+use crate::graph_runner::{GraphRunner, GraphRunnerConfig};
 use crate::input;
 
 /// Output of one GPU worker step, mapping each sequence to its sampled token.
@@ -333,6 +334,10 @@ pub struct GpuWorker {
     /// Constructed in init_cache() once cache geometry is known.
     #[cfg(feature = "cuda")]
     gpu_model_runner: Option<rvllm_model_runner::gpu_runner::GpuModelRunner>,
+    /// CUDA graph runner for decode step capture/replay.
+    graph_runner: GraphRunner,
+    /// Number of forward calls so far (for warmup before graph capture).
+    forward_count: usize,
 }
 
 impl GpuWorker {
@@ -363,6 +368,13 @@ impl GpuWorker {
             info!("FP8 KV cache enabled");
         }
 
+        let graph_runner = GraphRunner::new(GraphRunnerConfig {
+            max_batch_size: 32,
+            enabled: true,
+            vocab_size: config.vocab_size,
+            hidden_size: config.hidden_size,
+        });
+
         Ok(Self {
             device,
             cublas,
@@ -386,6 +398,8 @@ impl GpuWorker {
             raw_weight_map: None,
             #[cfg(feature = "cuda")]
             gpu_model_runner: None,
+            graph_runner,
+            forward_count: 0,
         })
     }
 
@@ -663,7 +677,7 @@ impl GpuWorker {
             "GpuWorker execute"
         );
 
-        let model_input = input::prepare_input(metadata)?;
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
         let total_tokens = model_input.num_tokens();
 
         debug!(
@@ -702,8 +716,8 @@ impl GpuWorker {
         self.execute(metadata)
     }
 
-    /// Real GPU forward pass: delegates to GpuModelRunner for full GPU-resident inference.
-    fn gpu_forward(&mut self, model_input: &ModelInput) -> Result<Vec<f32>> {
+    /// Run the raw model forward pass (no graph logic).
+    fn raw_gpu_forward(&self, model_input: &ModelInput) -> Result<Vec<f32>> {
         #[cfg(feature = "cuda")]
         {
             let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
@@ -726,6 +740,68 @@ impl GpuWorker {
                 "GPU forward pass requires --features cuda. CPU fallback is disabled.".into(),
             ));
         }
+    }
+
+    /// Warmup threshold: skip graph capture for the first N forward calls.
+    const GRAPH_WARMUP_CALLS: usize = 3;
+
+    /// Real GPU forward pass: tries CUDA graph replay for decode steps,
+    /// falls back to normal forward, and captures graphs after warmup.
+    fn gpu_forward(&mut self, model_input: &ModelInput) -> Result<Vec<f32>> {
+        self.forward_count += 1;
+
+        // Try graph replay for eligible decode steps.
+        if self.graph_runner.can_use_graph(model_input) {
+            let (padded_input, actual_batch) = self.graph_runner.pad_input(model_input)?;
+            let replayed = self
+                .graph_runner
+                .try_replay(&self.compute_stream, actual_batch)?;
+            if replayed {
+                debug!(actual_batch, "CUDA graph replayed, unpadding logits");
+                let padded_logits = self.raw_gpu_forward(&padded_input)?;
+                return Ok(self.graph_runner.unpad_logits(&padded_logits, actual_batch));
+            }
+        }
+
+        // Normal forward pass.
+        let logits = self.raw_gpu_forward(model_input)?;
+
+        // After warmup, capture a graph for this decode batch size if not yet captured.
+        if self.forward_count > Self::GRAPH_WARMUP_CALLS
+            && !model_input.is_prefill
+            && self.graph_runner.can_use_graph(model_input)
+        {
+            let (padded_input, _actual_batch) = self.graph_runner.pad_input(model_input)?;
+            let padded_bs = padded_input.num_tokens();
+            if !self.graph_runner.was_capture_attempted(padded_bs) {
+                info!(padded_bs, "capturing CUDA graph after warmup");
+                // Split borrow: take references to disjoint fields so the closure
+                // doesn't conflict with &mut graph_runner.
+                #[cfg(feature = "cuda")]
+                {
+                    let gpu_runner = self.gpu_model_runner.as_ref();
+                    let capture_result =
+                        self.graph_runner
+                            .capture_graph(&self.compute_stream, padded_bs, || {
+                                let runner = gpu_runner.ok_or_else(|| {
+                                    LLMError::GpuError("GPU model runner not initialized".into())
+                                })?;
+                                let _ = runner.forward(
+                                    &padded_input.token_ids,
+                                    &padded_input.position_ids,
+                                    &padded_input.attention_metadata,
+                                    padded_input.is_prefill,
+                                )?;
+                                Ok(())
+                            });
+                    if let Err(e) = capture_result {
+                        warn!(%e, "CUDA graph capture failed, continuing without graph");
+                    }
+                }
+            }
+        }
+
+        Ok(logits)
     }
 
     /// Legacy CPU forward pass (kept for comparison benchmarks only, not used in production).

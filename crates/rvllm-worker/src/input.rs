@@ -12,7 +12,7 @@ pub use rvllm_sequence::{SequenceData, SequenceGroupMetadata};
 /// Handles pure prefill, pure decode, and mixed prefill+decode batches.
 /// For mixed batches, prefill groups are processed first, then decode groups,
 /// and the results are merged into a single `ModelInput`.
-pub fn prepare_input(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
+pub fn prepare_input(metadata: &[SequenceGroupMetadata], block_size: usize) -> Result<ModelInput> {
     if metadata.is_empty() {
         return Ok(ModelInput {
             token_ids: Vec::new(),
@@ -33,11 +33,11 @@ pub fn prepare_input(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
         metadata.iter().filter(|g| !g.is_prompt).collect();
 
     match (prefill_groups.is_empty(), decode_groups.is_empty()) {
-        (false, true) => prepare_prefill(metadata),
-        (true, false) => prepare_decode(metadata),
+        (false, true) => prepare_prefill(metadata, block_size),
+        (true, false) => prepare_decode(metadata, block_size),
         (false, false) => {
-            let prefill = prepare_prefill_refs(&prefill_groups)?;
-            let decode = prepare_decode_refs(&decode_groups)?;
+            let prefill = prepare_prefill_refs(&prefill_groups, block_size)?;
+            let decode = prepare_decode_refs(&decode_groups, block_size)?;
             Ok(merge_inputs(prefill, decode))
         }
         // Both empty is unreachable since metadata is non-empty, but handle gracefully.
@@ -50,7 +50,7 @@ pub fn prepare_input(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
 /// Each sequence contributes all its prompt tokens. Position IDs are
 /// 0..prompt_len for each sequence. Block tables and slot mappings are
 /// derived from the provided block tables.
-fn prepare_prefill(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
+fn prepare_prefill(metadata: &[SequenceGroupMetadata], block_size: usize) -> Result<ModelInput> {
     let mut token_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut slot_mapping = Vec::new();
@@ -73,7 +73,6 @@ fn prepare_prefill(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
                 .map(|t| t.as_slice())
                 .unwrap_or(&[]);
 
-            let block_size: usize = 16; // default block size
             for pos in 0..seq_len {
                 let block_idx = pos / block_size;
                 let block_offset = pos % block_size;
@@ -109,7 +108,7 @@ fn prepare_prefill(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
 /// Each sequence contributes exactly one token (the last generated token).
 /// Position ID is the total sequence length - 1. Block tables are passed
 /// through for paged attention.
-fn prepare_decode(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
+fn prepare_decode(metadata: &[SequenceGroupMetadata], block_size: usize) -> Result<ModelInput> {
     let mut token_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut slot_mapping = Vec::new();
@@ -133,7 +132,6 @@ fn prepare_decode(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
                 .map(|t| t.as_slice())
                 .unwrap_or(&[]);
 
-            let block_size: usize = 16;
             let block_idx = (seq_len - 1) / block_size;
             let block_offset = (seq_len - 1) % block_size;
             if block_idx < bt.len() {
@@ -163,7 +161,10 @@ fn prepare_decode(metadata: &[SequenceGroupMetadata]) -> Result<ModelInput> {
 }
 
 /// Like `prepare_prefill` but accepts `&[&SequenceGroupMetadata]` for mixed-batch use.
-fn prepare_prefill_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInput> {
+fn prepare_prefill_refs(
+    metadata: &[&SequenceGroupMetadata],
+    block_size: usize,
+) -> Result<ModelInput> {
     let mut token_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut slot_mapping = Vec::new();
@@ -185,7 +186,6 @@ fn prepare_prefill_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInpu
                 .map(|t| t.as_slice())
                 .unwrap_or(&[]);
 
-            let block_size: usize = 16;
             for pos in 0..seq_len {
                 let block_idx = pos / block_size;
                 let block_offset = pos % block_size;
@@ -217,7 +217,10 @@ fn prepare_prefill_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInpu
 }
 
 /// Like `prepare_decode` but accepts `&[&SequenceGroupMetadata]` for mixed-batch use.
-fn prepare_decode_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInput> {
+fn prepare_decode_refs(
+    metadata: &[&SequenceGroupMetadata],
+    block_size: usize,
+) -> Result<ModelInput> {
     let mut token_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut slot_mapping = Vec::new();
@@ -240,7 +243,6 @@ fn prepare_decode_refs(metadata: &[&SequenceGroupMetadata]) -> Result<ModelInput
                 .map(|t| t.as_slice())
                 .unwrap_or(&[]);
 
-            let block_size: usize = 16;
             let block_idx = (seq_len - 1) / block_size;
             let block_offset = (seq_len - 1) % block_size;
             if block_idx < bt.len() {
@@ -317,6 +319,8 @@ mod tests {
     use super::*;
     use rvllm_core::prelude::{BlockId, SamplingParams, SequenceId};
 
+    const TEST_BLOCK_SIZE: usize = 16;
+
     fn make_seq_data(prompt: Vec<TokenId>, output: Vec<TokenId>) -> SequenceData {
         SequenceData {
             prompt_token_ids: prompt,
@@ -342,7 +346,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_model_input() {
-        let input = prepare_input(&[]).unwrap();
+        let input = prepare_input(&[], TEST_BLOCK_SIZE).unwrap();
         assert!(input.token_ids.is_empty());
         assert!(input.position_ids.is_empty());
         assert!(input.is_prefill);
@@ -359,7 +363,7 @@ mod tests {
             vec![(SequenceId(100), blocks)],
         );
 
-        let input = prepare_input(&[group]).unwrap();
+        let input = prepare_input(&[group], TEST_BLOCK_SIZE).unwrap();
         assert!(input.is_prefill);
         assert_eq!(input.token_ids, vec![10, 20, 30, 40]);
         assert_eq!(input.position_ids, vec![0, 1, 2, 3]);
@@ -385,7 +389,7 @@ mod tests {
             vec![(SequenceId(20), vec![BlockId(1)])],
         );
 
-        let input = prepare_input(&[g1, g2]).unwrap();
+        let input = prepare_input(&[g1, g2], TEST_BLOCK_SIZE).unwrap();
         assert!(input.is_prefill);
         assert_eq!(input.token_ids, vec![1, 2, 3, 4, 5]);
         assert_eq!(input.position_ids, vec![0, 1, 2, 0, 1]);
@@ -405,7 +409,7 @@ mod tests {
             vec![(SequenceId(100), blocks)],
         );
 
-        let input = prepare_input(&[group]).unwrap();
+        let input = prepare_input(&[group], TEST_BLOCK_SIZE).unwrap();
         assert!(!input.is_prefill);
         // Only the last token
         assert_eq!(input.token_ids, vec![50]);
@@ -432,7 +436,7 @@ mod tests {
             vec![(SequenceId(20), vec![BlockId(1)])],
         );
 
-        let input = prepare_input(&[g1, g2]).unwrap();
+        let input = prepare_input(&[g1, g2], TEST_BLOCK_SIZE).unwrap();
         assert!(!input.is_prefill);
         assert_eq!(input.token_ids, vec![100, 200]);
         assert_eq!(input.position_ids, vec![3, 2]);
@@ -468,7 +472,7 @@ mod tests {
             vec![(SequenceId(10), vec![BlockId(5)])],
         );
 
-        let input = prepare_input(&[group]).unwrap();
+        let input = prepare_input(&[group], TEST_BLOCK_SIZE).unwrap();
         // slots: 5*16+0=80, 5*16+1=81, 5*16+2=82
         assert_eq!(input.attention_metadata.slot_mapping, vec![80, 81, 82]);
     }
@@ -484,7 +488,7 @@ mod tests {
             vec![(SequenceId(10), vec![BlockId(3)])],
         );
 
-        let input = prepare_input(&[group]).unwrap();
+        let input = prepare_input(&[group], TEST_BLOCK_SIZE).unwrap();
         // position 4, block_idx=4/16=0, offset=4, slot=3*16+4=52
         assert_eq!(input.attention_metadata.slot_mapping, vec![52]);
     }
@@ -500,10 +504,75 @@ mod tests {
             vec![(SequenceId(5), blocks)],
         );
 
-        let input = prepare_input(&[group]).unwrap();
+        let input = prepare_input(&[group], TEST_BLOCK_SIZE).unwrap();
         assert_eq!(
             input.attention_metadata.block_tables,
             vec![vec![10, 20, 30]]
         );
+    }
+
+    #[test]
+    fn mixed_prefill_and_decode_batch() {
+        // Prefill group: 3 prompt tokens
+        let sd_prefill = make_seq_data(vec![1, 2, 3], vec![]);
+        let g_prefill = make_group(
+            1,
+            true,
+            vec![(SequenceId(10), sd_prefill)],
+            vec![(SequenceId(10), vec![BlockId(5)])],
+        );
+
+        // Decode group: 4 prompt + 1 generated = 5 total tokens, contributes 1 token
+        let sd_decode = make_seq_data(vec![10, 20, 30, 40], vec![50]);
+        let g_decode = make_group(
+            2,
+            false,
+            vec![(SequenceId(20), sd_decode)],
+            vec![(SequenceId(20), vec![BlockId(3)])],
+        );
+
+        let input = prepare_input(&[g_prefill, g_decode], TEST_BLOCK_SIZE).unwrap();
+        // is_prefill true because batch contains prefill groups
+        assert!(input.is_prefill);
+        // Prefill tokens first, then decode token
+        assert_eq!(input.token_ids, vec![1, 2, 3, 50]);
+        // Prefill positions: 0,1,2; Decode position: 4 (total_len - 1)
+        assert_eq!(input.position_ids, vec![0, 1, 2, 4]);
+        // Prefill context_len: 3; Decode context_len: 5
+        assert_eq!(input.attention_metadata.context_lens, vec![3, 5]);
+        assert_eq!(input.attention_metadata.max_context_len, 5);
+        // 4 total tokens in the batch
+        assert_eq!(input.num_tokens(), 4);
+        // Slot mapping: prefill slots 80,81,82; decode slot 52
+        assert_eq!(input.attention_metadata.slot_mapping, vec![80, 81, 82, 52]);
+    }
+
+    #[test]
+    fn mixed_batch_decode_before_prefill_in_metadata_order() {
+        // Even if decode group appears first in the metadata slice,
+        // prefill tokens should still come first in the merged output.
+        let sd_decode = make_seq_data(vec![4, 5], vec![200]);
+        let g_decode = make_group(
+            1,
+            false,
+            vec![(SequenceId(10), sd_decode)],
+            vec![(SequenceId(10), vec![BlockId(1)])],
+        );
+
+        let sd_prefill = make_seq_data(vec![1, 2, 3], vec![]);
+        let g_prefill = make_group(
+            2,
+            true,
+            vec![(SequenceId(20), sd_prefill)],
+            vec![(SequenceId(20), vec![BlockId(5)])],
+        );
+
+        // Decode group listed before prefill group in the slice
+        let input = prepare_input(&[g_decode, g_prefill], TEST_BLOCK_SIZE).unwrap();
+        assert!(input.is_prefill);
+        // Prefill tokens come first regardless of metadata order
+        assert_eq!(input.token_ids, vec![1, 2, 3, 200]);
+        assert_eq!(input.position_ids, vec![0, 1, 2, 2]);
+        assert_eq!(input.attention_metadata.context_lens, vec![3, 3]);
     }
 }

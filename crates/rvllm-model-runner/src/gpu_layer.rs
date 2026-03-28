@@ -229,10 +229,7 @@ mod inner {
 
             let attn_out = if input.is_prefill {
                 // Prefill: use FA2 prefill kernel reading from paged cache
-                info!(
-                    layer = cfg.layer_idx,
-                    "gpu_layer: prefill_attention start"
-                );
+                info!(layer = cfg.layer_idx, "gpu_layer: prefill_attention start");
                 Self::prefill_attention(
                     &self.device,
                     &q_rot,

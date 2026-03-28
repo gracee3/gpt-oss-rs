@@ -138,7 +138,8 @@ impl Worker {
         }
 
         // 2. Prepare model input tensors
-        let model_input = input::prepare_input(&input.seq_group_metadata_list)?;
+        let model_input =
+            input::prepare_input(&input.seq_group_metadata_list, self.config.block_size)?;
 
         // 3. Run forward pass
         let runner = self
