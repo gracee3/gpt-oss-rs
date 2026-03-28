@@ -82,6 +82,17 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
     ("rms_norm_f16", &["rms_norm_f16_kernel"]),
     ("rotary_embedding", &["rotary_embedding_kernel"]),
     ("softmax", &["softmax_kernel"]),
+    (
+        "fused_lm_head_argmax",
+        &[
+            "fused_lm_head_argmax_kernel",
+            "fused_lm_head_argmax_reduce_kernel",
+        ],
+    ),
+    (
+        "fused_lm_head_argmax_f16",
+        &["fused_lm_head_argmax_f16_kernel"],
+    ),
 ];
 
 /// Loads and manages CUDA PTX modules, providing kernel launch capabilities.

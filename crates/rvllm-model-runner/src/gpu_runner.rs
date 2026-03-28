@@ -21,6 +21,7 @@ pub enum ForwardOutput {
 
 #[cfg(feature = "cuda")]
 mod cuda_impl {
+    use std::cell::RefCell;
     use std::sync::Arc;
 
     use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
@@ -42,6 +43,48 @@ mod cuda_impl {
 
     use super::ForwardOutput;
 
+    /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
+    /// allocations on the hot decode path.
+    struct ReusableGpuBuf {
+        buf: Option<CudaSlice<i32>>,
+    }
+
+    impl ReusableGpuBuf {
+        fn new() -> Self {
+            Self { buf: None }
+        }
+
+        /// Upload `data` into the reusable buffer. If the existing GPU allocation
+        /// is large enough, copies via `memcpy_htod` (zero alloc). Otherwise
+        /// allocates a new buffer with 2x headroom and copies into that.
+        fn upload(
+            &mut self,
+            data: &[i32],
+            stream: &Arc<CudaStream>,
+        ) -> std::result::Result<(), cudarc::driver::result::DriverError> {
+            let need = data.len();
+            if need == 0 {
+                // Ensure we have at least a 1-element buffer so references are valid.
+                if self.buf.is_none() {
+                    self.buf = Some(stream.alloc_zeros::<i32>(1)?);
+                }
+                return Ok(());
+            }
+            let have = self.buf.as_ref().map_or(0, |b| b.len());
+            if have < need {
+                // Grow with 2x headroom to amortize future resizes.
+                let cap = need.max(have * 2).max(64);
+                self.buf = Some(stream.alloc_zeros::<i32>(cap)?);
+            }
+            stream.memcpy_htod(data, self.buf.as_mut().unwrap())?;
+            Ok(())
+        }
+
+        fn slice(&self) -> &CudaSlice<i32> {
+            self.buf.as_ref().expect("upload() must be called first")
+        }
+    }
+
     pub struct GpuModelRunner {
         weights: GpuModelWeights,
         cache: CudaCacheEngine,
@@ -61,6 +104,17 @@ mod cuda_impl {
         rope_sin: CudaSlice<f32>,
         /// When true, use hgemm with f16 projection weights instead of sgemm.
         use_fp16: bool,
+        /// Pre-allocated GPU buffers for per-step metadata, reused across
+        /// forward calls to avoid CUDA malloc/free on the decode hot path.
+        /// Interior mutability via RefCell since forward_ex takes &self.
+        meta_positions: RefCell<ReusableGpuBuf>,
+        meta_context_lens: RefCell<ReusableGpuBuf>,
+        meta_block_tables: RefCell<ReusableGpuBuf>,
+        meta_slot_mapping: RefCell<ReusableGpuBuf>,
+        meta_seq_start_pos: RefCell<ReusableGpuBuf>,
+        /// Reusable CPU scratch buffer for packing metadata (avoids per-step
+        /// heap allocations for the common small-batch decode case).
+        cpu_scratch: RefCell<Vec<i32>>,
     }
 
     impl GpuModelRunner {
@@ -154,6 +208,12 @@ mod cuda_impl {
                 rope_cos,
                 rope_sin,
                 use_fp16: false,
+                meta_positions: RefCell::new(ReusableGpuBuf::new()),
+                meta_context_lens: RefCell::new(ReusableGpuBuf::new()),
+                meta_block_tables: RefCell::new(ReusableGpuBuf::new()),
+                meta_slot_mapping: RefCell::new(ReusableGpuBuf::new()),
+                meta_seq_start_pos: RefCell::new(ReusableGpuBuf::new()),
+                cpu_scratch: RefCell::new(Vec::with_capacity(4096)),
             })
         }
 
@@ -193,21 +253,10 @@ mod cuda_impl {
 
             debug!(num_tokens, num_seqs, is_prefill, greedy_only, "GpuModelRunner::forward_ex");
 
-            // Upload positions to GPU as i32 (CUDA kernels expect int*)
-            let pos_i32: Vec<i32> = positions.iter().map(|&p| p as i32).collect();
-            let positions_gpu: CudaSlice<i32> = self
-                .stream
-                .clone_htod(&pos_i32)
-                .map_err(|e| LLMError::GpuError(format!("positions HtoD: {e}")))?;
-
-            // Upload context_lens as i32
-            let cl_i32: Vec<i32> = attn_meta.context_lens.iter().map(|&c| c as i32).collect();
-            let context_lens_gpu: CudaSlice<i32> = self
-                .stream
-                .clone_htod(&cl_i32)
-                .map_err(|e| LLMError::GpuError(format!("context_lens HtoD: {e}")))?;
-
-            // Flatten block_tables to [num_seqs, max_blocks_per_seq] row-major as i32
+            // Upload per-step metadata into reusable GPU buffers.
+            // On the decode hot path, buffer sizes are stable so this is pure
+            // memcpy_htod with zero CUDA malloc/free. The CPU scratch vec is
+            // also reused to avoid per-step heap allocations.
             let max_blocks = attn_meta
                 .block_tables
                 .iter()
@@ -215,39 +264,57 @@ mod cuda_impl {
                 .max()
                 .unwrap_or(1)
                 .max(1);
-            let mut flat_bt = vec![0i32; num_seqs * max_blocks];
-            for (s, row) in attn_meta.block_tables.iter().enumerate() {
-                for (b, &blk) in row.iter().enumerate() {
-                    flat_bt[s * max_blocks + b] = blk as i32;
-                }
-            }
-            let block_tables_gpu: CudaSlice<i32> = self
-                .stream
-                .clone_htod(&flat_bt)
-                .map_err(|e| LLMError::GpuError(format!("block_tables HtoD: {e}")))?;
-
-            // Upload slot_mapping as i32
-            let sm_i32: Vec<i32> = attn_meta.slot_mapping.iter().map(|&s| s as i32).collect();
-            let slot_mapping_gpu: CudaSlice<i32> = self
-                .stream
-                .clone_htod(&sm_i32)
-                .map_err(|e| LLMError::GpuError(format!("slot_mapping HtoD: {e}")))?;
-
             let max_context_len = attn_meta.max_context_len;
 
-            // Build seq_start_pos from query_lens (not context_lens).
-            // query_lens[i] = prompt_len for prefill, 1 for decode. Sum == num_tokens.
-            let mut seq_starts_host = Vec::with_capacity(num_seqs + 1);
-            let mut pos = 0i32;
-            for &ql in &attn_meta.query_lens {
-                seq_starts_host.push(pos);
-                pos += ql as i32;
+            {
+                let mut scratch = self.cpu_scratch.borrow_mut();
+
+                // positions (i32)
+                scratch.clear();
+                scratch.extend(positions.iter().map(|&p| p as i32));
+                self.meta_positions.borrow_mut().upload(&scratch, &self.stream)
+                    .map_err(|e| LLMError::GpuError(format!("positions HtoD: {e}")))?;
+
+                // context_lens (i32)
+                scratch.clear();
+                scratch.extend(attn_meta.context_lens.iter().map(|&c| c as i32));
+                self.meta_context_lens.borrow_mut().upload(&scratch, &self.stream)
+                    .map_err(|e| LLMError::GpuError(format!("context_lens HtoD: {e}")))?;
+
+                // block_tables flattened [num_seqs, max_blocks_per_seq] (i32)
+                scratch.clear();
+                scratch.resize(num_seqs * max_blocks, 0i32);
+                for (s, row) in attn_meta.block_tables.iter().enumerate() {
+                    for (b, &blk) in row.iter().enumerate() {
+                        scratch[s * max_blocks + b] = blk as i32;
+                    }
+                }
+                self.meta_block_tables.borrow_mut().upload(&scratch, &self.stream)
+                    .map_err(|e| LLMError::GpuError(format!("block_tables HtoD: {e}")))?;
+
+                // slot_mapping (i32)
+                scratch.clear();
+                scratch.extend(attn_meta.slot_mapping.iter().map(|&s| s as i32));
+                self.meta_slot_mapping.borrow_mut().upload(&scratch, &self.stream)
+                    .map_err(|e| LLMError::GpuError(format!("slot_mapping HtoD: {e}")))?;
+
+                // seq_start_pos from query_lens [num_seqs + 1] (i32)
+                scratch.clear();
+                let mut pos = 0i32;
+                for &ql in &attn_meta.query_lens {
+                    scratch.push(pos);
+                    pos += ql as i32;
+                }
+                scratch.push(num_tokens as i32);
+                self.meta_seq_start_pos.borrow_mut().upload(&scratch, &self.stream)
+                    .map_err(|e| LLMError::GpuError(format!("seq_start_pos HtoD: {e}")))?;
             }
-            seq_starts_host.push(num_tokens as i32); // sentinel
-            let seq_start_pos_gpu: CudaSlice<i32> = self
-                .stream
-                .clone_htod(&seq_starts_host)
-                .map_err(|e| LLMError::GpuError(format!("seq_start_pos HtoD: {e}")))?;
+
+            let meta_pos = self.meta_positions.borrow();
+            let meta_cl = self.meta_context_lens.borrow();
+            let meta_bt = self.meta_block_tables.borrow();
+            let meta_sm = self.meta_slot_mapping.borrow();
+            let meta_ssp = self.meta_seq_start_pos.borrow();
 
             // Step 1: token embedding lookup
             info!("gpu_runner: embedding lookup");
@@ -263,18 +330,18 @@ mod cuda_impl {
                 let (key_cache, value_cache) = &gpu_cache[layer_idx];
                 let input = GpuLayerInput {
                     hidden_states: &hidden_states,
-                    positions: &positions_gpu,
+                    positions: meta_pos.slice(),
                     key_cache,
                     value_cache,
-                    block_tables: &block_tables_gpu,
-                    context_lens: &context_lens_gpu,
-                    slot_mapping: &slot_mapping_gpu,
+                    block_tables: meta_bt.slice(),
+                    context_lens: meta_cl.slice(),
+                    slot_mapping: meta_sm.slice(),
                     num_tokens,
                     num_seqs,
                     max_context_len,
                     block_size,
                     is_prefill,
-                    seq_start_pos: &seq_start_pos_gpu,
+                    seq_start_pos: meta_ssp.slice(),
                     rope_cos: &self.rope_cos,
                     rope_sin: &self.rope_sin,
                 };
@@ -300,6 +367,29 @@ mod cuda_impl {
                 &self.stream,
             )?;
 
+            // Step 4+5: fused LM-head + argmax for single-token greedy decode
+            if num_tokens == 1 && greedy_only {
+                let token_ids_gpu = if self.use_fp16 {
+                    let lm_f16 = self
+                        .weights
+                        .get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    if let Some(lm_w) = lm_f16 {
+                        self.gpu_fused_lm_head_argmax_f16(&normed, lm_w, vocab_size, hidden_size)?
+                    } else {
+                        self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
+                    }
+                } else {
+                    self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
+                };
+                let token_ids_cpu = self
+                    .stream
+                    .clone_dtoh(&token_ids_gpu)
+                    .map_err(|e| LLMError::GpuError(format!("fused_lm_head token DtoH: {e}")))?;
+                debug!("forward_ex complete (fused lm_head+argmax, 4 bytes DtoH)");
+                return Ok(ForwardOutput::TokenIds(token_ids_cpu));
+            }
+
             // Step 4: LM head  normed [num_tokens, hidden] @ lm_head^T [hidden, vocab]
             let logits_gpu = if self.use_fp16 {
                 let lm_f16 = self
@@ -311,7 +401,6 @@ mod cuda_impl {
                         &normed, lm_w, num_tokens, vocab_size, hidden_size, &self.blas, &self.loader,
                     )?
                 } else {
-                    // Fallback: lm_head not available as f16, use f32
                     CudaLinearLayer::forward_once(
                         &normed, &self.lm_head_weight, None,
                         num_tokens, vocab_size, hidden_size, &self.blas,
@@ -384,6 +473,147 @@ mod cuda_impl {
                     .arg(&(vocab_size as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("argmax_kernel launch: {e}")))?;
+            }
+
+            Ok(output)
+        }
+
+        /// Fused LM-head matvec + argmax for single-token greedy decode (f32 weights).
+        /// Skips materializing the full [vocab_size] logits tensor entirely.
+        fn gpu_fused_lm_head_argmax(
+            &self,
+            hidden_state: &CudaSlice<f32>,
+            weight: &CudaSlice<f32>,
+            vocab_size: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<i32>> {
+            let pass1 = self
+                .loader
+                .get_func("fused_lm_head_argmax", "fused_lm_head_argmax_kernel")?;
+            let pass2 = self
+                .loader
+                .get_func("fused_lm_head_argmax", "fused_lm_head_argmax_reduce_kernel")?;
+
+            let num_blocks = (vocab_size + 255) / 256;
+
+            let partial_val: CudaSlice<f32> = self
+                .stream
+                .alloc_zeros::<f32>(num_blocks)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head partial_val alloc: {e}")))?;
+            let partial_idx: CudaSlice<i32> = self
+                .stream
+                .alloc_zeros::<i32>(num_blocks)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head partial_idx alloc: {e}")))?;
+            let output: CudaSlice<i32> = self
+                .stream
+                .alloc_zeros::<i32>(1)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head output alloc: {e}")))?;
+
+            // Pass 1: per-block dot + local argmax
+            let cfg1 = LaunchConfig {
+                grid_dim: (num_blocks as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: (hidden_size * std::mem::size_of::<f32>()) as u32,
+            };
+            unsafe {
+                self.stream
+                    .launch_builder(&pass1)
+                    .arg(weight)
+                    .arg(hidden_state)
+                    .arg(&partial_val)
+                    .arg(&partial_idx)
+                    .arg(&(vocab_size as i32))
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg1)
+                    .map_err(|e| LLMError::GpuError(format!("fused_lm_head_argmax_kernel launch: {e}")))?;
+            }
+
+            // Pass 2: reduce partials to single token ID
+            let reduce_threads = num_blocks.min(1024) as u32;
+            let cfg2 = LaunchConfig {
+                grid_dim: (1, 1, 1),
+                block_dim: (reduce_threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                self.stream
+                    .launch_builder(&pass2)
+                    .arg(&partial_val)
+                    .arg(&partial_idx)
+                    .arg(&output)
+                    .arg(&(num_blocks as i32))
+                    .launch(cfg2)
+                    .map_err(|e| LLMError::GpuError(format!("fused_lm_head_argmax_reduce_kernel launch: {e}")))?;
+            }
+
+            Ok(output)
+        }
+
+        /// Fused LM-head matvec + argmax for single-token greedy decode (f16 weights).
+        fn gpu_fused_lm_head_argmax_f16(
+            &self,
+            hidden_state: &CudaSlice<f32>,
+            weight: &CudaSlice<f16>,
+            vocab_size: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<i32>> {
+            let pass1 = self
+                .loader
+                .get_func("fused_lm_head_argmax_f16", "fused_lm_head_argmax_f16_kernel")?;
+            let pass2 = self
+                .loader
+                .get_func("fused_lm_head_argmax", "fused_lm_head_argmax_reduce_kernel")?;
+
+            let num_blocks = (vocab_size + 255) / 256;
+
+            let partial_val: CudaSlice<f32> = self
+                .stream
+                .alloc_zeros::<f32>(num_blocks)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head_f16 partial_val alloc: {e}")))?;
+            let partial_idx: CudaSlice<i32> = self
+                .stream
+                .alloc_zeros::<i32>(num_blocks)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head_f16 partial_idx alloc: {e}")))?;
+            let output: CudaSlice<i32> = self
+                .stream
+                .alloc_zeros::<i32>(1)
+                .map_err(|e| LLMError::GpuError(format!("fused_lm_head_f16 output alloc: {e}")))?;
+
+            // Pass 1: per-block dot + local argmax (f16 weight, f32 hidden)
+            let cfg1 = LaunchConfig {
+                grid_dim: (num_blocks as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: (hidden_size * std::mem::size_of::<f32>()) as u32,
+            };
+            unsafe {
+                self.stream
+                    .launch_builder(&pass1)
+                    .arg(weight)
+                    .arg(hidden_state)
+                    .arg(&partial_val)
+                    .arg(&partial_idx)
+                    .arg(&(vocab_size as i32))
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg1)
+                    .map_err(|e| LLMError::GpuError(format!("fused_lm_head_argmax_f16_kernel launch: {e}")))?;
+            }
+
+            // Pass 2: reduce partials to single token ID
+            let reduce_threads = num_blocks.min(1024) as u32;
+            let cfg2 = LaunchConfig {
+                grid_dim: (1, 1, 1),
+                block_dim: (reduce_threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                self.stream
+                    .launch_builder(&pass2)
+                    .arg(&partial_val)
+                    .arg(&partial_idx)
+                    .arg(&output)
+                    .arg(&(num_blocks as i32))
+                    .launch(cfg2)
+                    .map_err(|e| LLMError::GpuError(format!("fused_lm_head_argmax_f16_reduce launch: {e}")))?;
             }
 
             Ok(output)
