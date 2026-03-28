@@ -165,18 +165,24 @@ mod inner {
                 hidden,
             )?;
 
-            // 2. QKV projections via hgemm (f16 weights)
+            // 2. QKV projections: cast normed f32->f16 ONCE, share across Q/K/V
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
 
-            let mut q = CudaLinearLayer::forward_mixed(
-                &normed, weights.q_proj, num_tokens, q_dim, hidden, blas, &self.loader,
+            let cast_f32_f16 = self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel")
+                .map_err(|e| LLMError::GpuError(format!("load cast: {e}")))?;
+            let normed_f16 = CudaLinearLayer::gpu_cast_f32_to_f16(
+                &self.stream, &normed, num_tokens * hidden, &cast_f32_f16,
             )?;
-            let mut k = CudaLinearLayer::forward_mixed(
-                &normed, weights.k_proj, num_tokens, kv_dim, hidden, blas, &self.loader,
+
+            let mut q = CudaLinearLayer::forward_f16_in(
+                &normed_f16, weights.q_proj, num_tokens, q_dim, hidden, blas,
             )?;
-            let mut v = CudaLinearLayer::forward_mixed(
-                &normed, weights.v_proj, num_tokens, kv_dim, hidden, blas, &self.loader,
+            let mut k = CudaLinearLayer::forward_f16_in(
+                &normed_f16, weights.k_proj, num_tokens, kv_dim, hidden, blas,
+            )?;
+            let mut v = CudaLinearLayer::forward_f16_in(
+                &normed_f16, weights.v_proj, num_tokens, kv_dim, hidden, blas,
             )?;
 
             // QKV biases (f32)
@@ -270,14 +276,18 @@ mod inner {
                 num_tokens, hidden,
             )?;
 
-            // 7. MLP (f16 weights)
-            let gate = CudaLinearLayer::forward_mixed(
-                &normed2, weights.gate_proj, num_tokens, intermediate, hidden, blas, &self.loader,
+            // 7. MLP: cast normed2 f32->f16 ONCE, share across gate/up
+            let normed2_f16 = CudaLinearLayer::gpu_cast_f32_to_f16(
+                &self.stream, &normed2, num_tokens * hidden, &cast_f32_f16,
             )?;
-            let up = CudaLinearLayer::forward_mixed(
-                &normed2, weights.up_proj, num_tokens, intermediate, hidden, blas, &self.loader,
+            let gate = CudaLinearLayer::forward_f16_in(
+                &normed2_f16, weights.gate_proj, num_tokens, intermediate, hidden, blas,
+            )?;
+            let up = CudaLinearLayer::forward_f16_in(
+                &normed2_f16, weights.up_proj, num_tokens, intermediate, hidden, blas,
             )?;
             let fused = Self::fused_silu_mul(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?;
+            // down_proj: fused is unique input, use forward_mixed (includes its own cast)
             let mlp_out = CudaLinearLayer::forward_mixed(
                 &fused, weights.down_proj, num_tokens, hidden, intermediate, blas, &self.loader,
             )?;
