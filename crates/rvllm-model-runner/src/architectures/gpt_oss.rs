@@ -1,9 +1,10 @@
 //! GptOssForCausalLM architecture.
 //!
 //! This mirrors the dense attention and routed-MoE layout used by GPT-OSS.
-//! The current backend still cannot execute attention sinks or alternating
-//! sliding/global attention, and the public OpenAI checkpoints ship expert
-//! matrices in MXFP4 form, so those paths fail with targeted errors.
+//! The production CUDA runner handles GPT-OSS sinks, alternating sliding/full
+//! attention, and MXFP4 experts. This CPU/mock architecture keeps targeted
+//! errors for those paths because the mock `AttentionBackend` shim still lacks
+//! the extra controls needed to execute them faithfully.
 
 use half::f16;
 use tracing::trace;
@@ -270,14 +271,14 @@ impl Architecture for GptOssForCausalLM {
 
             if layer.layer_type == "sliding_attention" {
                 return Err(LLMError::ModelError(format!(
-                    "gpt-oss layer {} uses sliding attention (window {:?}), but alternating sliding/full attention is not wired into the backend yet",
+                    "gpt-oss layer {} uses sliding attention (window {:?}), but the CPU/mock attention backend does not expose alternating sliding/full controls",
                     layer_idx,
                     self.config.sliding_window
                 )));
             }
             if has_nonzero_sinks(&layer.sinks) {
                 return Err(LLMError::ModelError(format!(
-                    "gpt-oss layer {} uses attention sinks, but sink logits are not wired into the attention backend yet",
+                    "gpt-oss layer {} uses attention sinks, but the CPU/mock attention backend does not expose sink logits",
                     layer_idx
                 )));
             }
@@ -310,7 +311,7 @@ impl GptOssMlp {
             ExpertStorage::Unquantized(weights) => weights,
             ExpertStorage::QuantizedMxfp4 => {
                 return Err(LLMError::ModelError(
-                    "gpt-oss expert tensors are stored in MXFP4 blocks/scales; expert loading is not implemented yet".into(),
+                    "gpt-oss expert tensors are stored in MXFP4 blocks/scales; the CPU/mock architecture does not execute them".into(),
                 ))
             }
             ExpertStorage::Missing => {
