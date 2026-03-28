@@ -562,7 +562,7 @@ rvLLM benchmark --model <MODEL>   Run offline throughput benchmark
 - OpenAI-compatible API (completions, chat, streaming, embeddings, batch)
 - 10 model architectures (Llama, Mistral, Qwen2, Phi, Gemma, GPT-NeoX, StableLM, Cohere, Mixtral MoE, DeepSeek MoE)
 - FlashAttention-2 (CPU reference + CUDA kernel)
-- CUDA graphs capture/replay infrastructure
+- CUDA graph capture/replay (working end-to-end on A100)
 - FP8 KV cache (E4M3 quantization with per-head scaling)
 - Prefix caching with LRU eviction
 - Sliding window attention
@@ -576,13 +576,12 @@ rvLLM benchmark --model <MODEL>   Run offline throughput benchmark
 - Docker deployment with CUDA 12.4
 - vast.ai automated provisioning and benchmarking
 - Token-level parity test suite
-- 771 tests across 23 crates
+- 790 tests across 23 crates
 
 ### Roadmap
 - LoRA adapter hot-swapping (see [CONTRIBUTING.md](CONTRIBUTING.md))
 - Vision-language models (see [docs/VISION_MODELS.md](docs/VISION_MODELS.md))
 - Pipeline parallelism
-- Full CUDA graph integration (capture/replay wired to forward pass)
 - Production hardening (fuzz testing, load testing at 1000 concurrent)
 
 ## Development Cost
@@ -627,6 +626,13 @@ Roughly **$1,780** in compute and AI overage costs to go from zero to 10,291 tok
 - Scheduler: decode-first batching, cached sort
 - Result: **10,291 tok/s peak** -- beats vLLM up to N=256
 
+### Phase 4: CUDA graph capture/replay
+- Fixed 3 root causes: default stream (no capture support), cuBLAS workspace (internal malloc during capture), cudarc event tracking (cross-phase isolation errors)
+- Graph now captures full decode forward pass (28 layers x 9+ kernels) into a single replayable graph
+- Eliminates ~250 individual kernel launch dispatches per decode step
+- Padded block_tables to fixed stride for stable GPU pointer width across replays
+- Pre-allocated 4MB cuBLAS workspace registered via cublasSetWorkspace_v2
+
 ## Changelog
 
 ### v0.1.0
@@ -646,14 +652,14 @@ Roughly **$1,780** in compute and AI overage costs to go from zero to 10,291 tok
 - Sliding window attention
 - Tensor parallelism primitives (NCCL bindings)
 - FlashAttention-2 (CPU reference + CUDA kernel)
-- CUDA graphs capture/replay infrastructure
+- CUDA graph capture/replay (working end-to-end on A100)
 - SafeTensors and GGUF model loading from HuggingFace Hub
 - PyO3 Python bindings (`import rvllm`)
 - Prometheus metrics endpoint (`/metrics`)
 - Mock-GPU backend for development without NVIDIA hardware
 - Docker deployment with CUDA 12.4
 - vast.ai one-command benchmarking (`make a100-bench`)
-- 771 tests across 23 crates
+- 790 tests across 23 crates
 
 ## Contributing
 
