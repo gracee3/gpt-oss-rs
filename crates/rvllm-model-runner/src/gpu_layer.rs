@@ -26,6 +26,12 @@ mod inner {
     use rvllm_gpu::cublas::CublasHandle;
     use rvllm_gpu::kernel_loader::KernelLoader;
 
+    const GPT_OSS_SWIGLU_ALPHA: f32 = 1.702;
+    const GPT_OSS_SWIGLU_LIMIT: f32 = 7.0;
+    const MXFP4_VALUES: [f32; 16] = [
+        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    ];
+
     /// Configuration for a single transformer layer.
     #[derive(Debug, Clone)]
     pub struct GpuLayerConfig {
@@ -60,9 +66,10 @@ mod inner {
         // Post-attention norm
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         // MLP weights
-        pub gate_proj: &'a CudaSlice<f32>,
-        pub up_proj: &'a CudaSlice<f32>,
-        pub down_proj: &'a CudaSlice<f32>,
+        pub gate_proj: Option<&'a CudaSlice<f32>>,
+        pub up_proj: Option<&'a CudaSlice<f32>>,
+        pub down_proj: Option<&'a CudaSlice<f32>>,
+        pub gpt_oss_moe: Option<&'a GptOssMoeLayerWeights>,
     }
 
     /// FP16 weight references for a single transformer layer (f16 GEMM path).
@@ -80,9 +87,151 @@ mod inner {
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
         pub sinks: Option<&'a CudaSlice<f32>>,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
-        pub gate_proj: &'a CudaSlice<f16>,
-        pub up_proj: &'a CudaSlice<f16>,
-        pub down_proj: &'a CudaSlice<f16>,
+        pub gate_proj: Option<&'a CudaSlice<f16>>,
+        pub up_proj: Option<&'a CudaSlice<f16>>,
+        pub down_proj: Option<&'a CudaSlice<f16>>,
+        pub gpt_oss_moe: Option<&'a GptOssMoeLayerWeights>,
+    }
+
+    /// Host-side GPT-OSS routed-expert weights. The CUDA runner keeps the
+    /// transformer shell on device and calls back to this CPU path for the
+    /// MXFP4 expert projections until a native kernel exists.
+    pub struct GptOssMoeLayerWeights {
+        pub router_weight: Vec<f32>,
+        pub router_bias: Vec<f32>,
+        pub gate_up_blocks: Vec<u8>,
+        pub gate_up_scales: Vec<u8>,
+        pub gate_up_bias: Vec<f32>,
+        pub down_blocks: Vec<u8>,
+        pub down_scales: Vec<u8>,
+        pub down_bias: Vec<f32>,
+        pub hidden_size: usize,
+        pub intermediate_size: usize,
+        pub num_local_experts: usize,
+        pub num_experts_per_tok: usize,
+    }
+
+    impl GptOssMoeLayerWeights {
+        pub fn forward(
+            &self,
+            stream: &Arc<CudaStream>,
+            input: &CudaSlice<f32>,
+        ) -> Result<CudaSlice<f32>> {
+            let host_input = stream
+                .clone_dtoh(input)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe DtoH failed: {e}")))?;
+            let num_tokens = host_input.len() / self.hidden_size;
+            let mut output = vec![0.0f32; num_tokens * self.hidden_size];
+            let top_k = self.num_experts_per_tok.min(self.num_local_experts);
+
+            if top_k == 0 {
+                return stream
+                    .clone_htod(&output)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")));
+            }
+
+            for token_idx in 0..num_tokens {
+                let input_offset = token_idx * self.hidden_size;
+                let token = &host_input[input_offset..input_offset + self.hidden_size];
+
+                let mut logits = vec![0.0f32; self.num_local_experts];
+                for (expert_idx, logit) in logits.iter_mut().enumerate() {
+                    let row = expert_idx * self.hidden_size;
+                    let mut acc = self.router_bias[expert_idx];
+                    for hidden_idx in 0..self.hidden_size {
+                        acc += token[hidden_idx] * self.router_weight[row + hidden_idx];
+                    }
+                    *logit = acc;
+                }
+
+                let top_indices = top_k_indices(&logits, top_k);
+                let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
+                let route_weights = softmax(&top_logits);
+
+                for (rank, &expert_idx) in top_indices.iter().enumerate() {
+                    let expert_out = self.forward_expert(expert_idx, token);
+                    let dst_offset = token_idx * self.hidden_size;
+                    let route_weight = route_weights[rank];
+                    for hidden_idx in 0..self.hidden_size {
+                        output[dst_offset + hidden_idx] += expert_out[hidden_idx] * route_weight;
+                    }
+                }
+            }
+
+            stream
+                .clone_htod(&output)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")))
+        }
+
+        pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
+            let gate_up = self.quantized_projection(
+                expert_idx,
+                input,
+                &self.gate_up_blocks,
+                &self.gate_up_scales,
+                &self.gate_up_bias,
+                self.intermediate_size * 2,
+                self.hidden_size,
+            );
+            let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
+            self.quantized_projection(
+                expert_idx,
+                &activated,
+                &self.down_blocks,
+                &self.down_scales,
+                &self.down_bias,
+                self.hidden_size,
+                self.intermediate_size,
+            )
+        }
+
+        fn quantized_projection(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            blocks: &[u8],
+            scales: &[u8],
+            bias: &[f32],
+            out_features: usize,
+            in_features: usize,
+        ) -> Vec<f32> {
+            let groups = in_features.div_ceil(32);
+            let expert_blocks_stride = out_features * groups * 16;
+            let expert_scales_stride = out_features * groups;
+            let expert_bias_stride = out_features;
+
+            let mut output = vec![0.0f32; out_features];
+            let blocks_base = expert_idx * expert_blocks_stride;
+            let scales_base = expert_idx * expert_scales_stride;
+            let bias_base = expert_idx * expert_bias_stride;
+
+            for out_idx in 0..out_features {
+                let mut acc = bias[bias_base + out_idx];
+                let row_blocks = blocks_base + out_idx * groups * 16;
+                let row_scales = scales_base + out_idx * groups;
+
+                for group_idx in 0..groups {
+                    let scale = decode_mxfp_scale(scales[row_scales + group_idx]);
+                    let block_offset = row_blocks + group_idx * 16;
+                    let input_offset = group_idx * 32;
+                    for packed_idx in 0..16 {
+                        let packed = blocks[block_offset + packed_idx];
+                        let input_idx0 = input_offset + packed_idx * 2;
+                        if input_idx0 < in_features {
+                            acc += input[input_idx0] * MXFP4_VALUES[(packed & 0x0F) as usize] * scale;
+                        }
+                        let input_idx1 = input_idx0 + 1;
+                        if input_idx1 < in_features {
+                            acc += input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
+                        }
+                    }
+                }
+
+                output[out_idx] = acc;
+            }
+
+            output
+        }
     }
 
     /// Metadata needed for a single layer forward pass.
@@ -292,17 +441,36 @@ mod inner {
                 hidden,
             )?;
 
-            // 7. MLP (f16 weights)
-            let gate = CudaLinearLayer::forward_once_f16(
-                &normed2, weights.gate_proj, num_tokens, intermediate, hidden, blas, &self.loader,
-            )?;
-            let up = CudaLinearLayer::forward_once_f16(
-                &normed2, weights.up_proj, num_tokens, intermediate, hidden, blas, &self.loader,
-            )?;
-            let fused = Self::fused_silu_mul(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?;
-            let mlp_out = CudaLinearLayer::forward_once_f16(
-                &fused, weights.down_proj, num_tokens, hidden, intermediate, blas, &self.loader,
-            )?;
+            // 7. MLP / routed MoE
+            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                moe.forward(&self.stream, &normed2)?
+            } else {
+                let gate_proj = weights.gate_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense gate_proj for layer {}", cfg.layer_idx))
+                })?;
+                let up_proj = weights.up_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense up_proj for layer {}", cfg.layer_idx))
+                })?;
+                let down_proj = weights.down_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense down_proj for layer {}", cfg.layer_idx))
+                })?;
+                let gate = CudaLinearLayer::forward_once_f16(
+                    &normed2, gate_proj, num_tokens, intermediate, hidden, blas, &self.loader,
+                )?;
+                let up = CudaLinearLayer::forward_once_f16(
+                    &normed2, up_proj, num_tokens, intermediate, hidden, blas, &self.loader,
+                )?;
+                let fused = Self::fused_silu_mul(
+                    &self.stream,
+                    &self.loader,
+                    &gate,
+                    &up,
+                    num_tokens * intermediate,
+                )?;
+                CudaLinearLayer::forward_once_f16(
+                    &fused, down_proj, num_tokens, hidden, intermediate, blas, &self.loader,
+                )?
+            };
 
             // 8. Residual
             Self::add_tensors(&self.stream, &self.loader, &residual, &mlp_out, num_tokens * hidden)
@@ -512,38 +680,58 @@ mod inner {
             )?;
 
             // ---------------------------------------------------------------
-            // 7. MLP: gate_proj + up_proj -> fused_silu_mul -> down_proj
+            // 7. MLP / routed MoE
             // ---------------------------------------------------------------
-            let gate = Self::linear(
-                &self.stream,
-                blas,
-                &normed2,
-                weights.gate_proj,
-                num_tokens,
-                intermediate,
-                hidden,
-            )?;
-            let up = Self::linear(
-                &self.stream,
-                blas,
-                &normed2,
-                weights.up_proj,
-                num_tokens,
-                intermediate,
-                hidden,
-            )?;
+            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                moe.forward(&self.stream, &normed2)?
+            } else {
+                let gate_proj = weights.gate_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense gate_proj for layer {}", cfg.layer_idx))
+                })?;
+                let up_proj = weights.up_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense up_proj for layer {}", cfg.layer_idx))
+                })?;
+                let down_proj = weights.down_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense down_proj for layer {}", cfg.layer_idx))
+                })?;
 
-            let fused = Self::fused_silu_mul(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?;
+                let gate = Self::linear(
+                    &self.stream,
+                    blas,
+                    &normed2,
+                    gate_proj,
+                    num_tokens,
+                    intermediate,
+                    hidden,
+                )?;
+                let up = Self::linear(
+                    &self.stream,
+                    blas,
+                    &normed2,
+                    up_proj,
+                    num_tokens,
+                    intermediate,
+                    hidden,
+                )?;
 
-            let mlp_out = Self::linear(
-                &self.stream,
-                blas,
-                &fused,
-                weights.down_proj,
-                num_tokens,
-                hidden,
-                intermediate,
-            )?;
+                let fused = Self::fused_silu_mul(
+                    &self.stream,
+                    &self.loader,
+                    &gate,
+                    &up,
+                    num_tokens * intermediate,
+                )?;
+
+                Self::linear(
+                    &self.stream,
+                    blas,
+                    &fused,
+                    down_proj,
+                    num_tokens,
+                    hidden,
+                    intermediate,
+                )?
+            };
 
             // ---------------------------------------------------------------
             // 8. Residual: residual + mlp_out
@@ -1234,6 +1422,41 @@ mod inner {
             Ok(output)
         }
     }
+
+    fn decode_mxfp_scale(scale: u8) -> f32 {
+        f32::from_bits((scale as u32) << 23)
+    }
+
+    fn apply_gpt_oss_swiglu(gate_up: &[f32], intermediate_size: usize) -> Vec<f32> {
+        let mut output = vec![0.0f32; intermediate_size];
+        for idx in 0..intermediate_size {
+            let gate = gate_up[idx * 2].min(GPT_OSS_SWIGLU_LIMIT);
+            let up = gate_up[idx * 2 + 1].clamp(-GPT_OSS_SWIGLU_LIMIT, GPT_OSS_SWIGLU_LIMIT);
+            let glu = gate * sigmoid(gate * GPT_OSS_SWIGLU_ALPHA);
+            output[idx] = (up + 1.0) * glu;
+        }
+        output
+    }
+
+    fn sigmoid(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+
+    fn top_k_indices(vals: &[f32], k: usize) -> Vec<usize> {
+        let mut indexed: Vec<(usize, f32)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.into_iter().take(k).map(|(i, _)| i).collect()
+    }
+
+    fn softmax(vals: &[f32]) -> Vec<f32> {
+        if vals.is_empty() {
+            return Vec::new();
+        }
+        let max_val = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = vals.iter().map(|&v| (v - max_val).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        exps.into_iter().map(|v| v / sum).collect()
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -1248,5 +1471,42 @@ mod tests {
         // Under mock-gpu the `inner` module is not compiled.
         // This test confirms that the crate still builds cleanly.
         assert!(true);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn gpt_oss_moe_forward_mxfp4_smoke() {
+        let mut gate_up_blocks = vec![0u8; 2 * 16];
+        gate_up_blocks[0] = 0x02;
+        let gate_up_scales = vec![127u8; 2];
+        let gate_up_bias = vec![0.0f32; 2];
+
+        let mut down_blocks = vec![0u8; 32 * 16];
+        down_blocks[0] = 0x02;
+        let down_scales = vec![127u8; 32];
+        let down_bias = vec![0.0f32; 32];
+
+        let moe = super::inner::GptOssMoeLayerWeights {
+            router_weight: vec![0.0; 32],
+            router_bias: vec![0.0],
+            gate_up_blocks,
+            gate_up_scales,
+            gate_up_bias,
+            down_blocks,
+            down_scales,
+            down_bias,
+            hidden_size: 32,
+            intermediate_size: 1,
+            num_local_experts: 1,
+            num_experts_per_tok: 1,
+        };
+
+        let mut input = vec![0.0f32; 32];
+        input[0] = 1.0;
+        let output = moe.forward_expert(0, &input);
+
+        let expected = 1.0 / (1.0 + (-1.702f32).exp());
+        assert!((output[0] - expected).abs() < 1e-3, "got {}", output[0]);
+        assert!(output[1..].iter().all(|v| v.abs() < 1e-6));
     }
 }

@@ -368,19 +368,11 @@ mod inner {
             );
 
             let quant_method = rvllm_quant::detect_quant_method(&model_dir)?;
-            if quant_method.is_quantized() {
-                let message = if hf_config.architecture == "GptOssForCausalLM" {
-                    format!(
-                        "model '{}' uses {} expert weights. gpt-oss support still needs MXFP4 expert loading, attention sinks, and alternating sliding/full attention",
-                        model_name, quant_method
-                    )
-                } else {
-                    format!(
-                        "quantized model checkpoints are not wired into the GPU engine yet (detected {})",
-                        quant_method
-                    )
-                };
-                return Err(LLMError::ModelError(message));
+            if quant_method.is_quantized() && hf_config.architecture != "GptOssForCausalLM" {
+                return Err(LLMError::ModelError(format!(
+                    "quantized model checkpoints are not wired into the GPU engine yet (detected {})",
+                    quant_method
+                )));
             }
 
             // 3. Tokenizer

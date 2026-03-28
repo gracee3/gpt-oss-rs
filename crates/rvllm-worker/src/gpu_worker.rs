@@ -336,6 +336,8 @@ pub struct GpuWorker {
     raw_weight_shapes: Option<HashMap<String, Vec<usize>>>,
     #[cfg(feature = "cuda")]
     raw_weight_map_f16: Option<HashMap<String, CudaSlice<half::f16>>>,
+    #[cfg(feature = "cuda")]
+    raw_weight_map_u8: Option<HashMap<String, Vec<u8>>>,
     /// GPU-resident model runner (full forward pass on GPU, no CPU attention fallback).
     /// Constructed in init_cache() once cache geometry is known.
     #[cfg(feature = "cuda")]
@@ -432,6 +434,8 @@ impl GpuWorker {
             #[cfg(feature = "cuda")]
             raw_weight_map_f16: None,
             #[cfg(feature = "cuda")]
+            raw_weight_map_u8: None,
+            #[cfg(feature = "cuda")]
             gpu_model_runner: None,
             graph_runner,
             forward_count: 0,
@@ -465,6 +469,11 @@ impl GpuWorker {
         {
             self.raw_weight_map = Some(all_weights_full.clone());
             self.raw_weight_shapes = Some(all_weight_shapes.clone());
+            self.raw_weight_map_u8 = Some(
+                rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path).map_err(|e| {
+                    LLMError::GpuError(format!("u8 weight loading failed: {e}"))
+                })?,
+            );
 
             // Also load f16 weights for hgemm path when dtype is half
             if self.config.dtype.is_half() {
@@ -481,67 +490,69 @@ impl GpuWorker {
 
         let mut all_weights = all_weights_full;
 
-        let tie = !all_weights.contains_key("lm_head.weight");
-        info!(tie_word_embeddings = tie, "building model weight structure");
+        if self.config.architecture != "GptOssForCausalLM" {
+            let tie = !all_weights.contains_key("lm_head.weight");
+            info!(tie_word_embeddings = tie, "building model weight structure");
 
-        let embed_tokens = all_weights
-            .remove("model.embed_tokens.weight")
-            .ok_or_else(|| LLMError::ModelError("missing model.embed_tokens.weight".into()))?;
+            let embed_tokens = all_weights
+                .remove("model.embed_tokens.weight")
+                .ok_or_else(|| LLMError::ModelError("missing model.embed_tokens.weight".into()))?;
 
-        let norm_weight = all_weights
-            .remove("model.norm.weight")
-            .ok_or_else(|| LLMError::ModelError("missing model.norm.weight".into()))?;
+            let norm_weight = all_weights
+                .remove("model.norm.weight")
+                .ok_or_else(|| LLMError::ModelError("missing model.norm.weight".into()))?;
 
-        let lm_head_weight = all_weights.remove("lm_head.weight");
+            let lm_head_weight = all_weights.remove("lm_head.weight");
 
-        let num_layers = self.config.num_layers;
-        let mut layers = Vec::with_capacity(num_layers);
+            let num_layers = self.config.num_layers;
+            let mut layers = Vec::with_capacity(num_layers);
 
-        for i in 0..num_layers {
-            let p = format!("model.layers.{}", i);
-            layers.push(LayerWeights {
-                input_layernorm: all_weights
-                    .remove(&format!("{p}.input_layernorm.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                post_attention_layernorm: all_weights
-                    .remove(&format!("{p}.post_attention_layernorm.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                q_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.q_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                q_proj_bias: all_weights.remove(&format!("{p}.self_attn.q_proj.bias")),
-                k_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.k_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                k_proj_bias: all_weights.remove(&format!("{p}.self_attn.k_proj.bias")),
-                v_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.v_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                v_proj_bias: all_weights.remove(&format!("{p}.self_attn.v_proj.bias")),
-                o_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.o_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                gate_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.gate_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                up_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.up_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                down_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.down_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+            for i in 0..num_layers {
+                let p = format!("model.layers.{}", i);
+                layers.push(LayerWeights {
+                    input_layernorm: all_weights
+                        .remove(&format!("{p}.input_layernorm.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    post_attention_layernorm: all_weights
+                        .remove(&format!("{p}.post_attention_layernorm.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    q_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.q_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    q_proj_bias: all_weights.remove(&format!("{p}.self_attn.q_proj.bias")),
+                    k_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.k_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    k_proj_bias: all_weights.remove(&format!("{p}.self_attn.k_proj.bias")),
+                    v_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.v_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    v_proj_bias: all_weights.remove(&format!("{p}.self_attn.v_proj.bias")),
+                    o_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.o_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    gate_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.gate_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    up_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.up_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    down_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.down_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                });
+
+                debug!(layer = i, "loaded layer weights");
+            }
+
+            self.model_weights = Some(GpuModelWeights {
+                embed_tokens,
+                layers,
+                norm_weight,
+                lm_head_weight,
+                tie_word_embeddings: tie,
             });
-
-            debug!(layer = i, "loaded layer weights");
         }
-
-        self.model_weights = Some(GpuModelWeights {
-            embed_tokens,
-            layers,
-            norm_weight,
-            lm_head_weight,
-            tie_word_embeddings: tie,
-        });
 
         // Init RoPE tables
         let rope_theta = self.config.rope_theta;
@@ -607,6 +618,12 @@ impl GpuWorker {
                 LLMError::GpuError("raw weight shapes not available -- call load_weights first".into())
             })?;
             let mut loader_weights = LoaderWeights::new(raw_map, raw_shapes.clone());
+            if let Some(u8_map) = self.raw_weight_map_u8.take() {
+                for (name, data) in u8_map {
+                    let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
+                    loader_weights.insert_u8(name, data, shape);
+                }
+            }
 
             // Insert f16 weights for hgemm path
             if let Some(f16_map) = self.raw_weight_map_f16.take() {

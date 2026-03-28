@@ -32,7 +32,8 @@ mod cuda_impl {
     use crate::runner::ModelRunnerConfig;
 
     use crate::gpu_layer::{
-        GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16, GpuTransformerLayer,
+        GptOssMoeLayerWeights, GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16,
+        GpuTransformerLayer,
     };
     use crate::layers::linear_cuda::CudaLinearLayer;
     use crate::layers::norm_cuda::CudaRMSNorm;
@@ -129,6 +130,8 @@ mod cuda_impl {
         /// stride is constant across all forward calls, preventing stale
         /// scalar kernel args when a graph is replayed.
         graph_max_blocks: usize,
+        /// Optional host-side GPT-OSS routed-expert weights, one slot per layer.
+        gpt_oss_moe_layers: Vec<Option<GptOssMoeLayerWeights>>,
     }
 
     impl GpuModelRunner {
@@ -216,6 +219,8 @@ mod cuda_impl {
             let block_size = cache.block_size();
             let graph_max_blocks = (config.max_position + block_size - 1) / block_size;
             let rms_norm_eps = config.rms_norm_eps;
+            let gpt_oss_moe_layers =
+                Self::build_gpt_oss_moe_layers(&weights, &config, &stream)?;
             info!(graph_max_blocks, block_size, max_position = config.max_position,
                   "fixed block_tables stride for CUDA graph stability");
 
@@ -244,6 +249,7 @@ mod cuda_impl {
                 graph_output: RefCell::new(None),
                 cpu_scratch: RefCell::new(Vec::with_capacity(4096)),
                 graph_max_blocks,
+                gpt_oss_moe_layers,
             })
         }
 
@@ -1050,9 +1056,10 @@ mod cuda_impl {
                 post_attention_layernorm: g(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
-                gate_proj: g(&format!("model.layers.{i}.mlp.gate_proj.weight"))?,
-                up_proj: g(&format!("model.layers.{i}.mlp.up_proj.weight"))?,
-                down_proj: g(&format!("model.layers.{i}.mlp.down_proj.weight"))?,
+                gate_proj: self.weights.get(&format!("model.layers.{i}.mlp.gate_proj.weight")),
+                up_proj: self.weights.get(&format!("model.layers.{i}.mlp.up_proj.weight")),
+                down_proj: self.weights.get(&format!("model.layers.{i}.mlp.down_proj.weight")),
+                gpt_oss_moe: self.gpt_oss_moe_layers[i].as_ref(),
             })
         }
 
@@ -1165,10 +1172,70 @@ mod cuda_impl {
                 post_attention_layernorm: g_f32(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
-                gate_proj: g_f16(&format!("model.layers.{i}.mlp.gate_proj.weight"))?,
-                up_proj: g_f16(&format!("model.layers.{i}.mlp.up_proj.weight"))?,
-                down_proj: g_f16(&format!("model.layers.{i}.mlp.down_proj.weight"))?,
+                gate_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.gate_proj.weight")),
+                up_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.up_proj.weight")),
+                down_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.down_proj.weight")),
+                gpt_oss_moe: self.gpt_oss_moe_layers[i].as_ref(),
             })
+        }
+
+        fn build_gpt_oss_moe_layers(
+            weights: &GpuModelWeights,
+            config: &ModelRunnerConfig,
+            stream: &Arc<CudaStream>,
+        ) -> Result<Vec<Option<GptOssMoeLayerWeights>>> {
+            if config.architecture != "GptOssForCausalLM" {
+                return Ok((0..config.num_layers).map(|_| None).collect());
+            }
+
+            let mut layers = Vec::with_capacity(config.num_layers);
+            for i in 0..config.num_layers {
+                let prefix = format!("model.layers.{i}.mlp.experts");
+                let gate_up_blocks_name = format!("{prefix}.gate_up_proj_blocks");
+                let down_blocks_name = format!("{prefix}.down_proj_blocks");
+
+                let Some(gate_up_blocks) = weights.get_u8(&gate_up_blocks_name) else {
+                    layers.push(None);
+                    continue;
+                };
+                let down_blocks = weights.get_u8(&down_blocks_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {down_blocks_name}"))
+                })?;
+                let gate_up_scales_name = format!("{prefix}.gate_up_proj_scales");
+                let down_scales_name = format!("{prefix}.down_proj_scales");
+                let gate_up_scales = weights.get_u8(&gate_up_scales_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_scales_name}"))
+                })?;
+                let down_scales = weights.get_u8(&down_scales_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {down_scales_name}"))
+                })?;
+
+                let dtoh = |name: &str| -> Result<Vec<f32>> {
+                    let weight = weights
+                        .get(name)
+                        .ok_or_else(|| LLMError::GpuError(format!("missing weight: {name}")))?;
+                    stream
+                        .clone_dtoh(weight)
+                        .map_err(|e| LLMError::GpuError(format!("DtoH {name}: {e}")))
+                };
+
+                layers.push(Some(GptOssMoeLayerWeights {
+                    router_weight: dtoh(&format!("model.layers.{i}.mlp.router.weight"))?,
+                    router_bias: dtoh(&format!("model.layers.{i}.mlp.router.bias"))?,
+                    gate_up_blocks: gate_up_blocks.to_vec(),
+                    gate_up_scales: gate_up_scales.to_vec(),
+                    gate_up_bias: dtoh(&format!("{prefix}.gate_up_proj_bias"))?,
+                    down_blocks: down_blocks.to_vec(),
+                    down_scales: down_scales.to_vec(),
+                    down_bias: dtoh(&format!("{prefix}.down_proj_bias"))?,
+                    hidden_size: config.hidden_size,
+                    intermediate_size: config.intermediate_size,
+                    num_local_experts: config.num_local_experts,
+                    num_experts_per_tok: config.num_experts_per_tok,
+                }));
+            }
+
+            Ok(layers)
         }
     }
 }
