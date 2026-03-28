@@ -35,6 +35,7 @@ mod inner {
         pub head_dim: usize,
         pub intermediate_size: usize,
         pub rms_norm_eps: f32,
+        pub sliding_window: Option<usize>,
         pub layer_idx: usize,
     }
 
@@ -54,6 +55,8 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        // Optional sink logits (GPT-OSS)
+        pub sinks: Option<&'a CudaSlice<f32>>,
         // Post-attention norm
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         // MLP weights
@@ -75,6 +78,7 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub sinks: Option<&'a CudaSlice<f32>>,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         pub gate_proj: &'a CudaSlice<f16>,
         pub up_proj: &'a CudaSlice<f16>,
@@ -219,6 +223,7 @@ mod inner {
                 head_dim,
             )?;
 
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
             let attn_out = if input.is_prefill {
                 Self::prefill_attention(
                     &self.stream,
@@ -236,6 +241,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             } else {
                 Self::decode_attention(
@@ -253,6 +261,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             };
 
@@ -415,6 +426,7 @@ mod inner {
 
             info!(layer = cfg.layer_idx, "gpu_layer: cache_write done");
 
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
             let attn_out = if input.is_prefill {
                 // Prefill: use FA2 prefill kernel reading from paged cache
                 info!(layer = cfg.layer_idx, "gpu_layer: prefill_attention start");
@@ -434,6 +446,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             } else {
                 // Decode: read from paged cache
@@ -453,6 +468,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             };
 
@@ -902,6 +920,9 @@ mod inner {
             head_dim: usize,
             max_context_len: u32,
             block_size: usize,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+            sliding_window: Option<usize>,
         ) -> Result<CudaSlice<f32>> {
             let out_len = num_tokens * num_heads * head_dim;
             let output = stream
@@ -968,8 +989,10 @@ mod inner {
             let p_max_ctx = max_context_len as i32;
             let p_num_tokens = num_tokens as i32;
             let p_causal = 1i32;
+            let p_use_sinks = i32::from(use_sinks);
+            let p_sliding_window = sliding_window.unwrap_or(0) as i32;
 
-            // FA2 prefill kernel: 16 args via builder pattern
+            // FA2 prefill kernel: sink-aware sliding-window attention.
             unsafe {
                 stream
                     .launch_builder(&kernel)
@@ -989,6 +1012,9 @@ mod inner {
                     .arg(&max_blocks_per_seq)
                     .arg(&p_num_tokens)
                     .arg(&p_causal)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("prefill FA2 launch: {e}")))?;
             }
@@ -1013,6 +1039,9 @@ mod inner {
             head_dim: usize,
             max_context_len: u32,
             block_size: usize,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+            sliding_window: Option<usize>,
         ) -> Result<CudaSlice<f32>> {
             let out_len = num_tokens * num_heads * head_dim;
             let mut output = stream
@@ -1053,6 +1082,8 @@ mod inner {
             let p_head_dim = head_dim as i32;
             let p_block_size = block_size as i32;
             let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
+            let p_use_sinks = i32::from(use_sinks);
+            let p_sliding_window = sliding_window.unwrap_or(0) as i32;
 
             // SAFETY: All slices are valid GPU memory on this device.
             // output: [num_seqs, num_heads, head_dim]
@@ -1076,6 +1107,9 @@ mod inner {
                     .arg(&p_head_dim)
                     .arg(&p_block_size)
                     .arg(&p_max_blocks)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .launch(cfg)
                     .map_err(|e| {
                         LLMError::GpuError(format!("flash_attention_2_decode launch failed: {e}"))

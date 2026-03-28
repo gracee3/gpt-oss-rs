@@ -171,6 +171,12 @@ mod cuda_impl {
 
             let mut layers = Vec::with_capacity(config.num_layers);
             for i in 0..config.num_layers {
+                let sliding_window = matches!(
+                    config.layer_types.get(i).map(|ty| ty.as_str()),
+                    Some("sliding_attention")
+                )
+                .then_some(config.sliding_window)
+                .flatten();
                 let layer_cfg = GpuLayerConfig {
                     hidden_size: config.hidden_size,
                     num_heads: config.num_heads,
@@ -178,6 +184,7 @@ mod cuda_impl {
                     head_dim: config.head_dim,
                     intermediate_size: config.intermediate_size,
                     rms_norm_eps: config.rms_norm_eps,
+                    sliding_window,
                     layer_idx: i,
                 };
                 layers.push(GpuTransformerLayer::new(layer_cfg, Arc::clone(&stream), Arc::clone(&loader)));
@@ -1037,6 +1044,9 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                sinks: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.sinks")),
                 post_attention_layernorm: g(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
@@ -1149,6 +1159,9 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                sinks: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.sinks")),
                 post_attention_layernorm: g_f32(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,

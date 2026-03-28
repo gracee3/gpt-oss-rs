@@ -518,6 +518,9 @@ __global__ void flash_attention_2_f16kv_kernel(
     const int* __restrict__ block_tables,  // [num_seqs, max_blocks_per_seq]
     const int* __restrict__ context_lens,  // [num_seqs]
     const int* __restrict__ seq_start_pos, // [num_seqs+1]
+    const float* __restrict__ sinks,       // [num_heads] or dummy
+    int use_sinks,
+    int sliding_window,
     float scale,
     int num_heads,
     int num_kv_heads,
@@ -553,6 +556,10 @@ __global__ void flash_attention_2_f16kv_kernel(
     for (int qi = 0; qi < q_len; qi++) {
         const int q_pos = q_start + qi;
         const int q_global_pos = (seq_start_pos != nullptr) ? q_pos : seq_idx;
+        const int q_context_pos = context_len - q_len + qi;
+        const int window_start = (sliding_window > 0)
+            ? max(0, q_context_pos - sliding_window + 1)
+            : 0;
 
         const int dims_per_thread = (head_dim + FA2_THREADS - 1) / FA2_THREADS;
         float q_reg[8];
@@ -601,7 +608,7 @@ __global__ void flash_attention_2_f16kv_kernel(
                 dot = block_reduce_sum(dot, s_reduce, tid, FA2_THREADS);
                 if (tid == 0) {
                     int kv_pos = tile_start + t;
-                    if (causal && kv_pos > (context_len - q_len + qi)) {
+                    if ((causal && kv_pos > q_context_pos) || kv_pos < window_start) {
                         s_score[t] = -FLT_MAX;
                     } else {
                         s_score[t] = dot;
@@ -675,6 +682,21 @@ __global__ void flash_attention_2_f16kv_kernel(
             __syncthreads();
         }
 
+        if (use_sinks) {
+            const float sink_logit = sinks[head_idx];
+            const float prev_max = row_max;
+            const float new_max = fmaxf(row_max, sink_logit);
+            if (new_max > prev_max && prev_max > -FLT_MAX) {
+                const float correction = expf(prev_max - new_max);
+                for (int r = 0; r < dims_per_thread && r < 8; r++) {
+                    acc[r] *= correction;
+                }
+                row_sum *= correction;
+            }
+            row_max = new_max;
+            row_sum += expf(sink_logit - row_max);
+        }
+
         // Final normalization and write output (f32)
         float inv_sum = (row_sum > 0.0f) ? (1.0f / row_sum) : 0.0f;
         for (int r = 0; r < dims_per_thread && r < 8; r++) {
@@ -699,6 +721,9 @@ __global__ void flash_attention_2_decode_f16kv_kernel(
     const __half* __restrict__ value_cache,// [num_blocks, block_size, num_kv_heads, head_dim] f16
     const int* __restrict__ block_tables,  // [num_seqs, max_blocks_per_seq]
     const int* __restrict__ context_lens,  // [num_seqs]
+    const float* __restrict__ sinks,       // [num_heads] or dummy
+    int use_sinks,
+    int sliding_window,
     float scale,
     int num_heads,
     int num_kv_heads,
@@ -723,6 +748,9 @@ __global__ void flash_attention_2_decode_f16kv_kernel(
 
     const int num_kv_tiles = (context_len + FA2_BC - 1) / FA2_BC;
     const int dims_per_thread = (head_dim + FA2_THREADS - 1) / FA2_THREADS;
+    const int window_start = (sliding_window > 0)
+        ? max(0, context_len - sliding_window)
+        : 0;
 
     float q_reg[8];
     for (int r = 0; r < dims_per_thread && r < 8; r++) {
@@ -768,7 +796,8 @@ __global__ void flash_attention_2_decode_f16kv_kernel(
             }
             dot = block_reduce_sum(dot, s_reduce, tid, FA2_THREADS);
             if (tid == 0) {
-                s_score[t] = dot;
+                const int kv_pos = tile_start + t;
+                s_score[t] = (kv_pos < window_start) ? -FLT_MAX : dot;
             }
             __syncthreads();
         }
@@ -833,6 +862,21 @@ __global__ void flash_attention_2_decode_f16kv_kernel(
             }
         }
         __syncthreads();
+    }
+
+    if (use_sinks) {
+        const float sink_logit = sinks[head_idx];
+        const float prev_max = row_max;
+        const float new_max = fmaxf(row_max, sink_logit);
+        if (new_max > prev_max && prev_max > -FLT_MAX) {
+            const float correction = expf(prev_max - new_max);
+            for (int r = 0; r < dims_per_thread && r < 8; r++) {
+                acc[r] *= correction;
+            }
+            row_sum *= correction;
+        }
+        row_max = new_max;
+        row_sum += expf(sink_logit - row_max);
     }
 
     // Normalize and write (f32 output)
