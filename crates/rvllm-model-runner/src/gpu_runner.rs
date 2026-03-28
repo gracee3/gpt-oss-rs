@@ -177,7 +177,7 @@ mod cuda_impl {
                     num_kv_heads: config.num_kv_heads,
                     head_dim: config.head_dim,
                     intermediate_size: config.intermediate_size,
-                    rms_norm_eps: 1e-5_f32,
+                    rms_norm_eps: config.rms_norm_eps,
                     layer_idx: i,
                 };
                 layers.push(GpuTransformerLayer::new(layer_cfg, Arc::clone(&stream), Arc::clone(&loader)));
@@ -208,6 +208,7 @@ mod cuda_impl {
 
             let block_size = cache.block_size();
             let graph_max_blocks = (config.max_position + block_size - 1) / block_size;
+            let rms_norm_eps = config.rms_norm_eps;
             info!(graph_max_blocks, block_size, max_position = config.max_position,
                   "fixed block_tables stride for CUDA graph stability");
 
@@ -223,7 +224,7 @@ mod cuda_impl {
                 embed_tokens,
                 final_norm_weight,
                 lm_head_weight,
-                rms_norm_eps: 1e-5_f32,
+                rms_norm_eps,
                 rope_cos,
                 rope_sin,
                 use_fp16: false,
@@ -1270,6 +1271,7 @@ pub use mock_impl::GpuModelRunner;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rvllm_core::types::Dtype;
 
     #[test]
     fn mock_runner_returns_error() {
@@ -1284,8 +1286,16 @@ mod tests {
                 intermediate_size: 128,
                 vocab_size: 100,
                 max_position: 512,
+                rms_norm_eps: 1e-5,
                 rope_theta: 10000.0,
-                dtype: "float32".to_string(),
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: None,
+                layer_types: Vec::new(),
+                num_local_experts: 0,
+                num_experts_per_tok: 0,
+                dtype: Dtype::Float32,
                 architecture: "LlamaForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };
@@ -1309,8 +1319,16 @@ mod tests {
                 intermediate_size: 512,
                 vocab_size: 32000,
                 max_position: 2048,
+                rms_norm_eps: 1e-5,
                 rope_theta: 10000.0,
-                dtype: "float16".to_string(),
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: None,
+                layer_types: Vec::new(),
+                num_local_experts: 0,
+                num_experts_per_tok: 0,
+                dtype: Dtype::Float16,
                 architecture: "LlamaForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };
