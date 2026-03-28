@@ -16,63 +16,25 @@ pip install rvllm
 
 Or build from source -- see [Quick Start](#quick-start) below.
 
-## Verified Measurements (Qwen2.5-1.5B)
+## Benchmarks (Qwen2.5-1.5B, A100 80GB SXM4)
 
-All measurements verified with coherent text output at every batch size. Zero errors across thousands of requests. See `bench/run.sh` to reproduce.
+Greedy decoding, FP16, 32 tokens/request. Measured 2026-03-28.
 
-### Verified throughput: A100 80GB SXM4
-
-Same hardware, same model (Qwen2.5-1.5B), greedy decoding, 32 tokens/request. rvLLM FP16 with tensor cores. Measured 2026-03-28 with concurrent HTTP requests.
-
-| Concurrent (N) | rvLLM (tok/s) | Notes |
+| Concurrent (N) | tok/s | Notes |
 |---:|---:|---|
-| 1 | 128 | 7.7ms/tok (22.7% mem BW utilization) |
+| 1 | 128 | 7.7ms/tok |
 | 4 | 540 | |
 | 8 | 1,091 | |
 | 16 | 2,118 | |
 | 32 | 3,467 | |
 
-Per-token overhead analysis (N=1): 1.74ms theoretical (memory-bandwidth-bound), 7.7ms actual. **77% overhead** from kernel launch, memory allocation, metadata HtoD, and CPU scheduling. Optimization work in progress to close this gap.
+| Metric | Value |
+|---|---|
+| Startup time | 6 sec (vs ~120 sec Python vLLM) |
+| Binary size | 16 MB (vs ~500 MB Python vLLM) |
+| CPU memory | 348 MB (vs ~1 GB Python vLLM) |
 
-### B200 (180GB VRAM, FP32 -- earlier results)
-
-| Concurrent (N) | Tokens | Wall time | tok/s | Errors |
-|---:|---:|---:|---:|---:|
-| 1 | 32 | 279ms | 114 | 0 |
-| 4 | 128 | 762ms | 167 | 0 |
-| 8 | 256 | 601ms | 425 | 0 |
-| 16 | 512 | 826ms | 619 | 0 |
-| 32 | 1,024 | 1,346ms | 760 | 0 |
-| 64 | 2,048 | 798ms | 2,566 | 0 |
-| 128 | 4,096 | 1,249ms | 3,279 | 0 |
-| 256 | 8,192 | 2,106ms | 3,889 | 0 |
-| 512 | 16,384 | 4,179ms | 3,920 | 0 |
-| 768 | 24,576 | 6,227ms | **3,946** | 0 |
-| 1,024 | 32,768 | 8,365ms | 3,917 | 0 |
-| 1,536 | 49,152 | 12,490ms | 3,935 | 0 |
-| 2,048 | 65,536 | 16,640ms | 3,938 | 0 |
-| 3,072 | 98,304 | 25,000ms | 3,932 | 0 |
-| **4,096** | **131,072** | **34,002ms** | **3,854** | **0** |
-
-Peak: **3,946 tok/s** at N=768 (FP32). These B200 results predate the FP16 work and are superseded by the A100 FP16 head-to-head above. Zero errors across 13,553 total requests.
-
-Coherence verified on 5 diverse prompts (relativity, quantum computing, geography, Python code, ML):
-```
-Prompt: "The capital of France is"       -> "Paris. The capital of France is Paris..."
-Prompt: "Write a function that sorts..." -> "def sort_list(list): return sorted(list)"
-Prompt: "Explain quantum computing..."   -> "Quantum computing is a new type of computing that uses quantum mechanics..."
-```
-
-### Summary
-
-| Metric | rvLLM | Notes |
-|---|---:|---|
-| Throughput (A100, FP16, N=32) | 3,467 tok/s | Verified 2026-03-28 |
-| Throughput (A100, FP16, N=1) | 128 tok/s | Memory-bandwidth utilization: 22.7% |
-| Throughput (B200, FP32, N=768) | 3,946 tok/s | Earlier FP32 result |
-| Startup time | 6 sec | vs ~120 sec for Python vLLM |
-| Binary / install size | 16 MB | vs ~500 MB for Python vLLM |
-| CPU memory (RSS) | 348 MB | vs ~1 GB for Python vLLM |
+Theoretical peak at N=1 is 574 tok/s (memory-bandwidth-bound). Current 22.7% utilization -- active optimization in progress. See [docs/benchmark-history.md](docs/benchmark-history.md) for past results.
 
 ### CPU Component Benchmarks (sampling, logit processing)
 
