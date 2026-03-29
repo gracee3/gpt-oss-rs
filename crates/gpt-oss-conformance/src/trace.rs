@@ -97,13 +97,16 @@ impl TraceSummary {
             frame.events.push(TraceEvent::new(
                 "attention",
                 format!(
-                    "{:?}/{}",
-                    trace.attention.mode, trace.attention.attended_tokens
+                    "{:?}/{} visible={:?}",
+                    layer.attention.mode, layer.attention.attended_tokens, layer.attention.visible_tokens
                 ),
             ));
             frame.events.push(TraceEvent::new(
                 "moe",
-                format!("{:?}/{}", trace.moe.mode, trace.moe.experts_invoked),
+                format!(
+                    "{:?}/{} selected={:?}",
+                    layer.moe.mode, layer.moe.experts_invoked, layer.moe.selected_experts
+                ),
             ));
             frame.events.push(TraceEvent::new(
                 "cache",

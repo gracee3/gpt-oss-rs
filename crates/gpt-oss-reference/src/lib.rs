@@ -28,6 +28,12 @@ mod tests {
             vocab_size: 8,
             num_layers: 2,
             block_size: 16,
+            layer_types: vec!["full_attention".into(), "sliding_attention".into()],
+            sliding_window: Some(2),
+            sink_tokens: 1,
+            num_local_experts: 4,
+            num_experts_per_tok: 2,
+            moe_layer_indices: vec![1],
         });
 
         let output = executor
@@ -39,24 +45,53 @@ mod tests {
         assert_eq!(output.logits.len(), 8);
         assert_eq!(output.trace.layers.len(), 2);
         assert_eq!(output.trace.cache.blocks.len(), 1);
-        assert_eq!(output.trace.attention.mode, AttentionMode::Full);
-        assert_eq!(output.trace.moe.mode, MoeMode::DenseOnly);
+        assert_eq!(output.trace.attention.mode, AttentionMode::Sink);
+        assert_eq!(output.trace.moe.mode, MoeMode::SparseTopK);
+        assert!(output.logits.iter().any(|logit| *logit != 0.0));
+        assert_eq!(output.trace.layers[1].attention.visible_tokens, vec![0, 1]);
+        assert_eq!(output.trace.layers[1].moe.experts_invoked, 4);
     }
 
     #[test]
-    fn forward_rejects_inputs_larger_than_one_block() {
+    fn forward_supports_multi_block_cache_layout() {
         let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
             vocab_size: 4,
             num_layers: 1,
             block_size: 2,
+            layer_types: vec!["full_attention".into()],
+            sliding_window: None,
+            sink_tokens: 0,
+            num_local_experts: 0,
+            num_experts_per_tok: 0,
+            moe_layer_indices: Vec::new(),
+        });
+
+        let output = executor
+            .forward(ReferenceInput { tokens: vec![0, 1, 2] })
+            .expect("multi-block forward");
+
+        assert_eq!(output.trace.cache.blocks.len(), 2);
+        assert_eq!(output.trace.layers[0].attention.visible_tokens, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn invalid_layer_type_shape_is_rejected() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 4,
+            num_layers: 2,
+            block_size: 2,
+            layer_types: vec!["full_attention".into()],
+            sliding_window: None,
+            sink_tokens: 0,
+            num_local_experts: 0,
+            num_experts_per_tok: 0,
+            moe_layer_indices: Vec::new(),
         });
 
         let err = executor
-            .forward(ReferenceInput {
-                tokens: vec![0, 1, 2],
-            })
-            .expect_err("expected a single-block rejection");
+            .forward(ReferenceInput { tokens: vec![0, 1] })
+            .expect_err("expected layer type validation failure");
 
-        assert!(matches!(err, ReferenceError::InputTooLarge { .. }));
+        assert!(matches!(err, ReferenceError::LayerTypesLengthMismatch { .. }));
     }
 }

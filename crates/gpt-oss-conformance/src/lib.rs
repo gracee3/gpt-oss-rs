@@ -32,6 +32,12 @@ mod tests {
                     vocab_size: 8,
                     num_layers: 2,
                     block_size: 16,
+                    layer_types: vec!["full_attention".into(), "sliding_attention".into()],
+                    sliding_window: Some(4),
+                    sink_tokens: 1,
+                    num_local_experts: 4,
+                    num_experts_per_tok: 2,
+                    moe_layer_indices: vec![1],
                 },
             },
         )

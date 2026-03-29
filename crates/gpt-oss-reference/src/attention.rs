@@ -13,14 +13,31 @@ pub enum AttentionMode {
 pub struct AttentionTrace {
     pub mode: AttentionMode,
     pub attended_tokens: usize,
+    pub visible_tokens: Vec<usize>,
 }
 
 impl AttentionTrace {
-    pub fn full(attended_tokens: usize) -> Self {
+    pub fn full(visible_tokens: Vec<usize>) -> Self {
         Self {
             mode: AttentionMode::Full,
-            attended_tokens,
+            attended_tokens: visible_tokens.len(),
+            visible_tokens,
+        }
+    }
+
+    pub fn sliding(visible_tokens: Vec<usize>) -> Self {
+        Self {
+            mode: AttentionMode::Sliding,
+            attended_tokens: visible_tokens.len(),
+            visible_tokens,
+        }
+    }
+
+    pub fn sink(visible_tokens: Vec<usize>) -> Self {
+        Self {
+            mode: AttentionMode::Sink,
+            attended_tokens: visible_tokens.len(),
+            visible_tokens,
         }
     }
 }
-

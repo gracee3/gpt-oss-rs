@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 gpt-oss-core = { workspace = true }
+gpt-oss-moe-semantics = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-

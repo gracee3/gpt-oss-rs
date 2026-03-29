@@ -116,7 +116,7 @@ pub struct PlannedReferenceBackendConfig {
 
 impl PlannedReferenceBackend {
     pub fn new(name: impl Into<String>, config: PlannedReferenceBackendConfig) -> Self {
-        let reference = ReferenceExecutor::new(config.reference);
+        let reference = ReferenceExecutor::new(config.reference.clone());
         Self {
             name: name.into(),
             config,
