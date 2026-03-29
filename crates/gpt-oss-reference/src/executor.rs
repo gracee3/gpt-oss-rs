@@ -399,7 +399,8 @@ impl ReferenceExecutor {
                                 for (hidden_value, bias) in
                                     hidden[token_index].iter_mut().zip(expert_row.iter())
                                 {
-                                    *hidden_value += bias * *weight;
+                                    *hidden_value =
+                                        f16::from_f32(*hidden_value + bias * *weight).to_f32();
                                 }
                             }
                         }

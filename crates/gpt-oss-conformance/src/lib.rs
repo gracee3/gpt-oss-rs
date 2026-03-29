@@ -814,6 +814,60 @@ mod tests {
         )
     }
 
+    fn nonzero_biased_three_expert_top2_moe_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-moe-3e-top2-nonzero-biased",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 3,
+                    num_experts_per_tok: 2,
+                    token_embedding_rows: vec![
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                    ],
+                    final_norm_weight: vec![1.0, 1.0, 1.0, 1.0],
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: vec![
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                        vec![0.5, 0.0, 0.0, 0.5],
+                    ],
+                    expert_output_rows: vec![
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                    ],
+                    router_bias: vec![0.0, 1.0, 2.0],
+                    moe_layer_indices: vec![0],
+                },
+            },
+        )
+    }
+
     fn multi_block_dense_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
             "planned-reference-dense-multiblock",
@@ -1995,6 +2049,46 @@ mod tests {
 
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn nonzero_biased_three_expert_top2_moe_decode_gap_localizes_to_logits() {
+        let case = ConformanceCase::decode("three-expert-top2-moe-nonzero-biased-decode", 2, vec![3]);
+        let mut weights = runner_weights_with_layer_expert_down_proj_bias(
+            1,
+            3,
+            &[0],
+            &[(0, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+        );
+        weights.tensors.insert(
+            "model.layers.0.mlp.router.bias".to_string(),
+            tensor(
+                "model.layers.0.mlp.router.bias",
+                &[0.0, 1.0, 2.0],
+                &[3],
+            )
+            .1,
+        );
+        let runner = Arc::new(
+            ModelRunner::new(
+                weights,
+                runner_config_with_moe(3, 2),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![0])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = nonzero_biased_three_expert_top2_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.comparison.diffs, vec!["logits differ"]);
     }
 
     #[test]
