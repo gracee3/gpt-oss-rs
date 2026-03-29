@@ -320,7 +320,7 @@ impl Architecture for GptOssForCausalLM {
 
             if layer.layer_type == "sliding_attention" {
                 return Err(LLMError::ModelError(format!(
-                    "gpt-oss layer {} uses sliding attention (window {:?}), but the CPU/mock attention backend does not expose alternating sliding/full controls",
+                    "gpt-oss layer {} uses sliding attention (window {:?}), but the CPU/mock attention backend does not expose per-layer sliding-window controls or decode visibility continuity",
                     layer_idx,
                     self.config.sliding_window
                 )));
@@ -778,6 +778,10 @@ mod tests {
             .forward(&test_input(), &cache, &attention)
             .unwrap_err();
         assert!(err.to_string().contains("sliding attention"));
+        assert!(err
+            .to_string()
+            .contains("per-layer sliding-window controls"));
+        assert!(err.to_string().contains("decode visibility continuity"));
     }
 
     #[test]

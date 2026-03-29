@@ -1496,6 +1496,8 @@ mod tests {
 
         assert!(err.contains("sliding attention"));
         assert!(err.contains("CPU/mock attention backend"));
+        assert!(err.contains("per-layer sliding-window controls"));
+        assert!(err.contains("decode visibility continuity"));
     }
 
     #[test]
