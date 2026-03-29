@@ -24,6 +24,20 @@ pub enum ForwardOutput {
     TokenIdsPending { actual_batch: usize },
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrefillLayerTrace {
+    pub layer_idx: usize,
+    pub post_attn_residual: Vec<f32>,
+    pub mlp_out: Vec<f32>,
+    pub layer_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrefillActivationTrace {
+    pub embedding: Vec<f32>,
+    pub layers: Vec<PrefillLayerTrace>,
+}
+
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::cell::RefCell;
@@ -52,7 +66,7 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::ForwardOutput;
+    use super::{ForwardOutput, PrefillActivationTrace, PrefillLayerTrace};
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -600,6 +614,149 @@ mod cuda_impl {
                     unreachable!("greedy_only=false must return Logits")
                 }
             }
+        }
+
+        pub fn debug_prefill_trace(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<PrefillActivationTrace> {
+            let num_tokens = token_ids.len();
+            let num_seqs = attn_meta.context_lens.len();
+            let hidden_size = self.config.hidden_size;
+            let block_size = self.cache.block_size();
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            if self.use_fp16 {
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+                let mut trace = PrefillActivationTrace {
+                    embedding: self.copy_last_token_f16(&hidden_f16, num_tokens, hidden_size)?,
+                    layers: Vec::with_capacity(self.layers.len()),
+                };
+                let gpu_cache = self.cache.gpu_cache();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                let dummy_f32 = self
+                    .stream
+                    .alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf
+                            .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(
+                            offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                        ),
+                        context_lens: packed_buf.slice(
+                            offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                        ),
+                        slot_mapping: packed_buf.slice(
+                            offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                        ),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len: attn_meta.max_context_len,
+                        block_size,
+                        is_prefill: true,
+                        seq_start_pos: packed_buf.slice(
+                            offsets.seq_start_pos
+                                ..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                        ),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
+                    )?;
+                    let post_attn_residual =
+                        self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
+                    let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
+                    let layer_output = post_attn_residual
+                        .iter()
+                        .zip(mlp_out_last.iter())
+                        .map(|(lhs, rhs)| lhs + rhs)
+                        .collect();
+                    trace.layers.push(PrefillLayerTrace {
+                        layer_idx,
+                        post_attn_residual,
+                        mlp_out: mlp_out_last,
+                        layer_output,
+                    });
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+
+                return Ok(trace);
+            }
+
+            let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
+            let mut trace = PrefillActivationTrace {
+                embedding: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
+                layers: Vec::with_capacity(self.layers.len()),
+            };
+            let gpu_cache = self.cache.gpu_cache();
+            let meta_packed = self.meta_packed.borrow();
+            let packed_buf = meta_packed.slice();
+            let offsets = self.meta_packed_offsets.get();
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                let input = GpuLayerInput {
+                    hidden_states: &hidden_states,
+                    hidden_states_f16: None,
+                    positions: packed_buf
+                        .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                    key_cache,
+                    value_cache,
+                    block_tables: packed_buf.slice(
+                        offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                    ),
+                    context_lens: packed_buf.slice(
+                        offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                    ),
+                    slot_mapping: packed_buf.slice(
+                        offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                    ),
+                    num_tokens,
+                    num_seqs,
+                    max_context_len: attn_meta.max_context_len,
+                    block_size,
+                    is_prefill: true,
+                    seq_start_pos: packed_buf.slice(
+                        offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                    ),
+                    rope_cos: &self.rope_cos,
+                    rope_sin: &self.rope_sin,
+                };
+                let weights = self.layer_weights(layer_idx)?;
+                hidden_states = layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
+                trace.layers.push(PrefillLayerTrace {
+                    layer_idx,
+                    post_attn_residual: Vec::new(),
+                    mlp_out: Vec::new(),
+                    layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
+                });
+            }
+            Ok(trace)
         }
 
         /// Extended forward: when `greedy_only` is true, runs argmax on GPU and
@@ -2042,6 +2199,37 @@ mod cuda_impl {
             Ok(output)
         }
 
+        fn copy_last_token_f16(
+            &self,
+            buf: &CudaSlice<f16>,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<Vec<f32>> {
+            let host = self
+                .stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("trace dtoh f16: {e}")))?;
+            let start = (num_tokens - 1) * hidden_size;
+            Ok(host[start..start + hidden_size]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect())
+        }
+
+        fn copy_last_token_f32(
+            &self,
+            buf: &CudaSlice<f32>,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<Vec<f32>> {
+            let host = self
+                .stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("trace dtoh f32: {e}")))?;
+            let start = (num_tokens - 1) * hidden_size;
+            Ok(host[start..start + hidden_size].to_vec())
+        }
+
         /// GPU cast f32 -> f16 (static helper, does not need &self).
         fn gpu_cast_f32_to_f16_static(
             stream: &Arc<CudaStream>,
@@ -2490,7 +2678,7 @@ pub use cuda_impl::GpuModelRunner;
 // =========================================================================
 #[cfg(not(feature = "cuda"))]
 mod mock_impl {
-    use super::ForwardOutput;
+    use super::{ForwardOutput, PrefillActivationTrace};
     use crate::bridge::{LLMError, Result};
     use crate::runner::ModelRunnerConfig;
 
@@ -2524,6 +2712,17 @@ mod mock_impl {
             _is_prefill: bool,
             _greedy_only: bool,
         ) -> Result<ForwardOutput> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_prefill_trace(
+            &self,
+            _token_ids: &[u32],
+            _positions: &[u32],
+            _attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<PrefillActivationTrace> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))
