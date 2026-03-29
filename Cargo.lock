@@ -1085,10 +1085,19 @@ dependencies = [
 name = "gpt-oss-bench"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "criterion",
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-engine",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
