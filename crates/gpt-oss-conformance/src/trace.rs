@@ -130,4 +130,12 @@ impl TraceSummary {
 
         Self { label, frames }
     }
+
+    pub fn find_event_payload(&self, stage: &str) -> Option<&str> {
+        self.frames
+            .iter()
+            .flat_map(|frame| frame.events.iter())
+            .find(|event| event.stage == stage)
+            .map(|event| event.payload.as_str())
+    }
 }

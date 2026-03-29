@@ -35,6 +35,12 @@ pub struct ComparisonReport {
     pub observed: ExecutionSample,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuityReport {
+    pub outcome: ParityOutcome,
+    pub comparison: RunComparison,
+}
+
 impl fmt::Display for ComparisonReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -75,4 +81,34 @@ fn trace_diff(expected: &TraceSummary, observed: &TraceSummary) -> String {
         expected.frames.len(),
         observed.frames.len()
     )
+}
+
+pub fn compare_prefill_decode_continuity(
+    prefill: &ExecutionSample,
+    decode: &ExecutionSample,
+) -> RunComparison {
+    let mut diffs = Vec::new();
+
+    match prefill.trace.find_event_payload("reference_phase") {
+        Some("Prefill") => {}
+        Some(other) => diffs.push(format!("prefill phase mismatch: expected Prefill got {other}")),
+        None => diffs.push("prefill phase missing from trace".to_string()),
+    }
+
+    match decode.trace.find_event_payload("reference_phase") {
+        Some("Decode") => {}
+        Some(other) => diffs.push(format!("decode phase mismatch: expected Decode got {other}")),
+        None => diffs.push("decode phase missing from trace".to_string()),
+    }
+
+    let expected_start = prefill.tokens.len().to_string();
+    match decode.trace.find_event_payload("seq_start_pos") {
+        Some(value) if value == expected_start => {}
+        Some(value) => diffs.push(format!(
+            "decode seq_start_pos mismatch: expected {expected_start} got {value}"
+        )),
+        None => diffs.push("decode seq_start_pos missing from trace".to_string()),
+    }
+
+    RunComparison { diffs }
 }

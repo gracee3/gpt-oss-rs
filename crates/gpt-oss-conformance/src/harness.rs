@@ -1,6 +1,9 @@
 use crate::{
     case::{ConformanceBackend, ConformanceCase, ExecutionSample},
-    report::{compare_samples, ComparisonReport, ParityOutcome, RunComparison},
+    report::{
+        compare_prefill_decode_continuity, compare_samples, ComparisonReport, ContinuityReport,
+        ParityOutcome, RunComparison,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,5 +59,23 @@ impl ConformanceHarness {
             return comparison;
         }
         comparison
+    }
+
+    pub fn compare_prefill_decode_continuity(
+        &self,
+        prefill_case: &ConformanceCase,
+        decode_case: &ConformanceCase,
+        backend: &impl ConformanceBackend,
+    ) -> ContinuityReport {
+        let prefill = backend.run(prefill_case);
+        let decode = backend.run(decode_case);
+        let comparison = compare_prefill_decode_continuity(&prefill, &decode);
+        let outcome = if comparison.is_exact() {
+            ParityOutcome::Match
+        } else {
+            ParityOutcome::Mismatch
+        };
+
+        ContinuityReport { outcome, comparison }
     }
 }

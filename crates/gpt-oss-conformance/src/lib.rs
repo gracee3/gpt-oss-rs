@@ -8,7 +8,7 @@ pub use case::{
     PlannedReferenceBackend, PlannedReferenceBackendConfig,
 };
 pub use harness::{ConformanceHarness, HarnessConfig};
-pub use report::{ComparisonReport, ParityOutcome, RunComparison};
+pub use report::{compare_prefill_decode_continuity, ComparisonReport, ContinuityReport, ParityOutcome, RunComparison};
 pub use trace::{TraceEvent, TraceFrame, TraceSummary};
 
 #[cfg(test)]
@@ -96,5 +96,18 @@ mod tests {
                 event.stage == "layer" && event.payload.contains("positions=[4]")
             })
         }));
+    }
+
+    #[test]
+    fn planned_reference_reports_prefill_decode_continuity() {
+        let prefill = ConformanceCase::prefill("prefill_step", vec![1, 2, 3, 4]);
+        let decode = ConformanceCase::decode("decode_step", 4, vec![9]);
+        let harness = ConformanceHarness::default();
+        let backend = planned_backend();
+
+        let report = harness.compare_prefill_decode_continuity(&prefill, &decode, &backend);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 }
