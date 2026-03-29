@@ -1,4 +1,4 @@
-# rvLLM Optimization Roadmap
+# gpt-oss-rs Optimization Roadmap
 
 ## Current State (March 28, 2026)
 
@@ -21,8 +21,8 @@ N=1024: 8,578 tok/s  -- peak
 ### Python vLLM 0.18 Comparison (same hardware)
 
 ```
-N=1:    69 tok/s     -- rvLLM 1.5x faster
-N=64:   3,828 tok/s  -- rvLLM 1.06x faster
+N=1:    69 tok/s     -- gpt-oss-rs 1.5x faster
+N=64:   3,828 tok/s  -- gpt-oss-rs 1.06x faster
 N=128:  6,400 tok/s  -- roughly matched
 N=256:  9,437 tok/s  -- vLLM 1.13x faster
 N=512:  10,771 tok/s -- vLLM 1.26x faster
@@ -40,7 +40,7 @@ N=1024: 12,740 tok/s -- vLLM 1.49x faster
 **What would help:**
 - **cublasLt with split-K** (ready, behind feature flag). Split the K dimension across multiple thread blocks to create more parallelism. Expected: 20-40% gain at N=1, tapering to 0% at N=64+. Implementation exists in `cublaslt_ops.rs`, needs wiring into the forward path.
 - **Persistent GEMM kernels.** Instead of launching a new kernel per GEMM, keep thread blocks resident and feed them work via global memory queues. Eliminates kernel launch overhead (~10us per launch x 7 GEMMs x 28 layers = ~2ms per step).
-- **Speculative decoding.** Draft model generates K=4-8 candidate tokens, target verifies in one forward pass. Multiplies effective throughput by acceptance rate. Scaffolded in `crates/rvllm-speculative/` but not wired.
+- **Speculative decoding.** Draft model generates K=4-8 candidate tokens, target verifies in one forward pass. Multiplies effective throughput by acceptance rate. Scaffolded in `crates/gpt-oss-speculative/` but not wired.
 
 ### Region 2: N=32 to N=64 (Inflection Zone)
 
@@ -49,7 +49,7 @@ N=1024: 12,740 tok/s -- vLLM 1.49x faster
 **Bottleneck:** The sharp inflection suggests a threshold effect -- likely CUDA graph capture kicking in at a specific padded batch size, or the continuous batching scheduler switching from prefill-dominated to decode-dominated batching.
 
 **What would help:**
-- **Profile with RVLLM_PROFILE=1** (implemented) to identify exactly where time is spent at N=32 vs N=64. The profiling infrastructure records CUDA events around each phase (HtoD, embedding, per-layer norm/QKV/attention/MLP, LM head, DtoH).
+- **Profile with GPT_OSS_RS_PROFILE=1** (implemented) to identify exactly where time is spent at N=32 vs N=64. The profiling infrastructure records CUDA events around each phase (HtoD, embedding, per-layer norm/QKV/attention/MLP, LM head, DtoH).
 - **Fix CUDA graph capture/replay** (reverted due to coherency bug). The graph agent's implementation replayed with stale metadata. A correct implementation would update input buffer contents in-place before replay, not re-record. This alone could smooth the inflection and add 10-20% across all N.
 - **Fused QKV projection** (3 GEMMs -> 1). Agent wrote the code but it wasn't merged into gpu_layer.rs. The weight concatenation is cached after first call. Reduces kernel launches by 2 per layer.
 - **Fused gate+up projection** (2 GEMMs -> 1). Same pattern. Reduces kernel launches by 1 per layer.
@@ -172,4 +172,4 @@ The single largest remaining optimization is **CUDA graph capture/replay done co
 4. Never replay during prefill (variable sequence lengths)
 5. Validate output coherency on every change
 
-The graph infrastructure exists in `crates/rvllm-worker/src/graph_runner.rs`. The capture/replay pool with padded batch sizes {1, 2, 4, 8, 16, 32} is implemented. What broke was the metadata update path -- block tables and positions need to be updated in the captured graph's input buffers, not in newly allocated buffers.
+The graph infrastructure exists in `crates/gpt-oss-worker/src/graph_runner.rs`. The capture/replay pool with padded batch sizes {1, 2, 4, 8, 16, 32} is implemented. What broke was the metadata update path -- block tables and positions need to be updated in the captured graph's input buffers, not in newly allocated buffers.

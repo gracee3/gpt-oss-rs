@@ -1,4 +1,4 @@
-# Contributing to rvLLM
+# Contributing to gpt-oss-rs
 
 We're building the Rust standard for LLM inference. Here's how to help.
 
@@ -14,7 +14,7 @@ cargo test --workspace
 cargo check --workspace
 
 # Run your crate's tests
-cargo test -p rvllm-model-runner
+cargo test -p gpt-oss-model-runner
 ```
 
 ## Open Feature Tracks
@@ -25,12 +25,12 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ### 1. LoRA Adapter Serving
 
-**Crate:** `rvllm-model-runner`, `rvllm-model-loader`, `rvllm-api`
+**Crate:** `gpt-oss-model-runner`, `gpt-oss-model-loader`, `gpt-oss-api`
 **Difficulty:** Hard
 **Impact:** Huge -- lets users serve 100+ fine-tuned models on one GPU
 
 **What to build:**
-- `crates/rvllm-model-runner/src/lora.rs` -- LoRA weight container: base_weight + low-rank A,B matrices per layer
+- `crates/gpt-oss-model-runner/src/lora.rs` -- LoRA weight container: base_weight + low-rank A,B matrices per layer
 - Fused forward: `output = x @ (W + alpha * A @ B)` -- either materialize the merged weight or compute the delta on the fly
 - Hot-swap: load/unload LoRA adapters without restarting the server
 - API: `POST /v1/lora/load`, `POST /v1/lora/unload`, `model` field in request selects adapter
@@ -39,20 +39,20 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 **Reference:** [Python vLLM LoRA](https://docs.vllm.ai/en/latest/models/lora.html), [LoRA paper](https://arxiv.org/abs/2106.09685)
 
 **Key files to read:**
-- `crates/rvllm-model-runner/src/layers/linear.rs` -- where weight multiplication happens
-- `crates/rvllm-model-runner/src/gpu_runner.rs` -- forward pass orchestration
-- `crates/rvllm-model-loader/src/gpu_loader.rs` -- weight loading
+- `crates/gpt-oss-model-runner/src/layers/linear.rs` -- where weight multiplication happens
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs` -- forward pass orchestration
+- `crates/gpt-oss-model-loader/src/gpu_loader.rs` -- weight loading
 
 ---
 
 ### 2. Beam Search and Best-of-N
 
-**Crate:** `rvllm-engine`, `rvllm-block-manager`, `rvllm-sequence`
+**Crate:** `gpt-oss-engine`, `gpt-oss-block-manager`, `gpt-oss-sequence`
 **Difficulty:** Medium
 **Impact:** Medium -- needed for summarization, translation, and quality-sensitive applications
 
 **What to build:**
-- `crates/rvllm-engine/src/beam_search.rs` -- maintain K beams per request
+- `crates/gpt-oss-engine/src/beam_search.rs` -- maintain K beams per request
 - Each beam is a `Sequence` that shares prompt KV cache blocks via copy-on-write
 - At each step: expand each beam by top-K tokens, score, prune to K best
 - Best-of-N: run N independent samples, return highest cumulative logprob
@@ -69,12 +69,12 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ### 3. Batch Processing API
 
-**Crate:** `rvllm-api`, `rvllm-engine`
+**Crate:** `gpt-oss-api`, `gpt-oss-engine`
 **Difficulty:** Medium
 **Impact:** Medium -- needed for offline batch processing workloads
 
 **What to build:**
-- `crates/rvllm-api/src/routes/batch.rs` -- OpenAI Batch API endpoints
+- `crates/gpt-oss-api/src/routes/batch.rs` -- OpenAI Batch API endpoints
 - `POST /v1/batches` -- accept JSONL file of requests, return batch ID
 - `GET /v1/batches/{id}` -- check status (pending, in_progress, completed, failed)
 - `GET /v1/batches/{id}/output` -- download results as JSONL
@@ -87,16 +87,16 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ### 4. Embedding Model Support
 
-**Crate:** `rvllm-model-runner`, `rvllm-api`
+**Crate:** `gpt-oss-model-runner`, `gpt-oss-api`
 **Difficulty:** Medium
 **Impact:** Medium -- embeddings are a major API use case
 
 **What to build:**
-- `crates/rvllm-model-runner/src/architectures/embedding.rs` -- `EmbeddingModel` trait
+- `crates/gpt-oss-model-runner/src/architectures/embedding.rs` -- `EmbeddingModel` trait
 - Forward pass returns hidden states instead of logits
 - Pooling strategies: mean pooling, CLS token, last token
 - Normalization option (L2 normalize embeddings)
-- `crates/rvllm-api/src/routes/embeddings.rs` -- `POST /v1/embeddings` endpoint
+- `crates/gpt-oss-api/src/routes/embeddings.rs` -- `POST /v1/embeddings` endpoint
 - Support sentence-transformers, E5, GTE, BGE model families
 
 **Key difference from causal models:** no autoregressive generation, single forward pass per request. Much simpler execution path.
@@ -105,7 +105,7 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ### 5. Vision-Language Models
 
-**Crate:** `rvllm-model-runner`, `rvllm-tokenizer`, `rvllm-api`
+**Crate:** `gpt-oss-model-runner`, `gpt-oss-tokenizer`, `gpt-oss-api`
 **Difficulty:** Very Hard
 **Impact:** High -- VLMs are growing fast
 
@@ -115,7 +115,7 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 - Cross-attention or concatenated image+text tokens
 - Support LLaVA, Qwen-VL, InternVL architectures
 - API: accept image URLs or base64 in chat messages
-- `crates/rvllm-model-runner/src/vision/` -- vision encoder, image preprocessing
+- `crates/gpt-oss-model-runner/src/vision/` -- vision encoder, image preprocessing
 
 **This is the largest feature.** Consider starting with LLaVA (simplest architecture: ViT encoder + linear projection + Llama decoder).
 
@@ -123,7 +123,7 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ### 6. Pipeline Parallelism
 
-**Crate:** `rvllm-executor`, `rvllm-worker`
+**Crate:** `gpt-oss-executor`, `gpt-oss-worker`
 **Difficulty:** Hard
 **Impact:** Medium -- useful for very large models that don't fit with TP alone
 
@@ -143,7 +143,7 @@ These are well-scoped features with clear specs. Each one is a meaningful contri
 
 ```bash
 git clone https://github.com/m0at/hermes-lite.git
-cd hermes-lite/vllm-rs
+cd hermes-lite/gpt-oss-rs
 cargo test --workspace  # verify everything passes
 ```
 
@@ -153,11 +153,11 @@ The most common contribution. Here's the pattern:
 
 ```bash
 # 1. Create your architecture file
-touch crates/rvllm-model-runner/src/architectures/my_model.rs
+touch crates/gpt-oss-model-runner/src/architectures/my_model.rs
 ```
 
 ```rust
-// crates/rvllm-model-runner/src/architectures/my_model.rs
+// crates/gpt-oss-model-runner/src/architectures/my_model.rs
 use crate::bridge::*;
 
 pub struct MyModelForCausalLM {
@@ -176,7 +176,7 @@ impl Architecture for MyModelForCausalLM {
 ```
 
 ```rust
-// Register in crates/rvllm-model-runner/src/architectures/mod.rs
+// Register in crates/gpt-oss-model-runner/src/architectures/mod.rs
 pub fn create_model(architecture: &str, ...) -> Result<Box<dyn Architecture>> {
     match architecture {
         // ... existing models ...
@@ -202,13 +202,13 @@ EOF
 # 2. Compile to PTX
 cd kernels && nvcc -ptx -arch=sm_80 -O3 -o my_kernel.ptx my_kernel.cu
 
-# 3. Load in Rust via KernelLoader (see crates/rvllm-gpu/src/kernel_loader.rs)
+# 3. Load in Rust via KernelLoader (see crates/gpt-oss-gpu/src/kernel_loader.rs)
 ```
 
 ### Adding an API Endpoint
 
 ```rust
-// crates/rvllm-api/src/routes/my_endpoint.rs
+// crates/gpt-oss-api/src/routes/my_endpoint.rs
 use axum::{Json, extract::State};
 
 pub async fn my_handler(
@@ -218,7 +218,7 @@ pub async fn my_handler(
     // Your handler
 }
 
-// Register in crates/rvllm-api/src/server.rs build_router()
+// Register in crates/gpt-oss-api/src/server.rs build_router()
 ```
 
 ### Testing
@@ -228,7 +228,7 @@ pub async fn my_handler(
 cargo test --workspace
 
 # Run specific crate
-cargo test -p rvllm-sampling
+cargo test -p gpt-oss-sampling
 
 # Run with CUDA (requires GPU)
 cargo test --workspace --features cuda

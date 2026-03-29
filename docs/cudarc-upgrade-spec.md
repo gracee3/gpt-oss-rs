@@ -1,13 +1,13 @@
 # cudarc 0.12 -> 0.19 Upgrade Specification
 
-## New rvllm-gpu API Surface (what all agents code against)
+## New gpt-oss-gpu API Surface (what all agents code against)
 
 ### Core Type Change
 ```rust
 // OLD: Arc<CudaDevice> everywhere
 // NEW: Arc<CudaContext> + Arc<CudaStream>
 
-// Wrapper in rvllm-gpu/src/device.rs:
+// Wrapper in gpt-oss-gpu/src/device.rs:
 pub type CudaDevice = Arc<cudarc::driver::CudaContext>;
 
 // Every function that took Arc<CudaDevice> now takes:
@@ -99,12 +99,12 @@ cudarc = { version = "0.19", features = ["driver", "cublas", "f16"] }
 
 | Agent | Files | Phase |
 |-------|-------|-------|
-| 1 | rvllm-gpu: device.rs, lib.rs, mod exports | 1 |
-| 2 | rvllm-gpu: kernel_loader.rs | 1 |
-| 3 | rvllm-gpu: cublas.rs, cublas_ops.rs | 1 |
-| 4 | rvllm-gpu: buffer.rs, stream.rs | 1 |
-| 5 | rvllm-gpu: cuda_allocator.rs, pinned_memory.rs | 1 |
-| 6 | rvllm-gpu: cuda_graph.rs | 1 |
+| 1 | gpt-oss-gpu: device.rs, lib.rs, mod exports | 1 |
+| 2 | gpt-oss-gpu: kernel_loader.rs | 1 |
+| 3 | gpt-oss-gpu: cublas.rs, cublas_ops.rs | 1 |
+| 4 | gpt-oss-gpu: buffer.rs, stream.rs | 1 |
+| 5 | gpt-oss-gpu: cuda_allocator.rs, pinned_memory.rs | 1 |
+| 6 | gpt-oss-gpu: cuda_graph.rs | 1 |
 | 7 | model-loader: gpu_loader.rs (inner mod) | 2 |
 | 8 | model-loader: gpu_weights.rs | 2 |
 | 9 | kv-cache: engine_cuda.rs | 2 |

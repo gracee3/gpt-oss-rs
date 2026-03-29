@@ -49,7 +49,7 @@ def build_resource_table(data):
     rows = []
     rows.append("## Resource Usage\n")
     rows.append(f"Model: `{data['model']}` | GPU: {data.get('gpu', 'unknown')}\n")
-    rows.append("| Metric | rvLLM (Rust) | Python vLLM | Improvement |")
+    rows.append("| Metric | gpt-oss-rs (Rust) | Python vLLM | Improvement |")
     rows.append("|---|---:|---:|---:|")
 
     # Startup
@@ -85,8 +85,8 @@ def build_throughput_table(data, max_tokens):
     rows = []
     rows.append(f"\n## Throughput (max_tokens={max_tokens})\n")
     rows.append(
-        "| Concurrency | rvLLM tok/s | Python tok/s | Speedup "
-        "| rvLLM P50 (ms) | Python P50 (ms) | Latency ratio |"
+        "| Concurrency | gpt-oss-rs tok/s | Python tok/s | Speedup "
+        "| gpt-oss-rs P50 (ms) | Python P50 (ms) | Latency ratio |"
     )
     rows.append("|---:|---:|---:|---:|---:|---:|---:|")
 
@@ -125,9 +125,9 @@ def build_latency_detail_table(data, max_tokens):
     rows = []
     rows.append(f"\n## Latency Percentiles (max_tokens={max_tokens})\n")
     rows.append(
-        "| Conc | rvLLM P50 | rvLLM P95 | rvLLM P99 "
+        "| Conc | gpt-oss-rs P50 | gpt-oss-rs P95 | gpt-oss-rs P99 "
         "| Python P50 | Python P95 | Python P99 "
-        "| rvLLM TTFT | Python TTFT |"
+        "| gpt-oss-rs TTFT | Python TTFT |"
     )
     rows.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
@@ -163,7 +163,7 @@ def build_error_table(data):
         return "\n## Errors\n\nZero errors across all test configurations for both servers."
 
     rows = ["\n## Errors\n"]
-    rows.append("| Config | rvLLM errors | Python errors |")
+    rows.append("| Config | gpt-oss-rs errors | Python errors |")
     rows.append("|---|---:|---:|")
     for label in sorted(set(list(rust_tests.keys()) + list(py_tests.keys()))):
         re = rust_tests.get(label, {}).get("num_errors", 0)
@@ -201,7 +201,7 @@ def build_summary_table(data):
         f"Measured on {data.get('gpu', 'A100')}, `{data['model']}`, "
         f"{data['num_prompts']} prompts, concurrency {max_conc}.\n"
     )
-    rows.append("| Metric | rvLLM (Rust) | Python vLLM | Improvement |")
+    rows.append("| Metric | gpt-oss-rs (Rust) | Python vLLM | Improvement |")
     rows.append("|---|---:|---:|---:|")
 
     # Throughput

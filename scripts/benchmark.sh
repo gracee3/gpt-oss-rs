@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "================================================================"
-echo "  rvllm Local Benchmark: Rust vs Python sampling kernels"
+echo "  gpt-oss-rs Local Benchmark: Rust vs Python sampling kernels"
 echo "================================================================"
 echo ""
 
@@ -16,7 +16,7 @@ echo ""
 echo "[1/3] Building and running Rust benchmarks (criterion)..."
 echo "      This takes ~2 minutes on first run."
 echo ""
-cargo bench --package rvllm-bench --bench sampling_bench 2>&1 | grep -E "(Benchmarking|time:)" || true
+cargo bench --package gpt-oss-bench --bench sampling_bench 2>&1 | grep -E "(Benchmarking|time:)" || true
 echo ""
 echo "Rust benchmarks complete."
 echo ""

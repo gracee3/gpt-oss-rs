@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Response format parity test: rvLLM vs Python vLLM.
+"""Response format parity test: gpt-oss-rs vs Python vLLM.
 
 Verifies that the JSON response structure, field names, types, nesting,
 streaming SSE format, and error responses match between servers.
@@ -329,13 +329,13 @@ def test_models_format(rust_url, python_url, model):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Response format parity: rvLLM vs Python vLLM")
+    p = argparse.ArgumentParser(description="Response format parity: gpt-oss-rs vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
     p.add_argument("--model", default="openai/gpt-oss-20b")
     args = p.parse_args()
 
-    print(f"Response Format Parity Test: rvLLM vs Python vLLM")
+    print(f"Response Format Parity Test: gpt-oss-rs vs Python vLLM")
     print(f"  Rust:   {args.rust_url}")
     print(f"  Python: {args.python_url}")
     print(f"  Model:  {args.model}")

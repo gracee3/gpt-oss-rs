@@ -1,29 +1,29 @@
 #!/bin/bash
-# Publish rvllm crates to crates.io in dependency order
+# Publish gpt-oss-rs crates to crates.io in dependency order
 set -euo pipefail
 
 CRATES=(
-    rvllm-core
-    rvllm-config
-    rvllm-gpu
-    rvllm-memory
-    rvllm-sequence
-    rvllm-tokenizer
-    rvllm-telemetry
-    rvllm-block-manager
-    rvllm-kv-cache
-    rvllm-attention
-    rvllm-model-loader
-    rvllm-quant
-    rvllm-sampling
-    rvllm-model-runner
-    rvllm-scheduler
-    rvllm-worker
-    rvllm-executor
-    rvllm-speculative
-    rvllm-engine
-    rvllm-api
-    rvllm-server
+    gpt-oss-core
+    gpt-oss-config
+    gpt-oss-gpu
+    gpt-oss-memory
+    gpt-oss-sequence
+    gpt-oss-tokenizer
+    gpt-oss-telemetry
+    gpt-oss-block-manager
+    gpt-oss-kv-cache
+    gpt-oss-attention
+    gpt-oss-model-loader
+    gpt-oss-quant
+    gpt-oss-sampling
+    gpt-oss-model-runner
+    gpt-oss-scheduler
+    gpt-oss-worker
+    gpt-oss-executor
+    gpt-oss-speculative
+    gpt-oss-engine
+    gpt-oss-api
+    gpt-oss-server
 )
 
 for crate in "${CRATES[@]}"; do

@@ -1,7 +1,7 @@
 # Throughput Optimization Spec: Close the vLLM Gap
 
 ## Problem
-rvLLM plateaus at ~8,300 tok/s while Python vLLM reaches ~12,700 tok/s at high N on the same A100 80GB. The gap is kernel efficiency and scheduling, not VRAM.
+gpt-oss-rs plateaus at ~8,300 tok/s while Python vLLM reaches ~12,700 tok/s at high N on the same A100 80GB. The gap is kernel efficiency and scheduling, not VRAM.
 
 ## Root Causes (suspected)
 1. Per-step memory allocations (alloc_zeros called every forward pass)

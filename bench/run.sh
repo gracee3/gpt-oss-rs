@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# rvLLM Benchmark Script
+# gpt-oss-rs Benchmark Script
 # One-shot: builds from source, runs server, benchmarks, reports results.
 #
 # Usage:
 #   # On a fresh vast.ai instance with CUDA:
-#   curl -sSL https://raw.githubusercontent.com/m0at/rvllm/main/bench/run.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/m0at/gpt-oss-rs/main/bench/run.sh | bash
 #
 #   # Or locally:
 #   bash bench/run.sh
@@ -21,7 +21,7 @@ NUM_PROMPTS="${NUM_PROMPTS:-16}"
 CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-1 4}"
 
 BASE_URL="http://localhost:${PORT}"
-RESULTS_FILE="/tmp/rvllm_bench_results.txt"
+RESULTS_FILE="/tmp/gpt_oss_bench_results.txt"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -45,33 +45,33 @@ command -v curl >/dev/null 2>&1 || { err "curl not found."; exit 1; }
 nvidia-smi >/dev/null 2>&1 || { err "nvidia-smi failed. No GPU?"; exit 1; }
 
 # --- Step 1: Build ---
-log "Building rvllm-server with CUDA support..."
+log "Building gpt-oss-server with CUDA support..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
 if [ ! -f "${REPO_DIR}/Cargo.toml" ]; then
     log "Cloning repository..."
-    REPO_DIR="/tmp/rvllm"
-    git clone https://github.com/m0at/rvllm.git "$REPO_DIR" 2>/dev/null || true
+    REPO_DIR="/tmp/gpt-oss-rs"
+    git clone https://github.com/m0at/gpt-oss-rs.git "$REPO_DIR" 2>/dev/null || true
 fi
 cd "$REPO_DIR"
 
 BUILD_START=$(date +%s%N)
-cargo build --release --features cuda -p rvllm-server 2>&1 | tail -3
+cargo build --release --features cuda -p gpt-oss-server 2>&1 | tail -3
 BUILD_END=$(date +%s%N)
 BUILD_TIME_MS=$(( (BUILD_END - BUILD_START) / 1000000 ))
 log "Build time: ${BUILD_TIME_MS}ms"
 
-BINARY="./target/release/rvllm"
+BINARY="./target/release/gpt-oss-rs"
 BINARY_SIZE=$(ls -lh "$BINARY" | awk '{print $5}')
 log "Binary size: ${BINARY_SIZE}"
 
 # --- Step 2: Start server ---
-log "Starting rvllm server (model=${MODEL})..."
-pkill -9 rvllm 2>/dev/null || true
+log "Starting gpt-oss-rs server (model=${MODEL})..."
+pkill -9 gpt-oss-rs 2>/dev/null || true
 sleep 1
 
 SERVER_START=$(date +%s%N)
-nohup "$BINARY" serve --model "$MODEL" --port "$PORT" > /tmp/rvllm_server.log 2>&1 &
+nohup "$BINARY" serve --model "$MODEL" --port "$PORT" > /tmp/gpt_oss_server.log 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
@@ -88,7 +88,7 @@ for i in $(seq 1 60); do
     fi
     if [ "$i" -eq 60 ]; then
         err "Server failed to start in 60s"
-        cat /tmp/rvllm_server.log
+        cat /tmp/gpt_oss_server.log
         exit 1
     fi
     sleep 1
@@ -211,7 +211,7 @@ done
 # --- Step 6: Summary ---
 echo ""
 echo "========================================"
-echo "  rvLLM Benchmark Summary"
+echo "  gpt-oss-rs Benchmark Summary"
 echo "========================================"
 echo "  Model:        ${MODEL}"
 echo "  GPU:          ${GPU_NAME}"

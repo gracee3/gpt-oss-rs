@@ -1,0 +1,25 @@
+[package]
+name = "gpt-oss-kv-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "KV-cache management for the gpt-oss-rs inference engine"
+keywords = ["llm", "inference", "kv-cache", "attention", "vllm"]
+categories = ["caching", "science"]
+
+[features]
+default = []
+cuda = ["gpt-oss-gpu/cuda", "dep:cudarc"]
+
+[dependencies]
+gpt-oss-core.workspace = true
+gpt-oss-gpu.workspace = true
+thiserror.workspace = true
+half.workspace = true
+bytemuck.workspace = true
+tracing.workspace = true
+cudarc = { version = "0.19", features = ["driver"], optional = true }

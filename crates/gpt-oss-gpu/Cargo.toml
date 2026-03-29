@@ -1,0 +1,28 @@
+[package]
+name = "gpt-oss-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "GPU abstraction layer for the gpt-oss-rs inference engine"
+keywords = ["llm", "inference", "gpu", "cuda", "accelerator"]
+categories = ["hardware-support", "science"]
+
+[features]
+default = ["mock-gpu"]
+mock-gpu = []
+cuda = ["dep:cudarc"]
+cublaslt = ["cuda"]
+cuda-graphs = ["cuda"]
+
+[dependencies]
+gpt-oss-core.workspace = true
+thiserror.workspace = true
+bytemuck.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+half.workspace = true
+cudarc = { version = "0.19", features = ["driver", "cublas", "cublaslt", "f16", "cuda-version-from-build-system"], optional = true }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# rvLLM Development Environment Setup
+# gpt-oss-rs Development Environment Setup
 #
 # IMPORTANT: Review this script before running it. Shell scripts can execute
 # arbitrary commands. Read through each section to understand what will be
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-echo "=== rvLLM Development Environment Setup ==="
+echo "=== gpt-oss-rs Development Environment Setup ==="
 echo ""
 echo "This script will install development dependencies."
 echo "Review the source before running: cat install.sh"
@@ -87,7 +87,7 @@ if command -v nvcc &>/dev/null; then
 else
     echo "[INFO] CUDA not found. GPU inference requires NVIDIA CUDA toolkit."
     echo "       Install from: https://developer.nvidia.com/cuda-downloads"
-    echo "       rvLLM works without CUDA using the mock-gpu backend (for development)."
+    echo "       gpt-oss-rs works without CUDA using the mock-gpu backend (for development)."
 fi
 
 # --- vast.ai CLI (optional) ---
@@ -106,22 +106,22 @@ pip3 install -q requests numpy scipy aiohttp pytest 2>/dev/null || true
 
 # --- Verify build ---
 echo ""
-echo "=== Verifying rvLLM build ==="
+echo "=== Verifying gpt-oss-rs build ==="
 if [ -f "Cargo.toml" ]; then
     echo "Building (mock-gpu, no CUDA required)..."
-    cargo build --release -p rvllm-server 2>&1 | tail -3
+    cargo build --release -p gpt-oss-server 2>&1 | tail -3
     echo ""
-    echo "[OK] rvLLM binary: $(ls -lh target/release/rvllm 2>/dev/null | awk '{print $5, $9}')"
+    echo "[OK] gpt-oss-rs binary: $(ls -lh target/release/gpt-oss-rs 2>/dev/null | awk '{print $5, $9}')"
 else
-    echo "Run this script from the rvllm repo root."
+    echo "Run this script from the gpt-oss-rs repo root."
 fi
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  cargo build --release -p rvllm-server          # Build (mock-gpu)"
-echo "  cargo build --release --features cuda -p rvllm-server  # Build (CUDA)"
-echo "  ./target/release/rvllm serve --model Qwen/Qwen2.5-1.5B"
+echo "  cargo build --release -p gpt-oss-server          # Build (mock-gpu)"
+echo "  cargo build --release --features cuda -p gpt-oss-server  # Build (CUDA)"
+echo "  ./target/release/gpt-oss-rs serve --model Qwen/Qwen2.5-1.5B"
 echo "  cargo test --workspace                          # Run tests"
 echo "  make bench-compare                              # Benchmark"

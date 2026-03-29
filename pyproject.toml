@@ -1,5 +1,5 @@
 [project]
-name = "rvllm"
+name = "gpt-oss-rs"
 version = "0.1.0"
 description = "GPT-OSS-focused Rust inference bindings"
 readme = "README.md"
@@ -17,14 +17,14 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/m0at/rvllm"
-Repository = "https://github.com/m0at/rvllm"
-Documentation = "https://github.com/m0at/rvllm"
+Homepage = "https://github.com/m0at/gpt-oss-rs"
+Repository = "https://github.com/m0at/gpt-oss-rs"
+Documentation = "https://github.com/m0at/gpt-oss-rs"
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-manifest-path = "crates/rvllm-python/Cargo.toml"
+manifest-path = "crates/gpt-oss-python/Cargo.toml"
 features = ["pyo3/extension-module"]

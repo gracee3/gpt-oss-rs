@@ -36,7 +36,7 @@ def load_criterion_results():
     results = {}
     if not CRITERION_DIR.exists():
         print(f"{YELLOW}Warning: {CRITERION_DIR} not found. Run Rust benchmarks first:{RESET}")
-        print(f"  cd {BASE_DIR} && cargo bench -p rvllm-bench")
+        print(f"  cd {BASE_DIR} && cargo bench -p gpt-oss-bench")
         return results
 
     for estimates_path in CRITERION_DIR.rglob("new/estimates.json"):
@@ -279,7 +279,7 @@ def main():
 
     if not rust_results and not python_results:
         print(f"\n{RED}No results found. Run benchmarks first:{RESET}")
-        print(f"  cd {BASE_DIR} && cargo bench -p rvllm-bench")
+        print(f"  cd {BASE_DIR} && cargo bench -p gpt-oss-bench")
         print(f"  cd {BASE_DIR} && python3 benches/bench_python.py")
         sys.exit(1)
 

@@ -1,15 +1,15 @@
-# Migrating from Python vLLM to rvllm
+# Migrating from Python vLLM to gpt-oss-rs
 
 ## For API Consumers (no code changes needed)
 
-If you're calling vLLM's OpenAI-compatible API, rvllm is a drop-in replacement.
+If you're calling vLLM's OpenAI-compatible API, gpt-oss-rs is a drop-in replacement.
 Just change the server URL:
 
 ```python
 # Before (Python vLLM)
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
 
-# After (Rust rvllm) -- same URL, same API
+# After (Rust gpt-oss-rs) -- same URL, same API
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
 ```
 
@@ -20,8 +20,8 @@ Replace:
 # Python vLLM
 python -m vllm.entrypoints.openai.api_server --model openai/gpt-oss-20b
 
-# Rust rvllm
-rvllm serve --model openai/gpt-oss-20b
+# Rust gpt-oss-rs
+gpt-oss-rs serve --model openai/gpt-oss-20b
 ```
 
 Same CLI flags: --model, --port, --host, --gpu-memory-utilization, --max-model-len, --tensor-parallel-size

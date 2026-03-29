@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Provision A100 80GB on vast.ai for rvllm benchmarks
+# Provision A100 80GB on vast.ai for gpt-oss-rs benchmarks
 # Requires: vastai CLI (pip install vastai)
 # Usage: ./vastai-provision.sh [--dry-run]
 

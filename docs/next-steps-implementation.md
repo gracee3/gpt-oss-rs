@@ -37,9 +37,9 @@ The previous implementation allocated new GPU buffers for metadata (token_ids, p
    - Padded sizes: {1, 2, 4, 8, 16, 32, 64, 128, 256}
 
 ### Files
-- `crates/rvllm-model-runner/src/gpu_runner.rs` -- persistent buffers, forward_ex changes
-- `crates/rvllm-worker/src/gpu_worker.rs` -- capture/replay orchestration
-- `crates/rvllm-worker/src/graph_runner.rs` -- graph pool management
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs` -- persistent buffers, forward_ex changes
+- `crates/gpt-oss-worker/src/gpu_worker.rs` -- capture/replay orchestration
+- `crates/gpt-oss-worker/src/graph_runner.rs` -- graph pool management
 
 ### Verification
 - Coherency: 5 diverse prompts at N=1, same outputs as non-graph path
@@ -106,8 +106,8 @@ Key design choices:
 
 ### Files
 - New: `kernels/flash_attention_gqa.cu`
-- `crates/rvllm-gpu/src/kernel_loader.rs` -- register new kernel
-- `crates/rvllm-model-runner/src/gpu_layer.rs` -- dispatch to GQA kernel when num_heads != num_kv_heads
+- `crates/gpt-oss-gpu/src/kernel_loader.rs` -- register new kernel
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs` -- dispatch to GQA kernel when num_heads != num_kv_heads
 
 ### Verification
 - Coherency: output must match non-GQA kernel exactly (same QK scores, same softmax, same output)
@@ -152,7 +152,7 @@ In `gpu_layer.rs`:
 The split is zero-cost because Q, K, V occupy contiguous memory in the fused output. CudaView/CudaSlice slicing gives sub-views without copying.
 
 ### Files
-- `crates/rvllm-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
 
 ### Verification
 - Coherency: Q, K, V values must be identical to unfused path
@@ -187,7 +187,7 @@ Gate+up GEMMs are the largest per-layer operations (8960 output dim vs 1536 for 
 Same pattern as Step 3. Add fused weight buffer, concatenate once, single hgemm, split output.
 
 ### Files
-- `crates/rvllm-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
 
 ### Verification
 - Coherency check after
@@ -206,15 +206,15 @@ At N=1, Q projection [1, 1536] x [1536, 1536] produces 12 output tiles. 108 SMs,
 The gain is largest at N=1-32 where SM underutilization is severe. At N=128+, standard cuBLAS is already well-utilized and cublasLt adds no benefit (slight overhead from algorithm selection).
 
 ### Implementation
-Code already exists in `crates/rvllm-gpu/src/cublaslt_ops.rs` behind the `cublaslt` feature flag. What's needed:
+Code already exists in `crates/gpt-oss-gpu/src/cublaslt_ops.rs` behind the `cublaslt` feature flag. What's needed:
 1. Wire `CublasLtOps` into `GpuWorker` (create alongside `CublasHandle`)
 2. Pass it through to `GpuModelRunner` and `GpuTransformerLayer`
 3. In `forward_f16()`, check `num_tokens <= CUBLASLT_M_THRESHOLD` (32). If yes, use `forward_once_f16_lt()`. If no, use standard `forward_once_f16()`.
 
 ### Files
-- `crates/rvllm-worker/src/gpu_worker.rs` -- create CublasLtOps
-- `crates/rvllm-model-runner/src/gpu_runner.rs` -- store and pass through
-- `crates/rvllm-model-runner/src/gpu_layer.rs` -- dispatch
+- `crates/gpt-oss-worker/src/gpu_worker.rs` -- create CublasLtOps
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs` -- store and pass through
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs` -- dispatch
 
 ### Verification
 - Coherency at N=1 (most affected)

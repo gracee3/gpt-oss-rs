@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Token-level parity test: rvLLM vs Python vLLM.
+"""Token-level parity test: gpt-oss-rs vs Python vLLM.
 
 Sends identical prompts to both servers with temperature=0 (greedy decoding)
 and compares output token-by-token. Any divergence indicates a numerical
@@ -204,14 +204,14 @@ def run_parity(rust_url, python_url, model, use_logprobs):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Token-level parity: rvLLM vs Python vLLM")
+    p = argparse.ArgumentParser(description="Token-level parity: gpt-oss-rs vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
     p.add_argument("--model", default="openai/gpt-oss-20b")
     p.add_argument("--logprobs", action="store_true", help="Compare top-5 logprobs at divergence")
     args = p.parse_args()
 
-    print(f"Token Parity Test: rvLLM vs Python vLLM")
+    print(f"Token Parity Test: gpt-oss-rs vs Python vLLM")
     print(f"  Rust:   {args.rust_url}")
     print(f"  Python: {args.python_url}")
     print(f"  Model:  {args.model}")

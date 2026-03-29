@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark client for rvllm and Python vLLM comparison.
+"""Benchmark client for gpt-oss-rs and Python vLLM comparison.
 
 Sends concurrent inference requests and measures:
 - Throughput (tokens/sec)
@@ -197,7 +197,7 @@ async def run_benchmark(url, num_prompts, concurrency, max_tokens=128):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark client for rvllm and Python vLLM"
+        description="Benchmark client for gpt-oss-rs and Python vLLM"
     )
     parser.add_argument("--url", required=True, help="Server URL (e.g. http://localhost:8000)")
     parser.add_argument("--num-prompts", type=int, default=200, help="Number of prompts to send")

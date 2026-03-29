@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke_test.sh -- End-to-end smoke test for rvllm server.
+# smoke_test.sh -- End-to-end smoke test for gpt-oss-rs server.
 #
 # Usage:
 #   ./scripts/smoke_test.sh [HOST] [PORT]
@@ -46,14 +46,14 @@ if ! curl -sf "${BASE_URL}/health" > /dev/null 2>&1; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-    if [ -f "${PROJECT_ROOT}/target/release/rvllm" ]; then
-        BIN="${PROJECT_ROOT}/target/release/rvllm"
-    elif [ -f "${PROJECT_ROOT}/target/debug/rvllm" ]; then
-        BIN="${PROJECT_ROOT}/target/debug/rvllm"
+    if [ -f "${PROJECT_ROOT}/target/release/gpt-oss-rs" ]; then
+        BIN="${PROJECT_ROOT}/target/release/gpt-oss-rs"
+    elif [ -f "${PROJECT_ROOT}/target/debug/gpt-oss-rs" ]; then
+        BIN="${PROJECT_ROOT}/target/debug/gpt-oss-rs"
     else
-        echo "[smoke] building rvllm..."
-        (cd "$PROJECT_ROOT" && cargo build -p rvllm-server 2>&1)
-        BIN="${PROJECT_ROOT}/target/debug/rvllm"
+        echo "[smoke] building gpt-oss-rs..."
+        (cd "$PROJECT_ROOT" && cargo build -p gpt-oss-server 2>&1)
+        BIN="${PROJECT_ROOT}/target/debug/gpt-oss-rs"
     fi
 
     if [ ! -x "$BIN" ]; then
@@ -82,7 +82,7 @@ fi
 
 echo ""
 echo "========================================"
-echo "  rvllm Smoke Test"
+echo "  gpt-oss-rs Smoke Test"
 echo "  Target: ${BASE_URL}"
 echo "========================================"
 echo ""

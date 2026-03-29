@@ -81,7 +81,7 @@ sleep 2
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null || true
 
 # Run benchmark
-python3 /root/vllm-rs/deploy/benchmark_client.py \
+python3 /root/gpt-oss-rs/deploy/benchmark_client.py \
     --url http://localhost:8001 \
     --num-prompts $NUM_PROMPTS \
     --concurrent $CONCURRENT \
@@ -104,16 +104,16 @@ kill \$PYTHON_PID 2>/dev/null || true
 wait \$PYTHON_PID 2>/dev/null || true
 sleep 5
 
-# ========== Benchmark Rust rvllm ==========
+# ========== Benchmark Rust gpt-oss-rs ==========
 echo ""
 echo "=========================================="
-echo "BENCHMARK: Rust rvllm"
+echo "BENCHMARK: Rust gpt-oss-rs"
 echo "=========================================="
 
 # Record startup time
 RUST_START=\$(date +%s%N)
 
-/root/vllm-rs/target/release/rvllm serve \
+/root/gpt-oss-rs/target/release/gpt-oss-rs serve \
     --model $MODEL \
     --gpu-memory-utilization 0.90 \
     --port 8000 &
@@ -125,19 +125,19 @@ for i in \$(seq 1 120); do
 done
 RUST_READY=\$(date +%s%N)
 RUST_STARTUP_MS=\$(( (RUST_READY - RUST_START) / 1000000 ))
-echo "Rust rvllm server ready (startup: \${RUST_STARTUP_MS}ms)"
+echo "Rust gpt-oss-rs server ready (startup: \${RUST_STARTUP_MS}ms)"
 
 sleep 2
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null || true
 
-python3 /root/vllm-rs/deploy/benchmark_client.py \
+python3 /root/gpt-oss-rs/deploy/benchmark_client.py \
     --url http://localhost:8000 \
     --num-prompts $NUM_PROMPTS \
     --concurrent $CONCURRENT \
     --output /root/results_rust.json
 
 # Capture memory metrics while server is still loaded
-capture_memory "Rust rvllm" \$RUST_PID /root/results_rust.json
+capture_memory "Rust gpt-oss-rs" \$RUST_PID /root/results_rust.json
 
 # Add startup time
 python3 -c "
@@ -154,7 +154,7 @@ wait \$RUST_PID 2>/dev/null || true
 
 # ========== Generate Comparison Report ==========
 echo ""
-python3 /root/vllm-rs/deploy/compare_results.py \
+python3 /root/gpt-oss-rs/deploy/compare_results.py \
     --rust /root/results_rust.json \
     --python /root/results_python.json
 

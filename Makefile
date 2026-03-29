@@ -2,11 +2,11 @@
 
 # Local development (Mac, mock-gpu)
 build:
-	cargo build --release -p rvllm-server
+	cargo build --release -p gpt-oss-server
 
 # CUDA build (Linux + NVIDIA GPU)
 build-cuda:
-	cargo build --release --features cuda -p rvllm-server
+	cargo build --release --features cuda -p gpt-oss-server
 
 # Check workspace compiles (mock-gpu, Mac)
 check:
@@ -14,7 +14,7 @@ check:
 
 # Check workspace compiles with CUDA features (needs cudarc, OK to fail without CUDA toolkit)
 check-cuda:
-	cargo check --workspace --features rvllm-server/cuda
+	cargo check --workspace --features gpt-oss-server/cuda
 
 # Compile .cu kernels to .ptx (requires nvcc)
 kernels:
@@ -26,11 +26,11 @@ test:
 
 # Run tests with CUDA features
 test-cuda:
-	cargo test --workspace --features rvllm-server/cuda
+	cargo test --workspace --features gpt-oss-server/cuda
 
 # Run benchmarks (Rust)
 bench:
-	cargo bench --package rvllm-bench --bench sampling_bench
+	cargo bench --package gpt-oss-bench --bench sampling_bench
 
 # Run Python benchmarks
 bench-python:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sampling parity test: rvLLM vs Python vLLM.
+"""Sampling parity test: gpt-oss-rs vs Python vLLM.
 
 For non-greedy decoding, verifies that token frequency distributions
 are statistically indistinguishable between the two servers using
@@ -128,14 +128,14 @@ def run_test(name, rust_url, python_url, model, prompt, n_runs, **kwargs):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Sampling parity: rvLLM vs Python vLLM")
+    p = argparse.ArgumentParser(description="Sampling parity: gpt-oss-rs vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
     p.add_argument("--model", default="openai/gpt-oss-20b")
     p.add_argument("--runs", type=int, default=100, help="Samples per test case")
     args = p.parse_args()
 
-    print(f"Sampling Parity Test: rvLLM vs Python vLLM")
+    print(f"Sampling Parity Test: gpt-oss-rs vs Python vLLM")
     print(f"  Rust:   {args.rust_url}")
     print(f"  Python: {args.python_url}")
     print(f"  Model:  {args.model}")

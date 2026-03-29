@@ -1,7 +1,7 @@
 # Current Forward Model (as of d9cd982)
 
 Exact operation sequence for ONE decode step, ONE token, Qwen2.5-1.5B f16.
-Reference: `crates/rvllm-model-runner/src/gpu_layer.rs` forward_f16().
+Reference: `crates/gpt-oss-model-runner/src/gpu_layer.rs` forward_f16().
 
 ## Per-Step Outer Loop (gpu_worker.rs)
 

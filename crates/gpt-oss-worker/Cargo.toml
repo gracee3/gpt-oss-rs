@@ -1,0 +1,37 @@
+[package]
+name = "gpt-oss-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "GPU worker processes for distributed inference in gpt-oss-rs"
+keywords = ["llm", "inference", "worker", "distributed", "vllm"]
+categories = ["concurrency", "hardware-support"]
+
+[features]
+default = []
+cuda = ["dep:cudarc", "gpt-oss-gpu/cuda", "gpt-oss-gpu/cuda-graphs", "gpt-oss-model-runner/cuda", "gpt-oss-kv-cache/cuda", "gpt-oss-sampling/cuda", "gpt-oss-model-loader/cuda"]
+cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-model-runner/cublaslt"]
+
+[dependencies]
+cudarc = { version = "0.19", features = ["driver", "cublas", "f16"], optional = true }
+half = "2"
+gpt-oss-core.workspace = true
+gpt-oss-config.workspace = true
+gpt-oss-gpu.workspace = true
+gpt-oss-model-runner.workspace = true
+gpt-oss-kv-cache.workspace = true
+gpt-oss-sampling.workspace = true
+gpt-oss-model-loader.workspace = true
+gpt-oss-sequence.workspace = true
+gpt-oss-telemetry.workspace = true
+hf-hub = "0.4"
+memmap2.workspace = true
+metrics-exporter-prometheus.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rand.workspace = true

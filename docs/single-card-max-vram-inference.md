@@ -59,7 +59,7 @@ Load a small draft model (1-3B) alongside the main model. The draft model genera
 - Total: 183 GB (fits!)
 - Expected speedup: 2-3x for code generation, 1.5-2x for general text
 
-rvLLM already has `crates/rvllm-speculative/` scaffolded for this.
+gpt-oss-rs already has `crates/gpt-oss-speculative/` scaffolded for this.
 
 ### 3. Prefix Caching (Amortize System Prompts)
 
@@ -68,7 +68,7 @@ For chatbot workloads where many requests share the same system prompt:
 - Store it in GPU memory (using the excess VRAM)
 - New requests skip prefill for the shared prefix
 
-rvLLM already has `PrefixCache` in `gpu_engine.rs`. On B200 with 150GB free after model loading, you can cache thousands of prefix variants.
+gpt-oss-rs already has `PrefixCache` in `gpu_engine.rs`. On B200 with 150GB free after model loading, you can cache thousands of prefix variants.
 
 ### 4. Quantized Weights + Full-Precision KV Cache
 
@@ -89,7 +89,7 @@ Instead of blocking all decode sequences while one long prompt prefills:
 - Interleave prefill chunks with decode steps
 - Decode sequences don't stall waiting for a 4096-token prompt to finish
 
-This is a scheduler-level optimization. rvLLM's `FifoScheduler` already separates prefill and decode -- extending to chunked prefill is straightforward.
+This is a scheduler-level optimization. gpt-oss-rs's `FifoScheduler` already separates prefill and decode -- extending to chunked prefill is straightforward.
 
 ### 6. Memory Bandwidth Optimization
 
@@ -116,17 +116,17 @@ With many concurrent sequences, kernel launch overhead per token becomes signifi
 - Without graphs: ~10us per kernel * 10 kernels per layer * N layers = overhead
 - With graphs: single graph launch, ~5us total
 
-rvLLM has `CudaGraphPool` and `GraphRunner` already implemented, gated behind `cuda-graphs` feature.
+gpt-oss-rs has `CudaGraphPool` and `GraphRunner` already implemented, gated behind `cuda-graphs` feature.
 
-## Implementation Priority for rvLLM
+## Implementation Priority for gpt-oss-rs
 
 | Priority | Feature | Impact | Status |
 |----------|---------|--------|--------|
 | 1 | Max concurrent sequences (fill KV cache) | 3-5x throughput | Working (N=16 verified) |
 | 2 | GPU-side sampling (skip logits DtoH) | ~2x decode speed | Implemented (argmax kernel) |
 | 3 | CUDA graph replay | ~1.3x decode speed | Infrastructure ready, needs wiring |
-| 4 | INT8 weight quantization | 2x more concurrent seqs | `rvllm-quant` exists, needs GPU dequant |
-| 5 | Speculative decoding | 2-3x per-request latency | `rvllm-speculative` scaffolded |
+| 4 | INT8 weight quantization | 2x more concurrent seqs | `gpt-oss-quant` exists, needs GPU dequant |
+| 5 | Speculative decoding | 2-3x per-request latency | `gpt-oss-speculative` scaffolded |
 | 6 | Chunked prefill | Better tail latency | Scheduler change |
 | 7 | Prefix caching | Amortize system prompts | `PrefixCache` exists |
 
@@ -146,7 +146,7 @@ rvLLM has `CudaGraphPool` and `GraphRunner` already implemented, gated behind `c
 
 ## Next Steps
 
-1. Test rvLLM on B200 with Qwen2.5-14B or Llama-3.1-8B
+1. Test gpt-oss-rs on B200 with Qwen2.5-14B or Llama-3.1-8B
 2. Measure max concurrent sequences before throughput plateaus
 3. Enable CUDA graph replay for decode
 4. Implement INT8 weight dequantization on GPU

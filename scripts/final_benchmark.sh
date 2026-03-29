@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive rvLLM vs Python vLLM benchmark
+# Comprehensive gpt-oss-rs vs Python vLLM benchmark
 # Runs on A100 (local or via SSH). Measures startup, memory, and throughput
 # across multiple concurrency levels and output lengths.
 #
@@ -18,8 +18,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Configuration ---
 MODEL="${MODEL:-openai/gpt-oss-20b}"
-RVLLM_BIN="${RVLLM_BIN:-$ROOT_DIR/target/release/rvLLM}"
-RVLLM_PORT=8000
+GPT_OSS_RS_BIN="${GPT_OSS_RS_BIN:-$ROOT_DIR/target/release/gpt-oss-rs}"
+GPT_OSS_RS_PORT=8000
 PYTHON_PORT=8001
 NUM_PROMPTS="${NUM_PROMPTS:-100}"
 CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-1 4 8 16 32}"
@@ -109,7 +109,7 @@ run_load_test() {
 # --- System info ---
 
 log "=========================================="
-log "  rvLLM vs Python vLLM Final Benchmark"
+log "  gpt-oss-rs vs Python vLLM Final Benchmark"
 log "=========================================="
 log ""
 log "Model:        $MODEL"
@@ -143,29 +143,29 @@ with open('$RESULT_JSON', 'w') as f:
 "
 
 # =============================================
-#  BENCHMARK: Rust rvLLM
+#  BENCHMARK: Rust gpt-oss-rs
 # =============================================
 
 log "=========================================="
-log "  Starting Rust rvLLM"
+log "  Starting Rust gpt-oss-rs"
 log "=========================================="
 
 RUST_START_NS=$(date +%s%N)
 
-"$RVLLM_BIN" serve \
+"$GPT_OSS_RS_BIN" serve \
     --model "$MODEL" \
     --gpu-memory-utilization "$GPU_MEM_UTIL" \
-    --port "$RVLLM_PORT" &
+    --port "$GPT_OSS_RS_PORT" &
 RUST_PID=$!
 
-if ! wait_for_health "$RVLLM_PORT" "rvLLM"; then
+if ! wait_for_health "$GPT_OSS_RS_PORT" "gpt-oss-rs"; then
     kill_server "$RUST_PID"
     exit 1
 fi
 
 RUST_READY_NS=$(date +%s%N)
 RUST_STARTUP_MS=$(( (RUST_READY_NS - RUST_START_NS) / 1000000 ))
-log "rvLLM ready in ${RUST_STARTUP_MS}ms (PID $RUST_PID)"
+log "gpt-oss-rs ready in ${RUST_STARTUP_MS}ms (PID $RUST_PID)"
 
 # Let model settle, then capture memory
 sleep 3
@@ -177,7 +177,7 @@ log "  GPU VRAM: ${RUST_GPU_MB} MB"
 # Warmup
 log "  Warming up ($WARMUP_REQUESTS requests)..."
 python3 "$ROOT_DIR/deploy/benchmark_client.py" \
-    --url "http://localhost:$RVLLM_PORT" \
+    --url "http://localhost:$GPT_OSS_RS_PORT" \
     --num-prompts "$WARMUP_REQUESTS" \
     --concurrent 1 \
     --max-tokens 16 \
@@ -185,13 +185,13 @@ python3 "$ROOT_DIR/deploy/benchmark_client.py" \
 
 # Run load tests across all concurrency x max_tokens combinations
 log ""
-log "Running rvLLM load tests..."
+log "Running gpt-oss-rs load tests..."
 for max_tokens in $MAX_TOKENS_LIST; do
     for conc in $CONCURRENCY_LEVELS; do
         label="c${conc}_t${max_tokens}"
         outfile="$RESULTS_DIR/rust_${label}.json"
         log "  concurrency=$conc max_tokens=$max_tokens"
-        run_load_test "http://localhost:$RVLLM_PORT" "$conc" "$max_tokens" "$outfile"
+        run_load_test "http://localhost:$GPT_OSS_RS_PORT" "$conc" "$max_tokens" "$outfile"
     done
 done
 
@@ -200,7 +200,7 @@ RUST_RSS_MB_POST=$(get_pid_rss_mb "$RUST_PID")
 RUST_GPU_MB_POST=$(get_pid_gpu_mb "$RUST_PID")
 
 kill_server "$RUST_PID"
-log "rvLLM stopped."
+log "gpt-oss-rs stopped."
 log ""
 
 # Store rust metadata

@@ -1,4 +1,4 @@
-# rvLLM Update Log
+# gpt-oss-rs Update Log
 
 Chronological record of all optimization work, benchmarks, and architecture changes.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare rvllm vs Python vLLM benchmark results."""
+"""Compare gpt-oss-rs vs Python vLLM benchmark results."""
 
 import json
 import argparse
@@ -25,7 +25,7 @@ def speedup_str(rust_val, python_val, lower_is_better=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare rvllm vs Python vLLM benchmark results"
+        description="Compare gpt-oss-rs vs Python vLLM benchmark results"
     )
     parser.add_argument("--rust", required=True, help="Path to Rust benchmark results JSON")
     parser.add_argument("--python", required=True, help="Path to Python benchmark results JSON")
@@ -37,7 +37,7 @@ def main():
         python = json.load(f)
 
     print("=" * 80)
-    print("  rvllm (Rust) vs vLLM (Python) -- A100 80GB Benchmark Comparison")
+    print("  gpt-oss-rs (Rust) vs vLLM (Python) -- A100 80GB Benchmark Comparison")
     print("=" * 80)
     print()
 

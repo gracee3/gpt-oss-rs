@@ -1041,6 +1041,363 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "axum-test",
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-engine",
+ "gpt-oss-executor",
+ "gpt-oss-gpu",
+ "gpt-oss-sequence",
+ "gpt-oss-telemetry",
+ "gpt-oss-tokenizer",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "tokio",
+ "tokio-stream",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "gpt-oss-attention"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "half",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-bench"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+]
+
+[[package]]
+name = "gpt-oss-block-manager"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "gpt-oss-core",
+ "gpt-oss-memory",
+ "gpt-oss-sequence",
+ "parking_lot",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-config"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "config",
+ "gpt-oss-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-core"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "half",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gpt-oss-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cudarc",
+ "gpt-oss-block-manager",
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-executor",
+ "gpt-oss-quant",
+ "gpt-oss-sequence",
+ "gpt-oss-telemetry",
+ "gpt-oss-tokenizer",
+ "gpt-oss-worker",
+ "hf-hub",
+ "metrics-exporter-prometheus",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-executor"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gpt-oss-core",
+ "gpt-oss-sequence",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-gpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cudarc",
+ "gpt-oss-core",
+ "half",
+ "parking_lot",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-kv-cache"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cudarc",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "half",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-memory"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "parking_lot",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-model-loader"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "half",
+ "memmap2",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-model-runner"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "gpt-oss-attention",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "gpt-oss-kv-cache",
+ "gpt-oss-model-loader",
+ "half",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-python"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-engine",
+ "gpt-oss-sampling",
+ "gpt-oss-tokenizer",
+ "pyo3",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "gpt-oss-quant"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "half",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-sampling"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-scheduler"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-block-manager",
+ "gpt-oss-core",
+ "gpt-oss-sequence",
+ "parking_lot",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-sequence"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gpt-oss-api",
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-engine",
+ "gpt-oss-gpu",
+ "gpt-oss-sequence",
+ "gpt-oss-telemetry",
+ "gpt-oss-tokenizer",
+ "serde_json",
+ "tempfile",
+ "tokenizers",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "gpt-oss-speculative"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "gpt-oss-sequence",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-telemetry"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "gpt-oss-core",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "parking_lot",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "gpt-oss-tokenizer"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "hf-hub",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-worker"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "gpt-oss-config",
+ "gpt-oss-core",
+ "gpt-oss-gpu",
+ "gpt-oss-kv-cache",
+ "gpt-oss-model-loader",
+ "gpt-oss-model-runner",
+ "gpt-oss-sampling",
+ "gpt-oss-sequence",
+ "gpt-oss-telemetry",
+ "half",
+ "hf-hub",
+ "memmap2",
+ "metrics-exporter-prometheus",
+ "rand 0.8.5",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2572,363 +2929,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rvllm-api"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "axum-test",
- "rvllm-config",
- "rvllm-core",
- "rvllm-engine",
- "rvllm-executor",
- "rvllm-gpu",
- "rvllm-sequence",
- "rvllm-telemetry",
- "rvllm-tokenizer",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokenizers",
- "tokio",
- "tokio-stream",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "rvllm-attention"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "half",
- "rvllm-core",
- "rvllm-gpu",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-bench"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
-]
-
-[[package]]
-name = "rvllm-block-manager"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "parking_lot",
- "rvllm-core",
- "rvllm-memory",
- "rvllm-sequence",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-config"
-version = "0.1.0"
-dependencies = [
- "clap",
- "config",
- "rvllm-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-core"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "half",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "rvllm-engine"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "cudarc",
- "hf-hub",
- "metrics-exporter-prometheus",
- "rvllm-block-manager",
- "rvllm-config",
- "rvllm-core",
- "rvllm-executor",
- "rvllm-quant",
- "rvllm-sequence",
- "rvllm-telemetry",
- "rvllm-tokenizer",
- "rvllm-worker",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokenizers",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-executor"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "rvllm-core",
- "rvllm-sequence",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-gpu"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "cudarc",
- "half",
- "parking_lot",
- "rvllm-core",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-kv-cache"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "cudarc",
- "half",
- "rvllm-core",
- "rvllm-gpu",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-memory"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "rvllm-core",
- "rvllm-gpu",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-model-loader"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "half",
- "memmap2",
- "rvllm-core",
- "rvllm-gpu",
- "safetensors",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-model-runner"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "half",
- "rvllm-attention",
- "rvllm-core",
- "rvllm-gpu",
- "rvllm-kv-cache",
- "rvllm-model-loader",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-python"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
- "rvllm-config",
- "rvllm-core",
- "rvllm-engine",
- "rvllm-sampling",
- "rvllm-tokenizer",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rvllm-quant"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "half",
- "rvllm-core",
- "rvllm-gpu",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-sampling"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
- "rvllm-core",
- "rvllm-gpu",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-scheduler"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "rvllm-block-manager",
- "rvllm-core",
- "rvllm-sequence",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-sequence"
-version = "0.1.0"
-dependencies = [
- "rvllm-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "rvllm-api",
- "rvllm-config",
- "rvllm-core",
- "rvllm-engine",
- "rvllm-gpu",
- "rvllm-sequence",
- "rvllm-telemetry",
- "rvllm-tokenizer",
- "serde_json",
- "tempfile",
- "tokenizers",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rvllm-speculative"
-version = "0.1.0"
-dependencies = [
- "rand 0.8.5",
- "rvllm-core",
- "rvllm-sequence",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-telemetry"
-version = "0.1.0"
-dependencies = [
- "axum",
- "metrics",
- "metrics-exporter-prometheus",
- "parking_lot",
- "rvllm-core",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rvllm-tokenizer"
-version = "0.1.0"
-dependencies = [
- "hf-hub",
- "rvllm-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokenizers",
- "tracing",
-]
-
-[[package]]
-name = "rvllm-worker"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "half",
- "hf-hub",
- "memmap2",
- "metrics-exporter-prometheus",
- "rand 0.8.5",
- "rvllm-config",
- "rvllm-core",
- "rvllm-gpu",
- "rvllm-kv-cache",
- "rvllm-model-loader",
- "rvllm-model-runner",
- "rvllm-sampling",
- "rvllm-sequence",
- "rvllm-telemetry",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
 
 [[package]]
 name = "ryu"

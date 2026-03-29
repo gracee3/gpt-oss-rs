@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Equivalent Python/numpy/torch benchmarks for comparison with Rust rvllm."""
+"""Equivalent Python/numpy/torch benchmarks for comparison with Rust gpt-oss-rs."""
 
 import os
 import time

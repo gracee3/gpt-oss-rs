@@ -1,0 +1,42 @@
+[package]
+name = "gpt-oss-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "HTTP server binary for the gpt-oss-rs inference engine"
+keywords = ["llm", "inference", "server", "http", "vllm"]
+categories = ["web-programming::http-server", "science"]
+
+[[bin]]
+name = "gpt-oss-rs"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = ["gpt-oss-gpu/cuda", "gpt-oss-api/cuda", "gpt-oss-engine/cuda"]
+cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-engine/cublaslt"]
+
+[dependencies]
+gpt-oss-core.workspace = true
+gpt-oss-config.workspace = true
+gpt-oss-gpu.workspace = true
+gpt-oss-api.workspace = true
+gpt-oss-engine.workspace = true
+gpt-oss-sequence.workspace = true
+gpt-oss-telemetry.workspace = true
+gpt-oss-tokenizer.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokenizers = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+serde_json.workspace = true

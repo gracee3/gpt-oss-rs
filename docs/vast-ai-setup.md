@@ -2,7 +2,7 @@
 
 ## The PyTorch Docker Image Problem
 
-The `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` image runs a background process on startup that grabs ~70GB of GPU memory. You MUST kill it before running rvLLM.
+The `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` image runs a background process on startup that grabs ~70GB of GPU memory. You MUST kill it before running gpt-oss-rs.
 
 ### After every instance start/restart:
 
@@ -31,23 +31,23 @@ apt-get install -y pkg-config libssl-dev
 # 1. Rsync source (exclude target and .git)
 rsync -avz --exclude target --exclude .git --exclude '.claude/worktrees' \
   -e "ssh -o StrictHostKeyChecking=no -p $PORT" \
-  /Users/andy/rvllm/ root@$HOST:/root/rvllm/
+  /Users/andy/gpt-oss-rs/ root@$HOST:/root/gpt-oss-rs/
 
 # 2. Build with CUDA
 ssh -p $PORT root@$HOST "
   export PATH=/root/.cargo/bin:\$PATH
-  cd /root/rvllm && cargo build --release --features cuda -p rvllm-server
+  cd /root/gpt-oss-rs && cargo build --release --features cuda -p gpt-oss-server
 "
 
 # 3. Start server
 ssh -p $PORT root@$HOST "
   export PATH=/root/.cargo/bin:\$PATH
-  cd /root/rvllm
-  RUST_LOG=info nohup ./target/release/rvllm serve \
+  cd /root/gpt-oss-rs
+  RUST_LOG=info nohup ./target/release/gpt-oss-rs serve \
     --model openai/gpt-oss-20b \
     --gpu-memory-utilization 0.85 \
     --dtype half \
-    --port 8000 > /tmp/rvllm.log 2>&1 &
+    --port 8000 > /tmp/gpt-oss-rs.log 2>&1 &
 "
 
 # 4. Test
@@ -75,6 +75,6 @@ vastai show instances  # SSH Addr + SSH Port columns
 ## Common Issues
 
 - **OOM on model load**: The rogue PyTorch process is eating GPU memory. Kill it first.
-- **Address already in use**: Previous rvllm process still running. `kill -9 $(pgrep -x rvllm)`
+- **Address already in use**: Previous gpt-oss-rs process still running. `kill -9 $(pgrep -x gpt-oss-rs)`
 - **cargo: command not found**: `export PATH=/root/.cargo/bin:$PATH`
 - **openssl-sys build error**: `apt-get install -y pkg-config libssl-dev`

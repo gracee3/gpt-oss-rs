@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run full parity test suite: rvLLM vs Python vLLM
+# Run full parity test suite: gpt-oss-rs vs Python vLLM
 # Requires both servers running on specified URLs
 set -euo pipefail
 
@@ -9,7 +9,7 @@ MODEL=${MODEL:-openai/gpt-oss-20b}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "======================================"
-echo "  rvLLM Parity Test Suite"
+echo "  gpt-oss-rs Parity Test Suite"
 echo "======================================"
 echo "Rust server:   $RUST_URL"
 echo "Python server: $PYTHON_URL"

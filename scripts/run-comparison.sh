@@ -1,9 +1,9 @@
 #!/bin/bash
-# Run both rvllm and Python vLLM side by side for comparison
+# Run both gpt-oss-rs and Python vLLM side by side for comparison
 set -euo pipefail
 
 MODEL=${MODEL_NAME:-"openai/gpt-oss-20b"}
-echo "Starting comparison: Rust rvllm vs Python vLLM"
+echo "Starting comparison: Rust gpt-oss-rs vs Python vLLM"
 echo "Model: $MODEL"
 echo ""
 

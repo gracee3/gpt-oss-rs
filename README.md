@@ -1,8 +1,8 @@
 # gpt-oss-rs
 
-This repository is a narrowed fork of `rvllm` focused only on serving OpenAI's GPT-OSS checkpoints from Rust. Multi-model architecture support, embedding-model support, and unrelated research collateral have been removed so the codebase can evolve around one target instead of a generic matrix.
+This repository is a narrowed fork of `gpt-oss-rs` focused only on serving OpenAI's GPT-OSS checkpoints from Rust. Multi-model architecture support, embedding-model support, and unrelated research collateral have been removed so the codebase can evolve around one target instead of a generic matrix.
 
-The crate and binary names are still `rvllm*` for now. This cleanup keeps the existing workspace structure intact while removing non-GPT-OSS implementation paths.
+The crate and binary names are still `gpt-oss-rs*` for now. This cleanup keeps the existing workspace structure intact while removing non-GPT-OSS implementation paths.
 
 ## Scope
 
@@ -15,14 +15,14 @@ The crate and binary names are still `rvllm*` for now. This cleanup keeps the ex
 
 ```bash
 # CPU / mock backend
-cargo build --release -p rvllm-server
+cargo build --release -p gpt-oss-server
 
 # CUDA backend
-cargo build --release --features cuda -p rvllm-server
+cargo build --release --features cuda -p gpt-oss-server
 ```
 
 ```bash
-./target/release/rvllm serve --model openai/gpt-oss-20b
+./target/release/gpt-oss-rs serve --model openai/gpt-oss-20b
 ```
 
 For 24 GB consumer GPUs, the server defaults to the GPT-OSS profile:
@@ -33,7 +33,7 @@ For 24 GB consumer GPUs, the server defaults to the GPT-OSS profile:
 Override them explicitly if needed:
 
 ```bash
-./target/release/rvllm serve \
+./target/release/gpt-oss-rs serve \
   --model openai/gpt-oss-20b \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.85
@@ -55,4 +55,4 @@ curl http://localhost:8000/v1/chat/completions \
 
 - The CUDA engine now fails fast on non-`GptOssForCausalLM` checkpoints.
 - The CPU/mock model runner only instantiates `GptOssForCausalLM`.
-- Some naming still reflects the original upstream (`rvllm`, `rvllm-server`, etc.). If you want a full rename pass next, that should be done as a separate change because it touches crates, package metadata, and CLI behavior.
+- Some naming still reflects the original upstream (`gpt-oss-rs`, `gpt-oss-server`, etc.). If you want a full rename pass next, that should be done as a separate change because it touches crates, package metadata, and CLI behavior.

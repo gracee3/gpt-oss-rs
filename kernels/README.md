@@ -1,4 +1,4 @@
-# vllm-rs CUDA Kernels
+# gpt-oss-rs CUDA Kernels
 
 CUDA kernel sources for GPU-accelerated vLLM operations. Compiled to PTX and loaded at runtime via the CUDA driver API.
 

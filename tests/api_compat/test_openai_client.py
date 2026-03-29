@@ -1,17 +1,17 @@
 """
-API Compatibility Tests: rvllm vs Python vLLM
-Verifies that rvllm can be used as a drop-in replacement.
+API Compatibility Tests: gpt-oss-rs vs Python vLLM
+Verifies that gpt-oss-rs can be used as a drop-in replacement.
 
 Usage:
-    # Start rvllm server first, then:
-    RVLLM_URL=http://localhost:8000 python3 -m pytest tests/api_compat/ -v
+    # Start gpt-oss-rs server first, then:
+    GPT_OSS_RS_URL=http://localhost:8000 python3 -m pytest tests/api_compat/ -v
 
     # Or test against Python vLLM:
-    RVLLM_URL=http://localhost:8001 python3 -m pytest tests/api_compat/ -v
+    GPT_OSS_RS_URL=http://localhost:8001 python3 -m pytest tests/api_compat/ -v
 """
 import os, json, requests, pytest
 
-BASE_URL = os.environ.get("RVLLM_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("GPT_OSS_RS_URL", "http://localhost:8000")
 OPENAI_BASE_URL = f"{BASE_URL}/v1"
 
 class TestCompletions:
