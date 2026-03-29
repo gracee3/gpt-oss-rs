@@ -5,16 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Building rvllm Docker image..."
-echo "  CUDA 12.4 + Rust (release mode)"
-
-# Build kernels first if nvcc available
-if command -v nvcc &>/dev/null; then
-    echo "Compiling CUDA kernels..."
-    cd "$ROOT_DIR/kernels" && bash build.sh
+echo "  CUDA 13.0 + Rust (release mode)"
+echo "  CUDA kernels compiled inside the builder image"
+if [ -n "${CUDA_ARCH:-}" ]; then
+    echo "  Target arch: $CUDA_ARCH"
 fi
 
 cd "$ROOT_DIR"
-docker build -t rvllm:latest -f Dockerfile .
+docker build \
+    --build-arg CUDA_ARCH="${CUDA_ARCH:-}" \
+    -t rvllm:latest \
+    -f Dockerfile \
+    .
 
 echo ""
 echo "Build complete: rvllm:latest"
