@@ -2,6 +2,7 @@
 extern crate self as gpt_oss_server;
 
 pub mod error;
+pub(crate) mod protocol_stream;
 pub mod routes;
 pub mod runtime_policy;
 pub mod server;
