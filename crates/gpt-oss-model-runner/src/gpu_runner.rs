@@ -2667,6 +2667,294 @@ mod cuda_impl {
             Ok(layers)
         }
     }
+
+    #[cfg(test)]
+    mod cuda_tests {
+        use super::*;
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+
+        use gpt_oss_core::types::Dtype;
+
+        fn find_ptx_dir() -> Option<PathBuf> {
+            if let Ok(dir) = std::env::var("GPT_OSS_RS_KERNEL_DIR") {
+                let path = PathBuf::from(dir);
+                if path.join("flash_attention.ptx").exists()
+                    && path.join("reshape_and_cache.ptx").exists()
+                {
+                    return Some(path);
+                }
+            }
+
+            let build_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/debug/build");
+            let entries = std::fs::read_dir(&build_root).ok()?;
+            for entry in entries.flatten() {
+                let path = entry.path().join("out/ptx");
+                if path.join("flash_attention.ptx").exists()
+                    && path.join("reshape_and_cache.ptx").exists()
+                {
+                    return Some(path);
+                }
+            }
+            None
+        }
+
+        fn test_config() -> ModelRunnerConfig {
+            ModelRunnerConfig {
+                tensor_parallel_rank: 0,
+                tensor_parallel_size: 1,
+                num_layers: 1,
+                hidden_size: 64,
+                num_heads: 1,
+                num_kv_heads: 1,
+                head_dim: 64,
+                intermediate_size: 64,
+                vocab_size: 4,
+                max_position: 129,
+                rms_norm_eps: 1e-5,
+                rope_theta: 10_000.0,
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: Some(128),
+                layer_types: vec!["sliding_attention".to_string()],
+                num_local_experts: 1,
+                num_experts_per_tok: 1,
+                dtype: Dtype::Float32,
+                architecture: "GptOssForCausalLM".to_string(),
+            }
+        }
+
+        fn insert_weight(
+            host_weights: &mut HashMap<String, Vec<f32>>,
+            shapes: &mut HashMap<String, Vec<usize>>,
+            name: &str,
+            data: Vec<f32>,
+            shape: &[usize],
+        ) {
+            host_weights.insert(name.to_string(), data);
+            shapes.insert(name.to_string(), shape.to_vec());
+        }
+
+        fn zero_weights() -> (HashMap<String, Vec<f32>>, HashMap<String, Vec<usize>>) {
+            let mut host_weights = HashMap::new();
+            let mut shapes = HashMap::new();
+
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "model.embed_tokens.weight",
+                vec![0.0; 4 * 64],
+                &[4, 64],
+            );
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "model.norm.weight",
+                vec![1.0; 64],
+                &[64],
+            );
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "lm_head.weight",
+                vec![0.0; 4 * 64],
+                &[4, 64],
+            );
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "model.layers.0.input_layernorm.weight",
+                vec![1.0; 64],
+                &[64],
+            );
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "model.layers.0.post_attention_layernorm.weight",
+                vec![1.0; 64],
+                &[64],
+            );
+            for proj in ["q_proj", "k_proj", "v_proj", "o_proj"] {
+                insert_weight(
+                    &mut host_weights,
+                    &mut shapes,
+                    &format!("model.layers.0.self_attn.{proj}.weight"),
+                    vec![0.0; 64 * 64],
+                    &[64, 64],
+                );
+            }
+            for proj in ["gate_proj", "up_proj"] {
+                insert_weight(
+                    &mut host_weights,
+                    &mut shapes,
+                    &format!("model.layers.0.mlp.{proj}.weight"),
+                    vec![0.0; 64 * 64],
+                    &[64, 64],
+                );
+            }
+            insert_weight(
+                &mut host_weights,
+                &mut shapes,
+                "model.layers.0.mlp.down_proj.weight",
+                vec![0.0; 64 * 64],
+                &[64, 64],
+            );
+
+            (host_weights, shapes)
+        }
+
+        fn build_runner() -> Option<GpuModelRunner> {
+            let ptx_dir = find_ptx_dir()?;
+            let context = match CudaContext::new(0) {
+                Ok(context) => context,
+                Err(err) => {
+                    eprintln!("skipping: CUDA context unavailable: {err}");
+                    return None;
+                }
+            };
+            let stream = match context.new_stream() {
+                Ok(stream) => stream,
+                Err(err) => {
+                    eprintln!("skipping: CUDA stream unavailable: {err}");
+                    return None;
+                }
+            };
+            let loader = match KernelLoader::new(context.clone(), stream.clone(), &ptx_dir) {
+                Ok(loader) => loader,
+                Err(err) => {
+                    eprintln!("skipping: kernel loader unavailable: {err}");
+                    return None;
+                }
+            };
+            let blas = match CublasHandle::new(stream.clone()) {
+                Ok(blas) => blas,
+                Err(err) => {
+                    eprintln!("skipping: cuBLAS unavailable: {err}");
+                    return None;
+                }
+            };
+
+            let config = test_config();
+            let cache = match CudaCacheEngine::new(
+                config.num_layers,
+                config.num_kv_heads,
+                config.head_dim,
+                16,
+                9,
+                0,
+                context.clone(),
+                stream.clone(),
+            ) {
+                Ok(cache) => cache,
+                Err(err) => {
+                    eprintln!("skipping: CUDA cache unavailable: {err}");
+                    return None;
+                }
+            };
+            let (host_weights, shapes) = zero_weights();
+            let weights = match GpuModelWeights::from_host(host_weights, shapes, &stream) {
+                Ok(weights) => weights,
+                Err(err) => {
+                    eprintln!("skipping: GPU weight upload unavailable: {err}");
+                    return None;
+                }
+            };
+
+            match GpuModelRunner::new(weights, cache, blas, loader, config, context, stream) {
+                Ok(runner) => Some(runner),
+                Err(err) => {
+                    eprintln!("skipping: runner construction failed: {err}");
+                    None
+                }
+            }
+        }
+
+        fn prefill_metadata() -> crate::bridge::AttentionMetadata {
+            crate::bridge::AttentionMetadata {
+                slot_mapping: (0..128).collect(),
+                context_lens: vec![128],
+                block_tables: vec![(0..8).collect()],
+                max_context_len: 128,
+                query_lens: vec![128],
+            }
+        }
+
+        fn decode_metadata() -> crate::bridge::AttentionMetadata {
+            crate::bridge::AttentionMetadata {
+                slot_mapping: vec![128],
+                context_lens: vec![129],
+                block_tables: vec![(0..9).collect()],
+                max_context_len: 129,
+                query_lens: vec![1],
+            }
+        }
+
+        #[test]
+        fn sliding_decode_boundary_survives_runner_metadata_packing_on_cuda() {
+            let Some(runner) = build_runner() else {
+                return;
+            };
+
+            assert_eq!(runner.layers.len(), 1);
+            assert_eq!(runner.config.sliding_window, Some(128));
+            assert_eq!(runner.config.layer_types, vec!["sliding_attention"]);
+
+            let prefill_tokens = vec![0u32; 128];
+            let prefill_positions = (0..128u32).collect::<Vec<_>>();
+            let prefill_meta = prefill_metadata();
+            let prefill_output = runner.forward(
+                &prefill_tokens,
+                &prefill_positions,
+                &prefill_meta,
+                true,
+            );
+            assert!(prefill_output.is_ok(), "prefill failed: {:?}", prefill_output);
+
+            let decode_tokens = vec![0u32];
+            let decode_positions = vec![128u32];
+            let decode_meta = decode_metadata();
+            let decode_output = runner.forward(
+                &decode_tokens,
+                &decode_positions,
+                &decode_meta,
+                false,
+            );
+            let decode_logits = decode_output.expect("decode should succeed");
+            assert_eq!(decode_logits.len(), 4);
+            assert!(decode_logits.iter().all(|value| value.is_finite()));
+
+            let meta_packed = runner.meta_packed.borrow();
+            let packed = runner
+                .stream
+                .clone_dtoh(meta_packed.slice())
+                .expect("download packed metadata");
+            let offsets = runner.meta_packed_offsets.get();
+
+            assert_eq!(
+                &packed[offsets.positions..offsets.positions + offsets.num_positions],
+                &[128]
+            );
+            assert_eq!(
+                &packed[offsets.context_lens..offsets.context_lens + offsets.num_context_lens],
+                &[129]
+            );
+            assert_eq!(
+                &packed[offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping],
+                &[128]
+            );
+            assert_eq!(
+                &packed[offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos],
+                &[0, 1]
+            );
+            assert_eq!(offsets.num_block_tables, runner.graph_max_blocks);
+            assert_eq!(
+                &packed[offsets.block_tables..offsets.block_tables + 9],
+                &[0, 1, 2, 3, 4, 5, 6, 7, 8]
+            );
+        }
+    }
 }
 
 // Re-export under cuda feature gate.
