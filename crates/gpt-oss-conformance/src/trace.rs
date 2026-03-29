@@ -71,6 +71,7 @@ impl TraceSummary {
         is_prefill: bool,
         seq_start_pos: u32,
         token_count: usize,
+        block_size: usize,
         layer_types: &[String],
         num_layers: usize,
     ) -> Self {
@@ -115,6 +116,13 @@ impl TraceSummary {
             .map(|idx| seq_start_pos + idx as u32)
             .collect::<Vec<_>>();
         let visible_tokens = (0..(seq_start_pos as usize + token_count)).collect::<Vec<_>>();
+        let blocks_touched = if token_count == 0 {
+            0
+        } else {
+            ((seq_start_pos as usize + token_count - 1) / block_size)
+                .saturating_sub(seq_start_pos as usize / block_size)
+                + 1
+        };
         for layer_index in 0..num_layers {
             let mut frame = TraceFrame::new(format!("{label}:layer-{layer_index}"));
             frame.events.push(TraceEvent::new(
@@ -132,6 +140,13 @@ impl TraceSummary {
                 frame.events.push(TraceEvent::new(
                     "attention",
                     format!("Full/{} visible={:?}", visible_tokens.len(), visible_tokens),
+                ));
+                frame.events.push(TraceEvent::new(
+                    "cache",
+                    format!(
+                        "block_size={} visibility=Full blocks={}",
+                        block_size, blocks_touched
+                    ),
                 ));
             }
             frames.push(frame);
