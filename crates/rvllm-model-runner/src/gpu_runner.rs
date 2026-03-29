@@ -415,7 +415,7 @@ mod cuda_impl {
         /// Sized for max padded batch (256). Since all layers are processed
         /// sequentially, one set of buffers covers every layer.
         fn alloc_scratch(&mut self) -> Result<()> {
-            let max_tokens: usize = 128; // support up to N=128 concurrent decode
+            let max_tokens: usize = 32; // sized for max graph batch
             let hidden = self.config.hidden_size;
             let q_dim = self.config.num_heads * self.config.head_dim;
             let kv_dim = self.config.num_kv_heads * self.config.head_dim;
@@ -1717,7 +1717,7 @@ mod cuda_impl {
 
         pub fn disable_fp16(&mut self) {
             self.use_fp16 = false;
-            warn!("GpuModelRunner: fp16 mode disabled, using f32 forward");
+            tracing::warn!("GpuModelRunner: fp16 mode disabled, using f32 forward");
         }
 
         pub fn use_fp16(&self) -> bool {

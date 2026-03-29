@@ -1066,7 +1066,7 @@ impl GpuWorker {
 
         let actual_batch = model_input.num_tokens();
         let padded = match rvllm_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 128 => p,
+            Some(p) if p <= 32 => p,
             _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
         };
 
