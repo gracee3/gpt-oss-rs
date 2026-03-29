@@ -16,6 +16,7 @@ use crate::tool_parser::ToolDefinition;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolMessage {
     pub role: String,
+    pub author_name: Option<String>,
     pub content: String,
     pub channel: Option<String>,
     pub recipient: Option<String>,
@@ -26,11 +27,17 @@ impl ProtocolMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
+            author_name: None,
             content: content.into(),
             channel: None,
             recipient: None,
             content_type: None,
         }
+    }
+
+    pub fn with_author_name(mut self, author_name: impl Into<String>) -> Self {
+        self.author_name = Some(author_name.into());
+        self
     }
 
     pub fn with_channel(mut self, channel: impl Into<String>) -> Self {
@@ -52,6 +59,7 @@ impl ProtocolMessage {
         let content = flatten_message_content(&message.content)?;
         Ok(Self {
             role: message.author.role.as_str().to_string(),
+            author_name: message.author.name,
             content,
             channel: message.channel,
             recipient: message.recipient,
@@ -63,6 +71,7 @@ impl ProtocolMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedProtocolMessage {
     pub role: String,
+    pub author_name: Option<String>,
     pub content: String,
     pub channel: Option<String>,
     pub recipient: Option<String>,
@@ -167,6 +176,7 @@ impl HarmonyProtocol {
                 let protocol = ProtocolMessage::from_harmony_message(message)?;
                 Ok(ParsedProtocolMessage {
                     role: protocol.role,
+                    author_name: protocol.author_name,
                     content: protocol.content,
                     channel: protocol.channel,
                     recipient: protocol.recipient,
@@ -174,6 +184,10 @@ impl HarmonyProtocol {
                 })
             })
             .collect()
+    }
+
+    pub fn encode_completion_text(&self, text: &str) -> Vec<TokenId> {
+        self.encoding.tokenizer().encode_with_special_tokens(text)
     }
 
     pub fn stream_parser(&self) -> Result<HarmonyStreamParser> {
@@ -223,6 +237,7 @@ impl HarmonyStreamParser {
                 let protocol = ProtocolMessage::from_harmony_message(message)?;
                 Ok(ParsedProtocolMessage {
                     role: protocol.role,
+                    author_name: protocol.author_name,
                     content: protocol.content,
                     channel: protocol.channel,
                     recipient: protocol.recipient,
@@ -238,11 +253,10 @@ fn protocol_to_harmony_message(message: &ProtocolMessage) -> Result<Message> {
         LLMError::TokenizerError(format!("unsupported protocol role '{}'", message.role))
     })?;
     let mut converted = if role == Role::Tool {
-        match &message.recipient {
-            Some(name) => Message::from_author_and_content(
-                Author::new(Role::Tool, name.clone()),
-                message.content.clone(),
-            ),
+        match &message.author_name {
+            Some(name) => {
+                Message::from_author_and_content(Author::new(Role::Tool, name.clone()), message.content.clone())
+            }
             None => Message::from_role_and_content(Role::Tool, message.content.clone()),
         }
     } else {
@@ -335,6 +349,7 @@ mod tests {
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].role, "assistant");
+        assert_eq!(parsed[0].author_name, None);
         assert_eq!(parsed[0].channel.as_deref(), Some("commentary"));
         assert_eq!(parsed[0].recipient.as_deref(), Some("functions.get_weather"));
         assert_eq!(parsed[0].content_type.as_deref(), Some("<|constrain|>json"));
@@ -362,6 +377,7 @@ mod tests {
 
         let messages = parser.messages().unwrap();
         assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].author_name, None);
         assert_eq!(messages[0].recipient.as_deref(), Some("functions.get_weather"));
         assert_eq!(messages[0].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(messages[0].channel.as_deref(), Some("commentary"));

@@ -27,6 +27,24 @@ use crate::types::request::ChatMessage;
 use crate::types::response::Usage;
 use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
 
+fn visible_text_from_protocol_messages(
+    messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
+) -> Option<String> {
+    let collected: Vec<&str> = messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .filter(|message| message.recipient.is_none())
+        .filter(|message| message.channel.as_deref() != Some("analysis"))
+        .map(|message| message.content.as_str())
+        .filter(|content| !content.is_empty())
+        .collect();
+    if collected.is_empty() {
+        None
+    } else {
+        Some(collected.join("\n"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -487,6 +505,54 @@ pub async fn create_chat_completion_with_tools(
                     gpt_oss_core::prelude::FinishReason::Length => "length",
                     gpt_oss_core::prelude::FinishReason::Abort => "stop",
                 });
+
+                if tools_active && is_gpt_oss_model(&state.model_name) {
+                    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+                        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
+                        .ok();
+                    if let Some(protocol) = protocol {
+                        let parsed = protocol
+                            .parse_completion_tokens(&co.token_ids)
+                            .unwrap_or_default();
+                        let tool_calls: Vec<ResponseToolCall> = parsed
+                            .iter()
+                            .filter_map(|message| {
+                                let recipient = message.recipient.as_ref()?;
+                                Some(ResponseToolCall {
+                                    id: format!("{}_{}_{}", resp_id, co.index, recipient),
+                                    call_type: "function".to_string(),
+                                    function: ResponseFunctionCall {
+                                        name: recipient
+                                            .strip_prefix("functions.")
+                                            .unwrap_or(recipient.as_str())
+                                            .to_string(),
+                                        arguments: message.content.clone(),
+                                    },
+                                })
+                            })
+                            .collect();
+                        let content = visible_text_from_protocol_messages(&parsed);
+                        return ToolChatChoice {
+                            index: co.index,
+                            message: ToolChatMessage {
+                                role: "assistant".to_string(),
+                                content,
+                                tool_calls: if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_calls)
+                                },
+                            },
+                            finish_reason: Some(
+                                if parsed.iter().any(|message| message.recipient.is_some()) {
+                                    "tool_calls".to_string()
+                                } else {
+                                    finish_reason_val.unwrap_or("stop").to_string()
+                                },
+                            ),
+                        };
+                    }
+                }
 
                 if tools_active {
                     let call_prefix = format!("{}_{}_", resp_id, co.index);

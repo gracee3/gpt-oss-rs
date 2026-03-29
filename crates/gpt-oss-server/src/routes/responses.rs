@@ -74,7 +74,12 @@ pub async fn create_response(
 
     let prompt_style = preferred_tool_prompt_style(&state.model_name);
     let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
-    if prompt_messages.is_empty() {
+    let protocol_messages = if is_gpt_oss_model(&state.model_name) {
+        render_conversation_protocol_items(&conversation_items)
+    } else {
+        Vec::new()
+    };
+    if prompt_messages.is_empty() && protocol_messages.is_empty() {
         return Err(ApiError::InvalidRequest(
             "input must not be empty for /v1/responses".into(),
         ));
@@ -116,10 +121,6 @@ pub async fn create_response(
     let prompt = if is_gpt_oss_model(&state.model_name) {
         let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
             .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = prompt_messages
-            .iter()
-            .map(|message| gpt_oss_tokenizer::ProtocolMessage::new(&message.role, &message.content))
-            .collect();
         protocol
             .render_prompt(
                 &protocol_messages,
@@ -1054,12 +1055,13 @@ fn response_from_output(
         .outputs
         .first()
         .ok_or_else(|| ApiError::Internal("engine produced no completion output".into()))?;
-    let output_items = response_output_items_from_text(
+    let output_items = response_output_items_from_completion(
         response_id,
-        &completion.text,
+        completion,
         req,
         function_tools,
         &tool_choice,
+        model,
     )?;
     Ok(ResponseObject::completed(
         response_id.to_string(),
@@ -1159,6 +1161,111 @@ fn response_output_items_from_text(
     }
 }
 
+fn response_output_items_from_completion(
+    response_id: &str,
+    output: &gpt_oss_core::prelude::CompletionOutput,
+    req: &CreateResponseRequest,
+    function_tools: &[crate::types::responses::ResponseFunctionTool],
+    tool_choice: &ResponseToolChoice,
+    model_name: &str,
+) -> Result<Vec<ResponseOutputItem>, ApiError> {
+    if is_gpt_oss_model(model_name) {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        let parsed = protocol
+            .parse_completion_tokens(&output.token_ids)
+            .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
+        return response_output_items_from_protocol_messages(
+            response_id,
+            &parsed,
+            req,
+            function_tools,
+            tool_choice,
+        );
+    }
+
+    response_output_items_from_text(response_id, &output.text, req, function_tools, tool_choice)
+}
+
+fn response_output_items_from_protocol_messages(
+    response_id: &str,
+    messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
+    req: &CreateResponseRequest,
+    function_tools: &[crate::types::responses::ResponseFunctionTool],
+    tool_choice: &ResponseToolChoice,
+) -> Result<Vec<ResponseOutputItem>, ApiError> {
+    let allowed_tools: HashSet<&str> = function_tools.iter().map(|tool| tool.name.as_str()).collect();
+    let forced_tool_name = tool_choice.forced_tool_name();
+    let mut output_items = Vec::new();
+    let mut saw_function_call = false;
+
+    for message in messages {
+        if message.role != "assistant" {
+            continue;
+        }
+
+        if let Some(recipient) = &message.recipient {
+            let name = recipient
+                .strip_prefix("functions.")
+                .unwrap_or(recipient.as_str())
+                .to_string();
+            if !allowed_tools.contains(name.as_str()) {
+                return Err(ApiError::Internal(format!(
+                    "model emitted undeclared function '{}'",
+                    name
+                )));
+            }
+            if let Some(forced_name) = forced_tool_name {
+                if name != forced_name {
+                    return Err(ApiError::Internal(format!(
+                        "model emitted function '{}' but tool_choice requires '{}'",
+                        name, forced_name
+                    )));
+                }
+            }
+            saw_function_call = true;
+            output_items.push(ResponseOutputItem::FunctionCall(
+                ResponseFunctionCallItem::completed(
+                    format!("fc_{}", uuid::Uuid::new_v4().simple()),
+                    format!("{response_id}_{}", output_items.len()),
+                    name,
+                    message.content.clone(),
+                ),
+            ));
+            continue;
+        }
+
+        if message.channel.as_deref() == Some("analysis") {
+            continue;
+        }
+
+        if !message.content.is_empty() {
+            output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
+                format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                message.content.clone(),
+            )));
+        }
+    }
+
+    if !saw_function_call
+        && (matches!(tool_choice, ResponseToolChoice::Mode(mode) if mode == "required")
+            || tool_choice.forced_tool_name().is_some())
+    {
+        return Err(ApiError::Internal(
+            "model did not emit a required function call".into(),
+        ));
+    }
+
+    if output_items.is_empty() && !req.tools_enabled() {
+        output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
+            format!("msg_{}", uuid::Uuid::new_v4().simple()),
+            String::new(),
+        )));
+    }
+
+    Ok(output_items)
+}
+
 fn render_conversation_items(
     items: &[StoredConversationItem],
     style: gpt_oss_tokenizer::ToolPromptStyle,
@@ -1187,6 +1294,61 @@ fn render_conversation_items(
                     role: "assistant".to_string(),
                     content: render_function_call(call, style),
                 });
+            }
+        }
+    }
+
+    messages
+}
+
+fn render_conversation_protocol_items(
+    items: &[StoredConversationItem],
+) -> Vec<gpt_oss_tokenizer::ProtocolMessage> {
+    let mut messages = Vec::new();
+    let mut function_names = HashMap::new();
+
+    for item in items {
+        match item {
+            StoredConversationItem::Input(ResponseInputItem::Message(message)) => {
+                messages.push(gpt_oss_tokenizer::ProtocolMessage::new(
+                    &message.role,
+                    message
+                        .content
+                        .iter()
+                        .map(|part| part.text.as_str())
+                        .collect::<String>(),
+                ));
+            }
+            StoredConversationItem::Input(ResponseInputItem::FunctionCallOutput(output)) => {
+                if let Some(function_name) = function_names.get(&output.call_id) {
+                    messages.push(
+                        gpt_oss_tokenizer::ProtocolMessage::new("tool", output.output_text())
+                            .with_author_name(format!("functions.{function_name}"))
+                            .with_recipient("assistant")
+                            .with_channel("commentary"),
+                    );
+                }
+            }
+            StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
+                let content = message
+                    .content
+                    .iter()
+                    .map(|part| part.text.as_str())
+                    .collect::<String>();
+                let mut protocol_message =
+                    gpt_oss_tokenizer::ProtocolMessage::new(&message.role, content);
+                if message.role == "assistant" {
+                    protocol_message = protocol_message.with_channel("final");
+                }
+                messages.push(protocol_message);
+            }
+            StoredConversationItem::Output(ResponseOutputItem::FunctionCall(call)) => {
+                function_names.insert(call.call_id.clone(), call.name.clone());
+                messages.push(
+                    gpt_oss_tokenizer::ProtocolMessage::new("assistant", call.arguments.clone())
+                        .with_recipient(format!("functions.{}", call.name))
+                        .with_channel("commentary"),
+                );
             }
         }
     }
@@ -1377,6 +1539,27 @@ mod tests {
                 index: 0,
                 text: text.to_string(),
                 token_ids: vec![10, 11],
+                cumulative_logprob: -0.1,
+                logprobs: None,
+                finish_reason: finished.then_some(FinishReason::Stop),
+            }],
+            finished,
+        }
+    }
+
+    fn gpt_oss_request_output(text: &str, visible_text: &str, finished: bool) -> RequestOutput {
+        let token_ids = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .unwrap()
+            .encode_completion_text(text);
+        RequestOutput {
+            request_id: RequestId(1),
+            prompt: "prompt".into(),
+            prompt_token_ids: vec![1, 2, 3],
+            prompt_logprobs: None,
+            outputs: vec![CompletionOutput {
+                index: 0,
+                text: visible_text.to_string(),
+                token_ids,
                 cumulative_logprob: -0.1,
                 logprobs: None,
                 finish_reason: finished.then_some(FinishReason::Stop),
@@ -1765,11 +1948,16 @@ mod tests {
         let (server, engine) = make_server_with_model(
             "openai/gpt-oss-20b",
             vec![
-                vec![request_output(
-                    "{\"type\":\"function_call\",\"name\":\"get_weather\",\"arguments\":{\"location\":\"Boston\"}}",
+                vec![gpt_oss_request_output(
+                    " to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"location\":\"Boston\"}<|call|>",
+                    "",
                     true,
                 )],
-                vec![request_output("It is 18C and sunny.", true)],
+                vec![gpt_oss_request_output(
+                    "<|channel|>final<|message|>It is 18C and sunny.<|end|>",
+                    "It is 18C and sunny.",
+                    true,
+                )],
             ],
         );
 
@@ -1812,8 +2000,14 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].contains("\"type\":\"function_call\""));
-        assert!(prompts[1].contains("\"type\":\"function_call_output\""));
+        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
+        assert!(prompts[1].contains("<|channel|>commentary"), "{}", prompts[1]);
+        assert!(
+            prompts[1].contains("<|start|>functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
+        assert!(prompts[1].contains("to=assistant"), "{}", prompts[1]);
         assert!(prompts[1].contains("\"temp_c\":18"));
         assert!(!prompts[1].contains("<tool_call>"));
         assert!(!prompts[1].contains("Tool output for function"));

@@ -14,8 +14,27 @@ use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_st
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatCompletionRequest;
-use crate::types::response::ChatCompletionResponse;
+use crate::types::response::{ChatChoice, ChatCompletionResponse, Usage};
 use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
+
+fn visible_text_from_protocol_messages(
+    messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
+) -> Option<String> {
+    let collected: Vec<&str> = messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .filter(|message| message.recipient.is_none())
+        .filter(|message| message.channel.as_deref() != Some("analysis"))
+        .map(|message| message.content.as_str())
+        .filter(|content| !content.is_empty())
+        .collect();
+
+    if collected.is_empty() {
+        None
+    } else {
+        Some(collected.join("\n"))
+    }
+}
 
 /// POST /v1/chat/completions -- chat completion (streaming or non-streaming).
 pub async fn create_chat_completion(
@@ -204,6 +223,53 @@ pub async fn create_chat_completion(
         let output =
             last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
+        if is_gpt_oss_model(&state.model_name) && !tools_active {
+            let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+                .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut total_completion = 0usize;
+            let choices: Vec<ChatChoice> = output
+                .outputs
+                .iter()
+                .map(|co| {
+                    total_completion += co.token_ids.len();
+                    let parsed = protocol
+                        .parse_completion_tokens(&co.token_ids)
+                        .unwrap_or_default();
+                    let content =
+                        visible_text_from_protocol_messages(&parsed).unwrap_or_else(|| co.text.clone());
+                    ChatChoice {
+                        message: crate::types::request::ChatMessage {
+                            role: "assistant".to_string(),
+                            content,
+                        },
+                        index: co.index,
+                        finish_reason: co.finish_reason.map(|r| match r {
+                            gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
+                            gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
+                            gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                        }),
+                    }
+                })
+                .collect();
+            let resp = ChatCompletionResponse {
+                id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                object: "chat.completion".to_string(),
+                created: now,
+                model: state.model_name.clone(),
+                choices,
+                usage: Usage {
+                    prompt_tokens: output.prompt_token_ids.len(),
+                    completion_tokens: total_completion,
+                    total_tokens: output.prompt_token_ids.len() + total_completion,
+                },
+            };
+            return Ok(Json(resp).into_response());
+        }
+
         if tools_active {
             // Parse output for tool calls
             let resp_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
@@ -223,9 +289,55 @@ pub async fn create_chat_completion(
                         gpt_oss_core::prelude::FinishReason::Length => "length",
                         gpt_oss_core::prelude::FinishReason::Abort => "stop",
                     });
+                    if is_gpt_oss_model(&state.model_name) {
+                        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+                            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
+                            .ok();
+                        if let Some(protocol) = protocol {
+                            let parsed = protocol
+                                .parse_completion_tokens(&co.token_ids)
+                                .unwrap_or_default();
+                            let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = parsed
+                                .iter()
+                                .filter_map(|message| {
+                                    let recipient = message.recipient.as_ref()?;
+                                    Some(crate::routes::tools::ResponseToolCall {
+                                        id: format!("{}_{}_{}", resp_id, co.index, recipient),
+                                        call_type: "function".to_string(),
+                                        function: crate::routes::tools::ResponseFunctionCall {
+                                            name: recipient
+                                                .strip_prefix("functions.")
+                                                .unwrap_or(recipient.as_str())
+                                                .to_string(),
+                                            arguments: message.content.clone(),
+                                        },
+                                    })
+                                })
+                                .collect();
+                            let content = visible_text_from_protocol_messages(&parsed);
+                            return crate::routes::tools::ToolChatChoice {
+                                index: co.index,
+                                message: crate::routes::tools::ToolChatMessage {
+                                    role: "assistant".to_string(),
+                                    content,
+                                    tool_calls: if tool_calls.is_empty() {
+                                        None
+                                    } else {
+                                        Some(tool_calls)
+                                    },
+                                },
+                                finish_reason: Some(
+                                    if parsed.iter().any(|message| message.recipient.is_some()) {
+                                        "tool_calls".to_string()
+                                    } else {
+                                        finish_reason_val.unwrap_or("stop").to_string()
+                                    },
+                                ),
+                            };
+                        }
+                    }
                     let call_prefix = format!("{}_{}_", resp_id, co.index);
-                    let parse_result = gpt_oss_tokenizer::parse_tool_calls(&co.text, &call_prefix);
-                    match parse_result {
+                    match gpt_oss_tokenizer::parse_tool_calls(&co.text, &call_prefix) {
                         gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls } => {
                             let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = calls
                                 .into_iter()
