@@ -702,12 +702,54 @@ mod inner {
             block_size: usize,
         ) -> Result<CudaSlice<f16>> {
             let out_len = num_tokens * num_heads * head_dim;
-            // Safety: attention kernel writes all out_len elements
             let mut output = unsafe { stream.alloc::<f16>(out_len) }
                 .map_err(|e| LLMError::GpuError(format!("decode_attn_f16io alloc: {e}")))?;
 
             let scale = 1.0f32 / (head_dim as f32).sqrt();
+            let p_num_heads = num_heads as i32;
+            let p_num_kv_heads = num_kv_heads as i32;
+            let p_head_dim = head_dim as i32;
+            let p_block_size = block_size as i32;
+            let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
 
+            // FA3 kernel: 256 threads, vectorized half2 loads, warp-parallel reductions.
+            // Shared memory: 33KB (fits in default 48KB, no set_attribute needed).
+            if let Ok(fa3_kernel) = loader.get_func("flash_attention_3", "flash_attention_3_decode_f16io_kernel") {
+                const FA3_BC: usize = 64;
+                const FA3_THREADS: u32 = 256;
+                // Single KV buffer (reused for K then V) + scores + warp_reduce
+                let smem = (FA3_BC * head_dim + FA3_BC + 8) * std::mem::size_of::<f32>();
+                let shared_mem_bytes = smem as u32;
+
+                let cfg = LaunchConfig {
+                    grid_dim: (num_seqs as u32, num_heads as u32, 1),
+                    block_dim: (FA3_THREADS, 1, 1),
+                    shared_mem_bytes,
+                };
+
+                if shared_mem_bytes > 49152 {
+                    fa3_kernel.set_attribute(
+                        cudarc::driver::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                        shared_mem_bytes as i32,
+                    ).map_err(|e| LLMError::GpuError(format!("FA3 set max shared mem: {e}")))?;
+                }
+
+                unsafe {
+                    stream.launch_builder(&fa3_kernel)
+                        .arg(&mut output)
+                        .arg(q)
+                        .arg(key_cache).arg(value_cache)
+                        .arg(block_tables).arg(context_lens)
+                        .arg(&scale)
+                        .arg(&p_num_heads).arg(&p_num_kv_heads)
+                        .arg(&p_head_dim).arg(&p_block_size)
+                        .arg(&p_max_blocks)
+                        .launch(cfg)
+                        .map_err(|e| LLMError::GpuError(format!("FA3 decode launch: {e}")))?;
+                }
+                return Ok(output);
+            }
+            // Fallback: FA2 kernel
             const FA2_BC: usize = 64;
             const FA2_THREADS: u32 = 128;
             let shared_mem_bytes = ((2 * FA2_BC * head_dim + FA2_BC + (FA2_THREADS as usize / 32))
@@ -725,14 +767,8 @@ mod inner {
                 kernel.set_attribute(
                     cudarc::driver::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
                     shared_mem_bytes as i32,
-                ).map_err(|e| LLMError::GpuError(format!("decode FA2 f16io set max shared mem: {e}")))?;
+                ).map_err(|e| LLMError::GpuError(format!("FA2 set max shared mem: {e}")))?;
             }
-
-            let p_num_heads = num_heads as i32;
-            let p_num_kv_heads = num_kv_heads as i32;
-            let p_head_dim = head_dim as i32;
-            let p_block_size = block_size as i32;
-            let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
 
             unsafe {
                 stream.launch_builder(&kernel)
