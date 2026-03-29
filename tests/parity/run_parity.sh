@@ -5,7 +5,7 @@ set -euo pipefail
 
 RUST_URL=${RUST_URL:-http://localhost:8000}
 PYTHON_URL=${PYTHON_URL:-http://localhost:8001}
-MODEL=${MODEL:-Qwen/Qwen2.5-1.5B}
+MODEL=${MODEL:-openai/gpt-oss-20b}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "======================================"

@@ -111,11 +111,11 @@ mod inner {
             .and_then(|v| v.as_array())
             .and_then(|a| a.first())
             .and_then(|v| v.as_str())
-            .unwrap_or("LlamaForCausalLM")
+            .unwrap_or("GptOssForCausalLM")
             .to_string();
 
         Ok(HfModelConfig {
-            model_type: get_string("model_type", "llama"),
+            model_type: get_string("model_type", "gpt_oss"),
             hidden_size,
             intermediate_size: get_usize("intermediate_size", 11008),
             num_attention_heads,
@@ -395,6 +395,13 @@ mod inner {
                 intermediate = hf_config.intermediate_size,
                 "model config loaded"
             );
+
+            if hf_config.architecture != "GptOssForCausalLM" {
+                return Err(LLMError::ModelError(format!(
+                    "this fork only supports GptOssForCausalLM checkpoints; found {}",
+                    hf_config.architecture
+                )));
+            }
 
             let quant_method = rvllm_quant::detect_quant_method(&model_dir)?;
             if quant_method.is_quantized() && hf_config.architecture != "GptOssForCausalLM" {

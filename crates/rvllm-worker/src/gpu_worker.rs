@@ -2060,7 +2060,7 @@ fn worker_config_from_engine(
         rank: 0,
         tensor_parallel_size: config.parallel.tensor_parallel_size,
         pipeline_parallel_size: config.parallel.pipeline_parallel_size,
-        architecture: "llama".into(),
+        architecture: "GptOssForCausalLM".into(),
         dtype: config.model.dtype.clone(),
         rope_theta: 10000.0,
         kv_cache_dtype: config.cache.kv_cache_dtype.clone(),
@@ -2070,8 +2070,8 @@ fn worker_config_from_engine(
         attention_bias: false,
         sliding_window: None,
         layer_types: Vec::new(),
-        num_local_experts: 0,
-        num_experts_per_tok: 0,
+        num_local_experts: 2,
+        num_experts_per_tok: 1,
     }
 }
 

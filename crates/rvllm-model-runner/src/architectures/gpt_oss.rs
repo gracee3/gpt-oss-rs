@@ -16,7 +16,7 @@ use crate::layers::norm::RMSNorm;
 use crate::layers::rotary::RotaryEmbedding;
 use crate::runner::ModelRunnerConfig;
 
-use super::llama::{add_inplace, embed_tokens, get_or_zeros, lm_head};
+use super::shared::{add_inplace, embed_tokens, get_or_zeros, lm_head};
 use super::Architecture;
 
 const GPT_OSS_SWIGLU_ALPHA: f32 = 1.702;

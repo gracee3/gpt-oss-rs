@@ -8,7 +8,7 @@ Usage:
     python3 tests/parity/response_format_parity.py \
         --rust-url http://localhost:8000 \
         --python-url http://localhost:8001 \
-        --model Qwen/Qwen2.5-1.5B
+        --model openai/gpt-oss-20b
 """
 import argparse, json, sys, requests
 
@@ -332,7 +332,7 @@ def main():
     p = argparse.ArgumentParser(description="Response format parity: rvLLM vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
-    p.add_argument("--model", default="Qwen/Qwen2.5-1.5B")
+    p.add_argument("--model", default="openai/gpt-oss-20b")
     args = p.parse_args()
 
     print(f"Response Format Parity Test: rvLLM vs Python vLLM")

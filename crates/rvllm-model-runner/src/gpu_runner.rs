@@ -2609,10 +2609,10 @@ mod tests {
                 attention_bias: false,
                 sliding_window: None,
                 layer_types: Vec::new(),
-                num_local_experts: 0,
-                num_experts_per_tok: 0,
+                num_local_experts: 2,
+                num_experts_per_tok: 1,
                 dtype: Dtype::Float32,
-                architecture: "LlamaForCausalLM".to_string(),
+                architecture: "GptOssForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };
             let result = runner.forward(&[1, 2, 3], &[0, 1, 2], &[], &[]);
@@ -2642,10 +2642,10 @@ mod tests {
                 attention_bias: false,
                 sliding_window: None,
                 layer_types: Vec::new(),
-                num_local_experts: 0,
-                num_experts_per_tok: 0,
+                num_local_experts: 2,
+                num_experts_per_tok: 1,
                 dtype: Dtype::Float16,
-                architecture: "LlamaForCausalLM".to_string(),
+                architecture: "GptOssForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };
             assert_eq!(runner.config().num_layers, 4);

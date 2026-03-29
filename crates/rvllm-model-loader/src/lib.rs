@@ -1,8 +1,8 @@
 #![cfg_attr(not(feature = "cuda"), forbid(unsafe_code))]
-//! Model weight loading for vllm-rs.
+//! Model weight loading for the GPT-OSS-only fork.
 //!
-//! Supports safetensors and GGUF formats with memory-mapped I/O,
-//! HuggingFace name remapping, and tensor-parallel sharding.
+//! Supports safetensors and GGUF formats with memory-mapped I/O and
+//! tensor-parallel sharding while preserving raw HuggingFace tensor names.
 
 pub mod dtype;
 pub mod gguf;
@@ -82,10 +82,10 @@ pub fn detect_format(path: &Path) -> Result<ModelFormat> {
     )))
 }
 
-/// Load model weights from disk, applying name remapping and optional sharding.
+/// Load model weights from disk, preserving HuggingFace names and applying optional sharding.
 ///
 /// - Detects format from file extension
-/// - Applies HuggingFace -> internal name mapping
+/// - Preserves HuggingFace tensor names used by the GPT-OSS runtime
 /// - Shards weights when tensor_parallel_size > 1
 pub fn load_model_weights(
     model_path: &Path,
@@ -169,7 +169,7 @@ mod tests {
     struct TestModelConfig;
     impl ModelConfig for TestModelConfig {
         fn model_name(&self) -> &str {
-            "llama"
+            "openai/gpt-oss-20b"
         }
         fn hidden_size(&self) -> usize {
             256
@@ -256,8 +256,9 @@ mod tests {
 
         let weights = load_model_weights(tmp.path(), &config, &parallel, 0, &gpu).unwrap();
         assert_eq!(weights.num_weights(), 1);
-        // Name should be remapped from HF convention
-        assert!(weights.get("layers.0.attn.q.weight").is_some());
+        assert!(weights
+            .get("model.layers.0.self_attn.q_proj.weight")
+            .is_some());
     }
 
     #[test]
@@ -282,11 +283,11 @@ mod tests {
         let parallel = TestParallelConfig { tp: 2 };
 
         let rank0 = load_model_weights(tmp.path(), &config, &parallel, 0, &gpu).unwrap();
-        let w0 = rank0.get("layers.0.attn.q.weight").unwrap();
+        let w0 = rank0.get("model.layers.0.self_attn.q_proj.weight").unwrap();
         assert_eq!(w0.shape(), &[2, 4]);
 
         let rank1 = load_model_weights(tmp.path(), &config, &parallel, 1, &gpu).unwrap();
-        let w1 = rank1.get("layers.0.attn.q.weight").unwrap();
+        let w1 = rank1.get("model.layers.0.self_attn.q_proj.weight").unwrap();
         assert_eq!(w1.shape(), &[2, 4]);
     }
 }

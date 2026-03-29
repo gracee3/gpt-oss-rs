@@ -284,9 +284,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_profile_keeps_generic_defaults_for_other_models() {
+    fn auto_profile_keeps_generic_defaults_for_non_gpt_oss_names() {
         let resolved =
-            resolve_serve_profile("meta-llama/Llama-3.1-8B", ServeProfile::Auto, None, None);
+            resolve_serve_profile("/models/local-checkpoint", ServeProfile::Auto, None, None);
         assert_eq!(resolved.profile, ServeProfile::Generic);
         assert_eq!(resolved.max_model_len, 2048);
         assert_eq!(resolved.gpu_memory_utilization, 0.90);

@@ -10,7 +10,7 @@ Usage:
     python3 tests/parity/token_parity.py \
         --rust-url http://localhost:8000 \
         --python-url http://localhost:8001 \
-        --model Qwen/Qwen2.5-1.5B
+        --model openai/gpt-oss-20b
 """
 import argparse, json, sys, requests
 
@@ -207,7 +207,7 @@ def main():
     p = argparse.ArgumentParser(description="Token-level parity: rvLLM vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
-    p.add_argument("--model", default="Qwen/Qwen2.5-1.5B")
+    p.add_argument("--model", default="openai/gpt-oss-20b")
     p.add_argument("--logprobs", action="store_true", help="Compare top-5 logprobs at divergence")
     args = p.parse_args()
 

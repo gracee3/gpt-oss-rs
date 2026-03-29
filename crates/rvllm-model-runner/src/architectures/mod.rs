@@ -1,16 +1,7 @@
 //! Model architecture implementations.
 
-pub mod cohere;
-pub mod deepseek;
-pub mod embedding;
-pub mod gemma;
-pub mod gpt_neox;
 pub mod gpt_oss;
-pub mod llama;
-pub mod mistral;
-pub mod mixtral;
-pub mod phi;
-pub mod qwen2;
+mod shared;
 
 use crate::bridge::{AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result};
 use crate::input::ModelInput;
@@ -34,38 +25,54 @@ pub fn create_model(
     config: &ModelRunnerConfig,
 ) -> Result<Box<dyn Architecture>> {
     match architecture {
-        "LlamaForCausalLM" => Ok(Box::new(llama::LlamaForCausalLM::new(weights, config)?)),
-        "MistralForCausalLM" => Ok(Box::new(mistral::MistralForCausalLM::new(weights, config)?)),
-        "Qwen2ForCausalLM" => Ok(Box::new(qwen2::Qwen2ForCausalLM::new(weights, config)?)),
-        "CohereForCausalLM" => Ok(Box::new(cohere::CohereForCausalLM::new(weights, config)?)),
-        "GPTNeoXForCausalLM" => Ok(Box::new(gpt_neox::GPTNeoXForCausalLM::new(
-            weights, config,
-        )?)),
-        "StableLmForCausalLM" | "StableLMForCausalLM" => Ok(Box::new(
-            gpt_neox::StableLmForCausalLM::new(weights, config)?,
-        )),
-        "GemmaForCausalLM" => Ok(Box::new(gemma::GemmaForCausalLM::new(weights, config)?)),
-        "Gemma2ForCausalLM" => Ok(Box::new(gemma::Gemma2ForCausalLM::new(weights, config)?)),
-        "DeepSeekV2ForCausalLM" | "DeepseekV2ForCausalLM" => Ok(Box::new(
-            deepseek::DeepSeekV2ForCausalLM::new(weights, config)?,
-        )),
-        "MixtralForCausalLM" => Ok(Box::new(mixtral::MixtralForCausalLM::new(weights, config)?)),
         "GptOssForCausalLM" => Ok(Box::new(gpt_oss::GptOssForCausalLM::new(weights, config)?)),
-        "PhiForCausalLM" | "Phi3ForCausalLM" | "Phi3SmallForCausalLM" => {
-            Ok(Box::new(phi::PhiForCausalLM::new(weights, config)?))
-        }
-        // Embedding / encoder-only models (sentence-transformers, E5, GTE, BGE, etc.)
-        "BertModel"
-        | "RobertaModel"
-        | "XLMRobertaModel"
-        | "E5Model"
-        | "GTEModel"
-        | "BGEModel"
-        | "EmbeddingModel"
-        | "SentenceTransformer" => Ok(Box::new(embedding::EmbeddingModel::new(weights, config)?)),
         other => Err(LLMError::ModelError(format!(
-            "unsupported architecture: {}",
-            other
+            "unsupported architecture for this fork: {other}. Only GptOssForCausalLM is supported."
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::ModelRunnerConfig;
+    use rvllm_core::types::Dtype;
+
+    fn test_config() -> ModelRunnerConfig {
+        ModelRunnerConfig {
+            num_layers: 1,
+            hidden_size: 8,
+            num_heads: 2,
+            num_kv_heads: 2,
+            head_dim: 4,
+            intermediate_size: 16,
+            vocab_size: 32,
+            max_position: 128,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
+            sliding_window: None,
+            layer_types: vec!["full_attention".into()],
+            num_local_experts: 2,
+            num_experts_per_tok: 1,
+            dtype: Dtype::Float16,
+            architecture: "GptOssForCausalLM".into(),
+        }
+    }
+
+    #[test]
+    fn rejects_non_gpt_oss_architectures() {
+        let err = match create_model("LlamaForCausalLM", ModelWeights::default(), &test_config()) {
+            Ok(_) => panic!("non-GPT-OSS architectures should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Only GptOssForCausalLM is supported"));
+    }
+
+    #[test]
+    fn accepts_gpt_oss_architecture() {
+        create_model("GptOssForCausalLM", ModelWeights::default(), &test_config()).unwrap();
     }
 }

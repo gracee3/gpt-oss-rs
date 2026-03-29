@@ -44,7 +44,7 @@ ssh -p $PORT root@$HOST "
   export PATH=/root/.cargo/bin:\$PATH
   cd /root/rvllm
   RUST_LOG=info nohup ./target/release/rvllm serve \
-    --model Qwen/Qwen2.5-1.5B \
+    --model openai/gpt-oss-20b \
     --gpu-memory-utilization 0.85 \
     --dtype half \
     --port 8000 > /tmp/rvllm.log 2>&1 &
@@ -54,7 +54,7 @@ ssh -p $PORT root@$HOST "
 ssh -p $PORT root@$HOST "
   curl -s http://localhost:8000/v1/completions \
     -H 'Content-Type: application/json' \
-    -d '{\"model\":\"Qwen/Qwen2.5-1.5B\",\"prompt\":\"Hello\",\"max_tokens\":8,\"temperature\":0}'
+    -d '{\"model\":\"openai/gpt-oss-20b\",\"prompt\":\"Hello\",\"max_tokens\":8,\"temperature\":0}'
 "
 ```
 

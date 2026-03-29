@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Configuration ---
-MODEL="${MODEL:-Qwen/Qwen2.5-1.5B}"
+MODEL="${MODEL:-openai/gpt-oss-20b}"
 RVLLM_BIN="${RVLLM_BIN:-$ROOT_DIR/target/release/rvLLM}"
 RVLLM_PORT=8000
 PYTHON_PORT=8001

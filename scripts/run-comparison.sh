@@ -2,7 +2,7 @@
 # Run both rvllm and Python vLLM side by side for comparison
 set -euo pipefail
 
-MODEL=${MODEL_NAME:-"meta-llama/Llama-3.2-1B"}
+MODEL=${MODEL_NAME:-"openai/gpt-oss-20b"}
 echo "Starting comparison: Rust rvllm vs Python vLLM"
 echo "Model: $MODEL"
 echo ""

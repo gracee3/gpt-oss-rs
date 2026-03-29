@@ -63,7 +63,7 @@ mod tests {
     fn detects_gpt_oss_model_names() {
         assert!(is_gpt_oss_model("openai/gpt-oss-20b"));
         assert!(is_gpt_oss_model("OPENAI/GPT_OSS_20B"));
-        assert!(!is_gpt_oss_model("Qwen/Qwen2.5-7B-Instruct"));
+        assert!(!is_gpt_oss_model("/models/local-checkpoint"));
     }
 
     #[test]
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_gpt_oss_models() {
-        validate_gpt_oss_runtime("meta-llama/Llama-3.1-8B", 32768, 4, Some(8), false).unwrap();
+    fn ignores_non_gpt_oss_names() {
+        validate_gpt_oss_runtime("/models/local-checkpoint", 32768, 4, Some(8), false).unwrap();
     }
 }

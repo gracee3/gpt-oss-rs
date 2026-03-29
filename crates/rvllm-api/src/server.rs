@@ -121,10 +121,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/responses/:response_id/input_items",
             get(routes::responses::list_response_input_items),
         )
-        .route(
-            "/v1/embeddings",
-            post(routes::embeddings::create_embeddings),
-        )
         .route("/v1/models", get(routes::models::list_models))
         .route("/v1/batches", post(routes::batch::create_batch))
         .route("/v1/batches/:batch_id", get(routes::batch::get_batch))

@@ -9,7 +9,7 @@ Usage:
     python3 tests/parity/sampling_parity.py \
         --rust-url http://localhost:8000 \
         --python-url http://localhost:8001 \
-        --model Qwen/Qwen2.5-1.5B \
+        --model openai/gpt-oss-20b \
         --runs 100
 """
 import argparse, json, sys, time, requests
@@ -131,7 +131,7 @@ def main():
     p = argparse.ArgumentParser(description="Sampling parity: rvLLM vs Python vLLM")
     p.add_argument("--rust-url", default="http://localhost:8000")
     p.add_argument("--python-url", default="http://localhost:8001")
-    p.add_argument("--model", default="Qwen/Qwen2.5-1.5B")
+    p.add_argument("--model", default="openai/gpt-oss-20b")
     p.add_argument("--runs", type=int, default=100, help="Samples per test case")
     args = p.parse_args()
 

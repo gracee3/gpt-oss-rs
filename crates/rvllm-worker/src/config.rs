@@ -35,7 +35,7 @@ pub struct WorkerConfig {
     pub tensor_parallel_size: usize,
     /// Pipeline parallel world size.
     pub pipeline_parallel_size: usize,
-    /// Model architecture name (e.g. "llama").
+    /// Model architecture name (for this fork, `GptOssForCausalLM`).
     pub architecture: String,
     /// Data type for model weights and compute.
     pub dtype: Dtype,

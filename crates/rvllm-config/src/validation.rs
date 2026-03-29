@@ -85,7 +85,7 @@ mod tests {
     fn valid_config() -> EngineConfig {
         EngineConfig {
             model: ModelConfigImpl {
-                model_path: "meta-llama/Llama-2-7b".into(),
+                model_path: "openai/gpt-oss-20b".into(),
                 ..Default::default()
             },
             ..Default::default()

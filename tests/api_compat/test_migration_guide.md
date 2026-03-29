@@ -18,10 +18,10 @@ client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
 Replace:
 ```bash
 # Python vLLM
-python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-3-8B
+python -m vllm.entrypoints.openai.api_server --model openai/gpt-oss-20b
 
 # Rust rvllm
-rvllm serve --model meta-llama/Llama-3-8B
+rvllm serve --model openai/gpt-oss-20b
 ```
 
 Same CLI flags: --model, --port, --host, --gpu-memory-utilization, --max-model-len, --tensor-parallel-size
@@ -36,4 +36,4 @@ Same CLI flags: --model, --port, --host, --gpu-memory-utilization, --max-model-l
 - [x] Stop strings
 - [x] Logprobs
 - [ ] Tool/function calling (planned)
-- [ ] Vision models (planned)
+- [ ] Broader multi-model support (intentionally removed in this fork)
