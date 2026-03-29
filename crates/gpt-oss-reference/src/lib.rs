@@ -80,6 +80,7 @@ mod tests {
 
         assert_eq!(output.trace.cache.blocks.len(), 2);
         assert_eq!(output.trace.layers[0].attention.visible_tokens, vec![0, 1, 2]);
+        assert_eq!(output.logits, vec![0.0; 4]);
     }
 
     #[test]

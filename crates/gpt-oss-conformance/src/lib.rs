@@ -54,6 +54,32 @@ mod tests {
         )
     }
 
+    fn dense_baseline_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-dense",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 0,
+                    num_experts_per_tok: 0,
+                    moe_layer_indices: vec![],
+                },
+            },
+        )
+    }
+
     fn tensor(name: &str, vals: &[f32], shape: &[usize]) -> (String, WeightTensor) {
         (
             name.to_string(),
@@ -346,5 +372,32 @@ mod tests {
 
         assert_eq!(first.logits, second.logits);
         assert_eq!(first.tokens, second.tokens);
+    }
+
+    #[test]
+    fn dense_full_attention_parity_no_longer_differs_on_logits() {
+        let case = ConformanceCase::prefill("dense-baseline", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let reference = dense_baseline_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("logits differ")));
     }
 }

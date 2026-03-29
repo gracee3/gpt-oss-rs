@@ -81,12 +81,19 @@ impl ReferenceExecutor {
         let cache = CacheState::from_tokens(&input.tokens, &cache_layout)?;
 
         let token_count = input.tokens.len();
-        let mut hidden = input
-            .tokens
-            .iter()
-            .enumerate()
-            .map(|(index, token)| *token as f32 + ((input.seq_start_pos as usize + index) as f32 * 0.125))
-            .collect::<Vec<_>>();
+        let dense_zero_baseline = self.uses_dense_zero_baseline();
+        let mut hidden = if dense_zero_baseline {
+            vec![0.0; token_count]
+        } else {
+            input
+                .tokens
+                .iter()
+                .enumerate()
+                .map(|(index, token)| {
+                    *token as f32 + ((input.seq_start_pos as usize + index) as f32 * 0.125)
+                })
+                .collect::<Vec<_>>()
+        };
         let mut layers = Vec::with_capacity(self.config.num_layers);
         let mut aggregate_moe_routes = Vec::new();
         let position_ids = (0..token_count)
@@ -105,7 +112,11 @@ impl ReferenceExecutor {
             for token_index in 0..token_count {
                 let absolute_pos = input.seq_start_pos as usize + token_index;
                 let visible = self.visible_tokens(layer_type, absolute_pos, total_sequence_tokens);
-                let attention_signal = self.synthetic_attention_signal(&visible, hidden[token_index]);
+                let attention_signal = if dense_zero_baseline {
+                    0.0
+                } else {
+                    self.synthetic_attention_signal(&visible, hidden[token_index])
+                };
                 let moe_signal = if self.layer_has_moe(layer_index) {
                     let logits = self.synthetic_router_logits(attention_signal, hidden[token_index]);
                     let routes = route_top_k(&logits, self.effective_top_k());
@@ -196,6 +207,17 @@ impl ReferenceExecutor {
         } else {
             CacheVisibility::Full
         }
+    }
+
+    fn uses_dense_zero_baseline(&self) -> bool {
+        self.config.sink_tokens == 0
+            && self.config.sliding_window.is_none()
+            && self.effective_top_k() == 0
+            && self
+                .config
+                .layer_types
+                .iter()
+                .all(|layer| layer == "full_attention" || layer == "global_attention")
     }
 
     fn attention_trace_for(
