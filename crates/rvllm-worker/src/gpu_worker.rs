@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
@@ -367,6 +367,29 @@ impl GpuWorker {
         let stream = context.new_stream()
             .map_err(|e| LLMError::GpuError(format!("failed to create CUDA stream: {e}")))?;
 
+        // Set memory pool to never release freed memory (instant reuse).
+        // By default CUDA's pool may return memory to the OS aggressively;
+        // threshold=u64::MAX keeps all freed allocations in the pool.
+        unsafe {
+            use cudarc::driver::sys::{
+                cuDeviceGetDefaultMemPool, cuMemPoolSetAttribute,
+                CUmemPool_attribute, CUmemoryPool,
+            };
+            let mut pool: CUmemoryPool = std::ptr::null_mut();
+            let res = cuDeviceGetDefaultMemPool(&mut pool, device_id as i32);
+            if res == cudarc::driver::sys::CUresult::CUDA_SUCCESS && !pool.is_null() {
+                let mut threshold: u64 = u64::MAX;
+                cuMemPoolSetAttribute(
+                    pool,
+                    CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                    &mut threshold as *mut u64 as *mut std::ffi::c_void,
+                );
+                info!(device_id, "memory pool release threshold set to u64::MAX");
+            } else {
+                warn!(device_id, "failed to configure memory pool release threshold");
+            }
+        }
+
         let cublas = CublasHandle::new(stream.clone())
             .map_err(|e| LLMError::GpuError(format!("failed to create CublasHandle: {}", e)))?;
 
@@ -643,6 +666,10 @@ impl GpuWorker {
             if self.config.dtype.is_half() {
                 runner.enable_fp16();
                 info!("FP16 inference enabled (hgemm path)");
+                // Fuse QKV and gate+up weights for fewer GEMM calls per layer.
+                if let Err(e) = runner.fuse_weights() {
+                    warn!("weight fusion failed: {e} -- using unfused path");
+                }
             }
 
             // Pre-allocate cuBLAS workspace for CUDA graph capture.
@@ -748,49 +775,40 @@ impl GpuWorker {
             });
         }
 
-        debug!(
-            device_id = self.device_id,
-            num_groups = metadata.len(),
-            "GpuWorker execute"
-        );
+        let t_start = std::time::Instant::now();
 
         let model_input = input::prepare_input(metadata, self.config.block_size)?;
-        let total_tokens = model_input.num_tokens();
-
-        debug!(
-            num_tokens = total_tokens,
-            is_prefill = model_input.is_prefill,
-            "input prepared"
-        );
+        let t_input = t_start.elapsed();
 
         let greedy_only = Self::all_greedy(metadata);
-
-        // Run real GPU forward pass with RoPE and KV cache
-        info!(greedy_only, "gpu_worker: entering gpu_forward");
         let fwd_output = self.gpu_forward_ex(&model_input, greedy_only)?;
+        let t_forward = t_start.elapsed();
 
         let outputs = match fwd_output {
             ForwardOutput::TokenIds(ref token_ids) => {
-                info!(
-                    num_ids = token_ids.len(),
-                    "gpu_worker: gpu argmax fast path"
-                );
                 self.sample_tokens_from_gpu_argmax(token_ids, metadata)?
             }
             ForwardOutput::Logits(ref logits) => {
-                info!(
-                    logits_len = logits.len(),
-                    "gpu_worker: full logits path"
-                );
                 self.sample_tokens(logits, metadata)?
             }
         };
+        let t_sample = t_start.elapsed();
 
-        debug!(
-            device_id = self.device_id,
-            num_outputs = outputs.len(),
-            "execute done"
-        );
+        // Periodic timing report (every 64 steps)
+        self.forward_count += 0; // already incremented in gpu_forward_ex
+        if self.forward_count % 64 == 0 && self.forward_count > 0 {
+            let input_us = t_input.as_micros();
+            let forward_us = (t_forward - t_input).as_micros();
+            let sample_us = (t_sample - t_forward).as_micros();
+            let total_us = t_sample.as_micros();
+            info!(
+                input_us, forward_us, sample_us, total_us,
+                tokens = model_input.num_tokens(),
+                greedy = greedy_only,
+                "TIMING execute"
+            );
+        }
+
         Ok(GpuWorkerOutput { outputs })
     }
 
@@ -933,6 +951,8 @@ impl GpuWorker {
             LLMError::GpuError("GPU model runner not initialized".into())
         })?;
 
+        let t0 = std::time::Instant::now();
+
         // Upload metadata into persistent GPU buffers (memcpy_htod at stable
         // GPU pointers). This runs on the runner's stream OUTSIDE any graph.
         runner.upload_metadata(
@@ -940,21 +960,35 @@ impl GpuWorker {
             &padded_input.position_ids,
             &padded_input.attention_metadata,
         )?;
+        let t_upload = t0.elapsed();
 
         if self.graph_runner.has_graph_for(padded_batch) {
             // -- REPLAY path --
-            // Metadata was just updated in-place above. The graph replays on
-            // the same stream, so the memcpy_htod ordering is guaranteed.
-            debug!(actual_batch, padded_batch, "replaying CUDA graph");
             let pool = self.graph_runner.pool();
             let graph = pool.get(actual_batch).ok_or_else(|| {
                 LLMError::GpuError("graph lookup failed after has_graph_for".into())
             })?;
             graph.replay(&self.compute_stream)?;
+            let t_replay = t0.elapsed();
 
             // DtoH read from persistent output buffer (outside graph).
             let ids = runner.read_graph_output(num_tokens)?;
+            let t_read = t0.elapsed();
+
             let trimmed: Vec<i32> = ids[..actual_batch].to_vec();
+
+            if self.forward_count % 64 == 0 {
+                let upload_us = t_upload.as_micros();
+                let replay_us = (t_replay - t_upload).as_micros();
+                let read_us = (t_read - t_replay).as_micros();
+                info!(
+                    upload_us, replay_us, read_us,
+                    total_us = t_read.as_micros(),
+                    batch = actual_batch,
+                    "TIMING graph_replay"
+                );
+            }
+
             return Ok(ForwardOutput::TokenIds(trimmed));
         }
 
@@ -982,32 +1016,38 @@ impl GpuWorker {
             )?;
 
             // Begin capture on the model runner's stream.
-            self.graph_runner.pool_mut().begin_capture_on(&cuda_stream)?;
-            let result = runner.forward_gpu_only(
-                num_tokens, num_seqs, max_context_len, false,
-            );
+            let capture_begin = self.graph_runner.pool_mut().begin_capture_on(&cuda_stream);
+            if let Err(e) = capture_begin {
+                warn!("graph capture begin failed: {e} -- skipping capture for batch {padded_batch}");
+                self.graph_runner.mark_captured(padded_batch);
+                // Fall through to normal path below
+            } else {
+                let result = runner.forward_gpu_only(
+                    num_tokens, num_seqs, max_context_len, false,
+                );
 
-            match result {
-                Ok(()) => {
-                    let graph = self.graph_runner.pool_mut().end_capture_on(
-                        &cuda_stream, padded_batch,
-                    )?;
-                    self.graph_runner.pool_mut().insert(graph);
-                    self.graph_runner.mark_captured(padded_batch);
-                    info!(padded_batch, "CUDA graph captured successfully");
+                match result {
+                    Ok(()) => {
+                        let graph = self.graph_runner.pool_mut().end_capture_on(
+                            &cuda_stream, padded_batch,
+                        )?;
+                        self.graph_runner.pool_mut().insert(graph);
+                        self.graph_runner.mark_captured(padded_batch);
+                        info!(padded_batch, "CUDA graph captured successfully");
 
-                    // DtoH read from persistent output buffer.
-                    let ids = runner.read_graph_output(num_tokens)?;
-                    let trimmed: Vec<i32> = ids[..actual_batch].to_vec();
-                    return Ok(ForwardOutput::TokenIds(trimmed));
-                }
-                Err(e) => {
-                    warn!("graph capture forward failed, falling back: {e}");
-                    let _ = self.graph_runner.pool_mut().end_capture_on(
-                        &cuda_stream, padded_batch,
-                    );
-                    self.graph_runner.mark_captured(padded_batch);
-                    // Fall through to normal path below
+                        // DtoH read from persistent output buffer.
+                        let ids = runner.read_graph_output(num_tokens)?;
+                        let trimmed: Vec<i32> = ids[..actual_batch].to_vec();
+                        return Ok(ForwardOutput::TokenIds(trimmed));
+                    }
+                    Err(e) => {
+                        warn!("graph capture forward failed, falling back: {e}");
+                        let _ = self.graph_runner.pool_mut().end_capture_on(
+                            &cuda_stream, padded_batch,
+                        );
+                        self.graph_runner.mark_captured(padded_batch);
+                        // Fall through to normal path below
+                    }
                 }
             }
         }

@@ -169,6 +169,57 @@ impl CudaLinearLayer {
         Self::gpu_cast_f16_to_f32(stream, &output_f16, m * n, &cast_f16_f32)
     }
 
+    /// Mixed-precision forward: f32 input, f16 weight, f32 output.
+    ///
+    /// Casts input f32->f16, then uses cublasGemmEx(f16,f16->f32) to produce
+    /// f32 output directly. Saves 1 cast kernel + 1 alloc per call vs the old
+    /// forward_once_f16 which does cast_in + hgemm + cast_out (2 casts + 2 allocs).
+    pub fn forward_mixed(
+        input: &CudaSlice<f32>,
+        weight: &CudaSlice<f16>,
+        m: usize,
+        n: usize,
+        k: usize,
+        blas: &CublasHandle,
+        loader: &rvllm_gpu::kernel_loader::KernelLoader,
+    ) -> Result<CudaSlice<f32>> {
+        let stream = blas.stream();
+
+        // Cast input f32 -> f16 (still needed; cuBLAS requires matching A/B types)
+        let cast_f32_f16 = loader.get_func("cast_fp", "cast_f32_to_f16_kernel")
+            .map_err(|e| LLMError::GpuError(format!("load cast_f32_to_f16_kernel: {e}")))?;
+        let input_f16 = Self::gpu_cast_f32_to_f16(stream, input, m * k, &cast_f32_f16)?;
+
+        // Alloc f32 output directly (no f16 intermediate + cast)
+        let mut output = stream
+            .alloc_zeros::<f32>(m * n)
+            .map_err(|e| LLMError::GpuError(format!("forward_mixed alloc: {e}")))?;
+
+        // f16 x f16 -> f32 via cublasGemmEx
+        blas.hgemm_f32_output(m, n, k, 1.0, &input_f16, weight, 0.0, &mut output)?;
+        Ok(output)
+    }
+
+    /// Pre-cast forward: f16 input already cast by caller, f16 weight, f32 output.
+    ///
+    /// When multiple linears share the same f32 input (e.g. Q/K/V all use normed,
+    /// gate/up both use normed2), the caller casts f32->f16 ONCE and calls this
+    /// for each projection. Saves N-1 redundant cast kernels.
+    pub fn forward_f16_in(
+        input_f16: &CudaSlice<f16>,
+        weight: &CudaSlice<f16>,
+        m: usize,
+        n: usize,
+        k: usize,
+        blas: &CublasHandle,
+    ) -> Result<CudaSlice<f32>> {
+        let mut output = blas.stream()
+            .alloc_zeros::<f32>(m * n)
+            .map_err(|e| LLMError::GpuError(format!("forward_f16_in alloc: {e}")))?;
+        blas.hgemm_f32_output(m, n, k, 1.0, input_f16, weight, 0.0, &mut output)?;
+        Ok(output)
+    }
+
     /// Static forward with f16 weights using cublasLt for decode-sized batches.
     ///
     /// When `cublaslt` feature is enabled and `m <= CUBLASLT_M_THRESHOLD`,
@@ -209,7 +260,7 @@ impl CudaLinearLayer {
         Self::gpu_cast_f16_to_f32(stream, &output_f16, m * n, &cast_f16_f32)
     }
 
-    fn gpu_cast_f32_to_f16(
+    pub fn gpu_cast_f32_to_f16(
         stream: &Arc<CudaStream>,
         input: &CudaSlice<f32>,
         n: usize,
