@@ -72,14 +72,19 @@ pub async fn create_response(
             .map(StoredConversationItem::Input),
     );
 
+    let is_gpt_oss = is_gpt_oss_model(&state.model_name);
     let prompt_style = preferred_tool_prompt_style(&state.model_name);
-    let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
-    let protocol_messages = if is_gpt_oss_model(&state.model_name) {
+    let prompt_messages = if is_gpt_oss {
+        Vec::new()
+    } else {
+        render_conversation_items(&conversation_items, prompt_style)
+    };
+    let protocol_messages = if is_gpt_oss {
         render_conversation_protocol_items(&conversation_items)
     } else {
         Vec::new()
     };
-    if prompt_messages.is_empty() && protocol_messages.is_empty() {
+    if (!is_gpt_oss && prompt_messages.is_empty()) || (is_gpt_oss && protocol_messages.is_empty()) {
         return Err(ApiError::InvalidRequest(
             "input must not be empty for /v1/responses".into(),
         ));
@@ -93,7 +98,7 @@ pub async fn create_response(
 
     let mut templated_messages = prompt_messages.clone();
     let harmony_instructions = req.instructions.clone().filter(|value| !value.is_empty());
-    if !is_gpt_oss_model(&state.model_name) {
+    if !is_gpt_oss {
         if let Some(instructions) = harmony_instructions.clone() {
             templated_messages.insert(
                 0,
@@ -105,7 +110,7 @@ pub async fn create_response(
         }
     }
 
-    if req.tools_enabled() && !is_gpt_oss_model(&state.model_name) {
+    if req.tools_enabled() && !is_gpt_oss {
         templated_messages = augment_messages_with_tools(
             &templated_messages,
             &tool_defs,
@@ -118,7 +123,7 @@ pub async fn create_response(
         .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
         .collect();
 
-    let prompt = if is_gpt_oss_model(&state.model_name) {
+    let prompt = if is_gpt_oss {
         let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
             .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
         protocol
@@ -1475,8 +1480,7 @@ fn render_function_call(
     });
     match style {
         gpt_oss_tokenizer::ToolPromptStyle::Harmony => body.to_string(),
-        gpt_oss_tokenizer::ToolPromptStyle::Hermes
-        | gpt_oss_tokenizer::ToolPromptStyle::GenericJson => {
+        gpt_oss_tokenizer::ToolPromptStyle::Hermes => {
             format!("<tool_call>{}</tool_call>", body)
         }
     }
@@ -1502,8 +1506,7 @@ fn render_function_call_output(
             }
             body.to_string()
         }
-        gpt_oss_tokenizer::ToolPromptStyle::Hermes
-        | gpt_oss_tokenizer::ToolPromptStyle::GenericJson => match function_name {
+        gpt_oss_tokenizer::ToolPromptStyle::Hermes => match function_name {
             Some(name) => format!(
                 "Tool output for function {} (call_id {}):\n{}",
                 name, output.call_id, rendered_output

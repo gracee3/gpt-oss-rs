@@ -2,30 +2,6 @@
 
 use gpt_oss_core::prelude::{LLMError, Result};
 
-/// Role in a chat conversation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-}
-
-impl ChatRole {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ChatRole::System => "system",
-            ChatRole::User => "user",
-            ChatRole::Assistant => "assistant",
-        }
-    }
-}
-
-impl std::fmt::Display for ChatRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// A single message in a chat conversation.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -39,18 +15,6 @@ impl ChatMessage {
             role: role.into(),
             content: content.into(),
         }
-    }
-
-    pub fn system(content: impl Into<String>) -> Self {
-        Self::new(ChatRole::System.as_str(), content)
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self::new(ChatRole::User.as_str(), content)
-    }
-
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new(ChatRole::Assistant.as_str(), content)
     }
 }
 
@@ -85,8 +49,8 @@ mod tests {
     #[test]
     fn chatml_basic() {
         let msgs = vec![
-            ChatMessage::system("You are helpful."),
-            ChatMessage::user("Hello"),
+            ChatMessage::new("system", "You are helpful."),
+            ChatMessage::new("user", "Hello"),
         ];
         let result = apply_chatml(&msgs, true).unwrap();
         assert!(result.contains("<|im_start|>system\nYou are helpful.<|im_end|>"));
@@ -96,7 +60,7 @@ mod tests {
 
     #[test]
     fn chatml_no_generation_prompt() {
-        let msgs = vec![ChatMessage::user("Hi")];
+        let msgs = vec![ChatMessage::new("user", "Hi")];
         let result = apply_chatml(&msgs, false).unwrap();
         assert!(!result.contains("assistant"));
     }
@@ -107,22 +71,9 @@ mod tests {
     }
 
     #[test]
-    fn chat_role_display() {
-        assert_eq!(ChatRole::System.to_string(), "system");
-        assert_eq!(ChatRole::User.to_string(), "user");
-        assert_eq!(ChatRole::Assistant.to_string(), "assistant");
-    }
-
-    #[test]
-    fn chat_message_constructors() {
-        let m = ChatMessage::system("test");
+    fn chat_message_constructor() {
+        let m = ChatMessage::new("system", "test");
         assert_eq!(m.role, "system");
         assert_eq!(m.content, "test");
-
-        let m = ChatMessage::user("hello");
-        assert_eq!(m.role, "user");
-
-        let m = ChatMessage::assistant("hi");
-        assert_eq!(m.role, "assistant");
     }
 }

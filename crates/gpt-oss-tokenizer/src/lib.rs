@@ -10,7 +10,7 @@ pub mod protocol;
 pub mod tokenizer;
 pub mod tool_parser;
 
-pub use chat::{ChatMessage, ChatRole};
+pub use chat::ChatMessage;
 pub use incremental::IncrementalDecoder;
 pub use protocol::{
     HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage, ProtocolMessage, RenderedPrompt,

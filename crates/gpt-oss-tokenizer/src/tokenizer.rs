@@ -203,8 +203,7 @@ impl Tokenizer {
         &self.special_tokens
     }
 
-    /// Apply a chat template to format messages for the model.
-    /// Falls back to ChatML format.
+    /// Apply the non-GPT-OSS chat template used by legacy compatibility paths.
     pub fn apply_chat_template(
         &self,
         messages: &[ChatMessage],
@@ -305,8 +304,8 @@ mod tests {
     fn chat_template_works() {
         let tok = make_test_tokenizer();
         let msgs = vec![
-            ChatMessage::user("Hello"),
-            ChatMessage::assistant("Hi there"),
+            ChatMessage::new("user", "Hello"),
+            ChatMessage::new("assistant", "Hi there"),
         ];
         let result = tok.apply_chat_template(&msgs, true).unwrap();
         assert!(result.contains("Hello"));
