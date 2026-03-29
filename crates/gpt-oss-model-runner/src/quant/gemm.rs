@@ -230,9 +230,9 @@ fn dot_product_chunked(a: &[f32], b: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::QuantConfig;
     use super::super::dequant::q4::quantize_q4_0;
+    use super::*;
 
     #[test]
     fn gemm_q4_0_identity_like() {

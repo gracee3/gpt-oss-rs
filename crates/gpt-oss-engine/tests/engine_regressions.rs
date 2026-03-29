@@ -142,7 +142,10 @@ fn best_of_request_returns_highest_logprob_completion() {
     assert_eq!(outputs[0].outputs.len(), 1);
     assert_eq!(outputs[0].outputs[0].token_ids, vec![6]);
     assert_eq!(outputs[0].outputs[0].text, "beta");
-    assert_eq!(outputs[0].outputs[0].finish_reason, Some(FinishReason::Length));
+    assert_eq!(
+        outputs[0].outputs[0].finish_reason,
+        Some(FinishReason::Length)
+    );
     assert!((outputs[0].outputs[0].cumulative_logprob - (-0.1)).abs() < 1e-6);
 }
 
@@ -168,7 +171,10 @@ fn aborting_one_request_preserves_other_request_completion() {
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].request_id, RequestId(2));
     assert_eq!(outputs[0].outputs[0].text, "world");
-    assert_eq!(outputs[0].outputs[0].finish_reason, Some(FinishReason::Length));
+    assert_eq!(
+        outputs[0].outputs[0].finish_reason,
+        Some(FinishReason::Length)
+    );
 }
 
 #[test]
@@ -188,6 +194,9 @@ fn stop_string_truncation_applies_in_end_to_end_run() {
     let outputs = engine.run().unwrap();
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].outputs[0].token_ids, vec![7]);
-    assert_eq!(outputs[0].outputs[0].finish_reason, Some(FinishReason::Stop));
+    assert_eq!(
+        outputs[0].outputs[0].finish_reason,
+        Some(FinishReason::Stop)
+    );
     assert_eq!(outputs[0].outputs[0].text, "");
 }

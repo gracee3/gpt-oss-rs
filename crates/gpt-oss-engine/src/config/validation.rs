@@ -76,11 +76,11 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::cache::CacheConfigImpl;
     use super::super::device::DeviceConfig;
     use super::super::model::ModelConfigImpl;
     use super::super::parallel::ParallelConfigImpl;
+    use super::*;
 
     fn valid_config() -> EngineConfig {
         EngineConfig {

@@ -336,8 +336,8 @@ pub(crate) fn build_test_gguf(tensors: &[(&str, &[usize], u32, &[u8])]) -> Vec<u
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::weights::MockGpuAllocator;
+    use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
 

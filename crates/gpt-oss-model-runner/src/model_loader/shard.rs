@@ -348,9 +348,9 @@ fn shard_host_slice<T: Clone>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::dtype::DType;
     use super::super::weights::{GpuBuffer, MockGpuAllocator};
+    use super::*;
 
     fn make_tensor(name: &str, shape: Vec<usize>, dtype: DType, data: Vec<u8>) -> WeightTensor {
         WeightTensor::new(name.into(), shape, dtype, GpuBuffer::from_bytes(data))

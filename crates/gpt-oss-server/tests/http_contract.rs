@@ -99,7 +99,11 @@ fn make_test_tokenizer() -> Tokenizer {
 
 fn make_app(outputs: Vec<Vec<RequestOutput>>) -> (TestServer, Arc<ScriptedEngine>) {
     let engine = ScriptedEngine::new(outputs);
-    let mut state = AppState::new(engine.clone(), "test-model".to_string(), make_test_tokenizer());
+    let mut state = AppState::new(
+        engine.clone(),
+        "test-model".to_string(),
+        make_test_tokenizer(),
+    );
     state.batch_store = None;
     let state = Arc::new(state);
     (TestServer::new(build_router(state)).unwrap(), engine)
@@ -223,13 +227,19 @@ async fn responses_store_round_trip_and_replay_prompt_history() {
     first_response.assert_status_ok();
     let first_json = first_response.json::<serde_json::Value>();
     let first_id = first_json["id"].as_str().unwrap().to_string();
-    assert_eq!(first_json["output"][0]["content"][0]["text"], "First answer");
+    assert_eq!(
+        first_json["output"][0]["content"][0]["text"],
+        "First answer"
+    );
 
     let stored = server.get(&format!("/v1/responses/{first_id}")).await;
     stored.assert_status_ok();
     let stored_json = stored.json::<serde_json::Value>();
     assert_eq!(stored_json["id"], first_id);
-    assert_eq!(stored_json["output"][0]["content"][0]["text"], "First answer");
+    assert_eq!(
+        stored_json["output"][0]["content"][0]["text"],
+        "First answer"
+    );
 
     let stored_inputs = server
         .get(&format!("/v1/responses/{first_id}/input_items"))
@@ -237,7 +247,10 @@ async fn responses_store_round_trip_and_replay_prompt_history() {
     stored_inputs.assert_status_ok();
     let stored_inputs_json = stored_inputs.json::<serde_json::Value>();
     assert_eq!(stored_inputs_json["data"][0]["role"], "user");
-    assert_eq!(stored_inputs_json["data"][0]["content"][0]["text"], "first question");
+    assert_eq!(
+        stored_inputs_json["data"][0]["content"][0]["text"],
+        "first question"
+    );
 
     let second_response = server
         .post("/v1/responses")
@@ -251,7 +264,10 @@ async fn responses_store_round_trip_and_replay_prompt_history() {
     second_response.assert_status_ok();
     let second_json = second_response.json::<serde_json::Value>();
     assert_eq!(second_json["previous_response_id"], first_json["id"]);
-    assert_eq!(second_json["output"][0]["content"][0]["text"], "Second answer");
+    assert_eq!(
+        second_json["output"][0]["content"][0]["text"],
+        "Second answer"
+    );
 
     let prompts = engine.prompts();
     assert_eq!(prompts.len(), 2);
@@ -279,10 +295,8 @@ async fn chat_completions_returns_openai_style_model_not_found_error() {
     let json = response.json::<serde_json::Value>();
     assert_eq!(json["error"]["type"], "invalid_request_error");
     assert_eq!(json["error"]["code"], "model_not_found");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("model 'wrong-model' not found")
-    );
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("model 'wrong-model' not found"));
 }

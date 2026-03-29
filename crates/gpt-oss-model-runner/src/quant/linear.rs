@@ -84,9 +84,9 @@ impl QuantizedLinear {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::QuantConfig;
     use super::super::dequant::q4::quantize_q4_0;
+    use super::*;
 
     #[test]
     fn linear_forward_q4_0() {

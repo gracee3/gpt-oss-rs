@@ -222,8 +222,8 @@ pub(crate) fn build_test_safetensors(tensors: &[(&str, &[usize], DType, &[u8])])
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::weights::MockGpuAllocator;
+    use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
 

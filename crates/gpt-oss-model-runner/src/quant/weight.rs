@@ -41,8 +41,8 @@ impl QuantizedWeight {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::method::QuantMethod;
+    use super::*;
 
     #[test]
     fn weight_basic() {
