@@ -48,6 +48,7 @@ mod tests {
                     sink_tokens: 1,
                     num_local_experts: 4,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
             },
@@ -74,6 +75,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 0,
                     num_experts_per_tok: 0,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
             },
@@ -100,6 +102,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 1,
                     num_experts_per_tok: 1,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
             },
@@ -126,6 +129,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
             },
@@ -152,6 +156,34 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
+                    moe_layer_indices: vec![0],
+                },
+            },
+        )
+    }
+
+    fn biased_full_attention_three_expert_top2_moe_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-moe-3e-top2-biased",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 3,
+                    num_experts_per_tok: 2,
+                    router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0],
                 },
             },
@@ -178,6 +210,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 4,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
             },
@@ -204,6 +237,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 1,
                     num_experts_per_tok: 1,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
             },
@@ -230,6 +264,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
             },
@@ -256,6 +291,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
             },
@@ -286,6 +322,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
             },
@@ -312,6 +349,7 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 0,
                     num_experts_per_tok: 0,
+                    router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
             },
@@ -1356,7 +1394,7 @@ mod tests {
     }
 
     #[test]
-    fn biased_three_expert_top2_full_attention_moe_decode_gap_is_localized() {
+    fn biased_three_expert_top2_full_attention_moe_decode_parity_matches() {
         let case = ConformanceCase::decode("biased-three-expert-top2-moe-decode", 2, vec![3]);
         let runner = Arc::new(
             ModelRunner::new(
@@ -1374,27 +1412,11 @@ mod tests {
             vec![0],
         )
         .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
-        let reference = full_attention_three_expert_top2_moe_backend();
+        let reference = biased_full_attention_three_expert_top2_moe_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
-        println!(
-            "expected_moe={:?} observed_moe={:?} diffs={:?}",
-            report.expected.trace.frames.get(1),
-            report.observed.trace.frames.get(1),
-            report.comparison.diffs
-        );
-
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("event moe differs")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("plans differ")));
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 }

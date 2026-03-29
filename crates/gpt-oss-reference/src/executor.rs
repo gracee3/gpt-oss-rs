@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Config for the reference executor scaffold.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReferenceExecutorConfig {
     pub vocab_size: usize,
     pub num_layers: usize,
@@ -24,6 +24,8 @@ pub struct ReferenceExecutorConfig {
     pub num_local_experts: usize,
     #[serde(default)]
     pub num_experts_per_tok: usize,
+    #[serde(default)]
+    pub router_bias: Vec<f32>,
     #[serde(default)]
     pub moe_layer_indices: Vec<usize>,
 }
@@ -118,11 +120,7 @@ impl ReferenceExecutor {
                     self.synthetic_attention_signal(&visible, hidden[token_index])
                 };
                 let moe_signal = if self.layer_has_moe(layer_index) {
-                    let logits = if zero_logit_baseline {
-                        vec![0.0; self.config.num_local_experts]
-                    } else {
-                        self.synthetic_router_logits(attention_signal, hidden[token_index])
-                    };
+                    let logits = self.router_logits(attention_signal, hidden[token_index]);
                     let routes = route_top_k(&logits, self.effective_top_k());
                     layer_routes.push(routes);
                     if zero_logit_baseline {
@@ -296,11 +294,23 @@ impl ReferenceExecutor {
     fn synthetic_router_logits(&self, attention_signal: f32, hidden_value: f32) -> Vec<f32> {
         (0..self.config.num_local_experts)
             .map(|expert_index| {
-                attention_signal * ((expert_index + 1) as f32 * 0.1)
+                let synthetic = attention_signal * ((expert_index + 1) as f32 * 0.1)
                     + hidden_value * (((expert_index % 3) + 1) as f32 * 0.05)
-                    - expert_index as f32 * 0.02
+                    - expert_index as f32 * 0.02;
+                synthetic + self.config.router_bias.get(expert_index).copied().unwrap_or(0.0)
             })
             .collect()
+    }
+
+    fn router_logits(&self, attention_signal: f32, hidden_value: f32) -> Vec<f32> {
+        if self.uses_zero_logit_baseline() {
+            if self.config.router_bias.len() == self.config.num_local_experts {
+                return self.config.router_bias.clone();
+            }
+            return vec![0.0; self.config.num_local_experts];
+        }
+
+        self.synthetic_router_logits(attention_signal, hidden_value)
     }
 
     fn project_logits(&self, hidden: &[f32]) -> Vec<f32> {

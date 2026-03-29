@@ -33,6 +33,7 @@ mod tests {
             sink_tokens: 1,
             num_local_experts: 4,
             num_experts_per_tok: 2,
+            router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });
 
@@ -67,6 +68,7 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 0,
             num_experts_per_tok: 0,
+            router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
 
@@ -94,6 +96,7 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 1,
             num_experts_per_tok: 1,
+            router_bias: Vec::new(),
             moe_layer_indices: vec![0],
         });
 
@@ -112,6 +115,34 @@ mod tests {
     }
 
     #[test]
+    fn forward_uses_router_bias_for_zero_baseline_moe_selection() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 4,
+            num_layers: 1,
+            block_size: 2,
+            layer_types: vec!["full_attention".into()],
+            sliding_window: None,
+            sink_tokens: 0,
+            num_local_experts: 3,
+            num_experts_per_tok: 2,
+            router_bias: vec![0.0, 1.0, 2.0],
+            moe_layer_indices: vec![0],
+        });
+
+        let output = executor
+            .forward(ReferenceInput {
+                tokens: vec![0, 1, 2],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
+            })
+            .expect("biased moe forward");
+
+        assert_eq!(output.logits, vec![0.0; 4]);
+        assert_eq!(output.trace.moe.mode, MoeMode::SparseTopK);
+        assert_eq!(output.trace.moe.selected_experts, vec![vec![2, 1], vec![2, 1], vec![2, 1]]);
+    }
+
+    #[test]
     fn invalid_layer_type_shape_is_rejected() {
         let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
             vocab_size: 4,
@@ -122,6 +153,7 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 0,
             num_experts_per_tok: 0,
+            router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
 
@@ -147,6 +179,7 @@ mod tests {
             sink_tokens: 1,
             num_local_experts: 2,
             num_experts_per_tok: 1,
+            router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });
 
