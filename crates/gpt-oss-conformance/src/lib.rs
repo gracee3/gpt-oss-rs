@@ -2809,4 +2809,71 @@ mod tests {
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
     }
+
+    #[test]
+    fn nonzero_biased_three_layer_middle_moe_prefill_then_two_decode_steps() {
+        let cases = [
+            ConformanceCase::prefill("three-layer-middle-moe-nonzero-biased-prefill", vec![1, 2]),
+            ConformanceCase::decode("three-layer-middle-moe-nonzero-biased-decode-0", 2, vec![3]),
+            ConformanceCase::decode("three-layer-middle-moe-nonzero-biased-decode-1", 3, vec![4]),
+        ];
+        let mut weights = runner_weights_with_layer_expert_down_proj_bias(
+            3,
+            3,
+            &[1],
+            &[(1, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+        );
+        weights.tensors.insert(
+            "model.layers.1.mlp.router.bias".to_string(),
+            tensor(
+                "model.layers.1.mlp.router.bias",
+                &[0.0, 1.0, 2.0],
+                &[3],
+            )
+            .1,
+        );
+        let runner = Arc::new(
+            ModelRunner::new(
+                weights,
+                runner_config_with_layers(
+                    3,
+                    vec![
+                        "full_attention".into(),
+                        "full_attention".into(),
+                        "full_attention".into(),
+                    ],
+                    3,
+                    2,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![1])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = nonzero_biased_three_layer_full_attention_middle_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        for (step_idx, case) in cases.iter().enumerate() {
+            let report = harness.compare(case, &reference, &observed);
+
+            assert_eq!(
+                report.outcome,
+                ParityOutcome::Match,
+                "step {step_idx} ({}) diverged: {:?}",
+                case.name,
+                report.comparison,
+            );
+            assert_eq!(
+                report.comparison.diff_count(),
+                0,
+                "step {step_idx} ({}) had residual diffs: {:?}",
+                case.name,
+                report.comparison,
+            );
+        }
+    }
 }
