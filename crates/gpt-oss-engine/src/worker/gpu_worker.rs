@@ -35,6 +35,28 @@ use crate::worker::input;
 #[cfg(feature = "cuda")]
 use gpt_oss_model_runner::tensor_parallel::nccl_tensor_parallel_comm;
 
+fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
+    matches!(
+        name,
+        "model.embed_tokens.weight" | "model.norm.weight" | "lm_head.weight"
+    ) || name.ends_with("input_layernorm.weight")
+        || name.ends_with("post_attention_layernorm.weight")
+        || name.ends_with("self_attn.q_proj.bias")
+        || name.ends_with("self_attn.k_proj.bias")
+        || name.ends_with("self_attn.v_proj.bias")
+        || name.ends_with("self_attn.sinks")
+        || name.ends_with("mlp.router.weight")
+        || name.ends_with("mlp.router.bias")
+        || name.ends_with("mlp.experts.gate_up_proj_bias")
+        || name.ends_with("mlp.experts.down_proj_bias")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var_os(name)
+        .map(|value| value != "0")
+        .unwrap_or(false)
+}
+
 /// Output of one GPU worker step, mapping each sequence to its sampled token.
 #[derive(Debug, Clone)]
 pub struct GpuWorkerOutput {
@@ -347,6 +369,8 @@ pub struct GpuWorker {
     raw_weight_map_f16: Option<HashMap<String, CudaSlice<half::f16>>>,
     #[cfg(feature = "cuda")]
     raw_weight_map_u8: Option<HashMap<String, Vec<u8>>>,
+    filtered_f32_load: bool,
+    graph_decode_reserve_bytes: usize,
     /// GPU-resident model runner (full forward pass on GPU, no CPU attention fallback).
     /// Constructed in init_cache() once cache geometry is known.
     #[cfg(feature = "cuda")]
@@ -478,6 +502,8 @@ impl GpuWorker {
             raw_weight_map_f16: None,
             #[cfg(feature = "cuda")]
             raw_weight_map_u8: None,
+            filtered_f32_load: false,
+            graph_decode_reserve_bytes: 0,
             #[cfg(feature = "cuda")]
             gpu_model_runner: None,
             graph_runner,
@@ -501,12 +527,26 @@ impl GpuWorker {
     pub fn load_weights(&mut self, model_path: &Path) -> Result<()> {
         info!(device_id = self.device_id, path = %model_path.display(), "loading weights to GPU");
 
-        let (all_weights_loaded, all_weight_shapes) =
+        let use_filtered_f32_load = self.config.dtype.is_half()
+            && self.config.architecture == "GptOssForCausalLM"
+            && !env_flag_enabled("GPT_OSS_DISABLE_FILTERED_F32_LOAD");
+        self.filtered_f32_load = use_filtered_f32_load;
+
+        let (all_weights_loaded, all_weight_shapes) = if use_filtered_f32_load {
+            info!("using filtered f32 weight loading for GPT-OSS fp16 startup");
+            gpt_oss_model_runner::model_loader::gpu_loader::load_weights_to_gpu_with_shapes_filtered(
+                model_path,
+                &self.stream,
+                keep_gpt_oss_fp16_f32_weight,
+            )
+            .map_err(|e| LLMError::GpuError(format!("filtered f32 weight loading failed: {e}")))?
+        } else {
             gpt_oss_model_runner::model_loader::gpu_loader::load_weights_to_gpu_with_shapes(
                 model_path,
                 &self.stream,
             )
-            .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?;
+            .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?
+        };
 
         info!("loaded {} weight tensors to GPU", all_weights_loaded.len());
 
@@ -542,6 +582,16 @@ impl GpuWorker {
                 raw_u8_map
             };
             self.raw_weight_shapes = Some(raw_weight_shapes);
+            self.graph_decode_reserve_bytes = raw_u8_map
+                .iter()
+                .filter(|(name, _)| {
+                    name.contains("mlp.experts.gate_up_proj_blocks")
+                        || name.contains("mlp.experts.gate_up_proj_scales")
+                        || name.contains("mlp.experts.down_proj_blocks")
+                        || name.contains("mlp.experts.down_proj_scales")
+                })
+                .map(|(_, data)| data.len())
+                .sum();
             self.raw_weight_map_u8 = Some(raw_u8_map);
 
             // Also load f16 weights for hgemm path when dtype is half
@@ -683,6 +733,11 @@ impl GpuWorker {
 
         #[cfg(feature = "cuda")]
         {
+            if env_flag_enabled("GPT_OSS_DISABLE_CUDA_GRAPHS") {
+                info!("disabling CUDA graph replay via GPT_OSS_DISABLE_CUDA_GRAPHS");
+                self.graph_runner.disable();
+            }
+
             use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights as LoaderWeights;
 
             let raw_map = self.raw_weight_map.take().ok_or_else(|| {
@@ -835,7 +890,14 @@ impl GpuWorker {
             .context
             .mem_get_info()
             .map_err(|e| LLMError::GpuError(format!("mem_get_info failed: {e}")))?;
-        let available = (free as f32 * gpu_memory_utilization) as usize;
+        let reserve_bytes =
+            if self.config.architecture == "GptOssForCausalLM" && self.config.dtype.is_half() {
+                self.graph_decode_reserve_bytes
+            } else {
+                0
+            };
+        let available =
+            (free.saturating_sub(reserve_bytes) as f32 * gpu_memory_utilization) as usize;
 
         let cache_cfg = self.config.cache_config()?;
         let total_block_bytes = cache_cfg.total_block_bytes();
@@ -850,7 +912,7 @@ impl GpuWorker {
 
         info!(
             free,
-            available, num_gpu_blocks, num_cpu_blocks, "profiled available blocks"
+            reserve_bytes, available, num_gpu_blocks, num_cpu_blocks, "profiled available blocks"
         );
         Ok((num_gpu_blocks, num_cpu_blocks))
     }

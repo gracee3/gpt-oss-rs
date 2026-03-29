@@ -45,10 +45,25 @@ mod inner {
         path: &Path,
         stream: &Arc<CudaStream>,
     ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
+        load_weights_to_gpu_with_shapes_filtered(path, stream, |_| true)
+    }
+
+    /// Load safetensors weights as f32 while allowing callers to skip uploading
+    /// tensors they know are unnecessary on the current path. Shape metadata is
+    /// still preserved for skipped tensors so downstream sharding logic can
+    /// continue to operate on the full model topology.
+    pub fn load_weights_to_gpu_with_shapes_filtered<F>(
+        path: &Path,
+        stream: &Arc<CudaStream>,
+        should_load: F,
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)>
+    where
+        F: FnMut(&str) -> bool,
+    {
         if path.is_dir() {
-            load_sharded_to_gpu(path, stream)
+            load_sharded_to_gpu(path, stream, should_load)
         } else {
-            load_single_to_gpu(path, stream)
+            load_single_to_gpu(path, stream, should_load)
         }
     }
 
@@ -96,10 +111,14 @@ mod inner {
     // F32 path (unchanged)
     // -----------------------------------------------------------------------
 
-    fn load_single_to_gpu(
+    fn load_single_to_gpu<F>(
         path: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
+        mut should_load: F,
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)>
+    where
+        F: FnMut(&str) -> bool,
+    {
         info!("gpu_loader: memory-mapping {}", path.display());
 
         let file = std::fs::File::open(path)?;
@@ -123,6 +142,17 @@ mod inner {
 
             if dtype_str == "U8" {
                 debug!(tensor = name.as_str(), shape = ?shape, "skipping U8 tensor on f32 GPU path");
+                shapes.insert(name.clone(), shape);
+                continue;
+            }
+
+            if !should_load(name.as_str()) {
+                debug!(
+                    tensor = name.as_str(),
+                    dtype = dtype_str,
+                    shape = ?shape,
+                    "skipping tensor upload on filtered f32 GPU path"
+                );
                 shapes.insert(name.clone(), shape);
                 continue;
             }
@@ -158,10 +188,14 @@ mod inner {
         Ok((weights, shapes))
     }
 
-    fn load_sharded_to_gpu(
+    fn load_sharded_to_gpu<F>(
         dir: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
+        mut should_load: F,
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)>
+    where
+        F: FnMut(&str) -> bool,
+    {
         let shard_files = collect_shards(dir)?;
 
         info!(
@@ -173,7 +207,8 @@ mod inner {
         let mut all_weights: HashMap<String, CudaSlice<f32>> = HashMap::new();
         let mut all_shapes: HashMap<String, Vec<usize>> = HashMap::new();
         for shard_path in &shard_files {
-            let (shard_weights, shard_shapes) = load_single_to_gpu(shard_path, stream)?;
+            let (shard_weights, shard_shapes) =
+                load_single_to_gpu(shard_path, stream, &mut should_load)?;
             all_weights.extend(shard_weights);
             all_shapes.extend(shard_shapes);
         }
@@ -602,7 +637,8 @@ mod inner {
 #[cfg(feature = "cuda")]
 pub use inner::{
     load_u8_weights_to_host, load_weights_to_gpu, load_weights_to_gpu_f16,
-    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_with_shapes, GpuDType,
+    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_with_shapes,
+    load_weights_to_gpu_with_shapes_filtered, GpuDType,
 };
 
 #[cfg(test)]
