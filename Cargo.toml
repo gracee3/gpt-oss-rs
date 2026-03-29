@@ -24,6 +24,7 @@ members = [
     "crates/rvllm-bench",
     "crates/rvllm-server",
     "crates/rvllm-python",
+    "crates/rvllm-fusion",
 ]
 
 [workspace.package]
@@ -60,6 +61,7 @@ rvllm-api = { path = "crates/rvllm-api" }
 rvllm-quant = { path = "crates/rvllm-quant" }
 rvllm-speculative = { path = "crates/rvllm-speculative" }
 rvllm-telemetry = { path = "crates/rvllm-telemetry" }
+rvllm-fusion = { path = "crates/rvllm-fusion" }
 
 # External dependencies
 thiserror = "2"

@@ -2701,6 +2701,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvllm-fusion"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "rvllm-gpu"
 version = "0.1.0"
 dependencies = [

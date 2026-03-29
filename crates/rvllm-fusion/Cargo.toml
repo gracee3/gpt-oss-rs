@@ -1,0 +1,11 @@
+[package]
+name = "rvllm-fusion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Kernel fusion IR and compiler for rvLLM"
+authors.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tracing.workspace = true
