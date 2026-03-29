@@ -9,6 +9,10 @@
 use half::f16;
 use tracing::trace;
 
+use gpt_oss_moe_semantics::{
+    ExpertStorageBoundary, MoeSemanticSpec, RouterInputSpec,
+};
+
 use crate::bridge::{AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result};
 use crate::input::ModelInput;
 use crate::layers::linear::LinearLayer;
@@ -64,6 +68,7 @@ struct GptOssLayer {
 }
 
 struct GptOssMlp {
+    semantic_spec: MoeSemanticSpec,
     router_weight: GpuBuffer<f16>,
     router_bias: GpuBuffer<f16>,
     expert_storage: ExpertStorage,
@@ -78,6 +83,16 @@ enum ExpertStorage {
     Missing,
 }
 
+impl ExpertStorage {
+    fn semantic_storage_boundary(&self) -> ExpertStorageBoundary {
+        match self {
+            ExpertStorage::Unquantized(_) => ExpertStorageBoundary::Unquantized,
+            ExpertStorage::QuantizedMxfp4 => ExpertStorageBoundary::Mxfp4BlocksAndScales,
+            ExpertStorage::Missing => ExpertStorageBoundary::Missing,
+        }
+    }
+}
+
 struct GptOssExpertWeights {
     gate_up_proj: GpuBuffer<f16>,
     gate_up_proj_bias: GpuBuffer<f16>,
@@ -85,6 +100,12 @@ struct GptOssExpertWeights {
     down_proj_bias: GpuBuffer<f16>,
     hidden_size: usize,
     intermediate_size: usize,
+}
+
+impl GptOssMlp {
+    fn semantic_spec(&self) -> &MoeSemanticSpec {
+        &self.semantic_spec
+    }
 }
 
 impl GptOssForCausalLM {
@@ -145,6 +166,25 @@ impl GptOssForCausalLM {
                 cfg.hidden_size,
                 cfg.intermediate_size,
             );
+            let semantic_spec = MoeSemanticSpec::from_router_input(
+                RouterInputSpec::new(
+                    cfg.hidden_size,
+                    cfg.num_local_experts,
+                    cfg.num_experts_per_tok,
+                    true,
+                )
+                .map_err(|err| LLMError::ModelError(err.to_string()))?,
+                expert_storage.semantic_storage_boundary(),
+            )
+            .map_err(|err| LLMError::ModelError(err.to_string()))?;
+            trace!(
+                layer = i,
+                num_local_experts = semantic_spec.router_input.num_local_experts,
+                requested_top_k = semantic_spec.top_k.requested,
+                effective_top_k = semantic_spec.effective_top_k(),
+                storage = ?semantic_spec.storage_boundary,
+                "built gpt-oss moe semantic spec"
+            );
 
             layers.push(GptOssLayer {
                 input_layernorm: get_or_zeros(
@@ -204,6 +244,7 @@ impl GptOssForCausalLM {
                 sinks: get_or_zeros(&weights, &format!("{p}.self_attn.sinks"), &[cfg.num_heads]),
                 layer_type,
                 mlp: GptOssMlp {
+                    semantic_spec,
                     router_weight: get_or_zeros(
                         &weights,
                         &format!("{p}.mlp.router.weight"),
@@ -696,6 +737,24 @@ mod tests {
         let attention = MockAttentionBackend;
         let logits = model.forward(&test_input(), &cache, &attention).unwrap();
         assert_eq!(logits.shape, vec![2, 8]);
+    }
+
+    #[test]
+    fn gpt_oss_moe_semantic_spec_tracks_router_and_storage_metadata() {
+        let model =
+            GptOssForCausalLM::new(test_weights(true), &test_config("full_attention")).unwrap();
+        let spec = model.layers[0].mlp.semantic_spec();
+
+        assert_eq!(spec.router_input.hidden_size, 4);
+        assert_eq!(spec.router_input.num_local_experts, 1);
+        assert_eq!(spec.router_input.num_experts_per_tok, 1);
+        assert!(spec.router_input.has_router_bias);
+        assert_eq!(spec.top_k.requested, 1);
+        assert_eq!(spec.top_k.effective, 1);
+        assert!(matches!(
+            spec.storage_boundary,
+            ExpertStorageBoundary::Unquantized
+        ));
     }
 
     #[test]

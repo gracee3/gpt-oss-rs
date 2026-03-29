@@ -1,0 +1,17 @@
+[package]
+name = "gpt-oss-moe-semantics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Canonical MoE semantic types for gpt-oss-rs"
+keywords = ["gpt-oss", "moe", "semantics", "router", "inference"]
+categories = ["science", "hardware-support"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
