@@ -270,6 +270,11 @@ impl ModelRunnerGreedyBackend {
         self
     }
 
+    pub(crate) fn with_runtime_mode(mut self, runtime_mode: RuntimeMode) -> Self {
+        self.runtime_mode = runtime_mode;
+        self
+    }
+
     fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
         plan_request(
             &PlanRequest::new(
@@ -289,21 +294,14 @@ impl ModelRunnerGreedyBackend {
         )
         .expect("model runner conformance backend should be plannable")
     }
-}
 
-#[cfg(test)]
-impl ConformanceBackend for ModelRunnerGreedyBackend {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn run(&self, case: &ConformanceCase) -> ExecutionSample {
+    pub(crate) fn try_run(&self, case: &ConformanceCase) -> Result<ExecutionSample, String> {
         let input = model_input_from_case(case);
         let plan = self.plan_for_case(case);
         let logits_batch = self
             .runner
             .execute_model(input)
-            .expect("model runner backend should produce logits");
+            .map_err(|err| err.to_string())?;
         let vocab_size = self.runner.config.vocab_size;
         let logits = logits_batch.data[logits_batch.data.len() - vocab_size..].to_vec();
         let traced_selected_experts = self.traced_router_bias.as_ref().map(|router_bias| {
@@ -316,7 +314,7 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
             .collect::<Vec<_>>()
         });
 
-        ExecutionSample {
+        Ok(ExecutionSample {
             tokens: sample_tokens_from_logits(
                 &logits,
                 &case.sampling_params,
@@ -339,7 +337,19 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
                 self.runner.config.num_layers,
             ),
             plan: Some(plan),
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+impl ConformanceBackend for ModelRunnerGreedyBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn run(&self, case: &ConformanceCase) -> ExecutionSample {
+        self.try_run(case)
+            .expect("model runner backend should produce logits")
     }
 }
 
