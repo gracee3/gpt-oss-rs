@@ -30,12 +30,13 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+gpt-oss-gpu = { workspace = true, optional = true }
 gpt-oss-worker = { workspace = true, optional = true }
 gpt-oss-block-manager = { workspace = true, optional = true }
 
 [features]
 default = []
-cuda = ["dep:cudarc", "dep:gpt-oss-worker", "dep:gpt-oss-block-manager", "gpt-oss-worker?/cuda"]
+cuda = ["dep:cudarc", "dep:gpt-oss-gpu", "dep:gpt-oss-worker", "dep:gpt-oss-block-manager", "gpt-oss-worker?/cuda"]
 cublaslt = ["cuda", "gpt-oss-worker?/cublaslt"]
 
 [dev-dependencies]

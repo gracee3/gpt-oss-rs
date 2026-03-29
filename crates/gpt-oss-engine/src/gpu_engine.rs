@@ -104,6 +104,30 @@ mod inner {
             .collect()
     }
 
+    fn validate_parallel_topology(
+        config: &EngineConfig,
+        available_device_count: usize,
+    ) -> Result<()> {
+        let tp = config.parallel.tensor_parallel_size.max(1);
+        let pp = config.parallel.pipeline_parallel_size.max(1);
+
+        if pp > 1 {
+            return Err(LLMError::ConfigError(format!(
+                "pipeline_parallel_size={} is not supported yet",
+                config.parallel.pipeline_parallel_size
+            )));
+        }
+
+        if tp > available_device_count {
+            return Err(LLMError::ConfigError(format!(
+                "tensor_parallel_size={} requires at least {} CUDA devices, but only {} available",
+                config.parallel.tensor_parallel_size, tp, available_device_count
+            )));
+        }
+
+        Ok(())
+    }
+
     fn resolve_model_dir(model_name: &str) -> Result<PathBuf> {
         hf_snapshot::ensure_snapshot(model_name)
     }
@@ -551,6 +575,9 @@ mod inner {
                 intermediate = hf_config.intermediate_size,
                 "model config loaded"
             );
+
+            let available_devices = gpt_oss_gpu::device::list_devices();
+            validate_parallel_topology(&config, available_devices.len())?;
 
             if hf_config.architecture != "GptOssForCausalLM" {
                 return Err(LLMError::ModelError(format!(
@@ -1318,7 +1345,7 @@ mod inner {
         use gpt_oss_config::parallel::ParallelConfigImpl;
         use gpt_oss_core::types::Dtype;
 
-        fn make_engine_config(tp: usize, max_model_len: usize) -> EngineConfig {
+        fn make_engine_config(tp: usize, pp: usize, max_model_len: usize) -> EngineConfig {
             EngineConfig::builder()
                 .model(
                     ModelConfigImpl::builder()
@@ -1336,6 +1363,7 @@ mod inner {
                 .parallel(
                     ParallelConfigImpl::builder()
                         .tensor_parallel_size(tp)
+                        .pipeline_parallel_size(pp)
                         .build(),
                 )
                 .build()
@@ -1369,7 +1397,7 @@ mod inner {
         #[test]
         fn build_worker_configs_assigns_rank_and_device_per_tp_slot() {
             let configs =
-                build_worker_configs(&make_engine_config(4, 16384), &make_hf_config()).unwrap();
+                build_worker_configs(&make_engine_config(4, 1, 16384), &make_hf_config()).unwrap();
             assert_eq!(configs.len(), 4);
             for (rank, cfg) in configs.iter().enumerate() {
                 assert_eq!(cfg.rank, rank);
@@ -1381,8 +1409,30 @@ mod inner {
         #[test]
         fn build_worker_configs_clamps_model_len_to_model_cap() {
             let configs =
-                build_worker_configs(&make_engine_config(2, 200000), &make_hf_config()).unwrap();
+                build_worker_configs(&make_engine_config(2, 1, 200000), &make_hf_config()).unwrap();
             assert_eq!(configs[0].max_model_len, 131072);
+        }
+
+        #[test]
+        fn validate_parallel_topology_accepts_single_pipeline_with_enough_devices() {
+            validate_parallel_topology(&make_engine_config(2, 1, 16384), 2).unwrap();
+        }
+
+        #[test]
+        fn validate_parallel_topology_rejects_unsupported_pipeline_parallelism() {
+            let err = validate_parallel_topology(&make_engine_config(1, 2, 16384), 4)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("pipeline_parallel_size=2"));
+        }
+
+        #[test]
+        fn validate_parallel_topology_requires_enough_devices_for_tp() {
+            let err = validate_parallel_topology(&make_engine_config(4, 1, 16384), 2)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("tensor_parallel_size=4"));
+            assert!(err.contains("only 2 available"));
         }
     }
 
