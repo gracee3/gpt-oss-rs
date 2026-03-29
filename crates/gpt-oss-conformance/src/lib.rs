@@ -271,6 +271,33 @@ mod tests {
         )
     }
 
+    fn biased_two_layer_full_attention_moe_both_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-2layer-moe-both-biased",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 2,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into(), "full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 3,
+                    num_experts_per_tok: 2,
+                    router_bias: vec![0.0, 1.0, 2.0],
+                    moe_layer_indices: vec![0, 1],
+                },
+            },
+        )
+    }
+
     fn two_layer_full_attention_moe_both_multiblock_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
             "planned-reference-2layer-moe-both-multiblock",
@@ -431,6 +458,27 @@ mod tests {
 
     fn runner_weights_with_experts(num_local_experts: usize) -> BridgeModelWeights {
         runner_weights_with_layers(1, num_local_experts, &[0])
+    }
+
+    fn runner_weights_with_layers_and_router_bias(
+        num_layers: usize,
+        num_local_experts: usize,
+        moe_layers: &[usize],
+        router_bias_layers: &[(usize, &[f32])],
+    ) -> BridgeModelWeights {
+        let mut weights = runner_weights_with_layers(num_layers, num_local_experts, moe_layers);
+        for (layer_index, router_bias) in router_bias_layers {
+            let name = format!("model.layers.{layer_index}.mlp.router.bias");
+            weights.tensors.insert(
+                name.clone(),
+                WeightTensor {
+                    name,
+                    data: router_bias.iter().map(|&v| f16::from_f32(v)).collect(),
+                    shape: vec![router_bias.len()],
+                },
+            );
+        }
+        weights
     }
 
     fn runner_weights_with_layers(
@@ -1283,6 +1331,76 @@ mod tests {
             vec![0, 1],
         );
         let reference = two_layer_full_attention_moe_both_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn biased_two_layer_full_attention_both_layers_moe_decode_parity_matches() {
+        let case = ConformanceCase::decode("two-layer-both-moe-biased-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_layers_and_router_bias(
+                    2,
+                    3,
+                    &[0, 1],
+                    &[(0, &[0.0, 1.0, 2.0]), (1, &[0.0, 1.0, 2.0])],
+                ),
+                runner_config_with_layers(
+                    2,
+                    vec!["full_attention".into(), "full_attention".into()],
+                    3,
+                    2,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![0, 1])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = biased_two_layer_full_attention_moe_both_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn biased_two_layer_full_attention_both_layers_moe_prefill_parity_matches() {
+        let case = ConformanceCase::prefill("two-layer-both-moe-biased-prefill", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_layers_and_router_bias(
+                    2,
+                    3,
+                    &[0, 1],
+                    &[(0, &[0.0, 1.0, 2.0]), (1, &[0.0, 1.0, 2.0])],
+                ),
+                runner_config_with_layers(
+                    2,
+                    vec!["full_attention".into(), "full_attention".into()],
+                    3,
+                    2,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![0, 1])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = biased_two_layer_full_attention_moe_both_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
