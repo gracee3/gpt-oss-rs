@@ -52,6 +52,18 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         || name.ends_with("mlp.experts.down_proj_bias")
 }
 
+fn is_gpt_oss_sink_weight(name: &str) -> bool {
+    name.ends_with("self_attn.sinks")
+}
+
+fn has_nonzero_gpt_oss_sink_tensor<'a>(
+    tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
+) -> bool {
+    tensors
+        .into_iter()
+        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var_os(name)
         .map(|value| value != "0")
@@ -557,6 +569,9 @@ impl GpuWorker {
             all_weights_loaded
         };
 
+        #[cfg(feature = "cuda")]
+        self.reject_unsupported_gpt_oss_sink_attention(&all_weights_full)?;
+
         // Preserve a clone of the raw weight map for deferred GpuModelRunner construction
         #[cfg(feature = "cuda")]
         {
@@ -702,6 +717,33 @@ impl GpuWorker {
             device_id = self.device_id,
             "model weights loaded to GPU successfully"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    fn reject_unsupported_gpt_oss_sink_attention(
+        &self,
+        weights: &HashMap<String, CudaSlice<f32>>,
+    ) -> Result<()> {
+        if self.config.runtime_mode != gpt_oss_runtime_plan::RuntimeMode::Trusted
+            || self.config.architecture != "GptOssForCausalLM"
+        {
+            return Ok(());
+        }
+
+        for (name, tensor) in weights {
+            if !is_gpt_oss_sink_weight(name) {
+                continue;
+            }
+
+            let host = self.stream.clone_dtoh(tensor).map_err(gpu_err)?;
+            if host.iter().any(|value| *value != 0.0) {
+                return Err(LLMError::ConfigError(format!(
+                    "trusted GPT-OSS mode rejects attention sinks until runtime support and parity are proven: {name}"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -2355,6 +2397,30 @@ fn gpu_err(e: impl std::fmt::Display) -> LLMError {
 mod tests {
     use super::*;
     use gpt_oss_core::prelude::{RequestId, SequenceId};
+
+    #[test]
+    fn sink_tensor_detector_ignores_zero_sinks() {
+        let tensors = vec![
+            ("model.layers.0.self_attn.sinks", vec![0.0, 0.0]),
+            ("model.layers.0.self_attn.q_proj.bias", vec![1.0]),
+        ];
+
+        assert!(!has_nonzero_gpt_oss_sink_tensor(
+            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+        ));
+    }
+
+    #[test]
+    fn sink_tensor_detector_flags_nonzero_sinks() {
+        let tensors = vec![
+            ("model.layers.0.self_attn.sinks", vec![0.0, 1.0]),
+            ("model.layers.1.self_attn.sinks", vec![0.0, 0.0]),
+        ];
+
+        assert!(has_nonzero_gpt_oss_sink_tensor(
+            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+        ));
+    }
 
     fn make_seq_data(prompt: Vec<TokenId>, output: Vec<TokenId>) -> SequenceData {
         SequenceData {
