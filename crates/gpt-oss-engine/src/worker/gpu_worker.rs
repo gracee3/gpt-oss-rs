@@ -16,6 +16,7 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use gpt_oss_core::prelude::{BlockId, LLMError, Result, SamplingParams, TokenId};
 use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
+use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 use gpt_oss_model_runner::gpu_runner::ForwardOutput;
@@ -1248,22 +1249,59 @@ impl GpuWorker {
     ) -> Result<ForwardOutput> {
         self.forward_count += 1;
 
-        // Only use graphs for pure decode steps with greedy sampling
         let is_decode = !model_input.is_prefill
             && model_input
                 .attention_metadata
                 .query_lens
                 .iter()
                 .all(|&q| q == 1);
+        let actual_batch = model_input.num_tokens();
+        let graph_padded_batch_size = if is_decode && greedy_only && self.graph_runner.is_enabled()
+        {
+            gpt_oss_gpu::cuda_graph::padded_batch_size(actual_batch)
+        } else {
+            None
+        };
+        const GRAPH_MAX_BATCH_SIZE: usize = 32;
+        let plan = plan_request(&PlanRequest::new(
+            self.config.runtime_mode,
+            self.config.model_name.clone(),
+            model_input.is_prefill,
+            greedy_only,
+            self.graph_runner.is_enabled(),
+            GRAPH_MAX_BATCH_SIZE,
+            graph_padded_batch_size,
+            self.config.dtype,
+        ))
+        .map_err(|e| LLMError::ConfigError(e.to_string()))?;
+        trace!(
+            runtime_mode = ?plan.runtime_mode,
+            model = %plan.model_name,
+            request_kind = ?plan.request_kind,
+            backend = ?plan.backend_path,
+            graph_policy = ?plan.graph_policy,
+            output_policy = ?plan.output_policy,
+            reason = %plan.reason,
+            "planned GPU forward path"
+        );
 
-        if !is_decode || !greedy_only || !self.graph_runner.is_enabled() {
-            return self.raw_gpu_forward_ex(model_input, greedy_only);
+        match plan.backend_path {
+            BackendPath::CudaEager => return self.raw_gpu_forward_ex(model_input, greedy_only),
+            BackendPath::CudaGraph => {}
+            BackendPath::Mock => {
+                return Err(LLMError::GpuError(format!(
+                    "planner selected mock backend for {}",
+                    self.config.model_name
+                )))
+            }
         }
 
-        let actual_batch = model_input.num_tokens();
-        let padded = match gpt_oss_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 32 => p,
-            _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
+        let padded = match plan.graph_policy {
+            GraphPolicy::Eligible { padded_batch_size } => padded_batch_size,
+            GraphPolicy::Forbidden { ref reason } => {
+                trace!(%reason, "graph plan fell back to eager execution");
+                return self.raw_gpu_forward_ex(model_input, greedy_only);
+            }
         };
 
         // Pad the input to the graph batch size
@@ -2271,6 +2309,8 @@ fn worker_config_from_engine(
     config: &gpt_oss_engine::config::EngineConfig,
 ) -> WorkerConfig {
     WorkerConfig {
+        model_name: model_path.into(),
+        runtime_mode: config.runtime_mode,
         device_id: 0,
         num_layers: 32,
         num_kv_heads: 32,

@@ -45,7 +45,8 @@ pub use block_manager::{
 };
 pub use config::{
     load_config, validate, CacheConfigImpl, CliArgs, ConfigError, DeviceConfig, EngineConfig,
-    ModelConfigImpl, ParallelConfigImpl, PreemptionMode, SchedulerConfigImpl, TelemetryConfig,
+    ModelConfigImpl, ParallelConfigImpl, PreemptionMode, RuntimeMode, SchedulerConfigImpl,
+    TelemetryConfig,
 };
 pub use engine::LLMEngine;
 pub use engine::{Executor, ExecutorAdapter, Scheduler};

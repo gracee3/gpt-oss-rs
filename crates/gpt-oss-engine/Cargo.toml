@@ -17,6 +17,7 @@ gpt-oss-core.workspace = true
 gpt-oss-gpu.workspace = true
 gpt-oss-model-runner.workspace = true
 gpt-oss-tokenizer.workspace = true
+gpt-oss-runtime-plan.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true

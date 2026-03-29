@@ -2,6 +2,7 @@
 
 use gpt_oss_core::prelude::{LLMError, Result};
 use gpt_oss_core::types::Dtype;
+use gpt_oss_runtime_plan::RuntimeMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TensorParallelDims {
@@ -13,6 +14,10 @@ pub struct TensorParallelDims {
 /// Configuration for a single GPU worker instance.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
+    /// Model name or repo id used for trust-tier and planner decisions.
+    pub model_name: String,
+    /// Runtime trust tier for this worker.
+    pub runtime_mode: RuntimeMode,
     /// GPU device ordinal this worker owns.
     pub device_id: usize,
     /// Number of transformer layers.
@@ -166,6 +171,8 @@ mod tests {
 
     fn make_config() -> WorkerConfig {
         WorkerConfig {
+            model_name: "openai/gpt-oss-20b".into(),
+            runtime_mode: RuntimeMode::Experimental,
             device_id: 0,
             num_layers: 24,
             num_kv_heads: 8,
