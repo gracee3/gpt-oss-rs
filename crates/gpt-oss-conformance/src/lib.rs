@@ -472,6 +472,16 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("trace frame count differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("frame 1 label differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event layer differs")));
     }
 
     #[test]
@@ -509,6 +519,16 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("trace frame count differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("frame 1 label differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event layer differs")));
     }
 
     #[test]
@@ -546,6 +566,16 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("trace frame count differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("frame 1 label differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event layer differs")));
     }
 
     #[test]
@@ -583,5 +613,15 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("trace frame count differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("frame 1 label differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event layer differs")));
     }
 }

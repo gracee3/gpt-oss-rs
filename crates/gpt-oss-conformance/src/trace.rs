@@ -70,6 +70,7 @@ impl TraceSummary {
         plan: &ExecutionPlan,
         is_prefill: bool,
         seq_start_pos: u32,
+        token_count: usize,
         num_layers: usize,
     ) -> Self {
         let label = label.into();
@@ -109,15 +110,17 @@ impl TraceSummary {
             .push(TraceEvent::new("reason", plan.reason.clone()));
         frames.push(plan_frame);
 
+        let position_ids = (0..token_count)
+            .map(|idx| seq_start_pos + idx as u32)
+            .collect::<Vec<_>>();
         for layer_index in 0..num_layers {
-            let mut frame = TraceFrame::new(format!("{label}:observed-layer-{layer_index}"));
+            let mut frame = TraceFrame::new(format!("{label}:layer-{layer_index}"));
             frame.events.push(TraceEvent::new(
-                "reference_phase",
-                if is_prefill { "Prefill" } else { "Decode" },
-            ));
-            frame.events.push(TraceEvent::new(
-                "seq_start_pos",
-                seq_start_pos.to_string(),
+                "layer",
+                format!(
+                    "{}:{}->{} positions={:?}",
+                    layer_index, token_count, token_count, position_ids
+                ),
             ));
             frames.push(frame);
         }

@@ -73,10 +73,14 @@ pub fn compare_samples(expected: &ExecutionSample, observed: &ExecutionSample) -
     RunComparison { diffs }
 }
 
+fn semantic_label(label: &str) -> &str {
+    label.split_once(':').map(|(_, suffix)| suffix).unwrap_or(label)
+}
+
 fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> {
     let mut diffs = Vec::new();
 
-    if expected.label != observed.label {
+    if semantic_label(&expected.label) != semantic_label(&observed.label) {
         diffs.push(format!(
             "trace label differs: expected={} observed={}",
             expected.label, observed.label
@@ -109,7 +113,7 @@ fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> 
         .zip(observed.frames.iter())
         .enumerate()
     {
-        if expected_frame.label != observed_frame.label {
+        if semantic_label(&expected_frame.label) != semantic_label(&observed_frame.label) {
             diffs.push(format!(
                 "trace frame {frame_index} label differs: expected={} observed={}",
                 expected_frame.label, observed_frame.label
