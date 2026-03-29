@@ -677,7 +677,8 @@ impl GpuWorker {
                 info!("FP16 inference enabled (hgemm path)");
                 // Fuse QKV and gate+up weights for fewer GEMM calls per layer.
                 if let Err(e) = runner.fuse_weights() {
-                    warn!("weight fusion failed: {e} -- using unfused path");
+                    warn!("weight fusion failed: {e} -- falling back to f32 forward path");
+                    runner.disable_fp16();
                 }
             }
 
@@ -1065,7 +1066,7 @@ impl GpuWorker {
 
         let actual_batch = model_input.num_tokens();
         let padded = match rvllm_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 256 => p,
+            Some(p) if p <= 128 => p,
             _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
         };
 
