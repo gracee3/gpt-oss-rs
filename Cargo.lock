@@ -1377,6 +1377,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-conformance"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "gpt-oss-reference",
+ "gpt-oss-runtime-plan",
+ "serde",
+]
+
+[[package]]
 name = "gpt-oss-core"
 version = "0.1.0"
 dependencies = [
@@ -1452,6 +1462,26 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "gpt-oss-reference"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-runtime-plan"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "gpt-oss-core",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

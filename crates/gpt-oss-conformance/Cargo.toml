@@ -1,0 +1,19 @@
+[package]
+name = "gpt-oss-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+gpt-oss-core = { workspace = true }
+gpt-oss-reference = { workspace = true }
+gpt-oss-runtime-plan = { workspace = true }
+serde = { workspace = true }
+
