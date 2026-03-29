@@ -230,8 +230,8 @@ impl ReferenceExecutor {
         }
 
         self.effective_top_k() == 0
-            || (self.effective_top_k() == 1
-                && self.config.num_local_experts == 1
+            || (self.effective_top_k() == self.config.num_local_experts
+                && self.config.num_local_experts > 0
                 && self.config.moe_layer_indices.iter().all(|layer| {
                     matches!(self.layer_type(*layer), "full_attention" | "global_attention")
                 }))

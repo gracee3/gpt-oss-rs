@@ -152,13 +152,15 @@ impl TraceSummary {
                     ),
                 ));
             }
-            if traced_num_local_experts == 1
-                && traced_num_experts_per_tok == 1
-                && traced_moe_layer_indices.contains(&layer_index)
-            {
+            let effective_top_k = traced_num_experts_per_tok.min(traced_num_local_experts);
+            if effective_top_k > 0 && traced_moe_layer_indices.contains(&layer_index) {
                 frame.events.push(TraceEvent::new(
                     "moe",
-                    format!("SparseTopK/{} selected={:?}", token_count, vec![vec![0]; token_count]),
+                    format!(
+                        "SparseTopK/{} selected={:?}",
+                        token_count * effective_top_k,
+                        vec![(0..effective_top_k).collect::<Vec<_>>(); token_count]
+                    ),
                 ));
             } else {
                 frame.events.push(TraceEvent::new("moe", "DenseOnly/0 selected=[]"));
