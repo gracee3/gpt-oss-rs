@@ -128,6 +128,7 @@ pub async fn create_response(
         store = req.store,
         tools = req.tools_enabled(),
         previous_response = req.previous_response_id.as_deref().unwrap_or("none"),
+        runtime = %state.runtime_decision.summary(),
         "responses request"
     );
 
@@ -1335,6 +1336,11 @@ mod tests {
         let state = Arc::new(AppState::new(
             engine.clone(),
             model_name.to_string(),
+            crate::runtime_policy::RuntimeDecision {
+                runtime_mode: gpt_oss_engine::RuntimeMode::Experimental,
+                backend_path: crate::runtime_policy::RuntimeBackendPath::Mock,
+                reason: "test mock backend".into(),
+            },
             make_test_tokenizer(),
         ));
         let server = TestServer::new(build_router(state)).unwrap();

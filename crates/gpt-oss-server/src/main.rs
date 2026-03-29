@@ -6,6 +6,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use gpt_oss_core::types::Dtype;
+use gpt_oss_engine::RuntimeMode;
 use tracing::info;
 
 use gpt_oss_server::runtime_policy::{
@@ -39,6 +40,8 @@ enum Commands {
         tensor_parallel_size: usize,
         #[arg(long, default_value_t = 256)]
         max_num_seqs: usize,
+        #[arg(long, value_enum, default_value_t = RuntimeMode::Experimental)]
+        runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
         profile: ServeProfile,
         #[arg(long)]
@@ -160,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
             gpu_memory_utilization,
             tensor_parallel_size,
             max_num_seqs,
+            runtime_mode,
             profile,
             tokenizer,
             log_level,
@@ -198,6 +202,7 @@ async fn main() -> anyhow::Result<()> {
                             .gpu_memory_utilization(resolved_profile.gpu_memory_utilization)
                             .build(),
                     )
+                    .runtime_mode(runtime_mode)
                     .scheduler(
                         SchedulerConfigImpl::builder()
                             .max_num_seqs(max_num_seqs)
@@ -227,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
                 host = %host,
                 port = port,
                 dtype = %dtype,
+                runtime_mode = ?runtime_mode,
                 profile = ?resolved_profile.profile,
                 max_model_len = resolved_profile.max_model_len,
                 gpu_memory_utilization = resolved_profile.gpu_memory_utilization,

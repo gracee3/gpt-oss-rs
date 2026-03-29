@@ -35,6 +35,7 @@ pub async fn create_completion(
         model = %req.model,
         stream = req.stream,
         max_tokens = req.max_tokens,
+        runtime = %state.runtime_decision.summary(),
         "completion request"
     );
 
