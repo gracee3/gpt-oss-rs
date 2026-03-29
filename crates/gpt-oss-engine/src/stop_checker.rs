@@ -10,8 +10,9 @@ impl StopChecker {
     ///
     /// Checks in order:
     /// 1. EOS token produced
-    /// 2. Max tokens reached
-    /// 3. Stop string found in decoded text
+    /// 2. Explicit stop token produced
+    /// 3. Max tokens reached
+    /// 4. Stop string found in decoded text
     pub fn check_stop(
         text: &str,
         output_token_ids: &[TokenId],
@@ -23,6 +24,13 @@ impl StopChecker {
             if output_token_ids.last().copied() == Some(eos) {
                 return Some(FinishReason::Stop);
             }
+        }
+
+        if output_token_ids
+            .last()
+            .is_some_and(|token| params.stop_token_ids.contains(token))
+        {
+            return Some(FinishReason::Stop);
         }
 
         // Check max tokens
@@ -95,6 +103,14 @@ mod tests {
         params.max_tokens = 3;
         let result = StopChecker::check_stop("abc", &[1, 2, 3], &params, None);
         assert_eq!(result, Some(FinishReason::Length));
+    }
+
+    #[test]
+    fn stop_on_explicit_stop_token() {
+        let mut params = default_params();
+        params.stop_token_ids = vec![42, 99];
+        let result = StopChecker::check_stop("abc", &[1, 2, 42], &params, None);
+        assert_eq!(result, Some(FinishReason::Stop));
     }
 
     #[test]

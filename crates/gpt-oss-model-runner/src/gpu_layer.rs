@@ -1101,7 +1101,9 @@ mod inner {
                     num_tokens * hidden,
                     &cast_f16_f32,
                 )?;
-                let moe_out = if moe.supports_gpu_decode() {
+                let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
+                    moe.forward(&self.stream, &normed2_f32)?
+                } else {
                     moe.forward_decode_gpu(
                         &self.stream,
                         &self.loader,
@@ -1109,8 +1111,6 @@ mod inner {
                         &normed2_f32,
                         num_tokens,
                     )?
-                } else {
-                    moe.forward(&self.stream, &normed2_f32)?
                 };
                 Self::cast_f32_to_f16(&self.stream, &moe_out, num_tokens * hidden, &cast_f32_f16)?
             } else {

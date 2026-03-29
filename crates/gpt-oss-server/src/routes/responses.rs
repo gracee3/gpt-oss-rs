@@ -14,6 +14,7 @@ use tracing::info;
 
 use crate::error::ApiError;
 use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style};
+use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::responses::{
@@ -71,54 +72,67 @@ pub async fn create_response(
             .map(StoredConversationItem::Input),
     );
 
-    let prompt_style = preferred_tool_prompt_style(&state.model_name);
-    let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
-    if prompt_messages.is_empty() {
-        return Err(ApiError::InvalidRequest(
-            "input must not be empty for /v1/responses".into(),
-        ));
-    }
+    let function_tools = req.normalize_function_tools()?;
+    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    let use_harmony = is_gpt_oss_model(&state.model_name);
+    let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = function_tools
+        .iter()
+        .map(|tool| tool.to_tool_definition())
+        .collect();
+    let (prompt, prompt_token_ids, sampling_params) = if use_harmony {
+        let prompt = gpt_oss_tokenizer::render_harmony_prompt(
+            &render_harmony_conversation_items(&conversation_items),
+            req.instructions.as_deref(),
+            if req.tools_enabled() { &tool_defs } else { &[] },
+        )
+        .map_err(|e| ApiError::Internal(format!("harmony prompt error: {}", e)))?;
+        let mut sampling_params = req.to_sampling_params();
+        sampling_params.stop_token_ids = prompt.stop_token_ids.clone();
+        (prompt.prompt, Some(prompt.prompt_token_ids), sampling_params)
+    } else {
+        let prompt_style = preferred_tool_prompt_style(&state.model_name);
+        let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
+        if prompt_messages.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "input must not be empty for /v1/responses".into(),
+            ));
+        }
 
-    let mut templated_messages = prompt_messages.clone();
-    if let Some(instructions) = req.instructions.clone() {
-        if !instructions.is_empty() {
-            templated_messages.insert(
-                0,
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: instructions,
-                },
+        let mut templated_messages = prompt_messages.clone();
+        if let Some(instructions) = req.instructions.clone() {
+            if !instructions.is_empty() {
+                templated_messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: instructions,
+                    },
+                );
+            }
+        }
+
+        if req.tools_enabled() {
+            templated_messages = augment_messages_with_tools(
+                &templated_messages,
+                &tool_defs,
+                preferred_tool_prompt_style(&state.model_name),
             );
         }
-    }
 
-    let function_tools = req.normalize_function_tools()?;
-    if req.tools_enabled() {
-        let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = function_tools
+        let tokenizer_messages: Vec<gpt_oss_tokenizer::ChatMessage> = templated_messages
             .iter()
-            .map(|tool| tool.to_tool_definition())
+            .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
             .collect();
-        templated_messages = augment_messages_with_tools(
-            &templated_messages,
-            &tool_defs,
-            preferred_tool_prompt_style(&state.model_name),
-        );
-    }
 
-    let tokenizer_messages: Vec<gpt_oss_tokenizer::ChatMessage> = templated_messages
-        .iter()
-        .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
-        .collect();
+        let prompt = state
+            .tokenizer
+            .read()
+            .await
+            .apply_chat_template(&tokenizer_messages, true)
+            .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?;
+        (prompt, None, req.to_sampling_params())
+    };
 
-    let prompt = state
-        .tokenizer
-        .read()
-        .await
-        .apply_chat_template(&tokenizer_messages, true)
-        .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?;
-
-    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
-    let sampling_params = req.to_sampling_params();
     let tool_choice = req.effective_tool_choice();
     let response_tools = req.tools.clone().unwrap_or_default();
 
@@ -137,7 +151,9 @@ pub async fn create_response(
                 state,
                 req,
                 prompt,
+                prompt_token_ids,
                 sampling_params,
+                use_harmony,
                 response_id,
                 input_items,
                 conversation_items,
@@ -153,12 +169,22 @@ pub async fn create_response(
         let response_id_clone = response_id.clone();
         let tool_choice_clone = tool_choice.clone();
         let response_tools_clone = response_tools.clone();
+        let use_harmony_clone = use_harmony;
+        let function_tools_clone = function_tools.clone();
 
-        let (_request_id, mut output_stream) = state
-            .engine
-            .generate(prompt, sampling_params)
-            .await
-            .map_err(ApiError::from)?;
+        let (_request_id, mut output_stream) = if let Some(prompt_token_ids) = prompt_token_ids {
+            state
+                .engine
+                .generate_token_ids(prompt, prompt_token_ids, sampling_params)
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            state
+                .engine
+                .generate(prompt, sampling_params)
+                .await
+                .map_err(ApiError::from)?
+        };
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(16);
 
@@ -306,9 +332,41 @@ pub async fn create_response(
                 return;
             };
 
-            let output_items = vec![ResponseOutputItem::Message(
-                ResponseOutputMessage::completed(message_id.clone(), full_text.clone()),
-            )];
+            let output_items = if use_harmony_clone {
+                match response_output_items_from_tokens(
+                    &response_id_clone,
+                    &output.outputs.first().map(|choice| choice.token_ids.clone()).unwrap_or_default(),
+                    &req_clone,
+                    &function_tools_clone,
+                    &tool_choice_clone,
+                )
+                .or_else(|_| {
+                    response_output_items_from_text(
+                        &response_id_clone,
+                        &full_text,
+                        &req_clone,
+                        &function_tools_clone,
+                        &tool_choice_clone,
+                    )
+                }) {
+                    Ok(items) => items,
+                    Err(_) => return,
+                }
+            } else {
+                vec![ResponseOutputItem::Message(ResponseOutputMessage::completed(
+                    message_id.clone(),
+                    full_text.clone(),
+                ))]
+            };
+            if use_harmony_clone {
+                full_text = output_items
+                    .iter()
+                    .find_map(|item| match item {
+                        ResponseOutputItem::Message(message) => Some(message.to_chat_message().content),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+            }
             let response = ResponseObject::completed(
                 response_id_clone.clone(),
                 model.clone(),
@@ -415,11 +473,19 @@ pub async fn create_response(
             .unwrap()
             .into_response())
     } else {
-        let (_request_id, mut output_stream) = state
-            .engine
-            .generate(prompt, sampling_params)
-            .await
-            .map_err(ApiError::from)?;
+        let (_request_id, mut output_stream) = if let Some(prompt_token_ids) = prompt_token_ids {
+            state
+                .engine
+                .generate_token_ids(prompt, prompt_token_ids, sampling_params)
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            state
+                .engine
+                .generate(prompt, sampling_params)
+                .await
+                .map_err(ApiError::from)?
+        };
 
         let mut last_output = None;
         while let Some(output) = output_stream.next().await {
@@ -485,7 +551,9 @@ async fn stream_tool_response(
     state: Arc<AppState>,
     req: CreateResponseRequest,
     prompt: String,
+    prompt_token_ids: Option<Vec<u32>>,
     sampling_params: gpt_oss_core::prelude::SamplingParams,
+    use_harmony: bool,
     response_id: String,
     input_items: Vec<ResponseInputItem>,
     conversation_items: Vec<StoredConversationItem>,
@@ -495,11 +563,19 @@ async fn stream_tool_response(
     let tool_choice = req.effective_tool_choice();
     let response_tools = req.tools.clone().unwrap_or_default();
 
-    let (_request_id, mut output_stream) = state
-        .engine
-        .generate(prompt, sampling_params)
-        .await
-        .map_err(ApiError::from)?;
+    let (_request_id, mut output_stream) = if let Some(prompt_token_ids) = prompt_token_ids {
+        state
+            .engine
+            .generate_token_ids(prompt, prompt_token_ids, sampling_params)
+            .await
+            .map_err(ApiError::from)?
+    } else {
+        state
+            .engine
+            .generate(prompt, sampling_params)
+            .await
+            .map_err(ApiError::from)?
+    };
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
 
@@ -569,71 +645,131 @@ async fn stream_tool_response(
         while let Some(output) = output_stream.next().await {
             if let Some(choice) = output.outputs.first() {
                 full_text = choice.text.clone();
-                let parse_result =
-                    gpt_oss_tokenizer::parse_tool_calls(&full_text, &format!("{response_id}_0_"));
+                if !use_harmony {
+                    let parse_result = gpt_oss_tokenizer::parse_tool_calls(
+                        &full_text,
+                        &format!("{response_id}_0_"),
+                    );
 
-                if let gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls } =
-                    parse_result
-                {
-                    saw_tool_calls = true;
+                    if let gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls } =
+                        parse_result
+                    {
+                        saw_tool_calls = true;
 
-                    if !prefix_text.is_empty() {
-                        if prefix_state.is_none() {
-                            let item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-                            if tx
-                                .send(Ok(format_sse_event(
-                                    "response.output_item.added",
-                                    &serde_json::json!({
-                                        "type": "response.output_item.added",
-                                        "response_id": response_id,
-                                        "output_index": 0,
-                                        "item": ResponseOutputItem::Message(
-                                            ResponseOutputMessage::in_progress(item_id.clone())
-                                        ),
-                                    }),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                return;
+                        if !prefix_text.is_empty() {
+                            if prefix_state.is_none() {
+                                let item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+                                if tx
+                                    .send(Ok(format_sse_event(
+                                        "response.output_item.added",
+                                        &serde_json::json!({
+                                            "type": "response.output_item.added",
+                                            "response_id": response_id,
+                                            "output_index": 0,
+                                            "item": ResponseOutputItem::Message(
+                                                ResponseOutputMessage::in_progress(item_id.clone())
+                                            ),
+                                        }),
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                if tx
+                                    .send(Ok(format_sse_event(
+                                        "response.content_part.added",
+                                        &serde_json::json!({
+                                            "type": "response.content_part.added",
+                                            "item_id": item_id,
+                                            "output_index": 0,
+                                            "content_index": 0,
+                                            "part": {
+                                                "type": "output_text",
+                                                "text": "",
+                                                "annotations": [],
+                                            },
+                                        }),
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                prefix_state = Some(StreamedMessageState {
+                                    id: item_id,
+                                    text: String::new(),
+                                });
                             }
-                            if tx
-                                .send(Ok(format_sse_event(
-                                    "response.content_part.added",
-                                    &serde_json::json!({
-                                        "type": "response.content_part.added",
-                                        "item_id": item_id,
-                                        "output_index": 0,
-                                        "content_index": 0,
-                                        "part": {
-                                            "type": "output_text",
-                                            "text": "",
-                                            "annotations": [],
-                                        },
-                                    }),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                return;
+
+                            if let Some(state) = prefix_state.as_mut() {
+                                let delta = diff_text(&state.text, &prefix_text);
+                                if !delta.is_empty()
+                                    && tx
+                                        .send(Ok(format_sse_event(
+                                            "response.output_text.delta",
+                                            &serde_json::json!({
+                                                "type": "response.output_text.delta",
+                                                "item_id": state.id,
+                                                "output_index": 0,
+                                                "content_index": 0,
+                                                "delta": delta,
+                                            }),
+                                        )))
+                                        .await
+                                        .is_err()
+                                {
+                                    return;
+                                }
+                                state.text = prefix_text;
                             }
-                            prefix_state = Some(StreamedMessageState {
-                                id: item_id,
-                                text: String::new(),
-                            });
                         }
 
-                        if let Some(state) = prefix_state.as_mut() {
-                            let delta = diff_text(&state.text, &prefix_text);
+                        let tool_offset = usize::from(prefix_state.is_some());
+                        for (index, call) in calls.into_iter().enumerate() {
+                            if tool_states.len() <= index {
+                                let item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
+                                let output_index = tool_offset + index;
+                                if tx
+                                    .send(Ok(format_sse_event(
+                                        "response.output_item.added",
+                                        &serde_json::json!({
+                                            "type": "response.output_item.added",
+                                            "response_id": response_id,
+                                            "output_index": output_index,
+                                            "item": ResponseOutputItem::FunctionCall(
+                                                ResponseFunctionCallItem::in_progress(
+                                                    item_id.clone(),
+                                                    call.id.clone(),
+                                                    call.name.clone(),
+                                                )
+                                            ),
+                                        }),
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                tool_states.push(StreamedFunctionCallState {
+                                    id: item_id,
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    arguments: String::new(),
+                                });
+                            }
+
+                            let state = &mut tool_states[index];
+                            let delta = diff_text(&state.arguments, &call.arguments);
                             if !delta.is_empty()
                                 && tx
                                     .send(Ok(format_sse_event(
-                                        "response.output_text.delta",
+                                        "response.function_call_arguments.delta",
                                         &serde_json::json!({
-                                            "type": "response.output_text.delta",
+                                            "type": "response.function_call_arguments.delta",
+                                            "response_id": response_id,
                                             "item_id": state.id,
-                                            "output_index": 0,
-                                            "content_index": 0,
+                                            "output_index": tool_offset + index,
                                             "delta": delta,
                                         }),
                                     )))
@@ -642,64 +778,8 @@ async fn stream_tool_response(
                             {
                                 return;
                             }
-                            state.text = prefix_text;
+                            state.arguments = call.arguments;
                         }
-                    }
-
-                    let tool_offset = usize::from(prefix_state.is_some());
-                    for (index, call) in calls.into_iter().enumerate() {
-                        if tool_states.len() <= index {
-                            let item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
-                            let output_index = tool_offset + index;
-                            if tx
-                                .send(Ok(format_sse_event(
-                                    "response.output_item.added",
-                                    &serde_json::json!({
-                                        "type": "response.output_item.added",
-                                        "response_id": response_id,
-                                        "output_index": output_index,
-                                        "item": ResponseOutputItem::FunctionCall(
-                                            ResponseFunctionCallItem::in_progress(
-                                                item_id.clone(),
-                                                call.id.clone(),
-                                                call.name.clone(),
-                                            )
-                                        ),
-                                    }),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                            tool_states.push(StreamedFunctionCallState {
-                                id: item_id,
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                arguments: String::new(),
-                            });
-                        }
-
-                        let state = &mut tool_states[index];
-                        let delta = diff_text(&state.arguments, &call.arguments);
-                        if !delta.is_empty()
-                            && tx
-                                .send(Ok(format_sse_event(
-                                    "response.function_call_arguments.delta",
-                                    &serde_json::json!({
-                                        "type": "response.function_call_arguments.delta",
-                                        "response_id": response_id,
-                                        "item_id": state.id,
-                                        "output_index": tool_offset + index,
-                                        "delta": delta,
-                                    }),
-                                )))
-                                .await
-                                .is_err()
-                        {
-                            return;
-                        }
-                        state.arguments = call.arguments;
                     }
                 }
             }
@@ -714,7 +794,31 @@ async fn stream_tool_response(
             return;
         };
 
-        let output_items = if saw_tool_calls {
+        let output_items = if use_harmony {
+            let completion = match output.outputs.first() {
+                Some(completion) => completion,
+                None => return,
+            };
+            match response_output_items_from_tokens(
+                &response_id,
+                &completion.token_ids,
+                &req,
+                &req.normalize_function_tools().unwrap_or_default(),
+                &tool_choice,
+            )
+            .or_else(|_| {
+                response_output_items_from_text(
+                    &response_id,
+                    &completion.text,
+                    &req,
+                    &req.normalize_function_tools().unwrap_or_default(),
+                    &tool_choice,
+                )
+            }) {
+                Ok(items) => items,
+                Err(_) => return,
+            }
+        } else if saw_tool_calls {
             let mut items = Vec::new();
 
             if let Some(state) = prefix_state.as_ref() {
@@ -1033,13 +1137,32 @@ fn response_from_output(
         .outputs
         .first()
         .ok_or_else(|| ApiError::Internal("engine produced no completion output".into()))?;
-    let output_items = response_output_items_from_text(
-        response_id,
-        &completion.text,
-        req,
-        function_tools,
-        &tool_choice,
-    )?;
+    let output_items = if is_gpt_oss_model(model) {
+        response_output_items_from_tokens(
+            response_id,
+            &completion.token_ids,
+            req,
+            function_tools,
+            &tool_choice,
+        )
+        .or_else(|_| {
+            response_output_items_from_text(
+                response_id,
+                &completion.text,
+                req,
+                function_tools,
+                &tool_choice,
+            )
+        })?
+    } else {
+        response_output_items_from_text(
+            response_id,
+            &completion.text,
+            req,
+            function_tools,
+            &tool_choice,
+        )?
+    };
     Ok(ResponseObject::completed(
         response_id.to_string(),
         model.to_string(),
@@ -1056,6 +1179,87 @@ fn response_from_output(
         tool_choice,
         response_tools,
     ))
+}
+
+fn response_output_items_from_tokens(
+    response_id: &str,
+    tokens: &[u32],
+    req: &CreateResponseRequest,
+    function_tools: &[crate::types::responses::ResponseFunctionTool],
+    tool_choice: &ResponseToolChoice,
+) -> Result<Vec<ResponseOutputItem>, ApiError> {
+    let parsed = gpt_oss_tokenizer::parse_harmony_assistant_output(
+        tokens,
+        &format!("{response_id}_0_"),
+    )
+    .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
+
+    if !req.tools_enabled() {
+        return Ok(vec![ResponseOutputItem::Message(
+            ResponseOutputMessage::completed(
+                format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                parsed.text.unwrap_or_default(),
+            ),
+        )]);
+    }
+
+    let allowed_tools: HashSet<&str> = function_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+
+    if !parsed.tool_calls.is_empty() {
+        let mut output_items = Vec::new();
+        if let Some(text) = parsed.text.filter(|text| !text.is_empty()) {
+            output_items.push(ResponseOutputItem::Message(
+                ResponseOutputMessage::completed(
+                    format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                    text,
+                ),
+            ));
+        }
+
+        let forced_tool_name = tool_choice.forced_tool_name();
+        for call in parsed.tool_calls {
+            if !allowed_tools.contains(call.name.as_str()) {
+                return Err(ApiError::Internal(format!(
+                    "model emitted undeclared function '{}'",
+                    call.name
+                )));
+            }
+            if let Some(forced_name) = forced_tool_name {
+                if call.name != forced_name {
+                    return Err(ApiError::Internal(format!(
+                        "model emitted function '{}' but tool_choice requires '{}'",
+                        call.name, forced_name
+                    )));
+                }
+            }
+            output_items.push(ResponseOutputItem::FunctionCall(
+                ResponseFunctionCallItem::completed(
+                    format!("fc_{}", uuid::Uuid::new_v4().simple()),
+                    call.id,
+                    call.name,
+                    call.arguments,
+                ),
+            ));
+        }
+
+        Ok(output_items)
+    } else if matches!(tool_choice, ResponseToolChoice::Mode(mode) if mode == "required")
+        || tool_choice.forced_tool_name().is_some()
+    {
+        Err(ApiError::Internal(
+            "model did not emit a required function call".into(),
+        ))
+    } else {
+        Ok(vec![ResponseOutputItem::Message(
+            ResponseOutputMessage::completed(
+                format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                parsed.text.unwrap_or_default(),
+            ),
+        )])
+    }
 }
 
 fn response_output_items_from_text(
@@ -1171,6 +1375,45 @@ fn render_conversation_items(
     }
 
     messages
+}
+
+fn render_harmony_conversation_items(
+    items: &[StoredConversationItem],
+) -> Vec<gpt_oss_tokenizer::HarmonyConversationItem> {
+    let mut rendered = Vec::new();
+    let mut function_names: HashMap<String, String> = HashMap::new();
+
+    for item in items {
+        match item {
+            StoredConversationItem::Input(ResponseInputItem::Message(message)) => {
+                rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::Message(
+                    gpt_oss_tokenizer::ChatMessage::new(&message.role, message.to_chat_message().content),
+                ));
+            }
+            StoredConversationItem::Input(ResponseInputItem::FunctionCallOutput(output)) => {
+                if let Some(function_name) = function_names.get(&output.call_id) {
+                    rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::FunctionCallOutput {
+                        name: function_name.clone(),
+                        output: output.output_text(),
+                    });
+                }
+            }
+            StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
+                rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::Message(
+                    gpt_oss_tokenizer::ChatMessage::new(&message.role, message.to_chat_message().content),
+                ));
+            }
+            StoredConversationItem::Output(ResponseOutputItem::FunctionCall(call)) => {
+                function_names.insert(call.call_id.clone(), call.name.clone());
+                rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::FunctionCall {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                });
+            }
+        }
+    }
+
+    rendered
 }
 
 fn render_function_call(
@@ -1295,6 +1538,15 @@ mod tests {
             }
             drop(tx);
             Ok((RequestId(1), ReceiverStream::new(rx)))
+        }
+
+        async fn generate_token_ids(
+            &self,
+            prompt: String,
+            _prompt_token_ids: Vec<u32>,
+            params: SamplingParams,
+        ) -> gpt_oss_core::prelude::Result<(RequestId, ReceiverStream<RequestOutput>)> {
+            self.generate(prompt, params).await
         }
     }
 
@@ -1786,8 +2038,9 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].contains("\"type\":\"function_call\""));
-        assert!(prompts[1].contains("\"type\":\"function_call_output\""));
+        assert!(prompts[1].contains("to=functions.get_weather"));
+        assert!(prompts[1].contains("functions.get_weather to=assistant"));
+        assert!(prompts[1].contains("<|constrain|>json"));
         assert!(prompts[1].contains("\"temp_c\":18"));
         assert!(!prompts[1].contains("<tool_call>"));
         assert!(!prompts[1].contains("Tool output for function"));

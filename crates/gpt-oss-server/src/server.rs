@@ -41,6 +41,16 @@ pub trait InferenceEngine: Send + Sync {
         RequestId,
         tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
     )>;
+
+    async fn generate_token_ids(
+        &self,
+        prompt: String,
+        prompt_token_ids: Vec<u32>,
+        params: gpt_oss_core::prelude::SamplingParams,
+    ) -> gpt_oss_core::prelude::Result<(
+        RequestId,
+        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
+    )>;
 }
 
 #[async_trait::async_trait]
@@ -54,6 +64,18 @@ impl InferenceEngine for AsyncLLMEngine {
         tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
     )> {
         self.generate(prompt, params).await
+    }
+
+    async fn generate_token_ids(
+        &self,
+        prompt: String,
+        prompt_token_ids: Vec<u32>,
+        params: gpt_oss_core::prelude::SamplingParams,
+    ) -> gpt_oss_core::prelude::Result<(
+        RequestId,
+        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
+    )> {
+        self.generate_token_ids(prompt, prompt_token_ids, params).await
     }
 }
 
@@ -69,6 +91,18 @@ impl InferenceEngine for gpt_oss_engine::AsyncGpuLLMEngine {
         tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
     )> {
         self.generate(prompt, params).await
+    }
+
+    async fn generate_token_ids(
+        &self,
+        prompt: String,
+        prompt_token_ids: Vec<u32>,
+        params: gpt_oss_core::prelude::SamplingParams,
+    ) -> gpt_oss_core::prelude::Result<(
+        RequestId,
+        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
+    )> {
+        self.generate_token_ids(prompt, prompt_token_ids, params).await
     }
 }
 
