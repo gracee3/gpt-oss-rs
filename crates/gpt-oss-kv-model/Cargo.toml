@@ -1,0 +1,18 @@
+[package]
+name = "gpt-oss-kv-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Backend-independent KV-cache semantics for gpt-oss-rs"
+keywords = ["llm", "inference", "kv-cache", "semantics", "planning"]
+categories = ["science", "concurrency"]
+
+[dependencies]
+gpt-oss-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
