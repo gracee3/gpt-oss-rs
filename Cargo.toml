@@ -12,6 +12,7 @@ members = [
     "crates/gpt-oss-bench",
     "crates/gpt-oss-server",
     "crates/gpt-oss-reference",
+    "crates/gpt-oss-moe-semantics",
 ]
 
 [workspace.package]
@@ -37,6 +38,7 @@ gpt-oss-runtime-plan = { path = "crates/gpt-oss-runtime-plan" }
 gpt-oss-model-runner = { path = "crates/gpt-oss-model-runner" }
 gpt-oss-engine = { path = "crates/gpt-oss-engine" }
 gpt-oss-reference = { path = "crates/gpt-oss-reference" }
+gpt-oss-moe-semantics = { path = "crates/gpt-oss-moe-semantics" }
 
 # External dependencies
 thiserror = "2"

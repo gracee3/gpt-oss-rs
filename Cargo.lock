@@ -1134,6 +1134,7 @@ dependencies = [
  "cudarc",
  "gpt-oss-core",
  "gpt-oss-gpu",
+ "gpt-oss-moe-semantics",
  "gpt-oss-semantics",
  "half",
  "memmap2",
@@ -1146,6 +1147,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "gpt-oss-moe-semantics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
