@@ -375,6 +375,22 @@ mod tests {
         runner_weights_with_experts(1)
     }
 
+    fn runner_weights_with_router_bias(
+        num_local_experts: usize,
+        router_bias: &[f32],
+    ) -> BridgeModelWeights {
+        let mut weights = runner_weights_with_experts(num_local_experts);
+        weights.tensors.insert(
+            "model.layers.0.mlp.router.bias".to_string(),
+            WeightTensor {
+                name: "model.layers.0.mlp.router.bias".to_string(),
+                data: router_bias.iter().map(|&v| f16::from_f32(v)).collect(),
+                shape: vec![router_bias.len()],
+            },
+        );
+        weights
+    }
+
     fn runner_weights_with_experts(num_local_experts: usize) -> BridgeModelWeights {
         runner_weights_with_layers(1, num_local_experts, &[0])
     }
@@ -1337,5 +1353,48 @@ mod tests {
 
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn biased_three_expert_top2_full_attention_moe_decode_gap_is_localized() {
+        let case = ConformanceCase::decode("biased-three-expert-top2-moe-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_router_bias(3, &[0.0, 1.0, 2.0]),
+                runner_config_with_moe(3, 2),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            3,
+            2,
+            vec![0],
+        )
+        .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = full_attention_three_expert_top2_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+        println!(
+            "expected_moe={:?} observed_moe={:?} diffs={:?}",
+            report.expected.trace.frames.get(1),
+            report.observed.trace.frames.get(1),
+            report.comparison.diffs
+        );
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event moe differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("plans differ")));
     }
 }

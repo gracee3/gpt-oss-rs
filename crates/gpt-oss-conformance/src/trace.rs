@@ -76,6 +76,7 @@ impl TraceSummary {
         traced_num_local_experts: usize,
         traced_num_experts_per_tok: usize,
         traced_moe_layer_indices: &[usize],
+        traced_selected_experts: Option<&[usize]>,
         num_layers: usize,
     ) -> Self {
         let label = label.into();
@@ -154,12 +155,15 @@ impl TraceSummary {
             }
             let effective_top_k = traced_num_experts_per_tok.min(traced_num_local_experts);
             if effective_top_k > 0 && traced_moe_layer_indices.contains(&layer_index) {
+                let selected = traced_selected_experts
+                    .map(|selected| selected.to_vec())
+                    .unwrap_or_else(|| (0..effective_top_k).collect::<Vec<_>>());
                 frame.events.push(TraceEvent::new(
                     "moe",
                     format!(
                         "SparseTopK/{} selected={:?}",
                         token_count * effective_top_k,
-                        vec![(0..effective_top_k).collect::<Vec<_>>(); token_count]
+                        vec![selected; token_count]
                     ),
                 ));
             } else {

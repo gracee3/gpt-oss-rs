@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
+use gpt_oss_moe_semantics::route_top_k;
+#[cfg(test)]
 use gpt_oss_model_runner::{
     bridge::AttentionMetadata as BridgeAttentionMetadata, ModelInput, ModelRunner,
 };
@@ -221,6 +223,7 @@ pub(crate) struct ModelRunnerGreedyBackend {
     traced_num_local_experts: usize,
     traced_num_experts_per_tok: usize,
     traced_moe_layer_indices: Vec<usize>,
+    traced_router_bias: Option<Vec<f32>>,
     graph_enabled: bool,
     graph_max_batch_size: usize,
     graph_padded_batch_size: Option<usize>,
@@ -238,6 +241,7 @@ impl ModelRunnerGreedyBackend {
             traced_num_local_experts: 0,
             traced_num_experts_per_tok: 0,
             traced_moe_layer_indices: Vec::new(),
+            traced_router_bias: None,
             graph_enabled: true,
             graph_max_batch_size: 32,
             graph_padded_batch_size: Some(8),
@@ -253,6 +257,11 @@ impl ModelRunnerGreedyBackend {
         self.traced_num_local_experts = num_local_experts;
         self.traced_num_experts_per_tok = num_experts_per_tok;
         self.traced_moe_layer_indices = moe_layer_indices;
+        self
+    }
+
+    pub(crate) fn with_traced_router_bias(mut self, router_bias: Vec<f32>) -> Self {
+        self.traced_router_bias = Some(router_bias);
         self
     }
 
@@ -291,6 +300,15 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
             .expect("model runner backend should produce logits");
         let vocab_size = self.runner.config.vocab_size;
         let logits = logits_batch.data[logits_batch.data.len() - vocab_size..].to_vec();
+        let traced_selected_experts = self.traced_router_bias.as_ref().map(|router_bias| {
+            route_top_k(
+                router_bias,
+                self.traced_num_experts_per_tok.min(self.traced_num_local_experts),
+            )
+            .into_iter()
+            .map(|(expert, _)| expert)
+            .collect::<Vec<_>>()
+        });
 
         ExecutionSample {
             tokens: sample_tokens_from_logits(
@@ -311,6 +329,7 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
                 self.traced_num_local_experts,
                 self.traced_num_experts_per_tok,
                 &self.traced_moe_layer_indices,
+                traced_selected_experts.as_deref(),
                 self.runner.config.num_layers,
             ),
             plan: Some(plan),

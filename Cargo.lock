@@ -1064,6 +1064,7 @@ version = "0.1.0"
 dependencies = [
  "gpt-oss-core",
  "gpt-oss-model-runner",
+ "gpt-oss-moe-semantics",
  "gpt-oss-reference",
  "gpt-oss-runtime-plan",
  "half",
