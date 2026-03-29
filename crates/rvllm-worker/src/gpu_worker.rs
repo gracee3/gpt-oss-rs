@@ -346,6 +346,8 @@ pub struct GpuWorker {
     /// Sized to max graph batch size (32 i32 elements).
     #[cfg(feature = "cuda")]
     pinned_output: Option<cudarc::driver::PinnedHostSlice<i32>>,
+    /// Stored sync output for execute_launch/execute_collect pipeline.
+    pending_sync_output: Option<(ForwardOutput, Vec<SequenceGroupMetadata>)>,
 }
 
 impl GpuWorker {
@@ -459,6 +461,7 @@ impl GpuWorker {
             forward_count: 0,
             #[cfg(feature = "cuda")]
             pinned_output: None,
+            pending_sync_output: None,
         })
     }
 
@@ -771,6 +774,50 @@ impl GpuWorker {
                 && p.frequency_penalty == 0.0
                 && p.presence_penalty == 0.0
         })
+    }
+
+    /// Launch GPU work and return immediately. GPU computes asynchronously.
+    /// Call `execute_collect` to sync and get results.
+    /// Returns None if nothing to launch (empty metadata or non-graph path).
+    pub fn execute_launch(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<Option<usize>> {
+        if metadata.is_empty() {
+            return Ok(None);
+        }
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let greedy_only = Self::all_greedy(metadata);
+        let fwd_output = self.gpu_forward_ex(&model_input, greedy_only)?;
+        match fwd_output {
+            ForwardOutput::TokenIdsPending { actual_batch } => Ok(Some(actual_batch)),
+            _ => {
+                // Non-async path (prefill, capture, non-graph). Store output for collect.
+                self.pending_sync_output = Some((fwd_output, metadata.to_vec()));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Collect results after execute_launch. Syncs GPU if async DtoH pending.
+    pub fn execute_collect(&mut self, actual_batch: Option<usize>, metadata: &[SequenceGroupMetadata]) -> Result<GpuWorkerOutput> {
+        if let Some(batch) = actual_batch {
+            // Async path: sync and read from pinned buffer
+            let token_ids = self.collect_pending_tokens(batch)?;
+            let outputs = self.sample_tokens_from_gpu_argmax(&token_ids, metadata)?;
+            return Ok(GpuWorkerOutput { outputs });
+        }
+        // Sync path: output was stored in pending_sync_output
+        if let Some((fwd_output, _stored_meta)) = self.pending_sync_output.take() {
+            let outputs = match fwd_output {
+                ForwardOutput::TokenIds(ref token_ids) => {
+                    self.sample_tokens_from_gpu_argmax(token_ids, metadata)?
+                }
+                ForwardOutput::Logits(ref logits) => {
+                    self.sample_tokens(logits, metadata)?
+                }
+                ForwardOutput::TokenIdsPending { .. } => unreachable!(),
+            };
+            return Ok(GpuWorkerOutput { outputs });
+        }
+        Ok(GpuWorkerOutput { outputs: Vec::new() })
     }
 
     /// Execute one inference step with real GPU matmuls.
