@@ -43,6 +43,9 @@ struct Cli {
     #[arg(long, default_value_t = 2)]
     tp_size: usize,
 
+    #[arg(long, default_value_t = false)]
+    single_only: bool,
+
     #[arg(long, default_value = "info")]
     log_level: String,
 
@@ -280,10 +283,18 @@ fn main() -> Result<()> {
         single_visible_devices = %single_visible_devices,
         tp_visible_devices = %tp_visible_devices,
         tp_size = cli.tp_size,
+        single_only = cli.single_only,
         "starting live CUDA parity harness"
     );
 
     let single = spawn_child(&cli, "single", &single_visible_devices, 1)?;
+
+    if cli.single_only {
+        println!("single-rank run completed");
+        println!("{}", serde_json::to_string_pretty(&single)?);
+        return Ok(());
+    }
+
     let tp = spawn_child(&cli, "tp", &tp_visible_devices, cli.tp_size)?;
     compare_runs(&single, &tp)?;
 
