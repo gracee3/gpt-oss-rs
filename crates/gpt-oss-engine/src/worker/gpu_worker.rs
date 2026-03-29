@@ -370,9 +370,9 @@ pub struct GpuWorker {
     #[cfg(feature = "cuda")]
     raw_weight_map_u8: Option<HashMap<String, Vec<u8>>>,
     filtered_f32_load: bool,
-    graph_decode_reserve_bytes: usize,
     /// GPU-resident model runner (full forward pass on GPU, no CPU attention fallback).
-    /// Constructed in init_cache() once cache geometry is known.
+    /// Bootstrapped before profiling with a minimal cache, then rebound to the
+    /// final cache geometry in init_cache().
     #[cfg(feature = "cuda")]
     gpu_model_runner: Option<gpt_oss_model_runner::gpu_runner::GpuModelRunner>,
     /// CUDA graph runner for decode step capture/replay.
@@ -503,7 +503,6 @@ impl GpuWorker {
             #[cfg(feature = "cuda")]
             raw_weight_map_u8: None,
             filtered_f32_load: false,
-            graph_decode_reserve_bytes: 0,
             #[cfg(feature = "cuda")]
             gpu_model_runner: None,
             graph_runner,
@@ -582,16 +581,6 @@ impl GpuWorker {
                 raw_u8_map
             };
             self.raw_weight_shapes = Some(raw_weight_shapes);
-            self.graph_decode_reserve_bytes = raw_u8_map
-                .iter()
-                .filter(|(name, _)| {
-                    name.contains("mlp.experts.gate_up_proj_blocks")
-                        || name.contains("mlp.experts.gate_up_proj_scales")
-                        || name.contains("mlp.experts.down_proj_blocks")
-                        || name.contains("mlp.experts.down_proj_scales")
-                })
-                .map(|(_, data)| data.len())
-                .sum();
             self.raw_weight_map_u8 = Some(raw_u8_map);
 
             // Also load f16 weights for hgemm path when dtype is half
@@ -733,114 +722,142 @@ impl GpuWorker {
 
         #[cfg(feature = "cuda")]
         {
-            if env_flag_enabled("GPT_OSS_DISABLE_CUDA_GRAPHS") {
-                info!("disabling CUDA graph replay via GPT_OSS_DISABLE_CUDA_GRAPHS");
-                self.graph_runner.disable();
-            }
-
-            use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights as LoaderWeights;
-
-            let raw_map = self.raw_weight_map.take().ok_or_else(|| {
-                LLMError::GpuError("raw weight map not available -- call load_weights first".into())
-            })?;
-            let raw_shapes = self.raw_weight_shapes.take().ok_or_else(|| {
-                LLMError::GpuError(
-                    "raw weight shapes not available -- call load_weights first".into(),
-                )
-            })?;
-            let mut loader_weights = LoaderWeights::new(raw_map, raw_shapes.clone());
-            if let Some(u8_map) = self.raw_weight_map_u8.take() {
-                for (name, data) in u8_map {
-                    let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
-                    loader_weights.insert_u8(name, data, shape);
-                }
-            }
-
-            // Insert f16 weights for hgemm path
-            if let Some(f16_map) = self.raw_weight_map_f16.take() {
-                for (name, slice) in f16_map {
-                    let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
-                    loader_weights.insert_f16(name, slice, shape);
-                }
-                info!("inserted f16 weights into model weight container");
-            }
-
-            let block_size = self.config.block_size;
-            let cache = gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine::new(
-                self.config.num_layers,
-                self.config.num_kv_heads,
-                self.config.head_dim,
-                block_size,
-                num_gpu_blocks,
-                num_cpu_blocks,
-                self.context.clone(),
-                self.stream.clone(),
-            )
-            .map_err(|e| LLMError::GpuError(format!("CudaCacheEngine init: {e}")))?;
-
-            let runner_blas = CublasHandle::new(self.stream.clone())
-                .map_err(|e| LLMError::GpuError(format!("runner cublas: {e}")))?;
-
-            // KernelLoader: try build output dir, fall back to empty (PTX loaded at runtime)
-            let ptx_dir = Self::find_ptx_dir();
-            let loader = gpt_oss_gpu::kernel_loader::KernelLoader::new(
-                self.context.clone(),
-                self.stream.clone(),
-                &ptx_dir.unwrap_or_else(|| std::path::PathBuf::from("/nonexistent")),
-            )
-            .map_err(|e| LLMError::GpuError(format!("kernel loader: {e}")))?;
-
-            let mr_config = self.config.model_runner_config()?;
-            let mut runner = gpt_oss_model_runner::gpu_runner::GpuModelRunner::new(
-                loader_weights,
-                cache,
-                runner_blas,
-                loader,
-                mr_config,
-                self.context.clone(),
-                self.stream.clone(),
-            )?;
-
-            if self.config.dtype.is_half() {
-                runner.enable_fp16();
-                info!("FP16 inference enabled (hgemm path)");
-                if let Err(e) = runner.fuse_weights() {
-                    if self.config.architecture == "GptOssForCausalLM" {
-                        return Err(LLMError::GpuError(format!(
-                            "GPT-OSS fp16 setup failed: {e}"
-                        )));
-                    }
-                    warn!("weight fusion failed: {e} -- falling back to f32 forward path");
-                    runner.disable_fp16();
-                }
-                if self.config.architecture == "GptOssForCausalLM" {
-                    if let Err(e) = runner.prepare_gpt_oss_graph_decode() {
-                        warn!("GPT-OSS graph decode prep failed: {e} -- graph capture disabled");
-                        self.graph_runner.disable();
-                    }
-                }
-            }
-
-            // Pre-allocate cuBLAS workspace for CUDA graph capture.
-            // This must happen before any graph capture attempt.
-            if let Err(e) = runner.prepare_for_graph_capture() {
-                warn!("cuBLAS graph workspace setup failed: {e} -- graph capture disabled");
-                self.graph_runner.pool_mut().disable();
-            }
-
-            if !runner.supports_cuda_graphs() {
-                info!("disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe");
-                self.graph_runner.disable();
-            }
-
-            self.gpu_model_runner = Some(runner);
+            self.ensure_runner_initialized()?;
+            let cache = self.build_cuda_cache(num_gpu_blocks, num_cpu_blocks)?;
+            self.gpu_model_runner
+                .as_mut()
+                .ok_or_else(|| LLMError::GpuError("GPU model runner was not initialized".into()))?
+                .replace_cache(cache);
             info!(
                 "GPU model runner initialized with {} GPU blocks (block_size={})",
-                num_gpu_blocks, block_size
+                num_gpu_blocks, self.config.block_size
             );
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    fn ensure_runner_initialized(&mut self) -> Result<()> {
+        if self.gpu_model_runner.is_some() {
+            return Ok(());
+        }
+
+        if env_flag_enabled("GPT_OSS_DISABLE_CUDA_GRAPHS") {
+            info!("disabling CUDA graph replay via GPT_OSS_DISABLE_CUDA_GRAPHS");
+            self.graph_runner.disable();
+        }
+
+        let mut runner = self.build_gpu_model_runner(1, 0)?;
+        if self.config.dtype.is_half() {
+            runner.enable_fp16();
+            info!("FP16 inference enabled (hgemm path)");
+            if let Err(e) = runner.fuse_weights() {
+                if self.config.architecture == "GptOssForCausalLM" {
+                    return Err(LLMError::GpuError(format!(
+                        "GPT-OSS fp16 setup failed: {e}"
+                    )));
+                }
+                warn!("weight fusion failed: {e} -- falling back to f32 forward path");
+                runner.disable_fp16();
+            }
+            if self.config.architecture == "GptOssForCausalLM" {
+                if let Err(e) = runner.prepare_gpt_oss_graph_decode() {
+                    warn!("GPT-OSS graph decode prep failed: {e} -- graph capture disabled");
+                    self.graph_runner.disable();
+                }
+            }
+        }
+
+        if let Err(e) = runner.prepare_for_graph_capture() {
+            warn!("cuBLAS graph workspace setup failed: {e} -- graph capture disabled");
+            self.graph_runner.pool_mut().disable();
+        }
+
+        if !runner.supports_cuda_graphs() {
+            info!("disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe");
+            self.graph_runner.disable();
+        }
+
+        self.gpu_model_runner = Some(runner);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    fn build_gpu_model_runner(
+        &mut self,
+        num_gpu_blocks: usize,
+        num_cpu_blocks: usize,
+    ) -> Result<gpt_oss_model_runner::gpu_runner::GpuModelRunner> {
+        use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights as LoaderWeights;
+
+        let raw_map = self.raw_weight_map.take().ok_or_else(|| {
+            LLMError::GpuError("raw weight map not available -- call load_weights first".into())
+        })?;
+        let raw_shapes = self.raw_weight_shapes.take().ok_or_else(|| {
+            LLMError::GpuError("raw weight shapes not available -- call load_weights first".into())
+        })?;
+        let mut loader_weights = LoaderWeights::new(raw_map, raw_shapes.clone());
+        if let Some(u8_map) = self.raw_weight_map_u8.take() {
+            for (name, data) in u8_map {
+                let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
+                loader_weights.insert_u8(name, data, shape);
+            }
+        }
+
+        if let Some(f16_map) = self.raw_weight_map_f16.take() {
+            for (name, slice) in f16_map {
+                let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
+                loader_weights.insert_f16(name, slice, shape);
+            }
+            info!("inserted f16 weights into model weight container");
+        }
+
+        let cache = self.build_cuda_cache(num_gpu_blocks, num_cpu_blocks)?;
+        let runner_blas = CublasHandle::new(self.stream.clone())
+            .map_err(|e| LLMError::GpuError(format!("runner cublas: {e}")))?;
+        let ptx_dir = Self::find_ptx_dir();
+        let loader = gpt_oss_gpu::kernel_loader::KernelLoader::new(
+            self.context.clone(),
+            self.stream.clone(),
+            &ptx_dir.unwrap_or_else(|| std::path::PathBuf::from("/nonexistent")),
+        )
+        .map_err(|e| LLMError::GpuError(format!("kernel loader: {e}")))?;
+
+        let mr_config = self.config.model_runner_config()?;
+        gpt_oss_model_runner::gpu_runner::GpuModelRunner::new(
+            loader_weights,
+            cache,
+            runner_blas,
+            loader,
+            mr_config,
+            self.context.clone(),
+            self.stream.clone(),
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    fn build_cuda_cache(
+        &self,
+        num_gpu_blocks: usize,
+        num_cpu_blocks: usize,
+    ) -> Result<gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine> {
+        gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine::new(
+            self.config.num_layers,
+            self.config.num_kv_heads,
+            self.config.head_dim,
+            self.config.block_size,
+            num_gpu_blocks,
+            num_cpu_blocks,
+            self.context.clone(),
+            self.stream.clone(),
+        )
+        .map_err(|e| LLMError::GpuError(format!("CudaCacheEngine init: {e}")))
+    }
+
+    fn bootstrap_cache_bytes(&self) -> Result<usize> {
+        let cache_cfg = self.config.cache_config()?;
+        Ok(cache_cfg.total_block_bytes())
     }
 
     /// Search for compiled PTX directory from build output.
@@ -883,26 +900,23 @@ impl GpuWorker {
 
     /// Profile available GPU memory and return (num_gpu_blocks, num_cpu_blocks).
     pub fn profile_num_available_blocks(
-        &self,
+        &mut self,
         gpu_memory_utilization: f32,
     ) -> Result<(usize, usize)> {
+        #[cfg(feature = "cuda")]
+        self.ensure_runner_initialized()?;
+
+        let bootstrap_cache_bytes = self.bootstrap_cache_bytes()?;
         let (free, _total) = self
             .context
             .mem_get_info()
             .map_err(|e| LLMError::GpuError(format!("mem_get_info failed: {e}")))?;
-        let reserve_bytes =
-            if self.config.architecture == "GptOssForCausalLM" && self.config.dtype.is_half() {
-                self.graph_decode_reserve_bytes
-            } else {
-                0
-            };
         let available =
-            (free.saturating_sub(reserve_bytes) as f32 * gpu_memory_utilization) as usize;
+            ((free as usize + bootstrap_cache_bytes) as f32 * gpu_memory_utilization) as usize;
 
         let cache_cfg = self.config.cache_config()?;
         let total_block_bytes = cache_cfg.total_block_bytes();
 
-        // CudaCacheEngine now stores f16, matching CacheConfig::block_bytes.
         let num_gpu_blocks = if total_block_bytes > 0 {
             available / total_block_bytes
         } else {
@@ -912,7 +926,11 @@ impl GpuWorker {
 
         info!(
             free,
-            reserve_bytes, available, num_gpu_blocks, num_cpu_blocks, "profiled available blocks"
+            bootstrap_cache_bytes,
+            available,
+            num_gpu_blocks,
+            num_cpu_blocks,
+            "profiled available blocks"
         );
         Ok((num_gpu_blocks, num_cpu_blocks))
     }

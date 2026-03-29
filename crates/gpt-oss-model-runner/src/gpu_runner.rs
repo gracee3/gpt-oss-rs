@@ -1369,6 +1369,10 @@ mod cuda_impl {
             Ok(())
         }
 
+        pub fn replace_cache(&mut self, cache: CudaCacheEngine) {
+            self.cache = cache;
+        }
+
         /// GPU-only forward pass for CUDA graph capture.
         ///
         /// Runs the full forward pass (embedding -> layers -> norm -> argmax)
