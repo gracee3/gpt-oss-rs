@@ -575,6 +575,47 @@ mod tests {
         BridgeModelWeights { tensors }
     }
 
+    fn runner_weights_with_nonzero_dense_signal() -> BridgeModelWeights {
+        let mut weights = runner_weights();
+        weights.tensors.insert(
+            "model.embed_tokens.weight".to_string(),
+            tensor(
+                "model.embed_tokens.weight",
+                &[
+                    0.0, 0.0, 0.0, 0.0, // token 0
+                    1.0, 0.0, 0.0, 0.0, // token 1
+                    0.0, 1.0, 0.0, 0.0, // token 2
+                    0.0, 0.0, 1.0, 0.0, // token 3
+                    0.0, 0.0, 0.0, 1.0, // token 4
+                    0.5, 0.5, 0.0, 0.0, // token 5
+                    0.0, 0.5, 0.5, 0.0, // token 6
+                    0.0, 0.0, 0.5, 0.5, // token 7
+                ],
+                &[8, 4],
+            )
+            .1,
+        );
+        weights.tensors.insert(
+            "lm_head.weight".to_string(),
+            tensor(
+                "lm_head.weight",
+                &[
+                    1.0, 0.0, 0.0, 0.0, // vocab 0
+                    0.0, 1.0, 0.0, 0.0, // vocab 1
+                    0.0, 0.0, 1.0, 0.0, // vocab 2
+                    0.0, 0.0, 0.0, 1.0, // vocab 3
+                    0.5, 0.5, 0.0, 0.0, // vocab 4
+                    0.0, 0.5, 0.5, 0.0, // vocab 5
+                    0.0, 0.0, 0.5, 0.5, // vocab 6
+                    0.5, 0.0, 0.0, 0.5, // vocab 7
+                ],
+                &[8, 4],
+            )
+            .1,
+        );
+        weights
+    }
+
     fn runner_input() -> ModelInput {
         ModelInput {
             token_ids: vec![1, 2],
@@ -740,11 +781,11 @@ mod tests {
     }
 
     #[test]
-    fn greedy_model_runner_vs_reference_parity_gap_is_localized() {
-        let case = ConformanceCase::prefill("model-runner-logits", vec![1, 2]);
+    fn nonzero_dense_full_attention_gap_is_localized_to_outputs() {
+        let case = ConformanceCase::prefill("nonzero-dense-frontier", vec![1, 2]);
         let runner = Arc::new(
             ModelRunner::new(
-                runner_weights(),
+                runner_weights_with_nonzero_dense_signal(),
                 runner_config(),
                 Box::new(MockAttentionBackend),
                 Arc::new(BridgeCacheEngine::new(1, 64)),
@@ -752,13 +793,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![0],
-        )
-        .with_runtime_mode(RuntimeMode::Experimental);
-        let reference = planned_backend();
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let reference = dense_baseline_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
@@ -773,12 +809,22 @@ mod tests {
             .comparison
             .diffs
             .iter()
-            .any(|diff| diff.contains("event moe differs") || diff.contains("event cache differs")));
+            .any(|diff| diff.contains("tokens differ")));
         assert!(!report
             .comparison
             .diffs
             .iter()
-            .any(|diff| diff.starts_with("trace mismatch:")));
+            .any(|diff| diff.contains("plans differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event cache differs")));
     }
 
     #[test]

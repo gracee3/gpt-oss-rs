@@ -270,11 +270,6 @@ impl ModelRunnerGreedyBackend {
         self
     }
 
-    pub(crate) fn with_runtime_mode(mut self, runtime_mode: RuntimeMode) -> Self {
-        self.runtime_mode = runtime_mode;
-        self
-    }
-
     fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
         plan_request(
             &PlanRequest::new(
