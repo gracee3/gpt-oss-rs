@@ -32,3 +32,8 @@ harness = false
 name = "live_cuda_parity"
 path = "src/bin/live_cuda_parity.rs"
 required-features = ["cuda"]
+
+[[bin]]
+name = "restricted_prefill_trace"
+path = "src/bin/restricted_prefill_trace.rs"
+required-features = ["cuda"]
