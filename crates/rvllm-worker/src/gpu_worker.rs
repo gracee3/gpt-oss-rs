@@ -492,38 +492,65 @@ impl GpuWorker {
     pub fn load_weights(&mut self, model_path: &Path) -> Result<()> {
         info!(device_id = self.device_id, path = %model_path.display(), "loading weights to GPU");
 
-        let (all_weights_full, all_weight_shapes) =
+        let (all_weights_loaded, all_weight_shapes) =
             rvllm_model_loader::gpu_loader::load_weights_to_gpu_with_shapes(
                 model_path,
                 &self.stream,
             )
             .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?;
 
-        info!("loaded {} weight tensors to GPU", all_weights_full.len());
+        info!("loaded {} weight tensors to GPU", all_weights_loaded.len());
+
+        let mut all_weight_shapes = all_weight_shapes;
+        let mut all_weights_full = if self.config.tensor_parallel_size > 1 {
+            self.shard_f32_gpu_weights(all_weights_loaded, &mut all_weight_shapes)?
+        } else {
+            all_weights_loaded
+        };
 
         // Preserve a clone of the raw weight map for deferred GpuModelRunner construction
         #[cfg(feature = "cuda")]
         {
             self.raw_weight_map = Some(all_weights_full.clone());
-            self.raw_weight_shapes = Some(all_weight_shapes.clone());
-            self.raw_weight_map_u8 = Some(
-                rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path)
-                    .map_err(|e| LLMError::GpuError(format!("u8 weight loading failed: {e}")))?,
-            );
+            let mut raw_weight_shapes = all_weight_shapes.clone();
+            let raw_u8_map = rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path)
+                .map_err(|e| LLMError::GpuError(format!("u8 weight loading failed: {e}")))?;
+            let raw_u8_map = if self.config.tensor_parallel_size > 1 {
+                let (sharded_u8_map, updated_u8_shapes) =
+                    rvllm_model_loader::shard::shard_u8_host_map(
+                        raw_u8_map,
+                        &raw_weight_shapes,
+                        self.config.tensor_parallel_size,
+                        self.config.rank,
+                    )
+                    .map_err(|e| LLMError::GpuError(format!("u8 TP sharding failed: {e}")))?;
+                for (name, shape) in updated_u8_shapes {
+                    raw_weight_shapes.insert(name, shape);
+                }
+                sharded_u8_map
+            } else {
+                raw_u8_map
+            };
+            self.raw_weight_shapes = Some(raw_weight_shapes);
+            self.raw_weight_map_u8 = Some(raw_u8_map);
 
             // Also load f16 weights for hgemm path when dtype is half
             if self.config.dtype.is_half() {
                 info!("loading f16 weights for hgemm path");
-                let f16_weights = rvllm_model_loader::gpu_loader::load_weights_to_gpu_f16(
+                let f16_weights_loaded = rvllm_model_loader::gpu_loader::load_weights_to_gpu_f16(
                     model_path,
                     &self.stream,
                 )
                 .map_err(|e| LLMError::GpuError(format!("f16 weight loading failed: {e}")))?;
+                let f16_weights = if self.config.tensor_parallel_size > 1 {
+                    self.shard_f16_gpu_weights(f16_weights_loaded, &all_weight_shapes)?
+                } else {
+                    f16_weights_loaded
+                };
                 info!("loaded {} f16 weight tensors", f16_weights.len());
                 self.raw_weight_map_f16 = Some(f16_weights);
             }
         }
-
         let mut all_weights = all_weights_full;
 
         if self.config.architecture != "GptOssForCausalLM" {
@@ -630,7 +657,7 @@ impl GpuWorker {
     /// Initialise the model runner config.
     pub fn init_model(&mut self, model_path: &Path) -> Result<()> {
         info!(device_id = self.device_id, path = %model_path.display(), "GpuWorker init_model");
-        let mr_config = self.config.model_runner_config();
+        let mr_config = self.config.model_runner_config()?;
         self.vocab_size = mr_config.vocab_size;
         self.runner_config = Some(mr_config);
         Ok(())
@@ -697,7 +724,7 @@ impl GpuWorker {
             )
             .map_err(|e| LLMError::GpuError(format!("kernel loader: {e}")))?;
 
-            let mr_config = self.config.model_runner_config();
+            let mr_config = self.config.model_runner_config()?;
             let mut runner = rvllm_model_runner::gpu_runner::GpuModelRunner::new(
                 loader_weights,
                 cache,
@@ -799,7 +826,7 @@ impl GpuWorker {
             .map_err(|e| LLMError::GpuError(format!("mem_get_info failed: {e}")))?;
         let available = (free as f32 * gpu_memory_utilization) as usize;
 
-        let cache_cfg = self.config.cache_config();
+        let cache_cfg = self.config.cache_config()?;
         let total_block_bytes = cache_cfg.total_block_bytes();
 
         // CudaCacheEngine now stores f16, matching CacheConfig::block_bytes.
@@ -2036,6 +2063,78 @@ impl GpuWorker {
     }
     pub fn gpu_stream(&self) -> &Arc<CudaStream> {
         &self.stream
+    }
+
+    #[cfg(feature = "cuda")]
+    fn shard_f32_gpu_weights(
+        &self,
+        weights: HashMap<String, CudaSlice<f32>>,
+        shapes: &mut HashMap<String, Vec<usize>>,
+    ) -> Result<HashMap<String, CudaSlice<f32>>> {
+        let mut host_weights = HashMap::with_capacity(weights.len());
+        for (name, slice) in weights {
+            let host = self
+                .stream
+                .clone_dtoh(&slice)
+                .map_err(|e| LLMError::GpuError(format!("DtoH {name}: {e}")))?;
+            host_weights.insert(name, host);
+        }
+
+        let (sharded_host, updated_shapes) = rvllm_model_loader::shard::shard_host_map(
+            host_weights,
+            shapes,
+            self.config.tensor_parallel_size,
+            self.config.rank,
+        )
+        .map_err(|e| LLMError::GpuError(format!("f32 TP sharding failed: {e}")))?;
+
+        for (name, shape) in updated_shapes {
+            shapes.insert(name, shape);
+        }
+
+        let mut sharded_gpu = HashMap::with_capacity(sharded_host.len());
+        for (name, host) in sharded_host {
+            let slice = self
+                .stream
+                .clone_htod(&host)
+                .map_err(|e| LLMError::GpuError(format!("HtoD {name}: {e}")))?;
+            sharded_gpu.insert(name, slice);
+        }
+        Ok(sharded_gpu)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn shard_f16_gpu_weights(
+        &self,
+        weights: HashMap<String, CudaSlice<half::f16>>,
+        shapes: &HashMap<String, Vec<usize>>,
+    ) -> Result<HashMap<String, CudaSlice<half::f16>>> {
+        let mut host_weights = HashMap::with_capacity(weights.len());
+        for (name, slice) in weights {
+            let host = self
+                .stream
+                .clone_dtoh(&slice)
+                .map_err(|e| LLMError::GpuError(format!("DtoH {name}: {e}")))?;
+            host_weights.insert(name, host);
+        }
+
+        let (sharded_host, _) = rvllm_model_loader::shard::shard_host_map(
+            host_weights,
+            shapes,
+            self.config.tensor_parallel_size,
+            self.config.rank,
+        )
+        .map_err(|e| LLMError::GpuError(format!("f16 TP sharding failed: {e}")))?;
+
+        let mut sharded_gpu = HashMap::with_capacity(sharded_host.len());
+        for (name, host) in sharded_host {
+            let slice = self
+                .stream
+                .clone_htod(&host)
+                .map_err(|e| LLMError::GpuError(format!("HtoD {name}: {e}")))?;
+            sharded_gpu.insert(name, slice);
+        }
+        Ok(sharded_gpu)
     }
 }
 

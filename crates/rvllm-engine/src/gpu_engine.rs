@@ -25,6 +25,7 @@ mod inner {
     };
     use rvllm_tokenizer::Tokenizer;
     use rvllm_worker::gpu_worker::{GpuWorker, GpuWorkerOutput};
+    use rvllm_worker::WorkerConfig;
 
     use crate::hf_snapshot;
     use crate::output::{OutputProcessor, SequenceOutputState};
@@ -56,6 +57,51 @@ mod inner {
         layer_types: Vec<String>,
         num_local_experts: usize,
         num_experts_per_tok: usize,
+    }
+
+    fn base_worker_config(config: &EngineConfig, hf_config: &HfModelConfig) -> WorkerConfig {
+        WorkerConfig {
+            device_id: 0,
+            num_layers: hf_config.num_hidden_layers,
+            num_kv_heads: hf_config.num_key_value_heads,
+            head_dim: hf_config.head_dim,
+            hidden_size: hf_config.hidden_size,
+            num_attention_heads: hf_config.num_attention_heads,
+            intermediate_size: hf_config.intermediate_size,
+            vocab_size: hf_config.vocab_size,
+            max_model_len: config
+                .model
+                .max_model_len
+                .min(hf_config.max_position_embeddings),
+            rms_norm_eps: hf_config.rms_norm_eps,
+            block_size: config.cache.block_size,
+            gpu_memory_utilization: config.cache.gpu_memory_utilization,
+            rank: 0,
+            tensor_parallel_size: config.parallel.tensor_parallel_size,
+            pipeline_parallel_size: config.parallel.pipeline_parallel_size,
+            architecture: hf_config.architecture.clone(),
+            dtype: config.model.dtype,
+            rope_theta: hf_config.rope_theta,
+            partial_rotary_factor: hf_config.partial_rotary_factor,
+            attn_logit_softcapping: hf_config.attn_logit_softcapping,
+            attention_bias: hf_config.attention_bias,
+            sliding_window: hf_config.sliding_window,
+            layer_types: hf_config.layer_types.clone(),
+            num_local_experts: hf_config.num_local_experts,
+            num_experts_per_tok: hf_config.num_experts_per_tok,
+            kv_cache_dtype: config.cache.kv_cache_dtype.clone(),
+            enable_prefix_caching: config.cache.enable_prefix_caching,
+        }
+    }
+
+    fn build_worker_configs(
+        config: &EngineConfig,
+        hf_config: &HfModelConfig,
+    ) -> Result<Vec<WorkerConfig>> {
+        let base = base_worker_config(config, hf_config);
+        (0..config.parallel.tensor_parallel_size.max(1))
+            .map(|rank| base.for_rank(rank, rank))
+            .collect()
     }
 
     fn resolve_model_dir(model_name: &str) -> Result<PathBuf> {
@@ -415,39 +461,11 @@ mod inner {
             let tokenizer_path = config.model.tokenizer_path.as_deref().unwrap_or(model_name);
             let tokenizer = Tokenizer::from_pretrained(tokenizer_path)?;
 
-            // 4. Build WorkerConfig from real model config
-            let worker_config = rvllm_worker::WorkerConfig {
-                device_id: 0,
-                num_layers: hf_config.num_hidden_layers,
-                num_kv_heads: hf_config.num_key_value_heads,
-                head_dim: hf_config.head_dim,
-                hidden_size: hf_config.hidden_size,
-                num_attention_heads: hf_config.num_attention_heads,
-                intermediate_size: hf_config.intermediate_size,
-                vocab_size: hf_config.vocab_size,
-                max_model_len: config
-                    .model
-                    .max_model_len
-                    .min(hf_config.max_position_embeddings),
-                rms_norm_eps: hf_config.rms_norm_eps,
-                block_size: config.cache.block_size,
-                gpu_memory_utilization: config.cache.gpu_memory_utilization,
-                rank: 0,
-                tensor_parallel_size: config.parallel.tensor_parallel_size,
-                pipeline_parallel_size: config.parallel.pipeline_parallel_size,
-                architecture: hf_config.architecture.clone(),
-                dtype: config.model.dtype,
-                rope_theta: hf_config.rope_theta,
-                partial_rotary_factor: hf_config.partial_rotary_factor,
-                attn_logit_softcapping: hf_config.attn_logit_softcapping,
-                attention_bias: hf_config.attention_bias,
-                sliding_window: hf_config.sliding_window,
-                layer_types: hf_config.layer_types.clone(),
-                num_local_experts: hf_config.num_local_experts,
-                num_experts_per_tok: hf_config.num_experts_per_tok,
-                kv_cache_dtype: config.cache.kv_cache_dtype.clone(),
-                enable_prefix_caching: config.cache.enable_prefix_caching,
-            };
+            // 4. Build per-rank worker configs from the real model config.
+            let worker_config = build_worker_configs(&config, &hf_config)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| LLMError::ConfigError("no worker configs generated".into()))?;
 
             // 5. Create GPU worker
             let mut worker = GpuWorker::new(worker_config)
@@ -1152,6 +1170,82 @@ mod inner {
                 }
             }
             (metadata, aborted_seqs)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use rvllm_config::cache::CacheConfigImpl;
+        use rvllm_config::model::ModelConfigImpl;
+        use rvllm_config::parallel::ParallelConfigImpl;
+        use rvllm_core::types::Dtype;
+
+        fn make_engine_config(tp: usize, max_model_len: usize) -> EngineConfig {
+            EngineConfig::builder()
+                .model(
+                    ModelConfigImpl::builder()
+                        .model_path("openai/gpt-oss-20b")
+                        .dtype(Dtype::Float16)
+                        .max_model_len(max_model_len)
+                        .build(),
+                )
+                .cache(
+                    CacheConfigImpl::builder()
+                        .block_size(16)
+                        .gpu_memory_utilization(0.9)
+                        .build(),
+                )
+                .parallel(
+                    ParallelConfigImpl::builder()
+                        .tensor_parallel_size(tp)
+                        .build(),
+                )
+                .build()
+        }
+
+        fn make_hf_config() -> HfModelConfig {
+            HfModelConfig {
+                model_type: "gpt_oss".into(),
+                hidden_size: 2880,
+                intermediate_size: 2880,
+                num_attention_heads: 64,
+                head_dim: 64,
+                num_key_value_heads: 8,
+                num_hidden_layers: 24,
+                vocab_size: 200000,
+                max_position_embeddings: 131072,
+                rms_norm_eps: 1e-5,
+                tie_word_embeddings: true,
+                architecture: "GptOssForCausalLM".into(),
+                rope_theta: 150000.0,
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: None,
+                layer_types: Vec::new(),
+                num_local_experts: 32,
+                num_experts_per_tok: 4,
+            }
+        }
+
+        #[test]
+        fn build_worker_configs_assigns_rank_and_device_per_tp_slot() {
+            let configs =
+                build_worker_configs(&make_engine_config(4, 16384), &make_hf_config()).unwrap();
+            assert_eq!(configs.len(), 4);
+            for (rank, cfg) in configs.iter().enumerate() {
+                assert_eq!(cfg.rank, rank);
+                assert_eq!(cfg.device_id, rank);
+                assert_eq!(cfg.tensor_parallel_size, 4);
+            }
+        }
+
+        #[test]
+        fn build_worker_configs_clamps_model_len_to_model_cap() {
+            let configs =
+                build_worker_configs(&make_engine_config(2, 200000), &make_hf_config()).unwrap();
+            assert_eq!(configs[0].max_model_len, 131072);
         }
     }
 

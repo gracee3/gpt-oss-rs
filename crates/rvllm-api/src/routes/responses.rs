@@ -71,7 +71,8 @@ pub async fn create_response(
             .map(StoredConversationItem::Input),
     );
 
-    let prompt_messages = render_conversation_items(&conversation_items);
+    let prompt_style = preferred_tool_prompt_style(&state.model_name);
+    let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
     if prompt_messages.is_empty() {
         return Err(ApiError::InvalidRequest(
             "input must not be empty for /v1/responses".into(),
@@ -1137,7 +1138,10 @@ fn response_output_items_from_text(
     }
 }
 
-fn render_conversation_items(items: &[StoredConversationItem]) -> Vec<ChatMessage> {
+fn render_conversation_items(
+    items: &[StoredConversationItem],
+    style: rvllm_tokenizer::ToolPromptStyle,
+) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     let mut function_names = HashMap::new();
 
@@ -1150,7 +1154,7 @@ fn render_conversation_items(items: &[StoredConversationItem]) -> Vec<ChatMessag
                 let function_name = function_names.get(&output.call_id).map(String::as_str);
                 messages.push(ChatMessage {
                     role: "user".to_string(),
-                    content: render_function_call_output(output, function_name),
+                    content: render_function_call_output(output, function_name, style),
                 });
             }
             StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
@@ -1160,7 +1164,7 @@ fn render_conversation_items(items: &[StoredConversationItem]) -> Vec<ChatMessag
                 function_names.insert(call.call_id.clone(), call.name.clone());
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),
-                    content: render_function_call(call),
+                    content: render_function_call(call, style),
                 });
             }
         }
@@ -1169,30 +1173,58 @@ fn render_conversation_items(items: &[StoredConversationItem]) -> Vec<ChatMessag
     messages
 }
 
-fn render_function_call(call: &ResponseFunctionCallItem) -> String {
+fn render_function_call(
+    call: &ResponseFunctionCallItem,
+    style: rvllm_tokenizer::ToolPromptStyle,
+) -> String {
     let arguments = serde_json::from_str::<serde_json::Value>(&call.arguments)
         .unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone()));
     let body = serde_json::json!({
+        "type": "function_call",
+        "call_id": call.call_id,
         "name": call.name,
         "arguments": arguments,
     });
-    format!("<tool_call>{}</tool_call>", body)
+    match style {
+        rvllm_tokenizer::ToolPromptStyle::Harmony => body.to_string(),
+        rvllm_tokenizer::ToolPromptStyle::Hermes
+        | rvllm_tokenizer::ToolPromptStyle::GenericJson => {
+            format!("<tool_call>{}</tool_call>", body)
+        }
+    }
 }
 
 fn render_function_call_output(
     output: &ResponseFunctionCallOutputItem,
     function_name: Option<&str>,
+    style: rvllm_tokenizer::ToolPromptStyle,
 ) -> String {
     let rendered_output = output.output_text();
-    match function_name {
-        Some(name) => format!(
-            "Tool output for function {} (call_id {}):\n{}",
-            name, output.call_id, rendered_output
-        ),
-        None => format!(
-            "Tool output for call_id {}:\n{}",
-            output.call_id, rendered_output
-        ),
+    match style {
+        rvllm_tokenizer::ToolPromptStyle::Harmony => {
+            let output_value = serde_json::from_str::<serde_json::Value>(&rendered_output)
+                .unwrap_or_else(|_| serde_json::Value::String(rendered_output.clone()));
+            let mut body = serde_json::json!({
+                "type": "function_call_output",
+                "call_id": output.call_id,
+                "output": output_value,
+            });
+            if let Some(name) = function_name {
+                body["name"] = serde_json::Value::String(name.to_string());
+            }
+            body.to_string()
+        }
+        rvllm_tokenizer::ToolPromptStyle::Hermes
+        | rvllm_tokenizer::ToolPromptStyle::GenericJson => match function_name {
+            Some(name) => format!(
+                "Tool output for function {} (call_id {}):\n{}",
+                name, output.call_id, rendered_output
+            ),
+            None => format!(
+                "Tool output for call_id {}:\n{}",
+                output.call_id, rendered_output
+            ),
+        },
     }
 }
 
@@ -1292,10 +1324,17 @@ mod tests {
     }
 
     fn make_server(outputs: Vec<Vec<RequestOutput>>) -> (TestServer, Arc<FakeEngine>) {
+        make_server_with_model("test", outputs)
+    }
+
+    fn make_server_with_model(
+        model_name: &str,
+        outputs: Vec<Vec<RequestOutput>>,
+    ) -> (TestServer, Arc<FakeEngine>) {
         let engine = Arc::new(FakeEngine::new(outputs));
         let state = Arc::new(AppState::new(
             engine.clone(),
-            "test".to_string(),
+            model_name.to_string(),
             make_test_tokenizer(),
         ));
         let server = TestServer::new(build_router(state)).unwrap();
@@ -1407,6 +1446,29 @@ mod tests {
     }
 
     #[test]
+    fn response_output_items_parse_harmony_function_calls() {
+        let req = make_tool_request(ResponseToolChoice::Mode("auto".into()));
+        let tools = req.normalize_function_tools().unwrap();
+        let items = response_output_items_from_text(
+            "resp_test",
+            "{\"type\":\"function_call\",\"call_id\":\"abc123\",\"name\":\"get_weather\",\"arguments\":{\"location\":\"Boston\"}}",
+            &req,
+            &tools,
+            &req.effective_tool_choice(),
+        )
+        .unwrap();
+
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            ResponseOutputItem::FunctionCall(call) => {
+                assert_eq!(call.name, "get_weather");
+                assert!(call.arguments.contains("Boston"));
+            }
+            _ => panic!("expected function_call item"),
+        }
+    }
+
+    #[test]
     fn response_output_items_reject_plain_text_when_required() {
         let req = make_tool_request(ResponseToolChoice::Mode("required".into()));
         let tools = req.normalize_function_tools().unwrap();
@@ -1466,7 +1528,7 @@ mod tests {
             )),
         ];
 
-        let messages = render_conversation_items(&items);
+        let messages = render_conversation_items(&items, rvllm_tokenizer::ToolPromptStyle::Hermes);
         assert_eq!(messages.len(), 3);
         assert!(messages[1].content.contains("<tool_call>"));
         assert!(messages[2].content.contains("get_weather"));
@@ -1481,7 +1543,7 @@ mod tests {
             "get_weather",
             "{\"location\":\"Boston\"}",
         );
-        let rendered = render_function_call(&call);
+        let rendered = render_function_call(&call, rvllm_tokenizer::ToolPromptStyle::Hermes);
         assert!(rendered.contains("<tool_call>"));
         assert!(rendered.contains("\"name\":\"get_weather\""));
         assert!(rendered.contains("\"location\":\"Boston\""));
@@ -1495,8 +1557,74 @@ mod tests {
                 output: serde_json::json!({"ok": true}),
             },
             None,
+            rvllm_tokenizer::ToolPromptStyle::Hermes,
         );
         assert!(rendered.contains("call_123"));
+        assert!(rendered.contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn render_conversation_items_uses_harmony_json_for_gpt_oss_history() {
+        let items = vec![
+            StoredConversationItem::Input(ResponseInputItem::Message(ResponseInputMessage::new(
+                "user",
+                vec![ResponseInputTextPart::new("Weather?")],
+            ))),
+            StoredConversationItem::Output(ResponseOutputItem::FunctionCall(
+                ResponseFunctionCallItem::completed(
+                    "fc_1",
+                    "call_1",
+                    "get_weather",
+                    "{\"location\":\"Boston\"}",
+                ),
+            )),
+            StoredConversationItem::Input(ResponseInputItem::FunctionCallOutput(
+                ResponseFunctionCallOutputItem {
+                    call_id: "call_1".into(),
+                    output: serde_json::json!({"temp_c": 18}),
+                },
+            )),
+        ];
+
+        let messages = render_conversation_items(&items, rvllm_tokenizer::ToolPromptStyle::Harmony);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[1].content.contains("\"type\":\"function_call\""));
+        assert!(messages[1].content.contains("\"call_id\":\"call_1\""));
+        assert!(messages[2]
+            .content
+            .contains("\"type\":\"function_call_output\""));
+        assert!(messages[2].content.contains("\"temp_c\":18"));
+        assert!(!messages[1].content.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn render_function_call_harmony_serializes_typed_json() {
+        let call = ResponseFunctionCallItem::completed(
+            "fc_1",
+            "call_1",
+            "get_weather",
+            "{\"location\":\"Boston\"}",
+        );
+        let rendered = render_function_call(&call, rvllm_tokenizer::ToolPromptStyle::Harmony);
+        assert!(rendered.contains("\"type\":\"function_call\""));
+        assert!(rendered.contains("\"call_id\":\"call_1\""));
+        assert!(rendered.contains("\"location\":\"Boston\""));
+        assert!(!rendered.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn render_function_call_output_harmony_serializes_typed_json() {
+        let rendered = render_function_call_output(
+            &ResponseFunctionCallOutputItem {
+                call_id: "call_123".into(),
+                output: serde_json::json!({"ok": true}),
+            },
+            Some("lookup"),
+            rvllm_tokenizer::ToolPromptStyle::Harmony,
+        );
+        assert!(rendered.contains("\"type\":\"function_call_output\""));
+        assert!(rendered.contains("\"call_id\":\"call_123\""));
+        assert!(rendered.contains("\"name\":\"lookup\""));
         assert!(rendered.contains("\"ok\":true"));
     }
 
@@ -1602,6 +1730,65 @@ mod tests {
         let input_items = input_items.json::<serde_json::Value>();
         assert_eq!(input_items["data"][0]["type"], "function_call_output");
         assert_eq!(input_items["data"][0]["output"]["temp_c"], 18);
+    }
+
+    #[tokio::test]
+    async fn previous_response_id_uses_harmony_json_for_gpt_oss_replay() {
+        let (server, engine) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![
+                vec![request_output(
+                    "{\"type\":\"function_call\",\"name\":\"get_weather\",\"arguments\":{\"location\":\"Boston\"}}",
+                    true,
+                )],
+                vec![request_output("It is 18C and sunny.", true)],
+            ],
+        );
+
+        let first = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "What's the weather?",
+                "store": true,
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object"},
+                }],
+            }))
+            .await;
+        first.assert_status_ok();
+        let first_body = first.json::<serde_json::Value>();
+        let first_id = first_body["id"].as_str().unwrap().to_string();
+        let call_id = first_body["output"][0]["call_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let second = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "previous_response_id": first_id,
+                "store": true,
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": {"temp_c": 18, "conditions": "sunny"},
+                }],
+            }))
+            .await;
+        second.assert_status_ok();
+
+        let prompts = engine.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("\"type\":\"function_call\""));
+        assert!(prompts[1].contains("\"type\":\"function_call_output\""));
+        assert!(prompts[1].contains("\"temp_c\":18"));
+        assert!(!prompts[1].contains("<tool_call>"));
+        assert!(!prompts[1].contains("Tool output for function"));
     }
 
     #[tokio::test]

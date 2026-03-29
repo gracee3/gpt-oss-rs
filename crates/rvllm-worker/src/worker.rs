@@ -69,8 +69,8 @@ impl Worker {
     pub fn init_model(&mut self, model_weights: ModelWeights) -> Result<()> {
         info!(device_id = self.device_id, "initializing model");
 
-        let mr_config = self.config.model_runner_config();
-        let cache_elements = self.config.num_kv_heads * self.config.head_dim * 16;
+        let mr_config = self.config.model_runner_config()?;
+        let cache_elements = mr_config.num_kv_heads * mr_config.head_dim * 16;
         let cache = Arc::new(rvllm_model_runner::bridge::CacheEngine::new(
             self.config.num_layers,
             cache_elements,
@@ -171,7 +171,7 @@ impl Worker {
         let free_bytes = self.gpu.free_gpu_bytes();
         let available = (free_bytes as f32 * gpu_memory_utilization) as usize;
 
-        let cache_cfg = self.config.cache_config();
+        let cache_cfg = self.config.cache_config()?;
         let total_block_bytes = cache_cfg.total_block_bytes();
 
         let num_gpu_blocks = if total_block_bytes > 0 {

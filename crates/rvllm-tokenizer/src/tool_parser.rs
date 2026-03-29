@@ -44,6 +44,8 @@ pub enum ToolPromptStyle {
     Hermes,
     /// Generic JSON: embed tool schemas as a JSON array in the system prompt.
     GenericJson,
+    /// OpenAI Harmony-style JSON instructions for gpt-oss tool calling.
+    Harmony,
 }
 
 /// Definition of a single tool parameter property.
@@ -99,6 +101,7 @@ pub fn format_tool_definitions(tools: &[ToolDefinition], style: ToolPromptStyle)
     match style {
         ToolPromptStyle::Hermes => format_hermes_tools(tools),
         ToolPromptStyle::GenericJson => format_generic_json_tools(tools),
+        ToolPromptStyle::Harmony => format_harmony_tools(tools),
     }
 }
 
@@ -117,6 +120,23 @@ fn format_hermes_tools(tools: &[ToolDefinition]) -> String {
 fn format_generic_json_tools(tools: &[ToolDefinition]) -> String {
     let mut out = String::from(
         "You have access to the following tools. To call a tool, respond with a JSON object with \"name\" and \"arguments\" keys.\n\nAvailable tools:\n",
+    );
+    if let Ok(json) = serde_json::to_string_pretty(tools) {
+        out.push_str(&json);
+    }
+    out
+}
+
+fn format_harmony_tools(tools: &[ToolDefinition]) -> String {
+    let mut out = String::from(
+        "You are interacting using the OpenAI Harmony message format.\n\
+When you need to call a tool, respond with a JSON object or array only.\n\
+Each tool call item must have:\n\
+- \"type\": \"function_call\"\n\
+- \"name\": the tool name\n\
+- \"arguments\": a JSON object of arguments\n\
+Do not use XML tags or markdown fences around tool calls.\n\
+\nAvailable tools:\n",
     );
     if let Ok(json) = serde_json::to_string_pretty(tools) {
         out.push_str(&json);
@@ -410,6 +430,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_harmony_typed_tool_call() {
+        let text = r#"{"type":"function_call","call_id":"abc123","name":"search","arguments":{"query":"rust"}}"#;
+        let result = parse_tool_calls(text, "h_");
+        match result {
+            ToolParseResult::ToolCalls { calls, prefix_text } => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "search");
+                assert!(calls[0].arguments.contains("rust"));
+                assert!(prefix_text.is_empty());
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn parse_harmony_typed_tool_call_array() {
+        let text = r#"[{"type":"function_call","name":"fn_a","arguments":{"x":1}},{"type":"function_call","name":"fn_b","arguments":{"y":2}}]"#;
+        let result = parse_tool_calls(text, "ha_");
+        match result {
+            ToolParseResult::ToolCalls { calls, .. } => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "fn_a");
+                assert_eq!(calls[1].name, "fn_b");
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
     fn parse_plain_text_no_tools() {
         let text = "The weather in San Francisco is currently 65 degrees.";
         let result = parse_tool_calls(text, "x_");
@@ -481,6 +530,23 @@ mod tests {
         let formatted = format_tool_definitions(&tools, ToolPromptStyle::GenericJson);
         assert!(formatted.contains("search"));
         assert!(formatted.contains("Available tools"));
+    }
+
+    #[test]
+    fn format_harmony_tools_output() {
+        let tools = vec![ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: "lookup".to_string(),
+                description: Some("Lookup data".to_string()),
+                parameters: None,
+            },
+        }];
+        let formatted = format_tool_definitions(&tools, ToolPromptStyle::Harmony);
+        assert!(formatted.contains("OpenAI Harmony"));
+        assert!(formatted.contains("\"type\": \"function_call\""));
+        assert!(formatted.contains("lookup"));
+        assert!(!formatted.contains("<tool_call>"));
     }
 
     #[test]

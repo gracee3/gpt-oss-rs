@@ -10,6 +10,63 @@ use crate::weights::{GpuAllocator, ModelWeights, WeightTensor};
 /// slice for the given rank.
 pub struct ShardedLoader;
 
+/// Shard a host-side typed weight map using the same tensor-parallel rules as
+/// the main loader path. Returns the sharded data plus any updated shapes.
+pub fn shard_host_map<T: Clone>(
+    weights: std::collections::HashMap<String, Vec<T>>,
+    shapes: &std::collections::HashMap<String, Vec<usize>>,
+    tp_size: usize,
+    rank: usize,
+) -> Result<(
+    std::collections::HashMap<String, Vec<T>>,
+    std::collections::HashMap<String, Vec<usize>>,
+)> {
+    if tp_size <= 1 {
+        return Ok((weights, std::collections::HashMap::new()));
+    }
+    if rank >= tp_size {
+        return Err(LLMError::ConfigError(format!(
+            "rank {} >= tensor_parallel_size {}",
+            rank, tp_size
+        )));
+    }
+
+    let mut sharded = std::collections::HashMap::with_capacity(weights.len());
+    let mut updated_shapes = std::collections::HashMap::new();
+
+    for (name, data) in weights {
+        let shape = shapes.get(&name).ok_or_else(|| {
+            LLMError::ModelError(format!("missing shape metadata for host tensor {name}"))
+        })?;
+        match classify_shard_dim(&name, shape) {
+            ShardDim::Along(dim) => {
+                let (new_shape, shard_data) = shard_host_slice(shape, &data, dim, tp_size, rank)?;
+                updated_shapes.insert(name.clone(), new_shape);
+                sharded.insert(name, shard_data);
+            }
+            ShardDim::Replicate => {
+                sharded.insert(name, data);
+            }
+        }
+    }
+
+    Ok((sharded, updated_shapes))
+}
+
+/// Shard a host-side U8 weight map using the same tensor-parallel rules as the
+/// GPU loader path. Returns the sharded data plus any updated shapes.
+pub fn shard_u8_host_map(
+    weights: std::collections::HashMap<String, Vec<u8>>,
+    shapes: &std::collections::HashMap<String, Vec<usize>>,
+    tp_size: usize,
+    rank: usize,
+) -> Result<(
+    std::collections::HashMap<String, Vec<u8>>,
+    std::collections::HashMap<String, Vec<usize>>,
+)> {
+    shard_host_map(weights, shapes, tp_size, rank)
+}
+
 impl ShardedLoader {
     /// Shard weights for the given rank in tensor-parallel group.
     ///
@@ -74,6 +131,25 @@ enum ShardDim {
 
 /// Classify how a weight should be sharded based on its name.
 fn classify_shard_dim(name: &str, shape: &[usize]) -> ShardDim {
+    if name.contains("mlp.experts.gate_up_proj_blocks")
+        || name.contains("mlp.experts.gate_up_proj_scales")
+    {
+        return if shape.len() <= 2 {
+            ShardDim::Along(0)
+        } else {
+            ShardDim::Along(1)
+        };
+    }
+    if name.contains("mlp.experts.down_proj_blocks")
+        || name.contains("mlp.experts.down_proj_scales")
+    {
+        return if shape.len() <= 2 {
+            ShardDim::Along(1)
+        } else {
+            ShardDim::Along(2)
+        };
+    }
+
     // GPT-OSS expert tensors are 3D: [experts, out, in] or [experts, hidden, intermediate].
     // Shard the projection dimension and keep expert routing replicated.
     if name.contains("mlp.experts.gate_up_proj") {
@@ -158,12 +234,45 @@ fn shard_along_dim(
         )));
     }
 
+    let elem_size = tensor.dtype().size_of();
+    let data = tensor.data().as_bytes();
+    let (new_shape, shard_data) = shard_raw_bytes(shape, data, dim, elem_size, tp_size, rank)?;
+
+    let gpu_buf = gpu.upload(&shard_data)?;
+    Ok(WeightTensor::new(
+        tensor.name().to_string(),
+        new_shape,
+        tensor.dtype(),
+        gpu_buf,
+    ))
+}
+
+fn shard_raw_bytes(
+    shape: &[usize],
+    data: &[u8],
+    dim: usize,
+    elem_size: usize,
+    tp_size: usize,
+    rank: usize,
+) -> Result<(Vec<usize>, Vec<u8>)> {
+    if dim >= shape.len() {
+        return Err(LLMError::ModelError(format!(
+            "cannot shard shape {:?} along dim {}",
+            shape, dim
+        )));
+    }
+
+    let dim_size = shape[dim];
+    if !dim_size.is_multiple_of(tp_size) {
+        return Err(LLMError::ModelError(format!(
+            "shape {:?} dim {} size {} not divisible by tp_size {}",
+            shape, dim, dim_size, tp_size
+        )));
+    }
+
     let shard_size = dim_size / tp_size;
     let mut new_shape = shape.to_vec();
     new_shape[dim] = shard_size;
-
-    let elem_size = tensor.dtype().size_of();
-    let data = tensor.data().as_bytes();
 
     let outer_size = shape[..dim].iter().product::<usize>();
     let inner_size = shape[dim + 1..].iter().product::<usize>();
@@ -186,13 +295,55 @@ fn shard_along_dim(
         out
     };
 
-    let gpu_buf = gpu.upload(&shard_data)?;
-    Ok(WeightTensor::new(
-        tensor.name().to_string(),
-        new_shape,
-        tensor.dtype(),
-        gpu_buf,
-    ))
+    Ok((new_shape, shard_data))
+}
+
+fn shard_host_slice<T: Clone>(
+    shape: &[usize],
+    data: &[T],
+    dim: usize,
+    tp_size: usize,
+    rank: usize,
+) -> Result<(Vec<usize>, Vec<T>)> {
+    if dim >= shape.len() {
+        return Err(LLMError::ModelError(format!(
+            "cannot shard shape {:?} along dim {}",
+            shape, dim
+        )));
+    }
+
+    let dim_size = shape[dim];
+    if !dim_size.is_multiple_of(tp_size) {
+        return Err(LLMError::ModelError(format!(
+            "shape {:?} dim {} size {} not divisible by tp_size {}",
+            shape, dim, dim_size, tp_size
+        )));
+    }
+
+    let shard_size = dim_size / tp_size;
+    let mut new_shape = shape.to_vec();
+    new_shape[dim] = shard_size;
+
+    let outer_size = shape[..dim].iter().product::<usize>();
+    let inner_size = shape[dim + 1..].iter().product::<usize>();
+    let prefix_elems = dim_size * inner_size;
+    let shard_elems = shard_size * inner_size;
+    let shard_offset = rank * shard_elems;
+
+    let shard_data = if shape.len() == 1 {
+        data[shard_offset..shard_offset + shard_elems].to_vec()
+    } else {
+        let mut out = Vec::with_capacity(outer_size * shard_elems);
+        for outer_idx in 0..outer_size {
+            let base = outer_idx * prefix_elems;
+            let start = base + shard_offset;
+            let end = start + shard_elems;
+            out.extend_from_slice(&data[start..end]);
+        }
+        out
+    };
+
+    Ok((new_shape, shard_data))
 }
 
 #[cfg(test)]
@@ -309,6 +460,25 @@ mod tests {
             ShardDim::Replicate
         );
         assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.gate_up_proj_blocks", &[128, 64]),
+            ShardDim::Along(0)
+        );
+        assert_eq!(
+            classify_shard_dim(
+                "model.layers.0.mlp.experts.gate_up_proj_scales",
+                &[8, 16, 2]
+            ),
+            ShardDim::Along(1)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.down_proj_blocks", &[128, 64]),
+            ShardDim::Along(1)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.down_proj_scales", &[8, 4, 2]),
+            ShardDim::Along(2)
+        );
+        assert_eq!(
             classify_shard_dim("model.layers.0.mlp.router.weight", &[8, 4]),
             ShardDim::Replicate
         );
@@ -360,6 +530,73 @@ mod tests {
         assert_eq!(
             w.data().as_bytes(),
             &vec![0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 28, 29]
+        );
+    }
+
+    #[test]
+    fn shard_u8_host_map_updates_mxfp4_shapes() {
+        let weights = std::collections::HashMap::from([
+            (
+                "model.layers.0.mlp.experts.gate_up_proj_blocks".to_string(),
+                (0u8..32).collect::<Vec<u8>>(),
+            ),
+            (
+                "model.layers.0.mlp.experts.down_proj_scales".to_string(),
+                (32u8..48).collect::<Vec<u8>>(),
+            ),
+            ("model.layers.0.mlp.router.weight".to_string(), vec![9u8; 8]),
+        ]);
+        let shapes = std::collections::HashMap::from([
+            (
+                "model.layers.0.mlp.experts.gate_up_proj_blocks".to_string(),
+                vec![4, 8],
+            ),
+            (
+                "model.layers.0.mlp.experts.down_proj_scales".to_string(),
+                vec![2, 4, 2],
+            ),
+            ("model.layers.0.mlp.router.weight".to_string(), vec![2, 4]),
+        ]);
+
+        let (sharded, updated_shapes) = shard_u8_host_map(weights, &shapes, 2, 1).unwrap();
+        assert_eq!(
+            updated_shapes["model.layers.0.mlp.experts.gate_up_proj_blocks"],
+            vec![2, 8]
+        );
+        assert_eq!(
+            updated_shapes["model.layers.0.mlp.experts.down_proj_scales"],
+            vec![2, 4, 1]
+        );
+        assert_eq!(
+            sharded["model.layers.0.mlp.experts.gate_up_proj_blocks"],
+            (16u8..32).collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            sharded["model.layers.0.mlp.experts.down_proj_scales"],
+            vec![33, 35, 37, 39, 41, 43, 45, 47]
+        );
+        assert_eq!(sharded["model.layers.0.mlp.router.weight"], vec![9u8; 8]);
+    }
+
+    #[test]
+    fn shard_host_map_updates_f32_shapes() {
+        let weights = std::collections::HashMap::from([(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            (0..16).map(|v| v as f32).collect::<Vec<f32>>(),
+        )]);
+        let shapes = std::collections::HashMap::from([(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            vec![4, 4],
+        )]);
+
+        let (sharded, updated_shapes) = shard_host_map(weights, &shapes, 2, 1).unwrap();
+        assert_eq!(
+            updated_shapes["model.layers.0.self_attn.q_proj.weight"],
+            vec![2, 4]
+        );
+        assert_eq!(
+            sharded["model.layers.0.self_attn.q_proj.weight"],
+            vec![8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0]
         );
     }
 }
