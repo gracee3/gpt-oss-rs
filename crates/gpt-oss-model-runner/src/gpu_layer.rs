@@ -65,6 +65,8 @@ mod inner {
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct PrefillAttentionSubtrace {
+        pub qkv_pre_bias: Vec<f32>,
+        pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
         pub k_proj: Vec<f32>,
         pub v_proj: Vec<f32>,
@@ -1410,6 +1412,10 @@ mod inner {
                 .clone_dtoh(&qkv)
                 .map_err(|e| LLMError::GpuError(format!("trace qkv pre dtoh: {e}")))?;
             let last_token_base = (num_tokens - 1) * qkv_dim;
+            let qkv_pre_bias = qkv_host_pre[last_token_base..last_token_base + qkv_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
             let q_pre = qkv_host_pre[last_token_base..last_token_base + q_dim]
                 .iter()
                 .map(|value| value.to_f32())
@@ -1445,6 +1451,10 @@ mod inner {
                 .stream
                 .clone_dtoh(&qkv)
                 .map_err(|e| LLMError::GpuError(format!("trace qkv post dtoh: {e}")))?;
+            let qkv_post_bias = qkv_host_post[last_token_base..last_token_base + qkv_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
             let q_host = &qkv_host_post[..q_end];
             let k_host = &qkv_host_post[q_end..k_end];
             let sinks_host = match weights.sinks {
@@ -1613,6 +1623,8 @@ mod inner {
                 residual,
                 mlp_out,
                 PrefillAttentionSubtrace {
+                    qkv_pre_bias,
+                    qkv_post_bias,
                     q_proj: q_pre,
                     k_proj: k_pre,
                     v_proj: v_pre,

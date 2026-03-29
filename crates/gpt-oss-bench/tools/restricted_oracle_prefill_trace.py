@@ -88,7 +88,9 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
     attn = model.block[0].attn
     normed = attn.norm(x)
     qkv = attn.qkv(normed)
-    q = qkv[:, : attn.num_attention_heads * attn.head_dim].contiguous()
+    qkv_pre_bias = torch.nn.functional.linear(normed, attn.qkv.weight, bias=None)
+    qkv_post_bias = qkv
+    q = qkv_post_bias[:, : attn.num_attention_heads * attn.head_dim].contiguous()
     k = qkv[
         :,
         attn.num_attention_heads
@@ -130,6 +132,8 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
     residual_add = x + o_proj
 
     return ({
+        "qkv_pre_bias": flatten_last_token(qkv_pre_bias),
+        "qkv_post_bias": flatten_last_token(qkv_post_bias),
         "q_proj": flatten_last_token(q),
         "k_proj": flatten_last_token(k),
         "v_proj": flatten_last_token(v),
@@ -188,6 +192,8 @@ def main() -> int:
         oracle_attention = oracle_layer.get("attention")
         if cuda_attention and oracle_attention:
             for key in (
+                "qkv_pre_bias",
+                "qkv_post_bias",
                 "q_proj",
                 "k_proj",
                 "v_proj",
