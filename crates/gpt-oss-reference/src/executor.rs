@@ -141,7 +141,11 @@ impl ReferenceExecutor {
                 next_hidden[token_index] = hidden[token_index]
                     + attention_signal
                     + moe_signal
-                    + (layer_index as f32 * 0.01);
+                    + if zero_logit_baseline {
+                        0.0
+                    } else {
+                        layer_index as f32 * 0.01
+                    };
             }
 
             hidden = next_hidden;

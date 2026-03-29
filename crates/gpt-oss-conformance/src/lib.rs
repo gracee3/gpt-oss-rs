@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn two_layer_full_attention_second_layer_moe_decode_gap_is_localized() {
+    fn two_layer_full_attention_second_layer_moe_decode_parity_matches() {
         let case = ConformanceCase::decode("two-layer-second-moe-decode", 2, vec![3]);
         let runner = Arc::new(
             ModelRunner::new(
@@ -1055,11 +1055,39 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("logits differ")), "{:?}", report.comparison.diffs);
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn two_layer_full_attention_second_layer_moe_prefill_parity_matches() {
+        let case = ConformanceCase::prefill("two-layer-second-moe-prefill", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_layers(2, 1, &[1]),
+                runner_config_with_layers(
+                    2,
+                    vec!["full_attention".into(), "full_attention".into()],
+                    1,
+                    1,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![1],
+        );
+        let reference = two_layer_full_attention_moe_on_second_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 }
