@@ -1,8 +1,8 @@
 //! Parse tool/function call JSON from model output text.
 //!
-//! Supports two common tool-call formats emitted by instruction-tuned models:
+//! Supports two common tool-call formats emitted by models used by this repo:
 //!
-//! 1. **Hermes / ChatML style** -- delimited by `<tool_call>...</tool_call>` tags
+//! 1. **Hermes tag-wrapped style** -- delimited by `<tool_call>...</tool_call>` tags
 //! 2. **Inline JSON** -- a bare JSON object (or array of objects) containing
 //!    `"name"` and `"arguments"` keys
 //!
@@ -40,10 +40,8 @@ pub enum ToolParseResult {
 /// Format style for injecting tool definitions into the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPromptStyle {
-    /// Hermes/ChatML: wrap definitions in `<tools>` tags, calls in `<tool_call>` tags.
+    /// Hermes-style prompt text with `<tools>` and `<tool_call>` tags.
     Hermes,
-    /// Generic JSON: embed tool schemas as a JSON array in the system prompt.
-    GenericJson,
     /// OpenAI Harmony-style JSON instructions for gpt-oss tool calling.
     Harmony,
 }
@@ -100,7 +98,6 @@ pub struct FunctionDefinition {
 pub fn format_tool_definitions(tools: &[ToolDefinition], style: ToolPromptStyle) -> String {
     match style {
         ToolPromptStyle::Hermes => format_hermes_tools(tools),
-        ToolPromptStyle::GenericJson => format_generic_json_tools(tools),
         ToolPromptStyle::Harmony => format_harmony_tools(tools),
     }
 }
@@ -114,16 +111,6 @@ fn format_hermes_tools(tools: &[ToolDefinition]) -> String {
         }
     }
     out.push_str("</tools>\n\nFor each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>");
-    out
-}
-
-fn format_generic_json_tools(tools: &[ToolDefinition]) -> String {
-    let mut out = String::from(
-        "You have access to the following tools. To call a tool, respond with a JSON object with \"name\" and \"arguments\" keys.\n\nAvailable tools:\n",
-    );
-    if let Ok(json) = serde_json::to_string_pretty(tools) {
-        out.push_str(&json);
-    }
     out
 }
 
@@ -515,21 +502,6 @@ mod tests {
         assert!(formatted.contains("</tools>"));
         assert!(formatted.contains("get_weather"));
         assert!(formatted.contains("<tool_call>"));
-    }
-
-    #[test]
-    fn format_generic_json_tools_output() {
-        let tools = vec![ToolDefinition {
-            tool_type: "function".to_string(),
-            function: FunctionDefinition {
-                name: "search".to_string(),
-                description: None,
-                parameters: None,
-            },
-        }];
-        let formatted = format_tool_definitions(&tools, ToolPromptStyle::GenericJson);
-        assert!(formatted.contains("search"));
-        assert!(formatted.contains("Available tools"));
     }
 
     #[test]

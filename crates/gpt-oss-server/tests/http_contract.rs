@@ -14,6 +14,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use gpt_oss_core::prelude::{
     CompletionOutput, FinishReason, LLMError, RequestId, RequestOutput, SamplingParams,
 };
+use gpt_oss_engine::RuntimeMode;
+use gpt_oss_server::runtime_policy::{RuntimeBackendPath, RuntimeDecision};
 use gpt_oss_server::server::InferenceEngine;
 use gpt_oss_server::{build_router, AppState};
 use gpt_oss_tokenizer::Tokenizer;
@@ -22,7 +24,6 @@ use gpt_oss_tokenizer::Tokenizer;
 struct ScriptedEngine {
     next_request_id: AtomicU64,
     prompts: Mutex<Vec<String>>,
-    prompt_token_ids: Mutex<Vec<Vec<u32>>>,
     outputs: AsyncMutex<VecDeque<Vec<RequestOutput>>>,
 }
 
@@ -31,17 +32,12 @@ impl ScriptedEngine {
         Arc::new(Self {
             next_request_id: AtomicU64::new(1),
             prompts: Mutex::new(Vec::new()),
-            prompt_token_ids: Mutex::new(Vec::new()),
             outputs: AsyncMutex::new(VecDeque::from(outputs)),
         })
     }
 
     fn prompts(&self) -> Vec<String> {
         self.prompts.lock().unwrap().clone()
-    }
-
-    fn prompt_token_ids(&self) -> Vec<Vec<u32>> {
-        self.prompt_token_ids.lock().unwrap().clone()
     }
 }
 
@@ -53,35 +49,6 @@ impl InferenceEngine for ScriptedEngine {
         _params: SamplingParams,
     ) -> Result<(RequestId, ReceiverStream<RequestOutput>), LLMError> {
         self.prompts.lock().unwrap().push(prompt);
-
-        let scripted = self
-            .outputs
-            .lock()
-            .await
-            .pop_front()
-            .ok_or_else(|| LLMError::SchedulerError("missing scripted output".into()))?;
-
-        let request_id = RequestId(self.next_request_id.fetch_add(1, Ordering::Relaxed));
-        let (tx, rx) = tokio::sync::mpsc::channel(scripted.len().max(1));
-        tokio::spawn(async move {
-            for output in scripted {
-                if tx.send(output).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok((request_id, ReceiverStream::new(rx)))
-    }
-
-    async fn generate_token_ids(
-        &self,
-        prompt: String,
-        prompt_token_ids: Vec<u32>,
-        _params: SamplingParams,
-    ) -> Result<(RequestId, ReceiverStream<RequestOutput>), LLMError> {
-        self.prompts.lock().unwrap().push(prompt);
-        self.prompt_token_ids.lock().unwrap().push(prompt_token_ids);
 
         let scripted = self
             .outputs
@@ -133,17 +100,15 @@ fn make_test_tokenizer() -> Tokenizer {
 }
 
 fn make_app(outputs: Vec<Vec<RequestOutput>>) -> (TestServer, Arc<ScriptedEngine>) {
-    make_app_with_model("test-model", outputs)
-}
-
-fn make_app_with_model(
-    model_name: &str,
-    outputs: Vec<Vec<RequestOutput>>,
-) -> (TestServer, Arc<ScriptedEngine>) {
     let engine = ScriptedEngine::new(outputs);
     let mut state = AppState::new(
         engine.clone(),
-        model_name.to_string(),
+        "test-model".to_string(),
+        RuntimeDecision {
+            runtime_mode: RuntimeMode::Experimental,
+            backend_path: RuntimeBackendPath::Mock,
+            reason: "test mock backend".into(),
+        },
         make_test_tokenizer(),
     );
     state.batch_store = None;
@@ -232,41 +197,6 @@ async fn chat_completions_stream_emits_ordered_sse_events() {
     assert_eq!(data_lines[1]["choices"][0]["delta"]["content"], "Hel");
     assert_eq!(data_lines[2]["choices"][0]["delta"]["content"], "Hello");
     assert_eq!(data_lines[3]["choices"][0]["finish_reason"], "stop");
-}
-
-#[tokio::test]
-async fn gpt_oss_chat_completions_use_harmony_token_path() {
-    let scripted = vec![vec![output_with_text(
-        1,
-        "prompt",
-        &[1, 2, 3],
-        "Hi",
-        &[10],
-        Some(FinishReason::Stop),
-        true,
-    )]];
-    let (server, engine) = make_app_with_model("openai/gpt-oss-20b", scripted);
-
-    let response = server
-        .post("/v1/chat/completions")
-        .json(&serde_json::json!({
-            "model": "openai/gpt-oss-20b",
-            "messages": [
-                {"role": "user", "content": "hello"}
-            ]
-        }))
-        .await;
-
-    response.assert_status_ok();
-
-    let prompt_token_ids = engine.prompt_token_ids();
-    assert_eq!(prompt_token_ids.len(), 1);
-    assert!(!prompt_token_ids[0].is_empty());
-
-    let prompts = engine.prompts();
-    assert_eq!(prompts.len(), 1);
-    assert!(prompts[0].contains("<|start|>system"));
-    assert!(prompts[0].contains("<|start|>user"));
 }
 
 #[tokio::test]

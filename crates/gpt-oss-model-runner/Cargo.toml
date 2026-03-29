@@ -18,7 +18,9 @@ cublaslt = ["cuda", "gpt-oss-gpu/cublaslt"]
 
 [dependencies]
 gpt-oss-core.workspace = true
+gpt-oss-semantics.workspace = true
 gpt-oss-gpu.workspace = true
+gpt-oss-moe-semantics.workspace = true
 thiserror.workspace = true
 half.workspace = true
 tracing.workspace = true

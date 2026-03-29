@@ -22,8 +22,7 @@ use gpt_oss_engine::{ExecutorAdapter, ExecutorConfig};
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::routes;
-#[cfg(feature = "cuda")]
-use crate::runtime_policy::validate_gpt_oss_runtime;
+use crate::runtime_policy::{validate_gpt_oss_runtime, RuntimeBackendPath, RuntimeDecision};
 
 // ------------------------------------------------------------------
 // Engine trait object for unified API
@@ -36,16 +35,6 @@ pub trait InferenceEngine: Send + Sync {
     async fn generate(
         &self,
         prompt: String,
-        params: gpt_oss_core::prelude::SamplingParams,
-    ) -> gpt_oss_core::prelude::Result<(
-        RequestId,
-        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
-    )>;
-
-    async fn generate_token_ids(
-        &self,
-        prompt: String,
-        prompt_token_ids: Vec<u32>,
         params: gpt_oss_core::prelude::SamplingParams,
     ) -> gpt_oss_core::prelude::Result<(
         RequestId,
@@ -65,18 +54,6 @@ impl InferenceEngine for AsyncLLMEngine {
     )> {
         self.generate(prompt, params).await
     }
-
-    async fn generate_token_ids(
-        &self,
-        prompt: String,
-        prompt_token_ids: Vec<u32>,
-        params: gpt_oss_core::prelude::SamplingParams,
-    ) -> gpt_oss_core::prelude::Result<(
-        RequestId,
-        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
-    )> {
-        self.generate_token_ids(prompt, prompt_token_ids, params).await
-    }
 }
 
 #[cfg(feature = "cuda")]
@@ -92,24 +69,13 @@ impl InferenceEngine for gpt_oss_engine::AsyncGpuLLMEngine {
     )> {
         self.generate(prompt, params).await
     }
-
-    async fn generate_token_ids(
-        &self,
-        prompt: String,
-        prompt_token_ids: Vec<u32>,
-        params: gpt_oss_core::prelude::SamplingParams,
-    ) -> gpt_oss_core::prelude::Result<(
-        RequestId,
-        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
-    )> {
-        self.generate_token_ids(prompt, prompt_token_ids, params).await
-    }
 }
 
 /// Shared application state available to all route handlers.
 pub struct AppState {
     pub engine: Arc<dyn InferenceEngine>,
     pub model_name: String,
+    pub runtime_decision: RuntimeDecision,
     pub tokenizer: Arc<RwLock<Tokenizer>>,
     /// Batch job store (None if batch API is not enabled).
     pub batch_store: Option<crate::routes::batch::SharedBatchStore>,
@@ -119,10 +85,16 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(engine: Arc<dyn InferenceEngine>, model_name: String, tokenizer: Tokenizer) -> Self {
+    pub fn new(
+        engine: Arc<dyn InferenceEngine>,
+        model_name: String,
+        runtime_decision: RuntimeDecision,
+        tokenizer: Tokenizer,
+    ) -> Self {
         Self {
             engine,
             model_name,
+            runtime_decision,
             tokenizer: Arc::new(RwLock::new(tokenizer)),
             batch_store: Some(crate::routes::batch::create_batch_store(None)),
             response_store: Arc::new(RwLock::new(HashMap::new())),
@@ -181,13 +153,22 @@ async fn metrics_placeholder() -> &'static str {
     "# gpt-oss-rs metrics endpoint\n"
 }
 
-fn cuda_gpu_available() -> bool {
+#[derive(Debug, Clone, Copy)]
+struct CudaRuntimeInfo {
+    available: bool,
+    primary_gpu_total_memory: Option<usize>,
+}
+
+fn detect_cuda_runtime() -> CudaRuntimeInfo {
     #[cfg(feature = "cuda")]
     {
         let devices = gpt_oss_gpu::prelude::list_devices();
         if devices.is_empty() {
             info!("cuda feature enabled but no CUDA devices found");
-            return false;
+            return CudaRuntimeInfo {
+                available: false,
+                primary_gpu_total_memory: None,
+            };
         }
         for dev in &devices {
             info!(
@@ -196,11 +177,17 @@ fn cuda_gpu_available() -> bool {
                 "CUDA device available"
             );
         }
-        true
+        CudaRuntimeInfo {
+            available: true,
+            primary_gpu_total_memory: devices.first().map(|d| d.total_memory),
+        }
     }
     #[cfg(not(feature = "cuda"))]
     {
-        false
+        CudaRuntimeInfo {
+            available: false,
+            primary_gpu_total_memory: None,
+        }
     }
 }
 
@@ -215,16 +202,41 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
     info!(model = %model_name, "initializing engine");
 
     let tokenizer = Tokenizer::from_pretrained(&tokenizer_path)?;
+    let cuda_runtime = detect_cuda_runtime();
+    let allow_long_context_override = std::env::var("GPT_OSS_RS_ALLOW_LONG_CONTEXT")
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
 
-    let engine: Arc<dyn InferenceEngine> = if cuda_gpu_available() {
-        info!("GPU detected, creating AsyncGpuLLMEngine for real inference");
-        create_gpu_engine(config).await?
-    } else {
-        info!("no GPU detected, creating mock engine");
-        Arc::new(create_engine(config, &tokenizer_path)?)
+    let runtime_decision = validate_gpt_oss_runtime(
+        &config.model.model_path,
+        config.runtime_mode,
+        cuda_runtime.available,
+        config.model.max_model_len,
+        config.parallel.tensor_parallel_size,
+        cuda_runtime.primary_gpu_total_memory,
+        allow_long_context_override,
+    )
+    .map_err(gpt_oss_core::prelude::LLMError::ConfigError)?;
+    info!(runtime = %runtime_decision.summary(), "resolved runtime path");
+
+    let engine: Arc<dyn InferenceEngine> = match runtime_decision.backend_path {
+        RuntimeBackendPath::Cuda => {
+            info!("GPU-backed runtime selected, creating AsyncGpuLLMEngine");
+            create_gpu_engine(config).await?
+        }
+        RuntimeBackendPath::Mock => {
+            info!("mock runtime selected, creating AsyncLLMEngine");
+            Arc::new(create_engine(config, &tokenizer_path)?)
+        }
     };
 
-    let state = Arc::new(AppState::new(engine, model_name, tokenizer));
+    let state = Arc::new(AppState::new(
+        engine,
+        model_name,
+        runtime_decision,
+        tokenizer,
+    ));
     let app = build_router(state);
 
     let host = std::env::var("VLLM_HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -253,22 +265,6 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
 async fn create_gpu_engine(
     config: EngineConfig,
 ) -> gpt_oss_core::prelude::Result<Arc<dyn InferenceEngine>> {
-    let devices = gpt_oss_gpu::prelude::list_devices();
-    let primary_gpu_total_memory = devices.first().map(|d| d.total_memory);
-    let allow_long_context_override = std::env::var("GPT_OSS_RS_ALLOW_LONG_CONTEXT")
-        .ok()
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-
-    validate_gpt_oss_runtime(
-        &config.model.model_path,
-        config.model.max_model_len,
-        config.parallel.tensor_parallel_size,
-        primary_gpu_total_memory,
-        allow_long_context_override,
-    )
-    .map_err(gpt_oss_core::prelude::LLMError::ConfigError)?;
-
     let engine = gpt_oss_engine::AsyncGpuLLMEngine::new(config).await?;
     Ok(Arc::new(engine))
 }

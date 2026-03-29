@@ -22,6 +22,7 @@ pub use cache::CacheConfigImpl;
 pub use cli::CliArgs;
 pub use device::DeviceConfig;
 pub use engine::EngineConfig;
+pub use gpt_oss_runtime_plan::RuntimeMode;
 pub use model::ModelConfigImpl;
 pub use parallel::ParallelConfigImpl;
 pub use scheduler::{PreemptionMode, SchedulerConfigImpl};

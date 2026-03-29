@@ -5,6 +5,7 @@
 ## Scope
 
 - GPT-OSS checkpoints only
+- Harmony-native GPT-OSS protocol rendering only
 - Rust crates, CUDA kernels, and Criterion benchmarks only
 - OpenAI-compatible text generation endpoints for the server binary
 - No Python bindings, Python benchmark harnesses, or fork-era comparison tooling

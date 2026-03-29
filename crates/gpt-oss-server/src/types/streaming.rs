@@ -10,6 +10,27 @@ pub struct ChatDelta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatToolCallDelta>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct ChatToolCallDelta {
+    pub index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<ChatFunctionCallDelta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct ChatFunctionCallDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 /// A single choice within a streaming completion chunk.
@@ -102,6 +123,7 @@ impl ChatCompletionStreamChunk {
                 delta: ChatDelta {
                     role: Some("assistant".to_string()),
                     content: None,
+                    tool_calls: None,
                 },
                 index: 0,
                 finish_reason: None,
@@ -130,6 +152,35 @@ impl ChatCompletionStreamChunk {
                 delta: ChatDelta {
                     role: None,
                     content: Some(content.to_string()),
+                    tool_calls: None,
+                },
+                index,
+                finish_reason,
+            }],
+        }
+    }
+
+    pub fn tool_call_chunk(
+        id: &str,
+        model: &str,
+        index: usize,
+        tool_calls: Vec<ChatToolCallDelta>,
+        finish_reason: Option<String>,
+    ) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            id: id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: now,
+            model: model.to_string(),
+            choices: vec![ChatStreamChoice {
+                delta: ChatDelta {
+                    role: None,
+                    content: None,
+                    tool_calls: Some(tool_calls),
                 },
                 index,
                 finish_reason,
@@ -152,6 +203,7 @@ impl ChatCompletionStreamChunk {
                 delta: ChatDelta {
                     role: None,
                     content: None,
+                    tool_calls: None,
                 },
                 index,
                 finish_reason: Some(reason.to_string()),
@@ -221,10 +273,34 @@ mod tests {
         let delta = ChatDelta {
             role: None,
             content: Some("hi".into()),
+            tool_calls: None,
         };
         let json = serde_json::to_string(&delta).unwrap();
         assert!(!json.contains("role"));
         assert!(json.contains("content"));
+    }
+
+    #[test]
+    fn chat_stream_tool_call_chunk() {
+        let chunk = ChatCompletionStreamChunk::tool_call_chunk(
+            "chatcmpl-1",
+            "model",
+            0,
+            vec![ChatToolCallDelta {
+                index: 0,
+                id: Some("call_1".into()),
+                call_type: Some("function".into()),
+                function: Some(ChatFunctionCallDelta {
+                    name: Some("get_weather".into()),
+                    arguments: Some("{\"location\":\"Bos".into()),
+                }),
+            }],
+            None,
+        );
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(json.contains("tool_calls"));
+        assert!(json.contains("get_weather"));
+        assert!(json.contains("call_1"));
     }
 
     #[test]

@@ -1,0 +1,20 @@
+[package]
+name = "gpt-oss-runtime-plan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Runtime planning and trust-tier decisions for gpt-oss-rs"
+keywords = ["llm", "inference", "planning", "runtime", "gpt-oss"]
+categories = ["science", "asynchronous"]
+
+[dependencies]
+clap.workspace = true
+gpt-oss-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+

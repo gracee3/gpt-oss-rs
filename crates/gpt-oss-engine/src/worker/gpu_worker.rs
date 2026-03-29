@@ -16,6 +16,7 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use gpt_oss_core::prelude::{BlockId, LLMError, Result, SamplingParams, TokenId};
 use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
+use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 use gpt_oss_model_runner::gpu_runner::ForwardOutput;
@@ -49,6 +50,18 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         || name.ends_with("mlp.router.bias")
         || name.ends_with("mlp.experts.gate_up_proj_bias")
         || name.ends_with("mlp.experts.down_proj_bias")
+}
+
+fn is_gpt_oss_sink_weight(name: &str) -> bool {
+    name.ends_with("self_attn.sinks")
+}
+
+fn has_nonzero_gpt_oss_sink_tensor<'a>(
+    tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
+) -> bool {
+    tensors
+        .into_iter()
+        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -556,6 +569,9 @@ impl GpuWorker {
             all_weights_loaded
         };
 
+        #[cfg(feature = "cuda")]
+        self.reject_unsupported_gpt_oss_sink_attention(&all_weights_full)?;
+
         // Preserve a clone of the raw weight map for deferred GpuModelRunner construction
         #[cfg(feature = "cuda")]
         {
@@ -701,6 +717,33 @@ impl GpuWorker {
             device_id = self.device_id,
             "model weights loaded to GPU successfully"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    fn reject_unsupported_gpt_oss_sink_attention(
+        &self,
+        weights: &HashMap<String, CudaSlice<f32>>,
+    ) -> Result<()> {
+        if self.config.runtime_mode != gpt_oss_runtime_plan::RuntimeMode::Trusted
+            || self.config.architecture != "GptOssForCausalLM"
+        {
+            return Ok(());
+        }
+
+        for (name, tensor) in weights {
+            if !is_gpt_oss_sink_weight(name) {
+                continue;
+            }
+
+            let host = self.stream.clone_dtoh(tensor).map_err(gpu_err)?;
+            if host.iter().any(|value| *value != 0.0) {
+                return Err(LLMError::ConfigError(format!(
+                    "trusted GPT-OSS mode rejects attention sinks until runtime support and parity are proven: {name}"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -1248,22 +1291,65 @@ impl GpuWorker {
     ) -> Result<ForwardOutput> {
         self.forward_count += 1;
 
-        // Only use graphs for pure decode steps with greedy sampling
         let is_decode = !model_input.is_prefill
             && model_input
                 .attention_metadata
                 .query_lens
                 .iter()
                 .all(|&q| q == 1);
+        let actual_batch = model_input.num_tokens();
+        let graph_padded_batch_size = if is_decode && greedy_only && self.graph_runner.is_enabled()
+        {
+            gpt_oss_gpu::cuda_graph::padded_batch_size(actual_batch)
+        } else {
+            None
+        };
+        const GRAPH_MAX_BATCH_SIZE: usize = 32;
+        let plan = plan_request(
+            &PlanRequest::new(
+                self.config.runtime_mode,
+                self.config.model_name.clone(),
+                model_input.is_prefill,
+                greedy_only,
+                self.graph_runner.is_enabled(),
+                GRAPH_MAX_BATCH_SIZE,
+                graph_padded_batch_size,
+                self.config.dtype,
+            )
+            .with_attention_config(
+                self.config.layer_types.clone(),
+                self.config.sliding_window,
+            ),
+        )
+        .map_err(|e| LLMError::ConfigError(e.to_string()))?;
+        trace!(
+            runtime_mode = ?plan.runtime_mode,
+            model = %plan.model_name,
+            request_kind = ?plan.request_kind,
+            backend = ?plan.backend_path,
+            graph_policy = ?plan.graph_policy,
+            output_policy = ?plan.output_policy,
+            reason = %plan.reason,
+            "planned GPU forward path"
+        );
 
-        if !is_decode || !greedy_only || !self.graph_runner.is_enabled() {
-            return self.raw_gpu_forward_ex(model_input, greedy_only);
+        match plan.backend_path {
+            BackendPath::CudaEager => return self.raw_gpu_forward_ex(model_input, greedy_only),
+            BackendPath::CudaGraph => {}
+            BackendPath::Mock => {
+                return Err(LLMError::GpuError(format!(
+                    "planner selected mock backend for {}",
+                    self.config.model_name
+                )))
+            }
         }
 
-        let actual_batch = model_input.num_tokens();
-        let padded = match gpt_oss_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 32 => p,
-            _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
+        let padded = match plan.graph_policy {
+            GraphPolicy::Eligible { padded_batch_size } => padded_batch_size,
+            GraphPolicy::Forbidden { ref reason } => {
+                trace!(%reason, "graph plan fell back to eager execution");
+                return self.raw_gpu_forward_ex(model_input, greedy_only);
+            }
         };
 
         // Pad the input to the graph batch size
@@ -2271,6 +2357,8 @@ fn worker_config_from_engine(
     config: &gpt_oss_engine::config::EngineConfig,
 ) -> WorkerConfig {
     WorkerConfig {
+        model_name: model_path.into(),
+        runtime_mode: config.runtime_mode,
         device_id: 0,
         num_layers: 32,
         num_kv_heads: 32,
@@ -2309,6 +2397,30 @@ fn gpu_err(e: impl std::fmt::Display) -> LLMError {
 mod tests {
     use super::*;
     use gpt_oss_core::prelude::{RequestId, SequenceId};
+
+    #[test]
+    fn sink_tensor_detector_ignores_zero_sinks() {
+        let tensors = vec![
+            ("model.layers.0.self_attn.sinks", vec![0.0, 0.0]),
+            ("model.layers.0.self_attn.q_proj.bias", vec![1.0]),
+        ];
+
+        assert!(!has_nonzero_gpt_oss_sink_tensor(
+            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+        ));
+    }
+
+    #[test]
+    fn sink_tensor_detector_flags_nonzero_sinks() {
+        let tensors = vec![
+            ("model.layers.0.self_attn.sinks", vec![0.0, 1.0]),
+            ("model.layers.1.self_attn.sinks", vec![0.0, 0.0]),
+        ];
+
+        assert!(has_nonzero_gpt_oss_sink_tensor(
+            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+        ));
+    }
 
     fn make_seq_data(prompt: Vec<TokenId>, output: Vec<TokenId>) -> SequenceData {
         SequenceData {

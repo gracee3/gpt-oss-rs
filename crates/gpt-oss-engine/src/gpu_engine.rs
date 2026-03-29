@@ -63,6 +63,8 @@ mod inner {
 
     fn base_worker_config(config: &EngineConfig, hf_config: &HfModelConfig) -> WorkerConfig {
         WorkerConfig {
+            model_name: config.model.model_path.clone(),
+            runtime_mode: config.runtime_mode,
             device_id: 0,
             num_layers: hf_config.num_hidden_layers,
             num_kv_heads: hf_config.num_key_value_heads,
@@ -411,7 +413,6 @@ mod inner {
     pub struct PendingRequest {
         pub request_id: RequestId,
         pub prompt: String,
-        pub prompt_token_ids: Option<Vec<TokenId>>,
         pub params: SamplingParams,
     }
 
@@ -786,28 +787,6 @@ mod inner {
                 ));
             }
 
-            self.add_request_token_ids(request_id, prompt, prompt_token_ids, params)
-        }
-
-        pub fn add_request_token_ids(
-            &mut self,
-            request_id: RequestId,
-            prompt: String,
-            prompt_token_ids: Vec<TokenId>,
-            params: SamplingParams,
-        ) -> Result<()> {
-            if prompt_token_ids.is_empty() {
-                return Err(LLMError::TokenizerError(
-                    "prompt produced zero tokens".into(),
-                ));
-            }
-
-            debug!(
-                %request_id,
-                num_tokens = prompt_token_ids.len(),
-                "GpuLLMEngine: adding pretokenized request"
-            );
-
             self.insert_request(request_id, prompt, prompt_token_ids, params)
         }
 
@@ -973,15 +952,7 @@ mod inner {
                     std::mem::take(&mut *lock)
                 };
                 for req in requests {
-                    let _ = match req.prompt_token_ids {
-                        Some(prompt_token_ids) => self.add_request_token_ids(
-                            req.request_id,
-                            req.prompt,
-                            prompt_token_ids,
-                            req.params,
-                        ),
-                        None => self.add_request(req.request_id, req.prompt, req.params),
-                    };
+                    let _ = self.add_request(req.request_id, req.prompt, req.params);
                 }
             }
         }

@@ -2,12 +2,18 @@
 resolver = "2"
 members = [
     "crates/gpt-oss-core",
+    "crates/gpt-oss-semantics",
     "crates/gpt-oss-gpu",
     "crates/gpt-oss-tokenizer",
+    "crates/gpt-oss-kv-model",
+    "crates/gpt-oss-runtime-plan",
     "crates/gpt-oss-model-runner",
     "crates/gpt-oss-engine",
     "crates/gpt-oss-bench",
+    "crates/gpt-oss-conformance",
     "crates/gpt-oss-server",
+    "crates/gpt-oss-reference",
+    "crates/gpt-oss-moe-semantics",
 ]
 
 [workspace.package]
@@ -25,10 +31,16 @@ categories = ["science", "concurrency", "hardware-support"]
 [workspace.dependencies]
 # Internal crates
 gpt-oss-core = { path = "crates/gpt-oss-core" }
+gpt-oss-semantics = { path = "crates/gpt-oss-semantics" }
 gpt-oss-gpu = { path = "crates/gpt-oss-gpu" }
 gpt-oss-tokenizer = { path = "crates/gpt-oss-tokenizer" }
+gpt-oss-kv-model = { path = "crates/gpt-oss-kv-model" }
+gpt-oss-runtime-plan = { path = "crates/gpt-oss-runtime-plan" }
 gpt-oss-model-runner = { path = "crates/gpt-oss-model-runner" }
 gpt-oss-engine = { path = "crates/gpt-oss-engine" }
+gpt-oss-reference = { path = "crates/gpt-oss-reference" }
+gpt-oss-moe-semantics = { path = "crates/gpt-oss-moe-semantics" }
+gpt-oss-conformance = { path = "crates/gpt-oss-conformance" }
 
 # External dependencies
 thiserror = "2"
@@ -62,3 +74,4 @@ memmap2 = "0.9"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 anyhow = "1"
+openai-harmony = { git = "https://github.com/openai/harmony", default-features = false }
