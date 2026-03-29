@@ -83,6 +83,21 @@ mod inner {
             self.weights_u8.get(name).map(|v| v.as_slice())
         }
 
+        /// Remove an f32 weight tensor, returning ownership if it existed.
+        pub fn remove(&mut self, name: &str) -> Option<CudaSlice<f32>> {
+            self.weights.remove(name)
+        }
+
+        /// Remove an f16 weight tensor, returning ownership if it existed.
+        pub fn remove_f16(&mut self, name: &str) -> Option<CudaSlice<f16>> {
+            self.weights_f16.remove(name)
+        }
+
+        /// Remove a host-side u8 tensor, returning ownership if it existed.
+        pub fn remove_u8(&mut self, name: &str) -> Option<Vec<u8>> {
+            self.weights_u8.remove(name)
+        }
+
         /// Look up a weight by name, returning an error if missing.
         pub fn require(&self, name: &str) -> Result<&CudaSlice<f32>> {
             self.weights

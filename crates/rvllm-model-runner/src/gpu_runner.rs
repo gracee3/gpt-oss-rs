@@ -1151,6 +1151,133 @@ mod cuda_impl {
             self.use_fp16
         }
 
+        pub fn supports_cuda_graphs(&self) -> bool {
+            if self.config.architecture != "GptOssForCausalLM" {
+                return true;
+            }
+            self.use_fp16
+                && self
+                    .gpt_oss_moe_layers
+                    .iter()
+                    .flatten()
+                    .all(|layer| layer.supports_gpu_decode())
+        }
+
+        pub fn prepare_gpt_oss_graph_decode(&mut self) -> Result<()> {
+            if self.config.architecture != "GptOssForCausalLM" || !self.use_fp16 {
+                return Ok(());
+            }
+
+            self.prune_fp32_projection_weights_for_fp16();
+
+            for i in 0..self.gpt_oss_moe_layers.len() {
+                let Some(layer) = self.gpt_oss_moe_layers[i].as_mut() else {
+                    continue;
+                };
+                if layer.supports_gpu_decode() {
+                    continue;
+                }
+
+                let prefix = format!("model.layers.{i}.mlp.experts");
+                let gate_up_blocks_name = format!("{prefix}.gate_up_proj_blocks");
+                let gate_up_scales_name = format!("{prefix}.gate_up_proj_scales");
+                let down_blocks_name = format!("{prefix}.down_proj_blocks");
+                let down_scales_name = format!("{prefix}.down_proj_scales");
+
+                if layer.gate_up_blocks_gpu.is_none() {
+                    let data = self.weights.get_u8(&gate_up_blocks_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_blocks_name}"))
+                    })?;
+                    layer.gate_up_blocks_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {gate_up_blocks_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.gate_up_scales_gpu.is_none() {
+                    let data = self.weights.get_u8(&gate_up_scales_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_scales_name}"))
+                    })?;
+                    layer.gate_up_scales_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {gate_up_scales_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.down_blocks_gpu.is_none() {
+                    let data = self.weights.get_u8(&down_blocks_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {down_blocks_name}"))
+                    })?;
+                    layer.down_blocks_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {down_blocks_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.down_scales_gpu.is_none() {
+                    let data = self.weights.get_u8(&down_scales_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {down_scales_name}"))
+                    })?;
+                    layer.down_scales_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {down_scales_name}: {e}"))
+                        })?,
+                    );
+                }
+            }
+
+            Ok(())
+        }
+
+        fn prune_fp32_projection_weights_for_fp16(&mut self) {
+            if self.config.architecture != "GptOssForCausalLM" || !self.use_fp16 {
+                return;
+            }
+
+            let mut removed = 0usize;
+            for i in 0..self.config.num_layers {
+                for suffix in [
+                    "self_attn.q_proj.weight",
+                    "self_attn.k_proj.weight",
+                    "self_attn.v_proj.weight",
+                    "self_attn.o_proj.weight",
+                    "mlp.gate_proj.weight",
+                    "mlp.up_proj.weight",
+                    "mlp.down_proj.weight",
+                    "mlp.router.weight",
+                    "mlp.router.bias",
+                ] {
+                    let name = format!("model.layers.{i}.{suffix}");
+                    if self.weights.remove(&name).is_some() {
+                        removed += 1;
+                    }
+                }
+                for suffix in [
+                    "mlp.gate_proj.weight",
+                    "mlp.up_proj.weight",
+                    "mlp.down_proj.weight",
+                ] {
+                    let name = format!("model.layers.{i}.{suffix}");
+                    if self.weights.remove_f16(&name).is_some() {
+                        removed += 1;
+                    }
+                }
+            }
+
+            for shared in ["model.embed_tokens.weight", "lm_head.weight"] {
+                if self.weights.remove(shared).is_some() {
+                    removed += 1;
+                }
+                if self.weights.remove_f16(shared).is_some() {
+                    removed += 1;
+                }
+            }
+
+            if removed > 0 {
+                info!(removed, "pruned unused GPT-OSS fp32 projection weights after enabling fp16");
+            }
+        }
+
         /// Per-layer f16 weight references into the GPU weight map.
         fn layer_weights_f16(&self, i: usize) -> Result<GpuLayerWeightsF16<'_>> {
             let g_f16 = |name: &str| -> Result<&CudaSlice<f16>> {
@@ -1232,20 +1359,66 @@ mod cuda_impl {
                         .clone_dtoh(weight)
                         .map_err(|e| LLMError::GpuError(format!("DtoH {name}: {e}")))
                 };
+                let router_weight_name = format!("model.layers.{i}.mlp.router.weight");
+                let router_bias_name = format!("model.layers.{i}.mlp.router.bias");
+                let gate_up_bias_host = dtoh(&format!("{prefix}.gate_up_proj_bias"))?;
+                let down_bias_host = dtoh(&format!("{prefix}.down_proj_bias"))?;
+                let gate_up_bias_gpu = gate_up_bias_host
+                    .chunks(config.intermediate_size * 2)
+                    .map(|chunk| {
+                        stream
+                            .clone_htod(chunk)
+                            .map_err(|e| LLMError::GpuError(format!("HtoD gate_up bias layer {i}: {e}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let down_bias_gpu = down_bias_host
+                    .chunks(config.hidden_size)
+                    .map(|chunk| {
+                        stream
+                            .clone_htod(chunk)
+                            .map_err(|e| LLMError::GpuError(format!("HtoD down bias layer {i}: {e}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 layers.push(Some(GptOssMoeLayerWeights {
-                    router_weight: dtoh(&format!("model.layers.{i}.mlp.router.weight"))?,
-                    router_bias: dtoh(&format!("model.layers.{i}.mlp.router.bias"))?,
+                    router_weight: dtoh(&router_weight_name)?,
+                    router_bias: dtoh(&router_bias_name)?,
                     gate_up_blocks: gate_up_blocks.to_vec(),
                     gate_up_scales: gate_up_scales.to_vec(),
-                    gate_up_bias: dtoh(&format!("{prefix}.gate_up_proj_bias"))?,
+                    gate_up_bias: gate_up_bias_host,
                     down_blocks: down_blocks.to_vec(),
                     down_scales: down_scales.to_vec(),
-                    down_bias: dtoh(&format!("{prefix}.down_proj_bias"))?,
+                    down_bias: down_bias_host,
                     hidden_size: config.hidden_size,
                     intermediate_size: config.intermediate_size,
                     num_local_experts: config.num_local_experts,
                     num_experts_per_tok: config.num_experts_per_tok,
+                    router_weight_gpu: Some(
+                        weights
+                            .get(&router_weight_name)
+                            .ok_or_else(|| {
+                                LLMError::GpuError(format!(
+                                    "missing GPT-OSS weight: {router_weight_name}"
+                                ))
+                            })?
+                            .clone(),
+                    ),
+                    router_bias_gpu: Some(
+                        weights
+                            .get(&router_bias_name)
+                            .ok_or_else(|| {
+                                LLMError::GpuError(format!(
+                                    "missing GPT-OSS weight: {router_bias_name}"
+                                ))
+                            })?
+                            .clone(),
+                    ),
+                    gate_up_blocks_gpu: None,
+                    gate_up_scales_gpu: None,
+                    gate_up_bias_gpu: Some(gate_up_bias_gpu),
+                    down_blocks_gpu: None,
+                    down_scales_gpu: None,
+                    down_bias_gpu: Some(down_bias_gpu),
                 }));
             }
 

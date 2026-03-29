@@ -28,6 +28,7 @@ mod inner {
 
     const GPT_OSS_SWIGLU_ALPHA: f32 = 1.702;
     const GPT_OSS_SWIGLU_LIMIT: f32 = 7.0;
+    const GPT_OSS_MAX_TOP_K: usize = 8;
     const MXFP4_VALUES: [f32; 16] = [
         0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
     ];
@@ -113,6 +114,14 @@ mod inner {
         pub intermediate_size: usize,
         pub num_local_experts: usize,
         pub num_experts_per_tok: usize,
+        pub router_weight_gpu: Option<CudaSlice<f32>>,
+        pub router_bias_gpu: Option<CudaSlice<f32>>,
+        pub gate_up_blocks_gpu: Option<CudaSlice<u8>>,
+        pub gate_up_scales_gpu: Option<CudaSlice<u8>>,
+        pub gate_up_bias_gpu: Option<Vec<CudaSlice<f32>>>,
+        pub down_blocks_gpu: Option<CudaSlice<u8>>,
+        pub down_scales_gpu: Option<CudaSlice<u8>>,
+        pub down_bias_gpu: Option<Vec<CudaSlice<f32>>>,
     }
 
     impl GptOssMoeLayerWeights {
@@ -165,6 +174,198 @@ mod inner {
             stream
                 .clone_htod(&output)
                 .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")))
+        }
+
+        pub fn supports_gpu_decode(&self) -> bool {
+            self.router_weight_gpu.is_some()
+                && self.router_bias_gpu.is_some()
+                && self.gate_up_blocks_gpu.is_some()
+                && self.gate_up_scales_gpu.is_some()
+                && self.gate_up_bias_gpu.is_some()
+                && self.down_blocks_gpu.is_some()
+                && self.down_scales_gpu.is_some()
+                && self.down_bias_gpu.is_some()
+        }
+
+        pub fn forward_decode_gpu(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            blas: &CublasHandle,
+            input: &CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<CudaSlice<f32>> {
+            if self.num_experts_per_tok == 0 || self.num_local_experts == 0 {
+                return stream
+                    .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss moe zero alloc: {e}")));
+            }
+            if self.num_experts_per_tok > GPT_OSS_MAX_TOP_K {
+                return Err(LLMError::GpuError(format!(
+                    "gpt-oss top-k {} exceeds kernel limit {}",
+                    self.num_experts_per_tok, GPT_OSS_MAX_TOP_K
+                )));
+            }
+
+            let router_weight_gpu = self.router_weight_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU router weight for GPT-OSS decode".into())
+            })?;
+            let router_bias_gpu = self.router_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU router bias for GPT-OSS decode".into())
+            })?;
+            let gate_up_blocks_gpu = self.gate_up_blocks_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up blocks for GPT-OSS decode".into())
+            })?;
+            let gate_up_scales_gpu = self.gate_up_scales_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up scales for GPT-OSS decode".into())
+            })?;
+            let gate_up_bias_gpu = self.gate_up_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up bias for GPT-OSS decode".into())
+            })?;
+            let down_blocks_gpu = self.down_blocks_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down blocks for GPT-OSS decode".into())
+            })?;
+            let down_scales_gpu = self.down_scales_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down scales for GPT-OSS decode".into())
+            })?;
+            let down_bias_gpu = self.down_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down bias for GPT-OSS decode".into())
+            })?;
+
+            let mut router_logits = GpuTransformerLayer::linear(
+                stream,
+                blas,
+                input,
+                router_weight_gpu,
+                num_tokens,
+                self.num_local_experts,
+                self.hidden_size,
+            )?;
+            GpuTransformerLayer::add_bias(
+                stream,
+                loader,
+                &mut router_logits,
+                router_bias_gpu,
+                num_tokens,
+                self.num_local_experts,
+            )?;
+
+            let mut topk_indices = stream
+                .alloc_zeros::<i32>(num_tokens * self.num_experts_per_tok)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss topk idx alloc: {e}")))?;
+            let mut topk_weights = stream
+                .alloc_zeros::<f32>(num_tokens * self.num_experts_per_tok)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss topk weights alloc: {e}")))?;
+            self.launch_route_topk(
+                stream,
+                loader,
+                &router_logits,
+                &mut topk_indices,
+                &mut topk_weights,
+                num_tokens,
+            )?;
+
+            let mut output = stream
+                .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe output alloc: {e}")))?;
+
+            for expert_idx in 0..self.num_local_experts {
+                let mut route_weights = stream
+                    .alloc_zeros::<f32>(num_tokens)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss route weights alloc: {e}")))?;
+                let mut masked_input = stream
+                    .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss masked input alloc: {e}")))?;
+                self.launch_select_inputs(
+                    stream,
+                    loader,
+                    input,
+                    &topk_indices,
+                    &topk_weights,
+                    &mut masked_input,
+                    &mut route_weights,
+                    num_tokens,
+                    expert_idx,
+                )?;
+
+                let mut gate_up_weight = stream
+                    .alloc_zeros::<f16>(self.intermediate_size * 2 * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss gate_up weight alloc: {e}")))?;
+                self.launch_dequant_expert(
+                    stream,
+                    loader,
+                    gate_up_blocks_gpu,
+                    gate_up_scales_gpu,
+                    &mut gate_up_weight,
+                    expert_idx,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                )?;
+                let mut gate_up = crate::layers::linear_cuda::CudaLinearLayer::forward_mixed(
+                    &masked_input,
+                    &gate_up_weight,
+                    num_tokens,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                    blas,
+                    loader,
+                )?;
+                GpuTransformerLayer::add_bias(
+                    stream,
+                    loader,
+                    &mut gate_up,
+                    &gate_up_bias_gpu[expert_idx],
+                    num_tokens,
+                    self.intermediate_size * 2,
+                )?;
+                let fused = GpuTransformerLayer::fused_silu_mul_split(
+                    stream,
+                    loader,
+                    &gate_up,
+                    num_tokens * self.intermediate_size,
+                )?;
+
+                let mut down_weight = stream
+                    .alloc_zeros::<f16>(self.hidden_size * self.intermediate_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss down weight alloc: {e}")))?;
+                self.launch_dequant_expert(
+                    stream,
+                    loader,
+                    down_blocks_gpu,
+                    down_scales_gpu,
+                    &mut down_weight,
+                    expert_idx,
+                    self.hidden_size,
+                    self.intermediate_size,
+                )?;
+                let mut expert_out = crate::layers::linear_cuda::CudaLinearLayer::forward_mixed(
+                    &fused,
+                    &down_weight,
+                    num_tokens,
+                    self.hidden_size,
+                    self.intermediate_size,
+                    blas,
+                    loader,
+                )?;
+                GpuTransformerLayer::add_bias(
+                    stream,
+                    loader,
+                    &mut expert_out,
+                    &down_bias_gpu[expert_idx],
+                    num_tokens,
+                    self.hidden_size,
+                )?;
+                self.launch_weighted_add(
+                    stream,
+                    loader,
+                    &mut output,
+                    &expert_out,
+                    &route_weights,
+                    num_tokens,
+                )?;
+            }
+
+            Ok(output)
         }
 
         pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
@@ -237,6 +438,147 @@ mod inner {
             }
 
             output
+        }
+
+        fn launch_route_topk(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            router_logits: &CudaSlice<f32>,
+            topk_indices: &mut CudaSlice<i32>,
+            topk_weights: &mut CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_route_topk_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let num_experts = self.num_local_experts as i32;
+            let top_k = self.num_experts_per_tok as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(router_logits)
+                    .arg(topk_indices)
+                    .arg(topk_weights)
+                    .arg(&num_experts)
+                    .arg(&top_k)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss route topk launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn launch_select_inputs(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f32>,
+            topk_indices: &CudaSlice<i32>,
+            topk_weights: &CudaSlice<f32>,
+            masked_input: &mut CudaSlice<f32>,
+            route_weights: &mut CudaSlice<f32>,
+            num_tokens: usize,
+            expert_idx: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_select_expert_inputs_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: std::mem::size_of::<f32>() as u32,
+            };
+            let hidden_size = self.hidden_size as i32;
+            let top_k = self.num_experts_per_tok as i32;
+            let expert_idx = expert_idx as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(masked_input)
+                    .arg(route_weights)
+                    .arg(input)
+                    .arg(topk_indices)
+                    .arg(topk_weights)
+                    .arg(&hidden_size)
+                    .arg(&top_k)
+                    .arg(&expert_idx)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss select inputs launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn launch_dequant_expert(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            blocks: &CudaSlice<u8>,
+            scales: &CudaSlice<u8>,
+            output: &mut CudaSlice<f16>,
+            expert_idx: usize,
+            out_features: usize,
+            in_features: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_dequant_expert_f16_kernel")?;
+            let total = out_features * in_features;
+            let threads = 256u32;
+            let blocks_grid = (total as u32).div_ceil(threads);
+            let cfg = LaunchConfig {
+                grid_dim: (blocks_grid, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let expert_idx = expert_idx as i32;
+            let out_features = out_features as i32;
+            let in_features = in_features as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(output)
+                    .arg(blocks)
+                    .arg(scales)
+                    .arg(&expert_idx)
+                    .arg(&out_features)
+                    .arg(&in_features)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss dequant launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        fn launch_weighted_add(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            output: &mut CudaSlice<f32>,
+            expert_out: &CudaSlice<f32>,
+            route_weights: &CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_weighted_add_kernel")?;
+            let total = num_tokens * self.hidden_size;
+            let threads = 256u32;
+            let blocks = (total as u32).div_ceil(threads);
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let hidden_size = self.hidden_size as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(output)
+                    .arg(expert_out)
+                    .arg(route_weights)
+                    .arg(&hidden_size)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss weighted add launch: {e}")))?;
+            }
+            Ok(())
         }
     }
 
@@ -555,7 +897,17 @@ mod inner {
 
             // 7. MLP / routed MoE
             let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
-                moe.forward(&self.stream, &normed2)?
+                if input.is_prefill || !moe.supports_gpu_decode() {
+                    moe.forward(&self.stream, &normed2)?
+                } else {
+                    moe.forward_decode_gpu(
+                        &self.stream,
+                        &self.loader,
+                        blas,
+                        &normed2,
+                        num_tokens,
+                    )?
+                }
             } else {
                 let down_proj = weights.down_proj.ok_or_else(|| {
                     LLMError::GpuError(format!(
@@ -1785,6 +2137,14 @@ mod tests {
             intermediate_size: 1,
             num_local_experts: 1,
             num_experts_per_tok: 1,
+            router_weight_gpu: None,
+            router_bias_gpu: None,
+            gate_up_blocks_gpu: None,
+            gate_up_scales_gpu: None,
+            gate_up_bias_gpu: None,
+            down_blocks_gpu: None,
+            down_scales_gpu: None,
+            down_bias_gpu: None,
         };
 
         let mut input = vec![0.0f32; 32];

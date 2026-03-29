@@ -93,6 +93,15 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
         "fused_lm_head_argmax_f16",
         &["fused_lm_head_argmax_f16_kernel"],
     ),
+    (
+        "gpt_oss_moe",
+        &[
+            "gpt_oss_route_topk_kernel",
+            "gpt_oss_select_expert_inputs_kernel",
+            "gpt_oss_dequant_expert_f16_kernel",
+            "gpt_oss_weighted_add_kernel",
+        ],
+    ),
 ];
 
 /// Loads and manages CUDA PTX modules, providing kernel launch capabilities.

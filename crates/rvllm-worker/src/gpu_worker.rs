@@ -673,8 +673,16 @@ impl GpuWorker {
             if self.config.dtype.is_half() {
                 runner.enable_fp16();
                 info!("FP16 inference enabled (hgemm path)");
-                // Fuse QKV and gate+up weights for fewer GEMM calls per layer.
-                if let Err(e) = runner.fuse_weights() {
+                // GPT-OSS decode uses a custom MoE path and does not have dense
+                // gate/up projections, so the generic fusion pass can leave a
+                // partially fused runner state. Keep GPT-OSS on the unfused path.
+                if self.config.architecture == "GptOssForCausalLM" {
+                    info!("skipping generic weight fusion for GPT-OSS");
+                    if let Err(e) = runner.prepare_gpt_oss_graph_decode() {
+                        warn!("GPT-OSS graph decode prep failed: {e} -- graph capture disabled");
+                        self.graph_runner.disable();
+                    }
+                } else if let Err(e) = runner.fuse_weights() {
                     warn!("weight fusion failed: {e} -- using unfused path");
                 }
             }
@@ -686,9 +694,9 @@ impl GpuWorker {
                 self.graph_runner.pool_mut().disable();
             }
 
-            if !cuda_graphs_enabled_for_architecture(&self.config.architecture) {
+            if !runner.supports_cuda_graphs() {
                 info!(
-                    "disabling CUDA graph replay for GPT-OSS: decode still uses host-side MoE fallback"
+                    "disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe"
                 );
                 self.graph_runner.disable();
             }
@@ -1823,10 +1831,6 @@ fn worker_config_from_engine(
     }
 }
 
-fn cuda_graphs_enabled_for_architecture(architecture: &str) -> bool {
-    architecture != "GptOssForCausalLM"
-}
-
 fn gpu_err(e: impl std::fmt::Display) -> LLMError {
     LLMError::GpuError(format!("{e}"))
 }
@@ -1872,12 +1876,6 @@ mod tests {
         let wc = worker_config_from_engine("test/model", &engine);
         assert_eq!(wc.device_id, 0);
         assert_eq!(wc.block_size, engine.cache.block_size);
-    }
-
-    #[test]
-    fn gpt_oss_disables_cuda_graphs() {
-        assert!(!cuda_graphs_enabled_for_architecture("GptOssForCausalLM"));
-        assert!(cuda_graphs_enabled_for_architecture("LlamaForCausalLM"));
     }
 
     #[test]
