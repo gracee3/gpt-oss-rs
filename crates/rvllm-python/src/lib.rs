@@ -309,7 +309,11 @@ impl PyEngineConfig {
             .model(
                 rvllm_config::ModelConfigImpl::builder()
                     .model_path(&self.model)
-                    .dtype(self.dtype.parse::<rvllm_core::types::Dtype>().unwrap_or_default())
+                    .dtype(
+                        self.dtype
+                            .parse::<rvllm_core::types::Dtype>()
+                            .unwrap_or_default(),
+                    )
                     .max_model_len(self.max_model_len)
                     .build(),
             )

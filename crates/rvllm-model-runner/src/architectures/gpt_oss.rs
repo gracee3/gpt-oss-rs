@@ -9,9 +9,7 @@
 use half::f16;
 use tracing::trace;
 
-use crate::bridge::{
-    AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result,
-};
+use crate::bridge::{AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result};
 use crate::input::ModelInput;
 use crate::layers::linear::LinearLayer;
 use crate::layers::norm::RMSNorm;
@@ -203,11 +201,7 @@ impl GptOssForCausalLM {
                     cfg.hidden_size,
                     cfg.attention_bias,
                 ),
-                sinks: get_or_zeros(
-                    &weights,
-                    &format!("{p}.self_attn.sinks"),
-                    &[cfg.num_heads],
-                ),
+                sinks: get_or_zeros(&weights, &format!("{p}.self_attn.sinks"), &[cfg.num_heads]),
                 layer_type,
                 mlp: GptOssMlp {
                     router_weight: get_or_zeros(
@@ -254,7 +248,11 @@ impl Architecture for GptOssForCausalLM {
         attention: &dyn AttentionBackend,
     ) -> Result<GpuBuffer<f32>> {
         let num_tokens = input.num_tokens();
-        let mut hidden = embed_tokens(&self.embed_tokens, &input.token_ids, self.config.hidden_size);
+        let mut hidden = embed_tokens(
+            &self.embed_tokens,
+            &input.token_ids,
+            self.config.hidden_size,
+        );
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             trace!(layer = layer_idx, "gpt_oss layer forward");
@@ -289,8 +287,11 @@ impl Architecture for GptOssForCausalLM {
                 LinearLayer::forward(&attn_out, &layer.o_proj, layer.o_proj_bias.as_ref())?;
             add_inplace(&mut hidden, &attn_proj);
 
-            let normed2 =
-                RMSNorm::forward(&hidden, &layer.post_attention_layernorm, self.config.rms_norm_eps)?;
+            let normed2 = RMSNorm::forward(
+                &hidden,
+                &layer.post_attention_layernorm,
+                self.config.rms_norm_eps,
+            )?;
             let mlp_out = layer.mlp.forward(&normed2)?;
             add_inplace(&mut hidden, &mlp_out);
         }
@@ -367,7 +368,10 @@ impl GptOssMlp {
             }
         }
 
-        Ok(GpuBuffer::from_vec(output, vec![num_tokens, self.hidden_size]))
+        Ok(GpuBuffer::from_vec(
+            output,
+            vec![num_tokens, self.hidden_size],
+        ))
     }
 }
 
@@ -622,11 +626,31 @@ mod tests {
         tensors.extend([
             tensor("model.embed_tokens.weight", &[0.0; 32], &[8, 4]),
             tensor("model.layers.0.input_layernorm.weight", &[1.0; 4], &[4]),
-            tensor("model.layers.0.post_attention_layernorm.weight", &[1.0; 4], &[4]),
-            tensor("model.layers.0.self_attn.q_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.k_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.v_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.o_proj.weight", &[0.0; 16], &[4, 4]),
+            tensor(
+                "model.layers.0.post_attention_layernorm.weight",
+                &[1.0; 4],
+                &[4],
+            ),
+            tensor(
+                "model.layers.0.self_attn.q_proj.weight",
+                &[0.0; 16],
+                &[4, 4],
+            ),
+            tensor(
+                "model.layers.0.self_attn.k_proj.weight",
+                &[0.0; 16],
+                &[4, 4],
+            ),
+            tensor(
+                "model.layers.0.self_attn.v_proj.weight",
+                &[0.0; 16],
+                &[4, 4],
+            ),
+            tensor(
+                "model.layers.0.self_attn.o_proj.weight",
+                &[0.0; 16],
+                &[4, 4],
+            ),
             tensor("model.layers.0.self_attn.sinks", &[0.0; 2], &[2]),
             tensor("model.layers.0.mlp.router.weight", &[0.0; 4], &[1, 4]),
             tensor("model.layers.0.mlp.router.bias", &[0.0], &[1]),
@@ -664,8 +688,8 @@ mod tests {
 
     #[test]
     fn gpt_oss_forward_smoke() {
-        let model = GptOssForCausalLM::new(test_weights(true), &test_config("full_attention"))
-            .unwrap();
+        let model =
+            GptOssForCausalLM::new(test_weights(true), &test_config("full_attention")).unwrap();
         let cache = CacheEngine::new(1, 64);
         let attention = MockAttentionBackend;
         let logits = model.forward(&test_input(), &cache, &attention).unwrap();
@@ -678,17 +702,21 @@ mod tests {
             GptOssForCausalLM::new(test_weights(true), &test_config("sliding_attention")).unwrap();
         let cache = CacheEngine::new(1, 64);
         let attention = MockAttentionBackend;
-        let err = model.forward(&test_input(), &cache, &attention).unwrap_err();
+        let err = model
+            .forward(&test_input(), &cache, &attention)
+            .unwrap_err();
         assert!(err.to_string().contains("sliding attention"));
     }
 
     #[test]
     fn gpt_oss_missing_expert_weights_is_rejected() {
-        let model = GptOssForCausalLM::new(test_weights(false), &test_config("full_attention"))
-            .unwrap();
+        let model =
+            GptOssForCausalLM::new(test_weights(false), &test_config("full_attention")).unwrap();
         let cache = CacheEngine::new(1, 64);
         let attention = MockAttentionBackend;
-        let err = model.forward(&test_input(), &cache, &attention).unwrap_err();
+        let err = model
+            .forward(&test_input(), &cache, &attention)
+            .unwrap_err();
         assert!(err.to_string().contains("expert tensors"));
     }
 }

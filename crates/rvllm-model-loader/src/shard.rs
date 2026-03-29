@@ -45,27 +45,15 @@ impl ShardedLoader {
 
         for name in &names {
             let tensor = weights.get(name).unwrap();
-            let shard_dim = classify_shard_dim(name);
+            let shard_dim = classify_shard_dim(name, tensor.shape());
 
             match shard_dim {
-                ShardDim::Column => {
-                    let sharded_tensor = shard_along_dim(tensor, 0, tp_size, rank, gpu)?;
-                    debug!(tensor = name.as_str(), dim = 0, "column-parallel shard");
+                ShardDim::Along(dim) => {
+                    let sharded_tensor = shard_along_dim(tensor, dim, tp_size, rank, gpu)?;
+                    debug!(tensor = name.as_str(), dim, "tensor-parallel shard");
                     sharded.insert(sharded_tensor);
                 }
-                ShardDim::Row => {
-                    if tensor.shape().len() >= 2 {
-                        let sharded_tensor = shard_along_dim(tensor, 1, tp_size, rank, gpu)?;
-                        debug!(tensor = name.as_str(), dim = 1, "row-parallel shard");
-                        sharded.insert(sharded_tensor);
-                    } else {
-                        // 1D tensor: replicate
-                        sharded.insert(tensor.clone());
-                    }
-                }
-                ShardDim::Replicate => {
-                    sharded.insert(tensor.clone());
-                }
+                ShardDim::Replicate => sharded.insert(tensor.clone()),
             }
         }
 
@@ -80,13 +68,32 @@ impl ShardedLoader {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShardDim {
-    Column,
-    Row,
+    Along(usize),
     Replicate,
 }
 
 /// Classify how a weight should be sharded based on its name.
-fn classify_shard_dim(name: &str) -> ShardDim {
+fn classify_shard_dim(name: &str, shape: &[usize]) -> ShardDim {
+    // GPT-OSS expert tensors are 3D: [experts, out, in] or [experts, hidden, intermediate].
+    // Shard the projection dimension and keep expert routing replicated.
+    if name.contains("mlp.experts.gate_up_proj") {
+        return match shape.len() {
+            0 | 1 => ShardDim::Replicate,
+            2 => ShardDim::Along(1),
+            _ => ShardDim::Along(1),
+        };
+    }
+    if name.contains("mlp.experts.down_proj") {
+        return match shape.len() {
+            0 | 1 => ShardDim::Replicate,
+            2 => ShardDim::Replicate,
+            _ => ShardDim::Along(2),
+        };
+    }
+    if name.contains("mlp.router.") {
+        return ShardDim::Replicate;
+    }
+
     // Column-parallel: output dimension split (q, k, v, gate, up projections)
     if name.contains("attn.q")
         || name.contains("attn.k")
@@ -101,7 +108,7 @@ fn classify_shard_dim(name: &str) -> ShardDim {
         || name.contains("c_attn")
         || name.contains("c_fc")
     {
-        return ShardDim::Column;
+        return ShardDim::Along(0);
     }
 
     // Row-parallel: input dimension split (o, down projections)
@@ -111,7 +118,11 @@ fn classify_shard_dim(name: &str) -> ShardDim {
         || name.contains("ffn.down")
         || name.contains("c_proj")
     {
-        return ShardDim::Row;
+        return if shape.len() >= 2 {
+            ShardDim::Along(1)
+        } else {
+            ShardDim::Replicate
+        };
     }
 
     // Everything else (embeddings, norms, biases) gets replicated
@@ -154,47 +165,25 @@ fn shard_along_dim(
     let elem_size = tensor.dtype().size_of();
     let data = tensor.data().as_bytes();
 
-    // For 2D tensors (most common case):
-    // dim=0 sharding: take contiguous rows [rank*shard_size .. (rank+1)*shard_size]
-    // dim=1 sharding: for each row, take columns [rank*shard_size .. (rank+1)*shard_size]
+    let outer_size = shape[..dim].iter().product::<usize>();
+    let inner_size = shape[dim + 1..].iter().product::<usize>();
+    let prefix_bytes = dim_size * inner_size * elem_size;
+    let shard_bytes = shard_size * inner_size * elem_size;
+    let shard_offset_bytes = rank * shard_bytes;
+
     let shard_data = if shape.len() == 1 {
-        let start = rank * shard_size * elem_size;
-        let end = (rank + 1) * shard_size * elem_size;
+        let start = shard_offset_bytes;
+        let end = start + shard_bytes;
         data[start..end].to_vec()
-    } else if shape.len() == 2 {
-        if dim == 0 {
-            let row_bytes = shape[1] * elem_size;
-            let start = rank * shard_size * row_bytes;
-            let end = (rank + 1) * shard_size * row_bytes;
-            data[start..end].to_vec()
-        } else {
-            // dim == 1
-            let cols = shape[1];
-            let col_start = rank * shard_size;
-            let col_end = col_start + shard_size;
-            let mut out = Vec::with_capacity(shape[0] * shard_size * elem_size);
-            for row in 0..shape[0] {
-                let row_start = row * cols * elem_size;
-                let slice_start = row_start + col_start * elem_size;
-                let slice_end = row_start + col_end * elem_size;
-                out.extend_from_slice(&data[slice_start..slice_end]);
-            }
-            out
-        }
     } else {
-        // For higher-dimensional tensors, only support dim=0 sharding
-        if dim != 0 {
-            return Err(LLMError::ModelError(format!(
-                "sharding along dim {} not supported for {}-d tensor {}",
-                dim,
-                shape.len(),
-                tensor.name()
-            )));
+        let mut out = Vec::with_capacity(outer_size * shard_bytes);
+        for outer_idx in 0..outer_size {
+            let base = outer_idx * prefix_bytes;
+            let start = base + shard_offset_bytes;
+            let end = start + shard_bytes;
+            out.extend_from_slice(&data[start..end]);
         }
-        let inner_size: usize = shape[1..].iter().product::<usize>() * elem_size;
-        let start = rank * shard_size * inner_size;
-        let end = (rank + 1) * shard_size * inner_size;
-        data[start..end].to_vec()
+        out
     };
 
     let gpu_buf = gpu.upload(&shard_data)?;
@@ -288,22 +277,89 @@ mod tests {
     #[test]
     fn classify_names() {
         assert_eq!(
-            classify_shard_dim("layers.0.attn.q.weight"),
-            ShardDim::Column
-        );
-        assert_eq!(classify_shard_dim("layers.0.attn.o.weight"), ShardDim::Row);
-        assert_eq!(
-            classify_shard_dim("layers.0.ffn.gate.weight"),
-            ShardDim::Column
+            classify_shard_dim("layers.0.attn.q.weight", &[4, 4]),
+            ShardDim::Along(0)
         );
         assert_eq!(
-            classify_shard_dim("layers.0.ffn.down.weight"),
-            ShardDim::Row
+            classify_shard_dim("layers.0.attn.o.weight", &[4, 4]),
+            ShardDim::Along(1)
         );
         assert_eq!(
-            classify_shard_dim("embed_tokens.weight"),
+            classify_shard_dim("layers.0.ffn.gate.weight", &[4, 4]),
+            ShardDim::Along(0)
+        );
+        assert_eq!(
+            classify_shard_dim("layers.0.ffn.down.weight", &[4, 4]),
+            ShardDim::Along(1)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.gate_up_proj", &[8, 16, 4]),
+            ShardDim::Along(1)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.gate_up_proj_bias", &[8, 16]),
+            ShardDim::Along(1)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.down_proj", &[8, 4, 16]),
+            ShardDim::Along(2)
+        );
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.experts.down_proj_bias", &[8, 4]),
             ShardDim::Replicate
         );
-        assert_eq!(classify_shard_dim("norm.weight"), ShardDim::Replicate);
+        assert_eq!(
+            classify_shard_dim("model.layers.0.mlp.router.weight", &[8, 4]),
+            ShardDim::Replicate
+        );
+        assert_eq!(
+            classify_shard_dim("embed_tokens.weight", &[4, 2]),
+            ShardDim::Replicate
+        );
+        assert_eq!(classify_shard_dim("norm.weight", &[8]), ShardDim::Replicate);
+    }
+
+    #[test]
+    fn shard_3d_gate_up_projection_along_output_dim() {
+        let data: Vec<u8> = (0..32).collect();
+        let mut weights = ModelWeights::new();
+        weights.insert(make_tensor(
+            "model.layers.0.mlp.experts.gate_up_proj",
+            vec![2, 4, 4],
+            DType::U8,
+            data,
+        ));
+
+        let gpu = MockGpuAllocator;
+        let rank1 = ShardedLoader::shard(weights, 2, 1, &gpu).unwrap();
+        let w = rank1
+            .get("model.layers.0.mlp.experts.gate_up_proj")
+            .unwrap();
+        assert_eq!(w.shape(), &[2, 2, 4]);
+        assert_eq!(
+            w.data().as_bytes(),
+            &vec![8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+    }
+
+    #[test]
+    fn shard_3d_down_projection_along_input_dim() {
+        let data: Vec<u8> = (0..32).collect();
+        let mut weights = ModelWeights::new();
+        weights.insert(make_tensor(
+            "model.layers.0.mlp.experts.down_proj",
+            vec![2, 4, 4],
+            DType::U8,
+            data,
+        ));
+
+        let gpu = MockGpuAllocator;
+        let rank0 = ShardedLoader::shard(weights, 2, 0, &gpu).unwrap();
+        let w = rank0.get("model.layers.0.mlp.experts.down_proj").unwrap();
+        assert_eq!(w.shape(), &[2, 4, 2]);
+        assert_eq!(
+            w.data().as_bytes(),
+            &vec![0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 28, 29]
+        );
     }
 }

@@ -38,7 +38,11 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
     ("add_bias", &["add_bias_kernel", "add_kernel"]),
     (
         "add_bias_f16",
-        &["add_bias_f16_kernel", "add_f16_kernel", "add_inplace_f16_kernel"],
+        &[
+            "add_bias_f16_kernel",
+            "add_f16_kernel",
+            "add_inplace_f16_kernel",
+        ],
     ),
     ("copy_blocks", &["copy_blocks_kernel"]),
     ("embedding_gather", &["embedding_gather_kernel"]),
@@ -63,10 +67,16 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
         ],
     ),
     ("fused_residual_rmsnorm", &["fused_residual_rmsnorm_kernel"]),
-    ("fused_residual_rmsnorm_f16", &["fused_residual_rmsnorm_f16_kernel"]),
+    (
+        "fused_residual_rmsnorm_f16",
+        &["fused_residual_rmsnorm_f16_kernel"],
+    ),
     (
         "paged_attention",
-        &["paged_attention_v2_kernel", "paged_attention_v2_f16kv_kernel"],
+        &[
+            "paged_attention_v2_kernel",
+            "paged_attention_v2_f16kv_kernel",
+        ],
     ),
     (
         "split_kv_attention",
@@ -85,10 +95,7 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
         "cast_fp",
         &["cast_f32_to_f16_kernel", "cast_f16_to_f32_kernel"],
     ),
-    (
-        "reshape_and_cache_f16",
-        &["reshape_and_cache_f16io_kernel"],
-    ),
+    ("reshape_and_cache_f16", &["reshape_and_cache_f16io_kernel"]),
     ("gemv_f16", &["gemv_f16_kernel", "gemv_batched_f16_kernel"]),
     ("rms_norm", &["rms_norm_kernel"]),
     ("rms_norm_f16", &["rms_norm_f16_kernel"]),
@@ -234,9 +241,10 @@ impl KernelLoader {
 
     /// Retrieve a loaded CUDA function by module and function name.
     pub fn get_func(&self, module: &str, function: &str) -> Result<CudaFunction> {
-        let m = self.modules.get(module).ok_or_else(|| {
-            crate::LLMError::GpuError(format!("module '{module}' not loaded"))
-        })?;
+        let m = self
+            .modules
+            .get(module)
+            .ok_or_else(|| crate::LLMError::GpuError(format!("module '{module}' not loaded")))?;
         m.load_function(function).map_err(|e| {
             crate::LLMError::GpuError(format!(
                 "function '{function}' not found in module '{module}': {e}"
@@ -445,7 +453,8 @@ mod tests {
     fn new_with_nonexistent_dir() {
         let context = CudaContext::new(0).unwrap();
         let stream = context.new_stream().unwrap();
-        let loader = KernelLoader::new(context, stream, &PathBuf::from("/nonexistent/path")).unwrap();
+        let loader =
+            KernelLoader::new(context, stream, &PathBuf::from("/nonexistent/path")).unwrap();
         assert!(loader.loaded_modules().is_empty());
     }
 }

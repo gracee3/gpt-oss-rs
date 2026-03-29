@@ -369,12 +369,15 @@ impl GpuWorker {
         // pre-capture work create illegal cross-phase dependencies). Since we use
         // a single stream, event-based multi-stream sync is unnecessary.
         #[cfg(feature = "cuda")]
-        unsafe { context.disable_event_tracking(); }
+        unsafe {
+            context.disable_event_tracking();
+        }
 
         // Use a non-default stream for all GPU operations. The legacy default
         // stream (stream 0) does NOT support cuStreamBeginCapture, which is
         // required for CUDA graph capture/replay.
-        let stream = context.new_stream()
+        let stream = context
+            .new_stream()
             .map_err(|e| LLMError::GpuError(format!("failed to create CUDA stream: {e}")))?;
 
         // Set memory pool to never release freed memory (instant reuse).
@@ -382,8 +385,7 @@ impl GpuWorker {
         // threshold=u64::MAX keeps all freed allocations in the pool.
         unsafe {
             use cudarc::driver::sys::{
-                cuDeviceGetDefaultMemPool, cuMemPoolSetAttribute,
-                CUmemPool_attribute, CUmemoryPool,
+                cuDeviceGetDefaultMemPool, cuMemPoolSetAttribute, CUmemPool_attribute, CUmemoryPool,
             };
             let mut pool: CUmemoryPool = std::ptr::null_mut();
             let res = cuDeviceGetDefaultMemPool(&mut pool, device_id as i32);
@@ -396,7 +398,10 @@ impl GpuWorker {
                 );
                 info!(device_id, "memory pool release threshold set to u64::MAX");
             } else {
-                warn!(device_id, "failed to configure memory pool release threshold");
+                warn!(
+                    device_id,
+                    "failed to configure memory pool release threshold"
+                );
             }
         }
 
@@ -492,7 +497,7 @@ impl GpuWorker {
                 model_path,
                 &self.stream,
             )
-                .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?;
+            .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?;
 
         info!("loaded {} weight tensors to GPU", all_weights_full.len());
 
@@ -502,9 +507,8 @@ impl GpuWorker {
             self.raw_weight_map = Some(all_weights_full.clone());
             self.raw_weight_shapes = Some(all_weight_shapes.clone());
             self.raw_weight_map_u8 = Some(
-                rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path).map_err(|e| {
-                    LLMError::GpuError(format!("u8 weight loading failed: {e}"))
-                })?,
+                rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path)
+                    .map_err(|e| LLMError::GpuError(format!("u8 weight loading failed: {e}")))?,
             );
 
             // Also load f16 weights for hgemm path when dtype is half
@@ -647,7 +651,9 @@ impl GpuWorker {
                 LLMError::GpuError("raw weight map not available -- call load_weights first".into())
             })?;
             let raw_shapes = self.raw_weight_shapes.take().ok_or_else(|| {
-                LLMError::GpuError("raw weight shapes not available -- call load_weights first".into())
+                LLMError::GpuError(
+                    "raw weight shapes not available -- call load_weights first".into(),
+                )
             })?;
             let mut loader_weights = LoaderWeights::new(raw_map, raw_shapes.clone());
             if let Some(u8_map) = self.raw_weight_map_u8.take() {
@@ -730,12 +736,9 @@ impl GpuWorker {
             }
 
             if !runner.supports_cuda_graphs() {
-                info!(
-                    "disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe"
-                );
+                info!("disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe");
                 self.graph_runner.disable();
             }
-
 
             self.gpu_model_runner = Some(runner);
             info!(
@@ -790,7 +793,9 @@ impl GpuWorker {
         &self,
         gpu_memory_utilization: f32,
     ) -> Result<(usize, usize)> {
-        let (free, _total) = self.context.mem_get_info()
+        let (free, _total) = self
+            .context
+            .mem_get_info()
             .map_err(|e| LLMError::GpuError(format!("mem_get_info failed: {e}")))?;
         let available = (free as f32 * gpu_memory_utilization) as usize;
 
@@ -856,7 +861,11 @@ impl GpuWorker {
     }
 
     /// Collect results after execute_launch. Syncs GPU if async DtoH pending.
-    pub fn execute_collect(&mut self, actual_batch: Option<usize>, metadata: &[SequenceGroupMetadata]) -> Result<GpuWorkerOutput> {
+    pub fn execute_collect(
+        &mut self,
+        actual_batch: Option<usize>,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<GpuWorkerOutput> {
         if let Some(batch) = actual_batch {
             // Async path: sync and read from pinned buffer
             let token_ids = self.collect_pending_tokens(batch)?;
@@ -869,14 +878,14 @@ impl GpuWorker {
                 ForwardOutput::TokenIds(ref token_ids) => {
                     self.sample_tokens_from_gpu_argmax(token_ids, metadata)?
                 }
-                ForwardOutput::Logits(ref logits) => {
-                    self.sample_tokens(logits, metadata)?
-                }
+                ForwardOutput::Logits(ref logits) => self.sample_tokens(logits, metadata)?,
                 ForwardOutput::TokenIdsPending { .. } => unreachable!(),
             };
             return Ok(GpuWorkerOutput { outputs });
         }
-        Ok(GpuWorkerOutput { outputs: Vec::new() })
+        Ok(GpuWorkerOutput {
+            outputs: Vec::new(),
+        })
     }
 
     /// Execute with overlap: runs `during_gpu` closure while GPU computes.
@@ -889,7 +898,9 @@ impl GpuWorker {
     ) -> Result<GpuWorkerOutput> {
         if metadata.is_empty() {
             during_gpu();
-            return Ok(GpuWorkerOutput { outputs: Vec::new() });
+            return Ok(GpuWorkerOutput {
+                outputs: Vec::new(),
+            });
         }
 
         let model_input = input::prepare_input(metadata, self.config.block_size)?;
@@ -942,9 +953,7 @@ impl GpuWorker {
                 let token_ids = self.collect_pending_tokens(actual_batch)?;
                 self.sample_tokens_from_gpu_argmax(&token_ids, metadata)?
             }
-            ForwardOutput::Logits(ref logits) => {
-                self.sample_tokens(logits, metadata)?
-            }
+            ForwardOutput::Logits(ref logits) => self.sample_tokens(logits, metadata)?,
         };
         let t_sample = t_start.elapsed();
 
@@ -956,7 +965,10 @@ impl GpuWorker {
             let sample_us = (t_sample - t_forward).as_micros();
             let total_us = t_sample.as_micros();
             info!(
-                input_us, forward_us, sample_us, total_us,
+                input_us,
+                forward_us,
+                sample_us,
+                total_us,
                 tokens = model_input.num_tokens(),
                 greedy = greedy_only,
                 "TIMING execute"
@@ -971,7 +983,10 @@ impl GpuWorker {
     /// Returns `Some(GpuWorkerOutput)` if the forward path is synchronous
     /// (non-graph path, capture path), or `None` if async DtoH is pending
     /// and the caller should do CPU work before calling `collect_async_output`.
-    pub fn execute_async(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<Option<GpuWorkerOutput>> {
+    pub fn execute_async(
+        &mut self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Option<GpuWorkerOutput>> {
         if metadata.is_empty() {
             return Ok(Some(GpuWorkerOutput {
                 outputs: Vec::new(),
@@ -1003,11 +1018,12 @@ impl GpuWorker {
     /// Call after `execute_async` returned `None` (indicating async DtoH
     /// is in flight). Does CPU work between the async launch and this call
     /// to overlap with GPU compute + DtoH transfer.
-    pub fn collect_async_output(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<GpuWorkerOutput> {
+    pub fn collect_async_output(
+        &mut self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<GpuWorkerOutput> {
         // Determine actual batch size from metadata
-        let actual_batch: usize = metadata.iter()
-            .map(|g| g.seq_data.len())
-            .sum();
+        let actual_batch: usize = metadata.iter().map(|g| g.seq_data.len()).sum();
         let token_ids = self.collect_pending_tokens(actual_batch)?;
         let outputs = self.sample_tokens_from_gpu_argmax(&token_ids, metadata)?;
         Ok(GpuWorkerOutput { outputs })
@@ -1116,7 +1132,11 @@ impl GpuWorker {
 
         // Only use graphs for pure decode steps with greedy sampling
         let is_decode = !model_input.is_prefill
-            && model_input.attention_metadata.query_lens.iter().all(|&q| q == 1);
+            && model_input
+                .attention_metadata
+                .query_lens
+                .iter()
+                .all(|&q| q == 1);
 
         if !is_decode || !greedy_only || !self.graph_runner.is_enabled() {
             return self.raw_gpu_forward_ex(model_input, greedy_only);
@@ -1150,9 +1170,10 @@ impl GpuWorker {
         let num_seqs = padded_input.attention_metadata.context_lens.len();
         let max_context_len = padded_input.attention_metadata.max_context_len;
 
-        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
-            LLMError::GpuError("GPU model runner not initialized".into())
-        })?;
+        let runner = self
+            .gpu_model_runner
+            .as_ref()
+            .ok_or_else(|| LLMError::GpuError("GPU model runner not initialized".into()))?;
 
         let t0 = std::time::Instant::now();
 
@@ -1183,14 +1204,19 @@ impl GpuWorker {
 
             // Enqueue async DtoH into pinned buffer (returns immediately).
             let pinned = self.pinned_output.as_mut().unwrap();
-            runner.read_graph_output_async(actual_batch, pinned.as_mut_slice()
-                .map_err(|e| LLMError::GpuError(format!("pinned slice: {e}")))?)?;
+            runner.read_graph_output_async(
+                actual_batch,
+                pinned
+                    .as_mut_slice()
+                    .map_err(|e| LLMError::GpuError(format!("pinned slice: {e}")))?,
+            )?;
 
             if self.forward_count % 64 == 0 {
                 let upload_us = t_upload.as_micros();
                 let replay_us = (t_replay - t_upload).as_micros();
                 info!(
-                    upload_us, replay_us,
+                    upload_us,
+                    replay_us,
                     total_us = t0.elapsed().as_micros(),
                     batch = actual_batch,
                     "TIMING graph_replay (async DtoH enqueued)"
@@ -1213,7 +1239,8 @@ impl GpuWorker {
             // Synchronize to drain all pending async ops (allocs, frees,
             // kernel completions) before starting graph capture.
             let cuda_stream = runner.cuda_stream().clone();
-            cuda_stream.synchronize()
+            cuda_stream
+                .synchronize()
                 .map_err(|e| LLMError::GpuError(format!("pre-capture sync: {e}")))?;
 
             // Re-upload metadata (warmup consumed the stream state).
@@ -1226,19 +1253,20 @@ impl GpuWorker {
             // Begin capture on the model runner's stream.
             let capture_begin = self.graph_runner.pool_mut().begin_capture_on(&cuda_stream);
             if let Err(e) = capture_begin {
-                warn!("graph capture begin failed: {e} -- skipping capture for batch {padded_batch}");
+                warn!(
+                    "graph capture begin failed: {e} -- skipping capture for batch {padded_batch}"
+                );
                 self.graph_runner.mark_captured(padded_batch);
                 // Fall through to normal path below
             } else {
-                let result = runner.forward_gpu_only(
-                    num_tokens, num_seqs, max_context_len, false,
-                );
+                let result = runner.forward_gpu_only(num_tokens, num_seqs, max_context_len, false);
 
                 match result {
                     Ok(()) => {
-                        let graph = self.graph_runner.pool_mut().end_capture_on(
-                            &cuda_stream, padded_batch,
-                        )?;
+                        let graph = self
+                            .graph_runner
+                            .pool_mut()
+                            .end_capture_on(&cuda_stream, padded_batch)?;
                         self.graph_runner.pool_mut().insert(graph);
                         self.graph_runner.mark_captured(padded_batch);
                         info!(padded_batch, "CUDA graph captured successfully");
@@ -1250,9 +1278,10 @@ impl GpuWorker {
                     }
                     Err(e) => {
                         warn!("graph capture forward failed, falling back: {e}");
-                        let _ = self.graph_runner.pool_mut().end_capture_on(
-                            &cuda_stream, padded_batch,
-                        );
+                        let _ = self
+                            .graph_runner
+                            .pool_mut()
+                            .end_capture_on(&cuda_stream, padded_batch);
                         self.graph_runner.mark_captured(padded_batch);
                         // Fall through to normal path below
                     }
@@ -1262,9 +1291,8 @@ impl GpuWorker {
 
         // -- NORMAL path (pre-warmup or capture failure) --
         // Metadata already uploaded. Use forward_graph_body which includes DtoH.
-        let fwd_output = runner.forward_graph_body(
-            num_tokens, num_seqs, max_context_len, false, true,
-        )?;
+        let fwd_output =
+            runner.forward_graph_body(num_tokens, num_seqs, max_context_len, false, true)?;
 
         // Strip padding from output
         match fwd_output {
@@ -1921,21 +1949,26 @@ impl GpuWorker {
     /// Called after an async DtoH was enqueued via `ForwardOutput::TokenIdsPending`.
     #[cfg(feature = "cuda")]
     fn collect_pending_tokens(&mut self, actual_batch: usize) -> Result<Vec<i32>> {
-        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
-            LLMError::GpuError("GPU model runner not initialized".into())
-        })?;
+        let runner = self
+            .gpu_model_runner
+            .as_ref()
+            .ok_or_else(|| LLMError::GpuError("GPU model runner not initialized".into()))?;
         runner.sync_stream()?;
-        let pinned = self.pinned_output.as_ref().ok_or_else(|| {
-            LLMError::GpuError("pinned output buffer not allocated".into())
-        })?;
-        let slice = pinned.as_slice()
+        let pinned = self
+            .pinned_output
+            .as_ref()
+            .ok_or_else(|| LLMError::GpuError("pinned output buffer not allocated".into()))?;
+        let slice = pinned
+            .as_slice()
             .map_err(|e| LLMError::GpuError(format!("pinned buf read: {e}")))?;
         Ok(slice[..actual_batch].to_vec())
     }
 
     #[cfg(not(feature = "cuda"))]
     fn collect_pending_tokens(&mut self, _actual_batch: usize) -> Result<Vec<i32>> {
-        Err(LLMError::GpuError("async DtoH requires cuda feature".into()))
+        Err(LLMError::GpuError(
+            "async DtoH requires cuda feature".into(),
+        ))
     }
 
     /// Used when all requests in the batch use temperature=0 (greedy).

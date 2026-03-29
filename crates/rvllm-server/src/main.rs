@@ -4,9 +4,13 @@
 //!
 //! Compatible with OpenAI API at http://localhost:8000/v1/
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use rvllm_core::types::Dtype;
 use tracing::info;
+
+use rvllm_api::runtime_policy::{
+    is_gpt_oss_model, GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION, GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+};
 
 #[derive(Parser)]
 #[command(name = "rvllm", about = "High-performance LLM inference server")]
@@ -27,14 +31,16 @@ enum Commands {
         port: u16,
         #[arg(long, default_value = "auto")]
         dtype: Dtype,
-        #[arg(long, default_value_t = 2048)]
-        max_model_len: usize,
-        #[arg(long, default_value_t = 0.90)]
-        gpu_memory_utilization: f32,
+        #[arg(long)]
+        max_model_len: Option<usize>,
+        #[arg(long)]
+        gpu_memory_utilization: Option<f32>,
         #[arg(long, default_value_t = 1)]
         tensor_parallel_size: usize,
         #[arg(long, default_value_t = 256)]
         max_num_seqs: usize,
+        #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
+        profile: ServeProfile,
         #[arg(long)]
         tokenizer: Option<String>,
         #[arg(long, default_value = "info")]
@@ -55,6 +61,20 @@ enum Commands {
         #[arg(long, default_value_t = 128)]
         output_len: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ServeProfile {
+    Auto,
+    Generic,
+    GptOss3090,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ResolvedServeProfile {
+    profile: ServeProfile,
+    max_model_len: usize,
+    gpu_memory_utilization: f32,
 }
 
 fn init_tracing(log_level: &str) {
@@ -80,6 +100,33 @@ fn detect_gpu_and_log() {
                 "detected GPU device"
             );
         }
+    }
+}
+
+fn resolve_serve_profile(
+    model: &str,
+    requested_profile: ServeProfile,
+    max_model_len: Option<usize>,
+    gpu_memory_utilization: Option<f32>,
+) -> ResolvedServeProfile {
+    let profile = match requested_profile {
+        ServeProfile::Auto if is_gpt_oss_model(model) => ServeProfile::GptOss3090,
+        ServeProfile::Auto => ServeProfile::Generic,
+        profile => profile,
+    };
+
+    let (default_max_model_len, default_gpu_memory_utilization) = match profile {
+        ServeProfile::Auto | ServeProfile::Generic => (2048, 0.90),
+        ServeProfile::GptOss3090 => (
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION,
+        ),
+    };
+
+    ResolvedServeProfile {
+        profile,
+        max_model_len: max_model_len.unwrap_or(default_max_model_len),
+        gpu_memory_utilization: gpu_memory_utilization.unwrap_or(default_gpu_memory_utilization),
     }
 }
 
@@ -113,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
             gpu_memory_utilization,
             tensor_parallel_size,
             max_num_seqs,
+            profile,
             tokenizer,
             log_level,
             disable_telemetry,
@@ -122,6 +170,15 @@ async fn main() -> anyhow::Result<()> {
 
             detect_gpu_and_log();
 
+            let resolved_profile =
+                resolve_serve_profile(&model, profile, max_model_len, gpu_memory_utilization);
+            if resolved_profile.profile == ServeProfile::GptOss3090 && !is_gpt_oss_model(&model) {
+                tracing::warn!(
+                    model = %model,
+                    "gpt-oss-3090 profile selected for a non-GPT-OSS model"
+                );
+            }
+
             // Build EngineConfig from CLI args
             let config = {
                 use rvllm_config::*;
@@ -130,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
                         let mut m = ModelConfigImpl::builder()
                             .model_path(&model)
                             .dtype(dtype)
-                            .max_model_len(max_model_len);
+                            .max_model_len(resolved_profile.max_model_len);
                         if let Some(ref tok) = tokenizer {
                             m = m.tokenizer_path(tok);
                         }
@@ -138,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .cache(
                         CacheConfigImpl::builder()
-                            .gpu_memory_utilization(gpu_memory_utilization)
+                            .gpu_memory_utilization(resolved_profile.gpu_memory_utilization)
                             .build(),
                     )
                     .scheduler(
@@ -170,8 +227,9 @@ async fn main() -> anyhow::Result<()> {
                 host = %host,
                 port = port,
                 dtype = %dtype,
-                max_model_len = max_model_len,
-                gpu_memory_utilization = gpu_memory_utilization,
+                profile = ?resolved_profile.profile,
+                max_model_len = resolved_profile.max_model_len,
+                gpu_memory_utilization = resolved_profile.gpu_memory_utilization,
                 tp_size = tensor_parallel_size,
                 "starting server"
             );
@@ -208,4 +266,42 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_profile_uses_gpt_oss_3090_defaults() {
+        let resolved = resolve_serve_profile("openai/gpt-oss-20b", ServeProfile::Auto, None, None);
+        assert_eq!(resolved.profile, ServeProfile::GptOss3090);
+        assert_eq!(resolved.max_model_len, GPT_OSS_CONSUMER_MAX_MODEL_LEN);
+        assert_eq!(
+            resolved.gpu_memory_utilization,
+            GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION
+        );
+    }
+
+    #[test]
+    fn auto_profile_keeps_generic_defaults_for_other_models() {
+        let resolved =
+            resolve_serve_profile("meta-llama/Llama-3.1-8B", ServeProfile::Auto, None, None);
+        assert_eq!(resolved.profile, ServeProfile::Generic);
+        assert_eq!(resolved.max_model_len, 2048);
+        assert_eq!(resolved.gpu_memory_utilization, 0.90);
+    }
+
+    #[test]
+    fn explicit_values_override_profile_defaults() {
+        let resolved = resolve_serve_profile(
+            "openai/gpt-oss-20b",
+            ServeProfile::GptOss3090,
+            Some(4096),
+            Some(0.82),
+        );
+        assert_eq!(resolved.profile, ServeProfile::GptOss3090);
+        assert_eq!(resolved.max_model_len, 4096);
+        assert_eq!(resolved.gpu_memory_utilization, 0.82);
+    }
 }

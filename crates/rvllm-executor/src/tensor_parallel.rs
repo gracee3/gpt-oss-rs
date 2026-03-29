@@ -385,6 +385,16 @@ impl TransformerLayerParallel {
 ///
 /// Mirrors the logic in `rvllm-model-loader::shard::classify_shard_dim`.
 pub fn classify_parallel_style(name: &str) -> ParallelStyle {
+    if name.contains("mlp.experts.gate_up_proj") {
+        return ParallelStyle::ColumnParallel;
+    }
+    if name.contains("mlp.experts.down_proj") {
+        return ParallelStyle::RowParallel;
+    }
+    if name.contains("mlp.router.") {
+        return ParallelStyle::Replicated;
+    }
+
     // Column-parallel: output dimension split
     if name.contains("q_proj")
         || name.contains("k_proj")
@@ -596,6 +606,18 @@ mod tests {
         assert_eq!(
             classify_parallel_style("layers.0.mlp.down_proj.weight"),
             ParallelStyle::RowParallel
+        );
+        assert_eq!(
+            classify_parallel_style("model.layers.0.mlp.experts.gate_up_proj"),
+            ParallelStyle::ColumnParallel
+        );
+        assert_eq!(
+            classify_parallel_style("model.layers.0.mlp.experts.down_proj"),
+            ParallelStyle::RowParallel
+        );
+        assert_eq!(
+            classify_parallel_style("model.layers.0.mlp.router.weight"),
+            ParallelStyle::Replicated
         );
         assert_eq!(
             classify_parallel_style("model.embed_tokens.weight"),

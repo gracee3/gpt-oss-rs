@@ -68,7 +68,10 @@ mod inner {
     pub fn load_weights_to_gpu_f16_with_shapes(
         path: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
+    ) -> Result<(
+        HashMap<String, CudaSlice<half::f16>>,
+        HashMap<String, Vec<usize>>,
+    )> {
         if path.is_dir() {
             load_sharded_to_gpu_f16(path, stream)
         } else {
@@ -115,8 +118,7 @@ mod inner {
                 continue;
             }
 
-            let (dtype_str, shape, tensor_bytes) =
-                parse_tensor_meta(meta, name, data, data_start)?;
+            let (dtype_str, shape, tensor_bytes) = parse_tensor_meta(meta, name, data, data_start)?;
             let numel: usize = shape.iter().product();
 
             if dtype_str == "U8" {
@@ -191,7 +193,10 @@ mod inner {
     fn load_single_to_gpu_f16(
         path: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
+    ) -> Result<(
+        HashMap<String, CudaSlice<half::f16>>,
+        HashMap<String, Vec<usize>>,
+    )> {
         info!("gpu_loader: memory-mapping {} (f16 mode)", path.display());
 
         let file = std::fs::File::open(path)?;
@@ -210,8 +215,7 @@ mod inner {
                 continue;
             }
 
-            let (dtype_str, shape, tensor_bytes) =
-                parse_tensor_meta(meta, name, data, data_start)?;
+            let (dtype_str, shape, tensor_bytes) = parse_tensor_meta(meta, name, data, data_start)?;
             let numel: usize = shape.iter().product();
 
             if dtype_str == "U8" {
@@ -254,7 +258,10 @@ mod inner {
     fn load_sharded_to_gpu_f16(
         dir: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
+    ) -> Result<(
+        HashMap<String, CudaSlice<half::f16>>,
+        HashMap<String, Vec<usize>>,
+    )> {
         let shard_files = collect_shards(dir)?;
 
         info!(
@@ -322,9 +329,9 @@ mod inner {
         data: &'a [u8],
         data_start: usize,
     ) -> Result<(&'b str, Vec<usize>, &'a [u8])> {
-        let obj = meta.as_object().ok_or_else(|| {
-            LLMError::ModelError(format!("tensor {} has non-object meta", name))
-        })?;
+        let obj = meta
+            .as_object()
+            .ok_or_else(|| LLMError::ModelError(format!("tensor {} has non-object meta", name)))?;
 
         let dtype_str = obj
             .get("dtype")
@@ -346,9 +353,7 @@ mod inner {
         let offsets = obj
             .get("data_offsets")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                LLMError::ModelError(format!("tensor {} missing data_offsets", name))
-            })?;
+            .ok_or_else(|| LLMError::ModelError(format!("tensor {} missing data_offsets", name)))?;
 
         if offsets.len() != 2 {
             return Err(LLMError::ModelError(format!(
@@ -400,7 +405,10 @@ mod inner {
     }
 
     fn load_single_u8_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
-        info!("gpu_loader: memory-mapping {} (host U8 path)", path.display());
+        info!(
+            "gpu_loader: memory-mapping {} (host U8 path)",
+            path.display()
+        );
 
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {

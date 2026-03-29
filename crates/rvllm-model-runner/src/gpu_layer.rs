@@ -18,7 +18,10 @@
 mod inner {
     use std::sync::Arc;
 
-    use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice, LaunchConfig, PushKernelArg};
+    use cudarc::driver::{
+        CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice,
+        LaunchConfig, PushKernelArg,
+    };
     use half::f16;
     use tracing::{info, trace};
 
@@ -294,7 +297,9 @@ mod inner {
 
                 let mut gate_up_weight = stream
                     .alloc_zeros::<f16>(self.intermediate_size * 2 * self.hidden_size)
-                    .map_err(|e| LLMError::GpuError(format!("gpt-oss gate_up weight alloc: {e}")))?;
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("gpt-oss gate_up weight alloc: {e}"))
+                    })?;
                 self.launch_dequant_expert(
                     stream,
                     loader,
@@ -432,8 +437,7 @@ mod inner {
                         }
                         let input_idx1 = input_idx0 + 1;
                         if input_idx1 < in_features {
-                            acc +=
-                                input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
+                            acc += input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
                         }
                     }
                 }
@@ -509,7 +513,9 @@ mod inner {
                     .arg(&top_k)
                     .arg(&expert_idx)
                     .launch(cfg)
-                    .map_err(|e| LLMError::GpuError(format!("gpt-oss select inputs launch: {e}")))?;
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("gpt-oss select inputs launch: {e}"))
+                    })?;
             }
             Ok(())
         }
@@ -634,8 +640,16 @@ mod inner {
     }
 
     impl GpuTransformerLayer {
-        pub fn new(config: GpuLayerConfig, stream: Arc<CudaStream>, loader: Arc<KernelLoader>) -> Self {
-            Self { config, stream, loader }
+        pub fn new(
+            config: GpuLayerConfig,
+            stream: Arc<CudaStream>,
+            loader: Arc<KernelLoader>,
+        ) -> Self {
+            Self {
+                config,
+                stream,
+                loader,
+            }
         }
 
         /// Execute a full transformer layer forward pass.
@@ -736,9 +750,9 @@ mod inner {
             let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 hidden states required for f16 forward".into())
             })?;
-            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
-                LLMError::GpuError("f16 input_layernorm required".into())
-            })?;
+            let norm_w = weights
+                .input_layernorm_f16
+                .ok_or_else(|| LLMError::GpuError("f16 input_layernorm required".into()))?;
             let post_norm_w = weights.post_attention_layernorm_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 post_attention_layernorm required".into())
             })?;
@@ -776,17 +790,7 @@ mod inner {
             let qkv_dim = q_dim + kv_dim + kv_dim;
             #[cfg(feature = "cublaslt")]
             let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
-                Self::hgemm_dispatch(
-                    &self.stream,
-                    blas,
-                    lt,
-                    input,
-                    weight,
-                    m,
-                    n,
-                    k,
-                    &self.loader,
-                )
+                Self::hgemm_dispatch(&self.stream, blas, lt, input, weight, m, n, k, &self.loader)
             };
             #[cfg(not(feature = "cublaslt"))]
             let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
@@ -897,14 +901,14 @@ mod inner {
             let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
             let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
             let attn_out = if input.is_prefill || use_sink_attention {
-                let cast_f16_f32 =
-                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
-                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
-                    })?;
-                let cast_f32_f16 =
-                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
-                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
-                    })?;
+                let cast_f16_f32 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                let cast_f32_f16 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
                 let q_f16 = qkv.slice(..q_end);
                 let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
                 let attn_f32 = if input.is_prefill {
@@ -991,14 +995,14 @@ mod inner {
 
             // 9. MLP / routed MoE.
             let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
-                let cast_f16_f32 =
-                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
-                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
-                    })?;
-                let cast_f32_f16 =
-                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
-                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
-                    })?;
+                let cast_f16_f32 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                let cast_f32_f16 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
                 let normed2_f32 = Self::cast_f16_to_f32(
                     &self.stream,
                     &normed2.as_view(),
@@ -1016,12 +1020,7 @@ mod inner {
                         num_tokens,
                     )?
                 };
-                Self::cast_f32_to_f16(
-                    &self.stream,
-                    &moe_out,
-                    num_tokens * hidden,
-                    &cast_f32_f16,
-                )?
+                Self::cast_f32_to_f16(&self.stream, &moe_out, num_tokens * hidden, &cast_f32_f16)?
             } else {
                 let down_proj = weights.down_proj.ok_or_else(|| {
                     LLMError::GpuError(format!(
@@ -1253,12 +1252,18 @@ mod inner {
             // ---------------------------------------------------------------
             // Fused residual + post-attention RMSNorm (1 kernel instead of 2)
             // ---------------------------------------------------------------
-            let fused_rn_kernel = self.loader.get_func("fused_residual_rmsnorm", "fused_residual_rmsnorm_kernel")?;
+            let fused_rn_kernel = self
+                .loader
+                .get_func("fused_residual_rmsnorm", "fused_residual_rmsnorm_kernel")?;
             let (normed2, residual) = crate::layers::fused_ops::fused_residual_rmsnorm(
-                &self.stream, &fused_rn_kernel,
-                input.hidden_states, &attn_proj,
-                weights.post_attention_layernorm, cfg.rms_norm_eps,
-                num_tokens, hidden,
+                &self.stream,
+                &fused_rn_kernel,
+                input.hidden_states,
+                &attn_proj,
+                weights.post_attention_layernorm,
+                cfg.rms_norm_eps,
+                num_tokens,
+                hidden,
             )?;
 
             // ---------------------------------------------------------------
@@ -1268,13 +1273,19 @@ mod inner {
                 moe.forward(&self.stream, &normed2)?
             } else {
                 let gate_proj = weights.gate_proj.ok_or_else(|| {
-                    LLMError::GpuError(format!("missing dense gate_proj for layer {}", cfg.layer_idx))
+                    LLMError::GpuError(format!(
+                        "missing dense gate_proj for layer {}",
+                        cfg.layer_idx
+                    ))
                 })?;
                 let up_proj = weights.up_proj.ok_or_else(|| {
                     LLMError::GpuError(format!("missing dense up_proj for layer {}", cfg.layer_idx))
                 })?;
                 let down_proj = weights.down_proj.ok_or_else(|| {
-                    LLMError::GpuError(format!("missing dense down_proj for layer {}", cfg.layer_idx))
+                    LLMError::GpuError(format!(
+                        "missing dense down_proj for layer {}",
+                        cfg.layer_idx
+                    ))
                 })?;
 
                 let gate = Self::linear(
@@ -1318,7 +1329,13 @@ mod inner {
             // ---------------------------------------------------------------
             // 8. Residual: residual + mlp_out
             // ---------------------------------------------------------------
-            let output = Self::add_tensors(&self.stream, &self.loader, &residual, &mlp_out, num_tokens * hidden)?;
+            let output = Self::add_tensors(
+                &self.stream,
+                &self.loader,
+                &residual,
+                &mlp_out,
+                num_tokens * hidden,
+            )?;
 
             Ok(output)
         }
@@ -1428,7 +1445,8 @@ mod inner {
             };
             let dim_i32 = dim as i32;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(tensor)
                     .arg(bias)
                     .arg(&dim_i32)
@@ -1452,7 +1470,9 @@ mod inner {
             num_kv_heads: usize,
             head_dim: usize,
         ) -> Result<()> {
-            if num_tokens == 0 { return Ok(()); }
+            if num_tokens == 0 {
+                return Ok(());
+            }
             let kernel = loader.get_func("rotary_embedding", "rotary_embedding_kernel")?;
             let half_dim = head_dim / 2;
             let grid_y = num_heads.max(num_kv_heads) as u32;
@@ -1462,11 +1482,17 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(&kernel)
-                    .arg(q).arg(k)
-                    .arg(rope_cos).arg(rope_sin).arg(positions)
-                    .arg(&(num_tokens as i32)).arg(&(num_heads as i32))
-                    .arg(&(num_kv_heads as i32)).arg(&(head_dim as i32))
+                stream
+                    .launch_builder(&kernel)
+                    .arg(q)
+                    .arg(k)
+                    .arg(rope_cos)
+                    .arg(rope_sin)
+                    .arg(positions)
+                    .arg(&(num_tokens as i32))
+                    .arg(&(num_heads as i32))
+                    .arg(&(num_kv_heads as i32))
+                    .arg(&(head_dim as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("rope views launch: {e}")))?;
             }
@@ -1495,11 +1521,15 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(&kernel)
-                    .arg(k).arg(v)
-                    .arg(key_cache).arg(value_cache)
+                stream
+                    .launch_builder(&kernel)
+                    .arg(k)
+                    .arg(v)
+                    .arg(key_cache)
+                    .arg(value_cache)
                     .arg(slot_mapping)
-                    .arg(&(num_kv_heads as i32)).arg(&(head_dim as i32))
+                    .arg(&(num_kv_heads as i32))
+                    .arg(&(head_dim as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("cache_write_views launch: {e}")))?;
             }
@@ -1685,7 +1715,9 @@ mod inner {
                     .arg(&num_kv_heads_i32)
                     .arg(&head_dim_i32)
                     .launch(cfg)
-                    .map_err(|e| LLMError::GpuError(format!("reshape_and_cache_f16 launch: {e}")))?;
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("reshape_and_cache_f16 launch: {e}"))
+                    })?;
             }
             Ok(())
         }
@@ -2203,7 +2235,8 @@ mod inner {
             };
             let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
                     .arg(input)
                     .arg(weight)
@@ -2236,9 +2269,10 @@ mod inner {
             let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
             unsafe {
                 let (raw_ptr, _guard) = DevicePtrMut::device_ptr_mut(input, stream);
-                stream.launch_builder(&kernel)
-                    .arg(&raw_ptr)  // output (same ptr)
-                    .arg(&raw_ptr)  // input  (same ptr)
+                stream
+                    .launch_builder(&kernel)
+                    .arg(&raw_ptr) // output (same ptr)
+                    .arg(&raw_ptr) // input  (same ptr)
                     .arg(weight)
                     .arg(&eps)
                     .arg(&(hidden_size as i32))
@@ -2290,7 +2324,8 @@ mod inner {
                         shared_mem_bytes: 0,
                     };
                     unsafe {
-                        stream.launch_builder(&kernel)
+                        stream
+                            .launch_builder(&kernel)
                             .arg(&mut output)
                             .arg(weight)
                             .arg(input)
@@ -2331,7 +2366,8 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(tensor)
                     .arg(bias)
                     .arg(&(dim as i32))
@@ -2355,7 +2391,9 @@ mod inner {
             num_kv_heads: usize,
             head_dim: usize,
         ) -> Result<()> {
-            if num_tokens == 0 { return Ok(()); }
+            if num_tokens == 0 {
+                return Ok(());
+            }
             let kernel = loader.get_func("rotary_embedding_f16", "rotary_embedding_f16_kernel")?;
             let half_dim = head_dim / 2;
             let grid_y = num_heads.max(num_kv_heads) as u32;
@@ -2365,11 +2403,17 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(&kernel)
-                    .arg(q).arg(k)
-                    .arg(rope_cos).arg(rope_sin).arg(positions)
-                    .arg(&(num_tokens as i32)).arg(&(num_heads as i32))
-                    .arg(&(num_kv_heads as i32)).arg(&(head_dim as i32))
+                stream
+                    .launch_builder(&kernel)
+                    .arg(q)
+                    .arg(k)
+                    .arg(rope_cos)
+                    .arg(rope_sin)
+                    .arg(positions)
+                    .arg(&(num_tokens as i32))
+                    .arg(&(num_heads as i32))
+                    .arg(&(num_kv_heads as i32))
+                    .arg(&(head_dim as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("rope_f16 launch: {e}")))?;
             }
@@ -2390,7 +2434,8 @@ mod inner {
             head_dim: usize,
         ) -> Result<()> {
             let kv_dim = num_kv_heads * head_dim;
-            let kernel = loader.get_func("reshape_and_cache_f16", "reshape_and_cache_f16io_kernel")?;
+            let kernel =
+                loader.get_func("reshape_and_cache_f16", "reshape_and_cache_f16io_kernel")?;
             let threads = kv_dim.min(1024) as u32;
             let cfg = LaunchConfig {
                 grid_dim: (num_tokens as u32, 1, 1),
@@ -2398,9 +2443,12 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(&kernel)
-                    .arg(key_cache).arg(value_cache)
-                    .arg(k).arg(v)
+                stream
+                    .launch_builder(&kernel)
+                    .arg(key_cache)
+                    .arg(value_cache)
+                    .arg(k)
+                    .arg(v)
                     .arg(slot_mapping)
                     .arg(&(num_tokens as i32))
                     .arg(&(num_kv_heads as i32))
@@ -2441,7 +2489,8 @@ mod inner {
             let shared_mem_bytes = ((2 * FA2_BC * head_dim + FA2_BC + (FA2_THREADS as usize / 32))
                 * std::mem::size_of::<f32>()) as u32;
 
-            let kernel = loader.get_func("flash_attention", "flash_attention_2_decode_f16io_kernel")?;
+            let kernel =
+                loader.get_func("flash_attention", "flash_attention_2_decode_f16io_kernel")?;
 
             let cfg = LaunchConfig {
                 grid_dim: (num_seqs as u32, num_heads as u32, 1),
@@ -2463,14 +2512,19 @@ mod inner {
             let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
 
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
                     .arg(q)
-                    .arg(key_cache).arg(value_cache)
-                    .arg(block_tables).arg(context_lens)
+                    .arg(key_cache)
+                    .arg(value_cache)
+                    .arg(block_tables)
+                    .arg(context_lens)
                     .arg(&scale)
-                    .arg(&p_num_heads).arg(&p_num_kv_heads)
-                    .arg(&p_head_dim).arg(&p_block_size)
+                    .arg(&p_num_heads)
+                    .arg(&p_num_kv_heads)
+                    .arg(&p_head_dim)
+                    .arg(&p_block_size)
                     .arg(&p_max_blocks)
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("FA2 decode f16io launch: {e}")))?;
@@ -2502,9 +2556,13 @@ mod inner {
                 block_dim: (block_threads, 1, 1),
                 shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
             };
-            let kernel = loader.get_func("fused_residual_rmsnorm_f16", "fused_residual_rmsnorm_f16_kernel")?;
+            let kernel = loader.get_func(
+                "fused_residual_rmsnorm_f16",
+                "fused_residual_rmsnorm_f16_kernel",
+            )?;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
                     .arg(&mut residual)
                     .arg(input)
@@ -2538,9 +2596,11 @@ mod inner {
             };
             let kernel = loader.get_func("activation_f16", "fused_silu_mul_f16_kernel")?;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
-                    .arg(gate).arg(up)
+                    .arg(gate)
+                    .arg(up)
                     .arg(&(n as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16 launch: {e}")))?;
@@ -2569,12 +2629,16 @@ mod inner {
             };
             let kernel = loader.get_func("activation_f16", "fused_silu_mul_f16_kernel")?;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
-                    .arg(&gate_view).arg(&up_view)
+                    .arg(&gate_view)
+                    .arg(&up_view)
                     .arg(&(n as i32))
                     .launch(cfg)
-                    .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16_split launch: {e}")))?;
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("fused_silu_mul_f16_split launch: {e}"))
+                    })?;
             }
             Ok(output)
         }
@@ -2599,9 +2663,11 @@ mod inner {
             };
             let kernel = loader.get_func("add_bias_f16", "add_f16_kernel")?;
             unsafe {
-                stream.launch_builder(&kernel)
+                stream
+                    .launch_builder(&kernel)
                     .arg(&mut output)
-                    .arg(a).arg(b)
+                    .arg(a)
+                    .arg(b)
                     .arg(&(n as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("add_f16 launch: {e}")))?;
@@ -2627,7 +2693,8 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(kernel)
+                stream
+                    .launch_builder(kernel)
                     .arg(&mut output)
                     .arg(input)
                     .arg(&(n as i32))
@@ -2655,7 +2722,8 @@ mod inner {
                 shared_mem_bytes: 0,
             };
             unsafe {
-                stream.launch_builder(kernel)
+                stream
+                    .launch_builder(kernel)
                     .arg(&mut output)
                     .arg(input)
                     .arg(&(n as i32))
@@ -2686,7 +2754,8 @@ mod inner {
     }
 
     fn top_k_indices(vals: &[f32], k: usize) -> Vec<usize> {
-        let mut indexed: Vec<(usize, f32)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        let mut indexed: Vec<(usize, f32)> =
+            vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         indexed.into_iter().take(k).map(|(i, _)| i).collect()
     }

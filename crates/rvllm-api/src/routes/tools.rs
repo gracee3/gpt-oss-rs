@@ -21,6 +21,7 @@ use tracing::info;
 use utoipa::ToSchema;
 
 use crate::error::ApiError;
+use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::response::Usage;
@@ -304,7 +305,7 @@ pub fn augment_messages_with_tools(
 /// GPT-OSS is not a Hermes/XML tool-calling model, so prefer plain JSON tool
 /// instructions until a dedicated Harmony renderer/parser is in place.
 pub fn preferred_tool_prompt_style(model_name: &str) -> rvllm_tokenizer::ToolPromptStyle {
-    if model_name.to_ascii_lowercase().contains("gpt-oss") {
+    if is_gpt_oss_model(model_name) {
         rvllm_tokenizer::ToolPromptStyle::GenericJson
     } else {
         rvllm_tokenizer::ToolPromptStyle::Hermes

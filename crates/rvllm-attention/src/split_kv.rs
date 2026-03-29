@@ -74,11 +74,21 @@ impl AttentionBackend for SplitKvAttention {
         let max_blocks = block_tables.shape.get(1).copied().unwrap_or(0);
 
         if num_seqs == 0 {
-            return Ok(GpuBuffer { data: vec![], shape: vec![0, num_heads, head_dim] });
+            return Ok(GpuBuffer {
+                data: vec![],
+                shape: vec![0, num_heads, head_dim],
+            });
         }
 
         let num_splits = choose_num_splits(max_context_len);
-        trace!(num_seqs, num_heads, head_dim, num_splits, max_context_len, "split_kv forward");
+        trace!(
+            num_seqs,
+            num_heads,
+            head_dim,
+            num_splits,
+            max_context_len,
+            "split_kv forward"
+        );
 
         let mut output = vec![f16::ZERO; num_seqs * num_heads * head_dim];
 
@@ -134,11 +144,9 @@ impl AttentionBackend for SplitKvAttention {
                             // Q * K dot product
                             let mut dot = 0.0f32;
                             for d in 0..head_dim {
-                                let q_val = query.data
-                                    [(seq * num_heads + head) * head_dim + d]
-                                    .to_f32();
-                                let k_idx = ((phys_block * block_size + page_off)
-                                    * num_kv_heads
+                                let q_val =
+                                    query.data[(seq * num_heads + head) * head_dim + d].to_f32();
+                                let k_idx = ((phys_block * block_size + page_off) * num_kv_heads
                                     + kv_head)
                                     * head_dim
                                     + d;
@@ -161,8 +169,7 @@ impl AttentionBackend for SplitKvAttention {
 
                             // Accumulate V
                             for d in 0..head_dim {
-                                let v_idx = ((phys_block * block_size + page_off)
-                                    * num_kv_heads
+                                let v_idx = ((phys_block * block_size + page_off) * num_kv_heads
                                     + kv_head)
                                     * head_dim
                                     + d;
@@ -268,8 +275,7 @@ mod tests {
             &[
                 1.0, 2.0, 3.0, 4.0, // token 0
                 5.0, 6.0, 7.0, 8.0, // token 1
-                0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
             vec![1, 4, 1, 4],
         );
@@ -279,7 +285,15 @@ mod tests {
         let backend = SplitKvAttention::new();
         let scale = 1.0f32 / (4.0f32).sqrt();
         let out = backend
-            .forward(&query, &key_cache, &value_cache, &block_tables, &context_lens, 2, scale)
+            .forward(
+                &query,
+                &key_cache,
+                &value_cache,
+                &block_tables,
+                &context_lens,
+                2,
+                scale,
+            )
             .unwrap();
 
         assert_eq!(out.shape, vec![1, 1, 4]);
@@ -299,7 +313,15 @@ mod tests {
 
         let backend = SplitKvAttention::new();
         let out = backend
-            .forward(&query, &key_cache, &value_cache, &block_tables, &context_lens, 0, 1.0)
+            .forward(
+                &query,
+                &key_cache,
+                &value_cache,
+                &block_tables,
+                &context_lens,
+                0,
+                1.0,
+            )
             .unwrap();
 
         assert_eq!(out.shape, vec![1, 1, 2]);

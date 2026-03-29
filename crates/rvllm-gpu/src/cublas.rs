@@ -26,7 +26,11 @@ impl CublasHandle {
     pub fn new(stream: Arc<CudaStream>) -> Result<Self> {
         let blas = CudaBlas::new(stream.clone())
             .map_err(|e| crate::LLMError::GpuError(format!("cuBLAS init failed: {e}")))?;
-        Ok(Self { blas, stream, graph_workspace: None })
+        Ok(Self {
+            blas,
+            stream,
+            graph_workspace: None,
+        })
     }
 
     /// Returns a reference to the underlying stream.
@@ -50,11 +54,10 @@ impl CublasHandle {
             "allocating cuBLAS graph workspace"
         );
 
-        let mut ws = self.stream
+        let mut ws = self
+            .stream
             .alloc_zeros::<u8>(CUBLAS_GRAPH_WORKSPACE_BYTES)
-            .map_err(|e| crate::LLMError::GpuError(
-                format!("cuBLAS workspace alloc: {e}")
-            ))?;
+            .map_err(|e| crate::LLMError::GpuError(format!("cuBLAS workspace alloc: {e}")))?;
 
         // Get raw device pointer and call cublasSetWorkspace_v2 in a scoped
         // borrow so we can move `ws` into self.graph_workspace afterwards.
@@ -67,9 +70,9 @@ impl CublasHandle {
                     CUBLAS_GRAPH_WORKSPACE_BYTES,
                 );
                 if status != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
-                    return Err(crate::LLMError::GpuError(
-                        format!("cublasSetWorkspace_v2 failed: {status:?}")
-                    ));
+                    return Err(crate::LLMError::GpuError(format!(
+                        "cublasSetWorkspace_v2 failed: {status:?}"
+                    )));
                 }
             }
         }
@@ -106,11 +109,17 @@ impl CublasHandle {
             return Ok(());
         }
 
-        let a_buf = self.stream.alloc_zeros::<half::f16>(max_a)
+        let a_buf = self
+            .stream
+            .alloc_zeros::<half::f16>(max_a)
             .map_err(|e| crate::LLMError::GpuError(format!("warmup alloc A: {e}")))?;
-        let b_buf = self.stream.alloc_zeros::<half::f16>(max_b)
+        let b_buf = self
+            .stream
+            .alloc_zeros::<half::f16>(max_b)
             .map_err(|e| crate::LLMError::GpuError(format!("warmup alloc B: {e}")))?;
-        let mut c_buf = self.stream.alloc_zeros::<half::f16>(max_c)
+        let mut c_buf = self
+            .stream
+            .alloc_zeros::<half::f16>(max_c)
             .map_err(|e| crate::LLMError::GpuError(format!("warmup alloc C: {e}")))?;
 
         let alpha: f32 = 1.0;
@@ -126,25 +135,36 @@ impl CublasHandle {
                 unsafe {
                     let status = cudarc::cublas::sys::cublasGemmEx(
                         *self.blas.handle(),
-                        CUBLAS_OP_T, CUBLAS_OP_N,
-                        n as i32, m as i32, k as i32,
+                        CUBLAS_OP_T,
+                        CUBLAS_OP_N,
+                        n as i32,
+                        m as i32,
+                        k as i32,
                         &alpha as *const f32 as *const std::ffi::c_void,
-                        b_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
-                        a_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
+                        b_ptr as *const std::ffi::c_void,
+                        CUDA_R_16F,
+                        k as i32,
+                        a_ptr as *const std::ffi::c_void,
+                        CUDA_R_16F,
+                        k as i32,
                         &beta as *const f32 as *const std::ffi::c_void,
-                        c_ptr as *mut std::ffi::c_void, CUDA_R_16F, n as i32,
-                        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+                        c_ptr as *mut std::ffi::c_void,
+                        CUDA_R_16F,
+                        n as i32,
+                        CUBLAS_COMPUTE_32F,
+                        CUBLAS_GEMM_DEFAULT_TENSOR_OP,
                     );
                     if status != CUBLAS_STATUS_SUCCESS {
-                        return Err(crate::LLMError::GpuError(
-                            format!("warmup cublasGemmEx failed for ({m},{n},{k}): {status:?}")
-                        ));
+                        return Err(crate::LLMError::GpuError(format!(
+                            "warmup cublasGemmEx failed for ({m},{n},{k}): {status:?}"
+                        )));
                     }
                 }
             }
         }
 
-        self.stream.synchronize()
+        self.stream
+            .synchronize()
             .map_err(|e| crate::LLMError::GpuError(format!("warmup sync: {e}")))?;
 
         tracing::info!(count = shapes.len(), "cuBLAS GEMM warmup complete");
@@ -260,9 +280,9 @@ impl CublasHandle {
                 CUBLAS_GEMM_DEFAULT_TENSOR_OP,
             );
             if status != CUBLAS_STATUS_SUCCESS {
-                return Err(crate::LLMError::GpuError(
-                    format!("cublasGemmEx (f16xf16->f32) failed: {status:?}")
-                ));
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasGemmEx (f16xf16->f32) failed: {status:?}"
+                )));
             }
         }
         Ok(())
@@ -334,7 +354,9 @@ impl CublasHandle {
     #[cfg(feature = "cuda")]
     pub fn hgemm_into(
         &self,
-        m: usize, n: usize, k: usize,
+        m: usize,
+        n: usize,
+        k: usize,
         alpha: f32,
         a: &impl DevicePtr<half::f16>,
         b: &impl DevicePtr<half::f16>,
@@ -354,17 +376,29 @@ impl CublasHandle {
         unsafe {
             let status = cudarc::cublas::sys::cublasGemmEx(
                 *self.blas.handle(),
-                CUBLAS_OP_T, CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                m as i32,
+                k as i32,
                 &alpha as *const f32 as *const std::ffi::c_void,
-                b_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
-                a_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
+                b_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
+                a_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
                 &beta as *const f32 as *const std::ffi::c_void,
-                c_ptr as *mut std::ffi::c_void, CUDA_R_16F, n as i32,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+                c_ptr as *mut std::ffi::c_void,
+                CUDA_R_16F,
+                n as i32,
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT_TENSOR_OP,
             );
             if status != CUBLAS_STATUS_SUCCESS {
-                return Err(crate::LLMError::GpuError(format!("hgemm_into failed: {status:?}")));
+                return Err(crate::LLMError::GpuError(format!(
+                    "hgemm_into failed: {status:?}"
+                )));
             }
         }
         Ok(())
@@ -372,10 +406,18 @@ impl CublasHandle {
 
     #[cfg(not(feature = "cuda"))]
     pub fn hgemm_into(
-        &self, _m: usize, _n: usize, _k: usize, _alpha: f32,
-        _a: &impl DevicePtr<half::f16>, _b: &impl DevicePtr<half::f16>,
-        _beta: f32, _c: &mut impl DevicePtrMut<half::f16>,
-    ) -> Result<()> { Ok(()) }
+        &self,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _alpha: f32,
+        _a: &impl DevicePtr<half::f16>,
+        _b: &impl DevicePtr<half::f16>,
+        _beta: f32,
+        _c: &mut impl DevicePtrMut<half::f16>,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Strided batched HGEMM: multiple independent f16 GEMMs in one cuBLAS call.
     /// C[i] = alpha * A[i] @ B[i]^T + beta * C[i] for i in 0..batch_count
@@ -384,12 +426,17 @@ impl CublasHandle {
     #[cfg(feature = "cuda")]
     pub fn hgemm_strided_batched(
         &self,
-        m: usize, n: usize, k: usize,
+        m: usize,
+        n: usize,
+        k: usize,
         alpha: f32,
-        a: &impl DevicePtr<half::f16>, stride_a: i64,
-        b: &impl DevicePtr<half::f16>, stride_b: i64,
+        a: &impl DevicePtr<half::f16>,
+        stride_a: i64,
+        b: &impl DevicePtr<half::f16>,
+        stride_b: i64,
         beta: f32,
-        c: &mut impl DevicePtrMut<half::f16>, stride_c: i64,
+        c: &mut impl DevicePtrMut<half::f16>,
+        stride_c: i64,
         batch_count: usize,
     ) -> Result<()> {
         use cudarc::cublas::sys::{
@@ -411,20 +458,33 @@ impl CublasHandle {
         unsafe {
             let status = cudarc::cublas::sys::cublasGemmStridedBatchedEx(
                 *self.blas.handle(),
-                CUBLAS_OP_T, CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                m as i32,
+                k as i32,
                 &alpha as *const f32 as *const std::ffi::c_void,
-                b_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32, stride_b,
-                a_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32, stride_a,
+                b_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
+                stride_b,
+                a_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
+                stride_a,
                 &beta as *const f32 as *const std::ffi::c_void,
-                c_ptr as *mut std::ffi::c_void, CUDA_R_16F, n as i32, stride_c,
+                c_ptr as *mut std::ffi::c_void,
+                CUDA_R_16F,
+                n as i32,
+                stride_c,
                 batch_count as i32,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT_TENSOR_OP,
             );
             if status != CUBLAS_STATUS_SUCCESS {
-                return Err(crate::LLMError::GpuError(
-                    format!("hgemm_strided_batched failed: {status:?}")
-                ));
+                return Err(crate::LLMError::GpuError(format!(
+                    "hgemm_strided_batched failed: {status:?}"
+                )));
             }
         }
         Ok(())
@@ -433,13 +493,21 @@ impl CublasHandle {
     #[cfg(not(feature = "cuda"))]
     pub fn hgemm_strided_batched(
         &self,
-        _m: usize, _n: usize, _k: usize, _alpha: f32,
-        _a: &impl DevicePtr<half::f16>, _stride_a: i64,
-        _b: &impl DevicePtr<half::f16>, _stride_b: i64,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _alpha: f32,
+        _a: &impl DevicePtr<half::f16>,
+        _stride_a: i64,
+        _b: &impl DevicePtr<half::f16>,
+        _stride_b: i64,
         _beta: f32,
-        _c: &mut impl DevicePtrMut<half::f16>, _stride_c: i64,
+        _c: &mut impl DevicePtrMut<half::f16>,
+        _stride_c: i64,
         _batch_count: usize,
-    ) -> Result<()> { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// SGEMM (no transpose): C[m,n] = A[m,k] @ B[k,n]
     ///
@@ -585,17 +653,29 @@ impl CublasHandle {
         unsafe {
             let status = cudarc::cublas::sys::cublasGemmEx(
                 *self.blas.handle(),
-                CUBLAS_OP_T, CUBLAS_OP_N,
-                n as i32, 1i32, k as i32,
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                1i32,
+                k as i32,
                 &alpha as *const f32 as *const std::ffi::c_void,
-                w_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
-                x_ptr as *const std::ffi::c_void, CUDA_R_16F, k as i32,
+                w_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
+                x_ptr as *const std::ffi::c_void,
+                CUDA_R_16F,
+                k as i32,
                 &beta as *const f32 as *const std::ffi::c_void,
-                y_ptr as *mut std::ffi::c_void, CUDA_R_16F, n as i32,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+                y_ptr as *mut std::ffi::c_void,
+                CUDA_R_16F,
+                n as i32,
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT_TENSOR_OP,
             );
             if status != CUBLAS_STATUS_SUCCESS {
-                return Err(crate::LLMError::GpuError(format!("hgemv_f16 failed: {status:?}")));
+                return Err(crate::LLMError::GpuError(format!(
+                    "hgemv_f16 failed: {status:?}"
+                )));
             }
         }
         Ok(())
@@ -603,10 +683,17 @@ impl CublasHandle {
 
     #[cfg(not(feature = "cuda"))]
     pub fn hgemv_f16(
-        &self, _n: usize, _k: usize, _alpha: f32,
-        _weight: &impl DevicePtr<half::f16>, _input: &impl DevicePtr<half::f16>,
-        _beta: f32, _output: &mut impl DevicePtrMut<half::f16>,
-    ) -> Result<()> { Ok(()) }
+        &self,
+        _n: usize,
+        _k: usize,
+        _alpha: f32,
+        _weight: &impl DevicePtr<half::f16>,
+        _input: &impl DevicePtr<half::f16>,
+        _beta: f32,
+        _output: &mut impl DevicePtrMut<half::f16>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

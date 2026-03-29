@@ -104,10 +104,16 @@ impl FlashAttention2 {
 
         let prefill_func = module
             .load_function("flash_attention_2_kernel")
-            .map_err(|e| LLMError::GpuError(format!("failed to load flash_attention_2_kernel: {e}")))?;
+            .map_err(|e| {
+                LLMError::GpuError(format!("failed to load flash_attention_2_kernel: {e}"))
+            })?;
         let decode_func = module
             .load_function("flash_attention_2_decode_kernel")
-            .map_err(|e| LLMError::GpuError(format!("failed to load flash_attention_2_decode_kernel: {e}")))?;
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "failed to load flash_attention_2_decode_kernel: {e}"
+                ))
+            })?;
 
         let stream = context
             .new_stream()
@@ -433,7 +439,8 @@ impl FlashAttention2 {
             };
 
             unsafe {
-                stream.launch_builder(&state.decode_func)
+                stream
+                    .launch_builder(&state.decode_func)
                     .arg(&d_output)
                     .arg(&d_query)
                     .arg(&d_key)
@@ -484,7 +491,8 @@ impl FlashAttention2 {
             let p_causal: i32 = if self.config.causal { 1 } else { 0 };
 
             unsafe {
-                stream.launch_builder(&state.prefill_func)
+                stream
+                    .launch_builder(&state.prefill_func)
                     .arg(&d_output)
                     .arg(&d_query)
                     .arg(&d_key)

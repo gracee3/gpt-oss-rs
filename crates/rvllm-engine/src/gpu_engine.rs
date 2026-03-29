@@ -20,7 +20,9 @@ mod inner {
         BlockId, FinishReason, LLMError, LogProb, RequestId, RequestOutput, Result, SamplingParams,
         SequenceId, TokenId,
     };
-    use rvllm_sequence::{Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus};
+    use rvllm_sequence::{
+        Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus,
+    };
     use rvllm_tokenizer::Tokenizer;
     use rvllm_worker::gpu_worker::{GpuWorker, GpuWorkerOutput};
 
@@ -604,10 +606,16 @@ mod inner {
             }
 
             // Launch worker (returns quickly for async graph replay path)
-            let actual_batch = self.worker.execute_launch(&metadata)
+            let actual_batch = self
+                .worker
+                .execute_launch(&metadata)
                 .map_err(|e| LLMError::GpuError(format!("worker launch failed: {e}")))?;
 
-            Ok(Some(StepPending { scheduled_groups, metadata, actual_batch }))
+            Ok(Some(StepPending {
+                scheduled_groups,
+                metadata,
+                actual_batch,
+            }))
         }
 
         /// Collect GPU results and process outputs. Call after step_launch.
@@ -618,7 +626,9 @@ mod inner {
                 None => return Ok(Vec::new()),
             };
 
-            let worker_outputs = self.worker.execute_collect(pending.actual_batch, &pending.metadata)
+            let worker_outputs = self
+                .worker
+                .execute_collect(pending.actual_batch, &pending.metadata)
                 .map_err(|e| LLMError::GpuError(format!("worker collect failed: {e}")))?;
 
             // Prefix caching
@@ -632,7 +642,10 @@ mod inner {
                                 .map(|i| rvllm_core::prelude::BlockId(i as u32))
                                 .collect();
                             let _ = prefix_cache::register_prefix_blocks(
-                                pc, &seq_data.prompt_token_ids, &block_ids, block_size,
+                                pc,
+                                &seq_data.prompt_token_ids,
+                                &block_ids,
+                                block_size,
                             );
                         }
                     }
@@ -680,10 +693,16 @@ mod inner {
         /// Same correctness as step() -- scheduler state is consistent because
         /// the closure runs AFTER prepare_step but BEFORE process_worker_outputs.
         /// The closure should only drain NEW requests, not touch current sequences.
-        pub fn step_with_overlap<F: FnOnce()>(&mut self, during_gpu: F) -> Result<Vec<RequestOutput>> {
+        pub fn step_with_overlap<F: FnOnce()>(
+            &mut self,
+            during_gpu: F,
+        ) -> Result<Vec<RequestOutput>> {
             let (scheduled_groups, metadata, aborted_seqs) = match self.prepare_step() {
                 Some(v) => v,
-                None => { during_gpu(); return Ok(Vec::new()); }
+                None => {
+                    during_gpu();
+                    return Ok(Vec::new());
+                }
             };
 
             if !aborted_seqs.is_empty() {
@@ -700,7 +719,8 @@ mod inner {
                 }
             }
 
-            let worker_outputs = self.worker
+            let worker_outputs = self
+                .worker
                 .execute_with_overlap(&metadata, during_gpu)
                 .map_err(|e| LLMError::GpuError(format!("worker execute failed: {e}")))?;
 
@@ -715,7 +735,10 @@ mod inner {
                                 .map(|i| rvllm_core::prelude::BlockId(i as u32))
                                 .collect();
                             let _ = prefix_cache::register_prefix_blocks(
-                                pc, &seq_data.prompt_token_ids, &block_ids, block_size,
+                                pc,
+                                &seq_data.prompt_token_ids,
+                                &block_ids,
+                                block_size,
                             );
                         }
                     }
@@ -807,7 +830,10 @@ mod inner {
                     }
                 }
             }
-            info!(num_completed = all_outputs.len(), "GpuLLMEngine: run loop finished");
+            info!(
+                num_completed = all_outputs.len(),
+                "GpuLLMEngine: run loop finished"
+            );
             Ok(all_outputs)
         }
 
@@ -877,10 +903,7 @@ mod inner {
             let mut output_map: HashMap<u64, (TokenId, LogProb, &[(TokenId, LogProb)])> =
                 HashMap::with_capacity(worker_outputs.outputs.len());
             for wo in &worker_outputs.outputs {
-                output_map.insert(
-                    wo.seq_id,
-                    (wo.token_id, wo.logprob, &wo.top_logprobs),
-                );
+                output_map.insert(wo.seq_id, (wo.token_id, wo.logprob, &wo.top_logprobs));
             }
 
             let mut results = Vec::with_capacity(scheduled_groups.len());
@@ -953,10 +976,8 @@ mod inner {
                     if all_finished {
                         for state in &mut req.seq_states {
                             if !state.token_ids.is_empty() && state.text.is_empty() {
-                                state.text = self
-                                    .tokenizer
-                                    .decode(&state.token_ids)
-                                    .unwrap_or_default();
+                                state.text =
+                                    self.tokenizer.decode(&state.token_ids).unwrap_or_default();
                             }
                         }
                     }
@@ -988,8 +1009,7 @@ mod inner {
 
         /// Recycle KV cache blocks from sequences no longer tracked by scheduler.
         fn recycle_dead_blocks(&mut self) {
-            let live_seq_ids: std::collections::HashSet<SequenceId> =
-                self.scheduler.live_seq_ids();
+            let live_seq_ids: std::collections::HashSet<SequenceId> = self.scheduler.live_seq_ids();
             let dead_sids: Vec<SequenceId> = self
                 .seq_block_tables
                 .keys()
@@ -1039,7 +1059,10 @@ mod inner {
         fn build_metadata(
             &mut self,
             groups: &[SequenceGroup],
-        ) -> (Vec<SequenceGroupMetadata>, std::collections::HashSet<SequenceId>) {
+        ) -> (
+            Vec<SequenceGroupMetadata>,
+            std::collections::HashSet<SequenceId>,
+        ) {
             let block_size = self.config.cache.block_size;
             let mut metadata = Vec::with_capacity(groups.len());
             let mut aborted_seqs: std::collections::HashSet<SequenceId> =
@@ -1092,7 +1115,8 @@ mod inner {
                             }
                         }
                         // Mark finished so the scheduler drops it next round.
-                        self.scheduler.finish_seq(seq.seq_id, SequenceStatus::FinishedAborted);
+                        self.scheduler
+                            .finish_seq(seq.seq_id, SequenceStatus::FinishedAborted);
                         aborted_seqs.insert(seq.seq_id);
                         continue;
                     }

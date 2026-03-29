@@ -22,6 +22,8 @@ use rvllm_engine::{ExecutorAdapter, ExecutorConfig};
 use rvllm_tokenizer::Tokenizer;
 
 use crate::routes;
+#[cfg(feature = "cuda")]
+use crate::runtime_policy::validate_gpt_oss_runtime;
 
 // ------------------------------------------------------------------
 // Engine trait object for unified API
@@ -221,6 +223,22 @@ pub async fn serve(config: EngineConfig) -> rvllm_core::prelude::Result<()> {
 async fn create_gpu_engine(
     config: EngineConfig,
 ) -> rvllm_core::prelude::Result<Arc<dyn InferenceEngine>> {
+    let devices = rvllm_gpu::prelude::list_devices();
+    let primary_gpu_total_memory = devices.first().map(|d| d.total_memory);
+    let allow_long_context_override = std::env::var("RVLLM_ALLOW_LONG_CONTEXT")
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+
+    validate_gpt_oss_runtime(
+        &config.model.model_path,
+        config.model.max_model_len,
+        config.parallel.tensor_parallel_size,
+        primary_gpu_total_memory,
+        allow_long_context_override,
+    )
+    .map_err(rvllm_core::prelude::LLMError::ConfigError)?;
+
     let engine = rvllm_engine::AsyncGpuLLMEngine::new(config).await?;
     Ok(Arc::new(engine))
 }

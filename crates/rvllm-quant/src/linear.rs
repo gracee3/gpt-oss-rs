@@ -66,12 +66,10 @@ impl QuantizedLinear {
             QuantMethod::MXFP4
             | QuantMethod::GgufQ5_0
             | QuantMethod::GgufQ5KM
-            | QuantMethod::GgufQ8_0 => {
-                Err(LLMError::ModelError(format!(
-                    "dequantization not yet implemented for {}",
-                    w.quant_config.method
-                )))
-            }
+            | QuantMethod::GgufQ8_0 => Err(LLMError::ModelError(format!(
+                "dequantization not yet implemented for {}",
+                w.quant_config.method
+            ))),
         }
     }
 

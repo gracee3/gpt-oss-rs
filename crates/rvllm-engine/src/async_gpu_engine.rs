@@ -198,8 +198,7 @@ mod inner {
             // Shared queues: async loop pushes, GPU engine drains during step().
             let request_queue: RequestQueue =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let abort_queue: AbortQueue =
-                std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let abort_queue: AbortQueue = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             engine.set_request_queue(request_queue.clone());
             engine.set_abort_queue(abort_queue.clone());
 
@@ -289,17 +288,22 @@ mod inner {
                 let result = result_rx.recv().await;
                 // GPU done. Drain any requests that arrived during compute.
                 Self::drain_commands_to_queue(
-                    &mut cmd_rx, &request_queue, &abort_queue, &mut output_channels,
+                    &mut cmd_rx,
+                    &request_queue,
+                    &abort_queue,
+                    &mut output_channels,
                 );
                 Self::drain_generate_requests_to_queue(
-                    &mut gen_rx, &request_queue, &mut output_channels, &next_request_id,
+                    &mut gen_rx,
+                    &request_queue,
+                    &mut output_channels,
+                    &next_request_id,
                 );
                 match result {
                     Some(result) => {
                         has_unfinished = result.has_unfinished;
-                        Self::send_outputs(
-                            result.outputs, &mut output_channels, &abort_queue,
-                        ).await;
+                        Self::send_outputs(result.outputs, &mut output_channels, &abort_queue)
+                            .await;
                     }
                     None => {
                         error!("GPU thread result channel disconnected");
@@ -338,10 +342,13 @@ mod inner {
                     GpuWork::Step => {
                         let outputs = engine.step();
                         let unfinished = engine.has_unfinished();
-                        if result_tx.blocking_send(GpuStepResult {
-                            outputs,
-                            has_unfinished: unfinished,
-                        }).is_err() {
+                        if result_tx
+                            .blocking_send(GpuStepResult {
+                                outputs,
+                                has_unfinished: unfinished,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -419,12 +426,9 @@ mod inner {
         ) {
             loop {
                 match gen_rx.try_recv() {
-                    Ok(req) => Self::handle_generate_to_queue(
-                        req,
-                        request_queue,
-                        output_channels,
-                        next_id,
-                    ),
+                    Ok(req) => {
+                        Self::handle_generate_to_queue(req, request_queue, output_channels, next_id)
+                    }
                     Err(_) => break,
                 }
             }
