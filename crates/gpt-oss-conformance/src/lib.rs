@@ -400,4 +400,36 @@ mod tests {
             .iter()
             .any(|diff| diff.contains("logits differ")));
     }
+
+    #[test]
+    fn dense_full_attention_decode_parity_no_longer_differs_on_logits() {
+        let case = ConformanceCase::decode("dense-decode-baseline", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let reference = dense_baseline_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("logits differ")));
+        assert!(report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("plans differ")));
+    }
 }
