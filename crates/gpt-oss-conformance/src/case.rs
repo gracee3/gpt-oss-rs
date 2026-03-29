@@ -281,6 +281,7 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
                 case.is_prefill,
                 case.seq_start_pos,
                 case.inputs.len(),
+                &self.runner.config.layer_types,
                 self.runner.config.num_layers,
             ),
             plan: Some(plan),

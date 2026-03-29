@@ -380,7 +380,7 @@ mod tests {
             .comparison
             .diffs
             .iter()
-            .any(|diff| diff.contains("event attention differs")));
+            .any(|diff| diff.contains("event moe differs") || diff.contains("event cache differs")));
         assert!(!report
             .comparison
             .diffs
@@ -482,6 +482,11 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event layer differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
     }
 
     #[test]
@@ -529,6 +534,11 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event layer differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
     }
 
     #[test]
@@ -576,6 +586,11 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event layer differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
     }
 
     #[test]
@@ -623,5 +638,10 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event layer differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
     }
 }
