@@ -21,7 +21,7 @@ pub mod validation;
 pub use cache::CacheConfigImpl;
 pub use cli::CliArgs;
 pub use device::DeviceConfig;
-pub use engine::EngineConfig;
+pub use engine::{EngineConfig, RuntimeMode};
 pub use model::ModelConfigImpl;
 pub use parallel::ParallelConfigImpl;
 pub use scheduler::{PreemptionMode, SchedulerConfigImpl};

@@ -14,6 +14,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use gpt_oss_core::prelude::{
     CompletionOutput, FinishReason, LLMError, RequestId, RequestOutput, SamplingParams,
 };
+use gpt_oss_engine::RuntimeMode;
+use gpt_oss_server::runtime_policy::{RuntimeBackendPath, RuntimeDecision};
 use gpt_oss_server::server::InferenceEngine;
 use gpt_oss_server::{build_router, AppState};
 use gpt_oss_tokenizer::Tokenizer;
@@ -144,6 +146,11 @@ fn make_app_with_model(
     let mut state = AppState::new(
         engine.clone(),
         model_name.to_string(),
+        RuntimeDecision {
+            runtime_mode: RuntimeMode::Experimental,
+            backend_path: RuntimeBackendPath::Mock,
+            reason: "test mock backend".into(),
+        },
         make_test_tokenizer(),
     );
     state.batch_store = None;

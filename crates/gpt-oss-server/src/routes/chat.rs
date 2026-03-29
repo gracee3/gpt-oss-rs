@@ -88,7 +88,11 @@ pub async fn create_chat_completion(
         .map_err(|e| ApiError::Internal(format!("harmony prompt error: {}", e)))?;
         let mut sampling_params = sampling_params;
         sampling_params.stop_token_ids = prompt.stop_token_ids.clone();
-        (prompt.prompt, Some(prompt.prompt_token_ids), sampling_params)
+        (
+            prompt.prompt,
+            Some(prompt.prompt_token_ids),
+            sampling_params,
+        )
     } else {
         let chat_messages: Vec<gpt_oss_tokenizer::ChatMessage> = messages
             .iter()
@@ -108,6 +112,7 @@ pub async fn create_chat_completion(
         model = %req.model,
         stream = req.stream,
         messages = req.messages.len(),
+        runtime = %state.runtime_decision.summary(),
         "chat completion request"
     );
 
@@ -235,18 +240,19 @@ pub async fn create_chat_completion(
                             &call_prefix,
                         ) {
                             Ok(parsed) => Ok(if !parsed.tool_calls.is_empty() {
-                                let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = parsed
-                                    .tool_calls
-                                    .into_iter()
-                                    .map(|tc| crate::routes::tools::ResponseToolCall {
-                                        id: tc.id,
-                                        call_type: "function".to_string(),
-                                        function: crate::routes::tools::ResponseFunctionCall {
-                                            name: tc.name,
-                                            arguments: tc.arguments,
-                                        },
-                                    })
-                                    .collect();
+                                let tool_calls: Vec<crate::routes::tools::ResponseToolCall> =
+                                    parsed
+                                        .tool_calls
+                                        .into_iter()
+                                        .map(|tc| crate::routes::tools::ResponseToolCall {
+                                            id: tc.id,
+                                            call_type: "function".to_string(),
+                                            function: crate::routes::tools::ResponseFunctionCall {
+                                                name: tc.name,
+                                                arguments: tc.arguments,
+                                            },
+                                        })
+                                        .collect();
                                 crate::routes::tools::ToolChatChoice {
                                     index: co.index,
                                     message: crate::routes::tools::ToolChatMessage {
@@ -282,10 +288,11 @@ pub async fn create_chat_completion(
                                             .map(|tc| crate::routes::tools::ResponseToolCall {
                                                 id: tc.id,
                                                 call_type: "function".to_string(),
-                                                function: crate::routes::tools::ResponseFunctionCall {
-                                                    name: tc.name,
-                                                    arguments: tc.arguments,
-                                                },
+                                                function:
+                                                    crate::routes::tools::ResponseFunctionCall {
+                                                        name: tc.name,
+                                                        arguments: tc.arguments,
+                                                    },
                                             })
                                             .collect();
                                         let content = if prefix_text.is_empty() {
@@ -321,7 +328,10 @@ pub async fn create_chat_completion(
                         let parse_result =
                             gpt_oss_tokenizer::parse_tool_calls(&co.text, &call_prefix);
                         Ok(match parse_result {
-                            gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls } => {
+                            gpt_oss_tokenizer::ToolParseResult::ToolCalls {
+                                prefix_text,
+                                calls,
+                            } => {
                                 let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = calls
                                     .into_iter()
                                     .map(|tc| crate::routes::tools::ResponseToolCall {
@@ -404,9 +414,7 @@ pub async fn create_chat_completion(
                             index: co.index,
                             finish_reason: co.finish_reason.map(|r| match r {
                                 gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                                gpt_oss_core::prelude::FinishReason::Length => {
-                                    "length".to_string()
-                                }
+                                gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
                                 gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
                             }),
                         })

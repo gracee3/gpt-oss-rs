@@ -88,7 +88,11 @@ pub async fn create_response(
         .map_err(|e| ApiError::Internal(format!("harmony prompt error: {}", e)))?;
         let mut sampling_params = req.to_sampling_params();
         sampling_params.stop_token_ids = prompt.stop_token_ids.clone();
-        (prompt.prompt, Some(prompt.prompt_token_ids), sampling_params)
+        (
+            prompt.prompt,
+            Some(prompt.prompt_token_ids),
+            sampling_params,
+        )
     } else {
         let prompt_style = preferred_tool_prompt_style(&state.model_name);
         let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
@@ -142,6 +146,7 @@ pub async fn create_response(
         store = req.store,
         tools = req.tools_enabled(),
         previous_response = req.previous_response_id.as_deref().unwrap_or("none"),
+        runtime = %state.runtime_decision.summary(),
         "responses request"
     );
 
@@ -335,7 +340,11 @@ pub async fn create_response(
             let output_items = if use_harmony_clone {
                 match response_output_items_from_tokens(
                     &response_id_clone,
-                    &output.outputs.first().map(|choice| choice.token_ids.clone()).unwrap_or_default(),
+                    &output
+                        .outputs
+                        .first()
+                        .map(|choice| choice.token_ids.clone())
+                        .unwrap_or_default(),
                     &req_clone,
                     &function_tools_clone,
                     &tool_choice_clone,
@@ -353,16 +362,17 @@ pub async fn create_response(
                     Err(_) => return,
                 }
             } else {
-                vec![ResponseOutputItem::Message(ResponseOutputMessage::completed(
-                    message_id.clone(),
-                    full_text.clone(),
-                ))]
+                vec![ResponseOutputItem::Message(
+                    ResponseOutputMessage::completed(message_id.clone(), full_text.clone()),
+                )]
             };
             if use_harmony_clone {
                 full_text = output_items
                     .iter()
                     .find_map(|item| match item {
-                        ResponseOutputItem::Message(message) => Some(message.to_chat_message().content),
+                        ResponseOutputItem::Message(message) => {
+                            Some(message.to_chat_message().content)
+                        }
                         _ => None,
                     })
                     .unwrap_or_default();
@@ -1188,11 +1198,9 @@ fn response_output_items_from_tokens(
     function_tools: &[crate::types::responses::ResponseFunctionTool],
     tool_choice: &ResponseToolChoice,
 ) -> Result<Vec<ResponseOutputItem>, ApiError> {
-    let parsed = gpt_oss_tokenizer::parse_harmony_assistant_output(
-        tokens,
-        &format!("{response_id}_0_"),
-    )
-    .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
+    let parsed =
+        gpt_oss_tokenizer::parse_harmony_assistant_output(tokens, &format!("{response_id}_0_"))
+            .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
 
     if !req.tools_enabled() {
         return Ok(vec![ResponseOutputItem::Message(
@@ -1387,20 +1395,28 @@ fn render_harmony_conversation_items(
         match item {
             StoredConversationItem::Input(ResponseInputItem::Message(message)) => {
                 rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::Message(
-                    gpt_oss_tokenizer::ChatMessage::new(&message.role, message.to_chat_message().content),
+                    gpt_oss_tokenizer::ChatMessage::new(
+                        &message.role,
+                        message.to_chat_message().content,
+                    ),
                 ));
             }
             StoredConversationItem::Input(ResponseInputItem::FunctionCallOutput(output)) => {
                 if let Some(function_name) = function_names.get(&output.call_id) {
-                    rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::FunctionCallOutput {
-                        name: function_name.clone(),
-                        output: output.output_text(),
-                    });
+                    rendered.push(
+                        gpt_oss_tokenizer::HarmonyConversationItem::FunctionCallOutput {
+                            name: function_name.clone(),
+                            output: output.output_text(),
+                        },
+                    );
                 }
             }
             StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
                 rendered.push(gpt_oss_tokenizer::HarmonyConversationItem::Message(
-                    gpt_oss_tokenizer::ChatMessage::new(&message.role, message.to_chat_message().content),
+                    gpt_oss_tokenizer::ChatMessage::new(
+                        &message.role,
+                        message.to_chat_message().content,
+                    ),
                 ));
             }
             StoredConversationItem::Output(ResponseOutputItem::FunctionCall(call)) => {
@@ -1490,6 +1506,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    use crate::runtime_policy::{RuntimeBackendPath, RuntimeDecision};
     use crate::types::responses::{
         ResponseInputMessage, ResponseInputTextPart, ResponseSpecificToolChoice,
     };
@@ -1498,6 +1515,7 @@ mod tests {
     use gpt_oss_core::prelude::{
         CompletionOutput, FinishReason, RequestId, RequestOutput, SamplingParams,
     };
+    use gpt_oss_engine::RuntimeMode;
     use tokenizers::models::bpe::BPE;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
     use tokenizers::Tokenizer as HfTokenizer;
@@ -1587,6 +1605,11 @@ mod tests {
         let state = Arc::new(AppState::new(
             engine.clone(),
             model_name.to_string(),
+            RuntimeDecision {
+                runtime_mode: RuntimeMode::Experimental,
+                backend_path: RuntimeBackendPath::Mock,
+                reason: "test mock backend".into(),
+            },
             make_test_tokenizer(),
         ));
         let server = TestServer::new(build_router(state)).unwrap();

@@ -1,5 +1,6 @@
 //! Top-level engine configuration that composes all sub-configs.
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use super::cache::CacheConfigImpl;
@@ -9,11 +10,30 @@ use super::parallel::ParallelConfigImpl;
 use super::scheduler::SchedulerConfigImpl;
 use super::telemetry::TelemetryConfig;
 
+/// Runtime trust tier for GPT-OSS serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeMode {
+    /// Preserve current fallback behavior while the architecture is still migrating.
+    Experimental,
+    /// Reject any combination that has not been proven safe by conformance.
+    Trusted,
+}
+
+impl Default for RuntimeMode {
+    fn default() -> Self {
+        Self::Experimental
+    }
+}
+
 /// Top-level configuration composing every subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EngineConfig {
     /// Model weights and tokenizer settings.
     pub model: ModelConfigImpl,
+    /// Runtime trust tier for backend selection and rejection policy.
+    #[serde(default)]
+    pub runtime_mode: RuntimeMode,
     /// KV-cache memory budget.
     pub cache: CacheConfigImpl,
     /// Scheduler batch limits and preemption policy.
@@ -30,6 +50,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             model: ModelConfigImpl::default(),
+            runtime_mode: RuntimeMode::default(),
             cache: CacheConfigImpl::default(),
             scheduler: SchedulerConfigImpl::default(),
             parallel: ParallelConfigImpl::default(),
@@ -54,6 +75,12 @@ impl EngineConfigBuilder {
     /// Set model config.
     pub fn model(mut self, v: ModelConfigImpl) -> Self {
         self.0.model = v;
+        self
+    }
+
+    /// Set the runtime trust tier.
+    pub fn runtime_mode(mut self, v: RuntimeMode) -> Self {
+        self.0.runtime_mode = v;
         self
     }
 
