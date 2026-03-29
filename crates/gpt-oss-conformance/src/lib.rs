@@ -92,6 +92,38 @@ mod tests {
         )
     }
 
+    fn artifact_aligned_sliding_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-sliding-128",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Experimental,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: false,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: None,
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["sliding_attention".into()],
+                    sliding_window: Some(128),
+                    sink_tokens: 0,
+                    num_local_experts: 0,
+                    num_experts_per_tok: 0,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
+                    router_bias: Vec::new(),
+                    moe_layer_indices: vec![],
+                },
+            },
+        )
+    }
+
     fn nonzero_dense_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
             "planned-reference-dense-nonzero",
@@ -1384,6 +1416,54 @@ mod tests {
         let decode = ConformanceCase::decode("decode_step", 4, vec![9]);
         let harness = ConformanceHarness::default();
         let backend = planned_backend();
+
+        let report = harness.compare_prefill_decode_continuity(&prefill, &decode, &backend);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn artifact_aligned_sliding_decode_case_is_plannable_and_diagnosable() {
+        let case = ConformanceCase::decode("sliding_decode_128", 128, vec![9]);
+        let harness = ConformanceHarness::default();
+        let backend = artifact_aligned_sliding_backend();
+        let report = harness.compare(&case, &backend, &backend);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+        assert_eq!(
+            report.expected.plan.as_ref().unwrap().backend_path,
+            gpt_oss_runtime_plan::BackendPath::CudaEager
+        );
+        assert_eq!(
+            report.expected.plan.as_ref().unwrap().runtime_mode,
+            RuntimeMode::Experimental
+        );
+        let layer_frame = report
+            .expected
+            .trace
+            .frames
+            .iter()
+            .find(|frame| frame.label.ends_with("layer-0"))
+            .expect("sliding layer frame");
+        assert!(layer_frame.events.iter().any(|event| {
+            event.stage == "attention"
+                && event.payload.contains("Sliding/128")
+                && event.payload.contains("visible=[1, 2, 3")
+                && event.payload.contains(", 128]")
+        }));
+    }
+
+    #[test]
+    fn artifact_aligned_sliding_prefill_decode_continuity_matches() {
+        let prefill = ConformanceCase::prefill(
+            "sliding_prefill_128",
+            (0..128).map(|token| token as u32).collect(),
+        );
+        let decode = ConformanceCase::decode("sliding_decode_128", 128, vec![999]);
+        let harness = ConformanceHarness::default();
+        let backend = artifact_aligned_sliding_backend();
 
         let report = harness.compare_prefill_decode_continuity(&prefill, &decode, &backend);
 
