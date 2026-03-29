@@ -17,6 +17,7 @@
 #[cfg(feature = "cuda")]
 mod inner {
     use std::sync::Arc;
+    use std::time::Instant;
 
     use cudarc::driver::{
         CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice,
@@ -35,6 +36,18 @@ mod inner {
     const MXFP4_VALUES: [f32; 16] = [
         0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
     ];
+
+    fn trace_layer_timings_enabled() -> bool {
+        std::env::var_os("GPT_OSS_TRACE_LAYER_TIMINGS")
+            .map(|value| value != "0")
+            .unwrap_or(false)
+    }
+
+    fn sync_for_timing(stream: &Arc<CudaStream>, stage: &str) -> Result<()> {
+        stream
+            .synchronize()
+            .map_err(|e| LLMError::GpuError(format!("layer timing sync failed at {stage}: {e}")))
+    }
 
     /// Configuration for a single transformer layer.
     #[derive(Debug, Clone)]
@@ -747,6 +760,9 @@ mod inner {
             let num_kv_heads = cfg.num_kv_heads;
             let head_dim = cfg.head_dim;
             let intermediate = cfg.intermediate_size;
+            let trace_layer_timings = trace_layer_timings_enabled();
+            let layer_start = trace_layer_timings.then(Instant::now);
+            let mut stage_start = trace_layer_timings.then(Instant::now);
 
             let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 hidden states required for f16 forward".into())
@@ -782,6 +798,16 @@ mod inner {
                     hidden,
                 )?;
                 (n, None)
+            };
+            let pre_attn_norm_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "pre_attn_norm")?;
+                let elapsed = stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0);
+                elapsed
+            } else {
+                0
             };
             let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
 
@@ -870,6 +896,15 @@ mod inner {
                     qkv_dim,
                 )?;
             }
+            let qkv_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "qkv")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 4. RoPE f16 in-place on Q and K regions.
             {
@@ -889,6 +924,15 @@ mod inner {
                     head_dim,
                 )?;
             }
+            let rope_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "rope")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 5. KV cache write: f16 K/V -> f16 cache.
             {
@@ -907,6 +951,15 @@ mod inner {
                     head_dim,
                 )?;
             }
+            let cache_write_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "cache_write")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 6. Attention.
             let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
@@ -988,10 +1041,28 @@ mod inner {
                     input.block_size,
                 )?
             };
+            let attention_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "attention")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 7. Output projection: hgemm f16
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            let attn_proj_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "attn_proj")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 8. Fused residual + post-attention RMSNorm f16.
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
@@ -1004,6 +1075,15 @@ mod inner {
                 num_tokens,
                 hidden,
             )?;
+            let post_attn_norm_ms = if trace_layer_timings {
+                sync_for_timing(&self.stream, "post_attn_norm")?;
+                stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             // 9. MLP / routed MoE.
             let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
@@ -1080,6 +1160,31 @@ mod inner {
                 hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
             tp_comm.all_reduce_f16(&mut mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+            if trace_layer_timings {
+                sync_for_timing(&self.stream, "mlp")?;
+                let mlp_ms = stage_start
+                    .replace(Instant::now())
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0);
+                let total_ms = layer_start
+                    .map(|start| start.elapsed().as_millis())
+                    .unwrap_or(0);
+                info!(
+                    layer = cfg.layer_idx,
+                    is_prefill = input.is_prefill,
+                    num_tokens,
+                    pre_attn_norm_ms,
+                    qkv_ms,
+                    rope_ms,
+                    cache_write_ms,
+                    attention_ms,
+                    attn_proj_ms,
+                    post_attn_norm_ms,
+                    mlp_ms,
+                    total_ms,
+                    "gpu_layer: f16 stage timings"
+                );
+            }
             Ok((residual, mlp_out))
         }
 
