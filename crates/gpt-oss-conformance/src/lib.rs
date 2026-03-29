@@ -4,8 +4,8 @@ mod report;
 mod trace;
 
 pub use case::{
-    ConformanceBackend, ConformanceCase, ExecutionSample, PlaceholderBackend,
-    PlannedReferenceBackend, PlannedReferenceBackendConfig,
+    ConformanceBackend, ConformanceCase, ExecutionSample, ObservedLogitsCase, PlaceholderBackend,
+    PlannedReferenceBackend, PlannedReferenceBackendConfig, SampledLogitsBackend,
 };
 pub use harness::{ConformanceHarness, HarnessConfig};
 pub use report::{compare_prefill_decode_continuity, ComparisonReport, ContinuityReport, ParityOutcome, RunComparison};
@@ -14,7 +14,7 @@ pub use trace::{TraceEvent, TraceFrame, TraceSummary};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpt_oss_core::types::Dtype;
+    use gpt_oss_core::{prelude::SamplingParams, types::Dtype};
     use gpt_oss_runtime_plan::RuntimeMode;
 
     fn planned_backend() -> PlannedReferenceBackend {
@@ -109,5 +109,47 @@ mod tests {
 
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn trace_diffs_call_out_phase_boundary_fields() {
+        let backend = planned_backend();
+        let harness = ConformanceHarness::default();
+        let expected = backend.run(&ConformanceCase::decode("decode_step", 4, vec![9]));
+        let observed = backend.run(&ConformanceCase::decode("decode_step", 5, vec![9]));
+
+        let comparison = harness.compare_samples(&expected, &observed);
+
+        assert!(!comparison.is_exact());
+        assert!(comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("seq_start_pos differs")));
+    }
+
+    #[test]
+    fn sampled_logits_backend_produces_deterministic_observed_sample() {
+        let case = ConformanceCase::synthetic("observed-logits", vec![1, 2, 3]);
+        let backend = SampledLogitsBackend::new("observed").with_case(
+            case.name.clone(),
+            ObservedLogitsCase {
+                logits: vec![0.1, 3.0, 0.2],
+                sampling_params: SamplingParams {
+                    temperature: 0.0,
+                    ..Default::default()
+                },
+                past_tokens: vec![1, 2],
+                seed: 7,
+                trace: TraceSummary::synthetic("observed-logits", vec![1, 2, 3]),
+                plan: None,
+            },
+        );
+
+        let first = backend.run(&case);
+        let second = backend.run(&case);
+
+        assert_eq!(first.tokens, vec![1]);
+        assert_eq!(first.tokens, second.tokens);
+        assert_eq!(first.logits, second.logits);
     }
 }

@@ -67,20 +67,53 @@ pub fn compare_samples(expected: &ExecutionSample, observed: &ExecutionSample) -
         diffs.push("plans differ".to_string());
     }
     if expected.trace != observed.trace {
-        diffs.push(trace_diff(&expected.trace, &observed.trace));
+        diffs.extend(trace_diffs(&expected.trace, &observed.trace));
     }
 
     RunComparison { diffs }
 }
 
-fn trace_diff(expected: &TraceSummary, observed: &TraceSummary) -> String {
-    format!(
-        "trace mismatch: expected_label={} observed_label={} expected_frames={} observed_frames={}",
-        expected.label,
-        observed.label,
-        expected.frames.len(),
-        observed.frames.len()
-    )
+fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> {
+    let mut diffs = Vec::new();
+
+    if expected.label != observed.label {
+        diffs.push(format!(
+            "trace label differs: expected={} observed={}",
+            expected.label, observed.label
+        ));
+    }
+
+    for stage in ["reference_phase", "seq_start_pos"] {
+        let expected_value = expected.find_event_payload(stage);
+        let observed_value = observed.find_event_payload(stage);
+        if expected_value != observed_value {
+            diffs.push(format!(
+                "{stage} differs: expected={} observed={}",
+                expected_value.unwrap_or("missing"),
+                observed_value.unwrap_or("missing")
+            ));
+        }
+    }
+
+    if expected.frames.len() != observed.frames.len() {
+        diffs.push(format!(
+            "trace frame count differs: expected={} observed={}",
+            expected.frames.len(),
+            observed.frames.len()
+        ));
+    }
+
+    if diffs.is_empty() {
+        diffs.push(format!(
+            "trace mismatch: expected_label={} observed_label={} expected_frames={} observed_frames={}",
+            expected.label,
+            observed.label,
+            expected.frames.len(),
+            observed.frames.len()
+        ));
+    }
+
+    diffs
 }
 
 pub fn compare_prefill_decode_continuity(

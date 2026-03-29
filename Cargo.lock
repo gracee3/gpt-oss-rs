@@ -1063,8 +1063,10 @@ name = "gpt-oss-conformance"
 version = "0.1.0"
 dependencies = [
  "gpt-oss-core",
+ "gpt-oss-model-runner",
  "gpt-oss-reference",
  "gpt-oss-runtime-plan",
+ "rand 0.8.5",
  "serde",
 ]
 

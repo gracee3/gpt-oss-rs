@@ -1,10 +1,13 @@
 use crate::trace::TraceSummary;
-use gpt_oss_core::types::Dtype;
+use gpt_oss_core::{prelude::SamplingParams, types::Dtype};
+use gpt_oss_model_runner::Sampler;
 use gpt_oss_reference::{
     ReferenceExecutor, ReferenceExecutorConfig, ReferenceInput, ReferenceOutput,
 };
 use gpt_oss_runtime_plan::{plan_request, ExecutionPlan, PlanRequest, RuntimeMode};
+use rand::{rngs::StdRng, SeedableRng};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub trait ConformanceBackend {
     fn name(&self) -> &str;
@@ -61,6 +64,36 @@ pub struct ExecutionSample {
 }
 
 #[derive(Clone, Debug)]
+pub struct ObservedLogitsCase {
+    pub logits: Vec<f32>,
+    pub sampling_params: SamplingParams,
+    pub past_tokens: Vec<u32>,
+    pub seed: u64,
+    pub trace: TraceSummary,
+    pub plan: Option<ExecutionPlan>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SampledLogitsBackend {
+    name: String,
+    cases: HashMap<String, ObservedLogitsCase>,
+}
+
+impl SampledLogitsBackend {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            cases: HashMap::new(),
+        }
+    }
+
+    pub fn with_case(mut self, name: impl Into<String>, case: ObservedLogitsCase) -> Self {
+        self.cases.insert(name.into(), case);
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PlaceholderBackend {
     name: String,
     trace_suffix: String,
@@ -107,6 +140,37 @@ impl ConformanceBackend for PlaceholderBackend {
             tokens,
             trace,
             plan: None,
+        }
+    }
+}
+
+impl ConformanceBackend for SampledLogitsBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn run(&self, case: &ConformanceCase) -> ExecutionSample {
+        let observed = self
+            .cases
+            .get(&case.name)
+            .unwrap_or_else(|| panic!("missing observed logits case '{}'", case.name));
+        let sampler = Sampler::new();
+        let mut rng = StdRng::seed_from_u64(observed.seed);
+        let sample = sampler
+            .sample(
+                &observed.logits,
+                observed.logits.len(),
+                &observed.sampling_params,
+                &observed.past_tokens,
+                &mut rng,
+            )
+            .expect("sampled logits backend should produce a deterministic sample");
+
+        ExecutionSample {
+            logits: observed.logits.clone(),
+            tokens: vec![sample.token_id],
+            trace: observed.trace.clone(),
+            plan: observed.plan.clone(),
         }
     }
 }
