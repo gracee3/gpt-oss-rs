@@ -280,4 +280,45 @@ mod tests {
         assert_eq!(output.trace.cache_layout.seq_start_pos, 4);
         assert_eq!(output.trace.layers[1].attention.visible_tokens, vec![0, 3, 4]);
     }
+
+    #[test]
+    fn artifact_aligned_sliding_decode_uses_exported_window_shape() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 4,
+            num_layers: 1,
+            block_size: 16,
+            layer_types: vec!["sliding_attention".into()],
+            sliding_window: Some(128),
+            sink_tokens: 0,
+            num_local_experts: 0,
+            num_experts_per_tok: 0,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
+            router_bias: Vec::new(),
+            moe_layer_indices: Vec::new(),
+        });
+
+        let output = executor
+            .forward(ReferenceInput {
+                tokens: vec![9],
+                phase: ReferencePhase::Decode,
+                seq_start_pos: 128,
+            })
+            .expect("artifact-aligned sliding decode forward");
+
+        assert_eq!(output.trace.phase, ReferencePhase::Decode);
+        assert_eq!(output.trace.seq_start_pos, 128);
+        assert_eq!(
+            output.trace.cache_layout.visibility,
+            CacheVisibility::Sliding { window_tokens: 128 }
+        );
+        assert_eq!(output.trace.layers[0].position_ids, vec![128]);
+        assert_eq!(output.trace.layers[0].attention.mode, AttentionMode::Sliding);
+        assert_eq!(output.trace.layers[0].attention.attended_tokens, 128);
+        assert_eq!(output.trace.layers[0].attention.visible_tokens.first(), Some(&1));
+        assert_eq!(output.trace.layers[0].attention.visible_tokens.last(), Some(&128));
+    }
 }
