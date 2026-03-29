@@ -94,4 +94,21 @@ visibility and cache continuity:
 
 - Worktree and branch created.
 - Launch note written.
-- Implementation not started.
+- Implementation has now produced a bounded vertical slice for the exact first
+  case without widening semantics.
+
+## Sliding Attention — First Vertical Slice (Experimental)
+
+- Exact case: single sequence, single layer, `sliding_attention`,
+  `sliding_window = 128`, prefill `128`, decode `1` at absolute position `128`.
+- Layers exercised: planned-reference, conformance, mock-boundary diagnosis,
+  CUDA `gpu_layer`, CUDA `GpuModelRunner`, and CUDA `GpuWorker`.
+- The `128 -> 129` boundary is now covered by bounded CUDA eager tests through
+  worker-level runtime.
+- Metadata continuity is covered for `positions`, `context_lens`,
+  `slot_mapping`, and `block_tables`.
+- This is bounded experimental evidence only, not general or trusted sliding
+  support.
+- Broader sliding-attention support remains deferred.
+- Learned sinks remain the next increment on the same attention row.
+- Ordering remains: sliding -> sink -> graph.
