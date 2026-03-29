@@ -794,7 +794,17 @@ mod inner {
             };
             #[cfg(not(feature = "cublaslt"))]
             let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
-                Self::hgemm_dispatch(&self.stream, blas, input, weight, m, n, k, &self.loader)
+                Self::hgemm_dispatch(
+                    &self.stream,
+                    blas,
+                    None,
+                    input,
+                    weight,
+                    m,
+                    n,
+                    k,
+                    &self.loader,
+                )
             };
             let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
                 hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?

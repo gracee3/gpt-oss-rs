@@ -657,7 +657,7 @@ impl GpuWorker {
     /// Initialise the model runner config.
     pub fn init_model(&mut self, model_path: &Path) -> Result<()> {
         info!(device_id = self.device_id, path = %model_path.display(), "GpuWorker init_model");
-        let mr_config = self.config.model_runner_config();
+        let mr_config = self.config.model_runner_config()?;
         self.vocab_size = mr_config.vocab_size;
         self.runner_config = Some(mr_config);
         Ok(())
@@ -724,7 +724,7 @@ impl GpuWorker {
             )
             .map_err(|e| LLMError::GpuError(format!("kernel loader: {e}")))?;
 
-            let mr_config = self.config.model_runner_config();
+            let mr_config = self.config.model_runner_config()?;
             let mut runner = rvllm_model_runner::gpu_runner::GpuModelRunner::new(
                 loader_weights,
                 cache,
@@ -826,7 +826,7 @@ impl GpuWorker {
             .map_err(|e| LLMError::GpuError(format!("mem_get_info failed: {e}")))?;
         let available = (free as f32 * gpu_memory_utilization) as usize;
 
-        let cache_cfg = self.config.cache_config();
+        let cache_cfg = self.config.cache_config()?;
         let total_block_bytes = cache_cfg.total_block_bytes();
 
         // CudaCacheEngine now stores f16, matching CacheConfig::block_bytes.
