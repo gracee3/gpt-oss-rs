@@ -1,17 +1,15 @@
 # gpt-oss-rs
 
-This repository is a narrowed fork of `gpt-oss-rs` focused only on serving OpenAI's GPT-OSS checkpoints from Rust. Multi-model architecture support, embedding-model support, and unrelated research collateral have been removed so the codebase can evolve around one target instead of a generic matrix.
-
-The crate and binary names are still `gpt-oss-rs*` for now. This cleanup keeps the existing workspace structure intact while removing non-GPT-OSS implementation paths.
+`gpt-oss-rs` is a Rust-only workspace for serving OpenAI GPT-OSS checkpoints behind an OpenAI-compatible HTTP API.
 
 ## Scope
 
-- Supported architecture: `GptOssForCausalLM`
-- Supported serving mode: text generation via the OpenAI-compatible API
-- Supported endpoints: `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/health`, `/metrics`, and batch routes
-- Removed from this fork: non-GPT-OSS architectures, `/v1/embeddings`, vision-model planning docs, and stale experiment directories
+- GPT-OSS checkpoints only
+- Rust crates, CUDA kernels, and Criterion benchmarks only
+- OpenAI-compatible text generation endpoints for the server binary
+- No Python bindings, Python benchmark harnesses, or fork-era comparison tooling
 
-## Quick start
+## Quick Start
 
 ```bash
 # CPU / mock backend
@@ -25,34 +23,34 @@ cargo build --release --features cuda -p gpt-oss-server
 ./target/release/gpt-oss-rs serve --model openai/gpt-oss-20b
 ```
 
-For 24 GB consumer GPUs, the server defaults to the GPT-OSS profile:
+The server exposes:
 
-- `max_model_len=8192`
-- `gpu_memory_utilization=0.90`
+- `/v1/completions`
+- `/v1/chat/completions`
+- `/v1/responses`
+- `/v1/models`
+- `/health`
+- `/metrics`
 
-Override them explicitly if needed:
-
-```bash
-./target/release/gpt-oss-rs serve \
-  --model openai/gpt-oss-20b \
-  --max-model-len 4096 \
-  --gpu-memory-utilization 0.85
-```
-
-## API example
+## Development
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "openai/gpt-oss-20b",
-    "messages": [{"role":"user","content":"Explain mixture-of-experts routing."}],
-    "max_tokens": 200
-  }'
+cargo fmt --all
+cargo check --workspace
+cargo test --workspace
+cargo bench -p gpt-oss-bench --bench sampling_bench
+bash scripts/smoke_test.sh
 ```
 
-## Repository notes
+Useful entry points:
 
-- The CUDA engine now fails fast on non-`GptOssForCausalLM` checkpoints.
-- The CPU/mock model runner only instantiates `GptOssForCausalLM`.
-- Some naming still reflects the original upstream (`gpt-oss-rs`, `gpt-oss-server`, etc.). If you want a full rename pass next, that should be done as a separate change because it touches crates, package metadata, and CLI behavior.
+- `crates/gpt-oss-server`: CLI and HTTP server binary
+- `crates/gpt-oss-bench`: repository-level Rust benchmarks
+- `kernels/`: CUDA kernels loaded by the GPU path
+- `scripts/build-docker.sh`: Docker image build helper
+- `scripts/smoke_test.sh`: basic end-to-end API smoke test
+
+## Notes
+
+- The workspace intentionally stays narrow. If a new script, test harness, or package format is not part of the Rust serving path, it should not live here by default.
+- Historical optimization notes and fork migration collateral were removed to keep the repository easier to maintain. Add new docs only when they are current and directly useful.
