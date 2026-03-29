@@ -325,6 +325,12 @@ impl ReferenceExecutor {
     }
 
     fn router_logits(&self, attention_signal: f32, hidden_value: f32) -> Vec<f32> {
+        if self.config.router_bias.len() == self.config.num_local_experts
+            && (self.uses_zero_logit_baseline() || self.has_explicit_dense_projection())
+        {
+            return self.config.router_bias.clone();
+        }
+
         if self.uses_zero_logit_baseline() {
             if self.config.router_bias.len() == self.config.num_local_experts {
                 return self.config.router_bias.clone();
