@@ -1377,6 +1377,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-conformance"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-moe-semantics",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gpt-oss-core"
 version = "0.1.0"
 dependencies = [
@@ -1452,6 +1461,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "gpt-oss-moe-semantics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

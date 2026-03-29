@@ -1,0 +1,10 @@
+[package]
+name = "gpt-oss-conformance"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+gpt-oss-moe-semantics = { workspace = true }
+
