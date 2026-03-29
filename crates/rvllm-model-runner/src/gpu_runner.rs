@@ -26,7 +26,7 @@ mod cuda_impl {
 
     use std::cell::Cell;
 
-    use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+    use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtrMut, LaunchConfig, PushKernelArg};
     use half::f16;
     use tracing::{debug, info, trace};
 
@@ -88,6 +88,19 @@ mod cuda_impl {
         }
     }
 
+    /// Pre-allocated f16 scratch buffers for the forward pass.
+    /// Sized for max_batch_tokens. Reused across all layers (sequential execution).
+    struct F16LayerScratch {
+        qkv: CudaSlice<f16>,      // [max_tokens * qkv_dim]
+        attn_out: CudaSlice<f16>, // [max_tokens * q_dim]
+        o_proj: CudaSlice<f16>,   // [max_tokens * hidden]
+        normed: CudaSlice<f16>,   // [max_tokens * hidden]
+        residual: CudaSlice<f16>, // [max_tokens * hidden]
+        gate_up: CudaSlice<f16>,  // [max_tokens * intermediate * 2]
+        silu_out: CudaSlice<f16>, // [max_tokens * intermediate]
+        down: CudaSlice<f16>,     // [max_tokens * hidden]
+    }
+
     /// Element offsets into the packed metadata GPU buffer.
     #[derive(Clone, Copy, Default)]
     struct PackedMetaOffsets {
@@ -109,6 +122,8 @@ mod cuda_impl {
         weights: GpuModelWeights,
         cache: CudaCacheEngine,
         blas: CublasHandle,
+        #[cfg(feature = "cublaslt")]
+        blas_lt: Option<rvllm_gpu::cublaslt_ops::CublasLtOps>,
         loader: Arc<KernelLoader>,
         config: ModelRunnerConfig,
         device: Arc<CudaContext>,
@@ -144,6 +159,19 @@ mod cuda_impl {
         /// Fused gate+up weights per layer: [intermediate*2, hidden] f16.
         /// One GEMM instead of 2 per layer. Populated by fuse_weights().
         fused_gate_up_weights: Vec<CudaSlice<f16>>,
+        /// Pre-converted f16 input layernorm weights per layer.
+        fused_layernorm_f16: Vec<CudaSlice<f16>>,
+        /// Pre-converted f16 post-attention layernorm weights per layer.
+        fused_post_norm_f16: Vec<CudaSlice<f16>>,
+        /// Pre-converted f16 fused QKV bias per layer (None if model has no QKV bias).
+        fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>,
+        /// Pre-converted f16 final norm weight.
+        final_norm_weight_f16: Option<CudaSlice<f16>>,
+        /// Pre-converted f16 embed tokens table for f16 embedding lookup.
+        embed_tokens_f16: Option<CudaSlice<f16>>,
+        /// Pre-allocated scratch buffers for the f16 forward pass.
+        /// One set reused across all layers. Allocated by fuse_weights().
+        f16_scratch: Option<F16LayerScratch>,
     }
 
     impl GpuModelRunner {
@@ -236,10 +264,15 @@ mod cuda_impl {
             info!(graph_max_blocks, block_size, max_position = config.max_position,
                   "fixed block_tables stride for CUDA graph stability");
 
+            #[cfg(feature = "cublaslt")]
+            let blas_lt = rvllm_gpu::cublaslt_ops::CublasLtOps::new(stream.clone()).ok();
+
             Ok(Self {
                 weights,
                 cache,
                 blas,
+                #[cfg(feature = "cublaslt")]
+                blas_lt,
                 loader,
                 config,
                 device,
@@ -260,6 +293,12 @@ mod cuda_impl {
                 gpt_oss_moe_layers,
                 fused_qkv_weights: Vec::new(),
                 fused_gate_up_weights: Vec::new(),
+                fused_layernorm_f16: Vec::new(),
+                fused_post_norm_f16: Vec::new(),
+                fused_qkv_bias_f16: Vec::new(),
+                final_norm_weight_f16: None,
+                embed_tokens_f16: None,
+                f16_scratch: None,
             })
         }
 
@@ -280,47 +319,187 @@ mod cuda_impl {
             let gate_up_dim = intermediate * 2;
 
             for i in 0..num_layers {
+                let has_gpt_oss_moe = self.config.architecture == "GptOssForCausalLM"
+                    || self
+                        .gpt_oss_moe_layers
+                        .get(i)
+                        .and_then(|layer| layer.as_ref())
+                        .is_some();
+
                 // Fuse QKV: concat [q_dim, hidden] + [kv_dim, hidden] + [kv_dim, hidden]
-                let q_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.q_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 q_proj layer {i}")))?;
-                let k_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.k_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 k_proj layer {i}")))?;
-                let v_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.v_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 v_proj layer {i}")))?;
+                if !has_gpt_oss_moe {
+                    let q_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.q_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 q_proj layer {i}")))?;
+                    let k_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.k_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 k_proj layer {i}")))?;
+                    let v_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.v_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 v_proj layer {i}")))?;
 
-                let mut fused_qkv = self.stream.alloc_zeros::<half::f16>(qkv_dim * hidden)
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv alloc: {e}")))?;
-                // Copy Q, K, V contiguously
-                self.stream.memcpy_dtod(q_w, &mut fused_qkv.slice_mut(..q_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv q copy: {e}")))?;
-                self.stream.memcpy_dtod(k_w, &mut fused_qkv.slice_mut(q_dim * hidden..(q_dim + kv_dim) * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv k copy: {e}")))?;
-                self.stream.memcpy_dtod(v_w, &mut fused_qkv.slice_mut((q_dim + kv_dim) * hidden..qkv_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv v copy: {e}")))?;
-                self.fused_qkv_weights.push(fused_qkv);
+                    let mut fused_qkv = self.stream.alloc_zeros::<half::f16>(qkv_dim * hidden)
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv alloc: {e}")))?;
+                    // Copy Q, K, V contiguously
+                    self.stream.memcpy_dtod(q_w, &mut fused_qkv.slice_mut(..q_dim * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv q copy: {e}")))?;
+                    self.stream.memcpy_dtod(k_w, &mut fused_qkv.slice_mut(q_dim * hidden..(q_dim + kv_dim) * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv k copy: {e}")))?;
+                    self.stream.memcpy_dtod(v_w, &mut fused_qkv.slice_mut((q_dim + kv_dim) * hidden..qkv_dim * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv v copy: {e}")))?;
+                    self.fused_qkv_weights.push(fused_qkv);
+                }
 
-                // Fuse gate+up: concat [intermediate, hidden] + [intermediate, hidden]
-                let gate_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.mlp.gate_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 gate_proj layer {i}")))?;
-                let up_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.mlp.up_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 up_proj layer {i}")))?;
-
-                let mut fused_gu = self.stream.alloc_zeros::<half::f16>(gate_up_dim * hidden)
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up alloc: {e}")))?;
-                self.stream.memcpy_dtod(gate_w, &mut fused_gu.slice_mut(..intermediate * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up gate copy: {e}")))?;
-                self.stream.memcpy_dtod(up_w, &mut fused_gu.slice_mut(intermediate * hidden..gate_up_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up up copy: {e}")))?;
-                self.fused_gate_up_weights.push(fused_gu);
+                // Fuse gate+up when the dense MLP weights exist. GPT-OSS layers
+                // route through MoE experts instead, so they intentionally do not
+                // carry dense gate/up projections.
+                let gate_w = self
+                    .weights
+                    .get_f16(&format!("model.layers.{i}.mlp.gate_proj.weight"));
+                let up_w = self
+                    .weights
+                    .get_f16(&format!("model.layers.{i}.mlp.up_proj.weight"));
+                match (gate_w, up_w) {
+                    (Some(gate_w), Some(up_w)) => {
+                        let mut fused_gu =
+                            self.stream.alloc_zeros::<half::f16>(gate_up_dim * hidden).map_err(
+                                |e| LLMError::GpuError(format!("fused_gate_up alloc: {e}")),
+                            )?;
+                        self.stream
+                            .memcpy_dtod(gate_w, &mut fused_gu.slice_mut(..intermediate * hidden))
+                            .map_err(|e| {
+                                LLMError::GpuError(format!("fused_gate_up gate copy: {e}"))
+                            })?;
+                        self.stream
+                            .memcpy_dtod(
+                                up_w,
+                                &mut fused_gu.slice_mut(
+                                    intermediate * hidden..gate_up_dim * hidden,
+                                ),
+                            )
+                            .map_err(|e| {
+                                LLMError::GpuError(format!("fused_gate_up up copy: {e}"))
+                            })?;
+                        self.fused_gate_up_weights.push(fused_gu);
+                    }
+                    (None, None) if has_gpt_oss_moe => {}
+                    (None, None) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 gate_proj/up_proj layer {i}"
+                        )));
+                    }
+                    (None, Some(_)) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 gate_proj layer {i}"
+                        )));
+                    }
+                    (Some(_), None) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 up_proj layer {i}"
+                        )));
+                    }
+                }
             }
 
             info!(num_layers, qkv_dim, gate_up_dim, "fused QKV and gate+up weights");
+
+            // Pre-convert norm weights and biases to f16 for the zero-cast forward path.
+            let cast_kernel = self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel")?;
+            for i in 0..num_layers {
+                // input_layernorm: f32 -> f16
+                let ln_w = self.weights.get(&format!("model.layers.{i}.input_layernorm.weight"))
+                    .ok_or_else(|| LLMError::GpuError(format!("missing input_layernorm layer {i}")))?;
+                let ln_f16 = Self::gpu_cast_f32_to_f16_static(&self.stream, ln_w, hidden, &cast_kernel)?;
+                self.fused_layernorm_f16.push(ln_f16);
+
+                // post_attention_layernorm: f32 -> f16
+                let pn_w = self.weights.get(&format!("model.layers.{i}.post_attention_layernorm.weight"))
+                    .ok_or_else(|| LLMError::GpuError(format!("missing post_attention_layernorm layer {i}")))?;
+                let pn_f16 = Self::gpu_cast_f32_to_f16_static(&self.stream, pn_w, hidden, &cast_kernel)?;
+                self.fused_post_norm_f16.push(pn_f16);
+
+                // Fuse QKV biases: concat q_bias || k_bias || v_bias -> f16
+                let q_bias = self.weights.get(&format!("model.layers.{i}.self_attn.q_proj.bias"));
+                let k_bias = self.weights.get(&format!("model.layers.{i}.self_attn.k_proj.bias"));
+                let v_bias = self.weights.get(&format!("model.layers.{i}.self_attn.v_proj.bias"));
+                if let (Some(qb), Some(kb), Some(vb)) = (q_bias, k_bias, v_bias) {
+                    // Concat f32 biases on GPU, then cast to f16
+                    let mut fused_bias_f32 = self.stream.alloc_zeros::<f32>(qkv_dim)
+                        .map_err(|e| LLMError::GpuError(format!("fused_bias alloc: {e}")))?;
+                    self.stream.memcpy_dtod(qb, &mut fused_bias_f32.slice_mut(..q_dim))
+                        .map_err(|e| LLMError::GpuError(format!("fused_bias q copy: {e}")))?;
+                    self.stream.memcpy_dtod(kb, &mut fused_bias_f32.slice_mut(q_dim..q_dim + kv_dim))
+                        .map_err(|e| LLMError::GpuError(format!("fused_bias k copy: {e}")))?;
+                    self.stream.memcpy_dtod(vb, &mut fused_bias_f32.slice_mut(q_dim + kv_dim..qkv_dim))
+                        .map_err(|e| LLMError::GpuError(format!("fused_bias v copy: {e}")))?;
+                    let bias_f16 = Self::gpu_cast_f32_to_f16_static(&self.stream, &fused_bias_f32, qkv_dim, &cast_kernel)?;
+                    self.fused_qkv_bias_f16.push(Some(bias_f16));
+                } else {
+                    self.fused_qkv_bias_f16.push(None);
+                }
+            }
+
+            // Final norm weight: f32 -> f16
+            let fn_f16 = Self::gpu_cast_f32_to_f16_static(&self.stream, &self.final_norm_weight, hidden, &cast_kernel)?;
+            self.final_norm_weight_f16 = Some(fn_f16);
+
+            // Embed tokens: use f16 from weights if available, else cast f32
+            if let Some(et_f16) = self.weights.get_f16("model.embed_tokens.weight") {
+                // Clone the f16 embed table (it's already on GPU)
+                let mut et_clone = self.stream.alloc_zeros::<half::f16>(et_f16.len())
+                    .map_err(|e| LLMError::GpuError(format!("embed_f16 clone alloc: {e}")))?;
+                self.stream.memcpy_dtod(et_f16, &mut et_clone)
+                    .map_err(|e| LLMError::GpuError(format!("embed_f16 clone copy: {e}")))?;
+                self.embed_tokens_f16 = Some(et_clone);
+            } else {
+                let vocab = self.config.vocab_size;
+                let et_f16 = Self::gpu_cast_f32_to_f16_static(&self.stream, &self.embed_tokens, vocab * hidden, &cast_kernel)?;
+                self.embed_tokens_f16 = Some(et_f16);
+            }
+
+            info!(num_layers, "pre-converted norm/bias/embed to f16");
+
+            self.alloc_scratch()?;
             Ok(())
+        }
+
+        /// Pre-allocate a reusable set of f16 scratch buffers for the forward pass.
+        /// Sized for max_batch_tokens (32). Since all layers are processed
+        /// sequentially, one set of buffers covers every layer.
+        fn alloc_scratch(&mut self) -> Result<()> {
+            let max_tokens: usize = 32; // max padded batch
+            let hidden = self.config.hidden_size;
+            let q_dim = self.config.num_heads * self.config.head_dim;
+            let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            let intermediate = self.config.intermediate_size;
+
+            let alloc = |n: usize| -> Result<CudaSlice<f16>> {
+                self.stream.alloc_zeros::<f16>(n)
+                    .map_err(|e| LLMError::GpuError(format!("f16 scratch alloc ({n} elems): {e}")))
+            };
+
+            let scratch = F16LayerScratch {
+                qkv: alloc(max_tokens * qkv_dim)?,
+                attn_out: alloc(max_tokens * q_dim)?,
+                o_proj: alloc(max_tokens * hidden)?,
+                normed: alloc(max_tokens * hidden)?,
+                residual: alloc(max_tokens * hidden)?,
+                gate_up: alloc(max_tokens * intermediate * 2)?,
+                silu_out: alloc(max_tokens * intermediate)?,
+                down: alloc(max_tokens * hidden)?,
+            };
+
+            let total_bytes = (max_tokens * (qkv_dim + q_dim + hidden * 3 + intermediate * 3)) * 2;
+            info!(max_tokens, total_bytes, "f16 layer scratch allocated");
+            self.f16_scratch = Some(scratch);
+            Ok(())
+        }
+
+        /// Access the pre-allocated f16 scratch buffers.
+        /// Panics if called before fuse_weights().
+        pub fn f16_scratch(&self) -> &F16LayerScratch {
+            self.f16_scratch.as_ref().expect("f16_scratch not allocated; call fuse_weights() first")
         }
 
         pub fn forward(
@@ -366,9 +545,143 @@ mod cuda_impl {
 
             // Step 1: token embedding lookup from packed buffer
             info!("gpu_runner: embedding lookup");
+
+            if self.use_fp16 {
+                // === Fully f16 forward path ===
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+
+                let gpu_cache = self.cache.gpu_cache();
+                let num_layers = self.layers.len();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                // Need a dummy f32 buffer for GpuLayerInput.hidden_states (unused in f16 path)
+                let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(offsets.block_tables..offsets.block_tables + offsets.num_block_tables),
+                        context_lens: packed_buf.slice(offsets.context_lens..offsets.context_lens + offsets.num_context_lens),
+                        slot_mapping: packed_buf.slice(offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len,
+                        block_size,
+                        is_prefill,
+                        seq_start_pos: packed_buf.slice(offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    #[cfg(feature = "cublaslt")]
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.blas_lt.as_ref(),
+                    )?;
+                    #[cfg(not(feature = "cublaslt"))]
+                    let (residual, mlp_out) =
+                        layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+
+                // Final: fuse last layer's residual add with final RMSNorm
+                let fn_w = self.final_norm_weight_f16.as_ref()
+                    .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
+
+                // LM head + argmax: f16 hidden -> fused argmax
+                if num_tokens == 1 && greedy_only {
+                    let lm_f16 = self.weights.get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    let token_ids_gpu = if let Some(lm_w) = lm_f16 {
+                        self.gpu_fused_lm_head_argmax_f16_hidden(&normed_f16, lm_w, vocab_size, hidden_size)?
+                    } else {
+                        // Fallback: cast to f32 for f32 LM head
+                        let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                        let mut normed_f32 = self.stream.alloc_zeros::<f32>(hidden_size)
+                            .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                        let threads = 256u32;
+                        let blocks = ((hidden_size as u32) + threads - 1) / threads;
+                        let cfg = LaunchConfig { grid_dim: (blocks, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                        unsafe {
+                            self.stream.launch_builder(&cast_kernel)
+                                .arg(&mut normed_f32).arg(&normed_f16).arg(&(hidden_size as i32))
+                                .launch(cfg)
+                                .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                        }
+                        self.gpu_fused_lm_head_argmax(&normed_f32, &self.lm_head_weight, vocab_size, hidden_size)?
+                    };
+                    let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
+                        .map_err(|e| LLMError::GpuError(format!("fused_lm_head token DtoH: {e}")))?;
+                    debug!("forward_ex f16 complete (fused lm_head+argmax)");
+                    return Ok(ForwardOutput::TokenIds(token_ids_cpu));
+                }
+
+                // Full logits path: cast f16 hidden -> f32 for LM head matmul
+                let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                let n = num_tokens * hidden_size;
+                let mut normed_f32 = self.stream.alloc_zeros::<f32>(n)
+                    .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                let threads = 256u32;
+                let blocks_ct = ((n as u32) + threads - 1) / threads;
+                let cfg = LaunchConfig { grid_dim: (blocks_ct, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                unsafe {
+                    self.stream.launch_builder(&cast_kernel)
+                        .arg(&mut normed_f32).arg(&normed_f16).arg(&(n as i32))
+                        .launch(cfg)
+                        .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                }
+
+                let logits_gpu = {
+                    let lm_f16 = self.weights.get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    if let Some(lm_w) = lm_f16 {
+                        CudaLinearLayer::forward_once_f16(
+                            &normed_f32, lm_w, num_tokens, vocab_size, hidden_size, &self.blas, &self.loader,
+                        )?
+                    } else {
+                        CudaLinearLayer::forward_once(
+                            &normed_f32, &self.lm_head_weight, None,
+                            num_tokens, vocab_size, hidden_size, &self.blas,
+                        )?
+                    }
+                };
+
+                if greedy_only {
+                    let token_ids_gpu = self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?;
+                    let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
+                        .map_err(|e| LLMError::GpuError(format!("argmax DtoH: {e}")))?;
+                    return Ok(ForwardOutput::TokenIds(token_ids_cpu));
+                }
+
+                let logits_cpu = self.stream.clone_dtoh(&logits_gpu)
+                    .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}")))?;
+                return Ok(ForwardOutput::Logits(logits_cpu));
+            }
+
+            // === f32 forward path (unchanged) ===
             let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
 
-            // Step 2: transformer layers
             let gpu_cache = self.cache.gpu_cache();
             let num_layers = self.layers.len();
             let meta_packed = self.meta_packed.borrow();
@@ -376,11 +689,12 @@ mod cuda_impl {
             let offsets = self.meta_packed_offsets.get();
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 if layer_idx == 0 || layer_idx == num_layers - 1 {
-                    info!(layer = layer_idx, use_fp16 = self.use_fp16, "gpu_runner: layer start");
+                    info!(layer = layer_idx, "gpu_runner: layer start");
                 }
                 let (key_cache, value_cache) = &gpu_cache[layer_idx];
                 let input = GpuLayerInput {
                     hidden_states: &hidden_states,
+                    hidden_states_f16: None,
                     positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
                     key_cache,
                     value_cache,
@@ -396,13 +710,8 @@ mod cuda_impl {
                     rope_cos: &self.rope_cos,
                     rope_sin: &self.rope_sin,
                 };
-                hidden_states = if self.use_fp16 {
-                    let weights = self.layer_weights_f16(layer_idx)?;
-                    layer.forward_f16(&input, &weights, &self.blas)?
-                } else {
-                    let weights = self.layer_weights(layer_idx)?;
-                    layer.forward(&input, &weights, &self.blas)?
-                };
+                let weights = self.layer_weights(layer_idx)?;
+                hidden_states = layer.forward(&input, &weights, &self.blas)?;
                 if layer_idx == 0 || layer_idx == num_layers - 1 {
                     info!(layer = layer_idx, "gpu_runner: layer done");
                 }
@@ -420,19 +729,7 @@ mod cuda_impl {
 
             // Step 4+5: fused LM-head + argmax for single-token greedy decode
             if num_tokens == 1 && greedy_only {
-                let token_ids_gpu = if self.use_fp16 {
-                    let lm_f16 = self
-                        .weights
-                        .get_f16("lm_head.weight")
-                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                    if let Some(lm_w) = lm_f16 {
-                        self.gpu_fused_lm_head_argmax_f16(&normed, lm_w, vocab_size, hidden_size)?
-                    } else {
-                        self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                    }
-                } else {
-                    self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                };
+                let token_ids_gpu = self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?;
                 let token_ids_cpu = self
                     .stream
                     .clone_dtoh(&token_ids_gpu)
@@ -442,27 +739,10 @@ mod cuda_impl {
             }
 
             // Step 4: LM head  normed [num_tokens, hidden] @ lm_head^T [hidden, vocab]
-            let logits_gpu = if self.use_fp16 {
-                let lm_f16 = self
-                    .weights
-                    .get_f16("lm_head.weight")
-                    .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                if let Some(lm_w) = lm_f16 {
-                    CudaLinearLayer::forward_once_f16(
-                        &normed, lm_w, num_tokens, vocab_size, hidden_size, &self.blas, &self.loader,
-                    )?
-                } else {
-                    CudaLinearLayer::forward_once(
-                        &normed, &self.lm_head_weight, None,
-                        num_tokens, vocab_size, hidden_size, &self.blas,
-                    )?
-                }
-            } else {
-                CudaLinearLayer::forward_once(
-                    &normed, &self.lm_head_weight, None,
-                    num_tokens, vocab_size, hidden_size, &self.blas,
-                )?
-            };
+            let logits_gpu = CudaLinearLayer::forward_once(
+                &normed, &self.lm_head_weight, None,
+                num_tokens, vocab_size, hidden_size, &self.blas,
+            )?;
 
             // Step 5: greedy fast path -- argmax on GPU, copy only token IDs
             if greedy_only {
@@ -592,22 +872,148 @@ mod cuda_impl {
                 return Err(LLMError::ModelError("empty input".into()));
             }
 
-            // Step 1: token embedding lookup from persistent buffer
+            if self.use_fp16 {
+                // === Fully f16 graph body ===
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+
+                let gpu_cache = self.cache.gpu_cache();
+                let num_layers = self.layers.len();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(offsets.block_tables..offsets.block_tables + offsets.num_block_tables),
+                        context_lens: packed_buf.slice(offsets.context_lens..offsets.context_lens + offsets.num_context_lens),
+                        slot_mapping: packed_buf.slice(offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len,
+                        block_size,
+                        is_prefill,
+                        seq_start_pos: packed_buf.slice(offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    #[cfg(feature = "cublaslt")]
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.blas_lt.as_ref(),
+                    )?;
+                    #[cfg(not(feature = "cublaslt"))]
+                    let (residual, mlp_out) =
+                        layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+
+                // Final: fuse last layer's residual add with final RMSNorm
+                let fn_w = self.final_norm_weight_f16.as_ref()
+                    .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
+
+                if num_tokens == 1 && greedy_only {
+                    let lm_f16 = self.weights.get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    let token_ids_gpu = if let Some(lm_w) = lm_f16 {
+                        self.gpu_fused_lm_head_argmax_f16_hidden(&normed_f16, lm_w, vocab_size, hidden_size)?
+                    } else {
+                        let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                        let mut normed_f32 = self.stream.alloc_zeros::<f32>(hidden_size)
+                            .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                        let threads = 256u32;
+                        let bk = ((hidden_size as u32) + threads - 1) / threads;
+                        let cfg = LaunchConfig { grid_dim: (bk, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                        unsafe {
+                            self.stream.launch_builder(&cast_kernel)
+                                .arg(&mut normed_f32).arg(&normed_f16).arg(&(hidden_size as i32))
+                                .launch(cfg)
+                                .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                        }
+                        self.gpu_fused_lm_head_argmax(&normed_f32, &self.lm_head_weight, vocab_size, hidden_size)?
+                    };
+                    let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
+                        .map_err(|e| LLMError::GpuError(format!("fused_lm_head token DtoH: {e}")))?;
+                    return Ok(ForwardOutput::TokenIds(token_ids_cpu));
+                }
+
+                // Full logits: cast f16 -> f32 for LM head
+                let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                let n = num_tokens * hidden_size;
+                let mut normed_f32 = self.stream.alloc_zeros::<f32>(n)
+                    .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                let threads = 256u32;
+                let bk = ((n as u32) + threads - 1) / threads;
+                let cfg = LaunchConfig { grid_dim: (bk, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                unsafe {
+                    self.stream.launch_builder(&cast_kernel)
+                        .arg(&mut normed_f32).arg(&normed_f16).arg(&(n as i32))
+                        .launch(cfg)
+                        .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                }
+
+                let logits_gpu = {
+                    let lm_f16 = self.weights.get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    if let Some(lm_w) = lm_f16 {
+                        CudaLinearLayer::forward_once_f16(
+                            &normed_f32, lm_w, num_tokens, vocab_size, hidden_size, &self.blas, &self.loader,
+                        )?
+                    } else {
+                        CudaLinearLayer::forward_once(
+                            &normed_f32, &self.lm_head_weight, None,
+                            num_tokens, vocab_size, hidden_size, &self.blas,
+                        )?
+                    }
+                };
+
+                if greedy_only {
+                    let token_ids_gpu = self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?;
+                    let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
+                        .map_err(|e| LLMError::GpuError(format!("argmax DtoH: {e}")))?;
+                    return Ok(ForwardOutput::TokenIds(token_ids_cpu));
+                }
+
+                let logits_cpu = self.stream.clone_dtoh(&logits_gpu)
+                    .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}")))?;
+                return Ok(ForwardOutput::Logits(logits_cpu));
+            }
+
+            // === f32 graph body (unchanged) ===
             let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
 
-            // Step 2: transformer layers (views from packed metadata buffer)
             let gpu_cache = self.cache.gpu_cache();
             let num_layers = self.layers.len();
             let meta_packed = self.meta_packed.borrow();
             let packed_buf = meta_packed.slice();
             let offsets = self.meta_packed_offsets.get();
             for (layer_idx, layer) in self.layers.iter().enumerate() {
-                if layer_idx == 0 || layer_idx == num_layers - 1 {
-                    trace!(layer = layer_idx, use_fp16 = self.use_fp16, "gpu_runner graph body: layer");
-                }
                 let (key_cache, value_cache) = &gpu_cache[layer_idx];
                 let input = GpuLayerInput {
                     hidden_states: &hidden_states,
+                    hidden_states_f16: None,
                     positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
                     key_cache,
                     value_cache,
@@ -623,16 +1029,10 @@ mod cuda_impl {
                     rope_cos: &self.rope_cos,
                     rope_sin: &self.rope_sin,
                 };
-                hidden_states = if self.use_fp16 {
-                    let weights = self.layer_weights_f16(layer_idx)?;
-                    layer.forward_f16(&input, &weights, &self.blas)?
-                } else {
-                    let weights = self.layer_weights(layer_idx)?;
-                    layer.forward(&input, &weights, &self.blas)?
-                };
+                let weights = self.layer_weights(layer_idx)?;
+                hidden_states = layer.forward(&input, &weights, &self.blas)?;
             }
 
-            // Step 3: final RMSNorm
             let normed = CudaRMSNorm::forward(
                 &hidden_states,
                 &self.final_norm_weight,
@@ -642,65 +1042,26 @@ mod cuda_impl {
                 &self.stream,
             )?;
 
-            // Step 4+5: fused LM-head + argmax for single-token greedy decode
             if num_tokens == 1 && greedy_only {
-                let token_ids_gpu = if self.use_fp16 {
-                    let lm_f16 = self
-                        .weights
-                        .get_f16("lm_head.weight")
-                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                    if let Some(lm_w) = lm_f16 {
-                        self.gpu_fused_lm_head_argmax_f16(&normed, lm_w, vocab_size, hidden_size)?
-                    } else {
-                        self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                    }
-                } else {
-                    self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                };
-                let token_ids_cpu = self
-                    .stream
-                    .clone_dtoh(&token_ids_gpu)
+                let token_ids_gpu = self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?;
+                let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
                     .map_err(|e| LLMError::GpuError(format!("fused_lm_head token DtoH: {e}")))?;
                 return Ok(ForwardOutput::TokenIds(token_ids_cpu));
             }
 
-            // Step 4: LM head
-            let logits_gpu = if self.use_fp16 {
-                let lm_f16 = self
-                    .weights
-                    .get_f16("lm_head.weight")
-                    .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                if let Some(lm_w) = lm_f16 {
-                    CudaLinearLayer::forward_once_f16(
-                        &normed, lm_w, num_tokens, vocab_size, hidden_size, &self.blas, &self.loader,
-                    )?
-                } else {
-                    CudaLinearLayer::forward_once(
-                        &normed, &self.lm_head_weight, None,
-                        num_tokens, vocab_size, hidden_size, &self.blas,
-                    )?
-                }
-            } else {
-                CudaLinearLayer::forward_once(
-                    &normed, &self.lm_head_weight, None,
-                    num_tokens, vocab_size, hidden_size, &self.blas,
-                )?
-            };
+            let logits_gpu = CudaLinearLayer::forward_once(
+                &normed, &self.lm_head_weight, None,
+                num_tokens, vocab_size, hidden_size, &self.blas,
+            )?;
 
-            // Step 5: greedy fast path
             if greedy_only {
                 let token_ids_gpu = self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?;
-                let token_ids_cpu = self
-                    .stream
-                    .clone_dtoh(&token_ids_gpu)
+                let token_ids_cpu = self.stream.clone_dtoh(&token_ids_gpu)
                     .map_err(|e| LLMError::GpuError(format!("argmax DtoH: {e}")))?;
                 return Ok(ForwardOutput::TokenIds(token_ids_cpu));
             }
 
-            // Full logits DtoH
-            let logits_cpu = self
-                .stream
-                .clone_dtoh(&logits_gpu)
+            let logits_cpu = self.stream.clone_dtoh(&logits_gpu)
                 .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}")))?;
             Ok(ForwardOutput::Logits(logits_cpu))
         }
@@ -749,10 +1110,138 @@ mod cuda_impl {
                 return Err(LLMError::ModelError("empty input".into()));
             }
 
-            // Step 1: token embedding lookup from persistent buffer
+            if self.use_fp16 {
+                // === Fully f16 GPU-only path ===
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+
+                let gpu_cache = self.cache.gpu_cache();
+                let num_layers = self.layers.len();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(offsets.block_tables..offsets.block_tables + offsets.num_block_tables),
+                        context_lens: packed_buf.slice(offsets.context_lens..offsets.context_lens + offsets.num_context_lens),
+                        slot_mapping: packed_buf.slice(offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len,
+                        block_size,
+                        is_prefill,
+                        seq_start_pos: packed_buf.slice(offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    #[cfg(feature = "cublaslt")]
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.blas_lt.as_ref(),
+                    )?;
+                    #[cfg(not(feature = "cublaslt"))]
+                    let (residual, mlp_out) =
+                        layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+
+                // Final: fuse last layer's residual add with final RMSNorm
+                let fn_w = self.final_norm_weight_f16.as_ref()
+                    .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
+
+                let token_ids_gpu = if num_tokens == 1 {
+                    let lm_f16 = self.weights.get_f16("lm_head.weight")
+                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                    if let Some(lm_w) = lm_f16 {
+                        self.gpu_fused_lm_head_argmax_f16_hidden(&normed_f16, lm_w, vocab_size, hidden_size)?
+                    } else {
+                        let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                        let mut normed_f32 = self.stream.alloc_zeros::<f32>(hidden_size)
+                            .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                        let threads = 256u32;
+                        let bk = ((hidden_size as u32) + threads - 1) / threads;
+                        let cfg = LaunchConfig { grid_dim: (bk, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                        unsafe {
+                            self.stream.launch_builder(&cast_kernel)
+                                .arg(&mut normed_f32).arg(&normed_f16).arg(&(hidden_size as i32))
+                                .launch(cfg)
+                                .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                        }
+                        self.gpu_fused_lm_head_argmax(&normed_f32, &self.lm_head_weight, vocab_size, hidden_size)?
+                    }
+                } else {
+                    // Multi-token: cast f16 -> f32 for LM head
+                    let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+                    let n = num_tokens * hidden_size;
+                    let mut normed_f32 = self.stream.alloc_zeros::<f32>(n)
+                        .map_err(|e| LLMError::GpuError(format!("final cast alloc: {e}")))?;
+                    let threads = 256u32;
+                    let bk = ((n as u32) + threads - 1) / threads;
+                    let cfg = LaunchConfig { grid_dim: (bk, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 };
+                    unsafe {
+                        self.stream.launch_builder(&cast_kernel)
+                            .arg(&mut normed_f32).arg(&normed_f16).arg(&(n as i32))
+                            .launch(cfg)
+                            .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
+                    }
+                    let logits_gpu = {
+                        let lm_f16 = self.weights.get_f16("lm_head.weight")
+                            .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
+                        if let Some(lm_w) = lm_f16 {
+                            CudaLinearLayer::forward_once_f16(
+                                &normed_f32, lm_w, num_tokens, vocab_size, hidden_size,
+                                &self.blas, &self.loader,
+                            )?
+                        } else {
+                            CudaLinearLayer::forward_once(
+                                &normed_f32, &self.lm_head_weight, None,
+                                num_tokens, vocab_size, hidden_size, &self.blas,
+                            )?
+                        }
+                    };
+                    self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?
+                };
+
+                // Copy argmax result into the persistent output buffer.
+                let mut out = self.graph_output.borrow_mut();
+                let need = num_tokens;
+                let have = out.as_ref().map_or(0, |b| b.len());
+                if have < need {
+                    *out = Some(self.stream.alloc_zeros::<i32>(need)
+                        .map_err(|e| LLMError::GpuError(format!("graph_output alloc: {e}")))?);
+                }
+                let dst = out.as_mut().unwrap();
+                self.stream.memcpy_dtod(&token_ids_gpu, dst)
+                    .map_err(|e| LLMError::GpuError(format!("graph_output dtod: {e}")))?;
+                return Ok(());
+            }
+
+            // === f32 GPU-only path (unchanged) ===
             let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
 
-            // Step 2: transformer layers (views from packed metadata buffer)
             let gpu_cache = self.cache.gpu_cache();
             let num_layers = self.layers.len();
             let meta_packed = self.meta_packed.borrow();
@@ -762,6 +1251,7 @@ mod cuda_impl {
                 let (key_cache, value_cache) = &gpu_cache[layer_idx];
                 let input = GpuLayerInput {
                     hidden_states: &hidden_states,
+                    hidden_states_f16: None,
                     positions: packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
                     key_cache,
                     value_cache,
@@ -777,16 +1267,10 @@ mod cuda_impl {
                     rope_cos: &self.rope_cos,
                     rope_sin: &self.rope_sin,
                 };
-                hidden_states = if self.use_fp16 {
-                    let weights = self.layer_weights_f16(layer_idx)?;
-                    layer.forward_f16(&input, &weights, &self.blas)?
-                } else {
-                    let weights = self.layer_weights(layer_idx)?;
-                    layer.forward(&input, &weights, &self.blas)?
-                };
+                let weights = self.layer_weights(layer_idx)?;
+                hidden_states = layer.forward(&input, &weights, &self.blas)?;
             }
 
-            // Step 3: final RMSNorm
             let normed = CudaRMSNorm::forward(
                 &hidden_states,
                 &self.final_norm_weight,
@@ -796,45 +1280,13 @@ mod cuda_impl {
                 &self.stream,
             )?;
 
-            // Step 4+5: fused LM-head + argmax into persistent output buffer
             let token_ids_gpu = if num_tokens == 1 {
-                if self.use_fp16 {
-                    let lm_f16 = self
-                        .weights
-                        .get_f16("lm_head.weight")
-                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                    if let Some(lm_w) = lm_f16 {
-                        self.gpu_fused_lm_head_argmax_f16(&normed, lm_w, vocab_size, hidden_size)?
-                    } else {
-                        self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                    }
-                } else {
-                    self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
-                }
+                self.gpu_fused_lm_head_argmax(&normed, &self.lm_head_weight, vocab_size, hidden_size)?
             } else {
-                // Multi-token: full LM head then argmax
-                let logits_gpu = if self.use_fp16 {
-                    let lm_f16 = self
-                        .weights
-                        .get_f16("lm_head.weight")
-                        .or_else(|| self.weights.get_f16("model.embed_tokens.weight"));
-                    if let Some(lm_w) = lm_f16 {
-                        CudaLinearLayer::forward_once_f16(
-                            &normed, lm_w, num_tokens, vocab_size, hidden_size,
-                            &self.blas, &self.loader,
-                        )?
-                    } else {
-                        CudaLinearLayer::forward_once(
-                            &normed, &self.lm_head_weight, None,
-                            num_tokens, vocab_size, hidden_size, &self.blas,
-                        )?
-                    }
-                } else {
-                    CudaLinearLayer::forward_once(
-                        &normed, &self.lm_head_weight, None,
-                        num_tokens, vocab_size, hidden_size, &self.blas,
-                    )?
-                };
+                let logits_gpu = CudaLinearLayer::forward_once(
+                    &normed, &self.lm_head_weight, None,
+                    num_tokens, vocab_size, hidden_size, &self.blas,
+                )?;
                 self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?
             };
 
@@ -1125,6 +1577,168 @@ mod cuda_impl {
             Ok(output)
         }
 
+        /// f16 embedding lookup from pre-uploaded token IDs in packed metadata.
+        fn embedding_lookup_from_meta_f16(&self, num_tokens: usize) -> Result<CudaSlice<f16>> {
+            let hidden_size = self.config.hidden_size;
+            let embed_f16 = self.embed_tokens_f16.as_ref()
+                .ok_or_else(|| LLMError::GpuError("f16 embed_tokens not initialized (call fuse_weights)".into()))?;
+
+            let kernel = self.loader
+                .get_func("embedding_gather_f16", "embedding_gather_f16_kernel")?;
+
+            // Safety: embedding gather kernel writes all num_tokens * hidden_size elements
+            let output = unsafe { self.stream.alloc::<f16>(num_tokens * hidden_size) }
+                .map_err(|e| LLMError::GpuError(format!("embed_f16 alloc: {e}")))?;
+
+            let meta_packed = self.meta_packed.borrow();
+            let packed_buf = meta_packed.slice();
+            let offsets = self.meta_packed_offsets.get();
+            let token_ids_view = packed_buf.slice(
+                offsets.token_ids..offsets.token_ids + offsets.num_token_ids,
+            );
+
+            let block_dim = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_dim, 1, 1),
+                shared_mem_bytes: 0,
+            };
+
+            unsafe {
+                self.stream
+                    .launch_builder(&kernel)
+                    .arg(&output)
+                    .arg(embed_f16)
+                    .arg(&token_ids_view)
+                    .arg(&(hidden_size as i32))
+                    .arg(&(self.config.vocab_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("embedding_gather_f16 launch: {e}")))?;
+            }
+
+            Ok(output)
+        }
+
+        /// GPU cast f32 -> f16 (static helper, does not need &self).
+        fn gpu_cast_f32_to_f16_static(
+            stream: &Arc<CudaStream>,
+            input: &CudaSlice<f32>,
+            n: usize,
+            kernel: &cudarc::driver::CudaFunction,
+        ) -> Result<CudaSlice<f16>> {
+            // Safety: cast kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// RMSNorm f16: f16 input, f16 weight, f16 output.
+        fn rms_norm_f16_runner(
+            &self,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let num_tokens = input.len() / hidden_size;
+            // Safety: rms_norm kernel writes all elements
+            let mut output = unsafe { self.stream.alloc::<f16>(input.len()) }
+                .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = self.loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
+            unsafe {
+                self.stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(weight)
+                    .arg(&self.rms_norm_eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// In-place RMSNorm f16: normalizes `input` directly, no output allocation.
+        fn rms_norm_f16_inplace_runner(
+            &self,
+            input: &mut CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            hidden_size: usize,
+        ) -> Result<()> {
+            let num_tokens = input.len() / hidden_size;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = self.loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
+            unsafe {
+                let (raw_ptr, _guard) = DevicePtrMut::device_ptr_mut(input, &self.stream);
+                self.stream.launch_builder(&kernel)
+                    .arg(&raw_ptr)
+                    .arg(&raw_ptr)
+                    .arg(weight)
+                    .arg(&self.rms_norm_eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_inplace launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        /// Fused LM-head matvec + argmax for single-token greedy decode (f16 weights, f16 hidden).
+        /// Casts f16 hidden -> f32 internally since the kernel expects f32 hidden.
+        fn gpu_fused_lm_head_argmax_f16_hidden(
+            &self,
+            hidden_state_f16: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            vocab_size: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<i32>> {
+            // Cast f16 hidden -> f32 for the LM head kernel
+            let cast_kernel = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")?;
+            // Safety: cast kernel writes all hidden_size elements
+            let mut hidden_f32 = unsafe { self.stream.alloc::<f32>(hidden_size) }
+                .map_err(|e| LLMError::GpuError(format!("lm_head f16->f32 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((hidden_size as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                self.stream.launch_builder(&cast_kernel)
+                    .arg(&mut hidden_f32)
+                    .arg(hidden_state_f16)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("lm_head f16->f32 launch: {e}")))?;
+            }
+            self.gpu_fused_lm_head_argmax_f16(&hidden_f32, weight, vocab_size, hidden_size)
+        }
+
         pub fn config(&self) -> &ModelRunnerConfig {
             &self.config
         }
@@ -1317,6 +1931,9 @@ mod cuda_impl {
                 gpt_oss_moe: self.gpt_oss_moe_layers[i].as_ref(),
                 fused_qkv: self.fused_qkv_weights.get(i),
                 fused_gate_up: self.fused_gate_up_weights.get(i),
+                input_layernorm_f16: self.fused_layernorm_f16.get(i),
+                post_attention_layernorm_f16: self.fused_post_norm_f16.get(i),
+                fused_qkv_bias: self.fused_qkv_bias_f16.get(i).and_then(|o| o.as_ref()),
             })
         }
 

@@ -371,6 +371,29 @@ impl GpuWorker {
         let stream = context.new_stream()
             .map_err(|e| LLMError::GpuError(format!("failed to create CUDA stream: {e}")))?;
 
+        // Set memory pool to never release freed memory (instant reuse).
+        // By default CUDA's pool may return memory to the OS aggressively;
+        // threshold=u64::MAX keeps all freed allocations in the pool.
+        unsafe {
+            use cudarc::driver::sys::{
+                cuDeviceGetDefaultMemPool, cuMemPoolSetAttribute,
+                CUmemPool_attribute, CUmemoryPool,
+            };
+            let mut pool: CUmemoryPool = std::ptr::null_mut();
+            let res = cuDeviceGetDefaultMemPool(&mut pool, device_id as i32);
+            if res == cudarc::driver::sys::CUresult::CUDA_SUCCESS && !pool.is_null() {
+                let mut threshold: u64 = u64::MAX;
+                cuMemPoolSetAttribute(
+                    pool,
+                    CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                    &mut threshold as *mut u64 as *mut std::ffi::c_void,
+                );
+                info!(device_id, "memory pool release threshold set to u64::MAX");
+            } else {
+                warn!(device_id, "failed to configure memory pool release threshold");
+            }
+        }
+
         let cublas = CublasHandle::new(stream.clone())
             .map_err(|e| LLMError::GpuError(format!("failed to create CublasHandle: {}", e)))?;
 
@@ -673,17 +696,19 @@ impl GpuWorker {
             if self.config.dtype.is_half() {
                 runner.enable_fp16();
                 info!("FP16 inference enabled (hgemm path)");
-                // GPT-OSS decode uses a custom MoE path and does not have dense
-                // gate/up projections, so the generic fusion pass can leave a
-                // partially fused runner state. Keep GPT-OSS on the unfused path.
+                if let Err(e) = runner.fuse_weights() {
+                    if self.config.architecture == "GptOssForCausalLM" {
+                        return Err(LLMError::GpuError(format!(
+                            "GPT-OSS fp16 setup failed: {e}"
+                        )));
+                    }
+                    warn!("weight fusion failed: {e} -- using unfused path");
+                }
                 if self.config.architecture == "GptOssForCausalLM" {
-                    info!("skipping generic weight fusion for GPT-OSS");
                     if let Err(e) = runner.prepare_gpt_oss_graph_decode() {
                         warn!("GPT-OSS graph decode prep failed: {e} -- graph capture disabled");
                         self.graph_runner.disable();
                     }
-                } else if let Err(e) = runner.fuse_weights() {
-                    warn!("weight fusion failed: {e} -- using unfused path");
                 }
             }
 
@@ -715,13 +740,24 @@ impl GpuWorker {
     /// Search for compiled PTX directory from build output.
     #[cfg(feature = "cuda")]
     fn find_ptx_dir() -> Option<std::path::PathBuf> {
-        for base in &[
-            "/root/vllm-rs/target/release/build",
-            "/root/vllm-rs/target/debug/build",
-            "./target/release/build",
-            "./target/debug/build",
-        ] {
-            if let Ok(entries) = std::fs::read_dir(base) {
+        let mut bases = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(profile_dir) = exe.parent() {
+                if let Some(target_dir) = profile_dir.parent() {
+                    bases.push(target_dir.join(profile_dir.file_name()?));
+                }
+            }
+        }
+        bases.extend([
+            std::path::PathBuf::from("/root/vllm-rs/target/release"),
+            std::path::PathBuf::from("/root/vllm-rs/target/debug"),
+            std::path::PathBuf::from("./target/release"),
+            std::path::PathBuf::from("./target/debug"),
+        ]);
+
+        for base in &bases {
+            let build_dir = base.join("build");
+            if let Ok(entries) = std::fs::read_dir(&build_dir) {
                 for entry in entries.flatten() {
                     let ptx_path = entry.path().join("out/ptx");
                     if ptx_path.join("rotary_embedding.ptx").exists() {

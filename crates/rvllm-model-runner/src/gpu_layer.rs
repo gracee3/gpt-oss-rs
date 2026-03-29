@@ -18,7 +18,7 @@
 mod inner {
     use std::sync::Arc;
 
-    use cudarc::driver::{CudaSlice, CudaStream, CudaView, CudaViewMut, DeviceSlice, LaunchConfig, PushKernelArg};
+    use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice, LaunchConfig, PushKernelArg};
     use half::f16;
     use tracing::{info, trace};
 
@@ -96,6 +96,10 @@ mod inner {
         pub fused_qkv: Option<&'a CudaSlice<f16>>,
         /// Fused gate+up weight: [intermediate*2, hidden]. None if not fused.
         pub fused_gate_up: Option<&'a CudaSlice<f16>>,
+        /// Pre-converted f16 norm weights and biases for zero-cast f16 forward.
+        pub input_layernorm_f16: Option<&'a CudaSlice<f16>>,
+        pub post_attention_layernorm_f16: Option<&'a CudaSlice<f16>>,
+        pub fused_qkv_bias: Option<&'a CudaSlice<f16>>,
     }
 
     /// Host-side GPT-OSS routed-expert weights. The CUDA runner keeps the
@@ -586,6 +590,8 @@ mod inner {
     pub struct GpuLayerInput<'a> {
         /// Hidden states entering this layer, shape [num_tokens, hidden_size].
         pub hidden_states: &'a CudaSlice<f32>,
+        /// Optional f16 hidden states for the zero-cast f16 forward path.
+        pub hidden_states_f16: Option<&'a CudaSlice<f16>>,
         /// Position ids for RoPE, shape [num_tokens]. Kernels expect int*.
         pub positions: CudaView<'a, i32>,
         /// KV cache key block for this layer (f16), shape [num_blocks, block_size, num_kv_heads, head_dim].
@@ -637,16 +643,89 @@ mod inner {
         /// Returns the output hidden states as a new CudaSlice<f32> of shape
         /// [num_tokens, hidden_size]. The caller is responsible for using this
         /// as input to the next layer.
-        /// FP16 forward pass -- uses hgemm for projection weights (f16), while
-        /// norms, biases, RoPE, and attention remain in f32.
+        /// Fully f16 forward pass -- ZERO type casts within the layer.
+        /// All inputs, intermediates, and outputs are f16. Uses f16 kernels
+        /// throughout: rms_norm_f16, add_bias_f16, rotary_embedding_f16,
+        /// reshape_and_cache_f16io, flash_attention_2_decode_f16io, hgemm,
+        /// fused_residual_rmsnorm_f16, fused_silu_mul_f16, add_f16.
+        // ==================================================================
+        // Allocation audit (per layer, decode path with fused weights):
+        //
+        //  #  Buffer        Size (elems)         Overwritten by     Last read at
+        //  -- ------------- -------------------- ------------------ ------------------
+        //  1  normed        T*H                  rms_norm_f16       step 2 (QKV hgemm)
+        //  2  qkv           T*(Q+2K)             hgemm (fused)      step 5 (KV cache write, attn Q slice)
+        //  3  attn_out      T*Q                  decode_attn_f16io  step 7 (O proj hgemm)
+        //  4  attn_proj     T*H                  hgemm (O proj)     step 8 (fused resid+norm)
+        //  5  normed2       T*H                  fused_resid_rn     step 9 (gate_up hgemm)
+        //  6  residual      T*H                  fused_resid_rn     step 11 (final add)
+        //  7  gate_up       T*2I                 hgemm (gate+up)    step 9 (silu_mul reads both halves)
+        //  8  fused(silu)   T*I                  silu_mul_f16_split step 10 (down proj hgemm)
+        //  9  mlp_out       T*H                  hgemm (down proj)  step 11 (final add)
+        // 10  final_out     T*H                  add_tensors_f16    returned to caller
+        //
+        // Prefill-only extras (instead of #3 above):
+        //  3a q_f32         T*Q  (f32!)          cast_f16_to_f32    prefill_attention input
+        //  3b attn_f32      T*Q  (f32!)          prefill_attention  cast_f32_to_f16 input
+        //  3c attn_out      T*Q                  cast_f32_to_f16    step 7 (O proj hgemm)
+        //  Prefill total: 12 allocs (3 extra for f32 round-trip)
+        //
+        // Unfused fallback extras:
+        //  - separate Q/K/V instead of fused qkv: 3 allocs via hgemm_into (still 1 buf)
+        //  - separate gate + up instead of fused: 2 hgemm_alloc + 1 silu = same count
+        //
+        // Total decode: 10 allocs
+        // Total prefill: 12 allocs
+        //
+        // === Scratch buffer aliasing candidates ===
+        //
+        // Lifetime analysis (decode path, sequential execution on one stream):
+        //
+        //   normed     [1]: live during step 2, dead after QKV hgemm completes
+        //   qkv        [2]: live steps 2-5, dead after KV cache write + attn Q read
+        //   attn_out   [3]: live steps 6-7, dead after O proj hgemm
+        //   attn_proj  [4]: live steps 7-8, dead after fused_resid_rmsnorm
+        //   normed2    [5]: live steps 8-9, dead after gate_up hgemm
+        //   residual   [6]: live steps 8-11, LONG-LIVED (spans entire MLP)
+        //   gate_up    [7]: live step 9, dead after silu_mul
+        //   fused      [8]: live steps 9-10, dead after down proj hgemm
+        //   mlp_out    [9]: live steps 10-11, dead after final add
+        //   final_out [10]: returned, cannot alias
+        //
+        // Reuse opportunities (non-overlapping lifetimes):
+        //   A) normed [T*H] dead at step 2 -> reuse for attn_out [T*Q] at step 6
+        //      (Q = num_heads*head_dim = H for most models, exact same size)
+        //   B) qkv [T*(Q+2K)] dead at step 5 -> reuse for gate_up [T*2I] at step 9
+        //      (qkv_dim ~ H+2*H/GQA_ratio, gate_up = 2*I; for llama 2I > qkv, but
+        //       qkv buf could be a prefix if gate_up scratch is sized to max(qkv,2I))
+        //   C) attn_out [T*Q] dead at step 7 -> reuse for fused/silu [T*I] at step 9
+        //      (I > Q typically, so need max(Q,I) sizing)
+        //   D) attn_proj [T*H] dead at step 8 -> reuse for mlp_out [T*H] at step 10
+        //      (exact same size)
+        //   E) normed2 [T*H] dead at step 9 -> reuse for mlp_out [T*H] at step 10
+        //      (exact same size, alternative to D)
+        //
+        // LOW-HANGING FRUIT (same size, zero waste):
+        //   1. attn_proj -> mlp_out  [both T*H, saves 1 alloc]
+        //   2. normed -> attn_out    [T*H vs T*Q, same when Q=H, saves 1 alloc]
+        //   3. normed2 is an alternative to attn_proj for mlp_out reuse
+        //
+        // With a single scratch buffer sized to max(T*qkv_dim, T*2I, T*H):
+        //   Could eliminate 4-5 allocs, reducing 10 -> 5-6 per layer.
+        // ==================================================================
+        /// Full f16 forward with cross-layer fusion support.
+        /// When `prev_mlp_out` is Some, fuses the previous layer's residual add
+        /// with this layer's pre-attention RMSNorm (1 kernel instead of 2).
+        /// Returns (residual, mlp_out) for the NEXT layer to fuse.
         pub fn forward_f16(
             &self,
             input: &GpuLayerInput<'_>,
             weights: &GpuLayerWeightsF16<'_>,
             blas: &CublasHandle,
-        ) -> Result<CudaSlice<f32>> {
-            use crate::layers::linear_cuda::CudaLinearLayer;
-
+            prev_mlp_out: Option<&CudaSlice<f16>>,
+            #[cfg(feature = "cublaslt")]
+            lt: Option<&rvllm_gpu::cublaslt_ops::CublasLtOps>,
+        ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
             let hidden = cfg.hidden_size;
@@ -655,61 +734,127 @@ mod inner {
             let head_dim = cfg.head_dim;
             let intermediate = cfg.intermediate_size;
 
-            // 1. Pre-attention RMSNorm (f32)
-            let normed = Self::rms_norm(
-                &self.stream,
-                &self.loader,
-                input.hidden_states,
-                weights.input_layernorm,
-                cfg.rms_norm_eps,
-                num_tokens,
-                hidden,
-            )?;
+            let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 hidden states required for f16 forward".into())
+            })?;
+            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 input_layernorm required".into())
+            })?;
+            let post_norm_w = weights.post_attention_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 post_attention_layernorm required".into())
+            })?;
 
-            // 2. QKV projections
+            // 1. Pre-attention RMSNorm f16 (fused with previous layer's residual add if available).
+            let (normed, fused_residual) = if let Some(prev_mlp) = prev_mlp_out {
+                let (n, r) = Self::fused_residual_rmsnorm_f16(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    prev_mlp,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, Some(r))
+            } else {
+                let n = Self::rms_norm_f16(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, None)
+            };
+            let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
+
+            // 2. QKV projections: hgemm f16 x f16 -> f16.
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
             let qkv_dim = q_dim + kv_dim + kv_dim;
-
-            let cast_f32_f16 = self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel")
-                .map_err(|e| LLMError::GpuError(format!("load cast: {e}")))?;
-            let normed_f16 = CudaLinearLayer::gpu_cast_f32_to_f16(
-                &self.stream, &normed, num_tokens * hidden, &cast_f32_f16,
-            )?;
-            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
-            let attn_out = if let Some(fused_qkv) = weights.fused_qkv {
-                // Fused QKV: 1 GEMM, zero-copy split via views. No separate allocs or copies.
-                let mut qkv = CudaLinearLayer::forward_f16_in(
-                    &normed_f16, fused_qkv, num_tokens, qkv_dim, hidden, blas,
-                )?;
-
+            #[cfg(feature = "cublaslt")]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(&self.stream, blas, lt, input, weight, m, n, k)
+            };
+            #[cfg(not(feature = "cublaslt"))]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(&self.stream, blas, input, weight, m, n, k)
+            };
+            let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
+                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
+            } else {
+                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
+                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
                 let q_end = num_tokens * q_dim;
                 let k_end = q_end + num_tokens * kv_dim;
-                if let Some(bias) = weights.q_proj_bias {
-                    let mut q_view = qkv.slice_mut(..q_end);
-                    Self::add_bias_view(
-                        &self.stream, &self.loader, &mut q_view, bias, num_tokens, q_dim,
+                {
+                    let mut q_dst = qkv_buf.slice_mut(..q_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        q_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.q_proj,
+                        0.0,
+                        &mut q_dst,
                     )?;
                 }
-                if let Some(bias) = weights.k_proj_bias {
-                    let mut k_view = qkv.slice_mut(q_end..k_end);
-                    Self::add_bias_view(
-                        &self.stream, &self.loader, &mut k_view, bias, num_tokens, kv_dim,
+                {
+                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.k_proj,
+                        0.0,
+                        &mut k_dst,
                     )?;
                 }
-                if let Some(bias) = weights.v_proj_bias {
-                    let mut v_view = qkv.slice_mut(k_end..);
-                    Self::add_bias_view(
-                        &self.stream, &self.loader, &mut v_view, bias, num_tokens, kv_dim,
+                {
+                    let mut v_dst = qkv_buf.slice_mut(k_end..);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.v_proj,
+                        0.0,
+                        &mut v_dst,
                     )?;
                 }
+                qkv_buf
+            };
 
-                let (mut q_view, mut kv_view) = qkv.split_at_mut(q_end);
-                let (mut k_view, v_view) = kv_view.split_at_mut(num_tokens * kv_dim);
-                Self::apply_rotary_embedding_inplace_views(
+            // 3. Apply fused QKV bias (f16) in-place.
+            let q_end = num_tokens * q_dim;
+            let k_end = q_end + num_tokens * kv_dim;
+            if let Some(bias) = weights.fused_qkv_bias {
+                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                Self::add_bias_f16_view(
                     &self.stream,
                     &self.loader,
-                    &mut q_view,
+                    &mut qkv_view,
+                    bias,
+                    num_tokens,
+                    qkv_dim,
+                )?;
+            }
+
+            // 4. RoPE f16 in-place on Q and K regions.
+            {
+                let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
+                let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
+                Self::apply_rotary_embedding_f16_views(
+                    &self.stream,
+                    &self.loader,
+                    &mut q_part,
                     &mut k_view,
                     &input.positions,
                     input.rope_cos,
@@ -719,12 +864,17 @@ mod inner {
                     num_kv_heads,
                     head_dim,
                 )?;
+            }
 
-                Self::cache_write_views(
+            // 5. KV cache write: f16 K/V -> f16 cache.
+            {
+                let k_view = qkv.slice(q_end..k_end);
+                let v_view = qkv.slice(k_end..);
+                Self::cache_write_f16_views(
                     &self.stream,
                     &self.loader,
-                    &k_view.as_view(),
-                    &v_view.as_view(),
+                    &k_view,
+                    &v_view,
                     input.key_cache,
                     input.value_cache,
                     &input.slot_mapping,
@@ -732,12 +882,27 @@ mod inner {
                     num_kv_heads,
                     head_dim,
                 )?;
+            }
 
-                if input.is_prefill {
+            // 6. Attention.
+            let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+            let attn_out = if input.is_prefill || use_sink_attention {
+                let cast_f16_f32 =
+                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
+                    })?;
+                let cast_f32_f16 =
+                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
+                    })?;
+                let q_f16 = qkv.slice(..q_end);
+                let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
+                let attn_f32 = if input.is_prefill {
                     Self::prefill_attention(
                         &self.stream,
                         &self.loader,
-                        &q_view.as_view(),
+                        &q_f32.as_view(),
                         input.key_cache,
                         input.value_cache,
                         &input.block_tables,
@@ -758,7 +923,7 @@ mod inner {
                     Self::decode_attention(
                         &self.stream,
                         &self.loader,
-                        &q_view.as_view(),
+                        &q_f32.as_view(),
                         input.key_cache,
                         input.value_cache,
                         &input.block_tables,
@@ -774,140 +939,80 @@ mod inner {
                         weights.sinks.is_some(),
                         cfg.sliding_window,
                     )?
-                }
+                };
+                Self::cast_f32_to_f16(
+                    &self.stream,
+                    &attn_f32,
+                    num_tokens * num_heads * head_dim,
+                    &cast_f32_f16,
+                )?
             } else {
-                let mut q = self.stream
-                    .alloc_zeros::<f32>(num_tokens * q_dim)
-                    .map_err(|e| LLMError::GpuError(format!("q alloc: {e}")))?;
-                let mut k = self.stream
-                    .alloc_zeros::<f32>(num_tokens * kv_dim)
-                    .map_err(|e| LLMError::GpuError(format!("k alloc: {e}")))?;
-                let mut v = self.stream
-                    .alloc_zeros::<f32>(num_tokens * kv_dim)
-                    .map_err(|e| LLMError::GpuError(format!("v alloc: {e}")))?;
-                blas.hgemm_f32_output(
-                    num_tokens, q_dim, hidden, 1.0, &normed_f16, weights.q_proj, 0.0, &mut q,
-                )?;
-                blas.hgemm_f32_output(
-                    num_tokens, kv_dim, hidden, 1.0, &normed_f16, weights.k_proj, 0.0, &mut k,
-                )?;
-                blas.hgemm_f32_output(
-                    num_tokens, kv_dim, hidden, 1.0, &normed_f16, weights.v_proj, 0.0, &mut v,
-                )?;
-
-                if let Some(bias) = weights.q_proj_bias {
-                    Self::add_bias(&self.stream, &self.loader, &mut q, bias, num_tokens, q_dim)?;
-                }
-                if let Some(bias) = weights.k_proj_bias {
-                    Self::add_bias(&self.stream, &self.loader, &mut k, bias, num_tokens, kv_dim)?;
-                }
-                if let Some(bias) = weights.v_proj_bias {
-                    Self::add_bias(&self.stream, &self.loader, &mut v, bias, num_tokens, kv_dim)?;
-                }
-
-                Self::apply_rotary_embedding_inplace(
+                Self::decode_attention_f16io(
                     &self.stream,
                     &self.loader,
-                    &mut q,
-                    &mut k,
-                    &input.positions,
-                    input.rope_cos,
-                    input.rope_sin,
+                    &qkv.slice(..q_end),
+                    input.key_cache,
+                    input.value_cache,
+                    &input.block_tables,
+                    &input.context_lens,
                     num_tokens,
+                    input.num_seqs,
                     num_heads,
                     num_kv_heads,
                     head_dim,
-                )?;
-
-                Self::cache_write(
-                    &self.stream,
-                    &self.loader,
-                    &k,
-                    &v,
-                    input.key_cache,
-                    input.value_cache,
-                    &input.slot_mapping,
-                    num_tokens,
-                    num_kv_heads,
-                    head_dim,
-                )?;
-
-                if input.is_prefill {
-                    Self::prefill_attention(
-                        &self.stream,
-                        &self.loader,
-                        &q.as_view(),
-                        input.key_cache,
-                        input.value_cache,
-                        &input.block_tables,
-                        &input.context_lens,
-                        &input.seq_start_pos,
-                        num_tokens,
-                        input.num_seqs,
-                        num_heads,
-                        num_kv_heads,
-                        head_dim,
-                        input.max_context_len,
-                        input.block_size,
-                        sinks,
-                        weights.sinks.is_some(),
-                        cfg.sliding_window,
-                    )?
-                } else {
-                    Self::decode_attention(
-                        &self.stream,
-                        &self.loader,
-                        &q.as_view(),
-                        input.key_cache,
-                        input.value_cache,
-                        &input.block_tables,
-                        &input.context_lens,
-                        num_tokens,
-                        input.num_seqs,
-                        num_heads,
-                        num_kv_heads,
-                        head_dim,
-                        input.max_context_len,
-                        input.block_size,
-                        sinks,
-                        weights.sinks.is_some(),
-                        cfg.sliding_window,
-                    )?
-                }
+                    input.max_context_len,
+                    input.block_size,
+                )?
             };
 
-            // 5. Output projection (f16 weight)
-            let attn_proj = CudaLinearLayer::forward_mixed(
-                &attn_out, weights.o_proj, num_tokens, hidden, q_dim, blas, &self.loader,
+            // 7. Output projection: hgemm f16.
+            let attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
+
+            // 8. Fused residual + post-attention RMSNorm f16.
+            let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
+                &self.stream,
+                &self.loader,
+                residual_ref,
+                &attn_proj,
+                post_norm_w,
+                cfg.rms_norm_eps,
+                num_tokens,
+                hidden,
             )?;
 
-            // Fused residual + post-attention RMSNorm (1 kernel instead of 2)
-            let fused_rn_kernel = self.loader.get_func("fused_residual_rmsnorm", "fused_residual_rmsnorm_kernel")?;
-            let (normed2, residual) = crate::layers::fused_ops::fused_residual_rmsnorm(
-                &self.stream, &fused_rn_kernel,
-                input.hidden_states, &attn_proj,
-                weights.post_attention_layernorm, cfg.rms_norm_eps,
-                num_tokens, hidden,
-            )?;
-
-            // 7. MLP: cast normed2 f32->f16 ONCE, share across gate/up
-            let normed2_f16 = CudaLinearLayer::gpu_cast_f32_to_f16(
-                &self.stream, &normed2, num_tokens * hidden, &cast_f32_f16,
-            )?;
-
-            // 7. MLP / routed MoE
+            // 9. MLP / routed MoE.
             let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
-                if input.is_prefill || !moe.supports_gpu_decode() {
-                    moe.forward(&self.stream, &normed2)?
+                let cast_f16_f32 =
+                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
+                    })?;
+                let cast_f32_f16 =
+                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
+                    })?;
+                let normed2_f32 = Self::cast_f16_to_f32(
+                    &self.stream,
+                    &normed2.as_view(),
+                    num_tokens * hidden,
+                    &cast_f16_f32,
+                )?;
+                let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
+                    moe.forward(&self.stream, &normed2_f32)?
                 } else {
                     moe.forward_decode_gpu(
                         &self.stream,
                         &self.loader,
                         blas,
-                        &normed2,
+                        &normed2_f32,
                         num_tokens,
                     )?
-                }
+                };
+                Self::cast_f32_to_f16(
+                    &self.stream,
+                    &moe_out,
+                    num_tokens * hidden,
+                    &cast_f32_f16,
+                )?
             } else {
                 let down_proj = weights.down_proj.ok_or_else(|| {
                     LLMError::GpuError(format!(
@@ -916,11 +1021,13 @@ mod inner {
                     ))
                 })?;
                 let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
-                    let gate_up = CudaLinearLayer::forward_f16_in(
-                        &normed2_f16, fused_gate_up, num_tokens, intermediate * 2, hidden, blas,
-                    )?;
-                    Self::fused_silu_mul_split(
-                        &self.stream, &self.loader, &gate_up, num_tokens * intermediate,
+                    let gate_up =
+                        hgemm(&normed2, fused_gate_up, num_tokens, intermediate * 2, hidden)?;
+                    Self::fused_silu_mul_f16_split(
+                        &self.stream,
+                        &self.loader,
+                        &gate_up,
+                        num_tokens * intermediate,
                     )?
                 } else {
                     let gate_proj = weights.gate_proj.ok_or_else(|| {
@@ -935,23 +1042,20 @@ mod inner {
                             cfg.layer_idx
                         ))
                     })?;
-                    let gate = CudaLinearLayer::forward_f16_in(
-                        &normed2_f16, gate_proj, num_tokens, intermediate, hidden, blas,
-                    )?;
-                    let up = CudaLinearLayer::forward_f16_in(
-                        &normed2_f16, up_proj, num_tokens, intermediate, hidden, blas,
-                    )?;
-                    Self::fused_silu_mul(
-                        &self.stream, &self.loader, &gate, &up, num_tokens * intermediate,
+                    let gate = hgemm(&normed2, gate_proj, num_tokens, intermediate, hidden)?;
+                    let up = hgemm(&normed2, up_proj, num_tokens, intermediate, hidden)?;
+                    Self::fused_silu_mul_f16(
+                        &self.stream,
+                        &self.loader,
+                        &gate,
+                        &up,
+                        num_tokens * intermediate,
                     )?
                 };
-                CudaLinearLayer::forward_mixed(
-                    &fused, down_proj, num_tokens, hidden, intermediate, blas, &self.loader,
-                )?
+                hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
 
-            // 8. Residual
-            Self::add_tensors(&self.stream, &self.loader, &residual, &mlp_out, num_tokens * hidden)
+            Ok((residual, mlp_out))
         }
 
         pub fn forward(
@@ -2057,6 +2161,469 @@ mod inner {
                 }
             }
 
+            Ok(output)
+        }
+
+        // ===================================================================
+        // f16 dispatch helpers -- zero-cast f16 forward path
+        // ===================================================================
+
+        /// RMSNorm f16: f16 input, f16 weight, f16 output.
+        fn rms_norm_f16(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            eps: f32,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let n = num_tokens * hidden_size;
+            // Safety: kernel writes all num_tokens * hidden_size elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(weight)
+                    .arg(&eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// In-place RMSNorm f16: normalizes `input` directly, no output allocation.
+        /// Safe because the kernel uses __syncthreads() between the read pass and
+        /// write pass within each block (single-token-per-block launch).
+        fn rms_norm_f16_inplace(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &mut CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            eps: f32,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<()> {
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_kernel")?;
+            unsafe {
+                let (raw_ptr, _guard) = DevicePtrMut::device_ptr_mut(input, stream);
+                stream.launch_builder(&kernel)
+                    .arg(&raw_ptr)  // output (same ptr)
+                    .arg(&raw_ptr)  // input  (same ptr)
+                    .arg(weight)
+                    .arg(&eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_inplace launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        /// hgemm with output allocation: f16 x f16 -> f16.
+        fn hgemm_alloc(
+            stream: &Arc<CudaStream>,
+            blas: &CublasHandle,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<CudaSlice<f16>> {
+            // Safety: hgemm with beta=0 writes all m*n elements
+            let mut output = unsafe { stream.alloc::<f16>(m * n) }
+                .map_err(|e| LLMError::GpuError(format!("hgemm_alloc: {e}")))?;
+            blas.hgemm(m, n, k, f16::ONE, input, weight, f16::ZERO, &mut output)?;
+            Ok(output)
+        }
+
+        /// hgemm dispatch: uses cublasLt for M<=32 (split-K), falls back to standard cuBLAS.
+        fn hgemm_dispatch(
+            stream: &Arc<CudaStream>,
+            blas: &CublasHandle,
+            #[cfg(feature = "cublaslt")]
+            lt: Option<&rvllm_gpu::cublaslt_ops::CublasLtOps>,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let mut output = unsafe { stream.alloc::<f16>(m * n) }
+                .map_err(|e| LLMError::GpuError(format!("hgemm_dispatch: {e}")))?;
+            #[cfg(feature = "cublaslt")]
+            if let Some(lt_ops) = lt {
+                if m <= rvllm_gpu::cublaslt_ops::CUBLASLT_M_THRESHOLD {
+                    lt_ops.hgemm_a_bt(m, n, k, 1.0, input, weight, 0.0, &mut output)?;
+                    return Ok(output);
+                }
+            }
+            blas.hgemm(m, n, k, f16::ONE, input, weight, f16::ZERO, &mut output)?;
+            Ok(output)
+        }
+
+        /// Add bias f16 in-place on a CudaViewMut<f16>.
+        fn add_bias_f16_view(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            tensor: &mut CudaViewMut<'_, f16>,
+            bias: &CudaSlice<f16>,
+            num_tokens: usize,
+            dim: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("add_bias_f16", "add_bias_f16_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (dim.min(1024) as u32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(tensor)
+                    .arg(bias)
+                    .arg(&(dim as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("add_bias_f16 launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        /// RoPE f16 in-place on CudaViewMut<f16> Q/K slices.
+        fn apply_rotary_embedding_f16_views(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            q: &mut CudaViewMut<'_, f16>,
+            k: &mut CudaViewMut<'_, f16>,
+            positions: &CudaView<'_, i32>,
+            rope_cos: &CudaSlice<f32>,
+            rope_sin: &CudaSlice<f32>,
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<()> {
+            if num_tokens == 0 { return Ok(()); }
+            let kernel = loader.get_func("rotary_embedding_f16", "rotary_embedding_f16_kernel")?;
+            let half_dim = head_dim / 2;
+            let grid_y = num_heads.max(num_kv_heads) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, grid_y, 1),
+                block_dim: (half_dim.min(1024) as u32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(q).arg(k)
+                    .arg(rope_cos).arg(rope_sin).arg(positions)
+                    .arg(&(num_tokens as i32)).arg(&(num_heads as i32))
+                    .arg(&(num_kv_heads as i32)).arg(&(head_dim as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rope_f16 launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        /// Cache write f16: f16 K/V input -> f16 paged cache (pure copy).
+        fn cache_write_f16_views(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            k: &CudaView<'_, f16>,
+            v: &CudaView<'_, f16>,
+            key_cache: &CudaSlice<f16>,
+            value_cache: &CudaSlice<f16>,
+            slot_mapping: &CudaView<'_, i32>,
+            num_tokens: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<()> {
+            let kv_dim = num_kv_heads * head_dim;
+            let kernel = loader.get_func("reshape_and_cache_f16", "reshape_and_cache_f16io_kernel")?;
+            let threads = kv_dim.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(key_cache).arg(value_cache)
+                    .arg(k).arg(v)
+                    .arg(slot_mapping)
+                    .arg(&(num_tokens as i32))
+                    .arg(&(num_kv_heads as i32))
+                    .arg(&(head_dim as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("cache_write_f16 launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        /// FA2 decode attention with f16 I/O: f16 Q, f16 KV cache, f16 output.
+        #[allow(clippy::too_many_arguments)]
+        fn decode_attention_f16io(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            q: &CudaView<'_, f16>,
+            key_cache: &CudaSlice<f16>,
+            value_cache: &CudaSlice<f16>,
+            block_tables: &CudaView<'_, i32>,
+            context_lens: &CudaView<'_, i32>,
+            num_tokens: usize,
+            num_seqs: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+            max_context_len: u32,
+            block_size: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let out_len = num_tokens * num_heads * head_dim;
+            // Safety: attention kernel writes all out_len elements
+            let mut output = unsafe { stream.alloc::<f16>(out_len) }
+                .map_err(|e| LLMError::GpuError(format!("decode_attn_f16io alloc: {e}")))?;
+
+            let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+            const FA2_BC: usize = 64;
+            const FA2_THREADS: u32 = 128;
+            let shared_mem_bytes = ((2 * FA2_BC * head_dim + FA2_BC + (FA2_THREADS as usize / 32))
+                * std::mem::size_of::<f32>()) as u32;
+
+            let kernel = loader.get_func("flash_attention", "flash_attention_2_decode_f16io_kernel")?;
+
+            let cfg = LaunchConfig {
+                grid_dim: (num_seqs as u32, num_heads as u32, 1),
+                block_dim: (FA2_THREADS, 1, 1),
+                shared_mem_bytes,
+            };
+
+            if shared_mem_bytes > 49152 {
+                kernel.set_attribute(
+                    cudarc::driver::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                    shared_mem_bytes as i32,
+                ).map_err(|e| LLMError::GpuError(format!("decode FA2 f16io set max shared mem: {e}")))?;
+            }
+
+            let p_num_heads = num_heads as i32;
+            let p_num_kv_heads = num_kv_heads as i32;
+            let p_head_dim = head_dim as i32;
+            let p_block_size = block_size as i32;
+            let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
+
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(q)
+                    .arg(key_cache).arg(value_cache)
+                    .arg(block_tables).arg(context_lens)
+                    .arg(&scale)
+                    .arg(&p_num_heads).arg(&p_num_kv_heads)
+                    .arg(&p_head_dim).arg(&p_block_size)
+                    .arg(&p_max_blocks)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("FA2 decode f16io launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// Fused residual add + RMSNorm, all f16.
+        /// Returns (normed_output, residual) both f16.
+        pub fn fused_residual_rmsnorm_f16(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f16>,
+            add: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            eps: f32,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
+            let n = num_tokens * hidden_size;
+            // Safety: kernel writes all n elements to both output and residual
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("fused_rn_f16 output alloc: {e}")))?;
+            let mut residual = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("fused_rn_f16 residual alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = loader.get_func("fused_residual_rmsnorm_f16", "fused_residual_rmsnorm_f16_kernel")?;
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(&mut residual)
+                    .arg(input)
+                    .arg(add)
+                    .arg(weight)
+                    .arg(&eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("fused_rn_f16 launch: {e}")))?;
+            }
+            Ok((output, residual))
+        }
+
+        /// Fused SiLU * mul, f16 variant.
+        fn fused_silu_mul_f16(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            gate: &CudaSlice<f16>,
+            up: &CudaSlice<f16>,
+            n: usize,
+        ) -> Result<CudaSlice<f16>> {
+            // Safety: element-wise kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let kernel = loader.get_func("activation_f16", "fused_silu_mul_f16_kernel")?;
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(gate).arg(up)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// Fused SiLU*mul on a contiguous [gate || up] buffer, f16 variant.
+        fn fused_silu_mul_f16_split(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            gate_up: &CudaSlice<f16>,
+            n: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let gate_view = gate_up.slice(..n);
+            let up_view = gate_up.slice(n..n * 2);
+            // Safety: element-wise kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16_split alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let kernel = loader.get_func("activation_f16", "fused_silu_mul_f16_kernel")?;
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(&gate_view).arg(&up_view)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("fused_silu_mul_f16_split launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// Element-wise tensor addition f16: out = a + b.
+        fn add_tensors_f16(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            a: &CudaSlice<f16>,
+            b: &CudaSlice<f16>,
+            n: usize,
+        ) -> Result<CudaSlice<f16>> {
+            // Safety: element-wise kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("add_tensors_f16 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let kernel = loader.get_func("add_bias_f16", "add_f16_kernel")?;
+            unsafe {
+                stream.launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(a).arg(b)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("add_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// Cast f16 -> f32 (used only for prefill fallback).
+        fn cast_f16_to_f32(
+            stream: &Arc<CudaStream>,
+            input: &CudaView<'_, f16>,
+            n: usize,
+            kernel: &CudaFunction,
+        ) -> Result<CudaSlice<f32>> {
+            // Safety: cast kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f32>(n) }
+                .map_err(|e| LLMError::GpuError(format!("cast_f16_f32 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("cast_f16_f32 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// Cast f32 -> f16 (used only for prefill fallback).
+        fn cast_f32_to_f16(
+            stream: &Arc<CudaStream>,
+            input: &CudaSlice<f32>,
+            n: usize,
+            kernel: &CudaFunction,
+        ) -> Result<CudaSlice<f16>> {
+            // Safety: cast kernel writes all n elements
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 alloc: {e}")))?;
+            let threads = 256u32;
+            let blocks = ((n as u32) + threads - 1) / threads;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream.launch_builder(kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(&(n as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 launch: {e}")))?;
+            }
             Ok(output)
         }
     }
