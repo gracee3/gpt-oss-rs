@@ -1263,16 +1263,22 @@ impl GpuWorker {
             None
         };
         const GRAPH_MAX_BATCH_SIZE: usize = 32;
-        let plan = plan_request(&PlanRequest::new(
-            self.config.runtime_mode,
-            self.config.model_name.clone(),
-            model_input.is_prefill,
-            greedy_only,
-            self.graph_runner.is_enabled(),
-            GRAPH_MAX_BATCH_SIZE,
-            graph_padded_batch_size,
-            self.config.dtype,
-        ))
+        let plan = plan_request(
+            &PlanRequest::new(
+                self.config.runtime_mode,
+                self.config.model_name.clone(),
+                model_input.is_prefill,
+                greedy_only,
+                self.graph_runner.is_enabled(),
+                GRAPH_MAX_BATCH_SIZE,
+                graph_padded_batch_size,
+                self.config.dtype,
+            )
+            .with_attention_config(
+                self.config.layer_types.clone(),
+                self.config.sliding_window,
+            ),
+        )
         .map_err(|e| LLMError::ConfigError(e.to_string()))?;
         trace!(
             runtime_mode = ?plan.runtime_mode,

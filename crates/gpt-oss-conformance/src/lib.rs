@@ -32,7 +32,7 @@ mod tests {
         PlannedReferenceBackend::new(
             "planned-reference",
             PlannedReferenceBackendConfig {
-                runtime_mode: RuntimeMode::Trusted,
+                runtime_mode: RuntimeMode::Experimental,
                 model_name: "openai/gpt-oss-20b".to_string(),
                 greedy_only: true,
                 graph_enabled: true,
@@ -756,7 +756,8 @@ mod tests {
             1,
             1,
             vec![0],
-        );
+        )
+        .with_runtime_mode(RuntimeMode::Experimental);
         let reference = planned_backend();
         let harness = ConformanceHarness::default();
 

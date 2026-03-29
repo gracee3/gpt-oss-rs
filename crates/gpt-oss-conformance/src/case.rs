@@ -270,17 +270,28 @@ impl ModelRunnerGreedyBackend {
         self
     }
 
+    pub(crate) fn with_runtime_mode(mut self, runtime_mode: RuntimeMode) -> Self {
+        self.runtime_mode = runtime_mode;
+        self
+    }
+
     fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
-        plan_request(&PlanRequest::new(
-            self.runtime_mode,
-            self.model_name.clone(),
-            case.is_prefill,
-            true,
-            self.graph_enabled,
-            self.graph_max_batch_size,
-            self.graph_padded_batch_size,
-            self.runner.config.dtype,
-        ))
+        plan_request(
+            &PlanRequest::new(
+                self.runtime_mode,
+                self.model_name.clone(),
+                case.is_prefill,
+                true,
+                self.graph_enabled,
+                self.graph_max_batch_size,
+                self.graph_padded_batch_size,
+                self.runner.config.dtype,
+            )
+            .with_attention_config(
+                self.runner.config.layer_types.clone(),
+                self.runner.config.sliding_window,
+            ),
+        )
         .expect("model runner conformance backend should be plannable")
     }
 }
@@ -373,16 +384,22 @@ impl ConformanceBackend for PlannedReferenceBackend {
     }
 
     fn run(&self, case: &ConformanceCase) -> ExecutionSample {
-        let plan = plan_request(&PlanRequest::new(
-            self.config.runtime_mode,
-            self.config.model_name.clone(),
-            case.is_prefill,
-            self.config.greedy_only,
-            self.config.graph_enabled,
-            self.config.graph_max_batch_size,
-            self.config.graph_padded_batch_size,
-            self.config.dtype,
-        ))
+        let plan = plan_request(
+            &PlanRequest::new(
+                self.config.runtime_mode,
+                self.config.model_name.clone(),
+                case.is_prefill,
+                self.config.greedy_only,
+                self.config.graph_enabled,
+                self.config.graph_max_batch_size,
+                self.config.graph_padded_batch_size,
+                self.config.dtype,
+            )
+            .with_attention_config(
+                self.config.reference.layer_types.clone(),
+                self.config.reference.sliding_window,
+            ),
+        )
         .expect("planner should accept the configured reference backend");
 
         let reference_output: ReferenceOutput = self

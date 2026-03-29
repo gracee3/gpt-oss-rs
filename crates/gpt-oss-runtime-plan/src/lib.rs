@@ -65,6 +65,8 @@ pub struct PlanRequest {
     pub graph_max_batch_size: usize,
     pub graph_padded_batch_size: Option<usize>,
     pub dtype: Dtype,
+    pub layer_types: Vec<String>,
+    pub sliding_window: Option<usize>,
 }
 
 impl PlanRequest {
@@ -88,7 +90,19 @@ impl PlanRequest {
             graph_max_batch_size,
             graph_padded_batch_size,
             dtype,
+            layer_types: Vec::new(),
+            sliding_window: None,
         }
+    }
+
+    pub fn with_attention_config(
+        mut self,
+        layer_types: Vec<String>,
+        sliding_window: Option<usize>,
+    ) -> Self {
+        self.layer_types = layer_types;
+        self.sliding_window = sliding_window;
+        self
     }
 }
 
@@ -137,6 +151,18 @@ pub fn plan_request(request: &PlanRequest) -> Result<ExecutionPlan, PlanError> {
         OutputPolicy::Logits
     };
     let is_gpt_oss = is_gpt_oss_model(&request.model_name);
+    let uses_sliding_attention = request.sliding_window.is_some()
+        && request
+            .layer_types
+            .iter()
+            .any(|layer| matches!(layer.as_str(), "sliding_attention" | "local_attention"));
+
+    if request.runtime_mode == RuntimeMode::Trusted && is_gpt_oss && uses_sliding_attention {
+        return Err(PlanError::InvalidRequest(
+            "trusted GPT-OSS mode rejects sliding/local attention until runtime support and parity are proven"
+                .into(),
+        ));
+    }
 
     let graph_policy = if request.is_prefill {
         GraphPolicy::Forbidden {
@@ -256,5 +282,25 @@ mod tests {
 
         assert_eq!(plan.backend_path, BackendPath::CudaEager);
         assert!(matches!(plan.graph_policy, GraphPolicy::Forbidden { .. }));
+    }
+
+    #[test]
+    fn trusted_gpt_oss_rejects_sliding_attention_before_execution() {
+        let err = plan_request(
+            &PlanRequest::new(
+                RuntimeMode::Trusted,
+                "openai/gpt-oss-20b",
+                true,
+                true,
+                false,
+                32,
+                None,
+                Dtype::Float16,
+            )
+            .with_attention_config(vec!["sliding_attention".into()], Some(128)),
+        )
+        .expect_err("trusted sliding attention should be rejected");
+
+        assert!(err.to_string().contains("sliding/local attention"));
     }
 }
