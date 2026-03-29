@@ -297,4 +297,22 @@ mod tests {
         assert_eq!(sample.logits.len(), 8);
         assert_eq!(sample.tokens.len(), 1);
     }
+
+    #[test]
+    fn greedy_model_runner_vs_reference_parity_gap_is_localized() {
+        let case = ConformanceCase::prefill("model-runner-logits", vec![1, 2]);
+        let observed = SampledLogitsBackend::new("observed")
+            .with_case(case.name.clone(), real_model_runner_logits_case(&case.name));
+        let reference = planned_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("logits differ")));
+    }
 }

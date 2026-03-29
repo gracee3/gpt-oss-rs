@@ -119,6 +119,7 @@ fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> 
 pub fn compare_prefill_decode_continuity(
     prefill: &ExecutionSample,
     decode: &ExecutionSample,
+    expected_decode_start: u32,
 ) -> RunComparison {
     let mut diffs = Vec::new();
 
@@ -134,7 +135,7 @@ pub fn compare_prefill_decode_continuity(
         None => diffs.push("decode phase missing from trace".to_string()),
     }
 
-    let expected_start = prefill.tokens.len().to_string();
+    let expected_start = expected_decode_start.to_string();
     match decode.trace.find_event_payload("seq_start_pos") {
         Some(value) if value == expected_start => {}
         Some(value) => diffs.push(format!(

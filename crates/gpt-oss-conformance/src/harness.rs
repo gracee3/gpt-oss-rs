@@ -69,7 +69,11 @@ impl ConformanceHarness {
     ) -> ContinuityReport {
         let prefill = backend.run(prefill_case);
         let decode = backend.run(decode_case);
-        let comparison = compare_prefill_decode_continuity(&prefill, &decode);
+        let comparison = compare_prefill_decode_continuity(
+            &prefill,
+            &decode,
+            prefill_case.seq_start_pos + prefill_case.inputs.len() as u32,
+        );
         let outcome = if comparison.is_exact() {
             ParityOutcome::Match
         } else {

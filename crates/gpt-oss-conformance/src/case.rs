@@ -14,12 +14,15 @@ pub trait ConformanceBackend {
     fn run(&self, case: &ConformanceCase) -> ExecutionSample;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConformanceCase {
     pub name: String,
     pub inputs: Vec<u32>,
     pub is_prefill: bool,
     pub seq_start_pos: u32,
+    pub sampling_params: SamplingParams,
+    pub past_tokens: Vec<u32>,
+    pub seed: u64,
 }
 
 impl ConformanceCase {
@@ -29,6 +32,12 @@ impl ConformanceCase {
             inputs,
             is_prefill: false,
             seq_start_pos: 0,
+            sampling_params: SamplingParams {
+                temperature: 0.0,
+                ..Default::default()
+            },
+            past_tokens: Vec::new(),
+            seed: 0,
         }
     }
 
@@ -38,6 +47,12 @@ impl ConformanceCase {
             inputs,
             is_prefill: true,
             seq_start_pos: 0,
+            sampling_params: SamplingParams {
+                temperature: 0.0,
+                ..Default::default()
+            },
+            past_tokens: Vec::new(),
+            seed: 0,
         }
     }
 
@@ -51,7 +66,25 @@ impl ConformanceCase {
             inputs,
             is_prefill: false,
             seq_start_pos,
+            sampling_params: SamplingParams {
+                temperature: 0.0,
+                ..Default::default()
+            },
+            past_tokens: Vec::new(),
+            seed: 0,
         }
+    }
+
+    pub fn with_sampling(
+        mut self,
+        sampling_params: SamplingParams,
+        past_tokens: Vec<u32>,
+        seed: u64,
+    ) -> Self {
+        self.sampling_params = sampling_params;
+        self.past_tokens = past_tokens;
+        self.seed = seed;
+        self
     }
 }
 
@@ -125,19 +158,20 @@ impl ConformanceBackend for PlaceholderBackend {
             .enumerate()
             .map(|(idx, value)| (*value as f32) + (idx as f32) * 0.25)
             .collect::<Vec<_>>();
-        let tokens = case
-            .inputs
-            .iter()
-            .map(|value| value % 11)
-            .collect::<Vec<_>>();
         let trace = TraceSummary::synthetic(
             format!("{}{}", case.name, self.trace_suffix),
             case.inputs.clone(),
         );
+        let sampled = sample_tokens_from_logits(
+            &logits,
+            &case.sampling_params,
+            &case.past_tokens,
+            case.seed,
+        );
 
         ExecutionSample {
             logits,
-            tokens,
+            tokens: sampled,
             trace,
             plan: None,
         }
@@ -154,21 +188,15 @@ impl ConformanceBackend for SampledLogitsBackend {
             .cases
             .get(&case.name)
             .unwrap_or_else(|| panic!("missing observed logits case '{}'", case.name));
-        let sampler = Sampler::new();
-        let mut rng = StdRng::seed_from_u64(observed.seed);
-        let sample = sampler
-            .sample(
-                &observed.logits,
-                observed.logits.len(),
-                &observed.sampling_params,
-                &observed.past_tokens,
-                &mut rng,
-            )
-            .expect("sampled logits backend should produce a deterministic sample");
 
         ExecutionSample {
             logits: observed.logits.clone(),
-            tokens: vec![sample.token_id],
+            tokens: sample_tokens_from_logits(
+                &observed.logits,
+                &observed.sampling_params,
+                &observed.past_tokens,
+                observed.seed,
+            ),
             trace: observed.trace.clone(),
             plan: observed.plan.clone(),
         }
@@ -236,15 +264,16 @@ impl ConformanceBackend for PlannedReferenceBackend {
             })
             .expect("reference executor should accept the configured case");
 
-        let tokens = case
-            .inputs
-            .iter()
-            .map(|value| value % 11)
-            .collect::<Vec<_>>();
         let trace = TraceSummary::from_reference(
             format!("{}:{}", self.name, case.name),
             &plan,
             &reference_output.trace,
+        );
+        let tokens = sample_tokens_from_logits(
+            &reference_output.logits,
+            &case.sampling_params,
+            &case.past_tokens,
+            case.seed,
         );
 
         ExecutionSample {
@@ -254,4 +283,18 @@ impl ConformanceBackend for PlannedReferenceBackend {
             plan: Some(plan),
         }
     }
+}
+
+fn sample_tokens_from_logits(
+    logits: &[f32],
+    sampling_params: &SamplingParams,
+    past_tokens: &[u32],
+    seed: u64,
+) -> Vec<u32> {
+    let sampler = Sampler::new();
+    let mut rng = StdRng::seed_from_u64(seed);
+    let sample = sampler
+        .sample(logits, logits.len(), sampling_params, past_tokens, &mut rng)
+        .expect("conformance sampling should produce a deterministic sample");
+    vec![sample.token_id]
 }
