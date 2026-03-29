@@ -216,12 +216,18 @@ mod inner {
         // With a single scratch buffer sized to max(T*qkv_dim, T*2I, T*H):
         //   Could eliminate 4-5 allocs, reducing 10 -> 5-6 per layer.
         // ==================================================================
+        /// Full f16 forward with cross-layer fusion support.
+        /// When `prev_mlp_out` is Some, fuses the previous layer's residual add
+        /// with this layer's pre-attention RMSNorm (1 kernel instead of 2).
+        /// Returns (residual, mlp_out) for the NEXT layer to fuse.
         pub fn forward_f16(
             &self,
             input: &GpuLayerInput<'_>,
             weights: &GpuLayerWeightsF16<'_>,
             blas: &CublasHandle,
-        ) -> Result<CudaSlice<f16>> {
+            prev_mlp_out: Option<&CudaSlice<f16>>,
+            lt: Option<&crate::CublasLtRef>,
+        ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
             let hidden = cfg.hidden_size;
@@ -237,12 +243,26 @@ mod inner {
             let post_norm_w = weights.post_attention_layernorm_f16
                 .ok_or_else(|| LLMError::GpuError("f16 post_attention_layernorm required".into()))?;
 
-            // 1. Pre-attention RMSNorm f16
-            let normed = Self::rms_norm_f16(
-                &self.stream, &self.loader,
-                hidden_f16, norm_w,
-                cfg.rms_norm_eps, num_tokens, hidden,
-            )?;
+            // 1. Pre-attention RMSNorm f16 (fused with previous layer's residual add if available)
+            let (normed, fused_residual) = if let Some(prev_mlp) = prev_mlp_out {
+                // Fuse: hidden + prev_mlp -> norm in one kernel
+                let (n, r) = Self::fused_residual_rmsnorm_f16(
+                    &self.stream, &self.loader,
+                    hidden_f16, prev_mlp, norm_w,
+                    cfg.rms_norm_eps, num_tokens, hidden,
+                )?;
+                (n, Some(r))
+            } else {
+                // First layer: standalone norm
+                let n = Self::rms_norm_f16(
+                    &self.stream, &self.loader,
+                    hidden_f16, norm_w,
+                    cfg.rms_norm_eps, num_tokens, hidden,
+                )?;
+                (n, None)
+            };
+            // The residual stream: either the fused result or the original hidden_states
+            let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
 
             // 2. QKV projections: hgemm f16 x f16 -> f16
             let q_dim = num_heads * head_dim;
@@ -250,7 +270,7 @@ mod inner {
             let qkv_dim = q_dim + kv_dim + kv_dim;
 
             let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
-                Self::hgemm_alloc(&self.stream, blas, &normed, fused_qkv, num_tokens, qkv_dim, hidden)?
+                Self::hgemm_dispatch(&self.stream, blas, lt, &normed, fused_qkv, num_tokens, qkv_dim, hidden, &self.loader)?
             } else {
                 let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
                     .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
@@ -334,31 +354,31 @@ mod inner {
             };
 
             // 7. Output projection: hgemm f16
-            let attn_proj = Self::hgemm_alloc(&self.stream, blas, &attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
+            let attn_proj = Self::hgemm_dispatch(&self.stream, blas, lt, &attn_out, weights.o_proj, num_tokens, hidden, q_dim, &self.loader)?;
 
             // 8. Fused residual + post-attention RMSNorm f16
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
                 &self.stream, &self.loader,
-                hidden_f16, &attn_proj, post_norm_w,
+                residual_ref, &attn_proj, post_norm_w,
                 cfg.rms_norm_eps, num_tokens, hidden,
             )?;
 
             // 9. MLP: gate+up -> fused_silu_mul_f16 -> down, all f16
             let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
-                let gate_up = Self::hgemm_alloc(&self.stream, blas, &normed2, fused_gate_up, num_tokens, intermediate * 2, hidden)?;
+                let gate_up = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, fused_gate_up, num_tokens, intermediate * 2, hidden, &self.loader)?;
                 let n = num_tokens * intermediate;
                 Self::fused_silu_mul_f16_split(&self.stream, &self.loader, &gate_up, n)?
             } else {
-                let gate = Self::hgemm_alloc(&self.stream, blas, &normed2, weights.gate_proj, num_tokens, intermediate, hidden)?;
-                let up = Self::hgemm_alloc(&self.stream, blas, &normed2, weights.up_proj, num_tokens, intermediate, hidden)?;
+                let gate = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, weights.gate_proj, num_tokens, intermediate, hidden, &self.loader)?;
+                let up = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, weights.up_proj, num_tokens, intermediate, hidden, &self.loader)?;
                 Self::fused_silu_mul_f16(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?
             };
 
             // 10. Down projection: hgemm f16
-            let mlp_out = Self::hgemm_alloc(&self.stream, blas, &fused, weights.down_proj, num_tokens, hidden, intermediate)?;
+            let mlp_out = Self::hgemm_dispatch(&self.stream, blas, lt, &fused, weights.down_proj, num_tokens, hidden, intermediate, &self.loader)?;
 
-            // 11. Residual add f16
-            Self::add_tensors_f16(&self.stream, &self.loader, &residual, &mlp_out, num_tokens * hidden)
+            // 11. Return (residual, mlp_out) -- the add is fused into the NEXT layer's norm
+            Ok((residual, mlp_out))
         }
 
         pub fn forward(
@@ -1510,6 +1530,56 @@ mod inner {
             Ok(output)
         }
 
+        /// hgemm dispatch: uses cublasLt for M<=32 (split-K), falls back to standard cuBLAS.
+        /// GEMM dispatch: custom GEMV for M=1, cublasLt for M<=32, cuBLAS for larger.
+        fn hgemm_dispatch(
+            stream: &Arc<CudaStream>,
+            blas: &CublasHandle,
+            lt: Option<&crate::CublasLtRef>,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f16>,
+            m: usize,
+            n: usize,
+            k: usize,
+            loader: &KernelLoader,
+        ) -> Result<CudaSlice<f16>> {
+            let mut output = unsafe { stream.alloc::<f16>(m * n) }
+                .map_err(|e| LLMError::GpuError(format!("hgemm_dispatch: {e}")))?;
+
+            // M=1: custom GEMV kernel (vectorized half2, warp shuffle reduction)
+            if m == 1 {
+                if let Ok(kernel) = loader.get_func("gemv_f16", "gemv_f16_kernel") {
+                    let cfg = LaunchConfig {
+                        grid_dim: (n as u32, 1, 1),
+                        block_dim: (256, 1, 1),
+                        shared_mem_bytes: 0,
+                    };
+                    unsafe {
+                        stream.launch_builder(&kernel)
+                            .arg(&mut output)
+                            .arg(weight)
+                            .arg(input)
+                            .arg(&(n as i32))
+                            .arg(&(k as i32))
+                            .launch(cfg)
+                            .map_err(|e| LLMError::GpuError(format!("gemv_f16 launch: {e}")))?;
+                    }
+                    return Ok(output);
+                }
+                // Fallthrough to cuBLAS if kernel not loaded
+            }
+
+            #[cfg(feature = "cublaslt")]
+            if let Some(lt_ops) = lt {
+                if m <= rvllm_gpu::cublaslt_ops::CUBLASLT_M_THRESHOLD {
+                    lt_ops.hgemm_a_bt(m, n, k, 1.0, input, weight, 0.0, &mut output)?;
+                    return Ok(output);
+                }
+            }
+            blas.hgemm(m, n, k, f16::ONE, input, weight, f16::ZERO, &mut output)?;
+            Ok(output)
+        }
+
         /// Add bias f16 in-place on a CudaViewMut<f16>.
         fn add_bias_f16_view(
             stream: &Arc<CudaStream>,
@@ -1675,7 +1745,7 @@ mod inner {
 
         /// Fused residual add + RMSNorm, all f16.
         /// Returns (normed_output, residual) both f16.
-        fn fused_residual_rmsnorm_f16(
+        pub fn fused_residual_rmsnorm_f16(
             stream: &Arc<CudaStream>,
             loader: &KernelLoader,
             input: &CudaSlice<f16>,

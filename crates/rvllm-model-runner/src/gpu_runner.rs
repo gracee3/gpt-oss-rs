@@ -17,6 +17,11 @@ pub enum ForwardOutput {
     Logits(Vec<f32>),
     /// GPU-side argmax token IDs: [num_tokens] i32 (greedy fast path).
     TokenIds(Vec<i32>),
+    /// Async DtoH in progress: token IDs are in a pinned host buffer but
+    /// the stream has not been synchronized yet. The caller must call
+    /// `sync_stream()` + read from the pinned buffer before using the data.
+    /// Fields: (actual_batch_size,) -- the pinned buffer lives on the worker.
+    TokenIdsPending { actual_batch: usize },
 }
 
 #[cfg(feature = "cuda")]
@@ -121,6 +126,8 @@ mod cuda_impl {
         weights: GpuModelWeights,
         cache: CudaCacheEngine,
         blas: CublasHandle,
+        #[cfg(feature = "cublaslt")]
+        blas_lt: Option<rvllm_gpu::cublaslt_ops::CublasLtOps>,
         loader: Arc<KernelLoader>,
         config: ModelRunnerConfig,
         device: Arc<CudaContext>,
@@ -249,10 +256,15 @@ mod cuda_impl {
             info!(graph_max_blocks, block_size, max_position = config.max_position,
                   "fixed block_tables stride for CUDA graph stability");
 
+            #[cfg(feature = "cublaslt")]
+            let blas_lt = rvllm_gpu::cublaslt_ops::CublasLtOps::new(stream.clone()).ok();
+
             Ok(Self {
                 weights,
                 cache,
                 blas,
+                #[cfg(feature = "cublaslt")]
+                blas_lt,
                 loader,
                 config,
                 device,
@@ -400,10 +412,10 @@ mod cuda_impl {
         }
 
         /// Pre-allocate a reusable set of f16 scratch buffers for the forward pass.
-        /// Sized for max_batch_tokens (32). Since all layers are processed
+        /// Sized for max padded batch (256). Since all layers are processed
         /// sequentially, one set of buffers covers every layer.
         fn alloc_scratch(&mut self) -> Result<()> {
-            let max_tokens: usize = 32; // max padded batch
+            let max_tokens: usize = 32; // sized for max graph batch
             let hidden = self.config.hidden_size;
             let q_dim = self.config.num_heads * self.config.head_dim;
             let kv_dim = self.config.num_kv_heads * self.config.head_dim;
@@ -447,7 +459,9 @@ mod cuda_impl {
         ) -> Result<Vec<f32>> {
             match self.forward_ex(token_ids, positions, attn_meta, is_prefill, false)? {
                 ForwardOutput::Logits(logits) => Ok(logits),
-                ForwardOutput::TokenIds(_) => unreachable!("greedy_only=false must return Logits"),
+                ForwardOutput::TokenIds(_) | ForwardOutput::TokenIdsPending { .. } => {
+                    unreachable!("greedy_only=false must return Logits")
+                }
             }
         }
 
@@ -494,10 +508,8 @@ mod cuda_impl {
                 // Need a dummy f32 buffer for GpuLayerInput.hidden_states (unused in f16 path)
                 let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
                     .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
-                    if layer_idx == 0 || layer_idx == num_layers - 1 {
-                        info!(layer = layer_idx, "gpu_runner: f16 layer start");
-                    }
                     let (key_cache, value_cache) = &gpu_cache[layer_idx];
                     let input = GpuLayerInput {
                         hidden_states: &dummy_f32,
@@ -518,16 +530,24 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    hidden_f16 = layer.forward_f16(&input, &weights, &self.blas)?;
-                    if layer_idx == 0 || layer_idx == num_layers - 1 {
-                        info!(layer = layer_idx, "gpu_runner: f16 layer done");
-                    }
+                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
                 }
 
-                // Final RMSNorm f16
+                // Final: fuse last layer's residual add with final RMSNorm
                 let fn_w = self.final_norm_weight_f16.as_ref()
                     .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
-                let normed_f16 = self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
 
                 // LM head + argmax: f16 hidden -> fused argmax
                 if num_tokens == 1 && greedy_only {
@@ -803,6 +823,7 @@ mod cuda_impl {
                 let offsets = self.meta_packed_offsets.get();
                 let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
                     .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
                     let (key_cache, value_cache) = &gpu_cache[layer_idx];
                     let input = GpuLayerInput {
@@ -824,13 +845,24 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    hidden_f16 = layer.forward_f16(&input, &weights, &self.blas)?;
+                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
                 }
 
-                // Final RMSNorm f16
+                // Final: fuse last layer's residual add with final RMSNorm
                 let fn_w = self.final_norm_weight_f16.as_ref()
                     .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
-                let normed_f16 = self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
 
                 if num_tokens == 1 && greedy_only {
                     let lm_f16 = self.weights.get_f16("lm_head.weight")
@@ -969,6 +1001,14 @@ mod cuda_impl {
             &self.stream
         }
 
+        /// Get cublasLt reference (None when feature is off).
+        fn cublaslt_ref(&self) -> Option<&crate::CublasLtRef> {
+            #[cfg(feature = "cublaslt")]
+            { self.blas_lt.as_ref() }
+            #[cfg(not(feature = "cublaslt"))]
+            { None }
+        }
+
 
         /// Prepare the runner for CUDA graph capture.
         ///
@@ -1019,6 +1059,7 @@ mod cuda_impl {
                 let offsets = self.meta_packed_offsets.get();
                 let dummy_f32 = self.stream.alloc_zeros::<f32>(1)
                     .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
                     let (key_cache, value_cache) = &gpu_cache[layer_idx];
                     let input = GpuLayerInput {
@@ -1040,13 +1081,24 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    hidden_f16 = layer.forward_f16(&input, &weights, &self.blas)?;
+                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
                 }
 
-                // Final RMSNorm f16
+                // Final: fuse last layer's residual add with final RMSNorm
                 let fn_w = self.final_norm_weight_f16.as_ref()
                     .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
-                let normed_f16 = self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream, &self.loader,
+                        &hidden_f16, last_mlp, fn_w,
+                        self.rms_norm_eps, num_tokens, hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
 
                 let token_ids_gpu = if num_tokens == 1 {
                     let lm_f16 = self.weights.get_f16("lm_head.weight")
@@ -1196,6 +1248,36 @@ mod cuda_impl {
             let full = self.stream.clone_dtoh(buf)
                 .map_err(|e| LLMError::GpuError(format!("graph_output DtoH: {e}")))?;
             Ok(full[..num_tokens].to_vec())
+        }
+
+        /// Enqueue an async DtoH copy of graph output into a pinned host buffer.
+        ///
+        /// Unlike `read_graph_output`, this does NOT synchronize the stream.
+        /// The caller must call `sync_stream()` before reading from `dst`.
+        /// `dst` MUST be pinned host memory for truly async behavior; with
+        /// pageable memory cuMemcpyDtoHAsync degrades to synchronous.
+        pub fn read_graph_output_async(
+            &self,
+            num_tokens: usize,
+            dst: &mut [i32],
+        ) -> Result<()> {
+            let out = self.graph_output.borrow();
+            let buf = out.as_ref().ok_or_else(|| {
+                LLMError::GpuError("graph_output not populated -- call forward_gpu_only first".into())
+            })?;
+            // Only copy num_tokens elements (not the full padded buffer)
+            let src_view = buf.slice(..num_tokens);
+            self.stream.memcpy_dtoh(&src_view, &mut dst[..num_tokens])
+                .map_err(|e| LLMError::GpuError(format!("graph_output async DtoH: {e}")))?;
+            Ok(())
+        }
+
+        /// Synchronize the runner's CUDA stream, blocking until all enqueued
+        /// work (graph replay + async DtoH) completes.
+        pub fn sync_stream(&self) -> Result<()> {
+            self.stream.synchronize()
+                .map_err(|e| LLMError::GpuError(format!("stream sync: {e}")))?;
+            Ok(())
         }
 
         /// Launch argmax kernel on GPU, returning [num_tokens] i32 token IDs.
@@ -1633,6 +1715,11 @@ mod cuda_impl {
             info!(use_fp16 = true, "GpuModelRunner: fp16 mode enabled");
         }
 
+        pub fn disable_fp16(&mut self) {
+            self.use_fp16 = false;
+            tracing::warn!("GpuModelRunner: fp16 mode disabled, using f32 forward");
+        }
+
         pub fn use_fp16(&self) -> bool {
             self.use_fp16
         }
@@ -1769,6 +1856,18 @@ mod mock_impl {
         }
 
         pub fn read_graph_output(&self, _num_tokens: usize) -> Result<Vec<i32>> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn read_graph_output_async(&self, _dst: &mut [i32]) -> Result<()> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn sync_stream(&self) -> Result<()> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))

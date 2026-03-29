@@ -283,13 +283,28 @@ mod inner {
     // GpuLLMEngine
     // ------------------------------------------------------------------
 
+    /// Shared request queue for async overlap. The async engine pushes
+    /// new requests here; the GPU engine drains them during GPU wait.
+    pub type RequestQueue = std::sync::Arc<std::sync::Mutex<Vec<PendingRequest>>>;
+
+    /// Shared abort queue. The async engine pushes request IDs to abort
+    /// here; the GPU engine drains them at the start of each step.
+    pub type AbortQueue = std::sync::Arc<std::sync::Mutex<Vec<RequestId>>>;
+
+    /// A request buffered for async processing.
+    pub struct PendingRequest {
+        pub request_id: RequestId,
+        pub prompt: String,
+        pub params: SamplingParams,
+    }
+
     pub struct GpuLLMEngine {
         config: EngineConfig,
         scheduler: FifoScheduler,
         worker: GpuWorker,
         tokenizer: Tokenizer,
         requests: HashMap<RequestId, EngineRequest>,
-        next_request_id: AtomicU64,
+        next_request_id: std::sync::Arc<AtomicU64>,
         next_seq_id: u64,
         prefix_cache: Option<PrefixCache>,
         /// Total number of GPU KV-cache blocks available.
@@ -300,6 +315,18 @@ mod inner {
         free_blocks: Vec<u32>,
         /// Per-sequence block tables that persist across step() calls.
         seq_block_tables: HashMap<SequenceId, Vec<BlockId>>,
+        /// Shared queue for new requests arriving during GPU compute.
+        request_queue: Option<RequestQueue>,
+        /// Shared queue for abort requests arriving during GPU compute.
+        abort_queue: Option<AbortQueue>,
+    }
+
+    /// Pending state from step_launch, consumed by step_collect.
+    pub struct StepPending {
+        pub scheduled_groups: Vec<SequenceGroup>,
+        pub metadata: Vec<SequenceGroupMetadata>,
+        /// Async batch size from execute_launch (Some = async DtoH pending).
+        pub actual_batch: Option<usize>,
     }
 
     impl GpuLLMEngine {
@@ -402,13 +429,15 @@ mod inner {
                 worker,
                 tokenizer,
                 requests: HashMap::new(),
-                next_request_id: AtomicU64::new(1),
+                next_request_id: std::sync::Arc::new(AtomicU64::new(1)),
                 next_seq_id: 0,
                 prefix_cache,
                 num_gpu_blocks: num_gpu_blocks as u32,
                 next_block_id: 0,
                 free_blocks: Vec::new(),
                 seq_block_tables: HashMap::new(),
+                request_queue: None,
+                abort_queue: None,
             })
         }
 
@@ -495,15 +524,15 @@ mod inner {
             }
         }
 
-        pub fn step(&mut self) -> Result<Vec<RequestOutput>> {
-            debug!("GpuLLMEngine: step begin");
-
+        /// Launch GPU work for one step. Returns pending state if work was
+        /// launched, None if nothing to schedule. GPU computes asynchronously
+        /// after this returns (~60us for graph replay path).
+        pub fn step_launch(&mut self) -> Result<Option<StepPending>> {
             let (scheduled_groups, metadata, aborted_seqs) = match self.prepare_step() {
                 Some(v) => v,
-                None => return Ok(Vec::new()),
+                None => return Ok(None),
             };
 
-            // Propagate block-allocation aborts to request output states.
             if !aborted_seqs.is_empty() {
                 for group in &scheduled_groups {
                     for (seq_idx, seq) in group.get_seqs().iter().enumerate() {
@@ -518,10 +547,156 @@ mod inner {
                 }
             }
 
-            trace!(
-                num_groups = metadata.len(),
-                "gpu_engine: calling worker.execute"
-            );
+            // Launch worker (returns quickly for async graph replay path)
+            let actual_batch = self.worker.execute_launch(&metadata)
+                .map_err(|e| LLMError::GpuError(format!("worker launch failed: {e}")))?;
+
+            Ok(Some(StepPending { scheduled_groups, metadata, actual_batch }))
+        }
+
+        /// Collect GPU results and process outputs. Call after step_launch.
+        /// If pending is None, returns empty (nothing was launched).
+        pub fn step_collect(&mut self, pending: Option<StepPending>) -> Result<Vec<RequestOutput>> {
+            let pending = match pending {
+                Some(p) => p,
+                None => return Ok(Vec::new()),
+            };
+
+            let worker_outputs = self.worker.execute_collect(pending.actual_batch, &pending.metadata)
+                .map_err(|e| LLMError::GpuError(format!("worker collect failed: {e}")))?;
+
+            // Prefix caching
+            if let Some(ref mut pc) = self.prefix_cache {
+                let block_size = self.config.cache.block_size;
+                for meta in &pending.metadata {
+                    if meta.is_prompt {
+                        for (_seq_id, seq_data) in &meta.seq_data {
+                            let num_full_blocks = seq_data.prompt_token_ids.len() / block_size;
+                            let block_ids: Vec<rvllm_core::prelude::BlockId> = (0..num_full_blocks)
+                                .map(|i| rvllm_core::prelude::BlockId(i as u32))
+                                .collect();
+                            let _ = prefix_cache::register_prefix_blocks(
+                                pc, &seq_data.prompt_token_ids, &block_ids, block_size,
+                            );
+                        }
+                    }
+                }
+            }
+
+            let results = self.process_worker_outputs(&pending.scheduled_groups, &worker_outputs);
+            self.recycle_dead_blocks();
+            Ok(results)
+        }
+
+        /// Set the shared request queue for async overlap.
+        pub fn set_request_queue(&mut self, q: RequestQueue) {
+            self.request_queue = Some(q);
+        }
+
+        /// Set the shared abort queue for async overlap.
+        pub fn set_abort_queue(&mut self, q: AbortQueue) {
+            self.abort_queue = Some(q);
+        }
+
+        /// Drain buffered requests and aborts from shared queues into the engine.
+        fn drain_request_queue(&mut self) {
+            if let Some(ref q) = self.abort_queue {
+                let aborts: Vec<RequestId> = {
+                    let mut lock = q.lock().unwrap();
+                    std::mem::take(&mut *lock)
+                };
+                for rid in aborts {
+                    self.abort_request(&rid);
+                }
+            }
+            if let Some(ref q) = self.request_queue {
+                let requests: Vec<PendingRequest> = {
+                    let mut lock = q.lock().unwrap();
+                    std::mem::take(&mut *lock)
+                };
+                for req in requests {
+                    let _ = self.add_request(req.request_id, req.prompt, req.params);
+                }
+            }
+        }
+
+        /// Step with overlap: runs `during_gpu` while GPU computes.
+        /// Same correctness as step() -- scheduler state is consistent because
+        /// the closure runs AFTER prepare_step but BEFORE process_worker_outputs.
+        /// The closure should only drain NEW requests, not touch current sequences.
+        pub fn step_with_overlap<F: FnOnce()>(&mut self, during_gpu: F) -> Result<Vec<RequestOutput>> {
+            let (scheduled_groups, metadata, aborted_seqs) = match self.prepare_step() {
+                Some(v) => v,
+                None => { during_gpu(); return Ok(Vec::new()); }
+            };
+
+            if !aborted_seqs.is_empty() {
+                for group in &scheduled_groups {
+                    for (seq_idx, seq) in group.get_seqs().iter().enumerate() {
+                        if aborted_seqs.contains(&seq.seq_id) {
+                            if let Some(req) = self.requests.get_mut(&group.request_id) {
+                                if let Some(state) = req.seq_states.get_mut(seq_idx) {
+                                    state.finish_reason = Some(FinishReason::Abort);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let worker_outputs = self.worker
+                .execute_with_overlap(&metadata, during_gpu)
+                .map_err(|e| LLMError::GpuError(format!("worker execute failed: {e}")))?;
+
+            // Prefix caching
+            if let Some(ref mut pc) = self.prefix_cache {
+                let block_size = self.config.cache.block_size;
+                for meta in &metadata {
+                    if meta.is_prompt {
+                        for (_seq_id, seq_data) in &meta.seq_data {
+                            let num_full_blocks = seq_data.prompt_token_ids.len() / block_size;
+                            let block_ids: Vec<rvllm_core::prelude::BlockId> = (0..num_full_blocks)
+                                .map(|i| rvllm_core::prelude::BlockId(i as u32))
+                                .collect();
+                            let _ = prefix_cache::register_prefix_blocks(
+                                pc, &seq_data.prompt_token_ids, &block_ids, block_size,
+                            );
+                        }
+                    }
+                }
+            }
+
+            let results = self.process_worker_outputs(&scheduled_groups, &worker_outputs);
+            self.recycle_dead_blocks();
+            Ok(results)
+        }
+
+        pub fn step(&mut self) -> Result<Vec<RequestOutput>> {
+            // Drain any buffered requests from the shared queue before scheduling
+            self.drain_request_queue();
+            self.step_with_overlap(|| {})
+        }
+
+        pub fn step_old(&mut self) -> Result<Vec<RequestOutput>> {
+            let (scheduled_groups, metadata, aborted_seqs) = match self.prepare_step() {
+                Some(v) => v,
+                None => return Ok(Vec::new()),
+            };
+
+            if !aborted_seqs.is_empty() {
+                for group in &scheduled_groups {
+                    for (seq_idx, seq) in group.get_seqs().iter().enumerate() {
+                        if aborted_seqs.contains(&seq.seq_id) {
+                            if let Some(req) = self.requests.get_mut(&group.request_id) {
+                                if let Some(state) = req.seq_states.get_mut(seq_idx) {
+                                    state.finish_reason = Some(FinishReason::Abort);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let worker_outputs = self
                 .worker
                 .execute(&metadata)
@@ -797,6 +972,11 @@ mod inner {
             &self.config
         }
 
+        /// Get a shared handle to the request ID counter (for async-side ID assignment).
+        pub fn request_id_counter(&self) -> std::sync::Arc<AtomicU64> {
+            self.next_request_id.clone()
+        }
+
         /// Build per-group metadata with block allocation.  Returns the
         /// metadata list plus a set of sequence IDs that were aborted because
         /// blocks could not be allocated.
@@ -892,4 +1072,4 @@ mod inner {
 }
 
 #[cfg(feature = "cuda")]
-pub use inner::GpuLLMEngine;
+pub use inner::{AbortQueue, GpuLLMEngine, PendingRequest, RequestQueue};
