@@ -14,6 +14,7 @@ use tracing::info;
 
 use crate::error::ApiError;
 use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style};
+use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::responses::{
@@ -79,9 +80,16 @@ pub async fn create_response(
         ));
     }
 
+    let function_tools = req.normalize_function_tools()?;
+    let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = function_tools
+        .iter()
+        .map(|tool| tool.to_tool_definition())
+        .collect();
+
     let mut templated_messages = prompt_messages.clone();
-    if let Some(instructions) = req.instructions.clone() {
-        if !instructions.is_empty() {
+    let harmony_instructions = req.instructions.clone().filter(|value| !value.is_empty());
+    if !is_gpt_oss_model(&state.model_name) {
+        if let Some(instructions) = harmony_instructions.clone() {
             templated_messages.insert(
                 0,
                 ChatMessage {
@@ -92,12 +100,7 @@ pub async fn create_response(
         }
     }
 
-    let function_tools = req.normalize_function_tools()?;
-    if req.tools_enabled() {
-        let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = function_tools
-            .iter()
-            .map(|tool| tool.to_tool_definition())
-            .collect();
+    if req.tools_enabled() && !is_gpt_oss_model(&state.model_name) {
         templated_messages = augment_messages_with_tools(
             &templated_messages,
             &tool_defs,
@@ -110,12 +113,29 @@ pub async fn create_response(
         .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
         .collect();
 
-    let prompt = state
-        .tokenizer
-        .read()
-        .await
-        .apply_chat_template(&tokenizer_messages, true)
-        .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?;
+    let prompt = if is_gpt_oss_model(&state.model_name) {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = prompt_messages
+            .iter()
+            .map(|message| gpt_oss_tokenizer::ProtocolMessage::new(&message.role, &message.content))
+            .collect();
+        protocol
+            .render_prompt(
+                &protocol_messages,
+                harmony_instructions.as_deref(),
+                if req.tools_enabled() { &tool_defs } else { &[] },
+            )
+            .map(|rendered| rendered.text)
+            .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?
+    } else {
+        state
+            .tokenizer
+            .read()
+            .await
+            .apply_chat_template(&tokenizer_messages, true)
+            .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?
+    };
 
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let sampling_params = req.to_sampling_params();

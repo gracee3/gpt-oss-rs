@@ -6,11 +6,15 @@
 
 pub mod chat;
 pub mod incremental;
+pub mod protocol;
 pub mod tokenizer;
 pub mod tool_parser;
 
 pub use chat::{ChatMessage, ChatRole};
 pub use incremental::IncrementalDecoder;
+pub use protocol::{
+    HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage, ProtocolMessage, RenderedPrompt,
+};
 pub use tokenizer::Tokenizer;
 pub use tool_parser::{
     format_tool_definitions, parse_tool_calls, FunctionDefinition, ParsedToolCall, ToolDefinition,
