@@ -6,7 +6,7 @@
 //   Block: (head_dim / 2, 1, 1)   -- one thread per rotation pair
 //   Shared memory: none
 //
-// Each thread handles one pair of dimensions (2i, 2i+1) for one head of one token.
+// Each thread handles one split-half pair (i, i + head_dim/2) for one head of one token.
 
 extern "C"
 __global__ void rotary_embedding_kernel(
@@ -36,8 +36,8 @@ __global__ void rotary_embedding_kernel(
     // Apply to query
     {
         const int base = (token_idx * num_heads + head_idx) * head_dim;
-        const int i0 = base + 2 * pair_idx;
-        const int i1 = base + 2 * pair_idx + 1;
+        const int i0 = base + pair_idx;
+        const int i1 = base + half_dim + pair_idx;
 
         float x0 = query[i0];
         float x1 = query[i1];
@@ -48,8 +48,8 @@ __global__ void rotary_embedding_kernel(
     // Apply to key (only if this head maps to a KV head, for GQA support)
     if (head_idx < num_kv_heads) {
         const int base = (token_idx * num_kv_heads + head_idx) * head_dim;
-        const int i0 = base + 2 * pair_idx;
-        const int i1 = base + 2 * pair_idx + 1;
+        const int i0 = base + pair_idx;
+        const int i1 = base + half_dim + pair_idx;
 
         float x0 = key[i0];
         float x1 = key[i1];
