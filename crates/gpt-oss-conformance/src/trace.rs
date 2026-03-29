@@ -51,6 +51,20 @@ impl TraceSummary {
         }
     }
 
+    pub fn from_observed_case(label: impl Into<String>, is_prefill: bool, seq_start_pos: u32) -> Self {
+        let label = label.into();
+        let mut frame = TraceFrame::new(format!("{label}:observed"));
+        frame.events.push(TraceEvent::new(
+            "reference_phase",
+            if is_prefill { "Prefill" } else { "Decode" },
+        ));
+        frame.events.push(TraceEvent::new("seq_start_pos", seq_start_pos.to_string()));
+        Self {
+            label,
+            frames: vec![frame],
+        }
+    }
+
     pub fn from_reference(
         label: impl Into<String>,
         plan: &ExecutionPlan,

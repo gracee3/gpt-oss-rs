@@ -8,6 +8,13 @@ use gpt_oss_runtime_plan::{plan_request, ExecutionPlan, PlanRequest, RuntimeMode
 use rand::{rngs::StdRng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Arc;
+
+#[cfg(test)]
+use gpt_oss_model_runner::{
+    bridge::AttentionMetadata as BridgeAttentionMetadata, ModelInput, ModelRunner,
+};
 
 pub trait ConformanceBackend {
     fn name(&self) -> &str;
@@ -203,6 +210,56 @@ impl ConformanceBackend for SampledLogitsBackend {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct ModelRunnerGreedyBackend {
+    name: String,
+    runner: Arc<ModelRunner>,
+}
+
+#[cfg(test)]
+impl ModelRunnerGreedyBackend {
+    pub(crate) fn new(name: impl Into<String>, runner: Arc<ModelRunner>) -> Self {
+        Self {
+            name: name.into(),
+            runner,
+        }
+    }
+}
+
+#[cfg(test)]
+impl ConformanceBackend for ModelRunnerGreedyBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn run(&self, case: &ConformanceCase) -> ExecutionSample {
+        let input = model_input_from_case(case);
+        let logits_batch = self
+            .runner
+            .execute_model(input)
+            .expect("model runner backend should produce logits");
+        let vocab_size = self.runner.config.vocab_size;
+        let logits = logits_batch.data[logits_batch.data.len() - vocab_size..].to_vec();
+
+        ExecutionSample {
+            tokens: sample_tokens_from_logits(
+                &logits,
+                &case.sampling_params,
+                &case.past_tokens,
+                case.seed,
+            ),
+            logits,
+            trace: TraceSummary::from_observed_case(
+                format!("{}:{}", self.name, case.name),
+                case.is_prefill,
+                case.seq_start_pos,
+            ),
+            plan: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlannedReferenceBackend {
     name: String,
@@ -297,4 +354,24 @@ fn sample_tokens_from_logits(
         .sample(logits, logits.len(), sampling_params, past_tokens, &mut rng)
         .expect("conformance sampling should produce a deterministic sample");
     vec![sample.token_id]
+}
+
+#[cfg(test)]
+fn model_input_from_case(case: &ConformanceCase) -> ModelInput {
+    let token_count = case.inputs.len() as u32;
+    let context_len = case.seq_start_pos + token_count;
+    ModelInput {
+        token_ids: case.inputs.clone(),
+        position_ids: (0..case.inputs.len())
+            .map(|idx| case.seq_start_pos + idx as u32)
+            .collect(),
+        attention_metadata: BridgeAttentionMetadata {
+            slot_mapping: (0..case.inputs.len() as u32).collect(),
+            context_lens: vec![context_len],
+            block_tables: vec![vec![0]],
+            query_lens: vec![if case.is_prefill { token_count } else { 1 }],
+            max_context_len: context_len,
+        },
+        is_prefill: case.is_prefill,
+    }
 }

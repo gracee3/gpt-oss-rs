@@ -14,6 +14,7 @@ pub use trace::{TraceEvent, TraceFrame, TraceSummary};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::case::ModelRunnerGreedyBackend;
     use gpt_oss_core::{prelude::SamplingParams, types::Dtype};
     use gpt_oss_model_runner::{
         bridge::{
@@ -301,8 +302,17 @@ mod tests {
     #[test]
     fn greedy_model_runner_vs_reference_parity_gap_is_localized() {
         let case = ConformanceCase::prefill("model-runner-logits", vec![1, 2]);
-        let observed = SampledLogitsBackend::new("observed")
-            .with_case(case.name.clone(), real_model_runner_logits_case(&case.name));
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
         let reference = planned_backend();
         let harness = ConformanceHarness::default();
 
@@ -314,5 +324,27 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
+    }
+
+    #[test]
+    fn model_runner_backend_is_deterministic() {
+        let case = ConformanceCase::prefill("model-runner-logits", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let backend = ModelRunnerGreedyBackend::new("model-runner", runner);
+
+        let first = backend.run(&case);
+        let second = backend.run(&case);
+
+        assert_eq!(first.logits, second.logits);
+        assert_eq!(first.tokens, second.tokens);
     }
 }
