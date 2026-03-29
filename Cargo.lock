@@ -1140,6 +1140,7 @@ dependencies = [
  "gpt-oss-config",
  "gpt-oss-core",
  "gpt-oss-executor",
+ "gpt-oss-gpu",
  "gpt-oss-quant",
  "gpt-oss-sequence",
  "gpt-oss-telemetry",
