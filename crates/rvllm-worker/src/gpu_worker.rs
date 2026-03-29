@@ -484,12 +484,12 @@ impl GpuWorker {
 
         info!("loaded {} weight tensors to GPU", all_weights_full.len());
 
-        // Preserve a clone of the raw weight map for deferred GpuModelRunner construction
         #[cfg(feature = "cuda")]
         {
+            // Save f32 weight map for GpuModelRunner
             self.raw_weight_map = Some(all_weights_full.clone());
 
-            // Also load f16 weights for hgemm path when dtype is half
+            // Load f16 weights for hgemm path when dtype is half
             if self.config.dtype.is_half() {
                 info!("loading f16 weights for hgemm path");
                 let f16_weights = rvllm_model_loader::gpu_loader::load_weights_to_gpu_f16(
@@ -679,6 +679,12 @@ impl GpuWorker {
                 if let Err(e) = runner.fuse_weights() {
                     warn!("weight fusion failed: {e} -- falling back to f32 forward path");
                     runner.disable_fp16();
+                } else {
+                    // fuse_weights succeeded -- f16 forward is active.
+                    // Drop the f32 weight clone from the runner to free ~3GB GPU memory.
+                    // The f16 path doesn't need f32 weights at runtime.
+                    runner.drop_f32_weights();
+                    info!("dropped f32 weight clone to free GPU memory");
                 }
             }
 
@@ -1066,7 +1072,7 @@ impl GpuWorker {
 
         let actual_batch = model_input.num_tokens();
         let padded = match rvllm_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 32 => p,
+            Some(p) if p <= 128 => p,
             _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
         };
 

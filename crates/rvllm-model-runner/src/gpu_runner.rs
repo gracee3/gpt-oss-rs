@@ -415,7 +415,7 @@ mod cuda_impl {
         /// Sized for max padded batch (256). Since all layers are processed
         /// sequentially, one set of buffers covers every layer.
         fn alloc_scratch(&mut self) -> Result<()> {
-            let max_tokens: usize = 32; // sized for max graph batch
+            let max_tokens: usize = 128; // support N>32 with freed f32 memory
             let hidden = self.config.hidden_size;
             let q_dim = self.config.num_heads * self.config.head_dim;
             let kv_dim = self.config.num_kv_heads * self.config.head_dim;
@@ -1718,6 +1718,14 @@ mod cuda_impl {
         pub fn disable_fp16(&mut self) {
             self.use_fp16 = false;
             tracing::warn!("GpuModelRunner: fp16 mode disabled, using f32 forward");
+        }
+
+        /// Drop f32 weights to free GPU memory when f16 path is active.
+        /// The f16 forward path uses f16 weights exclusively.
+        pub fn drop_f32_weights(&mut self) {
+            self.weights.clear_f32();
+            // Drop the f32 embed/norm/lm_head too -- f16 versions exist
+            // (keep them as they're small and needed for non-f16 fallback paths)
         }
 
         pub fn use_fp16(&self) -> bool {

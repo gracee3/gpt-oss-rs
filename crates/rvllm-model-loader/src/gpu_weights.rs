@@ -59,6 +59,13 @@ mod inner {
             self.weights_f16.insert(name, data);
         }
 
+        /// Drop all f32 weights to free GPU memory (when f16 path is active).
+        pub fn clear_f32(&mut self) {
+            let count = self.weights.len();
+            self.weights.clear();
+            debug!(count, "cleared f32 weights from GPU");
+        }
+
         /// Look up a weight by name.
         pub fn get(&self, name: &str) -> Option<&CudaSlice<f32>> {
             self.weights.get(name)
