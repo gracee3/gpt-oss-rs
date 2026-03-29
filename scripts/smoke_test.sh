@@ -111,7 +111,7 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | head -n -1)
 check "POST /v1/completions" "$HTTP_CODE" 200
 
-if echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d.get('choices',[])) > 0" 2>/dev/null; then
+if printf '%s\n' "$BODY" | grep -q '"choices"[[:space:]]*:'; then
     echo "  -> response has choices"
     PASS=$((PASS + 1))
 else

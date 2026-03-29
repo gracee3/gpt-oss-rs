@@ -1,4 +1,4 @@
-.PHONY: build build-cuda check check-cuda test test-cuda kernels bench bench-python bench-compare docker deploy-provision deploy-push deploy-bench deploy-teardown a100-bench loc clean
+.PHONY: build build-cuda check check-cuda test test-cuda kernels bench docker smoke loc clean
 
 # Local development (Mac, mock-gpu)
 build:
@@ -32,33 +32,13 @@ test-cuda:
 bench:
 	cargo bench --package gpt-oss-bench --bench sampling_bench
 
-# Run Python benchmarks
-bench-python:
-	python3 benches/bench_python.py
-
-# Compare Rust vs Python benchmarks
-bench-compare: bench bench-python
-	python3 benches/compare.py
-
 # Build Docker image
 docker:
 	bash scripts/build-docker.sh
 
-# Deploy to vast.ai A100
-deploy-provision:
-	bash deploy/vastai-provision.sh
-
-deploy-push:
-	bash deploy/vastai-deploy.sh
-
-deploy-bench:
-	bash deploy/vastai-benchmark.sh
-
-deploy-teardown:
-	bash deploy/vastai-teardown.sh
-
-# Full A100 benchmark pipeline
-a100-bench: deploy-provision deploy-push deploy-bench
+# Run a basic HTTP smoke test against a local server
+smoke:
+	bash scripts/smoke_test.sh
 
 # Count lines of code
 loc:
@@ -69,5 +49,3 @@ loc:
 # Clean
 clean:
 	cargo clean
-	rm -f benches/python_results.json
-	rm -f deploy/results_*.json

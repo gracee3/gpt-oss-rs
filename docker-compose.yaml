@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   gpt-oss-rs:
     build:
@@ -20,26 +19,7 @@ services:
     environment:
       - RUST_LOG=info
       - CUDA_VISIBLE_DEVICES=0
-    command: ["serve", "--model", "${MODEL_NAME:-meta-llama/Llama-3.2-1B}", "--gpu-memory-utilization", "0.90"]
-
-  # Python vLLM for comparison benchmarks
-  gpt-oss-python:
-    image: vllm/vllm-openai:latest
-    ports:
-      - "8001:8000"
-    volumes:
-      - ${MODEL_PATH:-./models}:/models
-      - huggingface-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      - CUDA_VISIBLE_DEVICES=0
-    command: ["--model", "${MODEL_NAME:-meta-llama/Llama-3.2-1B}", "--gpu-memory-utilization", "0.90"]
+    command: ["serve", "--model", "${MODEL_NAME:-openai/gpt-oss-20b}", "--gpu-memory-utilization", "0.90"]
 
 volumes:
   huggingface-cache:
