@@ -2759,7 +2759,6 @@ mod tests {
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
     }
-
     #[test]
     fn nonzero_biased_three_layer_middle_moe_prefill_parity_matches() {
         let case =
