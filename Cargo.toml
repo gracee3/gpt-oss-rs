@@ -2,25 +2,10 @@
 resolver = "2"
 members = [
     "crates/gpt-oss-core",
-    "crates/gpt-oss-config",
     "crates/gpt-oss-gpu",
-    "crates/gpt-oss-memory",
-    "crates/gpt-oss-block-manager",
-    "crates/gpt-oss-kv-cache",
-    "crates/gpt-oss-attention",
     "crates/gpt-oss-tokenizer",
-    "crates/gpt-oss-model-loader",
     "crates/gpt-oss-model-runner",
-    "crates/gpt-oss-sampling",
-    "crates/gpt-oss-scheduler",
-    "crates/gpt-oss-sequence",
-    "crates/gpt-oss-worker",
-    "crates/gpt-oss-executor",
     "crates/gpt-oss-engine",
-    "crates/gpt-oss-api",
-    "crates/gpt-oss-quant",
-    "crates/gpt-oss-speculative",
-    "crates/gpt-oss-telemetry",
     "crates/gpt-oss-bench",
     "crates/gpt-oss-server",
 ]
@@ -40,25 +25,10 @@ categories = ["science", "concurrency", "hardware-support"]
 [workspace.dependencies]
 # Internal crates
 gpt-oss-core = { path = "crates/gpt-oss-core" }
-gpt-oss-config = { path = "crates/gpt-oss-config" }
 gpt-oss-gpu = { path = "crates/gpt-oss-gpu" }
-gpt-oss-memory = { path = "crates/gpt-oss-memory" }
-gpt-oss-block-manager = { path = "crates/gpt-oss-block-manager" }
-gpt-oss-kv-cache = { path = "crates/gpt-oss-kv-cache" }
-gpt-oss-attention = { path = "crates/gpt-oss-attention" }
 gpt-oss-tokenizer = { path = "crates/gpt-oss-tokenizer" }
-gpt-oss-model-loader = { path = "crates/gpt-oss-model-loader" }
 gpt-oss-model-runner = { path = "crates/gpt-oss-model-runner" }
-gpt-oss-sampling = { path = "crates/gpt-oss-sampling" }
-gpt-oss-scheduler = { path = "crates/gpt-oss-scheduler" }
-gpt-oss-sequence = { path = "crates/gpt-oss-sequence" }
-gpt-oss-worker = { path = "crates/gpt-oss-worker" }
-gpt-oss-executor = { path = "crates/gpt-oss-executor" }
 gpt-oss-engine = { path = "crates/gpt-oss-engine" }
-gpt-oss-api = { path = "crates/gpt-oss-api" }
-gpt-oss-quant = { path = "crates/gpt-oss-quant" }
-gpt-oss-speculative = { path = "crates/gpt-oss-speculative" }
-gpt-oss-telemetry = { path = "crates/gpt-oss-telemetry" }
 
 # External dependencies
 thiserror = "2"

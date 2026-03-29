@@ -20,8 +20,8 @@ mod inner {
     use tokio_util::sync::CancellationToken;
     use tracing::{debug, error, info, warn};
 
-    use gpt_oss_config::EngineConfig;
     use gpt_oss_core::prelude::{LLMError, RequestId, RequestOutput, Result, SamplingParams};
+    use gpt_oss_engine::config::EngineConfig;
 
     use crate::gpu_engine::{AbortQueue, GpuLLMEngine, PendingRequest, RequestQueue};
 

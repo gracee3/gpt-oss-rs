@@ -1,13 +1,13 @@
 //! GPU engine metrics instrumentation.
 //!
-//! Wraps `gpt_oss_telemetry::MetricsRecorder` to instrument the `GpuLLMEngine`
+//! Wraps `gpt_oss_engine::telemetry::MetricsRecorder` to instrument the `GpuLLMEngine`
 //! step loop: request_latency, time-to-first-token, inter-token latency,
 //! num_running, num_waiting, gpu_cache_usage_percent, and preemption counts.
 
 use std::collections::HashMap;
 
 use gpt_oss_core::prelude::RequestId;
-use gpt_oss_telemetry::MetricsRecorder;
+use gpt_oss_engine::telemetry::MetricsRecorder;
 
 /// Per-request timing state tracked by the engine metrics layer.
 #[derive(Debug)]

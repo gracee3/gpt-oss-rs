@@ -14,18 +14,20 @@ mod inner {
 
     use tracing::{debug, info, trace, warn};
 
-    use gpt_oss_block_manager::prefix_cache::{self, PrefixCache};
-    use gpt_oss_config::EngineConfig;
     use gpt_oss_core::prelude::{
         BlockId, FinishReason, LLMError, LogProb, RequestId, RequestOutput, Result, SamplingParams,
         SequenceId, TokenId,
     };
-    use gpt_oss_sequence::{
+    use gpt_oss_engine::block_manager::prefix_cache::{self, PrefixCache};
+    use gpt_oss_engine::config::EngineConfig;
+    use gpt_oss_engine::sequence::{
         Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus,
     };
+    use gpt_oss_engine::worker::gpu_worker::{
+        init_tensor_parallel_group, GpuWorker, GpuWorkerOutput,
+    };
+    use gpt_oss_engine::worker::WorkerConfig;
     use gpt_oss_tokenizer::Tokenizer;
-    use gpt_oss_worker::gpu_worker::{init_tensor_parallel_group, GpuWorker, GpuWorkerOutput};
-    use gpt_oss_worker::WorkerConfig;
 
     use crate::hf_snapshot;
     use crate::output::{OutputProcessor, SequenceOutputState};
@@ -586,7 +588,7 @@ mod inner {
                 )));
             }
 
-            let quant_method = gpt_oss_quant::detect_quant_method(&model_dir)?;
+            let quant_method = gpt_oss_model_runner::quant::detect_quant_method(&model_dir)?;
             if quant_method.is_quantized() && hf_config.architecture != "GptOssForCausalLM" {
                 return Err(LLMError::ModelError(format!(
                     "quantized model checkpoints are not wired into the GPU engine yet (detected {})",
@@ -1340,10 +1342,10 @@ mod inner {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use gpt_oss_config::cache::CacheConfigImpl;
-        use gpt_oss_config::model::ModelConfigImpl;
-        use gpt_oss_config::parallel::ParallelConfigImpl;
         use gpt_oss_core::types::Dtype;
+        use gpt_oss_engine::config::cache::CacheConfigImpl;
+        use gpt_oss_engine::config::model::ModelConfigImpl;
+        use gpt_oss_engine::config::parallel::ParallelConfigImpl;
 
         fn make_engine_config(tp: usize, pp: usize, max_model_len: usize) -> EngineConfig {
             EngineConfig::builder()

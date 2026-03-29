@@ -5,12 +5,18 @@
 //! embedding, transformer layers, and the final LM head. Layer primitives
 //! (norms, linear, rotary, activations, MLP) are naive CPU mock
 //! implementations; real GPU kernels dispatch to CUDA.
+extern crate self as gpt_oss_model_runner;
 
 pub mod architectures;
+pub mod attention;
 pub mod bridge;
 pub mod input;
+pub mod kv_cache;
 pub mod layers;
+pub mod model_loader;
+pub mod quant;
 pub mod runner;
+pub mod sampling;
 #[cfg(feature = "cuda")]
 pub mod tensor_parallel;
 
@@ -29,5 +35,15 @@ pub type CublasLtRef = gpt_oss_gpu::cublaslt_ops::CublasLtOps;
 pub type CublasLtRef = ();
 
 pub use architectures::{create_model, Architecture};
+pub use attention::{
+    select_backend, select_backend_with_options, select_decode_backend, AttentionBackend,
+    AttentionMetadata, FlashAttention2, FlashAttention2Config, FlashAttentionPaged, GpuBuffer,
+    MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
+    SplitKvAttention,
+};
 pub use input::ModelInput;
+pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
+pub use model_loader::{detect_format, load_model_weights, ModelFormat};
+pub use quant::{detect_quant_method, QuantConfig, QuantMethod, QuantizedLinear, QuantizedWeight};
 pub use runner::{ModelRunner, ModelRunnerConfig};
+pub use sampling::{sample_batch, sample_batch_parallel, Sampler, SamplerOutput};

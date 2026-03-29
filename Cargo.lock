@@ -1041,54 +1041,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpt-oss-api"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "axum-test",
- "gpt-oss-config",
- "gpt-oss-core",
- "gpt-oss-engine",
- "gpt-oss-executor",
- "gpt-oss-gpu",
- "gpt-oss-sequence",
- "gpt-oss-telemetry",
- "gpt-oss-tokenizer",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokenizers",
- "tokio",
- "tokio-stream",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "gpt-oss-attention"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "half",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "gpt-oss-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "criterion",
- "gpt-oss-config",
  "gpt-oss-core",
  "gpt-oss-engine",
  "rand 0.8.5",
@@ -1098,34 +1056,6 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "gpt-oss-block-manager"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "gpt-oss-core",
- "gpt-oss-memory",
- "gpt-oss-sequence",
- "parking_lot",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-config"
-version = "0.1.0"
-dependencies = [
- "clap",
- "config",
- "gpt-oss-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
- "tracing",
 ]
 
 [[package]]
@@ -1144,19 +1074,21 @@ name = "gpt-oss-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "clap",
+ "config",
  "cudarc",
- "gpt-oss-block-manager",
- "gpt-oss-config",
  "gpt-oss-core",
- "gpt-oss-executor",
  "gpt-oss-gpu",
- "gpt-oss-quant",
- "gpt-oss-sequence",
- "gpt-oss-telemetry",
+ "gpt-oss-model-runner",
  "gpt-oss-tokenizer",
- "gpt-oss-worker",
+ "half",
  "hf-hub",
+ "memmap2",
+ "metrics",
  "metrics-exporter-prometheus",
+ "parking_lot",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tempfile",
@@ -1165,19 +1097,9 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml",
  "tracing",
-]
-
-[[package]]
-name = "gpt-oss-executor"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "gpt-oss-core",
- "gpt-oss-sequence",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1194,7 +1116,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpt-oss-kv-cache"
+name = "gpt-oss-model-runner"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
@@ -1202,30 +1124,10 @@ dependencies = [
  "gpt-oss-core",
  "gpt-oss-gpu",
  "half",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-memory"
-version = "0.1.0"
-dependencies = [
- "gpt-oss-core",
- "gpt-oss-gpu",
- "parking_lot",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-model-loader"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "half",
  "memmap2",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
  "safetensors",
  "serde",
  "serde_json",
@@ -1235,122 +1137,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpt-oss-model-runner"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "gpt-oss-attention",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "gpt-oss-kv-cache",
- "gpt-oss-model-loader",
- "half",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-quant"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "half",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-sampling"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-scheduler"
-version = "0.1.0"
-dependencies = [
- "gpt-oss-block-manager",
- "gpt-oss-core",
- "gpt-oss-sequence",
- "parking_lot",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-sequence"
-version = "0.1.0"
-dependencies = [
- "gpt-oss-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "gpt-oss-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "axum",
+ "axum-test",
  "clap",
- "gpt-oss-api",
- "gpt-oss-config",
  "gpt-oss-core",
  "gpt-oss-engine",
  "gpt-oss-gpu",
- "gpt-oss-sequence",
- "gpt-oss-telemetry",
  "gpt-oss-tokenizer",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokenizers",
  "tokio",
+ "tokio-stream",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "gpt-oss-speculative"
-version = "0.1.0"
-dependencies = [
- "gpt-oss-core",
- "gpt-oss-sequence",
- "rand 0.8.5",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-telemetry"
-version = "0.1.0"
-dependencies = [
- "axum",
- "gpt-oss-core",
- "metrics",
- "metrics-exporter-prometheus",
- "parking_lot",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -1363,30 +1174,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokenizers",
- "tracing",
-]
-
-[[package]]
-name = "gpt-oss-worker"
-version = "0.1.0"
-dependencies = [
- "cudarc",
- "gpt-oss-config",
- "gpt-oss-core",
- "gpt-oss-gpu",
- "gpt-oss-kv-cache",
- "gpt-oss-model-loader",
- "gpt-oss-model-runner",
- "gpt-oss-sampling",
- "gpt-oss-sequence",
- "gpt-oss-telemetry",
- "half",
- "hf-hub",
- "memmap2",
- "metrics-exporter-prometheus",
- "rand 0.8.5",
- "serde_json",
- "thiserror 2.0.18",
  "tracing",
 ]
 

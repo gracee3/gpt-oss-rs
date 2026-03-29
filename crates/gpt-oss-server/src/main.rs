@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use gpt_oss_core::types::Dtype;
 use tracing::info;
 
-use gpt_oss_api::runtime_policy::{
+use gpt_oss_server::runtime_policy::{
     is_gpt_oss_model, GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION, GPT_OSS_CONSUMER_MAX_MODEL_LEN,
 };
 
@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Build EngineConfig from CLI args
             let config = {
-                use gpt_oss_config::*;
+                use gpt_oss_engine::config::*;
                 EngineConfig::builder()
                     .model({
                         let mut m = ModelConfigImpl::builder()
@@ -234,12 +234,12 @@ async fn main() -> anyhow::Result<()> {
                 "starting server"
             );
 
-            // Pass host/port to the server via env vars so gpt_oss_api::serve
+            // Pass host/port to the server via env vars so gpt_oss_server::serve
             // can pick them up without changing its public signature.
             std::env::set_var("VLLM_HOST", &host);
             std::env::set_var("VLLM_PORT", port.to_string());
 
-            gpt_oss_api::serve(config).await?;
+            gpt_oss_server::serve(config).await?;
         }
         Commands::Info => {
             init_tracing("info");

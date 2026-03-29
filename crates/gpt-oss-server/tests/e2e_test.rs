@@ -11,10 +11,10 @@ use tokenizers::models::bpe::BPE;
 use tokenizers::pre_tokenizers::whitespace::Whitespace;
 use tokenizers::Tokenizer as HfTokenizer;
 
-use gpt_oss_config::EngineConfig;
 use gpt_oss_core::prelude::{FinishReason, RequestId, SamplingParams, TokenId};
+use gpt_oss_engine::config::EngineConfig;
+use gpt_oss_engine::sequence::SequenceGroup;
 use gpt_oss_engine::{ExecutorInput, LLMEngine, SamplerOutput, Scheduler, SchedulerOutputs};
-use gpt_oss_sequence::SequenceGroup;
 use gpt_oss_tokenizer::Tokenizer;
 
 // ---------------------------------------------------------------------------

@@ -1,26 +1,21 @@
-//! Bridge / compatibility layer re-exporting types from upstream crates.
+//! Bridge / compatibility layer for the merged model-runner stack.
 //!
-//! Types whose upstream API matches are re-exported directly. Types with API
-//! mismatches (e.g. GpuBuffer, AttentionBackend) keep a local shim until the
-//! upstream crates unify on a common shape-aware buffer abstraction.
+//! Types whose APIs match the shared crates are re-exported directly. Types
+//! with API mismatches (for example `GpuBuffer` and `AttentionBackend`) keep a
+//! local shim until the runtime converges on a common shape-aware buffer
+//! abstraction.
 
 use half::f16;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
-// gpt-oss-core: error / result (direct re-export, fully compatible)
-// ---------------------------------------------------------------------------
 pub use gpt_oss_core::error::{LLMError, Result};
 
-// ---------------------------------------------------------------------------
-// gpt-oss-gpu: re-export what we can directly
-// ---------------------------------------------------------------------------
 // The real GpuAllocator / GpuBuffer from gpt-oss-gpu use Pod + Send bounds and
 // an opaque inner buffer without data/shape fields. Model-runner code needs
 // direct data/shape access for CPU-mock execution, so we keep a thin local
-// GpuBuffer. We re-export the upstream traits/types under qualified names so
-// callers can migrate incrementally.
+// GpuBuffer. The shared traits/types are still re-exported under qualified
+// names so callers can migrate incrementally.
 pub mod upstream_gpu {
     pub use gpt_oss_gpu::prelude::{
         GpuAllocator as RealGpuAllocator, GpuBuffer as RealGpuBuffer, GpuStream as RealGpuStream,
@@ -31,38 +26,22 @@ pub mod upstream_gpu {
     pub use gpt_oss_gpu::mock::MockGpuAllocator as RealMockGpuAllocator;
 }
 
-// ---------------------------------------------------------------------------
-// gpt-oss-attention: re-export the real trait + metadata under qualified name
-// ---------------------------------------------------------------------------
 pub mod upstream_attention {
-    pub use gpt_oss_attention::{
+    pub use gpt_oss_model_runner::attention::{
         AttentionBackend as RealAttentionBackend, AttentionMetadata as RealAttentionMetadata,
         MockAttentionBackend as RealMockAttentionBackend,
     };
 }
 
-// ---------------------------------------------------------------------------
-// gpt-oss-kv-cache: broken upstream (gpu module deleted, engine/ops not updated)
-// TODO: re-add once gpt-oss-kv-cache compiles:
-// pub mod upstream_kv_cache {
-//     pub use gpt_oss_kv_cache::{CacheEngine as RealCacheEngine, KVCache as RealKVCache};
-// }
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// gpt-oss-model-loader: re-export real weight types
-// ---------------------------------------------------------------------------
 pub mod upstream_model_loader {
-    pub use gpt_oss_model_loader::weights::{
+    pub use gpt_oss_model_runner::model_loader::weights::{
         ModelWeights as RealModelWeights, WeightTensor as RealWeightTensor,
     };
 }
 
-// ---------------------------------------------------------------------------
-// GPU buffer shim -- local struct with data/shape for CPU-mock forward passes.
+// Local GPU buffer shim with data/shape for CPU-mock forward passes.
 // TODO: Unify with gpt_oss_gpu::GpuBuffer once it gains shape metadata and
-//       host-accessible data views.
-// ---------------------------------------------------------------------------
+// host-accessible data views.
 #[derive(Debug, Clone)]
 pub struct GpuBuffer<T> {
     pub data: Vec<T>,
@@ -91,10 +70,8 @@ impl<T: Clone + Default> GpuBuffer<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// GPU allocator shim -- compatible with the local GpuBuffer.
+// Local GPU allocator shim compatible with the local GpuBuffer.
 // TODO: Replace with gpt_oss_gpu::prelude::GpuAllocator once buffer APIs unify.
-// ---------------------------------------------------------------------------
 pub trait GpuAllocator: Send + Sync {
     fn alloc_f16(&self, num_elements: usize) -> Result<GpuBuffer<f16>>;
     fn alloc_f32(&self, num_elements: usize) -> Result<GpuBuffer<f32>>;
@@ -139,13 +116,11 @@ impl GpuAllocator for MockGpuAllocator {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Attention shim -- model-runner uses a 5-arg forward() while the real
-// gpt-oss-attention AttentionBackend uses a 7-arg signature with separate
-// key_cache/value_cache/block_tables/context_lens/scale parameters.
-// TODO: Align model-runner forward pass to call the real AttentionBackend
-//       signature, passing cache tensors and metadata fields directly.
-// ---------------------------------------------------------------------------
+// Attention shim. Model-runner uses a 5-arg forward() while the shared
+// AttentionBackend uses a 7-arg signature with separate key_cache,
+// value_cache, block_tables, context_lens, and scale parameters.
+// TODO: Align model-runner forward pass to call the shared AttentionBackend
+// signature, passing cache tensors and metadata fields directly.
 #[derive(Debug, Clone)]
 pub struct AttentionMetadata {
     pub slot_mapping: Vec<u32>,
@@ -183,12 +158,10 @@ impl AttentionBackend for MockAttentionBackend {
     }
 }
 
-// ---------------------------------------------------------------------------
-// KV cache shim -- the real CacheEngine requires an Arc<dyn GpuAllocator>
-// from gpt-oss-kv-cache (with a different allocator trait). Keep the simple
-// version for now.
-// TODO: Wire to gpt_oss_kv_cache::CacheEngine once allocator traits unify.
-// ---------------------------------------------------------------------------
+// KV-cache shim. The real CacheEngine requires an Arc<dyn GpuAllocator> with a
+// different allocator trait, so keep the simple version here for now.
+// TODO: Wire to gpt_oss_model_runner::kv_cache::CacheEngine once allocator
+// traits unify.
 pub struct KVCache {
     pub key_cache: GpuBuffer<f16>,
     pub value_cache: GpuBuffer<f16>,
@@ -214,12 +187,10 @@ impl CacheEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Model loader shim -- the real ModelWeights uses GpuBuffer<u8> (raw bytes)
-// with typed access, while model-runner needs f16 data with shape metadata.
-// TODO: Wire to gpt_oss_model_loader::weights once a typed buffer conversion
-//       layer exists.
-// ---------------------------------------------------------------------------
+// Model-loader shim. The real ModelWeights uses GpuBuffer<u8> (raw bytes) with
+// typed access, while model-runner needs f16 data with shape metadata.
+// TODO: Wire to gpt_oss_model_runner::model_loader::weights once a typed
+// buffer-conversion layer exists.
 #[derive(Debug, Clone)]
 pub struct WeightTensor {
     pub name: String,

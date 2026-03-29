@@ -49,8 +49,8 @@ mod cuda_impl {
     use crate::tensor_parallel::{local_tensor_parallel_comm, TensorParallelComm};
     use gpt_oss_gpu::kernel_loader::KernelLoader;
     use gpt_oss_gpu::prelude::CublasHandle;
-    use gpt_oss_kv_cache::engine_cuda::CudaCacheEngine;
-    use gpt_oss_model_loader::gpu_weights::GpuModelWeights;
+    use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
+    use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
     use super::ForwardOutput;
 

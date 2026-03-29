@@ -3,11 +3,11 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use gpt_oss_config::{
+use gpt_oss_core::prelude::{Dtype, RequestId, RequestOutput, SamplingParams};
+use gpt_oss_engine::config::{
     CacheConfigImpl, DeviceConfig, EngineConfig, ModelConfigImpl, ParallelConfigImpl,
     SchedulerConfigImpl,
 };
-use gpt_oss_core::prelude::{Dtype, RequestId, RequestOutput, SamplingParams};
 use gpt_oss_engine::GpuLLMEngine;
 use serde::{Deserialize, Serialize};
 use tracing::info;

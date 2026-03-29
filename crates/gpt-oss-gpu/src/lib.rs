@@ -4,6 +4,8 @@
 //! and device enumeration. The default `mock-gpu` feature supplies a pure-Rust
 //! heap-backed implementation with zero unsafe for CPU-only testing.
 
+extern crate self as gpt_oss_gpu;
+
 pub mod allocator;
 pub mod buffer;
 pub mod cpu_buffer;
@@ -20,6 +22,7 @@ pub mod device;
 mod ffi;
 #[cfg(feature = "cuda")]
 pub mod kernel_loader;
+pub mod memory;
 #[cfg(all(feature = "mock-gpu", not(feature = "cuda")))]
 pub mod mock;
 pub mod nccl;
@@ -50,6 +53,9 @@ pub mod prelude {
     pub use crate::device::{list_devices, GpuDevice, MemoryInfo};
     #[cfg(feature = "cuda")]
     pub use crate::kernel_loader::{launch_config, KernelLoader};
+    pub use crate::memory::{
+        CpuBlock, CpuMemoryPool, DeviceType, GpuMemoryPool, MemoryPool, PhysicalBlock, SwapManager,
+    };
     #[cfg(all(feature = "mock-gpu", not(feature = "cuda")))]
     pub use crate::mock::MockGpuAllocator;
     pub use crate::nccl::{NcclComm, NcclDataType, NcclGroup, NcclReduceOp, NcclUniqueId};

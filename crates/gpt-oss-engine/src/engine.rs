@@ -1,47 +1,39 @@
 //! Synchronous inference engine composing scheduler, executor, and tokenizer.
 //!
-//! Uses real types from dependency crates where their APIs are compatible:
-//! - `gpt_oss_executor` -- `Executor` trait, `ExecutorInput`, `SamplerOutput`, `ExecutorFactory`
-//! - `gpt_oss_tokenizer` -- `Tokenizer` for encode/decode (via constructor)
-//! - `gpt_oss_sequence` -- `Sequence`, `SequenceGroup`, `SequenceGroupMetadata`
+//! Uses shared workspace types where their APIs are compatible:
+//! - `gpt_oss_engine::executor` for executor traits and inputs
+//! - `gpt_oss_tokenizer` for encode/decode
+//! - `gpt_oss_engine::sequence` for request/sequence bookkeeping
 //!
 //! The engine defines its own `Scheduler` and `Executor` traits as internal
-//! abstractions. `ExecutorAdapter` wraps the real async `gpt_oss_executor::Executor`
-//! into the engine's sync trait.
-//!
-//! NOTE: `gpt_oss_scheduler::Scheduler` uses a different `SequenceGroup` type
-//! (from gpt-oss-block-manager) and currently has API mismatches. Once those are
-//! resolved, a `SchedulerAdapter` can bridge the real scheduler here.
+//! abstractions. `ExecutorAdapter` wraps the async executor into the engine's
+//! sync trait.
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use tracing::{debug, info};
 
-use gpt_oss_config::EngineConfig;
 use gpt_oss_core::prelude::{
     FinishReason, LLMError, LogProb, RequestId, RequestOutput, Result, SamplingParams, SequenceId,
     TokenId,
 };
-use gpt_oss_sequence::{Sequence, SequenceGroup, SequenceGroupMetadata};
+use gpt_oss_engine::config::EngineConfig;
+use gpt_oss_engine::sequence::{Sequence, SequenceGroup, SequenceGroupMetadata};
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::output::{OutputProcessor, SequenceOutputState};
 
-// ---------------------------------------------------------------------------
-// Re-exports of real executor types from gpt-oss-executor
-// ---------------------------------------------------------------------------
-
-/// The real async executor trait from gpt-oss-executor.
-pub use gpt_oss_executor::Executor as RealExecutorTrait;
+/// The async executor trait used by the engine adapter.
+pub use gpt_oss_engine::executor::Executor as RealExecutorTrait;
 /// The real executor configuration.
-pub use gpt_oss_executor::ExecutorConfig;
+pub use gpt_oss_engine::executor::ExecutorConfig;
 /// Factory for creating executors based on config.
-pub use gpt_oss_executor::ExecutorFactory;
+pub use gpt_oss_engine::executor::ExecutorFactory;
 /// The real executor input type.
-pub use gpt_oss_executor::ExecutorInput as RealExecutorInput;
+pub use gpt_oss_engine::executor::ExecutorInput as RealExecutorInput;
 /// The real batch-level sampler output.
-pub use gpt_oss_executor::SamplerOutput as RealSamplerOutput;
+pub use gpt_oss_engine::executor::SamplerOutput as RealSamplerOutput;
 
 // ---------------------------------------------------------------------------
 // Engine-level types
@@ -67,7 +59,7 @@ pub struct ExecutorInput {
 
 /// Per-sequence sampler output from one forward pass.
 /// Engine-level granularity: one output per sequence.
-/// Adapted from the batch-level `gpt_oss_executor::SamplerOutput`.
+/// Adapted from the batch-level executor sampler output.
 #[derive(Debug, Clone)]
 pub struct SamplerOutput {
     pub seq_id: SequenceId,
@@ -91,22 +83,18 @@ pub trait Scheduler: Send {
 
 /// Executor trait -- runs the model forward pass and sampling.
 /// This is the engine's own sync abstraction. Use `ExecutorAdapter` to wrap
-/// the real async `gpt_oss_executor::Executor` trait.
+/// the real async `gpt_oss_engine::executor::Executor` trait.
 pub trait Executor: Send {
     fn execute_model(&mut self, input: ExecutorInput) -> Result<Vec<SamplerOutput>>;
 }
 
-// ---------------------------------------------------------------------------
-// ExecutorAdapter -- wraps real gpt_oss_executor::Executor (async) into sync
-// ---------------------------------------------------------------------------
-
-/// Adapter wrapping a boxed `gpt_oss_executor::Executor` (async trait) to
+/// Adapter wrapping a boxed `gpt_oss_engine::executor::Executor` (async trait) to
 /// implement the engine's synchronous `Executor` trait.
 ///
 /// Converts between:
-/// - Engine's `ExecutorInput` (uses `gpt_oss_sequence::SequenceGroupMetadata`)
-///   and real `gpt_oss_executor::ExecutorInput` (uses executor's stub `SequenceGroupMetadata`)
-/// - Real `gpt_oss_executor::SamplerOutput` (batch-level: `Vec<u32>`, `Vec<f32>`)
+/// - Engine's `ExecutorInput` (uses `gpt_oss_engine::sequence::SequenceGroupMetadata`)
+///   and real `gpt_oss_engine::executor::ExecutorInput` (uses executor's stub `SequenceGroupMetadata`)
+/// - Real `gpt_oss_engine::executor::SamplerOutput` (batch-level: `Vec<u32>`, `Vec<f32>`)
 ///   and engine's per-sequence `SamplerOutput`
 pub struct ExecutorAdapter {
     inner: Box<dyn RealExecutorTrait>,
@@ -147,12 +135,12 @@ impl Executor for ExecutorAdapter {
             }
         }
 
-        // Convert engine's ExecutorInput -> real gpt_oss_executor::ExecutorInput
+        // Convert engine ExecutorInput into the executor module's input type.
         let real_input = RealExecutorInput {
             seq_group_metadata_list: input
                 .seq_group_metadata
                 .iter()
-                .map(|m| gpt_oss_executor::SequenceGroupMetadata {
+                .map(|m| gpt_oss_engine::executor::SequenceGroupMetadata {
                     request_id: m.request_id,
                     is_prompt: m.is_prompt,
                     seq_data: m.seq_data.clone(),
@@ -244,7 +232,7 @@ impl LLMEngine {
 
     /// Create an engine wired to the real `gpt_oss_executor` crate.
     ///
-    /// Uses `ExecutorAdapter` to wrap the async `gpt_oss_executor::Executor` trait
+    /// Uses `ExecutorAdapter` to wrap the async `gpt_oss_engine::executor::Executor` trait
     /// into the engine's sync `Executor` trait.
     pub fn with_real_executor(
         config: EngineConfig,
@@ -478,7 +466,7 @@ impl LLMEngine {
                 }
                 seq_data.insert(
                     seq.seq_id,
-                    gpt_oss_sequence::SequenceData {
+                    gpt_oss_engine::sequence::SequenceData {
                         prompt_token_ids: seq.prompt_token_ids.clone(),
                         output_token_ids: seq.output_token_ids.clone(),
                         cumulative_logprob: seq.cumulative_logprob,

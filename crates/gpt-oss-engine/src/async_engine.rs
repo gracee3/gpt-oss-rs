@@ -5,8 +5,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use gpt_oss_config::EngineConfig;
 use gpt_oss_core::prelude::{LLMError, RequestId, RequestOutput, Result, SamplingParams};
+use gpt_oss_engine::config::EngineConfig;
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::engine::{Executor, LLMEngine, Scheduler};
@@ -293,8 +293,8 @@ fn rand_id() -> u64 {
 mod tests {
     use super::*;
     use crate::engine::{ExecutorAdapter, ExecutorInput, SamplerOutput, SchedulerOutputs};
-    use gpt_oss_executor::ExecutorConfig;
-    use gpt_oss_sequence::SequenceGroup;
+    use gpt_oss_engine::executor::ExecutorConfig;
+    use gpt_oss_engine::sequence::SequenceGroup;
     use tokio_stream::StreamExt;
 
     // Reuse mock types from engine tests
