@@ -302,11 +302,10 @@ pub fn augment_messages_with_tools(
 
 /// Choose the prompt style least likely to fight the target model.
 ///
-/// GPT-OSS is not a Hermes/XML tool-calling model, so prefer plain JSON tool
-/// instructions until a dedicated Harmony renderer/parser is in place.
+/// GPT-OSS expects Harmony-style JSON tool instructions instead of Hermes XML.
 pub fn preferred_tool_prompt_style(model_name: &str) -> rvllm_tokenizer::ToolPromptStyle {
     if is_gpt_oss_model(model_name) {
-        rvllm_tokenizer::ToolPromptStyle::GenericJson
+        rvllm_tokenizer::ToolPromptStyle::Harmony
     } else {
         rvllm_tokenizer::ToolPromptStyle::Hermes
     }
@@ -871,14 +870,14 @@ mod tests {
     }
 
     #[test]
-    fn preferred_tool_prompt_style_uses_generic_json_for_gpt_oss() {
+    fn preferred_tool_prompt_style_uses_harmony_for_gpt_oss() {
         assert_eq!(
             preferred_tool_prompt_style("openai/gpt-oss-20b"),
-            rvllm_tokenizer::ToolPromptStyle::GenericJson
+            rvllm_tokenizer::ToolPromptStyle::Harmony
         );
         assert_eq!(
             preferred_tool_prompt_style("OpenAI/GPT-OSS-20B"),
-            rvllm_tokenizer::ToolPromptStyle::GenericJson
+            rvllm_tokenizer::ToolPromptStyle::Harmony
         );
     }
 
