@@ -184,6 +184,32 @@ mod tests {
         )
     }
 
+    fn two_layer_full_attention_moe_on_second_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-2layer-moe-second",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 2,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into(), "full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 1,
+                    num_experts_per_tok: 1,
+                    moe_layer_indices: vec![1],
+                },
+            },
+        )
+    }
+
     fn multi_block_dense_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
             "planned-reference-dense-multiblock",
@@ -229,10 +255,19 @@ mod tests {
         num_local_experts: usize,
         num_experts_per_tok: usize,
     ) -> ModelRunnerConfig {
+        runner_config_with_layers(1, vec!["full_attention".into()], num_local_experts, num_experts_per_tok)
+    }
+
+    fn runner_config_with_layers(
+        num_layers: usize,
+        layer_types: Vec<String>,
+        num_local_experts: usize,
+        num_experts_per_tok: usize,
+    ) -> ModelRunnerConfig {
         ModelRunnerConfig {
             tensor_parallel_rank: 0,
             tensor_parallel_size: 1,
-            num_layers: 1,
+            num_layers,
             hidden_size: 4,
             num_heads: 2,
             num_kv_heads: 2,
@@ -246,7 +281,7 @@ mod tests {
             attn_logit_softcapping: 0.0,
             attention_bias: false,
             sliding_window: None,
-            layer_types: vec!["full_attention".into()],
+            layer_types,
             num_local_experts,
             num_experts_per_tok,
             dtype: Dtype::Float16,
@@ -259,53 +294,72 @@ mod tests {
     }
 
     fn runner_weights_with_experts(num_local_experts: usize) -> BridgeModelWeights {
+        runner_weights_with_layers(1, num_local_experts, &[0])
+    }
+
+    fn runner_weights_with_layers(
+        num_layers: usize,
+        num_local_experts: usize,
+        moe_layers: &[usize],
+    ) -> BridgeModelWeights {
         let mut tensors = HashMap::new();
         tensors.extend([
             tensor("model.embed_tokens.weight", &[0.0; 32], &[8, 4]),
-            tensor("model.layers.0.input_layernorm.weight", &[1.0; 4], &[4]),
-            tensor(
-                "model.layers.0.post_attention_layernorm.weight",
-                &[1.0; 4],
-                &[4],
-            ),
-            tensor("model.layers.0.self_attn.q_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.k_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.v_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.o_proj.weight", &[0.0; 16], &[4, 4]),
-            tensor("model.layers.0.self_attn.sinks", &[0.0; 2], &[2]),
-            tensor(
-                "model.layers.0.mlp.router.weight",
-                &vec![0.0; num_local_experts * 4],
-                &[num_local_experts, 4],
-            ),
-            tensor(
-                "model.layers.0.mlp.router.bias",
-                &vec![0.0; num_local_experts],
-                &[num_local_experts],
-            ),
-            tensor(
-                "model.layers.0.mlp.experts.gate_up_proj",
-                &vec![0.0; num_local_experts * 16],
-                &[num_local_experts, 4, 4],
-            ),
-            tensor(
-                "model.layers.0.mlp.experts.gate_up_proj_bias",
-                &vec![0.0; num_local_experts * 4],
-                &[num_local_experts, 4],
-            ),
-            tensor(
-                "model.layers.0.mlp.experts.down_proj",
-                &vec![0.0; num_local_experts * 8],
-                &[num_local_experts, 2, 4],
-            ),
-            tensor(
-                "model.layers.0.mlp.experts.down_proj_bias",
-                &vec![0.0; num_local_experts * 4],
-                &[num_local_experts, 4],
-            ),
             tensor("model.norm.weight", &[1.0; 4], &[4]),
             tensor("lm_head.weight", &[0.0; 32], &[8, 4]),
         ]);
+
+        for layer_index in 0..num_layers {
+            let prefix = format!("model.layers.{layer_index}");
+            tensors.extend([
+                tensor(&format!("{prefix}.input_layernorm.weight"), &[1.0; 4], &[4]),
+                tensor(
+                    &format!("{prefix}.post_attention_layernorm.weight"),
+                    &[1.0; 4],
+                    &[4],
+                ),
+                tensor(&format!("{prefix}.self_attn.q_proj.weight"), &[0.0; 16], &[4, 4]),
+                tensor(&format!("{prefix}.self_attn.k_proj.weight"), &[0.0; 16], &[4, 4]),
+                tensor(&format!("{prefix}.self_attn.v_proj.weight"), &[0.0; 16], &[4, 4]),
+                tensor(&format!("{prefix}.self_attn.o_proj.weight"), &[0.0; 16], &[4, 4]),
+                tensor(&format!("{prefix}.self_attn.sinks"), &[0.0; 2], &[2]),
+            ]);
+
+            if moe_layers.contains(&layer_index) || num_local_experts > 0 {
+                tensors.extend([
+                    tensor(
+                        &format!("{prefix}.mlp.router.weight"),
+                        &vec![0.0; num_local_experts * 4],
+                        &[num_local_experts, 4],
+                    ),
+                    tensor(
+                        &format!("{prefix}.mlp.router.bias"),
+                        &vec![0.0; num_local_experts],
+                        &[num_local_experts],
+                    ),
+                    tensor(
+                        &format!("{prefix}.mlp.experts.gate_up_proj"),
+                        &vec![0.0; num_local_experts * 16],
+                        &[num_local_experts, 4, 4],
+                    ),
+                    tensor(
+                        &format!("{prefix}.mlp.experts.gate_up_proj_bias"),
+                        &vec![0.0; num_local_experts * 4],
+                        &[num_local_experts, 4],
+                    ),
+                    tensor(
+                        &format!("{prefix}.mlp.experts.down_proj"),
+                        &vec![0.0; num_local_experts * 8],
+                        &[num_local_experts, 2, 4],
+                    ),
+                    tensor(
+                        &format!("{prefix}.mlp.experts.down_proj_bias"),
+                        &vec![0.0; num_local_experts * 4],
+                        &[num_local_experts, 4],
+                    ),
+                ]);
+            }
+        }
 
         BridgeModelWeights { tensors }
     }
@@ -971,5 +1025,41 @@ mod tests {
 
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn two_layer_full_attention_second_layer_moe_decode_gap_is_localized() {
+        let case = ConformanceCase::decode("two-layer-second-moe-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_layers(2, 1, &[1]),
+                runner_config_with_layers(
+                    2,
+                    vec!["full_attention".into(), "full_attention".into()],
+                    1,
+                    1,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![1],
+        );
+        let reference = two_layer_full_attention_moe_on_second_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("logits differ")), "{:?}", report.comparison.diffs);
     }
 }
