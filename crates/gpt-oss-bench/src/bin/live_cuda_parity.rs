@@ -63,11 +63,20 @@ struct Cli {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct TimingBreakdown {
+    engine_init_ms: u128,
+    add_request_ms: u128,
+    run_loop_ms: u128,
+    total_ms: u128,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct RunSummary {
     label: String,
     visible_devices: String,
     tp_size: usize,
     elapsed_ms: u128,
+    timings: TimingBreakdown,
     request: RequestOutput,
 }
 
@@ -116,7 +125,9 @@ fn run_decode(
 ) -> Result<RunSummary> {
     let config = build_config(cli, tp_size);
     let started = Instant::now();
+    let engine_start = Instant::now();
     let mut engine = GpuLLMEngine::new(config).context("failed to construct GPU engine")?;
+    let engine_init_ms = engine_start.elapsed().as_millis();
 
     let params = SamplingParams {
         temperature: 0.0,
@@ -124,20 +135,31 @@ fn run_decode(
         seed: Some(0),
         ..SamplingParams::default()
     };
+    let add_request_start = Instant::now();
     engine
         .add_request(RequestId(1), cli.prompt.clone(), params)
         .context("failed to add request")?;
+    let add_request_ms = add_request_start.elapsed().as_millis();
 
+    let run_loop_start = Instant::now();
     let mut outputs = engine.run().context("engine run failed")?;
+    let run_loop_ms = run_loop_start.elapsed().as_millis();
     if outputs.len() != 1 {
         bail!("expected exactly one request output, got {}", outputs.len());
     }
 
+    let total_ms = started.elapsed().as_millis();
     Ok(RunSummary {
         label,
         visible_devices,
         tp_size,
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms: total_ms,
+        timings: TimingBreakdown {
+            engine_init_ms,
+            add_request_ms,
+            run_loop_ms,
+            total_ms,
+        },
         request: outputs.remove(0),
     })
 }
