@@ -1,5 +1,5 @@
 use crate::{
-    case::{ConformanceCase, ExecutionSample, PlaceholderBackend},
+    case::{ConformanceBackend, ConformanceCase, ExecutionSample},
     report::{compare_samples, ComparisonReport, ParityOutcome, RunComparison},
 };
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,8 @@ impl ConformanceHarness {
     pub fn compare(
         &self,
         case: &ConformanceCase,
-        expected_backend: &PlaceholderBackend,
-        observed_backend: &PlaceholderBackend,
+        expected_backend: &impl ConformanceBackend,
+        observed_backend: &impl ConformanceBackend,
     ) -> ComparisonReport {
         let expected = expected_backend.run(case);
         let observed = observed_backend.run(case);

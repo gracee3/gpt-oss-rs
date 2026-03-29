@@ -26,7 +26,7 @@ impl Default for RuntimeMode {
 }
 
 /// Coarse backend path selected for a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendPath {
     CudaEager,
     CudaGraph,
@@ -34,28 +34,28 @@ pub enum BackendPath {
 }
 
 /// Request phase used by the planner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestKind {
     Prefill,
     Decode,
 }
 
 /// Graph replay legality.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphPolicy {
     Forbidden { reason: String },
     Eligible { padded_batch_size: usize },
 }
 
 /// Planned output-readback mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputPolicy {
     Logits,
     GreedyTokens,
 }
 
 /// Pure input to the planner.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanRequest {
     pub runtime_mode: RuntimeMode,
     pub model_name: String,
@@ -93,7 +93,7 @@ impl PlanRequest {
 }
 
 /// The planner output used by the worker routing seam.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     pub runtime_mode: RuntimeMode,
     pub model_name: String,
@@ -106,7 +106,7 @@ pub struct ExecutionPlan {
 }
 
 /// Planner failure.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanError {
     #[error("invalid plan request: {0}")]
     InvalidRequest(String),

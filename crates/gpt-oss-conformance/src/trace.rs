@@ -1,3 +1,5 @@
+use gpt_oss_reference::ReferenceTrace;
+use gpt_oss_runtime_plan::ExecutionPlan;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,5 +49,74 @@ impl TraceSummary {
             label,
             frames: vec![frame],
         }
+    }
+
+    pub fn from_reference(
+        label: impl Into<String>,
+        plan: &ExecutionPlan,
+        trace: &ReferenceTrace,
+    ) -> Self {
+        let label = label.into();
+        let mut frames = Vec::with_capacity(trace.layers.len() + 1);
+
+        let mut plan_frame = TraceFrame::new(format!("{label}:plan"));
+        plan_frame.events.push(TraceEvent::new(
+            "runtime_mode",
+            format!("{:?}", plan.runtime_mode),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "backend_path",
+            format!("{:?}", plan.backend_path),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "request_kind",
+            format!("{:?}", plan.request_kind),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "graph_policy",
+            format!("{:?}", plan.graph_policy),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "output_policy",
+            format!("{:?}", plan.output_policy),
+        ));
+        plan_frame
+            .events
+            .push(TraceEvent::new("reason", plan.reason.clone()));
+        frames.push(plan_frame);
+
+        for layer in &trace.layers {
+            let mut frame = TraceFrame::new(format!("{label}:layer-{}", layer.layer_index));
+            frame.events.push(TraceEvent::new(
+                "layer",
+                format!(
+                    "{}:{}->{}",
+                    layer.layer_index, layer.input_tokens, layer.output_tokens
+                ),
+            ));
+            frame.events.push(TraceEvent::new(
+                "attention",
+                format!(
+                    "{:?}/{}",
+                    trace.attention.mode, trace.attention.attended_tokens
+                ),
+            ));
+            frame.events.push(TraceEvent::new(
+                "moe",
+                format!("{:?}/{}", trace.moe.mode, trace.moe.experts_invoked),
+            ));
+            frame.events.push(TraceEvent::new(
+                "cache",
+                format!(
+                    "block_size={} visibility={:?} blocks={}",
+                    trace.cache_layout.block_size,
+                    trace.cache_layout.visibility,
+                    trace.cache.blocks.len()
+                ),
+            ));
+            frames.push(frame);
+        }
+
+        Self { label, frames }
     }
 }

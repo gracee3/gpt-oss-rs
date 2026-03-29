@@ -12,7 +12,9 @@ mod trace;
 
 pub use attention::{AttentionMode, AttentionTrace};
 pub use cache::{CacheLayout, CacheModelError, CacheState, CacheVisibility};
-pub use executor::{ReferenceExecutor, ReferenceExecutorConfig, ReferenceInput, ReferenceOutput};
+pub use executor::{
+    ReferenceError, ReferenceExecutor, ReferenceExecutorConfig, ReferenceInput, ReferenceOutput,
+};
 pub use moe::{MoeMode, MoeTrace};
 pub use trace::{LayerTrace, ReferenceTrace};
 
@@ -55,6 +57,6 @@ mod tests {
             })
             .expect_err("expected a single-block rejection");
 
-        assert!(matches!(err, executor::ReferenceError::InputTooLarge { .. }));
+        assert!(matches!(err, ReferenceError::InputTooLarge { .. }));
     }
 }

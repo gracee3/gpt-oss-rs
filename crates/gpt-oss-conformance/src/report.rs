@@ -57,6 +57,9 @@ pub fn compare_samples(expected: &ExecutionSample, observed: &ExecutionSample) -
     if expected.tokens != observed.tokens {
         diffs.push("tokens differ".to_string());
     }
+    if expected.plan != observed.plan {
+        diffs.push("plans differ".to_string());
+    }
     if expected.trace != observed.trace {
         diffs.push(trace_diff(&expected.trace, &observed.trace));
     }

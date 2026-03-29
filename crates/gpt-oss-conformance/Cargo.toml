@@ -7,15 +7,13 @@ description.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-readme.workspace = true
+readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+gpt-oss-core = { workspace = true }
+gpt-oss-reference = { workspace = true }
+gpt-oss-runtime-plan = { workspace = true }
+serde = { workspace = true }
 
-[dev-dependencies]
-pretty_assertions = "1"
