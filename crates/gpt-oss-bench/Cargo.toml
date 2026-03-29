@@ -38,3 +38,8 @@ required-features = ["cuda"]
 name = "restricted_prefill_trace"
 path = "src/bin/restricted_prefill_trace.rs"
 required-features = ["cuda"]
+
+[[bin]]
+name = "restricted_logit_diff"
+path = "src/bin/restricted_logit_diff.rs"
+required-features = ["cuda"]
