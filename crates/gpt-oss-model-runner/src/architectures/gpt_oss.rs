@@ -9,6 +9,8 @@
 use half::f16;
 use tracing::trace;
 
+use gpt_oss_moe_semantics::{softmax_weights, stable_top_k_indices};
+
 use crate::bridge::{AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result};
 use crate::input::ModelInput;
 use crate::layers::linear::LinearLayer;
@@ -335,9 +337,9 @@ impl GptOssMlp {
             let logits: Vec<f32> = (0..self.num_local_experts)
                 .map(|expert_idx| router_logits.data[offset + expert_idx].to_f32())
                 .collect();
-            let top_indices = top_k_indices(&logits, top_k);
+            let top_indices = stable_top_k_indices(&logits, top_k);
             let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
-            let route_weights = softmax(&top_logits);
+            let route_weights = softmax_weights(&top_logits);
 
             for (rank, &expert_idx) in top_indices.iter().enumerate() {
                 expert_tokens[expert_idx].push((token_idx, route_weights[rank]));
@@ -547,28 +549,13 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-fn top_k_indices(vals: &[f32], k: usize) -> Vec<usize> {
-    let mut indexed: Vec<(usize, f32)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    indexed.into_iter().take(k).map(|(i, _)| i).collect()
-}
-
-fn softmax(vals: &[f32]) -> Vec<f32> {
-    if vals.is_empty() {
-        return Vec::new();
-    }
-    let max_val = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let exps: Vec<f32> = vals.iter().map(|&v| (v - max_val).exp()).collect();
-    let sum: f32 = exps.iter().sum();
-    exps.into_iter().map(|v| v / sum).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
     use crate::bridge::{AttentionMetadata, MockAttentionBackend, WeightTensor};
+    use gpt_oss_moe_semantics::{route_top_k, softmax_weights, stable_top_k_indices};
 
     fn tensor(name: &str, vals: &[f32], shape: &[usize]) -> (String, WeightTensor) {
         (
@@ -720,5 +707,15 @@ mod tests {
             .forward(&test_input(), &cache, &attention)
             .unwrap_err();
         assert!(err.to_string().contains("expert tensors"));
+    }
+
+    #[test]
+    fn gpt_oss_moe_helper_matches_semantic_tie_break_and_weights() {
+        let logits = [1.0, 1.0, 0.5, 1.0];
+        let routed = route_top_k(&logits, 2);
+
+        assert_eq!(stable_top_k_indices(&logits, 2), vec![0, 1]);
+        assert_eq!(routed, vec![(0, 0.5), (1, 0.5)]);
+        assert!((softmax_weights(&[1.0, 2.0, 3.0]).iter().sum::<f32>() - 1.0).abs() < 1e-6);
     }
 }
