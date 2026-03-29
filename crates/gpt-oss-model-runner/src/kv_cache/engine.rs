@@ -209,7 +209,7 @@ impl CacheEngine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "cuda")))]
 mod tests {
     use super::*;
     use gpt_oss_gpu::prelude::MockGpuAllocator;
