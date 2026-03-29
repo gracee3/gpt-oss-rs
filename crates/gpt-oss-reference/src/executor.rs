@@ -6,6 +6,7 @@ use crate::{
 };
 use gpt_oss_core::types::TokenId;
 use gpt_oss_moe_semantics::route_top_k;
+use half::f16;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -25,9 +26,21 @@ pub struct ReferenceExecutorConfig {
     #[serde(default)]
     pub num_experts_per_tok: usize,
     #[serde(default)]
+    pub token_embedding_rows: Vec<Vec<f32>>,
+    #[serde(default)]
+    pub final_norm_weight: Vec<f32>,
+    #[serde(default = "default_rms_norm_eps")]
+    pub rms_norm_eps: f32,
+    #[serde(default)]
+    pub lm_head_rows: Vec<Vec<f32>>,
+    #[serde(default)]
     pub router_bias: Vec<f32>,
     #[serde(default)]
     pub moe_layer_indices: Vec<usize>,
+}
+
+fn default_rms_norm_eps() -> f32 {
+    1e-5
 }
 
 /// Input to the reference executor scaffold.
@@ -83,6 +96,10 @@ impl ReferenceExecutor {
         let cache = CacheState::from_tokens(&input.tokens, &cache_layout)?;
 
         let token_count = input.tokens.len();
+        if self.has_explicit_dense_projection() {
+            return self.forward_explicit_dense(input, cache_layout, cache);
+        }
+
         let zero_logit_baseline = self.uses_zero_logit_baseline();
         let mut hidden = if zero_logit_baseline {
             vec![0.0; token_count]
@@ -221,6 +238,9 @@ impl ReferenceExecutor {
     }
 
     fn uses_zero_logit_baseline(&self) -> bool {
+        if self.has_explicit_dense_projection() {
+            return false;
+        }
         if self.config.sink_tokens > 0 || self.config.sliding_window.is_some() {
             return false;
         }
@@ -314,15 +334,128 @@ impl ReferenceExecutor {
     }
 
     fn project_logits(&self, hidden: &[f32]) -> Vec<f32> {
+        let last_hidden = hidden.last().copied().unwrap_or(0.0);
         (0..self.config.vocab_size)
             .map(|vocab_index| {
-                hidden
+                let basis = (vocab_index % 7 + 1) as f32;
+                last_hidden * basis
+            })
+            .collect()
+    }
+
+    fn has_explicit_dense_projection(&self) -> bool {
+        !self.config.token_embedding_rows.is_empty()
+            && !self.config.final_norm_weight.is_empty()
+            && !self.config.lm_head_rows.is_empty()
+    }
+
+    fn forward_explicit_dense(
+        &self,
+        input: ReferenceInput,
+        cache_layout: CacheLayout,
+        cache: CacheState,
+    ) -> Result<ReferenceOutput, ReferenceError> {
+        let token_count = input.tokens.len();
+        let mut hidden = input
+            .tokens
+            .iter()
+            .map(|token| self.embedding_row(*token))
+            .collect::<Vec<_>>();
+        let mut layers = Vec::with_capacity(self.config.num_layers);
+        let position_ids = (0..token_count)
+            .map(|offset| input.seq_start_pos + offset as u32)
+            .collect::<Vec<_>>();
+        let total_sequence_tokens = input.seq_start_pos as usize + token_count;
+
+        for layer_index in 0..self.config.num_layers {
+            let layer_type = self.layer_type(layer_index);
+            let query_index = total_sequence_tokens.saturating_sub(1);
+            let layer_attention =
+                self.attention_trace_for(layer_type, query_index, total_sequence_tokens);
+            let layer_moe = if self.layer_has_moe(layer_index) {
+                let routes = hidden
                     .iter()
-                    .enumerate()
-                    .map(|(token_index, value)| {
-                        let basis = ((vocab_index + token_index) % 7 + 1) as f32;
-                        value * basis
+                    .map(|row| {
+                        route_top_k(
+                            &self.router_logits(0.0, row.first().copied().unwrap_or(0.0)),
+                            self.effective_top_k(),
+                        )
                     })
+                    .collect::<Vec<_>>();
+                MoeTrace::sparse(&routes)
+            } else {
+                MoeTrace::dense_only()
+            };
+            layers.push(LayerTrace {
+                layer_index,
+                input_tokens: token_count,
+                output_tokens: token_count,
+                position_ids: position_ids.clone(),
+                attention: layer_attention,
+                moe: layer_moe,
+            });
+        }
+
+        let attention = layers
+            .last()
+            .map(|layer| layer.attention.clone())
+            .unwrap_or_else(|| AttentionTrace::full(Vec::new()));
+        let moe = layers
+            .last()
+            .map(|layer| layer.moe.clone())
+            .unwrap_or_else(MoeTrace::dense_only);
+        let trace = ReferenceTrace {
+            phase: input.phase,
+            seq_start_pos: input.seq_start_pos,
+            layers,
+            attention,
+            moe,
+            cache_layout,
+            cache,
+        };
+
+        let normalized = hidden
+            .iter_mut()
+            .map(|row| self.rms_norm(row))
+            .collect::<Vec<_>>();
+        let logits = normalized
+            .last()
+            .map(|row| self.project_explicit_logits(row))
+            .unwrap_or_else(|| vec![0.0; self.config.vocab_size]);
+
+        Ok(ReferenceOutput { logits, trace })
+    }
+
+    fn embedding_row(&self, token: TokenId) -> Vec<f32> {
+        self.config
+            .token_embedding_rows
+            .get(token as usize)
+            .cloned()
+            .unwrap_or_else(|| vec![0.0; self.config.final_norm_weight.len()])
+    }
+
+    fn rms_norm(&self, row: &[f32]) -> Vec<f32> {
+        if row.is_empty() {
+            return Vec::new();
+        }
+        let sum_sq = row.iter().map(|value| value * value).sum::<f32>();
+        let inv_rms = (sum_sq / row.len() as f32 + self.config.rms_norm_eps)
+            .sqrt()
+            .recip();
+        row.iter()
+            .zip(self.config.final_norm_weight.iter())
+            .map(|(value, weight)| f16::from_f32(value * inv_rms * weight).to_f32())
+            .collect()
+    }
+
+    fn project_explicit_logits(&self, row: &[f32]) -> Vec<f32> {
+        self.config
+            .lm_head_rows
+            .iter()
+            .map(|weights| {
+                row.iter()
+                    .zip(weights.iter())
+                    .map(|(value, weight)| value * weight)
                     .sum::<f32>()
             })
             .collect()

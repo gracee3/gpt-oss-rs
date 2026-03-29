@@ -1177,6 +1177,7 @@ version = "0.1.0"
 dependencies = [
  "gpt-oss-core",
  "gpt-oss-moe-semantics",
+ "half",
  "serde",
  "thiserror 2.0.18",
  "tracing",

@@ -48,6 +48,10 @@ mod tests {
                     sink_tokens: 1,
                     num_local_experts: 4,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -75,6 +79,59 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 0,
                     num_experts_per_tok: 0,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
+                    router_bias: Vec::new(),
+                    moe_layer_indices: vec![],
+                },
+            },
+        )
+    }
+
+    fn nonzero_dense_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-dense-nonzero",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 0,
+                    num_experts_per_tok: 0,
+                    token_embedding_rows: vec![
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                    ],
+                    final_norm_weight: vec![1.0, 1.0, 1.0, 1.0],
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: vec![
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                        vec![0.5, 0.0, 0.0, 0.5],
+                    ],
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
@@ -102,6 +159,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 1,
                     num_experts_per_tok: 1,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -129,6 +190,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -156,6 +221,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -183,6 +252,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0],
                 },
@@ -210,6 +283,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 4,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -237,6 +314,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 1,
                     num_experts_per_tok: 1,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -264,6 +345,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
@@ -291,6 +376,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -318,6 +407,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
@@ -345,6 +438,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 3,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -376,6 +473,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 2,
                     num_experts_per_tok: 2,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -403,6 +504,10 @@ mod tests {
                     sink_tokens: 0,
                     num_local_experts: 0,
                     num_experts_per_tok: 0,
+                    token_embedding_rows: Vec::new(),
+                    final_norm_weight: Vec::new(),
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
@@ -781,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_dense_full_attention_gap_is_localized_to_outputs() {
+    fn nonzero_dense_full_attention_parity_matches() {
         let case = ConformanceCase::prefill("nonzero-dense-frontier", vec![1, 2]);
         let runner = Arc::new(
             ModelRunner::new(
@@ -794,37 +899,13 @@ mod tests {
             .expect("test model runner"),
         );
         let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
-        let reference = dense_baseline_backend();
+        let reference = nonzero_dense_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("logits differ")));
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("tokens differ")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("plans differ")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("event attention differs")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("event cache differs")));
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]

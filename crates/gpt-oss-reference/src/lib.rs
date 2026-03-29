@@ -33,6 +33,10 @@ mod tests {
             sink_tokens: 1,
             num_local_experts: 4,
             num_experts_per_tok: 2,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });
@@ -68,6 +72,10 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 0,
             num_experts_per_tok: 0,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
@@ -96,6 +104,10 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 1,
             num_experts_per_tok: 1,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![0],
         });
@@ -115,6 +127,57 @@ mod tests {
     }
 
     #[test]
+    fn forward_supports_explicit_dense_projection() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 8,
+            num_layers: 1,
+            block_size: 16,
+            layer_types: vec!["full_attention".into()],
+            sliding_window: None,
+            sink_tokens: 0,
+            num_local_experts: 0,
+            num_experts_per_tok: 0,
+            token_embedding_rows: vec![
+                vec![0.0, 0.0, 0.0, 0.0],
+                vec![1.0, 0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+                vec![0.5, 0.5, 0.0, 0.0],
+                vec![0.0, 0.5, 0.5, 0.0],
+                vec![0.0, 0.0, 0.5, 0.5],
+            ],
+            final_norm_weight: vec![1.0, 1.0, 1.0, 1.0],
+            rms_norm_eps: 1e-5,
+            lm_head_rows: vec![
+                vec![1.0, 0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+                vec![0.5, 0.5, 0.0, 0.0],
+                vec![0.0, 0.5, 0.5, 0.0],
+                vec![0.0, 0.0, 0.5, 0.5],
+                vec![0.5, 0.0, 0.0, 0.5],
+            ],
+            router_bias: Vec::new(),
+            moe_layer_indices: vec![],
+        });
+
+        let output = executor
+            .forward(ReferenceInput {
+                tokens: vec![1u32, 2u32],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
+            })
+            .expect("explicit dense projection forward");
+
+        assert_eq!(output.trace.layers.len(), 1);
+        assert_eq!(output.logits.len(), 8);
+        assert!(output.logits[1] > output.logits[4]);
+        assert_eq!(output.logits[0], 0.0);
+    }
+
+    #[test]
     fn forward_uses_router_bias_for_zero_baseline_moe_selection() {
         let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
             vocab_size: 4,
@@ -125,6 +188,10 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 3,
             num_experts_per_tok: 2,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: vec![0.0, 1.0, 2.0],
             moe_layer_indices: vec![0],
         });
@@ -153,6 +220,10 @@ mod tests {
             sink_tokens: 0,
             num_local_experts: 0,
             num_experts_per_tok: 0,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
@@ -179,6 +250,10 @@ mod tests {
             sink_tokens: 1,
             num_local_experts: 2,
             num_experts_per_tok: 1,
+            token_embedding_rows: Vec::new(),
+            final_norm_weight: Vec::new(),
+            rms_norm_eps: 1e-5,
+            lm_head_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });
