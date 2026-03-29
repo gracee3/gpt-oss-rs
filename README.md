@@ -150,6 +150,8 @@ cargo build --release --features cuda -p rvllm-server
 cd kernels && bash build.sh
 ```
 
+The repo includes a local Cargo build config in [`.cargo/config.toml`](.cargo/config.toml) that enables `sccache` and sets Cargo's default build jobs to match the host. If you want to override either setting locally, use environment variables such as `RUSTC_WRAPPER` or `CARGO_BUILD_JOBS`.
+
 ### Serve a model
 
 ```bash
