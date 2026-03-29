@@ -19,7 +19,7 @@ use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
 use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
-use gpt_oss_model_runner::gpu_runner::ForwardOutput;
+use gpt_oss_model_runner::gpu_runner::{ForwardOutput, PrefillActivationTrace};
 use gpt_oss_model_runner::input::ModelInput;
 use gpt_oss_model_runner::kv_cache::CacheEngine;
 use gpt_oss_model_runner::sampling::batch::make_rng;
@@ -1243,6 +1243,28 @@ impl GpuWorker {
             &model_input.position_ids,
             &model_input.attention_metadata,
             model_input.is_prefill,
+        )
+    }
+
+    pub fn debug_runner_prefill_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<PrefillActivationTrace> {
+        if metadata.is_empty() {
+            return Ok(PrefillActivationTrace {
+                embedding: Vec::new(),
+                layers: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError("GPU model runner not initialized -- build with --features cuda".into())
+        })?;
+        runner.debug_prefill_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
         )
     }
 
