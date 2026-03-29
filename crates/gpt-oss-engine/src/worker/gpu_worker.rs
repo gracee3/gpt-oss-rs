@@ -30,7 +30,7 @@ use gpt_oss_core::prelude::ResponseFormat;
 
 use super::config::WorkerConfig;
 use super::graph_runner::{GraphRunner, GraphRunnerConfig};
-use crate::input;
+use crate::worker::input;
 
 #[cfg(feature = "cuda")]
 use gpt_oss_model_runner::tensor_parallel::nccl_tensor_parallel_comm;

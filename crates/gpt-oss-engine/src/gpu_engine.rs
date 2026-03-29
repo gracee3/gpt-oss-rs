@@ -558,13 +558,20 @@ mod inner {
     impl GpuLLMEngine {
         pub fn new(config: EngineConfig) -> Result<Self> {
             let model_name = &config.model.model_path;
+            let engine_start = Instant::now();
             info!(model = %model_name, "GpuLLMEngine: initializing");
 
             // 1. Resolve model directory
+            let stage_start = Instant::now();
             let model_dir = resolve_model_dir(model_name)?;
-            info!(model_dir = %model_dir.display(), "resolved model directory");
+            info!(
+                model_dir = %model_dir.display(),
+                elapsed_ms = stage_start.elapsed().as_millis(),
+                "resolved model directory"
+            );
 
             // 2. Read model config.json
+            let stage_start = Instant::now();
             let hf_config = read_model_config(&model_dir)?;
             info!(
                 arch = %hf_config.architecture,
@@ -575,11 +582,18 @@ mod inner {
                 kv_heads = hf_config.num_key_value_heads,
                 vocab = hf_config.vocab_size,
                 intermediate = hf_config.intermediate_size,
+                elapsed_ms = stage_start.elapsed().as_millis(),
                 "model config loaded"
             );
 
+            let stage_start = Instant::now();
             let available_devices = gpt_oss_gpu::device::list_devices();
             validate_parallel_topology(&config, available_devices.len())?;
+            info!(
+                device_count = available_devices.len(),
+                elapsed_ms = stage_start.elapsed().as_millis(),
+                "validated CUDA topology"
+            );
 
             if hf_config.architecture != "GptOssForCausalLM" {
                 return Err(LLMError::ModelError(format!(
@@ -588,7 +602,13 @@ mod inner {
                 )));
             }
 
+            let stage_start = Instant::now();
             let quant_method = gpt_oss_model_runner::quant::detect_quant_method(&model_dir)?;
+            info!(
+                quant_method = %quant_method,
+                elapsed_ms = stage_start.elapsed().as_millis(),
+                "detected quantization method"
+            );
             if quant_method.is_quantized() && hf_config.architecture != "GptOssForCausalLM" {
                 return Err(LLMError::ModelError(format!(
                     "quantized model checkpoints are not wired into the GPU engine yet (detected {})",
@@ -598,10 +618,22 @@ mod inner {
 
             // 3. Tokenizer
             let tokenizer_path = config.model.tokenizer_path.as_deref().unwrap_or(model_name);
+            let stage_start = Instant::now();
             let tokenizer = Tokenizer::from_pretrained(tokenizer_path)?;
+            info!(
+                tokenizer_path,
+                elapsed_ms = stage_start.elapsed().as_millis(),
+                "tokenizer loaded"
+            );
 
             // 4. Build per-rank workers from the real model config.
+            let stage_start = Instant::now();
             let worker_configs = build_worker_configs(&config, &hf_config)?;
+            info!(
+                tensor_parallel_size = worker_configs.len(),
+                elapsed_ms = stage_start.elapsed().as_millis(),
+                "built worker configs"
+            );
             let mut workers = Vec::with_capacity(worker_configs.len());
             let mut profiled_blocks = Vec::with_capacity(worker_configs.len());
 
@@ -613,19 +645,32 @@ mod inner {
             for worker_config in worker_configs {
                 let rank = worker_config.rank;
                 let device_id = worker_config.device_id;
+                let worker_start = Instant::now();
                 let mut worker = GpuWorker::new(worker_config).map_err(|e| {
                     LLMError::GpuError(format!(
                         "GpuWorker creation failed for rank {rank} on device {device_id}: {e}"
                     ))
                 })?;
 
+                let init_model_start = Instant::now();
                 worker.init_model(&model_dir)?;
+                let init_model_ms = init_model_start.elapsed().as_millis();
+                let load_weights_start = Instant::now();
                 worker.load_weights(&model_dir)?;
+                let load_weights_ms = load_weights_start.elapsed().as_millis();
+                let profile_start = Instant::now();
                 let (rank_gpu_blocks, rank_cpu_blocks) =
                     worker.profile_num_available_blocks(config.cache.gpu_memory_utilization)?;
                 info!(
                     rank,
-                    device_id, rank_gpu_blocks, rank_cpu_blocks, "profiled TP worker capacity"
+                    device_id,
+                    init_model_ms,
+                    load_weights_ms,
+                    profile_ms = profile_start.elapsed().as_millis(),
+                    total_ms = worker_start.elapsed().as_millis(),
+                    rank_gpu_blocks,
+                    rank_cpu_blocks,
+                    "profiled TP worker capacity"
                 );
                 profiled_blocks.push((rank_gpu_blocks, rank_cpu_blocks));
                 workers.push(worker);
@@ -643,21 +688,48 @@ mod inner {
                 .unwrap_or(0);
 
             for (rank, worker) in workers.iter_mut().enumerate() {
+                let init_cache_start = Instant::now();
                 worker
                     .init_cache(num_gpu_blocks, num_cpu_blocks)
                     .map_err(|e| {
                         LLMError::GpuError(format!("tp worker rank {rank} init_cache failed: {e}"))
                     })?;
+                info!(
+                    rank,
+                    elapsed_ms = init_cache_start.elapsed().as_millis(),
+                    num_gpu_blocks,
+                    num_cpu_blocks,
+                    "initialized worker cache"
+                );
             }
 
+            let tp_group_start = Instant::now();
             init_tensor_parallel_group(&mut workers)?;
+            info!(
+                elapsed_ms = tp_group_start.elapsed().as_millis(),
+                world_size = workers.len(),
+                "initialized tensor-parallel communicator"
+            );
 
+            let tp_coordinator_start = Instant::now();
             let tp_coordinator = TensorParallelCoordinator::new(workers)?;
+            info!(
+                elapsed_ms = tp_coordinator_start.elapsed().as_millis(),
+                tensor_parallel_size = tp_coordinator.len(),
+                "constructed tensor-parallel coordinator"
+            );
 
             // 8. Scheduler
+            let scheduler_start = Instant::now();
             let scheduler = FifoScheduler::new(
                 config.scheduler.max_num_seqs,
                 config.scheduler.max_num_batched_tokens,
+            );
+            info!(
+                elapsed_ms = scheduler_start.elapsed().as_millis(),
+                max_num_seqs = config.scheduler.max_num_seqs,
+                max_num_batched_tokens = config.scheduler.max_num_batched_tokens,
+                "scheduler initialized"
             );
 
             let prefix_cache = if config.cache.enable_prefix_caching {
@@ -675,6 +747,7 @@ mod inner {
                 tensor_parallel_size = tp_coordinator.len(),
                 block_size = config.cache.block_size,
                 max_num_seqs = config.scheduler.max_num_seqs,
+                elapsed_ms = engine_start.elapsed().as_millis(),
                 "GpuLLMEngine: ready for inference"
             );
             Ok(Self {
