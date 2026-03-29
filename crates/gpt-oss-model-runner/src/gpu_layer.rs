@@ -2875,6 +2875,177 @@ mod inner {
     fn sigmoid(x: f32) -> f32 {
         1.0 / (1.0 + (-x).exp())
     }
+
+    #[cfg(test)]
+    mod cuda_tests {
+        use super::*;
+        use std::path::{Path, PathBuf};
+
+        use cudarc::driver::CudaContext;
+
+        fn find_ptx_dir() -> Option<PathBuf> {
+            if let Ok(dir) = std::env::var("GPT_OSS_RS_KERNEL_DIR") {
+                let path = PathBuf::from(dir);
+                if path.join("flash_attention.ptx").exists()
+                    && path.join("reshape_and_cache.ptx").exists()
+                {
+                    return Some(path);
+                }
+            }
+
+            let build_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/debug/build");
+            let entries = std::fs::read_dir(&build_root).ok()?;
+            for entry in entries.flatten() {
+                let path = entry.path().join("out/ptx");
+                if path.join("flash_attention.ptx").exists()
+                    && path.join("reshape_and_cache.ptx").exists()
+                {
+                    return Some(path);
+                }
+            }
+            None
+        }
+
+        #[test]
+        fn sliding_decode_boundary_excludes_dropped_token_on_cuda() {
+            let Some(ptx_dir) = find_ptx_dir() else {
+                eprintln!("skipping: PTX directory not found");
+                return;
+            };
+
+            let context = match CudaContext::new(0) {
+                Ok(context) => context,
+                Err(err) => {
+                    eprintln!("skipping: CUDA context unavailable: {err}");
+                    return;
+                }
+            };
+            let stream = match context.new_stream() {
+                Ok(stream) => stream,
+                Err(err) => {
+                    eprintln!("skipping: CUDA stream unavailable: {err}");
+                    return;
+                }
+            };
+            let loader = match KernelLoader::new(context.clone(), stream.clone(), &ptx_dir) {
+                Ok(loader) => loader,
+                Err(err) => {
+                    eprintln!("skipping: kernel loader unavailable: {err}");
+                    return;
+                }
+            };
+
+            let num_prefill_tokens = 128usize;
+            let num_decode_tokens = 1usize;
+            let num_seqs = 1usize;
+            let num_heads = 1usize;
+            let num_kv_heads = 1usize;
+            let head_dim = 64usize;
+            let block_size = 16usize;
+            let num_blocks = 9usize; // 129 tokens span 9 blocks at block_size 16
+            let cache_len = num_blocks * block_size * num_kv_heads * head_dim;
+
+            let key_cache = stream
+                .alloc_zeros::<f16>(cache_len)
+                .expect("allocate key cache");
+            let value_cache = stream
+                .alloc_zeros::<f16>(cache_len)
+                .expect("allocate value cache");
+
+            let prefill_k = stream
+                .clone_htod(&vec![1.0f32; num_prefill_tokens * num_kv_heads * head_dim])
+                .expect("upload prefill keys");
+            let mut prefill_v_host = vec![0.0f32; num_prefill_tokens * num_kv_heads * head_dim];
+            for dim in 0..head_dim {
+                prefill_v_host[dim] = 128.0;
+            }
+            let prefill_v = stream
+                .clone_htod(&prefill_v_host)
+                .expect("upload prefill values");
+            let prefill_slots = stream
+                .clone_htod(&(0..num_prefill_tokens as i32).collect::<Vec<_>>())
+                .expect("upload prefill slots");
+
+            GpuTransformerLayer::cache_write(
+                &stream,
+                &loader,
+                &prefill_k,
+                &prefill_v,
+                &key_cache,
+                &value_cache,
+                &prefill_slots.as_view(),
+                num_prefill_tokens,
+                num_kv_heads,
+                head_dim,
+            )
+            .expect("prefill cache write");
+
+            let decode_k = stream
+                .clone_htod(&vec![1.0f32; num_decode_tokens * num_kv_heads * head_dim])
+                .expect("upload decode keys");
+            let decode_v = stream
+                .clone_htod(&vec![0.0f32; num_decode_tokens * num_kv_heads * head_dim])
+                .expect("upload decode values");
+            let decode_slots = stream.clone_htod(&vec![128i32]).expect("upload decode slot");
+
+            GpuTransformerLayer::cache_write(
+                &stream,
+                &loader,
+                &decode_k,
+                &decode_v,
+                &key_cache,
+                &value_cache,
+                &decode_slots.as_view(),
+                num_decode_tokens,
+                num_kv_heads,
+                head_dim,
+            )
+            .expect("decode cache write");
+
+            let query = stream
+                .clone_htod(&vec![1.0f32; num_decode_tokens * num_heads * head_dim])
+                .expect("upload decode query");
+            let block_tables = stream
+                .clone_htod(&(0..num_blocks as i32).collect::<Vec<_>>())
+                .expect("upload block tables");
+            let context_lens = stream
+                .clone_htod(&vec![129i32])
+                .expect("upload context lens");
+            let sinks = stream.alloc_zeros::<f32>(1).expect("allocate sinks");
+
+            let output = GpuTransformerLayer::decode_attention(
+                &stream,
+                &loader,
+                &query.as_view(),
+                &key_cache,
+                &value_cache,
+                &block_tables.as_view(),
+                &context_lens.as_view(),
+                num_decode_tokens,
+                num_seqs,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+                129,
+                block_size,
+                &sinks,
+                false,
+                Some(128),
+            )
+            .expect("decode attention");
+
+            stream.synchronize().expect("sync decode attention");
+            let host_output = stream.clone_dtoh(&output).expect("download output");
+
+            assert_eq!(host_output.len(), head_dim);
+            assert!(
+                host_output[0].abs() < 0.1,
+                "expected token 0 to be excluded at the 128->129 sliding boundary, got {}",
+                host_output[0]
+            );
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
