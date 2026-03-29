@@ -364,7 +364,11 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![0],
+        );
         let reference = planned_backend();
         let harness = ConformanceHarness::default();
 
@@ -564,13 +568,17 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![0],
+        );
         let reference = full_attention_moe_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert!(!report
             .comparison
             .diffs
@@ -606,6 +614,12 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event cache differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event moe differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]
@@ -621,13 +635,17 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![0],
+        );
         let reference = full_attention_moe_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert!(!report
             .comparison
             .diffs
@@ -663,5 +681,11 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event cache differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event moe differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 }

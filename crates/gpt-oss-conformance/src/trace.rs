@@ -73,6 +73,9 @@ impl TraceSummary {
         token_count: usize,
         block_size: usize,
         layer_types: &[String],
+        traced_num_local_experts: usize,
+        traced_num_experts_per_tok: usize,
+        traced_moe_layer_indices: &[usize],
         num_layers: usize,
     ) -> Self {
         let label = label.into();
@@ -147,6 +150,15 @@ impl TraceSummary {
                         "block_size={} visibility=Full blocks={}",
                         block_size, blocks_touched
                     ),
+                ));
+            }
+            if traced_num_local_experts == 1
+                && traced_num_experts_per_tok == 1
+                && traced_moe_layer_indices.contains(&layer_index)
+            {
+                frame.events.push(TraceEvent::new(
+                    "moe",
+                    format!("SparseTopK/{} selected={:?}", token_count, vec![vec![0]; token_count]),
                 ));
             }
             frames.push(frame);

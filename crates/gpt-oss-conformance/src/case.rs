@@ -218,6 +218,9 @@ pub(crate) struct ModelRunnerGreedyBackend {
     runtime_mode: RuntimeMode,
     model_name: String,
     block_size: usize,
+    traced_num_local_experts: usize,
+    traced_num_experts_per_tok: usize,
+    traced_moe_layer_indices: Vec<usize>,
     graph_enabled: bool,
     graph_max_batch_size: usize,
     graph_padded_batch_size: Option<usize>,
@@ -232,10 +235,25 @@ impl ModelRunnerGreedyBackend {
             runtime_mode: RuntimeMode::Trusted,
             model_name: "openai/gpt-oss-20b".into(),
             block_size: 16,
+            traced_num_local_experts: 0,
+            traced_num_experts_per_tok: 0,
+            traced_moe_layer_indices: Vec::new(),
             graph_enabled: true,
             graph_max_batch_size: 32,
             graph_padded_batch_size: Some(8),
         }
+    }
+
+    pub(crate) fn with_traced_moe(
+        mut self,
+        num_local_experts: usize,
+        num_experts_per_tok: usize,
+        moe_layer_indices: Vec<usize>,
+    ) -> Self {
+        self.traced_num_local_experts = num_local_experts;
+        self.traced_num_experts_per_tok = num_experts_per_tok;
+        self.traced_moe_layer_indices = moe_layer_indices;
+        self
     }
 
     fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
@@ -285,6 +303,9 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
                 case.inputs.len(),
                 self.block_size,
                 &self.runner.config.layer_types,
+                self.traced_num_local_experts,
+                self.traced_num_experts_per_tok,
+                &self.traced_moe_layer_indices,
                 self.runner.config.num_layers,
             ),
             plan: Some(plan),
