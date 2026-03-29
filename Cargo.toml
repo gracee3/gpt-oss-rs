@@ -8,6 +8,7 @@ members = [
     "crates/gpt-oss-engine",
     "crates/gpt-oss-bench",
     "crates/gpt-oss-server",
+    "crates/gpt-oss-reference",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ gpt-oss-gpu = { path = "crates/gpt-oss-gpu" }
 gpt-oss-tokenizer = { path = "crates/gpt-oss-tokenizer" }
 gpt-oss-model-runner = { path = "crates/gpt-oss-model-runner" }
 gpt-oss-engine = { path = "crates/gpt-oss-engine" }
+gpt-oss-reference = { path = "crates/gpt-oss-reference" }
 
 # External dependencies
 thiserror = "2"

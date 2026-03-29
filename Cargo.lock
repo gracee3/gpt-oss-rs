@@ -1455,6 +1455,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-reference"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "gpt-oss-server"
 version = "0.1.0"
 dependencies = [
