@@ -452,11 +452,53 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
-        assert!(report
+        assert!(!report
             .comparison
             .diffs
             .iter()
             .any(|diff| diff.contains("plans differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("trace frame count differs")));
+    }
+
+    #[test]
+    fn dense_full_attention_prefill_parity_no_longer_differs_on_logits_or_plan() {
+        let case = ConformanceCase::prefill("dense-baseline", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner);
+        let reference = dense_baseline_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("logits differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("plans differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("trace frame count differs")));
     }
 
     #[test]
@@ -484,6 +526,16 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("plans differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("trace frame count differs")));
     }
 
     #[test]
@@ -511,5 +563,15 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("plans differ")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("trace frame count differs")));
     }
 }

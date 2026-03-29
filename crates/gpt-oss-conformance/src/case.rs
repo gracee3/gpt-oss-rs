@@ -215,6 +215,11 @@ impl ConformanceBackend for SampledLogitsBackend {
 pub(crate) struct ModelRunnerGreedyBackend {
     name: String,
     runner: Arc<ModelRunner>,
+    runtime_mode: RuntimeMode,
+    model_name: String,
+    graph_enabled: bool,
+    graph_max_batch_size: usize,
+    graph_padded_batch_size: Option<usize>,
 }
 
 #[cfg(test)]
@@ -223,7 +228,26 @@ impl ModelRunnerGreedyBackend {
         Self {
             name: name.into(),
             runner,
+            runtime_mode: RuntimeMode::Trusted,
+            model_name: "openai/gpt-oss-20b".into(),
+            graph_enabled: true,
+            graph_max_batch_size: 32,
+            graph_padded_batch_size: Some(8),
         }
+    }
+
+    fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
+        plan_request(&PlanRequest::new(
+            self.runtime_mode,
+            self.model_name.clone(),
+            case.is_prefill,
+            true,
+            self.graph_enabled,
+            self.graph_max_batch_size,
+            self.graph_padded_batch_size,
+            self.runner.config.dtype,
+        ))
+        .expect("model runner conformance backend should be plannable")
     }
 }
 
@@ -235,6 +259,7 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
 
     fn run(&self, case: &ConformanceCase) -> ExecutionSample {
         let input = model_input_from_case(case);
+        let plan = self.plan_for_case(case);
         let logits_batch = self
             .runner
             .execute_model(input)
@@ -250,12 +275,14 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
                 case.seed,
             ),
             logits,
-            trace: TraceSummary::from_observed_case(
+            trace: TraceSummary::from_observed_case_with_plan(
                 format!("{}:{}", self.name, case.name),
+                &plan,
                 case.is_prefill,
                 case.seq_start_pos,
+                self.runner.config.num_layers,
             ),
-            plan: None,
+            plan: Some(plan),
         }
     }
 }

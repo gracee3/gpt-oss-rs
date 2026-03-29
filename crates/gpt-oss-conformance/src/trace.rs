@@ -65,6 +65,66 @@ impl TraceSummary {
         }
     }
 
+    pub fn from_observed_case_with_plan(
+        label: impl Into<String>,
+        plan: &ExecutionPlan,
+        is_prefill: bool,
+        seq_start_pos: u32,
+        num_layers: usize,
+    ) -> Self {
+        let label = label.into();
+        let mut frames = Vec::with_capacity(num_layers.saturating_add(1));
+
+        let mut plan_frame = TraceFrame::new(format!("{label}:plan"));
+        plan_frame.events.push(TraceEvent::new(
+            "runtime_mode",
+            format!("{:?}", plan.runtime_mode),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "backend_path",
+            format!("{:?}", plan.backend_path),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "request_kind",
+            format!("{:?}", plan.request_kind),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "reference_phase",
+            if is_prefill { "Prefill" } else { "Decode" },
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "seq_start_pos",
+            seq_start_pos.to_string(),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "graph_policy",
+            format!("{:?}", plan.graph_policy),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "output_policy",
+            format!("{:?}", plan.output_policy),
+        ));
+        plan_frame
+            .events
+            .push(TraceEvent::new("reason", plan.reason.clone()));
+        frames.push(plan_frame);
+
+        for layer_index in 0..num_layers {
+            let mut frame = TraceFrame::new(format!("{label}:observed-layer-{layer_index}"));
+            frame.events.push(TraceEvent::new(
+                "reference_phase",
+                if is_prefill { "Prefill" } else { "Decode" },
+            ));
+            frame.events.push(TraceEvent::new(
+                "seq_start_pos",
+                seq_start_pos.to_string(),
+            ));
+            frames.push(frame);
+        }
+
+        Self { label, frames }
+    }
+
     pub fn from_reference(
         label: impl Into<String>,
         plan: &ExecutionPlan,
