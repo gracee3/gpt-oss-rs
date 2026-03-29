@@ -867,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn three_expert_top2_full_attention_moe_decode_gap_is_localized() {
+    fn three_expert_top2_full_attention_moe_decode_parity_matches() {
         let case = ConformanceCase::decode("three-expert-top2-moe-decode", 2, vec![3]);
         let runner = Arc::new(
             ModelRunner::new(
@@ -889,26 +889,34 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("logits differ")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("plans differ")));
-        assert!(!report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("plans differ")));
-        assert!(report
-            .comparison
-            .diffs
-            .iter()
-            .any(|diff| diff.contains("event moe differs")));
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn three_expert_top2_full_attention_moe_prefill_parity_matches() {
+        let case = ConformanceCase::prefill("three-expert-top2-moe-prefill", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_experts(3),
+                runner_config_with_moe(3, 2),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            3,
+            2,
+            vec![0],
+        );
+        let reference = full_attention_three_expert_top2_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 }

@@ -118,7 +118,11 @@ impl ReferenceExecutor {
                     self.synthetic_attention_signal(&visible, hidden[token_index])
                 };
                 let moe_signal = if self.layer_has_moe(layer_index) {
-                    let logits = self.synthetic_router_logits(attention_signal, hidden[token_index]);
+                    let logits = if zero_logit_baseline {
+                        vec![0.0; self.config.num_local_experts]
+                    } else {
+                        self.synthetic_router_logits(attention_signal, hidden[token_index])
+                    };
                     let routes = route_top_k(&logits, self.effective_top_k());
                     layer_routes.push(routes);
                     if zero_logit_baseline {
@@ -230,8 +234,8 @@ impl ReferenceExecutor {
         }
 
         self.effective_top_k() == 0
-            || (self.effective_top_k() == self.config.num_local_experts
-                && self.config.num_local_experts > 0
+            || (self.config.num_local_experts > 0
+                && self.effective_top_k() > 0
                 && self.config.moe_layer_indices.iter().all(|layer| {
                     matches!(self.layer_type(*layer), "full_attention" | "global_attention")
                 }))
