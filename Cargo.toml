@@ -74,3 +74,4 @@ memmap2 = "0.9"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 anyhow = "1"
+openai-harmony = { git = "https://github.com/openai/harmony", default-features = false }

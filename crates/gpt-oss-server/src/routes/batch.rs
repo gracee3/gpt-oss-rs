@@ -503,9 +503,9 @@ async fn process_single_request(
             }
 
             let sampling_params = req.to_sampling_params();
-            // Build prompt from messages -- for batch we just concatenate content
-            // since we don't have tokenizer access here. Real usage would apply
-            // chat template.
+            // Build a plain text prompt for batch passthrough. This route does
+            // not use the Harmony tokenizer seam because it has no tokenizer
+            // access in this path.
             let prompt = req
                 .messages
                 .iter()

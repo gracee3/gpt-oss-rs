@@ -9,6 +9,7 @@
 //! Supports `auto`, `none`, `required`, and specific function tool choice modes.
 //! Handles parallel tool calls (multiple calls in one response).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -21,11 +22,16 @@ use tracing::info;
 use utoipa::ToSchema;
 
 use crate::error::ApiError;
+use crate::protocol_stream::{
+    visible_text_from_protocol_messages, StreamedChatChoiceState,
+};
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::response::Usage;
-use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
+use crate::types::streaming::{
+    format_sse_data, ChatCompletionStreamChunk, SSE_DONE,
+};
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -339,30 +345,18 @@ pub async fn create_chat_completion_with_tools(
     let sampling_params = req.to_sampling_params();
     let tools_active = req.tools_enabled();
 
-    // Build messages, optionally augmented with tool definitions
-    let messages = if tools_active {
-        let tool_defs = req.to_tool_definitions();
-        augment_messages_with_tools(
-            &req.messages,
-            &tool_defs,
-            preferred_tool_prompt_style(&state.model_name),
-        )
-    } else {
-        req.messages.clone()
-    };
-
-    // Apply chat template
-    let chat_messages: Vec<gpt_oss_tokenizer::ChatMessage> = messages
+    let tool_defs = req.to_tool_definitions();
+    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+    let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
+        .messages
         .iter()
-        .map(|m| gpt_oss_tokenizer::ChatMessage::new(&m.role, &m.content))
+        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
         .collect();
-
-    let prompt = state
-        .tokenizer
-        .read()
-        .await
-        .apply_chat_template(&chat_messages, true)
-        .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?;
+    let prompt = protocol
+        .render_prompt(&protocol_messages, None, &tool_defs)
+        .map(|rendered| rendered.text)
+        .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?;
 
     info!(
         model = %req.model,
@@ -373,58 +367,124 @@ pub async fn create_chat_completion_with_tools(
     );
 
     if req.stream {
-        // Streaming: tool call parsing happens client-side in streaming mode,
-        // but we still emit proper SSE events.
         let stream_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
         let model = state.model_name.clone();
+        let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
-        let (_request_id, output_stream) = state
+        let (_request_id, mut output_stream) = state
             .engine
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
         let stream_id_clone = stream_id.clone();
         let model_clone = model.clone();
 
-        let initial = format_sse_data(&ChatCompletionStreamChunk::role_chunk(&stream_id, &model));
+        tokio::spawn(async move {
+            if tx
+                .send(Ok(format_sse_data(&ChatCompletionStreamChunk::role_chunk(
+                    &stream_id_clone,
+                    &model_clone,
+                ))))
+                .await
+                .is_err()
+            {
+                return;
+            }
 
-        let sse_stream = output_stream.map(move |output| {
-            let mut events = String::new();
-            for co in &output.outputs {
-                let finish = co.finish_reason.map(|r| match r {
-                    gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
-                });
-                if finish.is_some() {
-                    let chunk = ChatCompletionStreamChunk::finish_chunk(
-                        &stream_id_clone,
-                        &model_clone,
-                        co.index,
-                        finish.as_deref().unwrap(),
-                    );
-                    events.push_str(&format_sse_data(&chunk));
-                } else {
-                    let chunk = ChatCompletionStreamChunk::content_chunk(
-                        &stream_id_clone,
-                        &model_clone,
-                        co.index,
-                        &co.text,
-                        None,
-                    );
-                    events.push_str(&format_sse_data(&chunk));
+            let mut choice_states: HashMap<usize, StreamedChatChoiceState> = HashMap::new();
+
+            while let Some(output) = output_stream.next().await {
+                let mut events = String::new();
+                for co in &output.outputs {
+                    let finish = co.finish_reason.map(|r| match r {
+                        gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
+                        gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
+                        gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                    });
+
+                    if is_gpt_oss {
+                        let state = match choice_states.entry(co.index) {
+                            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                match StreamedChatChoiceState::new() {
+                                    Ok(state) => entry.insert(state),
+                                    Err(_) => return,
+                                }
+                            }
+                        };
+
+                        let (content_delta, tool_call_deltas) = match state.ingest(
+                            &stream_id_clone,
+                            co.index,
+                            &co.token_ids,
+                            output.finished,
+                        ) {
+                            Ok(value) => value,
+                            Err(_) => return,
+                        };
+
+                        if let Some(delta) = content_delta {
+                            let chunk = ChatCompletionStreamChunk::content_chunk(
+                                &stream_id_clone,
+                                &model_clone,
+                                co.index,
+                                &delta,
+                                None,
+                            );
+                            events.push_str(&format_sse_data(&chunk));
+                        }
+
+                        if !tool_call_deltas.is_empty() {
+                            let chunk = ChatCompletionStreamChunk::tool_call_chunk(
+                                &stream_id_clone,
+                                &model_clone,
+                                co.index,
+                                tool_call_deltas,
+                                None,
+                            );
+                            events.push_str(&format_sse_data(&chunk));
+                        }
+                    } else if finish.is_none() {
+                        let chunk = ChatCompletionStreamChunk::content_chunk(
+                            &stream_id_clone,
+                            &model_clone,
+                            co.index,
+                            &co.text,
+                            None,
+                        );
+                        events.push_str(&format_sse_data(&chunk));
+                    }
+
+                    if let Some(reason) = finish {
+                        let finish_reason = if is_gpt_oss
+                            && choice_states
+                                .get(&co.index)
+                                .is_some_and(|state| state.has_tool_calls())
+                        {
+                            "tool_calls"
+                        } else {
+                            reason.as_str()
+                        };
+                        let chunk = ChatCompletionStreamChunk::finish_chunk(
+                            &stream_id_clone,
+                            &model_clone,
+                            co.index,
+                            finish_reason,
+                        );
+                        events.push_str(&format_sse_data(&chunk));
+                    }
+                }
+                if output.finished {
+                    events.push_str(SSE_DONE);
+                }
+                if tx.send(Ok(events)).await.is_err() {
+                    return;
                 }
             }
-            if output.finished {
-                events.push_str(SSE_DONE);
-            }
-            Ok::<_, std::convert::Infallible>(events)
         });
-
-        let init_stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(initial));
-        let full_stream = init_stream.chain(sse_stream);
-        let body = axum::body::Body::from_stream(full_stream);
+        let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
 
         Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/event-stream")
@@ -472,6 +532,54 @@ pub async fn create_chat_completion_with_tools(
                     gpt_oss_core::prelude::FinishReason::Length => "length",
                     gpt_oss_core::prelude::FinishReason::Abort => "stop",
                 });
+
+                if tools_active && is_gpt_oss_model(&state.model_name) {
+                    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+                        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
+                        .ok();
+                    if let Some(protocol) = protocol {
+                        let parsed = protocol
+                            .parse_completion_tokens(&co.token_ids)
+                            .unwrap_or_default();
+                        let tool_calls: Vec<ResponseToolCall> = parsed
+                            .iter()
+                            .filter_map(|message| {
+                                let recipient = message.recipient.as_ref()?;
+                                Some(ResponseToolCall {
+                                    id: format!("{}_{}_{}", resp_id, co.index, recipient),
+                                    call_type: "function".to_string(),
+                                    function: ResponseFunctionCall {
+                                        name: recipient
+                                            .strip_prefix("functions.")
+                                            .unwrap_or(recipient.as_str())
+                                            .to_string(),
+                                        arguments: message.content.clone(),
+                                    },
+                                })
+                            })
+                            .collect();
+                        let content = visible_text_from_protocol_messages(&parsed);
+                        return ToolChatChoice {
+                            index: co.index,
+                            message: ToolChatMessage {
+                                role: "assistant".to_string(),
+                                content,
+                                tool_calls: if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_calls)
+                                },
+                            },
+                            finish_reason: Some(
+                                if parsed.iter().any(|message| message.recipient.is_some()) {
+                                    "tool_calls".to_string()
+                                } else {
+                                    finish_reason_val.unwrap_or("stop").to_string()
+                                },
+                            ),
+                        };
+                    }
+                }
 
                 if tools_active {
                     let call_prefix = format!("{}_{}_", resp_id, co.index);
