@@ -2462,7 +2462,12 @@ fn gpu_err(e: impl std::fmt::Display) -> LLMError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
     use gpt_oss_core::prelude::{RequestId, SequenceId};
+    use gpt_oss_core::types::Dtype;
+    use gpt_oss_runtime_plan::RuntimeMode;
 
     #[test]
     fn sink_tensor_detector_ignores_zero_sinks() {
@@ -2572,5 +2577,202 @@ mod tests {
 
         // Layer 1 should still be empty
         assert_eq!(cache.keys(1).len(), 0);
+    }
+
+    #[cfg(feature = "cuda")]
+    fn test_worker_config() -> WorkerConfig {
+        WorkerConfig {
+            model_name: "openai/gpt-oss-20b".into(),
+            runtime_mode: RuntimeMode::Experimental,
+            device_id: 0,
+            num_layers: 1,
+            num_kv_heads: 1,
+            head_dim: 64,
+            hidden_size: 64,
+            num_attention_heads: 1,
+            intermediate_size: 64,
+            vocab_size: 4,
+            max_model_len: 129,
+            rms_norm_eps: 1e-5,
+            block_size: 16,
+            gpu_memory_utilization: 0.9,
+            rank: 0,
+            tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            architecture: "GptOssForCausalLM".into(),
+            dtype: Dtype::Float32,
+            rope_theta: 10_000.0,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
+            sliding_window: Some(128),
+            layer_types: vec!["sliding_attention".into()],
+            num_local_experts: 1,
+            num_experts_per_tok: 1,
+            kv_cache_dtype: "auto".into(),
+            enable_prefix_caching: false,
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn upload_test_weight_map(
+        stream: &Arc<CudaStream>,
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
+        let mut weights = HashMap::new();
+        let mut shapes = HashMap::new();
+
+        let mut insert = |name: &str, data: Vec<f32>, shape: &[usize]| -> Result<()> {
+            let slice = stream
+                .clone_htod(&data)
+                .map_err(|e| LLMError::GpuError(format!("test HtoD {name}: {e}")))?;
+            weights.insert(name.to_string(), slice);
+            shapes.insert(name.to_string(), shape.to_vec());
+            Ok(())
+        };
+
+        insert("model.embed_tokens.weight", vec![0.0; 4 * 64], &[4, 64])?;
+        insert("model.norm.weight", vec![1.0; 64], &[64])?;
+        insert("lm_head.weight", vec![0.0; 4 * 64], &[4, 64])?;
+        insert(
+            "model.layers.0.input_layernorm.weight",
+            vec![1.0; 64],
+            &[64],
+        )?;
+        insert(
+            "model.layers.0.post_attention_layernorm.weight",
+            vec![1.0; 64],
+            &[64],
+        )?;
+        for proj in ["q_proj", "k_proj", "v_proj", "o_proj"] {
+            insert(
+                &format!("model.layers.0.self_attn.{proj}.weight"),
+                vec![0.0; 64 * 64],
+                &[64, 64],
+            )?;
+        }
+        for proj in ["gate_proj", "up_proj", "down_proj"] {
+            insert(
+                &format!("model.layers.0.mlp.{proj}.weight"),
+                vec![0.0; 64 * 64],
+                &[64, 64],
+            )?;
+        }
+
+        Ok((weights, shapes))
+    }
+
+    #[cfg(feature = "cuda")]
+    fn build_group(
+        request_id: u64,
+        is_prompt: bool,
+        prompt: Vec<TokenId>,
+        output: Vec<TokenId>,
+        blocks: Vec<BlockId>,
+    ) -> SequenceGroupMetadata {
+        let seq_id = SequenceId(7);
+        SequenceGroupMetadata {
+            request_id: RequestId(request_id),
+            is_prompt,
+            seq_data: HashMap::from([(seq_id, make_seq_data(prompt, output))]),
+            sampling_params: SamplingParams::default(),
+            block_tables: HashMap::from([(seq_id, blocks)]),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn find_test_ptx_dir() -> Option<PathBuf> {
+        let build_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/build");
+        let entries = std::fs::read_dir(&build_root).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path().join("out/ptx");
+            if path.join("flash_attention.ptx").exists()
+                && path.join("reshape_and_cache.ptx").exists()
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn sliding_decode_boundary_survives_worker_input_shaping_on_cuda() {
+        let Some(ptx_dir) = find_test_ptx_dir().or_else(GpuWorker::find_ptx_dir) else {
+            eprintln!("skipping: PTX directory not found");
+            return;
+        };
+        unsafe {
+            std::env::set_var("GPT_OSS_RS_PTX_DIR", &ptx_dir);
+        }
+
+        let mut worker = match GpuWorker::new(test_worker_config()) {
+            Ok(worker) => worker,
+            Err(err) => {
+                eprintln!("skipping: CUDA worker unavailable: {err}");
+                return;
+            }
+        };
+
+        let (raw_weight_map, raw_weight_shapes) = match upload_test_weight_map(&worker.stream) {
+            Ok(parts) => parts,
+            Err(err) => {
+                eprintln!("skipping: test weight upload unavailable: {err}");
+                return;
+            }
+        };
+        worker.raw_weight_map = Some(raw_weight_map);
+        worker.raw_weight_shapes = Some(raw_weight_shapes);
+        worker.raw_weight_map_u8 = Some(HashMap::new());
+
+        if let Err(err) = worker.init_cache(9, 0) {
+            eprintln!("skipping: worker cache init unavailable: {err}");
+            return;
+        }
+
+        let prefill_group = build_group(
+            1,
+            true,
+            vec![0; 128],
+            vec![],
+            (0..8).map(BlockId).collect(),
+        );
+        let prefill_input =
+            input::prepare_input(&[prefill_group], worker.config.block_size).unwrap();
+        assert!(prefill_input.is_prefill);
+        assert_eq!(prefill_input.position_ids.len(), 128);
+        assert_eq!(prefill_input.attention_metadata.context_lens, vec![128]);
+        assert_eq!(prefill_input.attention_metadata.query_lens, vec![128]);
+
+        let prefill_output = worker.raw_gpu_forward_ex(&prefill_input, false);
+        assert!(prefill_output.is_ok(), "prefill failed: {:?}", prefill_output);
+
+        let decode_group = build_group(
+            2,
+            false,
+            vec![0; 128],
+            vec![0],
+            (0..9).map(BlockId).collect(),
+        );
+        let decode_input =
+            input::prepare_input(&[decode_group], worker.config.block_size).unwrap();
+        assert!(!decode_input.is_prefill);
+        assert_eq!(decode_input.token_ids, vec![0]);
+        assert_eq!(decode_input.position_ids, vec![128]);
+        assert_eq!(decode_input.attention_metadata.context_lens, vec![129]);
+        assert_eq!(decode_input.attention_metadata.query_lens, vec![1]);
+        assert_eq!(decode_input.attention_metadata.slot_mapping, vec![128]);
+        assert_eq!(
+            decode_input.attention_metadata.block_tables,
+            vec![(0..9).collect::<Vec<_>>()]
+        );
+
+        let decode_output = worker.raw_gpu_forward_ex(&decode_input, false);
+        let decode_logits = match decode_output {
+            Ok(ForwardOutput::Logits(logits)) => logits,
+            Ok(other) => panic!("expected logits from worker decode path, got {:?}", other),
+            Err(err) => panic!("decode failed above runner seam: {err}"),
+        };
+        assert_eq!(decode_logits.len(), 4);
+        assert!(decode_logits.iter().all(|value| value.is_finite()));
     }
 }
