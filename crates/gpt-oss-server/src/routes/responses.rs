@@ -175,6 +175,7 @@ pub async fn create_response(
         let response_id_clone = response_id.clone();
         let tool_choice_clone = tool_choice.clone();
         let response_tools_clone = response_tools.clone();
+        let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
         let (_request_id, mut output_stream) = state
             .engine
@@ -233,6 +234,11 @@ pub async fn create_response(
             let mut content_open = false;
             let mut full_text = String::new();
             let mut final_output = None;
+            let mut protocol_state = if is_gpt_oss {
+                StreamedProtocolState::new().ok()
+            } else {
+                None
+            };
 
             while let Some(output) = output_stream.next().await {
                 if !content_open {
@@ -275,8 +281,16 @@ pub async fn create_response(
                 }
 
                 if let Some(choice) = output.outputs.first() {
-                    let delta = diff_text(&full_text, &choice.text);
-                    full_text = choice.text.clone();
+                    let next_text = if let Some(state) = protocol_state.as_mut() {
+                        match state.ingest(&choice.token_ids, output.finished) {
+                            Ok(messages) => visible_response_text(&messages),
+                            Err(_) => return,
+                        }
+                    } else {
+                        choice.text.clone()
+                    };
+                    let delta = diff_text(&full_text, &next_text);
+                    full_text = next_text;
                     if !delta.is_empty()
                         && tx
                             .send(Ok(format_sse_event(
@@ -503,6 +517,58 @@ struct StreamedFunctionCallState {
     arguments: String,
 }
 
+struct StreamedProtocolState {
+    processed_tokens: usize,
+    parser: gpt_oss_tokenizer::HarmonyStreamParser,
+}
+
+impl StreamedProtocolState {
+    fn new() -> Result<Self, ApiError> {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        let parser = protocol
+            .stream_parser()
+            .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?;
+        Ok(Self {
+            processed_tokens: 0,
+            parser,
+        })
+    }
+
+    fn ingest(
+        &mut self,
+        token_ids: &[u32],
+        finished: bool,
+    ) -> Result<Vec<gpt_oss_tokenizer::ParsedProtocolMessage>, ApiError> {
+        for token in token_ids.iter().copied().skip(self.processed_tokens) {
+            self.parser
+                .push_token(token)
+                .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
+        }
+        self.processed_tokens = token_ids.len();
+        if finished {
+            self.parser
+                .finish()
+                .map_err(|e| ApiError::Internal(format!("harmony stream finalize error: {}", e)))?;
+        }
+        self.parser
+            .messages()
+            .map_err(|e| ApiError::Internal(format!("harmony stream read error: {}", e)))
+    }
+}
+
+fn visible_response_text(messages: &[gpt_oss_tokenizer::ParsedProtocolMessage]) -> String {
+    messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .filter(|message| message.recipient.is_none())
+        .filter(|message| message.channel.as_deref() != Some("analysis"))
+        .map(|message| message.content.as_str())
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn stream_tool_response(
     state: Arc<AppState>,
     req: CreateResponseRequest,
@@ -516,6 +582,7 @@ async fn stream_tool_response(
     let response_store = state.response_store.clone();
     let tool_choice = req.effective_tool_choice();
     let response_tools = req.tools.clone().unwrap_or_default();
+    let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
     let (_request_id, mut output_stream) = state
         .engine
@@ -587,12 +654,50 @@ async fn stream_tool_response(
         let mut prefix_state: Option<StreamedMessageState> = None;
         let mut tool_states: Vec<StreamedFunctionCallState> = Vec::new();
         let mut saw_tool_calls = false;
+        let mut protocol_state = if is_gpt_oss {
+            StreamedProtocolState::new().ok()
+        } else {
+            None
+        };
 
         while let Some(output) = output_stream.next().await {
             if let Some(choice) = output.outputs.first() {
-                full_text = choice.text.clone();
-                let parse_result =
-                    gpt_oss_tokenizer::parse_tool_calls(&full_text, &format!("{response_id}_0_"));
+                let parse_result = if let Some(state) = protocol_state.as_mut() {
+                    let messages = match state.ingest(&choice.token_ids, output.finished) {
+                        Ok(messages) => messages,
+                        Err(_) => return,
+                    };
+                    let prefix_text = visible_response_text(&messages);
+                    full_text = prefix_text.clone();
+                    let calls = messages
+                        .iter()
+                        .filter(|message| message.role == "assistant")
+                        .filter_map(|message| {
+                            let recipient = message.recipient.as_ref()?;
+                            Some(gpt_oss_tokenizer::ParsedToolCall {
+                                id: format!(
+                                    "{response_id}_0_{}",
+                                    recipient
+                                        .strip_prefix("functions.")
+                                        .unwrap_or(recipient.as_str())
+                                ),
+                                name: recipient
+                                    .strip_prefix("functions.")
+                                    .unwrap_or(recipient.as_str())
+                                    .to_string(),
+                                arguments: message.content.clone(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if calls.is_empty() {
+                        gpt_oss_tokenizer::ToolParseResult::PlainText(prefix_text)
+                    } else {
+                        gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls }
+                    }
+                } else {
+                    full_text = choice.text.clone();
+                    gpt_oss_tokenizer::parse_tool_calls(&full_text, &format!("{response_id}_0_"))
+                };
 
                 if let gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls } =
                     parse_result
@@ -1568,6 +1673,33 @@ mod tests {
         }
     }
 
+    fn gpt_oss_stream_request_output_from_fragments(
+        fragments: &[&str],
+        visible_text: &str,
+        finished: bool,
+    ) -> RequestOutput {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss().unwrap();
+        let mut token_ids = Vec::new();
+        for fragment in fragments {
+            token_ids.extend(protocol.encode_stream_fragment_text(fragment));
+        }
+        RequestOutput {
+            request_id: RequestId(1),
+            prompt: "prompt".into(),
+            prompt_token_ids: vec![1, 2, 3],
+            prompt_logprobs: None,
+            outputs: vec![CompletionOutput {
+                index: 0,
+                text: visible_text.to_string(),
+                token_ids,
+                cumulative_logprob: -0.1,
+                logprobs: None,
+                finish_reason: finished.then_some(FinishReason::Stop),
+            }],
+            finished,
+        }
+    }
+
     fn parse_sse_events(body: &str) -> Vec<(String, serde_json::Value)> {
         body.split("\n\n")
             .filter_map(|chunk| {
@@ -2093,5 +2225,117 @@ mod tests {
         assert_eq!(stored["output"].as_array().unwrap().len(), 2);
         assert_eq!(stored["output"][0]["name"], "get_weather");
         assert_eq!(stored["output"][1]["name"], "get_time");
+    }
+
+    #[tokio::test]
+    async fn gpt_oss_streaming_tool_responses_use_incremental_protocol_parsing() {
+        let (server, _) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![vec![gpt_oss_stream_request_output_from_fragments(
+                &[
+                    " to=functions.get_weather",
+                    "<|channel|>commentary",
+                    "<|constrain|>json",
+                    "<|message|>",
+                    "{\"location\":\"Boston\"}",
+                    "<|call|>",
+                ],
+                "",
+                true,
+            )]],
+        );
+
+        let response = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "Call the tools you need.",
+                "stream": true,
+                "store": true,
+                "parallel_tool_calls": true,
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"},
+                    },
+                    {
+                        "type": "function",
+                        "name": "get_time",
+                        "description": "Get time",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            }))
+            .await;
+
+        response.assert_status_ok();
+        let body = response.text();
+        let events = parse_sse_events(&body);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"response.function_call_arguments.delta"), "{body}");
+        assert!(names.contains(&"response.function_call_arguments.done"));
+
+        let completed = events
+            .iter()
+            .find(|(name, _)| name == "response.completed")
+            .unwrap();
+        assert_eq!(
+            completed.1["response"]["output"][0]["name"],
+            "get_weather"
+        );
+        assert_eq!(
+            completed.1["response"]["output"][0]["arguments"],
+            "{\"location\":\"Boston\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gpt_oss_streaming_text_response_uses_incremental_protocol_parsing() {
+        let (server, _) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![vec![
+                gpt_oss_stream_request_output_from_fragments(
+                    &["<|channel|>final", "<|message|>", "Hel"],
+                    "",
+                    false,
+                ),
+                gpt_oss_stream_request_output_from_fragments(
+                    &["<|channel|>final", "<|message|>", "Hel", "lo world", "<|end|>"],
+                    "",
+                    true,
+                ),
+            ]],
+        );
+
+        let response = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "Say hello.",
+                "stream": true,
+                "store": false,
+            }))
+            .await;
+
+        response.assert_status_ok();
+        let body = response.text();
+        let events = parse_sse_events(&body);
+        let text_deltas: Vec<String> = events
+            .iter()
+            .filter(|(name, _)| name == "response.output_text.delta")
+            .map(|(_, payload)| payload["delta"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(text_deltas, vec!["Hello world".to_string()], "{body}");
+
+        let completed = events
+            .iter()
+            .find(|(name, _)| name == "response.completed")
+            .unwrap();
+        assert_eq!(
+            completed.1["response"]["output"][0]["content"][0]["text"],
+            "Hello world"
+        );
     }
 }

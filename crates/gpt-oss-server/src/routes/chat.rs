@@ -1,5 +1,6 @@
 //! Chat completion endpoint: POST /v1/chat/completions
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -15,7 +16,10 @@ use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatCompletionRequest;
 use crate::types::response::{ChatChoice, ChatCompletionResponse, Usage};
-use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
+use crate::types::streaming::{
+    format_sse_data, ChatCompletionStreamChunk, ChatFunctionCallDelta, ChatToolCallDelta,
+    SSE_DONE,
+};
 
 fn visible_text_from_protocol_messages(
     messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
@@ -33,6 +37,117 @@ fn visible_text_from_protocol_messages(
         None
     } else {
         Some(collected.join("\n"))
+    }
+}
+
+#[derive(Debug)]
+struct StreamedChatToolCallState {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+struct StreamedChatChoiceState {
+    processed_tokens: usize,
+    parser: gpt_oss_tokenizer::HarmonyStreamParser,
+    visible_text: String,
+    tool_calls: Vec<StreamedChatToolCallState>,
+}
+
+impl StreamedChatChoiceState {
+    fn new() -> Result<Self, ApiError> {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        Ok(Self {
+            processed_tokens: 0,
+            parser: protocol
+                .stream_parser()
+                .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?,
+            visible_text: String::new(),
+            tool_calls: Vec::new(),
+        })
+    }
+
+    fn ingest(
+        &mut self,
+        stream_id: &str,
+        choice_index: usize,
+        token_ids: &[u32],
+        finished: bool,
+    ) -> Result<(Option<String>, Vec<ChatToolCallDelta>), ApiError> {
+        for token in token_ids.iter().copied().skip(self.processed_tokens) {
+            self.parser
+                .push_token(token)
+                .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
+        }
+        self.processed_tokens = token_ids.len();
+        if finished {
+            self.parser
+                .finish()
+                .map_err(|e| ApiError::Internal(format!("harmony stream finalize error: {}", e)))?;
+        }
+
+        let messages = self
+            .parser
+            .messages()
+            .map_err(|e| ApiError::Internal(format!("harmony stream read error: {}", e)))?;
+        let visible_text = visible_text_from_protocol_messages(&messages).unwrap_or_default();
+        let content_delta = diff_text(&self.visible_text, &visible_text);
+        self.visible_text = visible_text;
+
+        let mut tool_call_deltas = Vec::new();
+        let mut parsed_tool_messages: Vec<_> = messages
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .filter_map(|message| {
+                message
+                    .recipient
+                    .as_ref()
+                    .map(|recipient| (recipient.as_str(), message.content.as_str()))
+            })
+            .collect();
+
+        for (tool_index, (recipient, arguments)) in parsed_tool_messages.drain(..).enumerate() {
+            let name = recipient
+                .strip_prefix("functions.")
+                .unwrap_or(recipient)
+                .to_string();
+            if self.tool_calls.len() <= tool_index {
+                self.tool_calls.push(StreamedChatToolCallState {
+                    id: format!("{stream_id}_{choice_index}_{tool_index}"),
+                    name: name.clone(),
+                    arguments: String::new(),
+                });
+            }
+
+            let state = &mut self.tool_calls[tool_index];
+            let arguments_delta = diff_text(&state.arguments, arguments);
+            if arguments_delta.is_empty() && state.name == name {
+                continue;
+            }
+            let is_new_call = state.arguments.is_empty();
+            state.name = name.clone();
+            state.arguments = arguments.to_string();
+            tool_call_deltas.push(ChatToolCallDelta {
+                index: tool_index,
+                id: is_new_call.then(|| state.id.clone()),
+                call_type: is_new_call.then(|| "function".to_string()),
+                function: Some(ChatFunctionCallDelta {
+                    name: is_new_call.then_some(name),
+                    arguments: (!arguments_delta.is_empty()).then_some(arguments_delta),
+                }),
+            });
+        }
+
+        Ok(((!content_delta.is_empty()).then_some(content_delta), tool_call_deltas))
+    }
+}
+
+fn diff_text(previous: &str, current: &str) -> String {
+    if let Some(suffix) = current.strip_prefix(previous) {
+        suffix.to_string()
+    } else {
+        current.to_string()
     }
 }
 
@@ -145,57 +260,125 @@ pub async fn create_chat_completion(
     if req.stream {
         let stream_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
         let model = state.model_name.clone();
+        let is_gpt_oss = is_gpt_oss_model(&state.model_name);
+        let tools_active_for_stream = tools_active;
 
-        let (_request_id, output_stream) = state
+        let (_request_id, mut output_stream) = state
             .engine
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
         let stream_id_clone = stream_id.clone();
         let model_clone = model.clone();
 
-        // First event: role chunk
-        let initial = format_sse_data(&ChatCompletionStreamChunk::role_chunk(&stream_id, &model));
+        tokio::spawn(async move {
+            if tx
+                .send(Ok(format_sse_data(&ChatCompletionStreamChunk::role_chunk(
+                    &stream_id_clone,
+                    &model_clone,
+                ))))
+                .await
+                .is_err()
+            {
+                return;
+            }
 
-        let sse_stream = output_stream.map(move |output| {
-            let mut events = String::new();
-            for co in &output.outputs {
-                let finish = co.finish_reason.map(|r| match r {
-                    gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
-                });
-                if finish.is_some() {
-                    let chunk = ChatCompletionStreamChunk::finish_chunk(
-                        &stream_id_clone,
-                        &model_clone,
-                        co.index,
-                        finish.as_deref().unwrap(),
-                    );
-                    events.push_str(&format_sse_data(&chunk));
-                } else {
-                    let chunk = ChatCompletionStreamChunk::content_chunk(
-                        &stream_id_clone,
-                        &model_clone,
-                        co.index,
-                        &co.text,
-                        None,
-                    );
-                    events.push_str(&format_sse_data(&chunk));
+            let mut choice_states: HashMap<usize, StreamedChatChoiceState> = HashMap::new();
+
+            while let Some(output) = output_stream.next().await {
+                let mut events = String::new();
+                for co in &output.outputs {
+                    let finish = co.finish_reason.map(|r| match r {
+                        gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
+                        gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
+                        gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                    });
+
+                    if is_gpt_oss {
+                        let state = match choice_states.entry(co.index) {
+                            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                match StreamedChatChoiceState::new() {
+                                    Ok(state) => entry.insert(state),
+                                    Err(_) => return,
+                                }
+                            }
+                        };
+
+                        let (content_delta, tool_call_deltas) = match state.ingest(
+                            &stream_id_clone,
+                            co.index,
+                            &co.token_ids,
+                            output.finished,
+                        ) {
+                            Ok(value) => value,
+                            Err(_) => return,
+                        };
+
+                        if let Some(delta) = content_delta {
+                            let chunk = ChatCompletionStreamChunk::content_chunk(
+                                &stream_id_clone,
+                                &model_clone,
+                                co.index,
+                                &delta,
+                                None,
+                            );
+                            events.push_str(&format_sse_data(&chunk));
+                        }
+
+                        if tools_active_for_stream && !tool_call_deltas.is_empty() {
+                            let chunk = ChatCompletionStreamChunk::tool_call_chunk(
+                                &stream_id_clone,
+                                &model_clone,
+                                co.index,
+                                tool_call_deltas,
+                                None,
+                            );
+                            events.push_str(&format_sse_data(&chunk));
+                        }
+                    } else if finish.is_none() {
+                        let chunk = ChatCompletionStreamChunk::content_chunk(
+                            &stream_id_clone,
+                            &model_clone,
+                            co.index,
+                            &co.text,
+                            None,
+                        );
+                        events.push_str(&format_sse_data(&chunk));
+                    }
+
+                    if let Some(reason) = finish {
+                        let finish_reason = if is_gpt_oss
+                            && tools_active_for_stream
+                            && choice_states
+                                .get(&co.index)
+                                .is_some_and(|state| !state.tool_calls.is_empty())
+                        {
+                            "tool_calls"
+                        } else {
+                            reason.as_str()
+                        };
+                        let chunk = ChatCompletionStreamChunk::finish_chunk(
+                            &stream_id_clone,
+                            &model_clone,
+                            co.index,
+                            finish_reason,
+                        );
+                        events.push_str(&format_sse_data(&chunk));
+                    }
+                }
+                if output.finished {
+                    events.push_str(SSE_DONE);
+                }
+                if tx.send(Ok(events)).await.is_err() {
+                    return;
                 }
             }
-            if output.finished {
-                events.push_str(SSE_DONE);
-            }
-            Ok::<_, std::convert::Infallible>(events)
         });
 
-        // Prepend the initial role chunk
-        let init_stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(initial));
-        let full_stream = init_stream.chain(sse_stream);
-
-        let body = axum::body::Body::from_stream(full_stream);
+        let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
         Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/event-stream")
             .header(header::CACHE_CONTROL, "no-cache")

@@ -5,6 +5,8 @@
 //! Harmony here, and treat the resulting structured parse state as the source
 //! of truth for future SSE/event derivation.
 
+use std::collections::HashSet;
+
 use gpt_oss_core::prelude::{LLMError, Result, TokenId};
 use openai_harmony::chat::{
     Author, Content, Conversation, DeveloperContent, Message, Role, SystemContent, ToolDescription,
@@ -190,6 +192,23 @@ impl HarmonyProtocol {
         self.encoding.tokenizer().encode_with_special_tokens(text)
     }
 
+    pub fn encode_stream_fragment_text(&self, text: &str) -> Vec<TokenId> {
+        self.encoding
+            .tokenizer()
+            .encode(
+                text,
+                &HashSet::from([
+                    "<|channel|>",
+                    "<|constrain|>",
+                    "<|message|>",
+                    "<|call|>",
+                    "<|return|>",
+                    "<|end|>",
+                ]),
+            )
+            .0
+    }
+
     pub fn stream_parser(&self) -> Result<HarmonyStreamParser> {
         HarmonyStreamParser::new(self.encoding.clone())
     }
@@ -314,8 +333,6 @@ fn map_json_error(error: serde_json::Error) -> LLMError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
 
     #[test]
