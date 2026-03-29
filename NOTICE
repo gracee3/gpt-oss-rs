@@ -1,0 +1,8 @@
+This repository is a narrowed fork of https://github.com/m0at/rvllm.
+
+The project was later renamed and refocused as gpt-oss-rs, a GPT-OSS inference engine.
+
+Credit for the original upstream foundation goes to m0at and the other upstream
+contributors whose authorship remains preserved in the git history.
+
+Inherited upstream code in this repository continues to carry Apache-2.0 obligations.

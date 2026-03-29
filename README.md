@@ -53,3 +53,20 @@ Useful entry points:
 - The workspace intentionally stays narrow. If a new script, test harness, or package format is not part of the Rust serving path, it should not live here by default.
 - Historical optimization notes and fork migration collateral were removed to keep the repository easier to maintain. Add new docs only when they are current and directly useful.
 - Related project: [m0at/rvllm](https://github.com/m0at/rvllm)
+
+## Lineage
+
+This repository began as a narrowed fork of [m0at/rvllm](https://github.com/m0at/rvllm).
+It was then renamed and refocused into `gpt-oss-rs`, a GPT-OSS inference engine.
+
+Credit for the original `rvllm` foundation and inherited upstream work goes to `m0at`
+and the other upstream contributors whose authorship remains preserved in git history.
+
+## License And Attribution
+
+This repository contains inherited upstream work from `m0at/rvllm`, so the repository
+continues to preserve Apache-2.0 licensing and attribution for that code.
+
+The current fork intentionally credits the original upstream work in this README, in
+the git history, and in the repository notice file rather than pretending the codebase
+started here.
