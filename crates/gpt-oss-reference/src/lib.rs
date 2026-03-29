@@ -37,6 +37,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });
@@ -76,6 +77,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
@@ -108,6 +110,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![0],
         });
@@ -159,6 +162,7 @@ mod tests {
                 vec![0.0, 0.0, 0.5, 0.5],
                 vec![0.5, 0.0, 0.0, 0.5],
             ],
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![],
         });
@@ -192,6 +196,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: vec![0.0, 1.0, 2.0],
             moe_layer_indices: vec![0],
         });
@@ -224,6 +229,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: Vec::new(),
         });
@@ -254,6 +260,7 @@ mod tests {
             final_norm_weight: Vec::new(),
             rms_norm_eps: 1e-5,
             lm_head_rows: Vec::new(),
+            expert_output_rows: Vec::new(),
             router_bias: Vec::new(),
             moe_layer_indices: vec![1],
         });

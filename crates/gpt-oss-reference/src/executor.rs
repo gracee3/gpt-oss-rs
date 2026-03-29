@@ -34,6 +34,8 @@ pub struct ReferenceExecutorConfig {
     #[serde(default)]
     pub lm_head_rows: Vec<Vec<f32>>,
     #[serde(default)]
+    pub expert_output_rows: Vec<Vec<f32>>,
+    #[serde(default)]
     pub router_bias: Vec<f32>,
     #[serde(default)]
     pub moe_layer_indices: Vec<usize>,
@@ -382,6 +384,21 @@ impl ReferenceExecutor {
                         )
                     })
                     .collect::<Vec<_>>();
+                if !self.config.expert_output_rows.is_empty() {
+                    for (token_index, token_routes) in routes.iter().enumerate() {
+                        for (expert_index, weight) in token_routes {
+                            if let Some(expert_row) =
+                                self.config.expert_output_rows.get(*expert_index)
+                            {
+                                for (hidden_value, bias) in
+                                    hidden[token_index].iter_mut().zip(expert_row.iter())
+                                {
+                                    *hidden_value += bias * *weight;
+                                }
+                            }
+                        }
+                    }
+                }
                 MoeTrace::sparse(&routes)
             } else {
                 MoeTrace::dense_only()

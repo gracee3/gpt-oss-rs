@@ -52,6 +52,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -83,6 +84,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
@@ -132,6 +134,7 @@ mod tests {
                         vec![0.0, 0.0, 0.5, 0.5],
                         vec![0.5, 0.0, 0.0, 0.5],
                     ],
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
@@ -163,6 +166,57 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
+                    router_bias: Vec::new(),
+                    moe_layer_indices: vec![0],
+                },
+            },
+        )
+    }
+
+    fn nonzero_single_expert_moe_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-moe-nonzero",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 1,
+                    num_experts_per_tok: 1,
+                    token_embedding_rows: vec![
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                    ],
+                    final_norm_weight: vec![1.0, 1.0, 1.0, 1.0],
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: vec![
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                        vec![0.5, 0.0, 0.0, 0.5],
+                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0]],
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -194,6 +248,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -225,6 +280,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -256,6 +312,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0],
                 },
@@ -287,6 +344,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0],
                 },
@@ -318,6 +376,57 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
+                    router_bias: Vec::new(),
+                    moe_layer_indices: vec![1],
+                },
+            },
+        )
+    }
+
+    fn nonzero_two_layer_full_attention_moe_on_second_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-2layer-moe-second-nonzero",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 2,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into(), "full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 1,
+                    num_experts_per_tok: 1,
+                    token_embedding_rows: vec![
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                    ],
+                    final_norm_weight: vec![1.0, 1.0, 1.0, 1.0],
+                    rms_norm_eps: 1e-5,
+                    lm_head_rows: vec![
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        vec![0.5, 0.5, 0.0, 0.0],
+                        vec![0.0, 0.5, 0.5, 0.0],
+                        vec![0.0, 0.0, 0.5, 0.5],
+                        vec![0.5, 0.0, 0.0, 0.5],
+                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0]],
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -349,6 +458,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
@@ -380,6 +490,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -411,6 +522,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![0, 1],
                 },
@@ -442,6 +554,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: vec![0.0, 1.0, 2.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -477,6 +590,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![1],
                 },
@@ -508,6 +622,7 @@ mod tests {
                     final_norm_weight: Vec::new(),
                     rms_norm_eps: 1e-5,
                     lm_head_rows: Vec::new(),
+                    expert_output_rows: Vec::new(),
                     router_bias: Vec::new(),
                     moe_layer_indices: vec![],
                 },
@@ -718,6 +833,73 @@ mod tests {
             )
             .1,
         );
+        weights
+    }
+
+    fn runner_weights_with_nonzero_single_expert_output() -> BridgeModelWeights {
+        let mut weights = runner_weights_with_nonzero_dense_signal();
+        weights.tensors.insert(
+            "model.layers.0.mlp.experts.down_proj_bias".to_string(),
+            tensor(
+                "model.layers.0.mlp.experts.down_proj_bias",
+                &[1.0, 0.0, 0.0, 0.0],
+                &[1, 4],
+            )
+            .1,
+        );
+        weights
+    }
+
+    fn runner_weights_with_layer_expert_down_proj_bias(
+        num_layers: usize,
+        num_local_experts: usize,
+        moe_layers: &[usize],
+        layer_expert_biases: &[(usize, &[f32])],
+    ) -> BridgeModelWeights {
+        let mut weights = runner_weights_with_layers(num_layers, num_local_experts, moe_layers);
+        weights.tensors.insert(
+            "model.embed_tokens.weight".to_string(),
+            tensor(
+                "model.embed_tokens.weight",
+                &[
+                    0.0, 0.0, 0.0, 0.0,
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                    0.5, 0.5, 0.0, 0.0,
+                    0.0, 0.5, 0.5, 0.0,
+                    0.0, 0.0, 0.5, 0.5,
+                ],
+                &[8, 4],
+            )
+            .1,
+        );
+        weights.tensors.insert(
+            "lm_head.weight".to_string(),
+            tensor(
+                "lm_head.weight",
+                &[
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                    0.5, 0.5, 0.0, 0.0,
+                    0.0, 0.5, 0.5, 0.0,
+                    0.0, 0.0, 0.5, 0.5,
+                    0.5, 0.0, 0.0, 0.5,
+                ],
+                &[8, 4],
+            )
+            .1,
+        );
+        for (layer_index, bias) in layer_expert_biases {
+            let name = format!("model.layers.{layer_index}.mlp.experts.down_proj_bias");
+            weights.tensors.insert(
+                name.clone(),
+                tensor(&name, bias, &[num_local_experts, 4]).1,
+            );
+        }
         weights
     }
 
@@ -1205,6 +1387,92 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event moe differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn nonzero_single_expert_moe_output_parity_matches() {
+        let case = ConformanceCase::prefill("single-expert-moe-nonzero", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_nonzero_single_expert_output(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![0],
+        );
+        let reference = nonzero_single_expert_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn nonzero_single_expert_moe_output_decode_parity_matches() {
+        let case = ConformanceCase::decode("single-expert-moe-nonzero-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_nonzero_single_expert_output(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![0],
+        );
+        let reference = nonzero_single_expert_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn nonzero_two_layer_second_layer_moe_output_parity_matches() {
+        let case = ConformanceCase::decode("two-layer-second-moe-nonzero-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_layer_expert_down_proj_bias(2, 1, &[1], &[(1, &[1.0, 0.0, 0.0, 0.0])]),
+                runner_config_with_layers(
+                    2,
+                    vec!["full_attention".into(), "full_attention".into()],
+                    1,
+                    1,
+                ),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            1,
+            1,
+            vec![1],
+        );
+        let reference = nonzero_two_layer_full_attention_moe_on_second_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
     }
 
