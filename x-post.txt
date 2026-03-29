@@ -1,9 +1,6 @@
 rvLLM -- vLLM rewritten in Rust from scratch. One dev, $1,780 in compute.
-
 6,385 tok/s on A100. Beats Python vLLM 0.11.0 at N=1 through N=32. 20x faster startup. 31x smaller binary.
-
 head-to-head (same A100 80GB SXM4, Qwen2.5-1.5B, greedy, 32 tok/req)
-
 N=1:    rvLLM  217  |  vLLM  207   1.05x
 N=2:    rvLLM  463  |  vLLM  438   1.06x
 N=4:    rvLLM  827  |  vLLM  867   0.95x
@@ -11,15 +8,11 @@ N=8:    rvLLM 1772  |  vLLM 1689   1.05x
 N=16:   rvLLM 3303  |  vLLM 3123   1.06x
 N=32:   rvLLM 6385  |  vLLM 5405   1.18x
 N=48+:  vLLM scales further (15,414 at N=1024)
-
 rvLLM currently caps at N=32 due to KV cache management. fixing this is the active bottleneck.
-
 what is it
 from-scratch Rust implementation of vLLM. drop-in OpenAI API replacement. same endpoints, same format. 16 MB static binary. zero python dependencies.
-
 the build
 23 Rust crates. 15 hand-written CUDA kernels. 792 tests. built in ~22 hours with Claude Opus doing architecture, CUDA kernels, debugging, and 30-agent swarms for major optimization passes. $1,500 vast.ai GPU rentals + $280 Claude Code usage.
-
 architecture (current)
 - full f16 forward path -- zero cast kernels in the decode inner loop
 - fused QKV + gate+up weight concatenation (5 GEMMs -> 2 per layer)
@@ -32,37 +25,27 @@ architecture (current)
 - in-place RoPE, packed metadata HtoD (6 transfers -> 1), memset elimination
 - continuous batching with preemption and prefix caching
 - 10 model architectures (Llama, Mistral, Qwen2, Phi, Gemma, Mixtral, DeepSeek, GPT-NeoX, StableLM, Cohere)
-
 the optimization journey
 started at 130 tok/s. ended at 6,385 tok/s. here's how:
-
 phase 4 -- CUDA graph capture (130 tok/s)
 graph capture kept failing with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. found 3 root causes: default stream can't capture, cuBLAS needs explicit workspace, cudarc event tracking creates cross-phase dependencies. fixed all three. graph working end-to-end.
-
 phase 5 -- 10-agent swarm (174 tok/s)
 launched 10 agents in parallel worktrees. each owned different files. eliminated output casts (forward_mixed), fused residual+RMSNorm, in-place RoPE, packed metadata HtoD, engine yield removal, hot-path logging downgrade. merged sequentially, coherency-checked between each.
-
 full f16 forward (200 tok/s)
 rewrote the entire forward path to stay in f16 from embedding to argmax. zero casts. wrote flash_attention_2_decode_f16io_kernel (f16 Q/output). pre-converted norm weights and biases at load time. every kernel has an f16 variant.
-
 9-agent kernel efficiency (236 tok/s)
 cross-layer add+norm fusion (-28 kernel launches). replaced alloc_zeros with unsafe alloc for immediately-overwritten buffers. CUDA memory pool release threshold = u64::MAX. cuBLAS warmup. in-place rms_norm_f16. allocation audit found 5 reusable buffers per layer.
-
 GPU thread model (6,385 tok/s at N=32)
 spawned dedicated OS thread for engine.step(). the tokio async loop stays responsive during 4ms GPU compute. new requests drain from channels while GPU is busy. replaced spin+yield polling with tokio::sync::mpsc .await (zero-cost async wait).
-
 the wall
 at N=1, per-token time is 4.2ms. theoretical minimum is 1.5ms (reading 3GB weights at 2039 GB/s). the 2.7ms gap is DRAM access patterns -- custom GEMV, cuBLAS, and cublasLt all converge to the same number. this is the hardware efficiency frontier for this model on A100.
-
 at N>32, rvLLM fails due to KV cache exhaustion. vLLM scales to N=1024 (15,414 tok/s) thanks to mature continuous batching and memory management. closing this gap is the next priority.
-
 what's next
 - fix N>32 ceiling (KV cache management, max_num_seqs scaling)
 - INT8/FP8 quantization (halve weight reads -> ~2ms/tok -> ~500 tok/s at N=1)
 - speculative decoding (amortize weight reads across draft tokens)
 - async engine overlap with new request arrival processing
 - B200 benchmarks (180GB VRAM, much higher N ceiling)
-
 system comparison
 - startup: 6s vs ~120s (20x)
 - binary: 16 MB vs ~500 MB (31x)
@@ -71,5 +54,4 @@ system comparison
 repo: https://github.com/m0at/rvllm
 paper: https://m0at.github.io/rvllm/paper/rvllm.pdf
 site: https://m0at.github.io/rvllm/
-
 Apache-2.0. open source. PRs welcome.

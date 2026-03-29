@@ -425,7 +425,7 @@ impl GpuWorker {
         }
 
         let graph_runner = GraphRunner::new(GraphRunnerConfig {
-            max_batch_size: 32,
+            max_batch_size: 256,
             enabled: true,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
@@ -1065,7 +1065,7 @@ impl GpuWorker {
 
         let actual_batch = model_input.num_tokens();
         let padded = match rvllm_gpu::cuda_graph::padded_batch_size(actual_batch) {
-            Some(p) if p <= 32 => p,
+            Some(p) if p <= 256 => p,
             _ => return self.raw_gpu_forward_ex(model_input, greedy_only),
         };
 
@@ -1117,7 +1117,7 @@ impl GpuWorker {
 
             // Lazily allocate pinned host buffer for async DtoH.
             if self.pinned_output.is_none() {
-                let pinned = unsafe { self.context.alloc_pinned::<i32>(32) }
+                let pinned = unsafe { self.context.alloc_pinned::<i32>(256) }
                     .map_err(|e| LLMError::GpuError(format!("pinned alloc: {e}")))?;
                 self.pinned_output = Some(pinned);
             }
