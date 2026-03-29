@@ -1201,6 +1201,51 @@ impl GpuWorker {
         self.execute(metadata)
     }
 
+    /// Debug-only logits capture for one prepared worker step.
+    ///
+    /// This uses the same worker input preparation and forward routing as the
+    /// live eager path, but returns full logits before sampling so offline
+    /// differential probes can localize the first divergence boundary.
+    pub fn debug_logits(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        match self.gpu_forward_ex(&model_input, false)? {
+            ForwardOutput::Logits(logits) => Ok(logits),
+            ForwardOutput::TokenIds(_) | ForwardOutput::TokenIdsPending { .. } => {
+                unreachable!("greedy_only=false must return full logits")
+            }
+        }
+    }
+
+    /// Debug-only direct runner logits capture for one prepared worker step.
+    ///
+    /// This bypasses worker planning and sampling and calls the underlying CUDA
+    /// model runner directly on the same prepared input. Comparing this against
+    /// `debug_logits()` isolates whether the live worker path itself introduces
+    /// divergence before any broader checkpoint-faithfulness questions.
+    pub fn debug_runner_logits(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError("GPU model runner not initialized -- build with --features cuda".into())
+        })?;
+        runner.forward(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            model_input.is_prefill,
+        )
+    }
+
     /// Run the raw model forward pass (no graph logic).
     fn raw_gpu_forward(&self, model_input: &ModelInput) -> Result<Vec<f32>> {
         #[cfg(feature = "cuda")]

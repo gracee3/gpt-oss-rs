@@ -12,6 +12,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 gpt-oss-core.workspace = true
 gpt-oss-engine.workspace = true
+gpt-oss-tokenizer.workspace = true
 
 [features]
 default = []
@@ -31,4 +32,9 @@ harness = false
 [[bin]]
 name = "live_cuda_parity"
 path = "src/bin/live_cuda_parity.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "restricted_logit_diff"
+path = "src/bin/restricted_logit_diff.rs"
 required-features = ["cuda"]
