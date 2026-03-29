@@ -113,6 +113,16 @@ impl GptOssForCausalLM {
             )));
         }
 
+        let semantic_spec = config
+            .semantic_model_spec()
+            .map_err(|err| LLMError::ModelError(err.to_string()))?;
+        trace!(
+            num_layers = semantic_spec.num_layers,
+            num_sliding_layers = semantic_spec.num_sliding_layers(),
+            num_moe_layers = semantic_spec.num_moe_layers(),
+            "built gpt-oss semantic spec"
+        );
+
         let cfg = GptOssConfig {
             num_layers: config.num_layers,
             hidden_size: config.hidden_size,
@@ -569,6 +579,7 @@ mod tests {
 
     use super::*;
     use crate::bridge::{AttentionMetadata, MockAttentionBackend, WeightTensor};
+    use gpt_oss_semantics::{AttentionKind, SinkBehavior};
 
     fn tensor(name: &str, vals: &[f32], shape: &[usize]) -> (String, WeightTensor) {
         (
@@ -720,5 +731,25 @@ mod tests {
             .forward(&test_input(), &cache, &attention)
             .unwrap_err();
         assert!(err.to_string().contains("expert tensors"));
+    }
+
+    #[test]
+    fn gpt_oss_semantic_spec_tracks_layer_metadata() {
+        let spec = test_config("sliding_attention")
+            .semantic_model_spec()
+            .unwrap();
+
+        assert_eq!(spec.num_layers, 1);
+        assert_eq!(spec.layers.len(), 1);
+        assert!(matches!(
+            spec.layers[0].attention.kind,
+            AttentionKind::Sliding
+        ));
+        assert!(matches!(
+            spec.layers[0].attention.sink_behavior,
+            SinkBehavior::Available
+        ));
+        assert_eq!(spec.layers[0].moe.num_local_experts, 1);
+        assert_eq!(spec.layers[0].moe.num_experts_per_tok, 1);
     }
 }

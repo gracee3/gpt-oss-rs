@@ -3,6 +3,9 @@
 use std::sync::Arc;
 
 use gpt_oss_core::types::Dtype;
+use gpt_oss_semantics::{
+    AttentionSpec, ExpertStorageSpec, LayerSpec, ModelSpec, MoeSpec, SemanticError,
+};
 use tracing::debug;
 
 use crate::architectures::{create_model, Architecture};
@@ -35,6 +38,62 @@ pub struct ModelRunnerConfig {
     pub num_experts_per_tok: usize,
     pub dtype: Dtype,
     pub architecture: String,
+}
+
+impl ModelRunnerConfig {
+    /// Build the canonical GPT-OSS semantic model description for this runner config.
+    pub fn semantic_model_spec(&self) -> gpt_oss_semantics::Result<ModelSpec> {
+        let layer_types = if self.layer_types.is_empty() {
+            vec!["full_attention".to_string(); self.num_layers]
+        } else {
+            self.layer_types.clone()
+        };
+
+        if layer_types.len() != self.num_layers {
+            return Err(SemanticError::LayerTypesLengthMismatch {
+                expected: self.num_layers,
+                got: layer_types.len(),
+            });
+        }
+
+        let layers = layer_types
+            .iter()
+            .enumerate()
+            .map(|(index, layer_type)| {
+                let attention = AttentionSpec::from_layer_type(layer_type, self.sliding_window)?;
+                Ok(LayerSpec {
+                    index,
+                    layer_type: layer_type.clone(),
+                    attention,
+                    moe: MoeSpec {
+                        num_local_experts: self.num_local_experts,
+                        num_experts_per_tok: self.num_experts_per_tok,
+                        storage: ExpertStorageSpec::Unquantized,
+                    },
+                })
+            })
+            .collect::<gpt_oss_semantics::Result<Vec<_>>>()?;
+
+        Ok(ModelSpec {
+            num_layers: self.num_layers,
+            hidden_size: self.hidden_size,
+            num_heads: self.num_heads,
+            num_kv_heads: self.num_kv_heads,
+            head_dim: self.head_dim,
+            intermediate_size: self.intermediate_size,
+            vocab_size: self.vocab_size,
+            max_position: self.max_position,
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            partial_rotary_factor: self.partial_rotary_factor,
+            attn_logit_softcapping: self.attn_logit_softcapping,
+            attention_bias: self.attention_bias,
+            sliding_window: self.sliding_window,
+            dtype: self.dtype,
+            architecture: self.architecture.clone(),
+            layers,
+        })
+    }
 }
 
 /// Drives the transformer forward pass: embed -> layers -> LM head -> logits.

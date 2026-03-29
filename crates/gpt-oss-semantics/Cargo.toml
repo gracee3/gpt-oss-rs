@@ -1,0 +1,18 @@
+[package]
+name = "gpt-oss-semantics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Canonical GPT-OSS semantic model types"
+keywords = ["gpt-oss", "semantics", "llm", "model"]
+categories = ["science", "data-structures"]
+
+[dependencies]
+gpt-oss-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
