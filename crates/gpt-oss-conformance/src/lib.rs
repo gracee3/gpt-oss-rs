@@ -73,4 +73,28 @@ mod tests {
         assert!(report.expected.plan.is_none());
         assert!(report.observed.plan.is_some());
     }
+
+    #[test]
+    fn decode_case_surfaces_phase_boundary_trace_details() {
+        let case = ConformanceCase::decode("decode_step", 4, vec![9]);
+        let harness = ConformanceHarness::default();
+        let backend = planned_backend();
+        let report = harness.compare(&case, &backend, &backend);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        let plan_frame = &report.expected.trace.frames[0];
+        assert!(plan_frame
+            .events
+            .iter()
+            .any(|event| event.stage == "reference_phase" && event.payload == "Decode"));
+        assert!(plan_frame
+            .events
+            .iter()
+            .any(|event| event.stage == "seq_start_pos" && event.payload == "4"));
+        assert!(report.expected.trace.frames.iter().skip(1).any(|frame| {
+            frame.events.iter().any(|event| {
+                event.stage == "layer" && event.payload.contains("positions=[4]")
+            })
+        }));
+    }
 }

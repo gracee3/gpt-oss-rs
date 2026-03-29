@@ -73,6 +73,14 @@ impl TraceSummary {
             format!("{:?}", plan.request_kind),
         ));
         plan_frame.events.push(TraceEvent::new(
+            "reference_phase",
+            format!("{:?}", trace.phase),
+        ));
+        plan_frame.events.push(TraceEvent::new(
+            "seq_start_pos",
+            trace.seq_start_pos.to_string(),
+        ));
+        plan_frame.events.push(TraceEvent::new(
             "graph_policy",
             format!("{:?}", plan.graph_policy),
         ));
@@ -90,8 +98,8 @@ impl TraceSummary {
             frame.events.push(TraceEvent::new(
                 "layer",
                 format!(
-                    "{}:{}->{}",
-                    layer.layer_index, layer.input_tokens, layer.output_tokens
+                    "{}:{}->{} positions={:?}",
+                    layer.layer_index, layer.input_tokens, layer.output_tokens, layer.position_ids
                 ),
             ));
             frame.events.push(TraceEvent::new(

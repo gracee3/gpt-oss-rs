@@ -28,8 +28,6 @@ pub struct CacheState {
 pub enum CacheModelError {
     #[error("block size must be greater than zero")]
     InvalidBlockSize,
-    #[error("sequence start position must not exceed the current token count")]
-    InvalidSequenceStart,
 }
 
 impl CacheLayout {
@@ -41,12 +39,9 @@ impl CacheLayout {
         }
     }
 
-    pub fn validate(&self, token_count: usize) -> Result<(), CacheModelError> {
+    pub fn validate(&self, _token_count: usize) -> Result<(), CacheModelError> {
         if self.block_size == 0 {
             return Err(CacheModelError::InvalidBlockSize);
-        }
-        if self.seq_start_pos > token_count {
-            return Err(CacheModelError::InvalidSequenceStart);
         }
         Ok(())
     }
@@ -55,10 +50,23 @@ impl CacheLayout {
 impl CacheState {
     pub fn from_tokens(tokens: &[TokenId], layout: &CacheLayout) -> Result<Self, CacheModelError> {
         layout.validate(tokens.len())?;
-        let blocks = tokens
-            .chunks(layout.block_size)
-            .map(|chunk| chunk.to_vec())
-            .collect();
+        let mut blocks = Vec::new();
+        let mut current_block = Vec::new();
+        let mut current_block_index = layout.seq_start_pos / layout.block_size;
+
+        for (token_offset, token) in tokens.iter().enumerate() {
+            let absolute_pos = layout.seq_start_pos + token_offset;
+            let block_index = absolute_pos / layout.block_size;
+            if block_index != current_block_index && !current_block.is_empty() {
+                blocks.push(std::mem::take(&mut current_block));
+                current_block_index = block_index;
+            }
+            current_block.push(*token);
+        }
+
+        if !current_block.is_empty() {
+            blocks.push(current_block);
+        }
         Ok(Self { blocks })
     }
 }

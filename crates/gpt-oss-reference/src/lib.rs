@@ -16,7 +16,7 @@ pub use executor::{
     ReferenceError, ReferenceExecutor, ReferenceExecutorConfig, ReferenceInput, ReferenceOutput,
 };
 pub use moe::{MoeMode, MoeTrace};
-pub use trace::{LayerTrace, ReferenceTrace};
+pub use trace::{LayerTrace, ReferencePhase, ReferenceTrace};
 
 #[cfg(test)]
 mod tests {
@@ -39,6 +39,8 @@ mod tests {
         let output = executor
             .forward(ReferenceInput {
                 tokens: vec![1u32, 2u32],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
             })
             .expect("placeholder forward");
 
@@ -50,6 +52,8 @@ mod tests {
         assert!(output.logits.iter().any(|logit| *logit != 0.0));
         assert_eq!(output.trace.layers[1].attention.visible_tokens, vec![0, 1]);
         assert_eq!(output.trace.layers[1].moe.experts_invoked, 4);
+        assert_eq!(output.trace.phase, ReferencePhase::Prefill);
+        assert_eq!(output.trace.layers[1].position_ids, vec![0, 1]);
     }
 
     #[test]
@@ -67,7 +71,11 @@ mod tests {
         });
 
         let output = executor
-            .forward(ReferenceInput { tokens: vec![0, 1, 2] })
+            .forward(ReferenceInput {
+                tokens: vec![0, 1, 2],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
+            })
             .expect("multi-block forward");
 
         assert_eq!(output.trace.cache.blocks.len(), 2);
@@ -89,9 +97,43 @@ mod tests {
         });
 
         let err = executor
-            .forward(ReferenceInput { tokens: vec![0, 1] })
+            .forward(ReferenceInput {
+                tokens: vec![0, 1],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
+            })
             .expect_err("expected layer type validation failure");
 
         assert!(matches!(err, ReferenceError::LayerTypesLengthMismatch { .. }));
+    }
+
+    #[test]
+    fn decode_tracks_absolute_positions_and_cache_alignment() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 4,
+            num_layers: 2,
+            block_size: 4,
+            layer_types: vec!["full_attention".into(), "sliding_attention".into()],
+            sliding_window: Some(2),
+            sink_tokens: 1,
+            num_local_experts: 2,
+            num_experts_per_tok: 1,
+            moe_layer_indices: vec![1],
+        });
+
+        let output = executor
+            .forward(ReferenceInput {
+                tokens: vec![9],
+                phase: ReferencePhase::Decode,
+                seq_start_pos: 4,
+            })
+            .expect("decode forward");
+
+        assert_eq!(output.trace.phase, ReferencePhase::Decode);
+        assert_eq!(output.trace.seq_start_pos, 4);
+        assert_eq!(output.trace.layers[0].position_ids, vec![4]);
+        assert_eq!(output.trace.cache.blocks.len(), 1);
+        assert_eq!(output.trace.cache_layout.seq_start_pos, 4);
+        assert_eq!(output.trace.layers[1].attention.visible_tokens, vec![0, 3, 4]);
     }
 }

@@ -2,7 +2,7 @@ use crate::{
     attention::AttentionTrace,
     cache::{CacheLayout, CacheModelError, CacheState, CacheVisibility},
     moe::MoeTrace,
-    trace::{LayerTrace, ReferenceTrace},
+    trace::{LayerTrace, ReferencePhase, ReferenceTrace},
 };
 use gpt_oss_core::types::TokenId;
 use gpt_oss_moe_semantics::route_top_k;
@@ -32,6 +32,9 @@ pub struct ReferenceExecutorConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceInput {
     pub tokens: Vec<TokenId>,
+    pub phase: ReferencePhase,
+    #[serde(default)]
+    pub seq_start_pos: u32,
 }
 
 /// Output of the reference executor scaffold.
@@ -70,7 +73,11 @@ impl ReferenceExecutor {
             });
         }
 
-        let cache_layout = CacheLayout::new(self.config.block_size, self.cache_visibility(), 0);
+        let cache_layout = CacheLayout::new(
+            self.config.block_size,
+            self.cache_visibility(),
+            input.seq_start_pos as usize,
+        );
         let cache = CacheState::from_tokens(&input.tokens, &cache_layout)?;
 
         let token_count = input.tokens.len();
@@ -78,25 +85,27 @@ impl ReferenceExecutor {
             .tokens
             .iter()
             .enumerate()
-            .map(|(index, token)| *token as f32 + (index as f32 * 0.125))
+            .map(|(index, token)| *token as f32 + ((input.seq_start_pos as usize + index) as f32 * 0.125))
             .collect::<Vec<_>>();
         let mut layers = Vec::with_capacity(self.config.num_layers);
         let mut aggregate_moe_routes = Vec::new();
+        let position_ids = (0..token_count)
+            .map(|offset| input.seq_start_pos + offset as u32)
+            .collect::<Vec<_>>();
+        let total_sequence_tokens = input.seq_start_pos as usize + token_count;
 
         for layer_index in 0..self.config.num_layers {
             let layer_type = self.layer_type(layer_index);
-            let query_index = token_count.saturating_sub(1);
-            let layer_attention = self.attention_trace_for(layer_type, query_index, token_count);
+            let query_index = total_sequence_tokens.saturating_sub(1);
+            let layer_attention =
+                self.attention_trace_for(layer_type, query_index, total_sequence_tokens);
             let mut next_hidden = hidden.clone();
             let mut layer_routes = Vec::new();
 
             for token_index in 0..token_count {
-                let visible = self.visible_tokens(layer_type, token_index, token_count);
-                let attention_signal = if visible.is_empty() {
-                    0.0
-                } else {
-                    visible.iter().map(|idx| hidden[*idx]).sum::<f32>() / visible.len() as f32
-                };
+                let absolute_pos = input.seq_start_pos as usize + token_index;
+                let visible = self.visible_tokens(layer_type, absolute_pos, total_sequence_tokens);
+                let attention_signal = self.synthetic_attention_signal(&visible, hidden[token_index]);
                 let moe_signal = if self.layer_has_moe(layer_index) {
                     let logits = self.synthetic_router_logits(attention_signal, hidden[token_index]);
                     let routes = route_top_k(&logits, self.effective_top_k());
@@ -126,6 +135,7 @@ impl ReferenceExecutor {
                 layer_index,
                 input_tokens: token_count,
                 output_tokens: token_count,
+                position_ids: position_ids.clone(),
                 attention: layer_attention,
                 moe: layer_moe,
             });
@@ -142,6 +152,8 @@ impl ReferenceExecutor {
         };
 
         let trace = ReferenceTrace {
+            phase: input.phase,
+            seq_start_pos: input.seq_start_pos,
             layers,
             attention,
             moe,
@@ -224,6 +236,14 @@ impl ReferenceExecutor {
         } else {
             (0..=last).collect()
         }
+    }
+
+    fn synthetic_attention_signal(&self, visible: &[usize], hidden_value: f32) -> f32 {
+        if visible.is_empty() {
+            return 0.0;
+        }
+        let positional_mean = visible.iter().map(|idx| *idx as f32).sum::<f32>() / visible.len() as f32;
+        hidden_value + positional_mean * 0.01
     }
 
     fn synthetic_router_logits(&self, attention_signal: f32, hidden_value: f32) -> Vec<f32> {

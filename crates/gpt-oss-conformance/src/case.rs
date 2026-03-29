@@ -16,6 +16,7 @@ pub struct ConformanceCase {
     pub name: String,
     pub inputs: Vec<u32>,
     pub is_prefill: bool,
+    pub seq_start_pos: u32,
 }
 
 impl ConformanceCase {
@@ -24,6 +25,7 @@ impl ConformanceCase {
             name: name.into(),
             inputs,
             is_prefill: false,
+            seq_start_pos: 0,
         }
     }
 
@@ -32,6 +34,20 @@ impl ConformanceCase {
             name: name.into(),
             inputs,
             is_prefill: true,
+            seq_start_pos: 0,
+        }
+    }
+
+    pub fn decode(
+        name: impl Into<String>,
+        seq_start_pos: u32,
+        inputs: Vec<u32>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            inputs,
+            is_prefill: false,
+            seq_start_pos,
         }
     }
 }
@@ -147,6 +163,12 @@ impl ConformanceBackend for PlannedReferenceBackend {
             .reference
             .forward(ReferenceInput {
                 tokens: case.inputs.clone(),
+                phase: if case.is_prefill {
+                    gpt_oss_reference::ReferencePhase::Prefill
+                } else {
+                    gpt_oss_reference::ReferencePhase::Decode
+                },
+                seq_start_pos: case.seq_start_pos,
             })
             .expect("reference executor should accept the configured case");
 
