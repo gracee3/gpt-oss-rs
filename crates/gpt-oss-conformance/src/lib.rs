@@ -158,6 +158,32 @@ mod tests {
         )
     }
 
+    fn full_attention_three_expert_top4_requested_moe_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-moe-3e-top4req",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 16,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 3,
+                    num_experts_per_tok: 4,
+                    moe_layer_indices: vec![0],
+                },
+            },
+        )
+    }
+
     fn multi_block_dense_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
             "planned-reference-dense-multiblock",
@@ -912,6 +938,33 @@ mod tests {
             vec![0],
         );
         let reference = full_attention_three_expert_top2_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn three_expert_top4_requested_full_attention_moe_decode_parity_matches() {
+        let case = ConformanceCase::decode("three-expert-top4req-moe-decode", 2, vec![3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_experts(3),
+                runner_config_with_moe(3, 4),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            3,
+            4,
+            vec![0],
+        );
+        let reference = full_attention_three_expert_top4_requested_moe_backend();
         let harness = ConformanceHarness::default();
 
         let report = harness.compare(&case, &reference, &observed);
