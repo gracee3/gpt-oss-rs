@@ -1803,6 +1803,98 @@ mod tests {
     }
 
     #[test]
+    fn response_output_items_from_protocol_messages_reject_plain_text_when_required() {
+        let req = make_tool_request(ResponseToolChoice::Mode("required".into()));
+        let tools = req.normalize_function_tools().unwrap();
+        let err = response_output_items_from_protocol_messages(
+            "resp_test",
+            &[gpt_oss_tokenizer::ParsedProtocolMessage {
+                role: "assistant".into(),
+                author_name: None,
+                content: "plain text".into(),
+                channel: Some("final".into()),
+                recipient: None,
+                content_type: None,
+            }],
+            &req,
+            &tools,
+            &req.effective_tool_choice(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("required function call"));
+    }
+
+    #[test]
+    fn response_output_items_from_protocol_messages_reject_wrong_forced_tool() {
+        let mut req = make_tool_request(ResponseToolChoice::Specific(ResponseSpecificToolChoice {
+            choice_type: "function".into(),
+            name: "get_weather".into(),
+        }));
+        req.tools
+            .as_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "function", "name": "get_time"}));
+        let tools = req.normalize_function_tools().unwrap();
+        let err = response_output_items_from_protocol_messages(
+            "resp_test",
+            &[gpt_oss_tokenizer::ParsedProtocolMessage {
+                role: "assistant".into(),
+                author_name: None,
+                content: "{\"timezone\":\"UTC\"}".into(),
+                channel: Some("commentary".into()),
+                recipient: Some("functions.get_time".into()),
+                content_type: Some("<|constrain|>json".into()),
+            }],
+            &req,
+            &tools,
+            &req.effective_tool_choice(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("tool_choice requires"));
+    }
+
+    #[test]
+    fn response_output_items_from_protocol_messages_ignore_analysis_and_keep_final_text() {
+        let req = make_tool_request(ResponseToolChoice::Mode("auto".into()));
+        let tools = req.normalize_function_tools().unwrap();
+        let items = response_output_items_from_protocol_messages(
+            "resp_test",
+            &[
+                gpt_oss_tokenizer::ParsedProtocolMessage {
+                    role: "assistant".into(),
+                    author_name: None,
+                    content: "Need weather lookup.".into(),
+                    channel: Some("analysis".into()),
+                    recipient: None,
+                    content_type: None,
+                },
+                gpt_oss_tokenizer::ParsedProtocolMessage {
+                    role: "assistant".into(),
+                    author_name: None,
+                    content: "It is 18C and sunny.".into(),
+                    channel: Some("final".into()),
+                    recipient: None,
+                    content_type: None,
+                },
+            ],
+            &req,
+            &tools,
+            &req.effective_tool_choice(),
+        )
+        .unwrap();
+
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            ResponseOutputItem::Message(message) => {
+                assert_eq!(message.content[0].text, "It is 18C and sunny.");
+            }
+            _ => panic!("expected final message item"),
+        }
+    }
+
+    #[test]
     fn render_conversation_items_preserves_tool_history() {
         let items = vec![
             StoredConversationItem::Input(ResponseInputItem::Message(ResponseInputMessage::new(
@@ -2102,6 +2194,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn previous_response_id_replays_harmony_tool_chain_in_order() {
+        let (server, engine) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![
+                vec![gpt_oss_request_output(
+                    " to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"location\":\"Boston\"}<|call|>",
+                    "",
+                    true,
+                )],
+                vec![gpt_oss_request_output(
+                    " to=functions.get_time<|channel|>commentary<|constrain|>json<|message|>{\"timezone\":\"America/New_York\"}<|call|>",
+                    "",
+                    true,
+                )],
+                vec![gpt_oss_request_output(
+                    "<|channel|>final<|message|>It is 18C and 09:00.<|end|>",
+                    "It is 18C and 09:00.",
+                    true,
+                )],
+            ],
+        );
+
+        let first = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "What's the weather and time?",
+                "store": true,
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"},
+                    },
+                    {
+                        "type": "function",
+                        "name": "get_time",
+                        "description": "Get time",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            }))
+            .await;
+        first.assert_status_ok();
+        let first_body = first.json::<serde_json::Value>();
+        let first_id = first_body["id"].as_str().unwrap().to_string();
+        let weather_call_id = first_body["output"][0]["call_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let second = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "previous_response_id": first_id,
+                "store": true,
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": weather_call_id,
+                    "output": {"temp_c": 18, "conditions": "sunny"},
+                }],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"},
+                    },
+                    {
+                        "type": "function",
+                        "name": "get_time",
+                        "description": "Get time",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            }))
+            .await;
+        second.assert_status_ok();
+        let second_body = second.json::<serde_json::Value>();
+        let second_id = second_body["id"].as_str().unwrap().to_string();
+        let time_call_id = second_body["output"][0]["call_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let third = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "previous_response_id": second_id,
+                "store": true,
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": time_call_id,
+                    "output": {"time": "09:00"},
+                }],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"},
+                    },
+                    {
+                        "type": "function",
+                        "name": "get_time",
+                        "description": "Get time",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            }))
+            .await;
+        third.assert_status_ok();
+        let third_body = third.json::<serde_json::Value>();
+        assert_eq!(third_body["output"][0]["type"], "message");
+        assert_eq!(
+            third_body["output"][0]["content"][0]["text"],
+            "It is 18C and 09:00."
+        );
+
+        let prompts = engine.prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
+        assert!(prompts[1].contains("<|start|>functions.get_weather"), "{}", prompts[1]);
+        assert!(prompts[1].contains("\"temp_c\":18"), "{}", prompts[1]);
+        assert!(prompts[2].contains("to=functions.get_weather"), "{}", prompts[2]);
+        assert!(prompts[2].contains("to=functions.get_time"), "{}", prompts[2]);
+        assert!(prompts[2].contains("\"temp_c\":18"), "{}", prompts[2]);
+        assert!(prompts[2].contains("\"time\":\"09:00\""), "{}", prompts[2]);
+
+        let weather_call_idx = prompts[2].find("to=functions.get_weather").unwrap();
+        let weather_output_idx = prompts[2].find("<|start|>functions.get_weather").unwrap();
+        let time_call_idx = prompts[2].find("to=functions.get_time").unwrap();
+        let time_output_idx = prompts[2]
+            .rfind("<|start|>functions.get_time")
+            .unwrap();
+        assert!(weather_call_idx < weather_output_idx);
+        assert!(weather_output_idx < time_call_idx);
+        assert!(time_call_idx < time_output_idx);
+        assert!(!prompts[2].contains("<tool_call>"));
+    }
+
+    #[tokio::test]
     async fn streaming_tool_responses_emit_function_call_events_and_store_output() {
         let (server, _) = make_server(vec![vec![
             request_output(
@@ -2245,6 +2482,79 @@ mod tests {
             completed.1["response"]["output"][0]["arguments"],
             "{\"location\":\"Boston\"}"
         );
+    }
+
+    #[tokio::test]
+    async fn gpt_oss_streaming_tool_response_events_are_ordered() {
+        let (server, _) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![vec![gpt_oss_stream_request_output_from_fragments(
+                &[
+                    " to=functions.get_weather",
+                    "<|channel|>commentary",
+                    "<|constrain|>json",
+                    "<|message|>",
+                    "{\"location\":\"Boston\"}",
+                    "<|call|>",
+                ],
+                "",
+                true,
+            )]],
+        );
+
+        let response = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "Call the tools you need.",
+                "stream": true,
+                "store": true,
+                "parallel_tool_calls": true,
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object"},
+                }],
+            }))
+            .await;
+
+        response.assert_status_ok();
+        let events = parse_sse_events(&response.text());
+        let event_names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+
+        let created_idx = event_names.iter().position(|name| *name == "response.created").unwrap();
+        let in_progress_idx = event_names
+            .iter()
+            .position(|name| *name == "response.in_progress")
+            .unwrap();
+        let added_idx = event_names
+            .iter()
+            .position(|name| *name == "response.output_item.added")
+            .unwrap();
+        let delta_idx = event_names
+            .iter()
+            .position(|name| *name == "response.function_call_arguments.delta")
+            .unwrap();
+        let done_idx = event_names
+            .iter()
+            .position(|name| *name == "response.function_call_arguments.done")
+            .unwrap();
+        let output_done_idx = event_names
+            .iter()
+            .position(|name| *name == "response.output_item.done")
+            .unwrap();
+        let completed_idx = event_names
+            .iter()
+            .position(|name| *name == "response.completed")
+            .unwrap();
+
+        assert!(created_idx < in_progress_idx);
+        assert!(in_progress_idx < added_idx);
+        assert!(added_idx < delta_idx);
+        assert!(delta_idx < done_idx);
+        assert!(done_idx < output_done_idx);
+        assert!(output_done_idx < completed_idx);
     }
 
     #[tokio::test]

@@ -198,6 +198,7 @@ impl HarmonyProtocol {
             .encode(
                 text,
                 &HashSet::from([
+                    "<|start|>",
                     "<|channel|>",
                     "<|constrain|>",
                     "<|message|>",
@@ -374,6 +375,52 @@ mod tests {
     }
 
     #[test]
+    fn render_prompt_preserves_tool_author_and_recipient_history() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let prompt = protocol
+            .render_prompt(
+                &[
+                    ProtocolMessage::new("user", "What's the weather?"),
+                    ProtocolMessage::new("assistant", "{\"location\":\"Boston\"}")
+                        .with_channel("commentary")
+                        .with_recipient("functions.get_weather")
+                        .with_content_type("<|constrain|>json"),
+                    ProtocolMessage::new("tool", "{\"temp_c\":18}")
+                        .with_author_name("functions.get_weather")
+                        .with_channel("commentary")
+                        .with_recipient("assistant"),
+                ],
+                None,
+                &[],
+            )
+            .unwrap();
+
+        assert!(prompt.text.contains("to=functions.get_weather"), "{}", prompt.text);
+        assert!(prompt.text.contains("<|start|>functions.get_weather"), "{}", prompt.text);
+        assert!(prompt.text.contains("to=assistant"), "{}", prompt.text);
+        assert!(prompt.text.contains("\"temp_c\":18"), "{}", prompt.text);
+    }
+
+    #[test]
+    fn parse_completion_tokens_round_trip_multiple_channels_and_recipients() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let text = concat!(
+            "<|channel|>analysis<|message|>Need weather lookup.<|end|>",
+            "<|start|>assistant to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"location\":\"Tokyo\"}<|call|>"
+        );
+        let token_ids = protocol.encode_completion_text(text);
+        let parsed = protocol.parse_completion_tokens(&token_ids).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].channel.as_deref(), Some("analysis"));
+        assert_eq!(parsed[0].content, "Need weather lookup.");
+        assert_eq!(parsed[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(parsed[1].channel.as_deref(), Some("commentary"));
+        assert_eq!(parsed[1].content_type.as_deref(), Some("<|constrain|>json"));
+        assert_eq!(parsed[1].content, "{\"location\":\"Tokyo\"}");
+    }
+
+    #[test]
     fn stream_parser_handles_fragmented_tool_call() {
         let protocol = HarmonyProtocol::gpt_oss().unwrap();
         let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
@@ -399,5 +446,37 @@ mod tests {
         assert_eq!(messages[0].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(messages[0].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[0].content, "{\"location\":\"Tokyo\"}");
+    }
+
+    #[test]
+    fn stream_parser_recovers_from_fragmented_json_and_message_boundaries() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let mut parser = protocol.stream_parser().unwrap();
+
+        for fragment in [
+            "<|channel|>analysis",
+            "<|message|>Need weather",
+            " lookup.",
+            "<|end|><|start|>assistant",
+            " to=functions.get_weather",
+            "<|channel|>commentary",
+            "<|constrain|>json",
+            "<|message|>{\"location\":\"Bos",
+            "ton\"}",
+            "<|call|>",
+        ] {
+            for token in protocol.encode_stream_fragment_text(fragment) {
+                parser.push_token(token).unwrap();
+            }
+        }
+        parser.finish().unwrap();
+
+        let messages = parser.messages().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].channel.as_deref(), Some("analysis"));
+        assert_eq!(messages[0].content, "Need weather lookup.");
+        assert_eq!(messages[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(messages[1].channel.as_deref(), Some("commentary"));
+        assert_eq!(messages[1].content, "{\"location\":\"Boston\"}");
     }
 }
