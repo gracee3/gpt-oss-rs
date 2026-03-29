@@ -7,7 +7,6 @@ use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer as HfTokenizer;
 use tracing::{debug, info};
 
-use crate::chat::{apply_chatml, ChatMessage};
 use crate::incremental::IncrementalDecoder;
 
 /// High-level tokenizer wrapping HuggingFace's tokenizer with vLLM conventions.
@@ -203,15 +202,6 @@ impl Tokenizer {
         &self.special_tokens
     }
 
-    /// Apply the non-GPT-OSS chat template used by legacy compatibility paths.
-    pub fn apply_chat_template(
-        &self,
-        messages: &[ChatMessage],
-        add_generation_prompt: bool,
-    ) -> Result<String> {
-        apply_chatml(messages, add_generation_prompt)
-    }
-
     /// Access the underlying HuggingFace tokenizer.
     pub fn inner(&self) -> &HfTokenizer {
         &self.inner
@@ -298,18 +288,6 @@ mod tests {
         }
         assert!(!output.is_empty());
         tok.reset_incremental();
-    }
-
-    #[test]
-    fn chat_template_works() {
-        let tok = make_test_tokenizer();
-        let msgs = vec![
-            ChatMessage::new("user", "Hello"),
-            ChatMessage::new("assistant", "Hi there"),
-        ];
-        let result = tok.apply_chat_template(&msgs, true).unwrap();
-        assert!(result.contains("Hello"));
-        assert!(result.contains("Hi there"));
     }
 
     #[test]

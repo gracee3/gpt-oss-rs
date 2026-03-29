@@ -2,15 +2,13 @@
 //! Tokenization and detokenization for gpt-oss-rs.
 //!
 //! Wraps the HuggingFace `tokenizers` crate with streaming decode,
-//! chat template support, and special token detection.
+//! Harmony protocol support, and special token detection.
 
-pub mod chat;
 pub mod incremental;
 pub mod protocol;
 pub mod tokenizer;
 pub mod tool_parser;
 
-pub use chat::ChatMessage;
 pub use incremental::IncrementalDecoder;
 pub use protocol::{
     HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage, ProtocolMessage, RenderedPrompt,

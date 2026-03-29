@@ -345,45 +345,18 @@ pub async fn create_chat_completion_with_tools(
     let sampling_params = req.to_sampling_params();
     let tools_active = req.tools_enabled();
 
-    // Build messages, optionally augmented with tool definitions
     let tool_defs = req.to_tool_definitions();
-    let messages = if tools_active && !is_gpt_oss_model(&state.model_name) {
-        let tool_defs = req.to_tool_definitions();
-        augment_messages_with_tools(
-            &req.messages,
-            &tool_defs,
-            preferred_tool_prompt_style(&state.model_name),
-        )
-    } else {
-        req.messages.clone()
-    };
-
-    // Apply chat template
-    let chat_messages: Vec<gpt_oss_tokenizer::ChatMessage> = messages
+    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+    let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
+        .messages
         .iter()
-        .map(|m| gpt_oss_tokenizer::ChatMessage::new(&m.role, &m.content))
+        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
         .collect();
-
-    let prompt = if is_gpt_oss_model(&state.model_name) {
-        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
-            .messages
-            .iter()
-            .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
-            .collect();
-        protocol
-            .render_prompt(&protocol_messages, None, &tool_defs)
-            .map(|rendered| rendered.text)
-            .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?
-    } else {
-        state
-            .tokenizer
-            .read()
-            .await
-            .apply_chat_template(&chat_messages, true)
-            .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?
-    };
+    let prompt = protocol
+        .render_prompt(&protocol_messages, None, &tool_defs)
+        .map(|rendered| rendered.text)
+        .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?;
 
     info!(
         model = %req.model,

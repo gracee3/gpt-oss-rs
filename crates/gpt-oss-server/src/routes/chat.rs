@@ -14,7 +14,7 @@ use crate::error::ApiError;
 use crate::protocol_stream::{
     visible_text_from_protocol_messages, StreamedChatChoiceState,
 };
-use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style, ToolChoice};
+use crate::routes::tools::ToolChoice;
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatCompletionRequest;
@@ -43,7 +43,6 @@ pub async fn create_chat_completion(
     let tools_active = req.tools.as_ref().map_or(false, |t| !t.is_empty())
         && !matches!(req.tool_choice.as_ref(), Some(ToolChoice::Mode(m)) if m == "none");
 
-    // Build messages, optionally augmented with tool definitions
     let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = req
         .tools
         .as_ref()
@@ -66,60 +65,17 @@ pub async fn create_chat_completion(
         })
         .unwrap_or_default();
 
-    let messages = if tools_active && !is_gpt_oss_model(&state.model_name) {
-        let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = req
-            .tools
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|t| gpt_oss_tokenizer::ToolDefinition {
-                tool_type: t.tool_type.clone(),
-                function: gpt_oss_tokenizer::FunctionDefinition {
-                    name: t.function.name.clone(),
-                    description: t.function.description.clone(),
-                    parameters: t
-                        .function
-                        .parameters
-                        .as_ref()
-                        .and_then(|p| serde_json::from_value(p.clone()).ok()),
-                },
-            })
-            .collect();
-        augment_messages_with_tools(
-            &req.messages,
-            &tool_defs,
-            preferred_tool_prompt_style(&state.model_name),
-        )
-    } else {
-        req.messages.clone()
-    };
-
-    // Convert chat messages to a prompt string via the tokenizer's chat template.
-    let chat_messages: Vec<gpt_oss_tokenizer::ChatMessage> = messages
+    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+    let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
+        .messages
         .iter()
-        .map(|m| gpt_oss_tokenizer::ChatMessage::new(&m.role, &m.content))
+        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
         .collect();
-
-    let prompt = if is_gpt_oss_model(&state.model_name) {
-        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
-            .messages
-            .iter()
-            .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
-            .collect();
-        protocol
-            .render_prompt(&protocol_messages, None, &tool_defs)
-            .map(|rendered| rendered.text)
-            .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?
-    } else {
-        state
-            .tokenizer
-            .read()
-            .await
-            .apply_chat_template(&chat_messages, true)
-            .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?
-    };
+    let prompt = protocol
+        .render_prompt(&protocol_messages, None, &tool_defs)
+        .map(|rendered| rendered.text)
+        .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?;
 
     info!(
         model = %req.model,
