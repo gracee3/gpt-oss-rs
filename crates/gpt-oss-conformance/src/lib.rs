@@ -15,7 +15,17 @@ pub use trace::{TraceEvent, TraceFrame, TraceSummary};
 mod tests {
     use super::*;
     use gpt_oss_core::{prelude::SamplingParams, types::Dtype};
+    use gpt_oss_model_runner::{
+        bridge::{
+            AttentionMetadata, CacheEngine as BridgeCacheEngine, MockAttentionBackend,
+            MockGpuAllocator, ModelWeights as BridgeModelWeights, WeightTensor,
+        },
+        ModelInput, ModelRunner, ModelRunnerConfig,
+    };
     use gpt_oss_runtime_plan::RuntimeMode;
+    use half::f16;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn planned_backend() -> PlannedReferenceBackend {
         PlannedReferenceBackend::new(
@@ -41,6 +51,129 @@ mod tests {
                 },
             },
         )
+    }
+
+    fn tensor(name: &str, vals: &[f32], shape: &[usize]) -> (String, WeightTensor) {
+        (
+            name.to_string(),
+            WeightTensor {
+                name: name.to_string(),
+                data: vals.iter().map(|&v| f16::from_f32(v)).collect(),
+                shape: shape.to_vec(),
+            },
+        )
+    }
+
+    fn runner_config() -> ModelRunnerConfig {
+        ModelRunnerConfig {
+            tensor_parallel_rank: 0,
+            tensor_parallel_size: 1,
+            num_layers: 1,
+            hidden_size: 4,
+            num_heads: 2,
+            num_kv_heads: 2,
+            head_dim: 2,
+            intermediate_size: 2,
+            vocab_size: 8,
+            max_position: 32,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
+            sliding_window: None,
+            layer_types: vec!["full_attention".into()],
+            num_local_experts: 1,
+            num_experts_per_tok: 1,
+            dtype: Dtype::Float16,
+            architecture: "GptOssForCausalLM".into(),
+        }
+    }
+
+    fn runner_weights() -> BridgeModelWeights {
+        let mut tensors = HashMap::new();
+        tensors.extend([
+            tensor("model.embed_tokens.weight", &[0.0; 32], &[8, 4]),
+            tensor("model.layers.0.input_layernorm.weight", &[1.0; 4], &[4]),
+            tensor(
+                "model.layers.0.post_attention_layernorm.weight",
+                &[1.0; 4],
+                &[4],
+            ),
+            tensor("model.layers.0.self_attn.q_proj.weight", &[0.0; 16], &[4, 4]),
+            tensor("model.layers.0.self_attn.k_proj.weight", &[0.0; 16], &[4, 4]),
+            tensor("model.layers.0.self_attn.v_proj.weight", &[0.0; 16], &[4, 4]),
+            tensor("model.layers.0.self_attn.o_proj.weight", &[0.0; 16], &[4, 4]),
+            tensor("model.layers.0.self_attn.sinks", &[0.0; 2], &[2]),
+            tensor("model.layers.0.mlp.router.weight", &[0.0; 4], &[1, 4]),
+            tensor("model.layers.0.mlp.router.bias", &[0.0], &[1]),
+            tensor(
+                "model.layers.0.mlp.experts.gate_up_proj",
+                &[0.0; 16],
+                &[1, 4, 4],
+            ),
+            tensor(
+                "model.layers.0.mlp.experts.gate_up_proj_bias",
+                &[0.0; 4],
+                &[1, 4],
+            ),
+            tensor(
+                "model.layers.0.mlp.experts.down_proj",
+                &[0.0; 8],
+                &[1, 2, 4],
+            ),
+            tensor(
+                "model.layers.0.mlp.experts.down_proj_bias",
+                &[0.0; 4],
+                &[1, 4],
+            ),
+            tensor("model.norm.weight", &[1.0; 4], &[4]),
+            tensor("lm_head.weight", &[0.0; 32], &[8, 4]),
+        ]);
+
+        BridgeModelWeights { tensors }
+    }
+
+    fn runner_input() -> ModelInput {
+        ModelInput {
+            token_ids: vec![1, 2],
+            position_ids: vec![0, 1],
+            attention_metadata: AttentionMetadata {
+                slot_mapping: vec![0, 1],
+                context_lens: vec![2],
+                block_tables: vec![vec![0]],
+                query_lens: vec![1],
+                max_context_len: 2,
+            },
+            is_prefill: true,
+        }
+    }
+
+    fn real_model_runner_logits_case(name: &str) -> ObservedLogitsCase {
+        let runner = ModelRunner::new(
+            runner_weights(),
+            runner_config(),
+            Box::new(MockAttentionBackend),
+            Arc::new(BridgeCacheEngine::new(1, 64)),
+            MockGpuAllocator::new(1 << 20),
+        )
+        .expect("test model runner");
+        let output = runner.execute_model(runner_input()).expect("runner logits");
+        let vocab_size = runner.config.vocab_size;
+        let last_row_start = output.data.len() - vocab_size;
+        let logits = output.data[last_row_start..].to_vec();
+
+        ObservedLogitsCase {
+            logits,
+            sampling_params: SamplingParams {
+                temperature: 0.0,
+                ..Default::default()
+            },
+            past_tokens: vec![1, 2],
+            seed: 11,
+            trace: TraceSummary::synthetic(format!("{name}:model-runner"), vec![1, 2]),
+            plan: None,
+        }
     }
 
     #[test]
@@ -151,5 +284,17 @@ mod tests {
         assert_eq!(first.tokens, vec![1]);
         assert_eq!(first.tokens, second.tokens);
         assert_eq!(first.logits, second.logits);
+    }
+
+    #[test]
+    fn sampled_logits_backend_accepts_real_model_runner_logits() {
+        let case = ConformanceCase::synthetic("model-runner-logits", vec![1, 2]);
+        let backend = SampledLogitsBackend::new("observed")
+            .with_case(case.name.clone(), real_model_runner_logits_case(&case.name));
+
+        let sample = backend.run(&case);
+
+        assert_eq!(sample.logits.len(), 8);
+        assert_eq!(sample.tokens.len(), 1);
     }
 }

@@ -1066,6 +1066,7 @@ dependencies = [
  "gpt-oss-model-runner",
  "gpt-oss-reference",
  "gpt-oss-runtime-plan",
+ "half",
  "rand 0.8.5",
  "serde",
 ]
