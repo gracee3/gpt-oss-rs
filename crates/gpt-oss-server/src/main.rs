@@ -89,10 +89,11 @@ fn init_tracing(log_level: &str) {
         .init();
 }
 
-fn detect_gpu_and_log() {
+fn detect_gpu_and_log() -> bool {
     let devices = gpt_oss_gpu::prelude::list_devices();
     if devices.is_empty() {
         info!("no GPU devices detected, using mock backend");
+        return false;
     } else {
         for dev in &devices {
             info!(
@@ -103,6 +104,25 @@ fn detect_gpu_and_log() {
                 "detected GPU device"
             );
         }
+    }
+    true
+}
+
+fn resolve_device_string(
+    model: &str,
+    runtime_mode: RuntimeMode,
+    gpu_available: bool,
+) -> anyhow::Result<&'static str> {
+    if runtime_mode == RuntimeMode::Trusted && is_gpt_oss_model(model) && !gpu_available {
+        return Err(anyhow::anyhow!(
+            "trusted GPT-OSS mode requires a CUDA-capable GPU; falling back to mock is not allowed"
+        ));
+    }
+
+    if gpu_available {
+        Ok("cuda")
+    } else {
+        Ok("cpu")
     }
 }
 
@@ -133,23 +153,6 @@ fn resolve_serve_profile(
     }
 }
 
-/// Detect the appropriate device string based on compiled features and hardware.
-fn detect_device_string() -> &'static str {
-    #[cfg(feature = "cuda")]
-    {
-        let devices = gpt_oss_gpu::prelude::list_devices();
-        if !devices.is_empty() {
-            return "cuda";
-        }
-        info!("cuda feature enabled but no CUDA devices found, falling back to cpu");
-        "cpu"
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        "cpu"
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -172,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
             init_tracing(&log_level);
             info!("gpt-oss-rs v0.1.0");
 
-            detect_gpu_and_log();
+            let gpu_available = detect_gpu_and_log();
 
             let resolved_profile =
                 resolve_serve_profile(&model, profile, max_model_len, gpu_memory_utilization);
@@ -182,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
                     "gpt-oss-3090 profile selected for a non-GPT-OSS model"
                 );
             }
+            let device = resolve_device_string(&model, runtime_mode, gpu_available)?;
 
             // Build EngineConfig from CLI args
             let config = {
@@ -208,16 +212,13 @@ async fn main() -> anyhow::Result<()> {
                             .max_num_seqs(max_num_seqs)
                             .build(),
                     )
+                    .runtime_mode(runtime_mode)
                     .parallel(
                         ParallelConfigImpl::builder()
                             .tensor_parallel_size(tensor_parallel_size)
                             .build(),
                     )
-                    .device(
-                        DeviceConfig::builder()
-                            .device(detect_device_string())
-                            .build(),
-                    )
+                    .device(DeviceConfig::builder().device(device).build())
                     .telemetry(
                         TelemetryConfig::builder()
                             .enabled(!disable_telemetry)
@@ -309,5 +310,21 @@ mod tests {
         assert_eq!(resolved.profile, ServeProfile::GptOss3090);
         assert_eq!(resolved.max_model_len, 4096);
         assert_eq!(resolved.gpu_memory_utilization, 0.82);
+    }
+
+    #[test]
+    fn trusted_gpt_oss_rejects_mock_fallback_without_gpu() {
+        let err = resolve_device_string("openai/gpt-oss-20b", RuntimeMode::Trusted, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("falling back to mock is not allowed"));
+    }
+
+    #[test]
+    fn experimental_non_gpu_uses_cpu() {
+        let device =
+            resolve_device_string("/models/local-checkpoint", RuntimeMode::Experimental, false)
+                .unwrap();
+        assert_eq!(device, "cpu");
     }
 }

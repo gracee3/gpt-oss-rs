@@ -1082,6 +1082,7 @@ dependencies = [
  "gpt-oss-gpu",
  "gpt-oss-kv-model",
  "gpt-oss-model-runner",
+ "gpt-oss-runtime-plan",
  "gpt-oss-tokenizer",
  "half",
  "hf-hub",
@@ -1151,6 +1152,17 @@ dependencies = [
 name = "gpt-oss-reference"
 version = "0.1.0"
 dependencies = [
+ "gpt-oss-core",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "gpt-oss-runtime-plan"
+version = "0.1.0"
+dependencies = [
+ "clap",
  "gpt-oss-core",
  "serde",
  "thiserror 2.0.18",

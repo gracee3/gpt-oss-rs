@@ -6,6 +6,7 @@ members = [
     "crates/gpt-oss-gpu",
     "crates/gpt-oss-tokenizer",
     "crates/gpt-oss-kv-model",
+    "crates/gpt-oss-runtime-plan",
     "crates/gpt-oss-model-runner",
     "crates/gpt-oss-engine",
     "crates/gpt-oss-bench",
@@ -32,6 +33,7 @@ gpt-oss-semantics = { path = "crates/gpt-oss-semantics" }
 gpt-oss-gpu = { path = "crates/gpt-oss-gpu" }
 gpt-oss-tokenizer = { path = "crates/gpt-oss-tokenizer" }
 gpt-oss-kv-model = { path = "crates/gpt-oss-kv-model" }
+gpt-oss-runtime-plan = { path = "crates/gpt-oss-runtime-plan" }
 gpt-oss-model-runner = { path = "crates/gpt-oss-model-runner" }
 gpt-oss-engine = { path = "crates/gpt-oss-engine" }
 gpt-oss-reference = { path = "crates/gpt-oss-reference" }

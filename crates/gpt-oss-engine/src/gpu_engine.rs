@@ -63,6 +63,8 @@ mod inner {
 
     fn base_worker_config(config: &EngineConfig, hf_config: &HfModelConfig) -> WorkerConfig {
         WorkerConfig {
+            model_name: config.model.model_path.clone(),
+            runtime_mode: config.runtime_mode,
             device_id: 0,
             num_layers: hf_config.num_hidden_layers,
             num_kv_heads: hf_config.num_key_value_heads,
