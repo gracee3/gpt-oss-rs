@@ -2052,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_biased_three_expert_top2_moe_decode_gap_localizes_to_logits() {
+    fn nonzero_biased_three_expert_top2_moe_decode_parity_matches() {
         let case = ConformanceCase::decode("three-expert-top2-moe-nonzero-biased-decode", 2, vec![3]);
         let mut weights = runner_weights_with_layer_expert_down_proj_bias(
             1,
@@ -2087,12 +2087,12 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert_eq!(report.comparison.diffs, vec!["logits differ"]);
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]
-    fn nonzero_biased_three_expert_top2_moe_prefill_gap_localizes_to_logits() {
+    fn nonzero_biased_three_expert_top2_moe_prefill_parity_matches() {
         let case = ConformanceCase::prefill("three-expert-top2-moe-nonzero-biased-prefill", vec![1, 2]);
         let mut weights = runner_weights_with_layer_expert_down_proj_bias(
             1,
@@ -2127,8 +2127,8 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
-        assert_eq!(report.comparison.diffs, vec!["logits differ"]);
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]

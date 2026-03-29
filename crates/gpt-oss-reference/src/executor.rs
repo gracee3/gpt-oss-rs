@@ -391,18 +391,25 @@ impl ReferenceExecutor {
                     })
                     .collect::<Vec<_>>();
                 if !self.config.expert_output_rows.is_empty() {
+                    let mut moe_output = vec![vec![0.0; hidden.first().map_or(0, Vec::len)]; token_count];
                     for (token_index, token_routes) in routes.iter().enumerate() {
                         for (expert_index, weight) in token_routes {
                             if let Some(expert_row) =
                                 self.config.expert_output_rows.get(*expert_index)
                             {
-                                for (hidden_value, bias) in
-                                    hidden[token_index].iter_mut().zip(expert_row.iter())
+                                for (moe_value, bias) in
+                                    moe_output[token_index].iter_mut().zip(expert_row.iter())
                                 {
-                                    *hidden_value =
-                                        f16::from_f32(*hidden_value + bias * *weight).to_f32();
+                                    *moe_value =
+                                        f16::from_f32(*moe_value + bias * *weight).to_f32();
                                 }
                             }
+                        }
+                    }
+                    for (hidden_row, moe_row) in hidden.iter_mut().zip(moe_output.iter()) {
+                        for (hidden_value, moe_value) in hidden_row.iter_mut().zip(moe_row.iter()) {
+                            *hidden_value =
+                                f16::from_f32(*hidden_value + *moe_value).to_f32();
                         }
                     }
                 }
