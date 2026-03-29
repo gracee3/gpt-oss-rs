@@ -24,7 +24,7 @@ mod inner {
         Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus,
     };
     use gpt_oss_tokenizer::Tokenizer;
-    use gpt_oss_worker::gpu_worker::{GpuWorker, GpuWorkerOutput};
+    use gpt_oss_worker::gpu_worker::{init_tensor_parallel_group, GpuWorker, GpuWorkerOutput};
     use gpt_oss_worker::WorkerConfig;
 
     use crate::hf_snapshot;
@@ -620,6 +620,8 @@ mod inner {
                         LLMError::GpuError(format!("tp worker rank {rank} init_cache failed: {e}"))
                     })?;
             }
+
+            init_tensor_parallel_group(&mut workers)?;
 
             let tp_coordinator = TensorParallelCoordinator::new(workers)?;
 

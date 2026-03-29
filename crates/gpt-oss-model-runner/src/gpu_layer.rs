@@ -990,8 +990,8 @@ mod inner {
             };
 
             // 7. Output projection: hgemm f16
-            let attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
-            tp_comm.all_reduce_f16(&attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
+            tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
 
             // 8. Fused residual + post-attention RMSNorm f16.
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
@@ -1006,7 +1006,7 @@ mod inner {
             )?;
 
             // 9. MLP / routed MoE.
-            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+            let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
                 let cast_f16_f32 = self
                     .loader
                     .get_func("cast_fp", "cast_f16_to_f32_kernel")
@@ -1079,7 +1079,7 @@ mod inner {
                 };
                 hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
-            tp_comm.all_reduce_f16(&mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+            tp_comm.all_reduce_f16(&mut mlp_out, num_tokens * hidden, "mlp.down_proj")?;
             Ok((residual, mlp_out))
         }
 
@@ -1253,7 +1253,7 @@ mod inner {
             // ---------------------------------------------------------------
             // 5. Output projection
             // ---------------------------------------------------------------
-            let attn_proj = Self::linear(
+            let mut attn_proj = Self::linear(
                 &self.stream,
                 blas,
                 &attn_out,
@@ -1262,7 +1262,7 @@ mod inner {
                 hidden,
                 q_dim,
             )?;
-            tp_comm.all_reduce_f32(&attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            tp_comm.all_reduce_f32(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
 
             // ---------------------------------------------------------------
             // Fused residual + post-attention RMSNorm (1 kernel instead of 2)
@@ -1284,7 +1284,7 @@ mod inner {
             // ---------------------------------------------------------------
             // 7. MLP / routed MoE
             // ---------------------------------------------------------------
-            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+            let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
                 moe.forward(&self.stream, &normed2)?
             } else {
                 let gate_proj = weights.gate_proj.ok_or_else(|| {
@@ -1344,7 +1344,7 @@ mod inner {
             // ---------------------------------------------------------------
             // 8. Residual: residual + mlp_out
             // ---------------------------------------------------------------
-            tp_comm.all_reduce_f32(&mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+            tp_comm.all_reduce_f32(&mut mlp_out, num_tokens * hidden, "mlp.down_proj")?;
 
             let output = Self::add_tensors(
                 &self.stream,

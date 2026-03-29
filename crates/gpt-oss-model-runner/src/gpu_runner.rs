@@ -583,6 +583,10 @@ mod cuda_impl {
                 .expect("f16_scratch not allocated; call fuse_weights() first")
         }
 
+        pub fn set_tensor_parallel_comm(&mut self, tp_comm: Arc<dyn TensorParallelComm>) {
+            self.tp_comm = tp_comm;
+        }
+
         pub fn forward(
             &self,
             token_ids: &[u32],
@@ -788,13 +792,6 @@ mod cuda_impl {
                         .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
                 }
 
-                let normed_f32 = self.tp_comm.all_gather_f32(
-                    &normed_f32,
-                    num_tokens,
-                    hidden_size,
-                    "lm_head.input",
-                )?;
-
                 let logits_gpu = {
                     let lm_f16 = self
                         .weights
@@ -914,10 +911,6 @@ mod cuda_impl {
             }
 
             // Step 4: LM head  normed [num_tokens, hidden] @ lm_head^T [hidden, vocab]
-            let normed =
-                self.tp_comm
-                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
-
             let logits_gpu = CudaLinearLayer::forward_once(
                 &normed,
                 &self.lm_head_weight,
@@ -1210,13 +1203,6 @@ mod cuda_impl {
                         .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
                 }
 
-                let normed_f32 = self.tp_comm.all_gather_f32(
-                    &normed_f32,
-                    num_tokens,
-                    hidden_size,
-                    "lm_head.input",
-                )?;
-
                 let logits_gpu = {
                     let lm_f16 = self
                         .weights
@@ -1311,10 +1297,6 @@ mod cuda_impl {
                 &self.loader,
                 &self.stream,
             )?;
-            let normed =
-                self.tp_comm
-                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
-
             if num_tokens == 1 && greedy_only {
                 let token_ids_gpu = self.gpu_fused_lm_head_argmax(
                     &normed,
@@ -1654,10 +1636,6 @@ mod cuda_impl {
                 &self.loader,
                 &self.stream,
             )?;
-            let normed =
-                self.tp_comm
-                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
-
             let token_ids_gpu = if num_tokens == 1 {
                 self.gpu_fused_lm_head_argmax(
                     &normed,

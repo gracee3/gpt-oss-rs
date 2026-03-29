@@ -32,6 +32,9 @@ use crate::config::WorkerConfig;
 use crate::graph_runner::{GraphRunner, GraphRunnerConfig};
 use crate::input;
 
+#[cfg(feature = "cuda")]
+use gpt_oss_model_runner::tensor_parallel::nccl_tensor_parallel_comm;
+
 /// Output of one GPU worker step, mapping each sequence to its sampled token.
 #[derive(Debug, Clone)]
 pub struct GpuWorkerOutput {
@@ -2066,6 +2069,17 @@ impl GpuWorker {
     }
 
     #[cfg(feature = "cuda")]
+    pub fn set_tensor_parallel_comm(&mut self, comm: cudarc::nccl::safe::Comm) -> Result<()> {
+        let runner = self.gpu_model_runner.as_mut().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized before tensor-parallel comm setup".into(),
+            )
+        })?;
+        runner.set_tensor_parallel_comm(nccl_tensor_parallel_comm(comm));
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
     fn shard_f32_gpu_weights(
         &self,
         weights: HashMap<String, CudaSlice<f32>>,
@@ -2136,6 +2150,30 @@ impl GpuWorker {
         }
         Ok(sharded_gpu)
     }
+}
+
+#[cfg(feature = "cuda")]
+pub fn init_tensor_parallel_group(workers: &mut [GpuWorker]) -> Result<()> {
+    if workers.len() <= 1 {
+        return Ok(());
+    }
+
+    let streams = workers
+        .iter()
+        .map(|worker| worker.gpu_stream().clone())
+        .collect();
+    let comms = cudarc::nccl::safe::Comm::from_devices(streams)
+        .map_err(|e| LLMError::GpuError(format!("nccl comm init failed: {e:?}")))?;
+
+    for (rank, (worker, comm)) in workers.iter_mut().zip(comms.into_iter()).enumerate() {
+        worker.set_tensor_parallel_comm(comm).map_err(|e| {
+            LLMError::GpuError(format!(
+                "failed to install NCCL communicator for rank {rank}: {e}"
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Build a WorkerConfig from EngineConfig.
