@@ -777,11 +777,21 @@ mod inner {
             let qkv_dim = q_dim + kv_dim + kv_dim;
             #[cfg(feature = "cublaslt")]
             let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
-                Self::hgemm_dispatch(&self.stream, blas, lt, input, weight, m, n, k)
+                Self::hgemm_dispatch(
+                    &self.stream,
+                    blas,
+                    lt,
+                    input,
+                    weight,
+                    m,
+                    n,
+                    k,
+                    &self.loader,
+                )
             };
             #[cfg(not(feature = "cublaslt"))]
             let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
-                Self::hgemm_dispatch(&self.stream, blas, input, weight, m, n, k)
+                Self::hgemm_dispatch(&self.stream, blas, input, weight, m, n, k, &self.loader)
             };
             let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
                 hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
@@ -965,7 +975,7 @@ mod inner {
                 )?
             };
 
-            // 7. Output projection: hgemm f16.
+            // 7. Output projection: hgemm f16
             let attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
 
             // 8. Fused residual + post-attention RMSNorm f16.
@@ -1021,8 +1031,13 @@ mod inner {
                     ))
                 })?;
                 let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
-                    let gate_up =
-                        hgemm(&normed2, fused_gate_up, num_tokens, intermediate * 2, hidden)?;
+                    let gate_up = hgemm(
+                        &normed2,
+                        fused_gate_up,
+                        num_tokens,
+                        intermediate * 2,
+                        hidden,
+                    )?;
                     Self::fused_silu_mul_f16_split(
                         &self.stream,
                         &self.loader,
@@ -1054,7 +1069,6 @@ mod inner {
                 };
                 hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
-
             Ok((residual, mlp_out))
         }
 
@@ -2253,6 +2267,7 @@ mod inner {
         }
 
         /// hgemm dispatch: uses cublasLt for M<=32 (split-K), falls back to standard cuBLAS.
+        /// GEMM dispatch: custom GEMV for M=1, cublasLt for M<=32, cuBLAS for larger.
         fn hgemm_dispatch(
             stream: &Arc<CudaStream>,
             blas: &CublasHandle,
@@ -2263,9 +2278,34 @@ mod inner {
             m: usize,
             n: usize,
             k: usize,
+            loader: &KernelLoader,
         ) -> Result<CudaSlice<f16>> {
             let mut output = unsafe { stream.alloc::<f16>(m * n) }
                 .map_err(|e| LLMError::GpuError(format!("hgemm_dispatch: {e}")))?;
+
+            // M=1: custom GEMV kernel (vectorized half2, warp shuffle reduction)
+            if m == 1 {
+                if let Ok(kernel) = loader.get_func("gemv_f16", "gemv_f16_kernel") {
+                    let cfg = LaunchConfig {
+                        grid_dim: (n as u32, 1, 1),
+                        block_dim: (256, 1, 1),
+                        shared_mem_bytes: 0,
+                    };
+                    unsafe {
+                        stream.launch_builder(&kernel)
+                            .arg(&mut output)
+                            .arg(weight)
+                            .arg(input)
+                            .arg(&(n as i32))
+                            .arg(&(k as i32))
+                            .launch(cfg)
+                            .map_err(|e| LLMError::GpuError(format!("gemv_f16 launch: {e}")))?;
+                    }
+                    return Ok(output);
+                }
+                // Fallthrough to cuBLAS if kernel not loaded
+            }
+
             #[cfg(feature = "cublaslt")]
             if let Some(lt_ops) = lt {
                 if m <= rvllm_gpu::cublaslt_ops::CUBLASLT_M_THRESHOLD {
