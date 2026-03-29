@@ -2092,6 +2092,46 @@ mod tests {
     }
 
     #[test]
+    fn nonzero_biased_three_expert_top2_moe_prefill_gap_localizes_to_logits() {
+        let case = ConformanceCase::prefill("three-expert-top2-moe-nonzero-biased-prefill", vec![1, 2]);
+        let mut weights = runner_weights_with_layer_expert_down_proj_bias(
+            1,
+            3,
+            &[0],
+            &[(0, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+        );
+        weights.tensors.insert(
+            "model.layers.0.mlp.router.bias".to_string(),
+            tensor(
+                "model.layers.0.mlp.router.bias",
+                &[0.0, 1.0, 2.0],
+                &[3],
+            )
+            .1,
+        );
+        let runner = Arc::new(
+            ModelRunner::new(
+                weights,
+                runner_config_with_moe(3, 2),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![0])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let reference = nonzero_biased_three_expert_top2_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.comparison.diffs, vec!["logits differ"]);
+    }
+
+    #[test]
     fn multi_block_full_attention_prefill_parity_matches() {
         let case = ConformanceCase::prefill("dense-multiblock", vec![1, 2, 3]);
         let runner = Arc::new(
