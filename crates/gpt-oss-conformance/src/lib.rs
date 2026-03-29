@@ -106,6 +106,32 @@ mod tests {
         )
     }
 
+    fn multi_block_dense_backend() -> PlannedReferenceBackend {
+        PlannedReferenceBackend::new(
+            "planned-reference-dense-multiblock",
+            PlannedReferenceBackendConfig {
+                runtime_mode: RuntimeMode::Trusted,
+                model_name: "openai/gpt-oss-20b".to_string(),
+                greedy_only: true,
+                graph_enabled: true,
+                graph_max_batch_size: 32,
+                graph_padded_batch_size: Some(8),
+                dtype: Dtype::Float16,
+                reference: gpt_oss_reference::ReferenceExecutorConfig {
+                    vocab_size: 8,
+                    num_layers: 1,
+                    block_size: 2,
+                    layer_types: vec!["full_attention".into()],
+                    sliding_window: None,
+                    sink_tokens: 0,
+                    num_local_experts: 0,
+                    num_experts_per_tok: 0,
+                    moe_layer_indices: vec![],
+                },
+            },
+        )
+    }
+
     fn tensor(name: &str, vals: &[f32], shape: &[usize]) -> (String, WeightTensor) {
         (
             name.to_string(),
@@ -433,12 +459,13 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert!(!report
             .comparison
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]
@@ -460,7 +487,7 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert!(!report
             .comparison
             .diffs
@@ -496,6 +523,7 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event cache differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]
@@ -517,7 +545,7 @@ mod tests {
 
         let report = harness.compare(&case, &reference, &observed);
 
-        assert_eq!(report.outcome, ParityOutcome::Mismatch);
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert!(!report
             .comparison
             .diffs
@@ -553,6 +581,7 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event cache differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
     }
 
     #[test]
@@ -686,6 +715,29 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("event moe differs")));
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn multi_block_full_attention_prefill_parity_matches() {
+        let case = ConformanceCase::prefill("dense-multiblock", vec![1, 2, 3]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config(),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_block_size(2);
+        let reference = multi_block_dense_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
     }
 }

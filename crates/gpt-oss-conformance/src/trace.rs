@@ -160,6 +160,8 @@ impl TraceSummary {
                     "moe",
                     format!("SparseTopK/{} selected={:?}", token_count, vec![vec![0]; token_count]),
                 ));
+            } else {
+                frame.events.push(TraceEvent::new("moe", "DenseOnly/0 selected=[]"));
             }
             frames.push(frame);
         }

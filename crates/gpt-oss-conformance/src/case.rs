@@ -256,6 +256,11 @@ impl ModelRunnerGreedyBackend {
         self
     }
 
+    pub(crate) fn with_block_size(mut self, block_size: usize) -> Self {
+        self.block_size = block_size;
+        self
+    }
+
     fn plan_for_case(&self, case: &ConformanceCase) -> ExecutionPlan {
         plan_request(&PlanRequest::new(
             self.runtime_mode,
