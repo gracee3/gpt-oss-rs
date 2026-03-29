@@ -1,8 +1,8 @@
 //! Parse tool/function call JSON from model output text.
 //!
-//! Supports two common tool-call formats emitted by instruction-tuned models:
+//! Supports two common tool-call formats emitted by models used by this repo:
 //!
-//! 1. **Hermes / ChatML style** -- delimited by `<tool_call>...</tool_call>` tags
+//! 1. **Hermes tag-wrapped style** -- delimited by `<tool_call>...</tool_call>` tags
 //! 2. **Inline JSON** -- a bare JSON object (or array of objects) containing
 //!    `"name"` and `"arguments"` keys
 //!
@@ -40,7 +40,7 @@ pub enum ToolParseResult {
 /// Format style for injecting tool definitions into the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPromptStyle {
-    /// Hermes/ChatML: wrap definitions in `<tools>` tags, calls in `<tool_call>` tags.
+    /// Hermes-style prompt text with `<tools>` and `<tool_call>` tags.
     Hermes,
     /// OpenAI Harmony-style JSON instructions for gpt-oss tool calling.
     Harmony,
