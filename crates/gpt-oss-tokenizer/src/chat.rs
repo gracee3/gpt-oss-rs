@@ -27,7 +27,7 @@ impl std::fmt::Display for ChatRole {
 }
 
 /// A single message in a chat conversation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,

@@ -266,29 +266,6 @@ impl LLMEngine {
             ));
         }
 
-        self.add_request_token_ids(request_id, prompt, prompt_token_ids, sampling_params)
-    }
-
-    /// Submit a new generation request with pretokenized prompt IDs.
-    pub fn add_request_token_ids(
-        &mut self,
-        request_id: RequestId,
-        prompt: String,
-        prompt_token_ids: Vec<TokenId>,
-        sampling_params: SamplingParams,
-    ) -> Result<()> {
-        if prompt_token_ids.is_empty() {
-            return Err(LLMError::TokenizerError(
-                "prompt produced zero tokens".into(),
-            ));
-        }
-
-        debug!(
-            %request_id,
-            num_tokens = prompt_token_ids.len(),
-            "adding pretokenized request"
-        );
-
         let num_seqs = sampling_params.best_of.max(1);
         let mut seqs = Vec::with_capacity(num_seqs);
         let mut seq_states = Vec::with_capacity(num_seqs);
