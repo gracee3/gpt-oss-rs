@@ -1398,6 +1398,7 @@ dependencies = [
  "cudarc",
  "gpt-oss-core",
  "gpt-oss-gpu",
+ "gpt-oss-kv-model",
  "gpt-oss-model-runner",
  "gpt-oss-tokenizer",
  "half",
@@ -1431,6 +1432,15 @@ dependencies = [
  "parking_lot",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "gpt-oss-kv-model"
+version = "0.1.0"
+dependencies = [
+ "gpt-oss-core",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

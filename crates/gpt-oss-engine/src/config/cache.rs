@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use gpt_oss_kv_model::CacheLayoutSpec;
+
 /// Configuration controlling KV-cache block allocation and memory budget.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CacheConfigImpl {
@@ -45,6 +47,33 @@ impl CacheConfigImpl {
     /// Create a new builder for tests and programmatic construction.
     pub fn builder() -> CacheConfigBuilder {
         CacheConfigBuilder::default()
+    }
+
+    /// Convert runtime cache config into backend-independent cache semantics.
+    ///
+    /// This keeps the current runtime behavior unchanged while giving later
+    /// planner work a stable cache-layout shape to depend on.
+    pub fn semantic_layout(&self, num_layers: usize) -> CacheLayoutSpec {
+        CacheLayoutSpec::new(num_layers, self.block_size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpt_oss_kv_model::CacheVisibility;
+
+    #[test]
+    fn semantic_layout_uses_runtime_block_size() {
+        let cfg = CacheConfigImpl::builder().block_size(32).build();
+        let layout = cfg.semantic_layout(4);
+
+        assert_eq!(layout.num_layers, 4);
+        assert_eq!(layout.block_size, 32);
+        assert!(matches!(
+            layout.layer(0).unwrap().visibility,
+            CacheVisibility::Full
+        ));
     }
 }
 
