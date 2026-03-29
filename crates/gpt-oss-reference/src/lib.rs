@@ -84,6 +84,34 @@ mod tests {
     }
 
     #[test]
+    fn forward_supports_single_expert_full_attention_moe_zero_baseline() {
+        let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
+            vocab_size: 4,
+            num_layers: 1,
+            block_size: 2,
+            layer_types: vec!["full_attention".into()],
+            sliding_window: None,
+            sink_tokens: 0,
+            num_local_experts: 1,
+            num_experts_per_tok: 1,
+            moe_layer_indices: vec![0],
+        });
+
+        let output = executor
+            .forward(ReferenceInput {
+                tokens: vec![0, 1, 2],
+                phase: ReferencePhase::Prefill,
+                seq_start_pos: 0,
+            })
+            .expect("single-expert moe forward");
+
+        assert_eq!(output.logits, vec![0.0; 4]);
+        assert_eq!(output.trace.moe.mode, MoeMode::SparseTopK);
+        assert_eq!(output.trace.moe.experts_invoked, 3);
+        assert_eq!(output.trace.moe.selected_experts, vec![vec![0], vec![0], vec![0]]);
+    }
+
+    #[test]
     fn invalid_layer_type_shape_is_rejected() {
         let executor = ReferenceExecutor::new(ReferenceExecutorConfig {
             vocab_size: 4,

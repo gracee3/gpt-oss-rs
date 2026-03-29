@@ -81,8 +81,8 @@ impl ReferenceExecutor {
         let cache = CacheState::from_tokens(&input.tokens, &cache_layout)?;
 
         let token_count = input.tokens.len();
-        let dense_zero_baseline = self.uses_dense_zero_baseline();
-        let mut hidden = if dense_zero_baseline {
+        let zero_logit_baseline = self.uses_zero_logit_baseline();
+        let mut hidden = if zero_logit_baseline {
             vec![0.0; token_count]
         } else {
             input
@@ -112,7 +112,7 @@ impl ReferenceExecutor {
             for token_index in 0..token_count {
                 let absolute_pos = input.seq_start_pos as usize + token_index;
                 let visible = self.visible_tokens(layer_type, absolute_pos, total_sequence_tokens);
-                let attention_signal = if dense_zero_baseline {
+                let attention_signal = if zero_logit_baseline {
                     0.0
                 } else {
                     self.synthetic_attention_signal(&visible, hidden[token_index])
@@ -120,12 +120,17 @@ impl ReferenceExecutor {
                 let moe_signal = if self.layer_has_moe(layer_index) {
                     let logits = self.synthetic_router_logits(attention_signal, hidden[token_index]);
                     let routes = route_top_k(&logits, self.effective_top_k());
-                    let signal = routes
-                        .iter()
-                        .map(|(expert, weight)| (*expert as f32 + 1.0) * *weight)
-                        .sum::<f32>();
                     layer_routes.push(routes);
-                    signal
+                    if zero_logit_baseline {
+                        0.0
+                    } else {
+                        layer_routes
+                            .last()
+                            .into_iter()
+                            .flatten()
+                            .map(|(expert, weight)| (*expert as f32 + 1.0) * *weight)
+                            .sum::<f32>()
+                    }
                 } else {
                     0.0
                 };
@@ -209,15 +214,27 @@ impl ReferenceExecutor {
         }
     }
 
-    fn uses_dense_zero_baseline(&self) -> bool {
-        self.config.sink_tokens == 0
-            && self.config.sliding_window.is_none()
-            && self.effective_top_k() == 0
-            && self
-                .config
-                .layer_types
-                .iter()
-                .all(|layer| layer == "full_attention" || layer == "global_attention")
+    fn uses_zero_logit_baseline(&self) -> bool {
+        if self.config.sink_tokens > 0 || self.config.sliding_window.is_some() {
+            return false;
+        }
+
+        let full_attention_only = self
+            .config
+            .layer_types
+            .iter()
+            .all(|layer| layer == "full_attention" || layer == "global_attention");
+
+        if !full_attention_only {
+            return false;
+        }
+
+        self.effective_top_k() == 0
+            || (self.effective_top_k() == 1
+                && self.config.num_local_experts == 1
+                && self.config.moe_layer_indices.iter().all(|layer| {
+                    matches!(self.layer_type(*layer), "full_attention" | "global_attention")
+                }))
     }
 
     fn attention_trace_for(
