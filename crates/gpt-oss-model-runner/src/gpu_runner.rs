@@ -27,6 +27,7 @@ pub enum ForwardOutput {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrefillLayerTrace {
     pub layer_idx: usize,
+    pub attention: Option<crate::gpu_layer::PrefillAttentionSubtrace>,
     pub post_attn_residual: Vec<f32>,
     pub mlp_out: Vec<f32>,
     pub layer_output: Vec<f32>,
@@ -55,8 +56,8 @@ mod cuda_impl {
     use crate::runner::ModelRunnerConfig;
 
     use crate::gpu_layer::{
-        GptOssMoeLayerWeights, GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16,
-        GpuTransformerLayer,
+        GptOssMoeLayerWeights, GpuLayerConfig, GpuLayerInput, GpuLayerWeights,
+        GpuLayerWeightsF16, GpuTransformerLayer,
     };
     use crate::layers::linear_cuda::CudaLinearLayer;
     use crate::layers::norm_cuda::CudaRMSNorm;
@@ -680,14 +681,28 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    let (residual, mlp_out) = layer.forward_f16(
-                        &input,
-                        &weights,
-                        &self.blas,
-                        prev_mlp_out.as_ref(),
-                        self.cublaslt_ref(),
-                        self.tp_comm.as_ref(),
-                    )?;
+                    let (residual, mlp_out, attention) = if layer_idx == 0 {
+                        let (residual, mlp_out, attention) =
+                            layer.forward_f16_with_prefill_attention_trace(
+                                &input,
+                                &weights,
+                                &self.blas,
+                                prev_mlp_out.as_ref(),
+                                self.cublaslt_ref(),
+                                self.tp_comm.as_ref(),
+                            )?;
+                        (residual, mlp_out, Some(attention))
+                    } else {
+                        let (residual, mlp_out) = layer.forward_f16(
+                            &input,
+                            &weights,
+                            &self.blas,
+                            prev_mlp_out.as_ref(),
+                            self.cublaslt_ref(),
+                            self.tp_comm.as_ref(),
+                        )?;
+                        (residual, mlp_out, None)
+                    };
                     let post_attn_residual =
                         self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
                     let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
@@ -698,6 +713,7 @@ mod cuda_impl {
                         .collect();
                     trace.layers.push(PrefillLayerTrace {
                         layer_idx,
+                        attention,
                         post_attn_residual,
                         mlp_out: mlp_out_last,
                         layer_output,
@@ -751,6 +767,7 @@ mod cuda_impl {
                 hidden_states = layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
                 trace.layers.push(PrefillLayerTrace {
                     layer_idx,
+                    attention: None,
                     post_attn_residual: Vec::new(),
                     mlp_out: Vec::new(),
                     layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,

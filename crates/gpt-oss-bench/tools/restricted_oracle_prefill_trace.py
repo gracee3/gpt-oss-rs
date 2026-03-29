@@ -80,6 +80,70 @@ def compare_stage(name: str, cuda_values: list[float], oracle_values: list[float
     }
 
 
+def flatten_last_token(tensor: torch.Tensor) -> list[float]:
+    return tensor[-1].reshape(-1).float().cpu().tolist()
+
+
+def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, torch.Tensor]:
+    attn = model.block[0].attn
+    normed = attn.norm(x)
+    qkv = attn.qkv(normed)
+    q = qkv[:, : attn.num_attention_heads * attn.head_dim].contiguous()
+    k = qkv[
+        :,
+        attn.num_attention_heads
+        * attn.head_dim : (attn.num_attention_heads + attn.num_key_value_heads)
+        * attn.head_dim,
+    ].contiguous()
+    v = qkv[
+        :,
+        (attn.num_attention_heads + attn.num_key_value_heads)
+        * attn.head_dim : (attn.num_attention_heads + 2 * attn.num_key_value_heads)
+        * attn.head_dim,
+    ].contiguous()
+
+    q_heads = q.view(
+        -1,
+        attn.num_key_value_heads,
+        attn.num_attention_heads // attn.num_key_value_heads,
+        attn.head_dim,
+    )
+    k_heads = k.view(-1, attn.num_key_value_heads, attn.head_dim)
+    v_heads = v.view(-1, attn.num_key_value_heads, attn.head_dim)
+    q_rope, k_rope = attn.rope(q_heads, k_heads)
+
+    n_tokens = q_rope.shape[0]
+    q_mult = attn.num_attention_heads // attn.num_key_value_heads
+    K = k_rope[:, :, None, :].expand(-1, -1, q_mult, -1)
+    V = v_heads[:, :, None, :].expand(-1, -1, q_mult, -1)
+    sinks = attn.sinks.reshape(attn.num_key_value_heads, q_mult, 1, 1).expand(
+        -1, -1, n_tokens, -1
+    )
+    mask = torch.triu(q_rope.new_full((n_tokens, n_tokens), -float("inf")), diagonal=1)
+    qk = torch.einsum("qhmd,khmd->hmqk", q_rope, K)
+    qk *= attn.sm_scale
+    qk += mask[None, None, :, :]
+    qk_with_sink = torch.cat([qk, sinks], dim=-1)
+    probs = torch.softmax(qk_with_sink, dim=-1)
+    context = torch.einsum("hmqk,khmd->qhmd", probs[..., :-1], V).reshape(n_tokens, -1)
+    o_proj = attn.out(context)
+    residual_add = x + o_proj
+
+    return ({
+        "q_proj": flatten_last_token(q),
+        "k_proj": flatten_last_token(k),
+        "v_proj": flatten_last_token(v),
+        "q_rope": flatten_last_token(q_rope),
+        "k_rope": flatten_last_token(k_rope),
+        "masked_scores": qk_with_sink[:, :, -1, :].reshape(-1).float().cpu().tolist(),
+        "attention_probs": probs[:, :, -1, :].reshape(-1).float().cpu().tolist(),
+        "attention_context": flatten_last_token(context),
+        "o_proj": flatten_last_token(o_proj),
+        "residual_add": flatten_last_token(residual_add),
+        "post_attn_residual": last_token(residual_add),
+    }, residual_add)
+
+
 def main() -> int:
     args = parse_args()
     with args.cuda_trace_json.open("r", encoding="utf-8") as handle:
@@ -97,17 +161,22 @@ def main() -> int:
             "layers": [],
         }
         for layer_idx, block in enumerate(model.block):
-            attn_hidden = block.attn(x)
+            if layer_idx == 0:
+                attention_trace, attn_hidden = layer0_attention_trace(model, x)
+            else:
+                attention_trace = None
+                attn_hidden = block.attn(x)
             layer_output = block.mlp(attn_hidden)
             mlp_out = layer_output - attn_hidden
-            oracle_trace["layers"].append(
-                {
-                    "layer_idx": layer_idx,
-                    "post_attn_residual": last_token(attn_hidden),
-                    "mlp_out": last_token(mlp_out),
-                    "layer_output": last_token(layer_output),
-                }
-            )
+            layer_trace = {
+                "layer_idx": layer_idx,
+                "post_attn_residual": last_token(attn_hidden),
+                "mlp_out": last_token(mlp_out),
+                "layer_output": last_token(layer_output),
+            }
+            if attention_trace is not None:
+                layer_trace["attention"] = attention_trace
+            oracle_trace["layers"].append(layer_trace)
             x = layer_output
 
     stage_diffs = []
@@ -115,6 +184,28 @@ def main() -> int:
         compare_stage("embedding", cuda_trace["trace"]["embedding"], oracle_trace["embedding"])
     )
     for cuda_layer, oracle_layer in zip(cuda_trace["trace"]["layers"], oracle_trace["layers"]):
+        cuda_attention = cuda_layer.get("attention")
+        oracle_attention = oracle_layer.get("attention")
+        if cuda_attention and oracle_attention:
+            for key in (
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "q_rope",
+                "k_rope",
+                "masked_scores",
+                "attention_probs",
+                "attention_context",
+                "o_proj",
+                "residual_add",
+            ):
+                stage_diffs.append(
+                    compare_stage(
+                        f"layer{cuda_layer['layer_idx']}.{key}",
+                        cuda_attention[key],
+                        oracle_attention[key],
+                    )
+                )
         for key in ("post_attn_residual", "mlp_out", "layer_output"):
             if not cuda_layer[key] and not oracle_layer[key]:
                 continue

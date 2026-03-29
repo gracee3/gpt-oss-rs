@@ -63,6 +63,20 @@ mod inner {
         pub layer_idx: usize,
     }
 
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct PrefillAttentionSubtrace {
+        pub q_proj: Vec<f32>,
+        pub k_proj: Vec<f32>,
+        pub v_proj: Vec<f32>,
+        pub q_rope: Vec<f32>,
+        pub k_rope: Vec<f32>,
+        pub masked_scores: Vec<f32>,
+        pub attention_probs: Vec<f32>,
+        pub attention_context: Vec<f32>,
+        pub o_proj: Vec<f32>,
+        pub residual_add: Vec<f32>,
+    }
+
     /// Weight references for a single transformer layer.
     ///
     /// All slices live on GPU and are owned by the GpuModelWeights container.
@@ -654,6 +668,73 @@ mod inner {
     }
 
     impl GpuTransformerLayer {
+        fn copy_last_row_f16(
+            stream: &Arc<CudaStream>,
+            buf: &CudaSlice<f16>,
+            num_rows: usize,
+            row_width: usize,
+        ) -> Result<Vec<f32>> {
+            let host = stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("trace dtoh f16: {e}")))?;
+            let start = (num_rows - 1) * row_width;
+            Ok(host[start..start + row_width]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect())
+        }
+
+        fn last_query_scores_probs_from_host_f16(
+            q_host: &[f16],
+            k_host: &[f16],
+            sinks_host: Option<&[f32]>,
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> (Vec<f32>, Vec<f32>) {
+            let heads_per_kv = num_heads / num_kv_heads;
+            let q_stride = num_heads * head_dim;
+            let kv_stride = num_kv_heads * head_dim;
+            let q_last = num_tokens - 1;
+            let scale = 1.0f32 / (head_dim as f32).sqrt();
+            let mut scores = Vec::with_capacity(
+                num_heads * (num_tokens + usize::from(sinks_host.is_some())),
+            );
+            let mut probs = Vec::with_capacity(scores.capacity());
+
+            for h in 0..num_heads {
+                let kv_h = h / heads_per_kv;
+                let mut row = Vec::with_capacity(num_tokens + usize::from(sinks_host.is_some()));
+                for ki in 0..num_tokens {
+                    let mut dot = 0.0f32;
+                    for d in 0..head_dim {
+                        let q_idx = q_last * q_stride + h * head_dim + d;
+                        let k_idx = ki * kv_stride + kv_h * head_dim + d;
+                        dot += q_host[q_idx].to_f32() * k_host[k_idx].to_f32();
+                    }
+                    row.push(dot * scale);
+                }
+                if let Some(sinks) = sinks_host {
+                    row.push(sinks[h]);
+                }
+
+                let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut exp_row = Vec::with_capacity(row.len());
+                let mut sum = 0.0f32;
+                for value in row.iter().copied() {
+                    let exp = (value - max).exp();
+                    exp_row.push(exp);
+                    sum += exp;
+                }
+                let inv = if sum > 0.0 { 1.0 / sum } else { 0.0 };
+                probs.extend(exp_row.into_iter().map(|value| value * inv));
+                scores.extend(row);
+            }
+
+            (scores, probs)
+        }
+
         pub fn new(
             config: GpuLayerConfig,
             stream: Arc<CudaStream>,
@@ -1187,6 +1268,363 @@ mod inner {
                 );
             }
             Ok((residual, mlp_out))
+        }
+
+        pub fn forward_f16_with_prefill_attention_trace(
+            &self,
+            input: &GpuLayerInput<'_>,
+            weights: &GpuLayerWeightsF16<'_>,
+            blas: &CublasHandle,
+            prev_mlp_out: Option<&CudaSlice<f16>>,
+            lt: Option<&crate::CublasLtRef>,
+            tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
+        ) -> Result<(CudaSlice<f16>, CudaSlice<f16>, PrefillAttentionSubtrace)> {
+            let cfg = &self.config;
+            let num_tokens = input.num_tokens;
+            let hidden = cfg.hidden_size;
+            let num_heads = cfg.num_heads;
+            let num_kv_heads = cfg.num_kv_heads;
+            let head_dim = cfg.head_dim;
+            let intermediate = cfg.intermediate_size;
+            let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 hidden states required for f16 forward".into())
+            })?;
+            let norm_w = weights
+                .input_layernorm_f16
+                .ok_or_else(|| LLMError::GpuError("f16 input_layernorm required".into()))?;
+            let post_norm_w = weights.post_attention_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 post_attention_layernorm required".into())
+            })?;
+            let (normed, fused_residual) = if let Some(prev_mlp) = prev_mlp_out {
+                let (n, r) = Self::fused_residual_rmsnorm_f16(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    prev_mlp,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, Some(r))
+            } else {
+                let n = Self::rms_norm_f16(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, None)
+            };
+            let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
+            let q_dim = num_heads * head_dim;
+            let kv_dim = num_kv_heads * head_dim;
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            #[cfg(feature = "cublaslt")]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(&self.stream, blas, lt, input, weight, m, n, k, &self.loader)
+            };
+            #[cfg(not(feature = "cublaslt"))]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(
+                    &self.stream,
+                    blas,
+                    None,
+                    input,
+                    weight,
+                    m,
+                    n,
+                    k,
+                    &self.loader,
+                )
+            };
+
+            let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
+                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
+            } else {
+                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
+                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
+                let q_end = num_tokens * q_dim;
+                let k_end = q_end + num_tokens * kv_dim;
+                {
+                    let mut q_dst = qkv_buf.slice_mut(..q_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        q_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.q_proj,
+                        0.0,
+                        &mut q_dst,
+                    )?;
+                }
+                {
+                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.k_proj,
+                        0.0,
+                        &mut k_dst,
+                    )?;
+                }
+                {
+                    let mut v_dst = qkv_buf.slice_mut(k_end..);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.v_proj,
+                        0.0,
+                        &mut v_dst,
+                    )?;
+                }
+                qkv_buf
+            };
+
+            let q_end = num_tokens * q_dim;
+            let k_end = q_end + num_tokens * kv_dim;
+            if let Some(bias) = weights.fused_qkv_bias {
+                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                Self::add_bias_f16_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut qkv_view,
+                    bias,
+                    num_tokens,
+                    qkv_dim,
+                )?;
+            }
+
+            let qkv_host_pre = self
+                .stream
+                .clone_dtoh(&qkv)
+                .map_err(|e| LLMError::GpuError(format!("trace qkv pre dtoh: {e}")))?;
+            let last_token_base = (num_tokens - 1) * qkv_dim;
+            let q_pre = qkv_host_pre[last_token_base..last_token_base + q_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let k_pre = qkv_host_pre[last_token_base + q_dim..last_token_base + q_dim + kv_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let v_pre = qkv_host_pre[last_token_base + q_dim + kv_dim..last_token_base + qkv_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+
+            {
+                let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
+                let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
+                Self::apply_rotary_embedding_f16_views(
+                    &self.stream,
+                    &self.loader,
+                    &mut q_part,
+                    &mut k_view,
+                    &input.positions,
+                    input.rope_cos,
+                    input.rope_sin,
+                    num_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                )?;
+            }
+
+            let qkv_host_post = self
+                .stream
+                .clone_dtoh(&qkv)
+                .map_err(|e| LLMError::GpuError(format!("trace qkv post dtoh: {e}")))?;
+            let q_host = &qkv_host_post[..q_end];
+            let k_host = &qkv_host_post[q_end..k_end];
+            let sinks_host = match weights.sinks {
+                Some(sinks) => Some(
+                    self.stream
+                        .clone_dtoh(sinks)
+                        .map_err(|e| LLMError::GpuError(format!("trace sinks dtoh: {e}")))?,
+                ),
+                None => None,
+            };
+            let (masked_scores, attention_probs) = Self::last_query_scores_probs_from_host_f16(
+                q_host,
+                k_host,
+                sinks_host.as_deref(),
+                num_tokens,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+            );
+
+            let q_rope = q_host[q_end - q_dim..q_end]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let k_rope = k_host[k_host.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+
+            {
+                let k_view = qkv.slice(q_end..k_end);
+                let v_view = qkv.slice(k_end..);
+                Self::cache_write_f16_views(
+                    &self.stream,
+                    &self.loader,
+                    &k_view,
+                    &v_view,
+                    input.key_cache,
+                    input.value_cache,
+                    &input.slot_mapping,
+                    num_tokens,
+                    num_kv_heads,
+                    head_dim,
+                )?;
+            }
+
+            let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+            let attn_out = if input.is_prefill || use_sink_attention {
+                let cast_f16_f32 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                let cast_f32_f16 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
+                let q_f16 = qkv.slice(..q_end);
+                let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
+                let attn_f32 = Self::prefill_attention(
+                    &self.stream,
+                    &self.loader,
+                    &q_f32.as_view(),
+                    input.key_cache,
+                    input.value_cache,
+                    &input.block_tables,
+                    &input.context_lens,
+                    &input.seq_start_pos,
+                    num_tokens,
+                    input.num_seqs,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    input.max_context_len,
+                    input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
+                )?;
+                Self::cast_f32_to_f16(
+                    &self.stream,
+                    &attn_f32,
+                    num_tokens * num_heads * head_dim,
+                    &cast_f32_f16,
+                )?
+            } else {
+                return Err(LLMError::GpuError(
+                    "attention trace only supports prefill/sink-aware path".into(),
+                ));
+            };
+            let attention_context =
+                Self::copy_last_row_f16(&self.stream, &attn_out, num_tokens, q_dim)?;
+
+            let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
+            tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            let o_proj = Self::copy_last_row_f16(&self.stream, &attn_proj, num_tokens, hidden)?;
+
+            let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
+                &self.stream,
+                &self.loader,
+                residual_ref,
+                &attn_proj,
+                post_norm_w,
+                cfg.rms_norm_eps,
+                num_tokens,
+                hidden,
+            )?;
+            let residual_add =
+                Self::copy_last_row_f16(&self.stream, &residual, num_tokens, hidden)?;
+
+            let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                let cast_f16_f32 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                let cast_f32_f16 = self
+                    .loader
+                    .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
+                let normed2_f32 = Self::cast_f16_to_f32(
+                    &self.stream,
+                    &normed2.as_view(),
+                    num_tokens * hidden,
+                    &cast_f16_f32,
+                )?;
+                let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
+                    moe.forward(&self.stream, &normed2_f32)?
+                } else {
+                    moe.forward_decode_gpu(&self.stream, &self.loader, blas, &normed2_f32, num_tokens)?
+                };
+                Self::cast_f32_to_f16(&self.stream, &moe_out, num_tokens * hidden, &cast_f32_f16)?
+            } else {
+                let down_proj = weights.down_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense down_proj for layer {}", cfg.layer_idx))
+                })?;
+                let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
+                    let gate_up = hgemm(&normed2, fused_gate_up, num_tokens, intermediate * 2, hidden)?;
+                    Self::fused_silu_mul_f16_split(
+                        &self.stream,
+                        &self.loader,
+                        &gate_up,
+                        num_tokens * intermediate,
+                    )?
+                } else {
+                    let gate_proj = weights.gate_proj.ok_or_else(|| {
+                        LLMError::GpuError(format!("missing dense gate_proj for layer {}", cfg.layer_idx))
+                    })?;
+                    let up_proj = weights.up_proj.ok_or_else(|| {
+                        LLMError::GpuError(format!("missing dense up_proj for layer {}", cfg.layer_idx))
+                    })?;
+                    let gate = hgemm(&normed2, gate_proj, num_tokens, intermediate, hidden)?;
+                    let up = hgemm(&normed2, up_proj, num_tokens, intermediate, hidden)?;
+                    Self::fused_silu_mul_f16(
+                        &self.stream,
+                        &self.loader,
+                        &gate,
+                        &up,
+                        num_tokens * intermediate,
+                    )?
+                };
+                hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
+            };
+            tp_comm.all_reduce_f16(&mut mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+
+            Ok((
+                residual,
+                mlp_out,
+                PrefillAttentionSubtrace {
+                    q_proj: q_pre,
+                    k_proj: k_pre,
+                    v_proj: v_pre,
+                    q_rope,
+                    k_rope,
+                    masked_scores,
+                    attention_probs,
+                    attention_context,
+                    o_proj,
+                    residual_add,
+                },
+            ))
         }
 
         pub fn forward(
