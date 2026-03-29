@@ -976,7 +976,10 @@ mod tests {
             partial_rotary_factor: 1.0,
             attn_logit_softcapping: 0.0,
             attention_bias: false,
-            sliding_window: None,
+            sliding_window: layer_types
+                .iter()
+                .any(|layer| layer == "sliding_attention")
+                .then_some(128),
             layer_types,
             num_local_experts,
             num_experts_per_tok,
@@ -1411,6 +1414,30 @@ mod tests {
 
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
+    }
+
+    #[test]
+    fn artifact_aligned_sliding_decode_observed_runtime_fails_at_mock_backend_seam() {
+        let case = ConformanceCase::decode("sliding_decode_128", 128, vec![9]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights(),
+                runner_config_with_layers(1, vec!["sliding_attention".into()], 1, 1),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_runtime_mode(RuntimeMode::Experimental);
+
+        let err = observed
+            .try_run(&case)
+            .expect_err("sliding attention should still fail on the observed mock runtime path");
+
+        assert!(err.contains("sliding attention"));
+        assert!(err.contains("CPU/mock attention backend"));
     }
 
     #[test]
