@@ -10,7 +10,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
-use crate::routes::tools::{augment_messages_with_tools, ToolChoice};
+use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style, ToolChoice};
 use crate::server::AppState;
 use crate::types::request::ChatCompletionRequest;
 use crate::types::response::ChatCompletionResponse;
@@ -59,7 +59,7 @@ pub async fn create_chat_completion(
         augment_messages_with_tools(
             &req.messages,
             &tool_defs,
-            rvllm_tokenizer::ToolPromptStyle::Hermes,
+            preferred_tool_prompt_style(&state.model_name),
         )
     } else {
         req.messages.clone()

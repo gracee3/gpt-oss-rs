@@ -37,6 +37,14 @@ mod inner {
         path: &Path,
         stream: &Arc<CudaStream>,
     ) -> Result<HashMap<String, CudaSlice<f32>>> {
+        load_weights_to_gpu_with_shapes(path, stream).map(|(weights, _shapes)| weights)
+    }
+
+    /// Load all safetensors weights as f32 and preserve tensor shapes.
+    pub fn load_weights_to_gpu_with_shapes(
+        path: &Path,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
         if path.is_dir() {
             load_sharded_to_gpu(path, stream)
         } else {
@@ -53,10 +61,31 @@ mod inner {
         path: &Path,
         stream: &Arc<CudaStream>,
     ) -> Result<HashMap<String, CudaSlice<half::f16>>> {
+        load_weights_to_gpu_f16_with_shapes(path, stream).map(|(weights, _shapes)| weights)
+    }
+
+    /// Load all safetensors weights as f16 on GPU and preserve tensor shapes.
+    pub fn load_weights_to_gpu_f16_with_shapes(
+        path: &Path,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
         if path.is_dir() {
             load_sharded_to_gpu_f16(path, stream)
         } else {
             load_single_to_gpu_f16(path, stream)
+        }
+    }
+
+    /// Load all raw `U8` tensors from safetensors files into host memory.
+    ///
+    /// GPT-OSS stores MXFP4 expert blocks/scales as `U8`, so these tensors
+    /// must survive loader setup even though they are not uploaded through the
+    /// normal f32/f16 weight maps.
+    pub fn load_u8_weights_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
+        if path.is_dir() {
+            load_sharded_u8_to_host(path)
+        } else {
+            load_single_u8_to_host(path)
         }
     }
 
@@ -67,7 +96,7 @@ mod inner {
     fn load_single_to_gpu(
         path: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<HashMap<String, CudaSlice<f32>>> {
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
         info!("gpu_loader: memory-mapping {}", path.display());
 
         let file = std::fs::File::open(path)?;
@@ -79,6 +108,7 @@ mod inner {
         let (header, data_start) = parse_safetensors_header(data, path)?;
 
         let mut weights: HashMap<String, CudaSlice<f32>> = HashMap::new();
+        let mut shapes: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (name, meta) in &header {
             if name == "__metadata__" {
@@ -88,6 +118,12 @@ mod inner {
             let (dtype_str, shape, tensor_bytes) =
                 parse_tensor_meta(meta, name, data, data_start)?;
             let numel: usize = shape.iter().product();
+
+            if dtype_str == "U8" {
+                debug!(tensor = name.as_str(), shape = ?shape, "skipping U8 tensor on f32 GPU path");
+                shapes.insert(name.clone(), shape);
+                continue;
+            }
 
             let f32_host = convert_to_f32(tensor_bytes, dtype_str, numel, name)?;
 
@@ -109,6 +145,7 @@ mod inner {
             );
 
             weights.insert(name.clone(), gpu_slice);
+            shapes.insert(name.clone(), shape);
         }
 
         info!(
@@ -116,13 +153,13 @@ mod inner {
             weights.len(),
             path.display()
         );
-        Ok(weights)
+        Ok((weights, shapes))
     }
 
     fn load_sharded_to_gpu(
         dir: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<HashMap<String, CudaSlice<f32>>> {
+    ) -> Result<(HashMap<String, CudaSlice<f32>>, HashMap<String, Vec<usize>>)> {
         let shard_files = collect_shards(dir)?;
 
         info!(
@@ -132,9 +169,11 @@ mod inner {
         );
 
         let mut all_weights: HashMap<String, CudaSlice<f32>> = HashMap::new();
+        let mut all_shapes: HashMap<String, Vec<usize>> = HashMap::new();
         for shard_path in &shard_files {
-            let shard = load_single_to_gpu(shard_path, stream)?;
-            all_weights.extend(shard);
+            let (shard_weights, shard_shapes) = load_single_to_gpu(shard_path, stream)?;
+            all_weights.extend(shard_weights);
+            all_shapes.extend(shard_shapes);
         }
 
         info!(
@@ -142,7 +181,7 @@ mod inner {
             all_weights.len(),
             shard_files.len()
         );
-        Ok(all_weights)
+        Ok((all_weights, all_shapes))
     }
 
     // -----------------------------------------------------------------------
@@ -152,7 +191,7 @@ mod inner {
     fn load_single_to_gpu_f16(
         path: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<HashMap<String, CudaSlice<half::f16>>> {
+    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
         info!("gpu_loader: memory-mapping {} (f16 mode)", path.display());
 
         let file = std::fs::File::open(path)?;
@@ -164,6 +203,7 @@ mod inner {
         let (header, data_start) = parse_safetensors_header(data, path)?;
 
         let mut weights: HashMap<String, CudaSlice<half::f16>> = HashMap::new();
+        let mut shapes: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (name, meta) in &header {
             if name == "__metadata__" {
@@ -173,6 +213,12 @@ mod inner {
             let (dtype_str, shape, tensor_bytes) =
                 parse_tensor_meta(meta, name, data, data_start)?;
             let numel: usize = shape.iter().product();
+
+            if dtype_str == "U8" {
+                debug!(tensor = name.as_str(), shape = ?shape, "skipping U8 tensor on f16 GPU path");
+                shapes.insert(name.clone(), shape);
+                continue;
+            }
 
             let f16_host = convert_to_f16(tensor_bytes, dtype_str, numel, name)?;
 
@@ -194,6 +240,7 @@ mod inner {
             );
 
             weights.insert(name.clone(), gpu_slice);
+            shapes.insert(name.clone(), shape);
         }
 
         info!(
@@ -201,13 +248,13 @@ mod inner {
             weights.len(),
             path.display()
         );
-        Ok(weights)
+        Ok((weights, shapes))
     }
 
     fn load_sharded_to_gpu_f16(
         dir: &Path,
         stream: &Arc<CudaStream>,
-    ) -> Result<HashMap<String, CudaSlice<half::f16>>> {
+    ) -> Result<(HashMap<String, CudaSlice<half::f16>>, HashMap<String, Vec<usize>>)> {
         let shard_files = collect_shards(dir)?;
 
         info!(
@@ -217,9 +264,11 @@ mod inner {
         );
 
         let mut all_weights: HashMap<String, CudaSlice<half::f16>> = HashMap::new();
+        let mut all_shapes: HashMap<String, Vec<usize>> = HashMap::new();
         for shard_path in &shard_files {
-            let shard = load_single_to_gpu_f16(shard_path, stream)?;
-            all_weights.extend(shard);
+            let (shard_weights, shard_shapes) = load_single_to_gpu_f16(shard_path, stream)?;
+            all_weights.extend(shard_weights);
+            all_shapes.extend(shard_shapes);
         }
 
         info!(
@@ -227,7 +276,7 @@ mod inner {
             all_weights.len(),
             shard_files.len()
         );
-        Ok(all_weights)
+        Ok((all_weights, all_shapes))
     }
 
     // -----------------------------------------------------------------------
@@ -348,6 +397,42 @@ mod inner {
             )));
         }
         Ok(shard_files)
+    }
+
+    fn load_single_u8_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
+        info!("gpu_loader: memory-mapping {} (host U8 path)", path.display());
+
+        let file = std::fs::File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+            LLMError::ModelError(format!("mmap failed for {}: {}", path.display(), e))
+        })?;
+        let data: &[u8] = &mmap;
+
+        let (header, data_start) = parse_safetensors_header(data, path)?;
+        let mut weights = HashMap::new();
+
+        for (name, meta) in &header {
+            if name == "__metadata__" {
+                continue;
+            }
+
+            let (dtype_str, _shape, tensor_bytes) =
+                parse_tensor_meta(meta, name, data, data_start)?;
+            if dtype_str == "U8" {
+                weights.insert(name.clone(), tensor_bytes.to_vec());
+            }
+        }
+
+        Ok(weights)
+    }
+
+    fn load_sharded_u8_to_host(dir: &Path) -> Result<HashMap<String, Vec<u8>>> {
+        let shard_files = collect_shards(dir)?;
+        let mut all_weights = HashMap::new();
+        for shard_path in &shard_files {
+            all_weights.extend(load_single_u8_to_host(shard_path)?);
+        }
+        Ok(all_weights)
     }
 
     // -----------------------------------------------------------------------
@@ -507,7 +592,10 @@ mod inner {
 }
 
 #[cfg(feature = "cuda")]
-pub use inner::{load_weights_to_gpu, load_weights_to_gpu_f16, GpuDType};
+pub use inner::{
+    load_u8_weights_to_host, load_weights_to_gpu, load_weights_to_gpu_f16,
+    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_with_shapes, GpuDType,
+};
 
 #[cfg(test)]
 mod tests {

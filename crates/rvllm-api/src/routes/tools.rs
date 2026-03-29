@@ -299,6 +299,18 @@ pub fn augment_messages_with_tools(
     result
 }
 
+/// Choose the prompt style least likely to fight the target model.
+///
+/// GPT-OSS is not a Hermes/XML tool-calling model, so prefer plain JSON tool
+/// instructions until a dedicated Harmony renderer/parser is in place.
+pub fn preferred_tool_prompt_style(model_name: &str) -> rvllm_tokenizer::ToolPromptStyle {
+    if model_name.to_ascii_lowercase().contains("gpt-oss") {
+        rvllm_tokenizer::ToolPromptStyle::GenericJson
+    } else {
+        rvllm_tokenizer::ToolPromptStyle::Hermes
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
@@ -333,7 +345,7 @@ pub async fn create_chat_completion_with_tools(
         augment_messages_with_tools(
             &req.messages,
             &tool_defs,
-            rvllm_tokenizer::ToolPromptStyle::Hermes,
+            preferred_tool_prompt_style(&state.model_name),
         )
     } else {
         req.messages.clone()
@@ -855,5 +867,25 @@ mod tests {
         assert_eq!(sp.top_p, 0.95);
         assert_eq!(sp.stop_strings, vec!["END".to_string()]);
         assert_eq!(sp.seed, Some(123));
+    }
+
+    #[test]
+    fn preferred_tool_prompt_style_uses_generic_json_for_gpt_oss() {
+        assert_eq!(
+            preferred_tool_prompt_style("openai/gpt-oss-20b"),
+            rvllm_tokenizer::ToolPromptStyle::GenericJson
+        );
+        assert_eq!(
+            preferred_tool_prompt_style("OpenAI/GPT-OSS-20B"),
+            rvllm_tokenizer::ToolPromptStyle::GenericJson
+        );
+    }
+
+    #[test]
+    fn preferred_tool_prompt_style_keeps_hermes_for_other_models() {
+        assert_eq!(
+            preferred_tool_prompt_style("NousResearch/Hermes-3-Llama"),
+            rvllm_tokenizer::ToolPromptStyle::Hermes
+        );
     }
 }

@@ -26,6 +26,13 @@ mod inner {
     use rvllm_gpu::cublas::CublasHandle;
     use rvllm_gpu::kernel_loader::KernelLoader;
 
+    const GPT_OSS_SWIGLU_ALPHA: f32 = 1.702;
+    const GPT_OSS_SWIGLU_LIMIT: f32 = 7.0;
+    const GPT_OSS_MAX_TOP_K: usize = 8;
+    const MXFP4_VALUES: [f32; 16] = [
+        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    ];
+
     /// Configuration for a single transformer layer.
     #[derive(Debug, Clone)]
     pub struct GpuLayerConfig {
@@ -35,6 +42,7 @@ mod inner {
         pub head_dim: usize,
         pub intermediate_size: usize,
         pub rms_norm_eps: f32,
+        pub sliding_window: Option<usize>,
         pub layer_idx: usize,
     }
 
@@ -54,12 +62,15 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        // Optional sink logits (GPT-OSS)
+        pub sinks: Option<&'a CudaSlice<f32>>,
         // Post-attention norm
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         // MLP weights
-        pub gate_proj: &'a CudaSlice<f32>,
-        pub up_proj: &'a CudaSlice<f32>,
-        pub down_proj: &'a CudaSlice<f32>,
+        pub gate_proj: Option<&'a CudaSlice<f32>>,
+        pub up_proj: Option<&'a CudaSlice<f32>>,
+        pub down_proj: Option<&'a CudaSlice<f32>>,
+        pub gpt_oss_moe: Option<&'a GptOssMoeLayerWeights>,
     }
 
     /// FP16 weight references for a single transformer layer (f16 GEMM path).
@@ -75,10 +86,12 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub sinks: Option<&'a CudaSlice<f32>>,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
-        pub gate_proj: &'a CudaSlice<f16>,
-        pub up_proj: &'a CudaSlice<f16>,
-        pub down_proj: &'a CudaSlice<f16>,
+        pub gate_proj: Option<&'a CudaSlice<f16>>,
+        pub up_proj: Option<&'a CudaSlice<f16>>,
+        pub down_proj: Option<&'a CudaSlice<f16>>,
+        pub gpt_oss_moe: Option<&'a GptOssMoeLayerWeights>,
         /// Fused QKV weight: [q_dim + kv_dim + kv_dim, hidden]. None if not fused.
         pub fused_qkv: Option<&'a CudaSlice<f16>>,
         /// Fused gate+up weight: [intermediate*2, hidden]. None if not fused.
@@ -87,6 +100,490 @@ mod inner {
         pub input_layernorm_f16: Option<&'a CudaSlice<f16>>,
         pub post_attention_layernorm_f16: Option<&'a CudaSlice<f16>>,
         pub fused_qkv_bias: Option<&'a CudaSlice<f16>>,
+    }
+
+    /// Host-side GPT-OSS routed-expert weights. The CUDA runner keeps the
+    /// transformer shell on device and calls back to this CPU path for the
+    /// MXFP4 expert projections until a native kernel exists.
+    pub struct GptOssMoeLayerWeights {
+        pub router_weight: Vec<f32>,
+        pub router_bias: Vec<f32>,
+        pub gate_up_blocks: Vec<u8>,
+        pub gate_up_scales: Vec<u8>,
+        pub gate_up_bias: Vec<f32>,
+        pub down_blocks: Vec<u8>,
+        pub down_scales: Vec<u8>,
+        pub down_bias: Vec<f32>,
+        pub hidden_size: usize,
+        pub intermediate_size: usize,
+        pub num_local_experts: usize,
+        pub num_experts_per_tok: usize,
+        pub router_weight_gpu: Option<CudaSlice<f32>>,
+        pub router_bias_gpu: Option<CudaSlice<f32>>,
+        pub gate_up_blocks_gpu: Option<CudaSlice<u8>>,
+        pub gate_up_scales_gpu: Option<CudaSlice<u8>>,
+        pub gate_up_bias_gpu: Option<Vec<CudaSlice<f32>>>,
+        pub down_blocks_gpu: Option<CudaSlice<u8>>,
+        pub down_scales_gpu: Option<CudaSlice<u8>>,
+        pub down_bias_gpu: Option<Vec<CudaSlice<f32>>>,
+    }
+
+    impl GptOssMoeLayerWeights {
+        pub fn forward(
+            &self,
+            stream: &Arc<CudaStream>,
+            input: &CudaSlice<f32>,
+        ) -> Result<CudaSlice<f32>> {
+            let host_input = stream
+                .clone_dtoh(input)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe DtoH failed: {e}")))?;
+            let num_tokens = host_input.len() / self.hidden_size;
+            let mut output = vec![0.0f32; num_tokens * self.hidden_size];
+            let top_k = self.num_experts_per_tok.min(self.num_local_experts);
+
+            if top_k == 0 {
+                return stream
+                    .clone_htod(&output)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")));
+            }
+
+            for token_idx in 0..num_tokens {
+                let input_offset = token_idx * self.hidden_size;
+                let token = &host_input[input_offset..input_offset + self.hidden_size];
+
+                let mut logits = vec![0.0f32; self.num_local_experts];
+                for (expert_idx, logit) in logits.iter_mut().enumerate() {
+                    let row = expert_idx * self.hidden_size;
+                    let mut acc = self.router_bias[expert_idx];
+                    for hidden_idx in 0..self.hidden_size {
+                        acc += token[hidden_idx] * self.router_weight[row + hidden_idx];
+                    }
+                    *logit = acc;
+                }
+
+                let top_indices = top_k_indices(&logits, top_k);
+                let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
+                let route_weights = softmax(&top_logits);
+
+                for (rank, &expert_idx) in top_indices.iter().enumerate() {
+                    let expert_out = self.forward_expert(expert_idx, token);
+                    let dst_offset = token_idx * self.hidden_size;
+                    let route_weight = route_weights[rank];
+                    for hidden_idx in 0..self.hidden_size {
+                        output[dst_offset + hidden_idx] += expert_out[hidden_idx] * route_weight;
+                    }
+                }
+            }
+
+            stream
+                .clone_htod(&output)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")))
+        }
+
+        pub fn supports_gpu_decode(&self) -> bool {
+            self.router_weight_gpu.is_some()
+                && self.router_bias_gpu.is_some()
+                && self.gate_up_blocks_gpu.is_some()
+                && self.gate_up_scales_gpu.is_some()
+                && self.gate_up_bias_gpu.is_some()
+                && self.down_blocks_gpu.is_some()
+                && self.down_scales_gpu.is_some()
+                && self.down_bias_gpu.is_some()
+        }
+
+        pub fn forward_decode_gpu(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            blas: &CublasHandle,
+            input: &CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<CudaSlice<f32>> {
+            if self.num_experts_per_tok == 0 || self.num_local_experts == 0 {
+                return stream
+                    .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss moe zero alloc: {e}")));
+            }
+            if self.num_experts_per_tok > GPT_OSS_MAX_TOP_K {
+                return Err(LLMError::GpuError(format!(
+                    "gpt-oss top-k {} exceeds kernel limit {}",
+                    self.num_experts_per_tok, GPT_OSS_MAX_TOP_K
+                )));
+            }
+
+            let router_weight_gpu = self.router_weight_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU router weight for GPT-OSS decode".into())
+            })?;
+            let router_bias_gpu = self.router_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU router bias for GPT-OSS decode".into())
+            })?;
+            let gate_up_blocks_gpu = self.gate_up_blocks_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up blocks for GPT-OSS decode".into())
+            })?;
+            let gate_up_scales_gpu = self.gate_up_scales_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up scales for GPT-OSS decode".into())
+            })?;
+            let gate_up_bias_gpu = self.gate_up_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU gate_up bias for GPT-OSS decode".into())
+            })?;
+            let down_blocks_gpu = self.down_blocks_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down blocks for GPT-OSS decode".into())
+            })?;
+            let down_scales_gpu = self.down_scales_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down scales for GPT-OSS decode".into())
+            })?;
+            let down_bias_gpu = self.down_bias_gpu.as_ref().ok_or_else(|| {
+                LLMError::GpuError("missing GPU down bias for GPT-OSS decode".into())
+            })?;
+
+            let mut router_logits = GpuTransformerLayer::linear(
+                stream,
+                blas,
+                input,
+                router_weight_gpu,
+                num_tokens,
+                self.num_local_experts,
+                self.hidden_size,
+            )?;
+            GpuTransformerLayer::add_bias(
+                stream,
+                loader,
+                &mut router_logits,
+                router_bias_gpu,
+                num_tokens,
+                self.num_local_experts,
+            )?;
+
+            let mut topk_indices = stream
+                .alloc_zeros::<i32>(num_tokens * self.num_experts_per_tok)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss topk idx alloc: {e}")))?;
+            let mut topk_weights = stream
+                .alloc_zeros::<f32>(num_tokens * self.num_experts_per_tok)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss topk weights alloc: {e}")))?;
+            self.launch_route_topk(
+                stream,
+                loader,
+                &router_logits,
+                &mut topk_indices,
+                &mut topk_weights,
+                num_tokens,
+            )?;
+
+            let mut output = stream
+                .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe output alloc: {e}")))?;
+
+            for expert_idx in 0..self.num_local_experts {
+                let mut route_weights = stream
+                    .alloc_zeros::<f32>(num_tokens)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss route weights alloc: {e}")))?;
+                let mut masked_input = stream
+                    .alloc_zeros::<f32>(num_tokens * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss masked input alloc: {e}")))?;
+                self.launch_select_inputs(
+                    stream,
+                    loader,
+                    input,
+                    &topk_indices,
+                    &topk_weights,
+                    &mut masked_input,
+                    &mut route_weights,
+                    num_tokens,
+                    expert_idx,
+                )?;
+
+                let mut gate_up_weight = stream
+                    .alloc_zeros::<f16>(self.intermediate_size * 2 * self.hidden_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss gate_up weight alloc: {e}")))?;
+                self.launch_dequant_expert(
+                    stream,
+                    loader,
+                    gate_up_blocks_gpu,
+                    gate_up_scales_gpu,
+                    &mut gate_up_weight,
+                    expert_idx,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                )?;
+                let mut gate_up = crate::layers::linear_cuda::CudaLinearLayer::forward_mixed(
+                    &masked_input,
+                    &gate_up_weight,
+                    num_tokens,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                    blas,
+                    loader,
+                )?;
+                GpuTransformerLayer::add_bias(
+                    stream,
+                    loader,
+                    &mut gate_up,
+                    &gate_up_bias_gpu[expert_idx],
+                    num_tokens,
+                    self.intermediate_size * 2,
+                )?;
+                let fused = GpuTransformerLayer::fused_silu_mul_split(
+                    stream,
+                    loader,
+                    &gate_up,
+                    num_tokens * self.intermediate_size,
+                )?;
+
+                let mut down_weight = stream
+                    .alloc_zeros::<f16>(self.hidden_size * self.intermediate_size)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss down weight alloc: {e}")))?;
+                self.launch_dequant_expert(
+                    stream,
+                    loader,
+                    down_blocks_gpu,
+                    down_scales_gpu,
+                    &mut down_weight,
+                    expert_idx,
+                    self.hidden_size,
+                    self.intermediate_size,
+                )?;
+                let mut expert_out = crate::layers::linear_cuda::CudaLinearLayer::forward_mixed(
+                    &fused,
+                    &down_weight,
+                    num_tokens,
+                    self.hidden_size,
+                    self.intermediate_size,
+                    blas,
+                    loader,
+                )?;
+                GpuTransformerLayer::add_bias(
+                    stream,
+                    loader,
+                    &mut expert_out,
+                    &down_bias_gpu[expert_idx],
+                    num_tokens,
+                    self.hidden_size,
+                )?;
+                self.launch_weighted_add(
+                    stream,
+                    loader,
+                    &mut output,
+                    &expert_out,
+                    &route_weights,
+                    num_tokens,
+                )?;
+            }
+
+            Ok(output)
+        }
+
+        pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
+            let gate_up = self.quantized_projection(
+                expert_idx,
+                input,
+                &self.gate_up_blocks,
+                &self.gate_up_scales,
+                &self.gate_up_bias,
+                self.intermediate_size * 2,
+                self.hidden_size,
+            );
+            let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
+            self.quantized_projection(
+                expert_idx,
+                &activated,
+                &self.down_blocks,
+                &self.down_scales,
+                &self.down_bias,
+                self.hidden_size,
+                self.intermediate_size,
+            )
+        }
+
+        fn quantized_projection(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            blocks: &[u8],
+            scales: &[u8],
+            bias: &[f32],
+            out_features: usize,
+            in_features: usize,
+        ) -> Vec<f32> {
+            let groups = in_features.div_ceil(32);
+            let expert_blocks_stride = out_features * groups * 16;
+            let expert_scales_stride = out_features * groups;
+            let expert_bias_stride = out_features;
+
+            let mut output = vec![0.0f32; out_features];
+            let blocks_base = expert_idx * expert_blocks_stride;
+            let scales_base = expert_idx * expert_scales_stride;
+            let bias_base = expert_idx * expert_bias_stride;
+
+            for out_idx in 0..out_features {
+                let mut acc = bias[bias_base + out_idx];
+                let row_blocks = blocks_base + out_idx * groups * 16;
+                let row_scales = scales_base + out_idx * groups;
+
+                for group_idx in 0..groups {
+                    let scale = decode_mxfp_scale(scales[row_scales + group_idx]);
+                    let block_offset = row_blocks + group_idx * 16;
+                    let input_offset = group_idx * 32;
+                    for packed_idx in 0..16 {
+                        let packed = blocks[block_offset + packed_idx];
+                        let input_idx0 = input_offset + packed_idx * 2;
+                        if input_idx0 < in_features {
+                            acc +=
+                                input[input_idx0] * MXFP4_VALUES[(packed & 0x0F) as usize] * scale;
+                        }
+                        let input_idx1 = input_idx0 + 1;
+                        if input_idx1 < in_features {
+                            acc +=
+                                input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
+                        }
+                    }
+                }
+
+                output[out_idx] = acc;
+            }
+
+            output
+        }
+
+        fn launch_route_topk(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            router_logits: &CudaSlice<f32>,
+            topk_indices: &mut CudaSlice<i32>,
+            topk_weights: &mut CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_route_topk_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let num_experts = self.num_local_experts as i32;
+            let top_k = self.num_experts_per_tok as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(router_logits)
+                    .arg(topk_indices)
+                    .arg(topk_weights)
+                    .arg(&num_experts)
+                    .arg(&top_k)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss route topk launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn launch_select_inputs(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f32>,
+            topk_indices: &CudaSlice<i32>,
+            topk_weights: &CudaSlice<f32>,
+            masked_input: &mut CudaSlice<f32>,
+            route_weights: &mut CudaSlice<f32>,
+            num_tokens: usize,
+            expert_idx: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_select_expert_inputs_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: std::mem::size_of::<f32>() as u32,
+            };
+            let hidden_size = self.hidden_size as i32;
+            let top_k = self.num_experts_per_tok as i32;
+            let expert_idx = expert_idx as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(masked_input)
+                    .arg(route_weights)
+                    .arg(input)
+                    .arg(topk_indices)
+                    .arg(topk_weights)
+                    .arg(&hidden_size)
+                    .arg(&top_k)
+                    .arg(&expert_idx)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss select inputs launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn launch_dequant_expert(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            blocks: &CudaSlice<u8>,
+            scales: &CudaSlice<u8>,
+            output: &mut CudaSlice<f16>,
+            expert_idx: usize,
+            out_features: usize,
+            in_features: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_dequant_expert_f16_kernel")?;
+            let total = out_features * in_features;
+            let threads = 256u32;
+            let blocks_grid = (total as u32).div_ceil(threads);
+            let cfg = LaunchConfig {
+                grid_dim: (blocks_grid, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let expert_idx = expert_idx as i32;
+            let out_features = out_features as i32;
+            let in_features = in_features as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(output)
+                    .arg(blocks)
+                    .arg(scales)
+                    .arg(&expert_idx)
+                    .arg(&out_features)
+                    .arg(&in_features)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss dequant launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        fn launch_weighted_add(
+            &self,
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            output: &mut CudaSlice<f32>,
+            expert_out: &CudaSlice<f32>,
+            route_weights: &CudaSlice<f32>,
+            num_tokens: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("gpt_oss_moe", "gpt_oss_weighted_add_kernel")?;
+            let total = num_tokens * self.hidden_size;
+            let threads = 256u32;
+            let blocks = (total as u32).div_ceil(threads);
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (threads, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let hidden_size = self.hidden_size as i32;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(output)
+                    .arg(expert_out)
+                    .arg(route_weights)
+                    .arg(&hidden_size)
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("gpt-oss weighted add launch: {e}")))?;
+            }
+            Ok(())
+        }
     }
 
     /// Metadata needed for a single layer forward pass.
@@ -236,41 +733,67 @@ mod inner {
             let head_dim = cfg.head_dim;
             let intermediate = cfg.intermediate_size;
 
-            let hidden_f16 = input.hidden_states_f16
-                .ok_or_else(|| LLMError::GpuError("f16 hidden states required for f16 forward".into()))?;
-            let norm_w = weights.input_layernorm_f16
-                .ok_or_else(|| LLMError::GpuError("f16 input_layernorm required".into()))?;
-            let post_norm_w = weights.post_attention_layernorm_f16
-                .ok_or_else(|| LLMError::GpuError("f16 post_attention_layernorm required".into()))?;
+            let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 hidden states required for f16 forward".into())
+            })?;
+            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 input_layernorm required".into())
+            })?;
+            let post_norm_w = weights.post_attention_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 post_attention_layernorm required".into())
+            })?;
 
-            // 1. Pre-attention RMSNorm f16 (fused with previous layer's residual add if available)
+            // 1. Pre-attention RMSNorm f16 (fused with previous layer's residual add if available).
             let (normed, fused_residual) = if let Some(prev_mlp) = prev_mlp_out {
-                // Fuse: hidden + prev_mlp -> norm in one kernel
                 let (n, r) = Self::fused_residual_rmsnorm_f16(
-                    &self.stream, &self.loader,
-                    hidden_f16, prev_mlp, norm_w,
-                    cfg.rms_norm_eps, num_tokens, hidden,
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    prev_mlp,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
                 )?;
                 (n, Some(r))
             } else {
-                // First layer: standalone norm
                 let n = Self::rms_norm_f16(
-                    &self.stream, &self.loader,
-                    hidden_f16, norm_w,
-                    cfg.rms_norm_eps, num_tokens, hidden,
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    norm_w,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
                 )?;
                 (n, None)
             };
-            // The residual stream: either the fused result or the original hidden_states
             let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
 
-            // 2. QKV projections: hgemm f16 x f16 -> f16
+            // 2. QKV projections: hgemm f16 x f16 -> f16.
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
             let qkv_dim = q_dim + kv_dim + kv_dim;
-
+            #[cfg(feature = "cublaslt")]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(
+                    &self.stream,
+                    blas,
+                    lt,
+                    input,
+                    weight,
+                    m,
+                    n,
+                    k,
+                    &self.loader,
+                )
+            };
+            #[cfg(not(feature = "cublaslt"))]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(&self.stream, blas, input, weight, m, n, k, &self.loader)
+            };
             let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
-                Self::hgemm_dispatch(&self.stream, blas, lt, &normed, fused_qkv, num_tokens, qkv_dim, hidden, &self.loader)?
+                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
             } else {
                 let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
                     .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
@@ -278,106 +801,273 @@ mod inner {
                 let k_end = q_end + num_tokens * kv_dim;
                 {
                     let mut q_dst = qkv_buf.slice_mut(..q_end);
-                    blas.hgemm_into(num_tokens, q_dim, hidden, 1.0, &normed, weights.q_proj, 0.0, &mut q_dst)?;
+                    blas.hgemm_into(
+                        num_tokens,
+                        q_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.q_proj,
+                        0.0,
+                        &mut q_dst,
+                    )?;
                 }
                 {
                     let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
-                    blas.hgemm_into(num_tokens, kv_dim, hidden, 1.0, &normed, weights.k_proj, 0.0, &mut k_dst)?;
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.k_proj,
+                        0.0,
+                        &mut k_dst,
+                    )?;
                 }
                 {
                     let mut v_dst = qkv_buf.slice_mut(k_end..);
-                    blas.hgemm_into(num_tokens, kv_dim, hidden, 1.0, &normed, weights.v_proj, 0.0, &mut v_dst)?;
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        &normed,
+                        weights.v_proj,
+                        0.0,
+                        &mut v_dst,
+                    )?;
                 }
                 qkv_buf
             };
 
-            // 3. Apply fused QKV bias (f16) in-place
+            // 3. Apply fused QKV bias (f16) in-place.
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
             if let Some(bias) = weights.fused_qkv_bias {
                 let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                Self::add_bias_f16_view(&self.stream, &self.loader, &mut qkv_view, bias, num_tokens, qkv_dim)?;
+                Self::add_bias_f16_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut qkv_view,
+                    bias,
+                    num_tokens,
+                    qkv_dim,
+                )?;
             }
 
-            // 4. RoPE f16 in-place on Q and K regions (split_at_mut avoids double borrow)
+            // 4. RoPE f16 in-place on Q and K regions.
             {
                 let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
                 let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
                 Self::apply_rotary_embedding_f16_views(
-                    &self.stream, &self.loader,
-                    &mut q_part, &mut k_view,
-                    &input.positions, input.rope_cos, input.rope_sin,
-                    num_tokens, num_heads, num_kv_heads, head_dim,
+                    &self.stream,
+                    &self.loader,
+                    &mut q_part,
+                    &mut k_view,
+                    &input.positions,
+                    input.rope_cos,
+                    input.rope_sin,
+                    num_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
                 )?;
             }
 
-            // 5. KV cache write: f16 K/V -> f16 cache (pure copy, no conversion)
+            // 5. KV cache write: f16 K/V -> f16 cache.
             {
                 let k_view = qkv.slice(q_end..k_end);
                 let v_view = qkv.slice(k_end..);
                 Self::cache_write_f16_views(
-                    &self.stream, &self.loader,
-                    &k_view, &v_view,
-                    input.key_cache, input.value_cache, &input.slot_mapping,
-                    num_tokens, num_kv_heads, head_dim,
+                    &self.stream,
+                    &self.loader,
+                    &k_view,
+                    &v_view,
+                    input.key_cache,
+                    input.value_cache,
+                    &input.slot_mapping,
+                    num_tokens,
+                    num_kv_heads,
+                    head_dim,
                 )?;
             }
 
-            // 6. Attention: f16 Q, f16 KV cache, f16 output
-            let attn_out = if input.is_prefill {
-                // Prefill uses f32 Q kernel (prefill is one-shot, not perf-critical)
-                // Fall back to f32 path for prefill: cast Q f16->f32, run f32 prefill, cast back
-                let cast_f16_f32 = self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel")
-                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
-                let cast_f32_f16 = self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel")
-                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
+            // 6. Attention.
+            let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+            let attn_out = if input.is_prefill || use_sink_attention {
+                let cast_f16_f32 =
+                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
+                    })?;
+                let cast_f32_f16 =
+                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
+                    })?;
                 let q_f16 = qkv.slice(..q_end);
                 let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
-                let attn_f32 = Self::prefill_attention(
-                    &self.stream, &self.loader,
-                    &q_f32.as_view(),
-                    input.key_cache, input.value_cache,
-                    &input.block_tables, &input.context_lens, &input.seq_start_pos,
-                    num_tokens, input.num_seqs, num_heads, num_kv_heads, head_dim,
-                    input.max_context_len, input.block_size,
-                )?;
-                Self::cast_f32_to_f16(&self.stream, &attn_f32, num_tokens * num_heads * head_dim, &cast_f32_f16)?
+                let attn_f32 = if input.is_prefill {
+                    Self::prefill_attention(
+                        &self.stream,
+                        &self.loader,
+                        &q_f32.as_view(),
+                        input.key_cache,
+                        input.value_cache,
+                        &input.block_tables,
+                        &input.context_lens,
+                        &input.seq_start_pos,
+                        num_tokens,
+                        input.num_seqs,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                        input.max_context_len,
+                        input.block_size,
+                        sinks,
+                        weights.sinks.is_some(),
+                        cfg.sliding_window,
+                    )?
+                } else {
+                    Self::decode_attention(
+                        &self.stream,
+                        &self.loader,
+                        &q_f32.as_view(),
+                        input.key_cache,
+                        input.value_cache,
+                        &input.block_tables,
+                        &input.context_lens,
+                        num_tokens,
+                        input.num_seqs,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                        input.max_context_len,
+                        input.block_size,
+                        sinks,
+                        weights.sinks.is_some(),
+                        cfg.sliding_window,
+                    )?
+                };
+                Self::cast_f32_to_f16(
+                    &self.stream,
+                    &attn_f32,
+                    num_tokens * num_heads * head_dim,
+                    &cast_f32_f16,
+                )?
             } else {
                 Self::decode_attention_f16io(
-                    &self.stream, &self.loader,
+                    &self.stream,
+                    &self.loader,
                     &qkv.slice(..q_end),
-                    input.key_cache, input.value_cache,
-                    &input.block_tables, &input.context_lens,
-                    num_tokens, input.num_seqs, num_heads, num_kv_heads, head_dim,
-                    input.max_context_len, input.block_size,
+                    input.key_cache,
+                    input.value_cache,
+                    &input.block_tables,
+                    &input.context_lens,
+                    num_tokens,
+                    input.num_seqs,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    input.max_context_len,
+                    input.block_size,
                 )?
             };
 
             // 7. Output projection: hgemm f16
-            let attn_proj = Self::hgemm_dispatch(&self.stream, blas, lt, &attn_out, weights.o_proj, num_tokens, hidden, q_dim, &self.loader)?;
+            let attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
 
-            // 8. Fused residual + post-attention RMSNorm f16
+            // 8. Fused residual + post-attention RMSNorm f16.
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
-                &self.stream, &self.loader,
-                residual_ref, &attn_proj, post_norm_w,
-                cfg.rms_norm_eps, num_tokens, hidden,
+                &self.stream,
+                &self.loader,
+                residual_ref,
+                &attn_proj,
+                post_norm_w,
+                cfg.rms_norm_eps,
+                num_tokens,
+                hidden,
             )?;
 
-            // 9. MLP: gate+up -> fused_silu_mul_f16 -> down, all f16
-            let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
-                let gate_up = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, fused_gate_up, num_tokens, intermediate * 2, hidden, &self.loader)?;
-                let n = num_tokens * intermediate;
-                Self::fused_silu_mul_f16_split(&self.stream, &self.loader, &gate_up, n)?
+            // 9. MLP / routed MoE.
+            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                let cast_f16_f32 =
+                    self.loader.get_func("cast_fp", "cast_f16_to_f32_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f16->f32: {e}"))
+                    })?;
+                let cast_f32_f16 =
+                    self.loader.get_func("cast_fp", "cast_f32_to_f16_kernel").map_err(|e| {
+                        LLMError::GpuError(format!("load cast f32->f16: {e}"))
+                    })?;
+                let normed2_f32 = Self::cast_f16_to_f32(
+                    &self.stream,
+                    &normed2.as_view(),
+                    num_tokens * hidden,
+                    &cast_f16_f32,
+                )?;
+                let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
+                    moe.forward(&self.stream, &normed2_f32)?
+                } else {
+                    moe.forward_decode_gpu(
+                        &self.stream,
+                        &self.loader,
+                        blas,
+                        &normed2_f32,
+                        num_tokens,
+                    )?
+                };
+                Self::cast_f32_to_f16(
+                    &self.stream,
+                    &moe_out,
+                    num_tokens * hidden,
+                    &cast_f32_f16,
+                )?
             } else {
-                let gate = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, weights.gate_proj, num_tokens, intermediate, hidden, &self.loader)?;
-                let up = Self::hgemm_dispatch(&self.stream, blas, lt, &normed2, weights.up_proj, num_tokens, intermediate, hidden, &self.loader)?;
-                Self::fused_silu_mul_f16(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?
+                let down_proj = weights.down_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "missing dense down_proj for layer {}",
+                        cfg.layer_idx
+                    ))
+                })?;
+                let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
+                    let gate_up = hgemm(
+                        &normed2,
+                        fused_gate_up,
+                        num_tokens,
+                        intermediate * 2,
+                        hidden,
+                    )?;
+                    Self::fused_silu_mul_f16_split(
+                        &self.stream,
+                        &self.loader,
+                        &gate_up,
+                        num_tokens * intermediate,
+                    )?
+                } else {
+                    let gate_proj = weights.gate_proj.ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing dense gate_proj for layer {}",
+                            cfg.layer_idx
+                        ))
+                    })?;
+                    let up_proj = weights.up_proj.ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing dense up_proj for layer {}",
+                            cfg.layer_idx
+                        ))
+                    })?;
+                    let gate = hgemm(&normed2, gate_proj, num_tokens, intermediate, hidden)?;
+                    let up = hgemm(&normed2, up_proj, num_tokens, intermediate, hidden)?;
+                    Self::fused_silu_mul_f16(
+                        &self.stream,
+                        &self.loader,
+                        &gate,
+                        &up,
+                        num_tokens * intermediate,
+                    )?
+                };
+                hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
-
-            // 10. Down projection: hgemm f16
-            let mlp_out = Self::hgemm_dispatch(&self.stream, blas, lt, &fused, weights.down_proj, num_tokens, hidden, intermediate, &self.loader)?;
-
-            // 11. Return (residual, mlp_out) -- the add is fused into the NEXT layer's norm
             Ok((residual, mlp_out))
         }
 
@@ -499,6 +1189,7 @@ mod inner {
 
             info!(layer = cfg.layer_idx, "gpu_layer: cache_write done");
 
+            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
             let attn_out = if input.is_prefill {
                 // Prefill: use FA2 prefill kernel reading from paged cache
                 info!(layer = cfg.layer_idx, "gpu_layer: prefill_attention start");
@@ -518,6 +1209,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             } else {
                 // Decode: read from paged cache
@@ -537,6 +1231,9 @@ mod inner {
                     head_dim,
                     input.max_context_len,
                     input.block_size,
+                    sinks,
+                    weights.sinks.is_some(),
+                    cfg.sliding_window,
                 )?
             };
 
@@ -565,38 +1262,58 @@ mod inner {
             )?;
 
             // ---------------------------------------------------------------
-            // 7. MLP: gate_proj + up_proj -> fused_silu_mul -> down_proj
+            // 7. MLP / routed MoE
             // ---------------------------------------------------------------
-            let gate = Self::linear(
-                &self.stream,
-                blas,
-                &normed2,
-                weights.gate_proj,
-                num_tokens,
-                intermediate,
-                hidden,
-            )?;
-            let up = Self::linear(
-                &self.stream,
-                blas,
-                &normed2,
-                weights.up_proj,
-                num_tokens,
-                intermediate,
-                hidden,
-            )?;
+            let mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                moe.forward(&self.stream, &normed2)?
+            } else {
+                let gate_proj = weights.gate_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense gate_proj for layer {}", cfg.layer_idx))
+                })?;
+                let up_proj = weights.up_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense up_proj for layer {}", cfg.layer_idx))
+                })?;
+                let down_proj = weights.down_proj.ok_or_else(|| {
+                    LLMError::GpuError(format!("missing dense down_proj for layer {}", cfg.layer_idx))
+                })?;
 
-            let fused = Self::fused_silu_mul(&self.stream, &self.loader, &gate, &up, num_tokens * intermediate)?;
+                let gate = Self::linear(
+                    &self.stream,
+                    blas,
+                    &normed2,
+                    gate_proj,
+                    num_tokens,
+                    intermediate,
+                    hidden,
+                )?;
+                let up = Self::linear(
+                    &self.stream,
+                    blas,
+                    &normed2,
+                    up_proj,
+                    num_tokens,
+                    intermediate,
+                    hidden,
+                )?;
 
-            let mlp_out = Self::linear(
-                &self.stream,
-                blas,
-                &fused,
-                weights.down_proj,
-                num_tokens,
-                hidden,
-                intermediate,
-            )?;
+                let fused = Self::fused_silu_mul(
+                    &self.stream,
+                    &self.loader,
+                    &gate,
+                    &up,
+                    num_tokens * intermediate,
+                )?;
+
+                Self::linear(
+                    &self.stream,
+                    blas,
+                    &fused,
+                    down_proj,
+                    num_tokens,
+                    hidden,
+                    intermediate,
+                )?
+            };
 
             // ---------------------------------------------------------------
             // 8. Residual: residual + mlp_out
@@ -1107,6 +1824,9 @@ mod inner {
             head_dim: usize,
             max_context_len: u32,
             block_size: usize,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+            sliding_window: Option<usize>,
         ) -> Result<CudaSlice<f32>> {
             let out_len = num_tokens * num_heads * head_dim;
             let output = stream
@@ -1173,8 +1893,11 @@ mod inner {
             let p_max_ctx = max_context_len as i32;
             let p_num_tokens = num_tokens as i32;
             let p_causal = 1i32;
+            let p_use_sinks = i32::from(use_sinks);
+            let p_sliding_window = sliding_window.unwrap_or(0) as i32;
 
-            // FA2 prefill kernel: 16 args via builder pattern
+            // FA2 prefill kernel: sink-aware sliding-window attention.
+            // Keep this launch order in lockstep with flash_attention_2_f16kv_kernel.
             unsafe {
                 stream
                     .launch_builder(&kernel)
@@ -1185,6 +1908,9 @@ mod inner {
                     .arg(block_tables)
                     .arg(context_lens)
                     .arg(seq_start_pos)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .arg(&scale)
                     .arg(&p_num_heads)
                     .arg(&p_num_kv)
@@ -1218,6 +1944,9 @@ mod inner {
             head_dim: usize,
             max_context_len: u32,
             block_size: usize,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+            sliding_window: Option<usize>,
         ) -> Result<CudaSlice<f32>> {
             let out_len = num_tokens * num_heads * head_dim;
             let mut output = stream
@@ -1258,6 +1987,8 @@ mod inner {
             let p_head_dim = head_dim as i32;
             let p_block_size = block_size as i32;
             let p_max_blocks = (block_tables.len() / num_seqs.max(1)) as i32;
+            let p_use_sinks = i32::from(use_sinks);
+            let p_sliding_window = sliding_window.unwrap_or(0) as i32;
 
             // SAFETY: All slices are valid GPU memory on this device.
             // output: [num_seqs, num_heads, head_dim]
@@ -1266,6 +1997,7 @@ mod inner {
             // block_tables: [num_seqs, max_blocks_per_seq]
             // context_lens: [num_seqs]
             // Scalar int args cast from usize; all values fit in i32 range.
+            // Keep this launch order in lockstep with flash_attention_2_decode_f16kv_kernel.
             unsafe {
                 stream
                     .launch_builder(&kernel)
@@ -1275,6 +2007,9 @@ mod inner {
                     .arg(value_cache)
                     .arg(block_tables)
                     .arg(context_lens)
+                    .arg(sinks)
+                    .arg(&p_use_sinks)
+                    .arg(&p_sliding_window)
                     .arg(&scale)
                     .arg(&p_num_heads)
                     .arg(&p_num_kv_heads)
@@ -1930,6 +2665,41 @@ mod inner {
             Ok(output)
         }
     }
+
+    fn decode_mxfp_scale(scale: u8) -> f32 {
+        f32::from_bits((scale as u32) << 23)
+    }
+
+    fn apply_gpt_oss_swiglu(gate_up: &[f32], intermediate_size: usize) -> Vec<f32> {
+        let mut output = vec![0.0f32; intermediate_size];
+        for idx in 0..intermediate_size {
+            let gate = gate_up[idx * 2].min(GPT_OSS_SWIGLU_LIMIT);
+            let up = gate_up[idx * 2 + 1].clamp(-GPT_OSS_SWIGLU_LIMIT, GPT_OSS_SWIGLU_LIMIT);
+            let glu = gate * sigmoid(gate * GPT_OSS_SWIGLU_ALPHA);
+            output[idx] = (up + 1.0) * glu;
+        }
+        output
+    }
+
+    fn sigmoid(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+
+    fn top_k_indices(vals: &[f32], k: usize) -> Vec<usize> {
+        let mut indexed: Vec<(usize, f32)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.into_iter().take(k).map(|(i, _)| i).collect()
+    }
+
+    fn softmax(vals: &[f32]) -> Vec<f32> {
+        if vals.is_empty() {
+            return Vec::new();
+        }
+        let max_val = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = vals.iter().map(|&v| (v - max_val).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        exps.into_iter().map(|v| v / sum).collect()
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -1944,5 +2714,50 @@ mod tests {
         // Under mock-gpu the `inner` module is not compiled.
         // This test confirms that the crate still builds cleanly.
         assert!(true);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn gpt_oss_moe_forward_mxfp4_smoke() {
+        let mut gate_up_blocks = vec![0u8; 2 * 16];
+        gate_up_blocks[0] = 0x02;
+        let gate_up_scales = vec![127u8; 2];
+        let gate_up_bias = vec![0.0f32; 2];
+
+        let mut down_blocks = vec![0u8; 32 * 16];
+        down_blocks[0] = 0x02;
+        let down_scales = vec![127u8; 32];
+        let down_bias = vec![0.0f32; 32];
+
+        let moe = super::inner::GptOssMoeLayerWeights {
+            router_weight: vec![0.0; 32],
+            router_bias: vec![0.0],
+            gate_up_blocks,
+            gate_up_scales,
+            gate_up_bias,
+            down_blocks,
+            down_scales,
+            down_bias,
+            hidden_size: 32,
+            intermediate_size: 1,
+            num_local_experts: 1,
+            num_experts_per_tok: 1,
+            router_weight_gpu: None,
+            router_bias_gpu: None,
+            gate_up_blocks_gpu: None,
+            gate_up_scales_gpu: None,
+            gate_up_bias_gpu: None,
+            down_blocks_gpu: None,
+            down_scales_gpu: None,
+            down_bias_gpu: None,
+        };
+
+        let mut input = vec![0.0f32; 32];
+        input[0] = 1.0;
+        let output = moe.forward_expert(0, &input);
+
+        let expected = 1.0 / (1.0 + (-1.702f32).exp());
+        assert!((output[0] - expected).abs() < 1e-3, "got {}", output[0]);
+        assert!(output[1..].iter().all(|v| v.abs() < 1e-6));
     }
 }

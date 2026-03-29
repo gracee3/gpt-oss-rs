@@ -333,7 +333,11 @@ pub struct GpuWorker {
     #[cfg(feature = "cuda")]
     raw_weight_map: Option<HashMap<String, CudaSlice<f32>>>,
     #[cfg(feature = "cuda")]
+    raw_weight_shapes: Option<HashMap<String, Vec<usize>>>,
+    #[cfg(feature = "cuda")]
     raw_weight_map_f16: Option<HashMap<String, CudaSlice<half::f16>>>,
+    #[cfg(feature = "cuda")]
+    raw_weight_map_u8: Option<HashMap<String, Vec<u8>>>,
     /// GPU-resident model runner (full forward pass on GPU, no CPU attention fallback).
     /// Constructed in init_cache() once cache geometry is known.
     #[cfg(feature = "cuda")]
@@ -430,6 +434,7 @@ impl GpuWorker {
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
         });
+        let rms_norm_eps = config.rms_norm_eps;
 
         Ok(Self {
             context,
@@ -444,7 +449,7 @@ impl GpuWorker {
             runner_config: None,
             vocab_size: 0,
             model_weights: None,
-            rms_norm_eps: 1e-6,
+            rms_norm_eps,
             rope_table: None,
             kv_cache: None,
             fp8_kv_cache: None,
@@ -454,7 +459,11 @@ impl GpuWorker {
             #[cfg(feature = "cuda")]
             raw_weight_map: None,
             #[cfg(feature = "cuda")]
+            raw_weight_shapes: None,
+            #[cfg(feature = "cuda")]
             raw_weight_map_f16: None,
+            #[cfg(feature = "cuda")]
+            raw_weight_map_u8: None,
             #[cfg(feature = "cuda")]
             gpu_model_runner: None,
             graph_runner,
@@ -478,8 +487,11 @@ impl GpuWorker {
     pub fn load_weights(&mut self, model_path: &Path) -> Result<()> {
         info!(device_id = self.device_id, path = %model_path.display(), "loading weights to GPU");
 
-        let all_weights_full =
-            rvllm_model_loader::gpu_loader::load_weights_to_gpu(model_path, &self.stream)
+        let (all_weights_full, all_weight_shapes) =
+            rvllm_model_loader::gpu_loader::load_weights_to_gpu_with_shapes(
+                model_path,
+                &self.stream,
+            )
                 .map_err(|e| LLMError::GpuError(format!("weight loading failed: {e}")))?;
 
         info!("loaded {} weight tensors to GPU", all_weights_full.len());
@@ -488,6 +500,12 @@ impl GpuWorker {
         #[cfg(feature = "cuda")]
         {
             self.raw_weight_map = Some(all_weights_full.clone());
+            self.raw_weight_shapes = Some(all_weight_shapes.clone());
+            self.raw_weight_map_u8 = Some(
+                rvllm_model_loader::gpu_loader::load_u8_weights_to_host(model_path).map_err(|e| {
+                    LLMError::GpuError(format!("u8 weight loading failed: {e}"))
+                })?,
+            );
 
             // Also load f16 weights for hgemm path when dtype is half
             if self.config.dtype.is_half() {
@@ -504,67 +522,69 @@ impl GpuWorker {
 
         let mut all_weights = all_weights_full;
 
-        let tie = !all_weights.contains_key("lm_head.weight");
-        info!(tie_word_embeddings = tie, "building model weight structure");
+        if self.config.architecture != "GptOssForCausalLM" {
+            let tie = !all_weights.contains_key("lm_head.weight");
+            info!(tie_word_embeddings = tie, "building model weight structure");
 
-        let embed_tokens = all_weights
-            .remove("model.embed_tokens.weight")
-            .ok_or_else(|| LLMError::ModelError("missing model.embed_tokens.weight".into()))?;
+            let embed_tokens = all_weights
+                .remove("model.embed_tokens.weight")
+                .ok_or_else(|| LLMError::ModelError("missing model.embed_tokens.weight".into()))?;
 
-        let norm_weight = all_weights
-            .remove("model.norm.weight")
-            .ok_or_else(|| LLMError::ModelError("missing model.norm.weight".into()))?;
+            let norm_weight = all_weights
+                .remove("model.norm.weight")
+                .ok_or_else(|| LLMError::ModelError("missing model.norm.weight".into()))?;
 
-        let lm_head_weight = all_weights.remove("lm_head.weight");
+            let lm_head_weight = all_weights.remove("lm_head.weight");
 
-        let num_layers = self.config.num_layers;
-        let mut layers = Vec::with_capacity(num_layers);
+            let num_layers = self.config.num_layers;
+            let mut layers = Vec::with_capacity(num_layers);
 
-        for i in 0..num_layers {
-            let p = format!("model.layers.{}", i);
-            layers.push(LayerWeights {
-                input_layernorm: all_weights
-                    .remove(&format!("{p}.input_layernorm.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                post_attention_layernorm: all_weights
-                    .remove(&format!("{p}.post_attention_layernorm.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                q_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.q_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                q_proj_bias: all_weights.remove(&format!("{p}.self_attn.q_proj.bias")),
-                k_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.k_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                k_proj_bias: all_weights.remove(&format!("{p}.self_attn.k_proj.bias")),
-                v_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.v_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                v_proj_bias: all_weights.remove(&format!("{p}.self_attn.v_proj.bias")),
-                o_proj_weight: all_weights
-                    .remove(&format!("{p}.self_attn.o_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                gate_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.gate_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                up_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.up_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
-                down_proj_weight: all_weights
-                    .remove(&format!("{p}.mlp.down_proj.weight"))
-                    .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+            for i in 0..num_layers {
+                let p = format!("model.layers.{}", i);
+                layers.push(LayerWeights {
+                    input_layernorm: all_weights
+                        .remove(&format!("{p}.input_layernorm.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    post_attention_layernorm: all_weights
+                        .remove(&format!("{p}.post_attention_layernorm.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    q_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.q_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    q_proj_bias: all_weights.remove(&format!("{p}.self_attn.q_proj.bias")),
+                    k_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.k_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    k_proj_bias: all_weights.remove(&format!("{p}.self_attn.k_proj.bias")),
+                    v_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.v_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    v_proj_bias: all_weights.remove(&format!("{p}.self_attn.v_proj.bias")),
+                    o_proj_weight: all_weights
+                        .remove(&format!("{p}.self_attn.o_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    gate_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.gate_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    up_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.up_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                    down_proj_weight: all_weights
+                        .remove(&format!("{p}.mlp.down_proj.weight"))
+                        .ok_or_else(|| LLMError::ModelError(format!("missing weight")))?,
+                });
+
+                debug!(layer = i, "loaded layer weights");
+            }
+
+            self.model_weights = Some(GpuModelWeights {
+                embed_tokens,
+                layers,
+                norm_weight,
+                lm_head_weight,
+                tie_word_embeddings: tie,
             });
-
-            debug!(layer = i, "loaded layer weights");
         }
-
-        self.model_weights = Some(GpuModelWeights {
-            embed_tokens,
-            layers,
-            norm_weight,
-            lm_head_weight,
-            tie_word_embeddings: tie,
-        });
 
         // Init RoPE tables
         let rope_theta = self.config.rope_theta;
@@ -626,12 +646,22 @@ impl GpuWorker {
             let raw_map = self.raw_weight_map.take().ok_or_else(|| {
                 LLMError::GpuError("raw weight map not available -- call load_weights first".into())
             })?;
-            let mut loader_weights = LoaderWeights::new(raw_map, HashMap::new());
+            let raw_shapes = self.raw_weight_shapes.take().ok_or_else(|| {
+                LLMError::GpuError("raw weight shapes not available -- call load_weights first".into())
+            })?;
+            let mut loader_weights = LoaderWeights::new(raw_map, raw_shapes.clone());
+            if let Some(u8_map) = self.raw_weight_map_u8.take() {
+                for (name, data) in u8_map {
+                    let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
+                    loader_weights.insert_u8(name, data, shape);
+                }
+            }
 
             // Insert f16 weights for hgemm path
             if let Some(f16_map) = self.raw_weight_map_f16.take() {
                 for (name, slice) in f16_map {
-                    loader_weights.insert_f16(name, slice, vec![]);
+                    let shape = raw_shapes.get(&name).cloned().unwrap_or_default();
+                    loader_weights.insert_f16(name, slice, shape);
                 }
                 info!("inserted f16 weights into model weight container");
             }
@@ -675,10 +705,20 @@ impl GpuWorker {
             if self.config.dtype.is_half() {
                 runner.enable_fp16();
                 info!("FP16 inference enabled (hgemm path)");
-                // Fuse QKV and gate+up weights for fewer GEMM calls per layer.
                 if let Err(e) = runner.fuse_weights() {
+                    if self.config.architecture == "GptOssForCausalLM" {
+                        return Err(LLMError::GpuError(format!(
+                            "GPT-OSS fp16 setup failed: {e}"
+                        )));
+                    }
                     warn!("weight fusion failed: {e} -- falling back to f32 forward path");
                     runner.disable_fp16();
+                }
+                if self.config.architecture == "GptOssForCausalLM" {
+                    if let Err(e) = runner.prepare_gpt_oss_graph_decode() {
+                        warn!("GPT-OSS graph decode prep failed: {e} -- graph capture disabled");
+                        self.graph_runner.disable();
+                    }
                 }
             }
 
@@ -687,6 +727,13 @@ impl GpuWorker {
             if let Err(e) = runner.prepare_for_graph_capture() {
                 warn!("cuBLAS graph workspace setup failed: {e} -- graph capture disabled");
                 self.graph_runner.pool_mut().disable();
+            }
+
+            if !runner.supports_cuda_graphs() {
+                info!(
+                    "disabling CUDA graph replay for GPT-OSS: decode path is not graph-safe"
+                );
+                self.graph_runner.disable();
             }
 
 
@@ -703,13 +750,24 @@ impl GpuWorker {
     /// Search for compiled PTX directory from build output.
     #[cfg(feature = "cuda")]
     fn find_ptx_dir() -> Option<std::path::PathBuf> {
-        for base in &[
-            "/root/vllm-rs/target/release/build",
-            "/root/vllm-rs/target/debug/build",
-            "./target/release/build",
-            "./target/debug/build",
-        ] {
-            if let Ok(entries) = std::fs::read_dir(base) {
+        let mut bases = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(profile_dir) = exe.parent() {
+                if let Some(target_dir) = profile_dir.parent() {
+                    bases.push(target_dir.join(profile_dir.file_name()?));
+                }
+            }
+        }
+        bases.extend([
+            std::path::PathBuf::from("/root/vllm-rs/target/release"),
+            std::path::PathBuf::from("/root/vllm-rs/target/debug"),
+            std::path::PathBuf::from("./target/release"),
+            std::path::PathBuf::from("./target/debug"),
+        ]);
+
+        for base in &bases {
+            let build_dir = base.join("build");
+            if let Ok(entries) = std::fs::read_dir(&build_dir) {
                 for entry in entries.flatten() {
                     let ptx_path = entry.path().join("out/ptx");
                     if ptx_path.join("rotary_embedding.ptx").exists() {
@@ -1963,6 +2021,7 @@ fn worker_config_from_engine(
         intermediate_size: 11008,
         vocab_size: 32000,
         max_model_len: config.model.max_model_len,
+        rms_norm_eps: 1e-5,
         block_size: config.cache.block_size,
         gpu_memory_utilization: config.cache.gpu_memory_utilization,
         rank: 0,
@@ -1975,6 +2034,9 @@ fn worker_config_from_engine(
         enable_prefix_caching: config.cache.enable_prefix_caching,
         partial_rotary_factor: 1.0,
         attn_logit_softcapping: 0.0,
+        attention_bias: false,
+        sliding_window: None,
+        layer_types: Vec::new(),
         num_local_experts: 0,
         num_experts_per_tok: 0,
     }

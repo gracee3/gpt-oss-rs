@@ -31,7 +31,7 @@ mod cuda_impl {
 
     use std::cell::Cell;
 
-    use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, DevicePtrMut, LaunchConfig, PushKernelArg};
+    use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtrMut, LaunchConfig, PushKernelArg};
     use half::f16;
     use tracing::{debug, info, trace};
 
@@ -39,7 +39,8 @@ mod cuda_impl {
     use crate::runner::ModelRunnerConfig;
 
     use crate::gpu_layer::{
-        GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16, GpuTransformerLayer,
+        GptOssMoeLayerWeights, GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16,
+        GpuTransformerLayer,
     };
     use crate::layers::linear_cuda::CudaLinearLayer;
     use crate::layers::norm_cuda::CudaRMSNorm;
@@ -155,22 +156,24 @@ mod cuda_impl {
         cpu_scratch: RefCell<Vec<i32>>,
         /// Fixed max blocks per sequence for CUDA graph capture/replay.
         graph_max_blocks: usize,
+        /// Optional host-side GPT-OSS routed-expert weights, one slot per layer.
+        gpt_oss_moe_layers: Vec<Option<GptOssMoeLayerWeights>>,
         /// Fused QKV weights per layer: [q_dim + kv_dim + kv_dim, hidden] f16.
         /// One GEMM instead of 3 per layer. Populated by fuse_weights().
-        fused_qkv_weights: Vec<CudaSlice<half::f16>>,
+        fused_qkv_weights: Vec<CudaSlice<f16>>,
         /// Fused gate+up weights per layer: [intermediate*2, hidden] f16.
         /// One GEMM instead of 2 per layer. Populated by fuse_weights().
-        fused_gate_up_weights: Vec<CudaSlice<half::f16>>,
+        fused_gate_up_weights: Vec<CudaSlice<f16>>,
         /// Pre-converted f16 input layernorm weights per layer.
-        fused_layernorm_f16: Vec<CudaSlice<half::f16>>,
+        fused_layernorm_f16: Vec<CudaSlice<f16>>,
         /// Pre-converted f16 post-attention layernorm weights per layer.
-        fused_post_norm_f16: Vec<CudaSlice<half::f16>>,
+        fused_post_norm_f16: Vec<CudaSlice<f16>>,
         /// Pre-converted f16 fused QKV bias per layer (None if model has no QKV bias).
-        fused_qkv_bias_f16: Vec<Option<CudaSlice<half::f16>>>,
+        fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>,
         /// Pre-converted f16 final norm weight.
-        final_norm_weight_f16: Option<CudaSlice<half::f16>>,
+        final_norm_weight_f16: Option<CudaSlice<f16>>,
         /// Pre-converted f16 embed tokens table for f16 embedding lookup.
-        embed_tokens_f16: Option<CudaSlice<half::f16>>,
+        embed_tokens_f16: Option<CudaSlice<f16>>,
         /// Pre-allocated scratch buffers for the f16 forward pass.
         /// One set reused across all layers. Allocated by fuse_weights().
         f16_scratch: Option<F16LayerScratch>,
@@ -216,13 +219,20 @@ mod cuda_impl {
 
             let mut layers = Vec::with_capacity(config.num_layers);
             for i in 0..config.num_layers {
+                let sliding_window = matches!(
+                    config.layer_types.get(i).map(|ty| ty.as_str()),
+                    Some("sliding_attention")
+                )
+                .then_some(config.sliding_window)
+                .flatten();
                 let layer_cfg = GpuLayerConfig {
                     hidden_size: config.hidden_size,
                     num_heads: config.num_heads,
                     num_kv_heads: config.num_kv_heads,
                     head_dim: config.head_dim,
                     intermediate_size: config.intermediate_size,
-                    rms_norm_eps: 1e-5_f32,
+                    rms_norm_eps: config.rms_norm_eps,
+                    sliding_window,
                     layer_idx: i,
                 };
                 layers.push(GpuTransformerLayer::new(layer_cfg, Arc::clone(&stream), Arc::clone(&loader)));
@@ -253,6 +263,9 @@ mod cuda_impl {
 
             let block_size = cache.block_size();
             let graph_max_blocks = (config.max_position + block_size - 1) / block_size;
+            let rms_norm_eps = config.rms_norm_eps;
+            let gpt_oss_moe_layers =
+                Self::build_gpt_oss_moe_layers(&weights, &config, &stream)?;
             info!(graph_max_blocks, block_size, max_position = config.max_position,
                   "fixed block_tables stride for CUDA graph stability");
 
@@ -273,7 +286,7 @@ mod cuda_impl {
                 embed_tokens,
                 final_norm_weight,
                 lm_head_weight,
-                rms_norm_eps: 1e-5_f32,
+                rms_norm_eps,
                 rope_cos,
                 rope_sin,
                 use_fp16: false,
@@ -282,6 +295,7 @@ mod cuda_impl {
                 graph_output: RefCell::new(None),
                 cpu_scratch: RefCell::new(Vec::with_capacity(4096)),
                 graph_max_blocks,
+                gpt_oss_moe_layers,
                 fused_qkv_weights: Vec::new(),
                 fused_gate_up_weights: Vec::new(),
                 fused_layernorm_f16: Vec::new(),
@@ -310,43 +324,86 @@ mod cuda_impl {
             let gate_up_dim = intermediate * 2;
 
             for i in 0..num_layers {
+                let has_gpt_oss_moe = self.config.architecture == "GptOssForCausalLM"
+                    || self
+                        .gpt_oss_moe_layers
+                        .get(i)
+                        .and_then(|layer| layer.as_ref())
+                        .is_some();
+
                 // Fuse QKV: concat [q_dim, hidden] + [kv_dim, hidden] + [kv_dim, hidden]
-                let q_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.q_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 q_proj layer {i}")))?;
-                let k_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.k_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 k_proj layer {i}")))?;
-                let v_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.self_attn.v_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 v_proj layer {i}")))?;
+                if !has_gpt_oss_moe {
+                    let q_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.q_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 q_proj layer {i}")))?;
+                    let k_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.k_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 k_proj layer {i}")))?;
+                    let v_w = self.weights.get_f16(
+                        &format!("model.layers.{i}.self_attn.v_proj.weight")
+                    ).ok_or_else(|| LLMError::GpuError(format!("missing f16 v_proj layer {i}")))?;
 
-                let mut fused_qkv = self.stream.alloc_zeros::<half::f16>(qkv_dim * hidden)
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv alloc: {e}")))?;
-                // Copy Q, K, V contiguously
-                self.stream.memcpy_dtod(q_w, &mut fused_qkv.slice_mut(..q_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv q copy: {e}")))?;
-                self.stream.memcpy_dtod(k_w, &mut fused_qkv.slice_mut(q_dim * hidden..(q_dim + kv_dim) * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv k copy: {e}")))?;
-                self.stream.memcpy_dtod(v_w, &mut fused_qkv.slice_mut((q_dim + kv_dim) * hidden..qkv_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_qkv v copy: {e}")))?;
-                self.fused_qkv_weights.push(fused_qkv);
+                    let mut fused_qkv = self.stream.alloc_zeros::<half::f16>(qkv_dim * hidden)
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv alloc: {e}")))?;
+                    // Copy Q, K, V contiguously
+                    self.stream.memcpy_dtod(q_w, &mut fused_qkv.slice_mut(..q_dim * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv q copy: {e}")))?;
+                    self.stream.memcpy_dtod(k_w, &mut fused_qkv.slice_mut(q_dim * hidden..(q_dim + kv_dim) * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv k copy: {e}")))?;
+                    self.stream.memcpy_dtod(v_w, &mut fused_qkv.slice_mut((q_dim + kv_dim) * hidden..qkv_dim * hidden))
+                        .map_err(|e| LLMError::GpuError(format!("fused_qkv v copy: {e}")))?;
+                    self.fused_qkv_weights.push(fused_qkv);
+                }
 
-                // Fuse gate+up: concat [intermediate, hidden] + [intermediate, hidden]
-                let gate_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.mlp.gate_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 gate_proj layer {i}")))?;
-                let up_w = self.weights.get_f16(
-                    &format!("model.layers.{i}.mlp.up_proj.weight")
-                ).ok_or_else(|| LLMError::GpuError(format!("missing f16 up_proj layer {i}")))?;
-
-                let mut fused_gu = self.stream.alloc_zeros::<half::f16>(gate_up_dim * hidden)
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up alloc: {e}")))?;
-                self.stream.memcpy_dtod(gate_w, &mut fused_gu.slice_mut(..intermediate * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up gate copy: {e}")))?;
-                self.stream.memcpy_dtod(up_w, &mut fused_gu.slice_mut(intermediate * hidden..gate_up_dim * hidden))
-                    .map_err(|e| LLMError::GpuError(format!("fused_gate_up up copy: {e}")))?;
-                self.fused_gate_up_weights.push(fused_gu);
+                // Fuse gate+up when the dense MLP weights exist. GPT-OSS layers
+                // route through MoE experts instead, so they intentionally do not
+                // carry dense gate/up projections.
+                let gate_w = self
+                    .weights
+                    .get_f16(&format!("model.layers.{i}.mlp.gate_proj.weight"));
+                let up_w = self
+                    .weights
+                    .get_f16(&format!("model.layers.{i}.mlp.up_proj.weight"));
+                match (gate_w, up_w) {
+                    (Some(gate_w), Some(up_w)) => {
+                        let mut fused_gu =
+                            self.stream.alloc_zeros::<half::f16>(gate_up_dim * hidden).map_err(
+                                |e| LLMError::GpuError(format!("fused_gate_up alloc: {e}")),
+                            )?;
+                        self.stream
+                            .memcpy_dtod(gate_w, &mut fused_gu.slice_mut(..intermediate * hidden))
+                            .map_err(|e| {
+                                LLMError::GpuError(format!("fused_gate_up gate copy: {e}"))
+                            })?;
+                        self.stream
+                            .memcpy_dtod(
+                                up_w,
+                                &mut fused_gu.slice_mut(
+                                    intermediate * hidden..gate_up_dim * hidden,
+                                ),
+                            )
+                            .map_err(|e| {
+                                LLMError::GpuError(format!("fused_gate_up up copy: {e}"))
+                            })?;
+                        self.fused_gate_up_weights.push(fused_gu);
+                    }
+                    (None, None) if has_gpt_oss_moe => {}
+                    (None, None) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 gate_proj/up_proj layer {i}"
+                        )));
+                    }
+                    (None, Some(_)) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 gate_proj layer {i}"
+                        )));
+                    }
+                    (Some(_), None) => {
+                        return Err(LLMError::GpuError(format!(
+                            "missing f16 up_proj layer {i}"
+                        )));
+                    }
+                }
             }
 
             info!(num_layers, qkv_dim, gate_up_dim, "fused QKV and gate+up weights");
@@ -530,7 +587,13 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                    )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
                 }
@@ -845,7 +908,13 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                    )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
                 }
@@ -1081,7 +1150,13 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    let (residual, mlp_out) = layer.forward_f16(&input, &weights, &self.blas, prev_mlp_out.as_ref(), self.cublaslt_ref())?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                    )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
                 }
@@ -1479,12 +1554,16 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                sinks: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.sinks")),
                 post_attention_layernorm: g(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
-                gate_proj: g(&format!("model.layers.{i}.mlp.gate_proj.weight"))?,
-                up_proj: g(&format!("model.layers.{i}.mlp.up_proj.weight"))?,
-                down_proj: g(&format!("model.layers.{i}.mlp.down_proj.weight"))?,
+                gate_proj: self.weights.get(&format!("model.layers.{i}.mlp.gate_proj.weight")),
+                up_proj: self.weights.get(&format!("model.layers.{i}.mlp.up_proj.weight")),
+                down_proj: self.weights.get(&format!("model.layers.{i}.mlp.down_proj.weight")),
+                gpt_oss_moe: self.gpt_oss_moe_layers[i].as_ref(),
             })
         }
 
@@ -1724,6 +1803,133 @@ mod cuda_impl {
             self.use_fp16
         }
 
+        pub fn supports_cuda_graphs(&self) -> bool {
+            if self.config.architecture != "GptOssForCausalLM" {
+                return true;
+            }
+            self.use_fp16
+                && self
+                    .gpt_oss_moe_layers
+                    .iter()
+                    .flatten()
+                    .all(|layer| layer.supports_gpu_decode())
+        }
+
+        pub fn prepare_gpt_oss_graph_decode(&mut self) -> Result<()> {
+            if self.config.architecture != "GptOssForCausalLM" || !self.use_fp16 {
+                return Ok(());
+            }
+
+            self.prune_fp32_projection_weights_for_fp16();
+
+            for i in 0..self.gpt_oss_moe_layers.len() {
+                let Some(layer) = self.gpt_oss_moe_layers[i].as_mut() else {
+                    continue;
+                };
+                if layer.supports_gpu_decode() {
+                    continue;
+                }
+
+                let prefix = format!("model.layers.{i}.mlp.experts");
+                let gate_up_blocks_name = format!("{prefix}.gate_up_proj_blocks");
+                let gate_up_scales_name = format!("{prefix}.gate_up_proj_scales");
+                let down_blocks_name = format!("{prefix}.down_proj_blocks");
+                let down_scales_name = format!("{prefix}.down_proj_scales");
+
+                if layer.gate_up_blocks_gpu.is_none() {
+                    let data = self.weights.get_u8(&gate_up_blocks_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_blocks_name}"))
+                    })?;
+                    layer.gate_up_blocks_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {gate_up_blocks_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.gate_up_scales_gpu.is_none() {
+                    let data = self.weights.get_u8(&gate_up_scales_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_scales_name}"))
+                    })?;
+                    layer.gate_up_scales_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {gate_up_scales_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.down_blocks_gpu.is_none() {
+                    let data = self.weights.get_u8(&down_blocks_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {down_blocks_name}"))
+                    })?;
+                    layer.down_blocks_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {down_blocks_name}: {e}"))
+                        })?,
+                    );
+                }
+                if layer.down_scales_gpu.is_none() {
+                    let data = self.weights.get_u8(&down_scales_name).ok_or_else(|| {
+                        LLMError::GpuError(format!("missing GPT-OSS weight: {down_scales_name}"))
+                    })?;
+                    layer.down_scales_gpu = Some(
+                        self.stream.clone_htod(data).map_err(|e| {
+                            LLMError::GpuError(format!("HtoD {down_scales_name}: {e}"))
+                        })?,
+                    );
+                }
+            }
+
+            Ok(())
+        }
+
+        fn prune_fp32_projection_weights_for_fp16(&mut self) {
+            if self.config.architecture != "GptOssForCausalLM" || !self.use_fp16 {
+                return;
+            }
+
+            let mut removed = 0usize;
+            for i in 0..self.config.num_layers {
+                for suffix in [
+                    "self_attn.q_proj.weight",
+                    "self_attn.k_proj.weight",
+                    "self_attn.v_proj.weight",
+                    "self_attn.o_proj.weight",
+                    "mlp.gate_proj.weight",
+                    "mlp.up_proj.weight",
+                    "mlp.down_proj.weight",
+                    "mlp.router.weight",
+                    "mlp.router.bias",
+                ] {
+                    let name = format!("model.layers.{i}.{suffix}");
+                    if self.weights.remove(&name).is_some() {
+                        removed += 1;
+                    }
+                }
+                for suffix in [
+                    "mlp.gate_proj.weight",
+                    "mlp.up_proj.weight",
+                    "mlp.down_proj.weight",
+                ] {
+                    let name = format!("model.layers.{i}.{suffix}");
+                    if self.weights.remove_f16(&name).is_some() {
+                        removed += 1;
+                    }
+                }
+            }
+
+            for shared in ["model.embed_tokens.weight", "lm_head.weight"] {
+                if self.weights.remove(shared).is_some() {
+                    removed += 1;
+                }
+                if self.weights.remove_f16(shared).is_some() {
+                    removed += 1;
+                }
+            }
+
+            if removed > 0 {
+                info!(removed, "pruned unused GPT-OSS fp32 projection weights after enabling fp16");
+            }
+        }
+
         /// Per-layer f16 weight references into the GPU weight map.
         fn layer_weights_f16(&self, i: usize) -> Result<GpuLayerWeightsF16<'_>> {
             let g_f16 = |name: &str| -> Result<&CudaSlice<f16>> {
@@ -1751,18 +1957,127 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                sinks: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.sinks")),
                 post_attention_layernorm: g_f32(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
-                gate_proj: g_f16(&format!("model.layers.{i}.mlp.gate_proj.weight"))?,
-                up_proj: g_f16(&format!("model.layers.{i}.mlp.up_proj.weight"))?,
-                down_proj: g_f16(&format!("model.layers.{i}.mlp.down_proj.weight"))?,
+                gate_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.gate_proj.weight")),
+                up_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.up_proj.weight")),
+                down_proj: self.weights.get_f16(&format!("model.layers.{i}.mlp.down_proj.weight")),
+                gpt_oss_moe: self.gpt_oss_moe_layers[i].as_ref(),
                 fused_qkv: self.fused_qkv_weights.get(i),
                 fused_gate_up: self.fused_gate_up_weights.get(i),
                 input_layernorm_f16: self.fused_layernorm_f16.get(i),
                 post_attention_layernorm_f16: self.fused_post_norm_f16.get(i),
                 fused_qkv_bias: self.fused_qkv_bias_f16.get(i).and_then(|o| o.as_ref()),
             })
+        }
+
+        fn build_gpt_oss_moe_layers(
+            weights: &GpuModelWeights,
+            config: &ModelRunnerConfig,
+            stream: &Arc<CudaStream>,
+        ) -> Result<Vec<Option<GptOssMoeLayerWeights>>> {
+            if config.architecture != "GptOssForCausalLM" {
+                return Ok((0..config.num_layers).map(|_| None).collect());
+            }
+
+            let mut layers = Vec::with_capacity(config.num_layers);
+            for i in 0..config.num_layers {
+                let prefix = format!("model.layers.{i}.mlp.experts");
+                let gate_up_blocks_name = format!("{prefix}.gate_up_proj_blocks");
+                let down_blocks_name = format!("{prefix}.down_proj_blocks");
+
+                let Some(gate_up_blocks) = weights.get_u8(&gate_up_blocks_name) else {
+                    layers.push(None);
+                    continue;
+                };
+                let down_blocks = weights.get_u8(&down_blocks_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {down_blocks_name}"))
+                })?;
+                let gate_up_scales_name = format!("{prefix}.gate_up_proj_scales");
+                let down_scales_name = format!("{prefix}.down_proj_scales");
+                let gate_up_scales = weights.get_u8(&gate_up_scales_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {gate_up_scales_name}"))
+                })?;
+                let down_scales = weights.get_u8(&down_scales_name).ok_or_else(|| {
+                    LLMError::GpuError(format!("missing GPT-OSS weight: {down_scales_name}"))
+                })?;
+
+                let dtoh = |name: &str| -> Result<Vec<f32>> {
+                    let weight = weights
+                        .get(name)
+                        .ok_or_else(|| LLMError::GpuError(format!("missing weight: {name}")))?;
+                    stream
+                        .clone_dtoh(weight)
+                        .map_err(|e| LLMError::GpuError(format!("DtoH {name}: {e}")))
+                };
+                let router_weight_name = format!("model.layers.{i}.mlp.router.weight");
+                let router_bias_name = format!("model.layers.{i}.mlp.router.bias");
+                let gate_up_bias_host = dtoh(&format!("{prefix}.gate_up_proj_bias"))?;
+                let down_bias_host = dtoh(&format!("{prefix}.down_proj_bias"))?;
+                let gate_up_bias_gpu = gate_up_bias_host
+                    .chunks(config.intermediate_size * 2)
+                    .map(|chunk| {
+                        stream
+                            .clone_htod(chunk)
+                            .map_err(|e| LLMError::GpuError(format!("HtoD gate_up bias layer {i}: {e}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let down_bias_gpu = down_bias_host
+                    .chunks(config.hidden_size)
+                    .map(|chunk| {
+                        stream
+                            .clone_htod(chunk)
+                            .map_err(|e| LLMError::GpuError(format!("HtoD down bias layer {i}: {e}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                layers.push(Some(GptOssMoeLayerWeights {
+                    router_weight: dtoh(&router_weight_name)?,
+                    router_bias: dtoh(&router_bias_name)?,
+                    gate_up_blocks: gate_up_blocks.to_vec(),
+                    gate_up_scales: gate_up_scales.to_vec(),
+                    gate_up_bias: gate_up_bias_host,
+                    down_blocks: down_blocks.to_vec(),
+                    down_scales: down_scales.to_vec(),
+                    down_bias: down_bias_host,
+                    hidden_size: config.hidden_size,
+                    intermediate_size: config.intermediate_size,
+                    num_local_experts: config.num_local_experts,
+                    num_experts_per_tok: config.num_experts_per_tok,
+                    router_weight_gpu: Some(
+                        weights
+                            .get(&router_weight_name)
+                            .ok_or_else(|| {
+                                LLMError::GpuError(format!(
+                                    "missing GPT-OSS weight: {router_weight_name}"
+                                ))
+                            })?
+                            .clone(),
+                    ),
+                    router_bias_gpu: Some(
+                        weights
+                            .get(&router_bias_name)
+                            .ok_or_else(|| {
+                                LLMError::GpuError(format!(
+                                    "missing GPT-OSS weight: {router_bias_name}"
+                                ))
+                            })?
+                            .clone(),
+                    ),
+                    gate_up_blocks_gpu: None,
+                    gate_up_scales_gpu: None,
+                    gate_up_bias_gpu: Some(gate_up_bias_gpu),
+                    down_blocks_gpu: None,
+                    down_scales_gpu: None,
+                    down_bias_gpu: Some(down_bias_gpu),
+                }));
+            }
+
+            Ok(layers)
         }
     }
 }
@@ -1890,6 +2205,7 @@ pub use mock_impl::GpuModelRunner;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rvllm_core::types::Dtype;
 
     #[test]
     fn mock_runner_returns_error() {
@@ -1904,8 +2220,16 @@ mod tests {
                 intermediate_size: 128,
                 vocab_size: 100,
                 max_position: 512,
+                rms_norm_eps: 1e-5,
                 rope_theta: 10000.0,
-                dtype: "float32".to_string(),
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: None,
+                layer_types: Vec::new(),
+                num_local_experts: 0,
+                num_experts_per_tok: 0,
+                dtype: Dtype::Float32,
                 architecture: "LlamaForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };
@@ -1929,8 +2253,16 @@ mod tests {
                 intermediate_size: 512,
                 vocab_size: 32000,
                 max_position: 2048,
+                rms_norm_eps: 1e-5,
                 rope_theta: 10000.0,
-                dtype: "float16".to_string(),
+                partial_rotary_factor: 1.0,
+                attn_logit_softcapping: 0.0,
+                attention_bias: false,
+                sliding_window: None,
+                layer_types: Vec::new(),
+                num_local_experts: 0,
+                num_experts_per_tok: 0,
+                dtype: Dtype::Float16,
                 architecture: "LlamaForCausalLM".to_string(),
             };
             let runner = GpuModelRunner { config };

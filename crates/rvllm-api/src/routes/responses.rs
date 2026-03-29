@@ -13,7 +13,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
-use crate::routes::tools::augment_messages_with_tools;
+use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style};
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::responses::{
@@ -100,7 +100,7 @@ pub async fn create_response(
         templated_messages = augment_messages_with_tools(
             &templated_messages,
             &tool_defs,
-            rvllm_tokenizer::ToolPromptStyle::Hermes,
+            preferred_tool_prompt_style(&state.model_name),
         );
     }
 

@@ -21,6 +21,7 @@ mod inner {
     pub struct GpuModelWeights {
         weights: HashMap<String, CudaSlice<f32>>,
         weights_f16: HashMap<String, CudaSlice<f16>>,
+        weights_u8: HashMap<String, Vec<u8>>,
         shapes: HashMap<String, Vec<usize>>,
     }
 
@@ -34,6 +35,7 @@ mod inner {
             Self {
                 weights,
                 weights_f16: HashMap::new(),
+                weights_u8: HashMap::new(),
                 shapes,
             }
         }
@@ -43,6 +45,7 @@ mod inner {
             Self {
                 weights: HashMap::new(),
                 weights_f16: HashMap::new(),
+                weights_u8: HashMap::new(),
                 shapes: HashMap::new(),
             }
         }
@@ -59,6 +62,12 @@ mod inner {
             self.weights_f16.insert(name, data);
         }
 
+        /// Insert a raw host-side U8 tensor with its shape.
+        pub fn insert_u8(&mut self, name: String, data: Vec<u8>, shape: Vec<usize>) {
+            self.shapes.insert(name.clone(), shape);
+            self.weights_u8.insert(name, data);
+        }
+
         /// Look up a weight by name.
         pub fn get(&self, name: &str) -> Option<&CudaSlice<f32>> {
             self.weights.get(name)
@@ -67,6 +76,26 @@ mod inner {
         /// Look up an f16 weight by name.
         pub fn get_f16(&self, name: &str) -> Option<&CudaSlice<f16>> {
             self.weights_f16.get(name)
+        }
+
+        /// Look up a host-side U8 tensor by name.
+        pub fn get_u8(&self, name: &str) -> Option<&[u8]> {
+            self.weights_u8.get(name).map(|v| v.as_slice())
+        }
+
+        /// Remove an f32 weight tensor, returning ownership if it existed.
+        pub fn remove(&mut self, name: &str) -> Option<CudaSlice<f32>> {
+            self.weights.remove(name)
+        }
+
+        /// Remove an f16 weight tensor, returning ownership if it existed.
+        pub fn remove_f16(&mut self, name: &str) -> Option<CudaSlice<f16>> {
+            self.weights_f16.remove(name)
+        }
+
+        /// Remove a host-side u8 tensor, returning ownership if it existed.
+        pub fn remove_u8(&mut self, name: &str) -> Option<Vec<u8>> {
+            self.weights_u8.remove(name)
         }
 
         /// Look up a weight by name, returning an error if missing.
@@ -91,17 +120,23 @@ mod inner {
 
         /// Number of weight tensors stored.
         pub fn num_weights(&self) -> usize {
-            self.weights.len()
+            self.weights.len() + self.weights_f16.len() + self.weights_u8.len()
         }
 
         /// Iterate over all weight names.
         pub fn names(&self) -> impl Iterator<Item = &str> {
-            self.weights.keys().map(|s| s.as_str())
+            self.weights
+                .keys()
+                .chain(self.weights_f16.keys())
+                .chain(self.weights_u8.keys())
+                .map(|s| s.as_str())
         }
 
         /// Check whether a weight exists.
         pub fn contains(&self, name: &str) -> bool {
             self.weights.contains_key(name)
+                || self.weights_f16.contains_key(name)
+                || self.weights_u8.contains_key(name)
         }
 
         /// Total GPU memory used by all weight buffers, in bytes.
@@ -135,6 +170,7 @@ mod inner {
             Ok(Self {
                 weights: gpu_weights,
                 weights_f16: HashMap::new(),
+                weights_u8: HashMap::new(),
                 shapes,
             })
         }
