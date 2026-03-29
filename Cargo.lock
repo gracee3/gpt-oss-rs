@@ -1059,6 +1059,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-conformance"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "gpt-oss-core"
 version = "0.1.0"
 dependencies = [
