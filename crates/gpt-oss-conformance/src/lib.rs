@@ -812,4 +812,31 @@ mod tests {
         assert_eq!(report.outcome, ParityOutcome::Match);
         assert_eq!(report.comparison.diff_count(), 0);
     }
+
+    #[test]
+    fn two_expert_top2_full_attention_moe_prefill_parity_matches() {
+        let case = ConformanceCase::prefill("two-expert-moe-prefill", vec![1, 2]);
+        let runner = Arc::new(
+            ModelRunner::new(
+                runner_weights_with_experts(2),
+                runner_config_with_moe(2, 2),
+                Box::new(MockAttentionBackend),
+                Arc::new(BridgeCacheEngine::new(1, 64)),
+                MockGpuAllocator::new(1 << 20),
+            )
+            .expect("test model runner"),
+        );
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
+            2,
+            2,
+            vec![0],
+        );
+        let reference = full_attention_two_expert_moe_backend();
+        let harness = ConformanceHarness::default();
+
+        let report = harness.compare(&case, &reference, &observed);
+
+        assert_eq!(report.outcome, ParityOutcome::Match);
+        assert_eq!(report.comparison.diff_count(), 0);
+    }
 }
