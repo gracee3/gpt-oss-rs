@@ -35,7 +35,7 @@ mod cuda_impl {
         CudaContext, CudaSlice, CudaStream, DevicePtrMut, LaunchConfig, PushKernelArg,
     };
     use half::f16;
-    use tracing::{debug, info, trace};
+    use tracing::{debug, info};
 
     use crate::bridge::{LLMError, Result};
     use crate::runner::ModelRunnerConfig;
@@ -46,6 +46,7 @@ mod cuda_impl {
     };
     use crate::layers::linear_cuda::CudaLinearLayer;
     use crate::layers::norm_cuda::CudaRMSNorm;
+    use crate::tensor_parallel::{local_tensor_parallel_comm, TensorParallelComm};
     use gpt_oss_gpu::kernel_loader::KernelLoader;
     use gpt_oss_gpu::prelude::CublasHandle;
     use gpt_oss_kv_cache::engine_cuda::CudaCacheEngine;
@@ -179,6 +180,7 @@ mod cuda_impl {
         /// Pre-allocated scratch buffers for the f16 forward pass.
         /// One set reused across all layers. Allocated by fuse_weights().
         f16_scratch: Option<F16LayerScratch>,
+        tp_comm: Arc<dyn TensorParallelComm>,
     }
 
     impl GpuModelRunner {
@@ -192,6 +194,8 @@ mod cuda_impl {
             stream: Arc<CudaStream>,
         ) -> Result<Self> {
             let loader = Arc::new(loader);
+            let tp_rank = config.tensor_parallel_rank;
+            let tp_size = config.tensor_parallel_size;
             debug!(
                 num_layers = config.num_layers,
                 hidden = config.hidden_size,
@@ -313,6 +317,7 @@ mod cuda_impl {
                 final_norm_weight_f16: None,
                 embed_tokens_f16: None,
                 f16_scratch: None,
+                tp_comm: local_tensor_parallel_comm(tp_rank, tp_size),
             })
         }
 
@@ -679,6 +684,7 @@ mod cuda_impl {
                         &self.blas,
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -782,6 +788,13 @@ mod cuda_impl {
                         .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
                 }
 
+                let normed_f32 = self.tp_comm.all_gather_f32(
+                    &normed_f32,
+                    num_tokens,
+                    hidden_size,
+                    "lm_head.input",
+                )?;
+
                 let logits_gpu = {
                     let lm_f16 = self
                         .weights
@@ -867,7 +880,8 @@ mod cuda_impl {
                     rope_sin: &self.rope_sin,
                 };
                 let weights = self.layer_weights(layer_idx)?;
-                hidden_states = layer.forward(&input, &weights, &self.blas)?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
                 if layer_idx == 0 || layer_idx == num_layers - 1 {
                     info!(layer = layer_idx, "gpu_runner: layer done");
                 }
@@ -900,6 +914,10 @@ mod cuda_impl {
             }
 
             // Step 4: LM head  normed [num_tokens, hidden] @ lm_head^T [hidden, vocab]
+            let normed =
+                self.tp_comm
+                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
+
             let logits_gpu = CudaLinearLayer::forward_once(
                 &normed,
                 &self.lm_head_weight,
@@ -1091,6 +1109,7 @@ mod cuda_impl {
                         &self.blas,
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1191,6 +1210,13 @@ mod cuda_impl {
                         .map_err(|e| LLMError::GpuError(format!("final cast launch: {e}")))?;
                 }
 
+                let normed_f32 = self.tp_comm.all_gather_f32(
+                    &normed_f32,
+                    num_tokens,
+                    hidden_size,
+                    "lm_head.input",
+                )?;
+
                 let logits_gpu = {
                     let lm_f16 = self
                         .weights
@@ -1273,7 +1299,8 @@ mod cuda_impl {
                     rope_sin: &self.rope_sin,
                 };
                 let weights = self.layer_weights(layer_idx)?;
-                hidden_states = layer.forward(&input, &weights, &self.blas)?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
             }
 
             let normed = CudaRMSNorm::forward(
@@ -1284,6 +1311,9 @@ mod cuda_impl {
                 &self.loader,
                 &self.stream,
             )?;
+            let normed =
+                self.tp_comm
+                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
 
             if num_tokens == 1 && greedy_only {
                 let token_ids_gpu = self.gpu_fused_lm_head_argmax(
@@ -1431,6 +1461,7 @@ mod cuda_impl {
                         &self.blas,
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1611,7 +1642,8 @@ mod cuda_impl {
                     rope_sin: &self.rope_sin,
                 };
                 let weights = self.layer_weights(layer_idx)?;
-                hidden_states = layer.forward(&input, &weights, &self.blas)?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
             }
 
             let normed = CudaRMSNorm::forward(
@@ -1622,6 +1654,9 @@ mod cuda_impl {
                 &self.loader,
                 &self.stream,
             )?;
+            let normed =
+                self.tp_comm
+                    .all_gather_f32(&normed, num_tokens, hidden_size, "lm_head.input")?;
 
             let token_ids_gpu = if num_tokens == 1 {
                 self.gpu_fused_lm_head_argmax(
@@ -2594,6 +2629,8 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         {
             let config = ModelRunnerConfig {
+                tensor_parallel_rank: 0,
+                tensor_parallel_size: 1,
                 num_layers: 2,
                 hidden_size: 64,
                 num_heads: 4,
@@ -2627,6 +2664,8 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         {
             let config = ModelRunnerConfig {
+                tensor_parallel_rank: 0,
+                tensor_parallel_size: 1,
                 num_layers: 4,
                 hidden_size: 256,
                 num_heads: 8,

@@ -40,6 +40,8 @@ mod tests {
 
     fn test_config() -> ModelRunnerConfig {
         ModelRunnerConfig {
+            tensor_parallel_rank: 0,
+            tensor_parallel_size: 1,
             num_layers: 1,
             hidden_size: 8,
             num_heads: 2,

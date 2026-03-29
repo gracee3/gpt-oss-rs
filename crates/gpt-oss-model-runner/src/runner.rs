@@ -14,6 +14,8 @@ use crate::input::ModelInput;
 /// Static configuration for the model runner, derived from the model config.
 #[derive(Debug, Clone)]
 pub struct ModelRunnerConfig {
+    pub tensor_parallel_rank: usize,
+    pub tensor_parallel_size: usize,
     pub num_layers: usize,
     pub hidden_size: usize,
     pub num_heads: usize,

@@ -583,6 +583,8 @@ mod tests {
 
     fn test_config(layer_type: &str) -> ModelRunnerConfig {
         ModelRunnerConfig {
+            tensor_parallel_rank: 0,
+            tensor_parallel_size: 1,
             num_layers: 1,
             hidden_size: 4,
             num_heads: 2,

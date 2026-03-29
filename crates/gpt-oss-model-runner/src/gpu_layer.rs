@@ -738,6 +738,7 @@ mod inner {
             blas: &CublasHandle,
             prev_mlp_out: Option<&CudaSlice<f16>>,
             lt: Option<&crate::CublasLtRef>,
+            tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
         ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
@@ -990,6 +991,7 @@ mod inner {
 
             // 7. Output projection: hgemm f16
             let attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
+            tp_comm.all_reduce_f16(&attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
 
             // 8. Fused residual + post-attention RMSNorm f16.
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
@@ -1077,6 +1079,7 @@ mod inner {
                 };
                 hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
             };
+            tp_comm.all_reduce_f16(&mlp_out, num_tokens * hidden, "mlp.down_proj")?;
             Ok((residual, mlp_out))
         }
 
@@ -1085,6 +1088,7 @@ mod inner {
             input: &GpuLayerInput<'_>,
             weights: &GpuLayerWeights<'_>,
             blas: &CublasHandle,
+            tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
         ) -> Result<CudaSlice<f32>> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
@@ -1258,6 +1262,7 @@ mod inner {
                 hidden,
                 q_dim,
             )?;
+            tp_comm.all_reduce_f32(&attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
 
             // ---------------------------------------------------------------
             // Fused residual + post-attention RMSNorm (1 kernel instead of 2)
@@ -1339,6 +1344,8 @@ mod inner {
             // ---------------------------------------------------------------
             // 8. Residual: residual + mlp_out
             // ---------------------------------------------------------------
+            tp_comm.all_reduce_f32(&mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+
             let output = Self::add_tensors(
                 &self.stream,
                 &self.loader,

@@ -124,6 +124,8 @@ impl WorkerConfig {
     pub fn model_runner_config(&self) -> Result<gpt_oss_model_runner::ModelRunnerConfig> {
         let tp_dims = self.tensor_parallel_dims()?;
         Ok(gpt_oss_model_runner::ModelRunnerConfig {
+            tensor_parallel_rank: self.rank,
+            tensor_parallel_size: self.tensor_parallel_size,
             num_layers: self.num_layers,
             hidden_size: self.hidden_size,
             num_heads: tp_dims.num_attention_heads,

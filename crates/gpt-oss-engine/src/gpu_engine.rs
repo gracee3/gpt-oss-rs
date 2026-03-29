@@ -391,7 +391,7 @@ mod inner {
     pub struct GpuLLMEngine {
         config: EngineConfig,
         scheduler: FifoScheduler,
-        worker: GpuWorker,
+        tp_coordinator: TensorParallelCoordinator,
         tokenizer: Tokenizer,
         requests: HashMap<RequestId, EngineRequest>,
         next_request_id: std::sync::Arc<AtomicU64>,
@@ -411,12 +411,122 @@ mod inner {
         abort_queue: Option<AbortQueue>,
     }
 
+    struct TensorParallelCoordinator {
+        workers: Vec<GpuWorker>,
+    }
+
+    struct TensorParallelPending {
+        actual_batches: Vec<Option<usize>>,
+    }
+
+    impl TensorParallelCoordinator {
+        fn new(workers: Vec<GpuWorker>) -> Result<Self> {
+            if workers.is_empty() {
+                return Err(LLMError::ConfigError(
+                    "tensor-parallel coordinator requires at least one worker".into(),
+                ));
+            }
+            Ok(Self { workers })
+        }
+
+        fn len(&self) -> usize {
+            self.workers.len()
+        }
+
+        fn execute_launch(
+            &mut self,
+            metadata: &[SequenceGroupMetadata],
+        ) -> Result<TensorParallelPending> {
+            let mut actual_batches = Vec::with_capacity(self.workers.len());
+            for (rank, worker) in self.workers.iter_mut().enumerate() {
+                let actual_batch = worker.execute_launch(metadata).map_err(|e| {
+                    LLMError::GpuError(format!("tp worker rank {rank} launch failed: {e}"))
+                })?;
+                actual_batches.push(actual_batch);
+            }
+            Ok(TensorParallelPending { actual_batches })
+        }
+
+        fn execute_collect(
+            &mut self,
+            pending: &TensorParallelPending,
+            metadata: &[SequenceGroupMetadata],
+        ) -> Result<GpuWorkerOutput> {
+            let mut rank0_output = None;
+
+            for (rank, (worker, actual_batch)) in self
+                .workers
+                .iter_mut()
+                .zip(pending.actual_batches.iter())
+                .enumerate()
+            {
+                let output = worker
+                    .execute_collect(*actual_batch, metadata)
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("tp worker rank {rank} collect failed: {e}"))
+                    })?;
+                if rank == 0 {
+                    rank0_output = Some(output);
+                }
+            }
+
+            Ok(rank0_output.unwrap_or(GpuWorkerOutput {
+                outputs: Vec::new(),
+            }))
+        }
+
+        fn execute_with_overlap<F: FnOnce()>(
+            &mut self,
+            metadata: &[SequenceGroupMetadata],
+            during_gpu: F,
+        ) -> Result<GpuWorkerOutput> {
+            let pending = self.execute_launch(metadata)?;
+            during_gpu();
+            self.execute_collect(&pending, metadata)
+        }
+
+        fn execute(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<GpuWorkerOutput> {
+            self.execute_with_overlap(metadata, || {})
+        }
+
+        fn execute_with_cache_ops(
+            &mut self,
+            metadata: &[SequenceGroupMetadata],
+            blocks_to_swap_in: &[(BlockId, BlockId)],
+            blocks_to_swap_out: &[(BlockId, BlockId)],
+            blocks_to_copy: &[(BlockId, BlockId)],
+        ) -> Result<GpuWorkerOutput> {
+            let mut rank0_output = None;
+
+            for (rank, worker) in self.workers.iter_mut().enumerate() {
+                let output = worker
+                    .execute_with_cache_ops(
+                        metadata,
+                        blocks_to_swap_in,
+                        blocks_to_swap_out,
+                        blocks_to_copy,
+                    )
+                    .map_err(|e| {
+                        LLMError::GpuError(format!(
+                            "tp worker rank {rank} execute_with_cache_ops failed: {e}"
+                        ))
+                    })?;
+                if rank == 0 {
+                    rank0_output = Some(output);
+                }
+            }
+
+            Ok(rank0_output.unwrap_or(GpuWorkerOutput {
+                outputs: Vec::new(),
+            }))
+        }
+    }
+
     /// Pending state from step_launch, consumed by step_collect.
     pub struct StepPending {
-        pub scheduled_groups: Vec<SequenceGroup>,
-        pub metadata: Vec<SequenceGroupMetadata>,
-        /// Async batch size from execute_launch (Some = async DtoH pending).
-        pub actual_batch: Option<usize>,
+        scheduled_groups: Vec<SequenceGroup>,
+        metadata: Vec<SequenceGroupMetadata>,
+        tp_pending: TensorParallelPending,
     }
 
     impl GpuLLMEngine {
@@ -461,28 +571,57 @@ mod inner {
             let tokenizer_path = config.model.tokenizer_path.as_deref().unwrap_or(model_name);
             let tokenizer = Tokenizer::from_pretrained(tokenizer_path)?;
 
-            // 4. Build per-rank worker configs from the real model config.
-            let worker_config = build_worker_configs(&config, &hf_config)?
-                .into_iter()
-                .next()
-                .ok_or_else(|| LLMError::ConfigError("no worker configs generated".into()))?;
+            // 4. Build per-rank workers from the real model config.
+            let worker_configs = build_worker_configs(&config, &hf_config)?;
+            let mut workers = Vec::with_capacity(worker_configs.len());
+            let mut profiled_blocks = Vec::with_capacity(worker_configs.len());
 
-            // 5. Create GPU worker
-            let mut worker = GpuWorker::new(worker_config)
-                .map_err(|e| LLMError::GpuError(format!("GpuWorker creation failed: {e}")))?;
+            info!(
+                tensor_parallel_size = worker_configs.len(),
+                "initializing tensor-parallel worker set"
+            );
 
-            // 6. Init model config
-            worker.init_model(&model_dir)?;
+            for worker_config in worker_configs {
+                let rank = worker_config.rank;
+                let device_id = worker_config.device_id;
+                let mut worker = GpuWorker::new(worker_config).map_err(|e| {
+                    LLMError::GpuError(format!(
+                        "GpuWorker creation failed for rank {rank} on device {device_id}: {e}"
+                    ))
+                })?;
 
-            // 7. Load weights to GPU
-            info!("loading model weights to GPU...");
-            worker.load_weights(&model_dir)?;
-            info!("model weights loaded successfully");
+                worker.init_model(&model_dir)?;
+                worker.load_weights(&model_dir)?;
+                let (rank_gpu_blocks, rank_cpu_blocks) =
+                    worker.profile_num_available_blocks(config.cache.gpu_memory_utilization)?;
+                info!(
+                    rank,
+                    device_id, rank_gpu_blocks, rank_cpu_blocks, "profiled TP worker capacity"
+                );
+                profiled_blocks.push((rank_gpu_blocks, rank_cpu_blocks));
+                workers.push(worker);
+            }
 
-            // 8. Profile GPU memory and init KV cache + GPU model runner
-            let (num_gpu_blocks, num_cpu_blocks) =
-                worker.profile_num_available_blocks(config.cache.gpu_memory_utilization)?;
-            worker.init_cache(num_gpu_blocks, num_cpu_blocks)?;
+            let num_gpu_blocks = profiled_blocks
+                .iter()
+                .map(|(gpu, _)| *gpu)
+                .min()
+                .unwrap_or(0);
+            let num_cpu_blocks = profiled_blocks
+                .iter()
+                .map(|(_, cpu)| *cpu)
+                .min()
+                .unwrap_or(0);
+
+            for (rank, worker) in workers.iter_mut().enumerate() {
+                worker
+                    .init_cache(num_gpu_blocks, num_cpu_blocks)
+                    .map_err(|e| {
+                        LLMError::GpuError(format!("tp worker rank {rank} init_cache failed: {e}"))
+                    })?;
+            }
+
+            let tp_coordinator = TensorParallelCoordinator::new(workers)?;
 
             // 8. Scheduler
             let scheduler = FifoScheduler::new(
@@ -502,6 +641,7 @@ mod inner {
             info!(
                 num_gpu_blocks,
                 num_cpu_blocks,
+                tensor_parallel_size = tp_coordinator.len(),
                 block_size = config.cache.block_size,
                 max_num_seqs = config.scheduler.max_num_seqs,
                 "GpuLLMEngine: ready for inference"
@@ -509,7 +649,7 @@ mod inner {
             Ok(Self {
                 config,
                 scheduler,
-                worker,
+                tp_coordinator,
                 tokenizer,
                 requests: HashMap::new(),
                 next_request_id: std::sync::Arc::new(AtomicU64::new(1)),
@@ -631,15 +771,12 @@ mod inner {
             }
 
             // Launch worker (returns quickly for async graph replay path)
-            let actual_batch = self
-                .worker
-                .execute_launch(&metadata)
-                .map_err(|e| LLMError::GpuError(format!("worker launch failed: {e}")))?;
+            let tp_pending = self.tp_coordinator.execute_launch(&metadata)?;
 
             Ok(Some(StepPending {
                 scheduled_groups,
                 metadata,
-                actual_batch,
+                tp_pending,
             }))
         }
 
@@ -652,9 +789,8 @@ mod inner {
             };
 
             let worker_outputs = self
-                .worker
-                .execute_collect(pending.actual_batch, &pending.metadata)
-                .map_err(|e| LLMError::GpuError(format!("worker collect failed: {e}")))?;
+                .tp_coordinator
+                .execute_collect(&pending.tp_pending, &pending.metadata)?;
 
             // Prefix caching
             if let Some(ref mut pc) = self.prefix_cache {
@@ -746,9 +882,8 @@ mod inner {
             }
 
             let worker_outputs = self
-                .worker
-                .execute_with_overlap(&metadata, during_gpu)
-                .map_err(|e| LLMError::GpuError(format!("worker execute failed: {e}")))?;
+                .tp_coordinator
+                .execute_with_overlap(&metadata, during_gpu)?;
 
             // Prefix caching
             if let Some(ref mut pc) = self.prefix_cache {
@@ -803,10 +938,7 @@ mod inner {
                 }
             }
 
-            let worker_outputs = self
-                .worker
-                .execute(&metadata)
-                .map_err(|e| LLMError::GpuError(format!("worker execute failed: {e}")))?;
+            let worker_outputs = self.tp_coordinator.execute(&metadata)?;
             trace!(
                 num_outputs = worker_outputs.outputs.len(),
                 "gpu_engine: worker.execute returned"

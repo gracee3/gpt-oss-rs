@@ -11,6 +11,8 @@ pub mod bridge;
 pub mod input;
 pub mod layers;
 pub mod runner;
+#[cfg(feature = "cuda")]
+pub mod tensor_parallel;
 
 // GPU forward-pass modules (CUDA-only)
 #[cfg(feature = "cuda")]
