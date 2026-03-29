@@ -32,7 +32,7 @@ Run any narrower checks that match your change:
 
 - `cargo test -p <crate>`
 - `cargo bench -p gpt-oss-bench --bench sampling_bench`
-- `bash scripts/smoke_test.sh`
+- `cargo build --release -p gpt-oss-server`
 
 For CUDA-specific changes, also run the relevant `--features cuda` build or test commands on hardware if you have access to it.
 
