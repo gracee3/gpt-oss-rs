@@ -376,6 +376,16 @@ mod tests {
             .diffs
             .iter()
             .any(|diff| diff.contains("logits differ")));
+        assert!(report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.contains("event attention differs")));
+        assert!(!report
+            .comparison
+            .diffs
+            .iter()
+            .any(|diff| diff.starts_with("trace mismatch:")));
     }
 
     #[test]

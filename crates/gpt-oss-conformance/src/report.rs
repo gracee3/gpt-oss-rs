@@ -103,14 +103,40 @@ fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> 
         ));
     }
 
-    if diffs.is_empty() {
-        diffs.push(format!(
-            "trace mismatch: expected_label={} observed_label={} expected_frames={} observed_frames={}",
-            expected.label,
-            observed.label,
-            expected.frames.len(),
-            observed.frames.len()
-        ));
+    for (frame_index, (expected_frame, observed_frame)) in expected
+        .frames
+        .iter()
+        .zip(observed.frames.iter())
+        .enumerate()
+    {
+        if expected_frame.label != observed_frame.label {
+            diffs.push(format!(
+                "trace frame {frame_index} label differs: expected={} observed={}",
+                expected_frame.label, observed_frame.label
+            ));
+        }
+
+        let expected_events = expected_frame
+            .events
+            .iter()
+            .map(|event| (event.stage.as_str(), event.payload.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let observed_events = observed_frame
+            .events
+            .iter()
+            .map(|event| (event.stage.as_str(), event.payload.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        for stage in expected_events.keys().chain(observed_events.keys()) {
+            let expected_payload = expected_events.get(stage).copied().unwrap_or("missing");
+            let observed_payload = observed_events.get(stage).copied().unwrap_or("missing");
+            if expected_payload != observed_payload {
+                diffs.push(format!(
+                    "trace frame {frame_index} event {stage} differs: expected={} observed={}",
+                    expected_payload, observed_payload
+                ));
+            }
+        }
     }
 
     diffs
