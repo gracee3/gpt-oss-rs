@@ -980,7 +980,9 @@ mod inner {
                     sum += exp;
                 }
                 let inv = if sum > 0.0 { 1.0 / sum } else { 0.0 };
-                probs.extend(exp_row.into_iter().map(|value| value * inv));
+                probs.extend(exp_row.into_iter().map(|value| {
+                    Self::round_f32_to_bf16_value(value * inv)
+                }));
                 scores.extend(row);
             }
 
