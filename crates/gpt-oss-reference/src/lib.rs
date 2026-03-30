@@ -91,7 +91,10 @@ mod tests {
             .expect("multi-block forward");
 
         assert_eq!(output.trace.cache.blocks.len(), 2);
-        assert_eq!(output.trace.layers[0].attention.visible_tokens, vec![0, 1, 2]);
+        assert_eq!(
+            output.trace.layers[0].attention.visible_tokens,
+            vec![0, 1, 2]
+        );
         assert_eq!(output.logits, vec![0.0; 4]);
     }
 
@@ -126,7 +129,10 @@ mod tests {
         assert_eq!(output.logits, vec![0.0; 4]);
         assert_eq!(output.trace.moe.mode, MoeMode::SparseTopK);
         assert_eq!(output.trace.moe.experts_invoked, 3);
-        assert_eq!(output.trace.moe.selected_experts, vec![vec![0], vec![0], vec![0]]);
+        assert_eq!(
+            output.trace.moe.selected_experts,
+            vec![vec![0], vec![0], vec![0]]
+        );
     }
 
     #[test]
@@ -211,7 +217,10 @@ mod tests {
 
         assert_eq!(output.logits, vec![0.0; 4]);
         assert_eq!(output.trace.moe.mode, MoeMode::SparseTopK);
-        assert_eq!(output.trace.moe.selected_experts, vec![vec![2, 1], vec![2, 1], vec![2, 1]]);
+        assert_eq!(
+            output.trace.moe.selected_experts,
+            vec![vec![2, 1], vec![2, 1], vec![2, 1]]
+        );
     }
 
     #[test]
@@ -242,7 +251,10 @@ mod tests {
             })
             .expect_err("expected layer type validation failure");
 
-        assert!(matches!(err, ReferenceError::LayerTypesLengthMismatch { .. }));
+        assert!(matches!(
+            err,
+            ReferenceError::LayerTypesLengthMismatch { .. }
+        ));
     }
 
     #[test]
@@ -278,7 +290,10 @@ mod tests {
         assert_eq!(output.trace.layers[0].position_ids, vec![4]);
         assert_eq!(output.trace.cache.blocks.len(), 1);
         assert_eq!(output.trace.cache_layout.seq_start_pos, 4);
-        assert_eq!(output.trace.layers[1].attention.visible_tokens, vec![0, 3, 4]);
+        assert_eq!(
+            output.trace.layers[1].attention.visible_tokens,
+            vec![0, 3, 4]
+        );
     }
 
     #[test]
@@ -316,9 +331,18 @@ mod tests {
             CacheVisibility::Sliding { window_tokens: 128 }
         );
         assert_eq!(output.trace.layers[0].position_ids, vec![128]);
-        assert_eq!(output.trace.layers[0].attention.mode, AttentionMode::Sliding);
+        assert_eq!(
+            output.trace.layers[0].attention.mode,
+            AttentionMode::Sliding
+        );
         assert_eq!(output.trace.layers[0].attention.attended_tokens, 128);
-        assert_eq!(output.trace.layers[0].attention.visible_tokens.first(), Some(&1));
-        assert_eq!(output.trace.layers[0].attention.visible_tokens.last(), Some(&128));
+        assert_eq!(
+            output.trace.layers[0].attention.visible_tokens.first(),
+            Some(&1)
+        );
+        assert_eq!(
+            output.trace.layers[0].attention.visible_tokens.last(),
+            Some(&128)
+        );
     }
 }

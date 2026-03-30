@@ -8,7 +8,10 @@ pub use case::{
     PlannedReferenceBackend, PlannedReferenceBackendConfig, SampledLogitsBackend,
 };
 pub use harness::{ConformanceHarness, HarnessConfig};
-pub use report::{compare_prefill_decode_continuity, ComparisonReport, ContinuityReport, ParityOutcome, RunComparison};
+pub use report::{
+    compare_prefill_decode_continuity, ComparisonReport, ContinuityReport, ParityOutcome,
+    RunComparison,
+};
 pub use trace::{TraceEvent, TraceFrame, TraceSummary};
 
 #[cfg(test)]
@@ -330,10 +333,7 @@ mod tests {
                         vec![0.0, 0.0, 0.5, 0.5],
                         vec![0.5, 0.0, 0.0, 0.5],
                     ],
-                    expert_output_rows: vec![
-                        vec![1.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, 0.0, 0.0],
-                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]],
                     router_bias: vec![0.0, 0.0],
                     moe_layer_indices: vec![0],
                 },
@@ -593,10 +593,7 @@ mod tests {
                         vec![0.0, 0.0, 0.5, 0.5],
                         vec![0.5, 0.0, 0.0, 0.5],
                     ],
-                    expert_output_rows: vec![
-                        vec![1.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, 0.0, 0.0],
-                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]],
                     router_bias: vec![0.0, 0.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -782,10 +779,7 @@ mod tests {
                         vec![0.0, 0.0, 0.5, 0.5],
                         vec![0.5, 0.0, 0.0, 0.5],
                     ],
-                    expert_output_rows: vec![
-                        vec![1.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, 0.0, 0.0],
-                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]],
                     router_bias: vec![0.0, 0.0],
                     moe_layer_indices: vec![1],
                 },
@@ -835,10 +829,7 @@ mod tests {
                         vec![0.0, 0.0, 0.5, 0.5],
                         vec![0.5, 0.0, 0.0, 0.5],
                     ],
-                    expert_output_rows: vec![
-                        vec![1.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, 0.0, 0.0],
-                    ],
+                    expert_output_rows: vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]],
                     router_bias: vec![0.0, 0.0],
                     moe_layer_indices: vec![0, 1],
                 },
@@ -951,7 +942,12 @@ mod tests {
         num_local_experts: usize,
         num_experts_per_tok: usize,
     ) -> ModelRunnerConfig {
-        runner_config_with_layers(1, vec!["full_attention".into()], num_local_experts, num_experts_per_tok)
+        runner_config_with_layers(
+            1,
+            vec!["full_attention".into()],
+            num_local_experts,
+            num_experts_per_tok,
+        )
     }
 
     fn runner_config_with_layers(
@@ -1054,10 +1050,26 @@ mod tests {
                     &[1.0; 4],
                     &[4],
                 ),
-                tensor(&format!("{prefix}.self_attn.q_proj.weight"), &[0.0; 16], &[4, 4]),
-                tensor(&format!("{prefix}.self_attn.k_proj.weight"), &[0.0; 16], &[4, 4]),
-                tensor(&format!("{prefix}.self_attn.v_proj.weight"), &[0.0; 16], &[4, 4]),
-                tensor(&format!("{prefix}.self_attn.o_proj.weight"), &[0.0; 16], &[4, 4]),
+                tensor(
+                    &format!("{prefix}.self_attn.q_proj.weight"),
+                    &[0.0; 16],
+                    &[4, 4],
+                ),
+                tensor(
+                    &format!("{prefix}.self_attn.k_proj.weight"),
+                    &[0.0; 16],
+                    &[4, 4],
+                ),
+                tensor(
+                    &format!("{prefix}.self_attn.v_proj.weight"),
+                    &[0.0; 16],
+                    &[4, 4],
+                ),
+                tensor(
+                    &format!("{prefix}.self_attn.o_proj.weight"),
+                    &[0.0; 16],
+                    &[4, 4],
+                ),
                 tensor(&format!("{prefix}.self_attn.sinks"), &[0.0; 2], &[2]),
             ]);
 
@@ -1162,14 +1174,8 @@ mod tests {
             tensor(
                 "model.embed_tokens.weight",
                 &[
-                    0.0, 0.0, 0.0, 0.0,
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    0.0, 0.0, 0.0, 1.0,
-                    0.5, 0.5, 0.0, 0.0,
-                    0.0, 0.5, 0.5, 0.0,
-                    0.0, 0.0, 0.5, 0.5,
+                    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5,
                 ],
                 &[8, 4],
             )
@@ -1180,14 +1186,8 @@ mod tests {
             tensor(
                 "lm_head.weight",
                 &[
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    0.0, 0.0, 0.0, 1.0,
-                    0.5, 0.5, 0.0, 0.0,
-                    0.0, 0.5, 0.5, 0.0,
-                    0.0, 0.0, 0.5, 0.5,
-                    0.5, 0.0, 0.0, 0.5,
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5,
                 ],
                 &[8, 4],
             )
@@ -1217,14 +1217,8 @@ mod tests {
             tensor(
                 "model.embed_tokens.weight",
                 &[
-                    0.0, 0.0, 0.0, 0.0,
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    0.0, 0.0, 0.0, 1.0,
-                    0.5, 0.5, 0.0, 0.0,
-                    0.0, 0.5, 0.5, 0.0,
-                    0.0, 0.0, 0.5, 0.5,
+                    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5,
                 ],
                 &[8, 4],
             )
@@ -1235,14 +1229,8 @@ mod tests {
             tensor(
                 "lm_head.weight",
                 &[
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    0.0, 0.0, 0.0, 1.0,
-                    0.5, 0.5, 0.0, 0.0,
-                    0.0, 0.5, 0.5, 0.0,
-                    0.0, 0.0, 0.5, 0.5,
-                    0.5, 0.0, 0.0, 0.5,
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5,
                 ],
                 &[8, 4],
             )
@@ -1250,10 +1238,9 @@ mod tests {
         );
         for (layer_index, bias) in layer_expert_biases {
             let name = format!("model.layers.{layer_index}.mlp.experts.down_proj_bias");
-            weights.tensors.insert(
-                name.clone(),
-                tensor(&name, bias, &[num_local_experts, 4]).1,
-            );
+            weights
+                .tensors
+                .insert(name.clone(), tensor(&name, bias, &[num_local_experts, 4]).1);
         }
         weights
     }
@@ -1349,9 +1336,10 @@ mod tests {
             .iter()
             .any(|event| event.stage == "seq_start_pos" && event.payload == "4"));
         assert!(report.expected.trace.frames.iter().skip(1).any(|frame| {
-            frame.events.iter().any(|event| {
-                event.stage == "layer" && event.payload.contains("positions=[4]")
-            })
+            frame
+                .events
+                .iter()
+                .any(|event| event.stage == "layer" && event.payload.contains("positions=[4]"))
         }));
     }
 
@@ -1698,11 +1686,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![0]);
         let reference = full_attention_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1765,11 +1750,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![0]);
         let reference = full_attention_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1832,11 +1814,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![0]);
         let reference = nonzero_single_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1859,11 +1838,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![0]);
         let reference = nonzero_single_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1878,7 +1854,12 @@ mod tests {
         let case = ConformanceCase::decode("two-layer-second-moe-nonzero-decode", 2, vec![3]);
         let runner = Arc::new(
             ModelRunner::new(
-                runner_weights_with_layer_expert_down_proj_bias(2, 1, &[1], &[(1, &[1.0, 0.0, 0.0, 0.0])]),
+                runner_weights_with_layer_expert_down_proj_bias(
+                    2,
+                    1,
+                    &[1],
+                    &[(1, &[1.0, 0.0, 0.0, 0.0])],
+                ),
                 runner_config_with_layers(
                     2,
                     vec!["full_attention".into(), "full_attention".into()],
@@ -1891,11 +1872,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![1]);
         let reference = nonzero_two_layer_full_attention_moe_on_second_backend();
         let harness = ConformanceHarness::default();
 
@@ -1918,11 +1896,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0]);
         let reference = nonzero_two_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1945,11 +1920,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0]);
         let reference = nonzero_two_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -1985,11 +1957,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0, 1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0, 1]);
         let reference = nonzero_two_layer_full_attention_moe_both_backend();
         let harness = ConformanceHarness::default();
 
@@ -2025,11 +1994,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0, 1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0, 1]);
         let reference = nonzero_two_layer_full_attention_moe_both_backend();
         let harness = ConformanceHarness::default();
 
@@ -2066,11 +2032,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![1]);
         let reference = nonzero_three_layer_full_attention_middle_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2107,11 +2070,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![1]);
         let reference = nonzero_three_layer_full_attention_middle_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2123,8 +2083,10 @@ mod tests {
 
     #[test]
     fn nonzero_two_layer_both_layers_moe_multiblock_prefill_parity_matches() {
-        let case =
-            ConformanceCase::prefill("two-layer-both-moe-multiblock-nonzero-prefill", vec![1, 2, 3]);
+        let case = ConformanceCase::prefill(
+            "two-layer-both-moe-multiblock-nonzero-prefill",
+            vec![1, 2, 3],
+        );
         let runner = Arc::new(
             ModelRunner::new(
                 runner_weights_with_layer_expert_down_proj_bias(
@@ -2162,21 +2124,20 @@ mod tests {
 
     #[test]
     fn nonzero_biased_three_expert_top2_moe_decode_parity_matches() {
-        let case = ConformanceCase::decode("three-expert-top2-moe-nonzero-biased-decode", 2, vec![3]);
+        let case =
+            ConformanceCase::decode("three-expert-top2-moe-nonzero-biased-decode", 2, vec![3]);
         let mut weights = runner_weights_with_layer_expert_down_proj_bias(
             1,
             3,
             &[0],
-            &[(0, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+            &[(
+                0,
+                &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            )],
         );
         weights.tensors.insert(
             "model.layers.0.mlp.router.bias".to_string(),
-            tensor(
-                "model.layers.0.mlp.router.bias",
-                &[0.0, 1.0, 2.0],
-                &[3],
-            )
-            .1,
+            tensor("model.layers.0.mlp.router.bias", &[0.0, 1.0, 2.0], &[3]).1,
         );
         let runner = Arc::new(
             ModelRunner::new(
@@ -2202,21 +2163,20 @@ mod tests {
 
     #[test]
     fn nonzero_biased_three_expert_top2_moe_prefill_parity_matches() {
-        let case = ConformanceCase::prefill("three-expert-top2-moe-nonzero-biased-prefill", vec![1, 2]);
+        let case =
+            ConformanceCase::prefill("three-expert-top2-moe-nonzero-biased-prefill", vec![1, 2]);
         let mut weights = runner_weights_with_layer_expert_down_proj_bias(
             1,
             3,
             &[0],
-            &[(0, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+            &[(
+                0,
+                &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            )],
         );
         weights.tensors.insert(
             "model.layers.0.mlp.router.bias".to_string(),
-            tensor(
-                "model.layers.0.mlp.router.bias",
-                &[0.0, 1.0, 2.0],
-                &[3],
-            )
-            .1,
+            tensor("model.layers.0.mlp.router.bias", &[0.0, 1.0, 2.0], &[3]).1,
         );
         let runner = Arc::new(
             ModelRunner::new(
@@ -2276,11 +2236,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0]);
         let reference = full_attention_two_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2303,11 +2260,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0]);
         let reference = full_attention_two_expert_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2330,11 +2284,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            3,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(3, 2, vec![0]);
         let reference = full_attention_three_expert_top2_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2357,11 +2308,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            3,
-            2,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(3, 2, vec![0]);
         let reference = full_attention_three_expert_top2_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2384,11 +2332,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            3,
-            4,
-            vec![0],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(3, 4, vec![0]);
         let reference = full_attention_three_expert_top4_requested_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2416,11 +2361,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![1]);
         let reference = two_layer_full_attention_moe_on_second_backend();
         let harness = ConformanceHarness::default();
 
@@ -2448,11 +2390,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            1,
-            1,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(1, 1, vec![1]);
         let reference = two_layer_full_attention_moe_on_second_backend();
         let harness = ConformanceHarness::default();
 
@@ -2480,11 +2419,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0, 1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0, 1]);
         let reference = two_layer_full_attention_moe_both_backend();
         let harness = ConformanceHarness::default();
 
@@ -2512,11 +2448,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![0, 1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![0, 1]);
         let reference = two_layer_full_attention_moe_both_backend();
         let harness = ConformanceHarness::default();
 
@@ -2628,8 +2561,10 @@ mod tests {
 
     #[test]
     fn biased_two_layer_full_attention_both_layers_moe_multiblock_prefill_parity_matches() {
-        let case =
-            ConformanceCase::prefill("two-layer-both-moe-biased-multiblock-prefill", vec![1, 2, 3]);
+        let case = ConformanceCase::prefill(
+            "two-layer-both-moe-biased-multiblock-prefill",
+            vec![1, 2, 3],
+        );
         let runner = Arc::new(
             ModelRunner::new(
                 runner_weights_with_layers_and_router_bias(
@@ -2685,11 +2620,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![1]);
         let reference = three_layer_full_attention_middle_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2721,11 +2653,8 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            2,
-            2,
-            vec![1],
-        );
+        let observed =
+            ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(2, 2, vec![1]);
         let reference = three_layer_full_attention_middle_moe_backend();
         let harness = ConformanceHarness::default();
 
@@ -2748,12 +2677,9 @@ mod tests {
             )
             .expect("test model runner"),
         );
-        let observed = ModelRunnerGreedyBackend::new("model-runner", runner).with_traced_moe(
-            3,
-            2,
-            vec![0],
-        )
-        .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
+        let observed = ModelRunnerGreedyBackend::new("model-runner", runner)
+            .with_traced_moe(3, 2, vec![0])
+            .with_traced_router_bias(vec![0.0, 1.0, 2.0]);
         let reference = biased_full_attention_three_expert_top2_moe_backend();
         let harness = ConformanceHarness::default();
 

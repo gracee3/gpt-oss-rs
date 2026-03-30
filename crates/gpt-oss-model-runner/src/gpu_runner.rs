@@ -54,6 +54,8 @@ mod cuda_impl {
 
     use super::ForwardOutput;
 
+    const NONZERO_SINK_EPSILON: f32 = 1e-6;
+
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
     struct ReusableGpuBuf {
@@ -161,6 +163,8 @@ mod cuda_impl {
         graph_max_blocks: usize,
         /// Optional host-side GPT-OSS routed-expert weights, one slot per layer.
         gpt_oss_moe_layers: Vec<Option<GptOssMoeLayerWeights>>,
+        /// Per-layer sink gate state computed once from the original sink tensor values.
+        sink_gate_enabled: Vec<bool>,
         /// Fused QKV weights per layer: [q_dim + kv_dim + kv_dim, hidden] f16.
         /// One GEMM instead of 3 per layer. Populated by fuse_weights().
         fused_qkv_weights: Vec<CudaSlice<f16>>,
@@ -184,6 +188,21 @@ mod cuda_impl {
     }
 
     impl GpuModelRunner {
+        fn layer_uses_sinks(
+            stream: &Arc<CudaStream>,
+            weights: &GpuModelWeights,
+            layer_idx: usize,
+        ) -> Result<bool> {
+            let Some(sinks) = weights.get(&format!("model.layers.{layer_idx}.self_attn.sinks"))
+            else {
+                return Ok(false);
+            };
+            let host = stream.clone_dtoh(sinks).map_err(|e| {
+                LLMError::GpuError(format!("sink gate dtoh failed for layer {layer_idx}: {e}"))
+            })?;
+            Ok(host.iter().any(|value| value.abs() > NONZERO_SINK_EPSILON))
+        }
+
         pub fn new(
             weights: GpuModelWeights,
             cache: CudaCacheEngine,
@@ -224,6 +243,7 @@ mod cuda_impl {
                 .clone();
 
             let mut layers = Vec::with_capacity(config.num_layers);
+            let mut sink_gate_enabled = Vec::with_capacity(config.num_layers);
             for i in 0..config.num_layers {
                 let sliding_window = matches!(
                     config.layer_types.get(i).map(|ty| ty.as_str()),
@@ -246,6 +266,7 @@ mod cuda_impl {
                     Arc::clone(&stream),
                     Arc::clone(&loader),
                 ));
+                sink_gate_enabled.push(Self::layer_uses_sinks(&stream, &weights, i)?);
             }
 
             // Precompute RoPE cos/sin tables
@@ -309,6 +330,7 @@ mod cuda_impl {
                 cpu_scratch: RefCell::new(Vec::with_capacity(4096)),
                 graph_max_blocks,
                 gpt_oss_moe_layers,
+                sink_gate_enabled,
                 fused_qkv_weights: Vec::new(),
                 fused_gate_up_weights: Vec::new(),
                 fused_layernorm_f16: Vec::new(),
@@ -1941,6 +1963,7 @@ mod cuda_impl {
                 sinks: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.sinks")),
+                use_sinks: self.sink_gate_enabled.get(i).copied().unwrap_or(false),
                 post_attention_layernorm: g(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
@@ -2353,6 +2376,7 @@ mod cuda_impl {
                 sinks: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.sinks")),
+                use_sinks: self.sink_gate_enabled.get(i).copied().unwrap_or(false),
                 post_attention_layernorm: g_f32(&format!(
                     "model.layers.{i}.post_attention_layernorm.weight"
                 ))?,
@@ -2498,8 +2522,7 @@ mod cuda_impl {
                 }
             }
 
-            let build_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/debug/build");
+            let build_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/build");
             let entries = std::fs::read_dir(&build_root).ok()?;
             for entry in entries.flatten() {
                 let path = entry.path().join("out/ptx");
@@ -2716,23 +2739,19 @@ mod cuda_impl {
             let prefill_tokens = vec![0u32; 128];
             let prefill_positions = (0..128u32).collect::<Vec<_>>();
             let prefill_meta = prefill_metadata();
-            let prefill_output = runner.forward(
-                &prefill_tokens,
-                &prefill_positions,
-                &prefill_meta,
-                true,
+            let prefill_output =
+                runner.forward(&prefill_tokens, &prefill_positions, &prefill_meta, true);
+            assert!(
+                prefill_output.is_ok(),
+                "prefill failed: {:?}",
+                prefill_output
             );
-            assert!(prefill_output.is_ok(), "prefill failed: {:?}", prefill_output);
 
             let decode_tokens = vec![0u32];
             let decode_positions = vec![128u32];
             let decode_meta = decode_metadata();
-            let decode_output = runner.forward(
-                &decode_tokens,
-                &decode_positions,
-                &decode_meta,
-                false,
-            );
+            let decode_output =
+                runner.forward(&decode_tokens, &decode_positions, &decode_meta, false);
             let decode_logits = decode_output.expect("decode should succeed");
             assert_eq!(decode_logits.len(), 4);
             assert!(decode_logits.iter().all(|value| value.is_finite()));

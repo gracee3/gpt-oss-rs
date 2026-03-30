@@ -59,9 +59,9 @@ fn is_gpt_oss_sink_weight(name: &str) -> bool {
 fn has_nonzero_gpt_oss_sink_tensor<'a>(
     tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
 ) -> bool {
-    tensors
-        .into_iter()
-        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
+    tensors.into_iter().any(|(name, values)| {
+        is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0)
+    })
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1316,10 +1316,7 @@ impl GpuWorker {
                 graph_padded_batch_size,
                 self.config.dtype,
             )
-            .with_attention_config(
-                self.config.layer_types.clone(),
-                self.config.sliding_window,
-            ),
+            .with_attention_config(self.config.layer_types.clone(), self.config.sliding_window),
         )
         .map_err(|e| LLMError::ConfigError(e.to_string()))?;
         trace!(
@@ -2411,7 +2408,9 @@ mod tests {
         ];
 
         assert!(!has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2423,7 +2422,9 @@ mod tests {
         ];
 
         assert!(has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2663,13 +2664,8 @@ mod tests {
             return;
         }
 
-        let prefill_group = build_group(
-            1,
-            true,
-            vec![0; 128],
-            vec![],
-            (0..8).map(BlockId).collect(),
-        );
+        let prefill_group =
+            build_group(1, true, vec![0; 128], vec![], (0..8).map(BlockId).collect());
         let prefill_input =
             input::prepare_input(&[prefill_group], worker.config.block_size).unwrap();
         assert!(prefill_input.is_prefill);
@@ -2678,7 +2674,11 @@ mod tests {
         assert_eq!(prefill_input.attention_metadata.query_lens, vec![128]);
 
         let prefill_output = worker.raw_gpu_forward_ex(&prefill_input, false);
-        assert!(prefill_output.is_ok(), "prefill failed: {:?}", prefill_output);
+        assert!(
+            prefill_output.is_ok(),
+            "prefill failed: {:?}",
+            prefill_output
+        );
 
         let decode_group = build_group(
             2,
@@ -2687,8 +2687,7 @@ mod tests {
             vec![0],
             (0..9).map(BlockId).collect(),
         );
-        let decode_input =
-            input::prepare_input(&[decode_group], worker.config.block_size).unwrap();
+        let decode_input = input::prepare_input(&[decode_group], worker.config.block_size).unwrap();
         assert!(!decode_input.is_prefill);
         assert_eq!(decode_input.token_ids, vec![0]);
         assert_eq!(decode_input.position_ids, vec![128]);

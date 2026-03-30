@@ -81,6 +81,7 @@ mod inner {
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
         // Optional sink logits (GPT-OSS)
         pub sinks: Option<&'a CudaSlice<f32>>,
+        pub use_sinks: bool,
         // Post-attention norm
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         // MLP weights
@@ -104,6 +105,7 @@ mod inner {
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
         pub sinks: Option<&'a CudaSlice<f32>>,
+        pub use_sinks: bool,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         pub gate_proj: Option<&'a CudaSlice<f16>>,
         pub up_proj: Option<&'a CudaSlice<f16>>,
@@ -963,7 +965,7 @@ mod inner {
             };
 
             // 6. Attention.
-            let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+            let use_sink_attention = weights.use_sinks || cfg.sliding_window.is_some();
             let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
             let attn_out = if input.is_prefill || use_sink_attention {
                 let cast_f16_f32 = self
@@ -994,7 +996,7 @@ mod inner {
                         input.max_context_len,
                         input.block_size,
                         sinks,
-                        weights.sinks.is_some(),
+                        weights.use_sinks,
                         cfg.sliding_window,
                     )?
                 } else {
@@ -1014,7 +1016,7 @@ mod inner {
                         input.max_context_len,
                         input.block_size,
                         sinks,
-                        weights.sinks.is_some(),
+                        weights.use_sinks,
                         cfg.sliding_window,
                     )?
                 };
@@ -1329,7 +1331,7 @@ mod inner {
                     input.max_context_len,
                     input.block_size,
                     sinks,
-                    weights.sinks.is_some(),
+                    weights.use_sinks,
                     cfg.sliding_window,
                 )?
             } else {
@@ -1351,7 +1353,7 @@ mod inner {
                     input.max_context_len,
                     input.block_size,
                     sinks,
-                    weights.sinks.is_some(),
+                    weights.use_sinks,
                     cfg.sliding_window,
                 )?
             };
@@ -2893,8 +2895,7 @@ mod inner {
                 }
             }
 
-            let build_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/debug/build");
+            let build_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/build");
             let entries = std::fs::read_dir(&build_root).ok()?;
             for entry in entries.flatten() {
                 let path = entry.path().join("out/ptx");
@@ -2907,43 +2908,50 @@ mod inner {
             None
         }
 
-        #[test]
-        fn sliding_decode_boundary_excludes_dropped_token_on_cuda() {
-            let Some(ptx_dir) = find_ptx_dir() else {
-                eprintln!("skipping: PTX directory not found");
-                return;
-            };
-
+        fn load_cuda() -> Option<(Arc<CudaStream>, KernelLoader)> {
+            let ptx_dir = find_ptx_dir()?;
             let context = match CudaContext::new(0) {
                 Ok(context) => context,
                 Err(err) => {
                     eprintln!("skipping: CUDA context unavailable: {err}");
-                    return;
+                    return None;
                 }
             };
             let stream = match context.new_stream() {
                 Ok(stream) => stream,
                 Err(err) => {
                     eprintln!("skipping: CUDA stream unavailable: {err}");
-                    return;
+                    return None;
                 }
             };
             let loader = match KernelLoader::new(context.clone(), stream.clone(), &ptx_dir) {
                 Ok(loader) => loader,
                 Err(err) => {
                     eprintln!("skipping: kernel loader unavailable: {err}");
-                    return;
+                    return None;
                 }
             };
+            Some((stream, loader))
+        }
 
+        fn build_sliding_decode_fixture(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            visible_value: f32,
+            dropped_value_dim0: f32,
+        ) -> (
+            CudaSlice<f16>,
+            CudaSlice<f16>,
+            CudaSlice<f32>,
+            CudaSlice<i32>,
+            CudaSlice<i32>,
+        ) {
             let num_prefill_tokens = 128usize;
             let num_decode_tokens = 1usize;
-            let num_seqs = 1usize;
-            let num_heads = 1usize;
             let num_kv_heads = 1usize;
             let head_dim = 64usize;
             let block_size = 16usize;
-            let num_blocks = 9usize; // 129 tokens span 9 blocks at block_size 16
+            let num_blocks = 9usize;
             let cache_len = num_blocks * block_size * num_kv_heads * head_dim;
 
             let key_cache = stream
@@ -2956,10 +2964,9 @@ mod inner {
             let prefill_k = stream
                 .clone_htod(&vec![1.0f32; num_prefill_tokens * num_kv_heads * head_dim])
                 .expect("upload prefill keys");
-            let mut prefill_v_host = vec![0.0f32; num_prefill_tokens * num_kv_heads * head_dim];
-            for dim in 0..head_dim {
-                prefill_v_host[dim] = 128.0;
-            }
+            let mut prefill_v_host =
+                vec![visible_value; num_prefill_tokens * num_kv_heads * head_dim];
+            prefill_v_host[0] = dropped_value_dim0;
             let prefill_v = stream
                 .clone_htod(&prefill_v_host)
                 .expect("upload prefill values");
@@ -2968,8 +2975,8 @@ mod inner {
                 .expect("upload prefill slots");
 
             GpuTransformerLayer::cache_write(
-                &stream,
-                &loader,
+                stream,
+                loader,
                 &prefill_k,
                 &prefill_v,
                 &key_cache,
@@ -2987,11 +2994,13 @@ mod inner {
             let decode_v = stream
                 .clone_htod(&vec![0.0f32; num_decode_tokens * num_kv_heads * head_dim])
                 .expect("upload decode values");
-            let decode_slots = stream.clone_htod(&vec![128i32]).expect("upload decode slot");
+            let decode_slots = stream
+                .clone_htod(&vec![128i32])
+                .expect("upload decode slot");
 
             GpuTransformerLayer::cache_write(
-                &stream,
-                &loader,
+                stream,
+                loader,
                 &decode_k,
                 &decode_v,
                 &key_cache,
@@ -3004,7 +3013,7 @@ mod inner {
             .expect("decode cache write");
 
             let query = stream
-                .clone_htod(&vec![1.0f32; num_decode_tokens * num_heads * head_dim])
+                .clone_htod(&vec![1.0f32; num_decode_tokens * num_kv_heads * head_dim])
                 .expect("upload decode query");
             let block_tables = stream
                 .clone_htod(&(0..num_blocks as i32).collect::<Vec<_>>())
@@ -3012,37 +3021,164 @@ mod inner {
             let context_lens = stream
                 .clone_htod(&vec![129i32])
                 .expect("upload context lens");
-            let sinks = stream.alloc_zeros::<f32>(1).expect("allocate sinks");
 
+            (key_cache, value_cache, query, block_tables, context_lens)
+        }
+
+        fn run_decode_row(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            key_cache: &CudaSlice<f16>,
+            value_cache: &CudaSlice<f16>,
+            query: &CudaSlice<f32>,
+            block_tables: &CudaSlice<i32>,
+            context_lens: &CudaSlice<i32>,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+        ) -> Vec<f32> {
             let output = GpuTransformerLayer::decode_attention(
-                &stream,
-                &loader,
+                stream,
+                loader,
                 &query.as_view(),
-                &key_cache,
-                &value_cache,
+                key_cache,
+                value_cache,
                 &block_tables.as_view(),
                 &context_lens.as_view(),
-                num_decode_tokens,
-                num_seqs,
-                num_heads,
-                num_kv_heads,
-                head_dim,
+                1,
+                1,
+                1,
+                1,
+                64,
                 129,
-                block_size,
-                &sinks,
-                false,
+                16,
+                sinks,
+                use_sinks,
                 Some(128),
             )
             .expect("decode attention");
 
             stream.synchronize().expect("sync decode attention");
-            let host_output = stream.clone_dtoh(&output).expect("download output");
+            stream.clone_dtoh(&output).expect("download output")
+        }
 
-            assert_eq!(host_output.len(), head_dim);
+        #[test]
+        fn sliding_decode_boundary_excludes_dropped_token_on_cuda() {
+            let Some((stream, loader)) = load_cuda() else {
+                return;
+            };
+            let sinks = stream.alloc_zeros::<f32>(1).expect("allocate sinks");
+            let (key_cache, value_cache, query, block_tables, context_lens) =
+                build_sliding_decode_fixture(&stream, &loader, 0.0, 128.0);
+            let host_output = run_decode_row(
+                &stream,
+                &loader,
+                &key_cache,
+                &value_cache,
+                &query,
+                &block_tables,
+                &context_lens,
+                &sinks,
+                false,
+            );
+
+            assert_eq!(host_output.len(), 64);
             assert!(
                 host_output[0].abs() < 0.1,
                 "expected token 0 to be excluded at the 128->129 sliding boundary, got {}",
                 host_output[0]
+            );
+        }
+
+        #[test]
+        fn zero_sink_tensor_matches_no_sink_baseline_exactly_on_sliding_decode_cuda() {
+            let Some((stream, loader)) = load_cuda() else {
+                return;
+            };
+
+            let (key_cache, value_cache, query, block_tables, context_lens) =
+                build_sliding_decode_fixture(&stream, &loader, 1.0, 17.0);
+            let no_sink = stream.alloc_zeros::<f32>(1).expect("allocate dummy sinks");
+            let zero_sink = stream.alloc_zeros::<f32>(1).expect("allocate zero sinks");
+
+            let baseline = run_decode_row(
+                &stream,
+                &loader,
+                &key_cache,
+                &value_cache,
+                &query,
+                &block_tables,
+                &context_lens,
+                &no_sink,
+                false,
+            );
+            let zero_sink_row = run_decode_row(
+                &stream,
+                &loader,
+                &key_cache,
+                &value_cache,
+                &query,
+                &block_tables,
+                &context_lens,
+                &zero_sink,
+                false,
+            );
+
+            assert_eq!(baseline, zero_sink_row);
+        }
+
+        #[test]
+        fn nonzero_sink_scales_same_shape_decode_row_by_expected_factor_on_cuda() {
+            let Some((stream, loader)) = load_cuda() else {
+                return;
+            };
+
+            let (key_cache, value_cache, query, block_tables, context_lens) =
+                build_sliding_decode_fixture(&stream, &loader, 1.0, 1.0);
+            let no_sink = stream.alloc_zeros::<f32>(1).expect("allocate dummy sinks");
+            let nonzero_sink = stream
+                .clone_htod(&vec![8.0f32])
+                .expect("upload nonzero sink");
+
+            let baseline = run_decode_row(
+                &stream,
+                &loader,
+                &key_cache,
+                &value_cache,
+                &query,
+                &block_tables,
+                &context_lens,
+                &no_sink,
+                false,
+            );
+            let with_sink = run_decode_row(
+                &stream,
+                &loader,
+                &key_cache,
+                &value_cache,
+                &query,
+                &block_tables,
+                &context_lens,
+                &nonzero_sink,
+                true,
+            );
+
+            let expected_baseline = 127.0f32 / 128.0f32;
+            let expected = 127.0f32 / 129.0f32;
+            for (idx, value) in baseline.iter().enumerate() {
+                assert!(
+                    (value - expected_baseline).abs() < 5e-4,
+                    "baseline row dim {idx} drifted from the no-sink expectation: {value}"
+                );
+            }
+            for (idx, value) in with_sink.iter().enumerate() {
+                assert!(
+                    (value - expected).abs() < 5e-4,
+                    "nonzero sink row dim {idx} expected ~{expected}, got {value}"
+                );
+            }
+            assert!(
+                with_sink[0] < baseline[0],
+                "nonzero sink should renormalize the row downward on the same shape"
             );
         }
     }

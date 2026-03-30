@@ -11,17 +11,13 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
-use crate::protocol_stream::{
-    visible_text_from_protocol_messages, StreamedChatChoiceState,
-};
+use crate::protocol_stream::{visible_text_from_protocol_messages, StreamedChatChoiceState};
 use crate::routes::tools::ToolChoice;
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatCompletionRequest;
 use crate::types::response::{ChatChoice, ChatCompletionResponse, Usage};
-use crate::types::streaming::{
-    format_sse_data, ChatCompletionStreamChunk, SSE_DONE,
-};
+use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
 
 /// POST /v1/chat/completions -- chat completion (streaming or non-streaming).
 pub async fn create_chat_completion(
@@ -250,8 +246,8 @@ pub async fn create_chat_completion(
                     let parsed = protocol
                         .parse_completion_tokens(&co.token_ids)
                         .unwrap_or_default();
-                    let content =
-                        visible_text_from_protocol_messages(&parsed).unwrap_or_else(|| co.text.clone());
+                    let content = visible_text_from_protocol_messages(&parsed)
+                        .unwrap_or_else(|| co.text.clone());
                     ChatChoice {
                         message: crate::types::request::ChatMessage {
                             role: "assistant".to_string(),
