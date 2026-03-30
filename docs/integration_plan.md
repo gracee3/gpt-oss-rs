@@ -134,3 +134,145 @@
   - running against stock `/data/models/openai/gpt-oss-20b` fails at trusted admission with:
     - `config error: trusted GPT-OSS mode rejects attention sinks until runtime support and parity are proven: model.layers.6.self_attn.sinks`
   - so the current branch is probe-ready at the code level, but still needs a restricted/admissible model view (or equivalent narrow model-view preparation step) before future semantic cherry-picks can be safely validated from `main`
+
+## Restricted Model View Enablement
+
+### Step 5
+- Action: added a tiny local restricted-model-view generator for probe use only
+- Files/commits added:
+  - `crates/gpt-oss-bench/tools/create_restricted_probe_model_view.py`
+- Result:
+  - generator now creates a derived model directory that:
+    - symlinks the real checkpoint/tokenizer assets
+    - rewrites `config.json` to full-attention-only with sliding disabled
+    - adds `zzzz-sinks-override.safetensors` so all `self_attn.sinks` tensors load as zeros
+- Remaining blocker: none at the model-view preparation stage
+
+### Step 6
+- Action: generated a restricted probe model view and reran the trace on GPU1
+- Files/commits added:
+  - generated local model view (not committed): `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+  - generated trace artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-cuda-prefill-trace.integration.json`
+- Result:
+  - `restricted_prefill_trace` now runs end-to-end on GPU1 against the restricted model view
+  - it progresses through:
+    - trusted admission
+    - f32 + f16 weight load
+    - KV cache initialization
+    - prefill execution
+    - trace export
+- Remaining blocker:
+  - probe enablement itself is no longer blocked
+  - next safe integration step is still separate: bring over only the smallest oracle-side comparison helper needed for measured semantic cherry-picks
+
+## Oracle Comparison Enablement
+
+### Step 7
+- Action: restored the smallest oracle-side comparison helper from `gpt-oss/full-attention-next-case`
+- Files/commits added:
+  - `crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py`
+- Result:
+  - helper now:
+    - reads the integration-branch restricted prefill trace artifact
+    - uses the restricted model view for config
+    - uses the original monolithic GPT-OSS checkpoint for oracle weights
+    - tolerates the minimal integration trace shape without deeper attention subtraces
+- Remaining blocker:
+  - helper execution depends on an existing Python environment with `torch`
+  - current successful run used `/home/emmy/openai/worktrees/full-attention-next-case/.venv-oracle/bin/python`
+
+### Step 8
+- Action: ran the trace-vs-oracle comparison on the integration branch artifacts
+- Files/commits added:
+  - generated trace artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-cuda-prefill-trace.integration.json`
+  - generated oracle diff artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-prefill-trace-diff.integration.json`
+- Result:
+  - trace-vs-oracle comparison now runs successfully
+  - earliest divergence boundary reported by the minimal compare surface:
+    - `layer0.post_attn_residual`
+    - `max_abs_diff = 26.2617188`
+    - `mean_abs_diff = 0.31712404078090667`
+- Remaining blocker:
+  - safe semantic cherry-picks deeper than this still need additional selective trace/detail promotion if they must be measured below the coarse per-layer surfaces now available
+
+## Probe Validation Tiers
+
+### Objective
+Reduce rerun cost by running only what is informative for each edit.
+
+Use `scripts/probe_validation_tier.sh` for the smallest useful tiered check.
+
+### Tier 0 — Compile-only
+- Scope: tiny edits or infrastructure/CLI changes
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 0`
+- Mandatory steps:
+  - compile `gpt-oss-engine`
+  - compile `restricted_prefill_trace`
+
+### Tier 1 — Targeted local/stage check
+- Scope: narrow frontier edits where full oracle rerun is not yet justified
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 1`
+- Mandatory steps:
+  - Tier 0 compile
+  - trace capture on the fixed prompt/model (or reuse existing artifact)
+- Artifact reuse policy:
+  - safe to reuse when trace metadata matches:
+    - same `restricted_model_path`
+    - same `prompt`
+  - if either changes, or if trace-generation code changed, rerun trace
+  - if uncertain, disable reuse with `--no-reuse`
+- Oracle compare: skipped unless explicitly requested
+
+### Tier 2 — Full restricted trace + oracle compare
+- Scope: merge candidates, frontier moves, newly added trace depth
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 2`
+- Mandatory steps:
+  - Tier 1 checks
+  - oracle compare step
+
+### Minimal compare-only path
+- Command:
+  - `./scripts/probe_validation_tier.sh --compare-only`
+- Use when:
+  - trace artifact is known-good and unchanged
+  - only oracle-side helper logic changed
+
+### Mandatory full rerun rules
+- Always run Tier 2 for:
+  - semantic cherry-pick certification
+  - first time a frontier appears to move
+  - when trace surfaces are modified beyond prompt/model/pure formatting
+- Tier 2 can remain not required only for tooling-only edits that do not change runtime outputs
+
+## Probe Validation Log
+
+### Step 9
+- Action: added tiered validation helper
+- Files/commits added:
+  - `scripts/probe_validation_tier.sh`
+- Result:
+  - enabled smallest viable compile/trace/compare decision workflow
+  - added explicit artifact reuse checks keyed on model/prompt metadata
+  - added one-click compare-only rerun path
+- Remaining blocker:
+  - not a replacement for full semantic confidence; deeper trace surfaces still need separate selective promotions before broad frontier-level certainty
+
+## Fast Merge Log
+
+### `gpt-oss/full-attention-next-case` (selected probe-only extract)
+- Action: cherry-picked `f4ac565`
+- Validation: Tier 0 pass
+- Notes: added `crates/gpt-oss-bench/tools/restricted_oracle_prefill.py` (standalone prefill logit comparator helper)
+
+### `gpt-oss/full-attention-next-case` (selected parity-case enrichments)
+- Action: cherry-picked `ae9a5bd`, `adb0174`, `8d974de`, `7be518b`
+- Validation: Tier 0 pass
+- Notes: added `restricted_logit_diff` binary plus three conformance MoE parity tests/cases for biased routed middle-layer 3-layer coverage without changing runtime behavior
+
+### `gpt-oss/full-attention-next-case` (remaining high-risk/value commits)
+- Action: skipped (`e269212` and downstream semantic commits)
+- Validation: N/A (not merged)
+- Notes: kept for later integration; remaining commits are parity diagnostics plus runtime semantic edits (`e269212` and later) that would expand scope past probe-enablement
