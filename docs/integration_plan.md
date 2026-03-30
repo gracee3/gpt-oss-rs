@@ -259,3 +259,15 @@ Use `scripts/probe_validation_tier.sh` for the smallest useful tiered check.
   - added one-click compare-only rerun path
 - Remaining blocker:
   - not a replacement for full semantic confidence; deeper trace surfaces still need separate selective promotions before broad frontier-level certainty
+
+## Fast Merge Log
+
+### `gpt-oss/full-attention-next-case` (selected probe-only extract)
+- Action: cherry-picked `f4ac565`
+- Validation: Tier 0 pass
+- Notes: added `crates/gpt-oss-bench/tools/restricted_oracle_prefill.py` (standalone prefill logit comparator helper)
+
+### `gpt-oss/full-attention-next-case` (remaining high-risk/value commits)
+- Action: skipped (`0eef46e` and downstream parity commits including `ae9a5bd`, `e269212`, etc.)
+- Validation: N/A (not merged)
+- Notes: skipped to keep this pass narrowly probe-centric; remaining commits are either already superseded by the current richer prefill oracle helper or are broader semantic-runtime changes
