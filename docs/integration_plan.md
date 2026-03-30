@@ -276,3 +276,12 @@ Use `scripts/probe_validation_tier.sh` for the smallest useful tiered check.
 - Action: skipped (`e269212` and downstream semantic commits)
 - Validation: N/A (not merged)
 - Notes: kept for later integration; remaining commits are parity diagnostics plus runtime semantic edits (`e269212` and later) that would expand scope past probe-enablement
+
+## Fast Merge Stabilization Checkpoint
+
+- Branch HEAD: `8c847cf`
+- Tier 0: pass
+- Tier 1: pass (restricted prefill trace capture on existing model view)
+- Tier 2: not run (not in scope for this checkpoint)
+- Result: merge wave paused; no additional clearly low-risk probe-adjacent commit identified
+- Recommendation: begin a focused certification pass before the next selective semantic cherry-pick

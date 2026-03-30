@@ -143,10 +143,10 @@ with open(trace_path, "r", encoding="utf-8") as handle:
     data = json.load(handle)
 
 matched = (
-    data.get("restricted_model_path") == expected_model
-    and data.get("prompt") == expected_prompt
+  data.get("restricted_model_path") == expected_model
+  and data.get("prompt") == expected_prompt
 )
-  print("1" if matched else "0")
+print("1" if matched else "0")
 PY
   return 0
 }
