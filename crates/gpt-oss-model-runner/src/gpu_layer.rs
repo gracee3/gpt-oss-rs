@@ -104,6 +104,17 @@ mod inner {
         pub residual_add: Vec<f32>,
     }
 
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct PrefillMlpSubtrace {
+        pub mlp_norm_output: Vec<f32>,
+        pub router_logits: Vec<f32>,
+        pub topk_indices: Vec<usize>,
+        pub route_weights: Vec<f32>,
+        pub expert_gate_up: Vec<Vec<f32>>,
+        pub expert_activation: Vec<Vec<f32>>,
+        pub expert_down: Vec<Vec<f32>>,
+    }
+
     /// Weight references for a single transformer layer.
     ///
     /// All slices live on GPU and are owned by the GpuModelWeights container.
@@ -193,6 +204,58 @@ mod inner {
     }
 
     impl GptOssMoeLayerWeights {
+        pub fn trace_last_token(&self, input: &[f32]) -> PrefillMlpSubtrace {
+            let top_k = self.num_experts_per_tok.min(self.num_local_experts);
+            let mut logits = vec![0.0f32; self.num_local_experts];
+            for (expert_idx, logit) in logits.iter_mut().enumerate() {
+                let row = expert_idx * self.hidden_size;
+                let mut acc = self.router_bias[expert_idx];
+                for hidden_idx in 0..self.hidden_size {
+                    acc += input[hidden_idx] * self.router_weight[row + hidden_idx];
+                }
+                *logit = acc;
+            }
+            let top_indices = stable_top_k_indices(&logits, top_k);
+            let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
+            let route_weights = softmax_weights(&top_logits);
+            let mut expert_gate_up = Vec::with_capacity(top_indices.len());
+            let mut expert_activation = Vec::with_capacity(top_indices.len());
+            let mut expert_down = Vec::with_capacity(top_indices.len());
+            for &expert_idx in &top_indices {
+                let gate_up = self.quantized_projection(
+                    expert_idx,
+                    input,
+                    &self.gate_up_blocks,
+                    &self.gate_up_scales,
+                    &self.gate_up_bias,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                );
+                let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
+                let down = self.quantized_projection(
+                    expert_idx,
+                    &activated,
+                    &self.down_blocks,
+                    &self.down_scales,
+                    &self.down_bias,
+                    self.hidden_size,
+                    self.intermediate_size,
+                );
+                expert_gate_up.push(gate_up);
+                expert_activation.push(activated);
+                expert_down.push(down);
+            }
+            PrefillMlpSubtrace {
+                mlp_norm_output: input.to_vec(),
+                router_logits: logits,
+                topk_indices: top_indices,
+                route_weights,
+                expert_gate_up,
+                expert_activation,
+                expert_down,
+            }
+        }
+
         pub fn forward(
             &self,
             stream: &Arc<CudaStream>,
@@ -1699,7 +1762,12 @@ mod inner {
             prev_mlp_out: Option<&CudaSlice<f16>>,
             lt: Option<&crate::CublasLtRef>,
             tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
-        ) -> Result<(CudaSlice<f16>, CudaSlice<f16>, PrefillAttentionSubtrace)> {
+        ) -> Result<(
+            CudaSlice<f16>,
+            CudaSlice<f16>,
+            PrefillAttentionSubtrace,
+            Option<PrefillMlpSubtrace>,
+        )> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
             let hidden = cfg.hidden_size;
@@ -2339,6 +2407,7 @@ mod inner {
                 Self::copy_last_row_f16(&self.stream, &residual, num_tokens, hidden)?
             };
 
+            let mut mlp_trace = None;
             let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
                 let cast_f16_f32 = self
                     .loader
@@ -2354,6 +2423,11 @@ mod inner {
                     num_tokens * hidden,
                     &cast_f16_f32,
                 )?;
+                if cfg.layer_idx == 0 && input.is_prefill {
+                    let normed2_last =
+                        Self::copy_last_row_f16(&self.stream, &normed2, num_tokens, hidden)?;
+                    mlp_trace = Some(moe.trace_last_token(&normed2_last));
+                }
                 let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
                     moe.forward(&self.stream, &normed2_f32)?
                 } else {
@@ -2435,6 +2509,7 @@ mod inner {
                     o_proj,
                     residual_add,
                 },
+                mlp_trace,
             ))
         }
 

@@ -28,6 +28,7 @@ pub enum ForwardOutput {
 pub struct PrefillLayerTrace {
     pub layer_idx: usize,
     pub attention: Option<crate::gpu_layer::PrefillAttentionSubtrace>,
+    pub mlp: Option<crate::gpu_layer::PrefillMlpSubtrace>,
     pub post_attn_residual: Vec<f32>,
     pub mlp_out: Vec<f32>,
     pub layer_output: Vec<f32>,
@@ -750,8 +751,8 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
-                    let (residual, mlp_out, attention) = if layer_idx == 0 {
-                        let (residual, mlp_out, attention) =
+                    let (residual, mlp_out, attention, mlp) = if layer_idx == 0 {
+                        let (residual, mlp_out, attention, mlp) =
                             layer.forward_f16_with_prefill_attention_trace(
                                 &input,
                                 &weights,
@@ -760,7 +761,7 @@ mod cuda_impl {
                                 self.cublaslt_ref(),
                                 self.tp_comm.as_ref(),
                             )?;
-                        (residual, mlp_out, Some(attention))
+                        (residual, mlp_out, Some(attention), mlp)
                     } else {
                         let (residual, mlp_out) = layer.forward_f16(
                             &input,
@@ -770,7 +771,7 @@ mod cuda_impl {
                             self.cublaslt_ref(),
                             self.tp_comm.as_ref(),
                         )?;
-                        (residual, mlp_out, None)
+                        (residual, mlp_out, None, None)
                     };
                     let post_attn_residual = if layer_idx == 0 {
                         attention
@@ -789,6 +790,7 @@ mod cuda_impl {
                     trace.layers.push(PrefillLayerTrace {
                         layer_idx,
                         attention,
+                        mlp,
                         post_attn_residual,
                         mlp_out: mlp_out_last,
                         layer_output,
@@ -843,6 +845,7 @@ mod cuda_impl {
                 trace.layers.push(PrefillLayerTrace {
                     layer_idx,
                     attention: None,
+                    mlp: None,
                     post_attn_residual: Vec::new(),
                     mlp_out: Vec::new(),
                     layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
