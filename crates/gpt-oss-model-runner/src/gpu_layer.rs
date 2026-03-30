@@ -30,6 +30,7 @@ mod inner {
     use gpt_oss_gpu::cublas::CublasHandle;
     use gpt_oss_gpu::kernel_loader::KernelLoader;
     use gpt_oss_moe_semantics::{softmax_weights, stable_top_k_indices};
+    use crate::gpu_runner::PrefillAttentionTrace;
 
     const GPT_OSS_SWIGLU_ALPHA: f32 = 1.702;
     const GPT_OSS_SWIGLU_LIMIT: f32 = 7.0;
@@ -48,6 +49,102 @@ mod inner {
         stream
             .synchronize()
             .map_err(|e| LLMError::GpuError(format!("layer timing sync failed at {stage}: {e}")))
+    }
+
+    fn host_last_row_f16(host: &[f16], num_rows: usize, row_width: usize) -> Vec<f32> {
+        let start = (num_rows - 1) * row_width;
+        host[start..start + row_width]
+            .iter()
+            .map(|value| value.to_f32())
+            .collect()
+    }
+
+    fn host_last_row_f32(host: &[f32], num_rows: usize, row_width: usize) -> Vec<f32> {
+        let start = (num_rows - 1) * row_width;
+        host[start..start + row_width].to_vec()
+    }
+
+    fn split_qkv_last_token(
+        host: &[f16],
+        num_tokens: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let q_end = num_tokens * q_dim;
+        let k_end = q_end + num_tokens * kv_dim;
+        let q = host_last_row_f16(&host[..q_end], num_tokens, q_dim);
+        let k = host_last_row_f16(&host[q_end..k_end], num_tokens, kv_dim);
+        let v = host_last_row_f16(&host[k_end..], num_tokens, kv_dim);
+        (q, k, v)
+    }
+
+    fn rms_norm_host_last_token_f16_weight_f16_output(
+        input: &[f16],
+        weight: &[f16],
+        eps: f32,
+    ) -> Vec<f32> {
+        let inv_rms = {
+            let mean_sq = input
+                .iter()
+                .map(|value| {
+                    let value = value.to_f32();
+                    value * value
+                })
+                .sum::<f32>()
+                / input.len() as f32;
+            (mean_sq + eps).sqrt().recip()
+        };
+        input
+            .iter()
+            .zip(weight.iter())
+            .map(|(x, w)| f16::from_f32(x.to_f32() * w.to_f32() * inv_rms).to_f32())
+            .collect()
+    }
+
+    fn rms_norm_host_last_token_f16_weight_f32_output(
+        input: &[f16],
+        weight: &[f16],
+        eps: f32,
+    ) -> Vec<f32> {
+        let inv_rms = {
+            let mean_sq = input
+                .iter()
+                .map(|value| {
+                    let value = value.to_f32();
+                    value * value
+                })
+                .sum::<f32>()
+                / input.len() as f32;
+            (mean_sq + eps).sqrt().recip()
+        };
+        input
+            .iter()
+            .zip(weight.iter())
+            .map(|(x, w)| x.to_f32() * w.to_f32() * inv_rms)
+            .collect()
+    }
+
+    fn rms_norm_host_last_token_f32_weight_f32_output(
+        input: &[f16],
+        weight: &[f32],
+        eps: f32,
+    ) -> Vec<f32> {
+        let inv_rms = {
+            let mean_sq = input
+                .iter()
+                .map(|value| {
+                    let value = value.to_f32();
+                    value * value
+                })
+                .sum::<f32>()
+                / input.len() as f32;
+            (mean_sq + eps).sqrt().recip()
+        };
+        input
+            .iter()
+            .zip(weight.iter())
+            .map(|(x, w)| x.to_f32() * *w * inv_rms)
+            .collect()
     }
 
     /// Configuration for a single transformer layer.
@@ -753,6 +850,7 @@ mod inner {
             prev_mlp_out: Option<&CudaSlice<f16>>,
             lt: Option<&crate::CublasLtRef>,
             tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
+            mut debug_trace: Option<&mut PrefillAttentionTrace>,
         ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
@@ -764,7 +862,6 @@ mod inner {
             let trace_layer_timings = trace_layer_timings_enabled();
             let layer_start = trace_layer_timings.then(Instant::now);
             let mut stage_start = trace_layer_timings.then(Instant::now);
-
             let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 hidden states required for f16 forward".into())
             })?;
@@ -811,6 +908,45 @@ mod inner {
                 0
             };
             let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let residual_host = self
+                    .stream
+                    .clone_dtoh(residual_ref)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh residual_input: {e}")))?;
+                trace.residual_input = host_last_row_f16(&residual_host, num_tokens, hidden);
+                let host = self.stream.clone_dtoh(&normed).map_err(|e| {
+                    LLMError::GpuError(format!("trace dtoh attention_norm_output: {e}"))
+                })?;
+                trace.attention_norm_output = host_last_row_f16(&host, num_tokens, hidden);
+                let norm_w_f16_host = self
+                    .stream
+                    .clone_dtoh(norm_w)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh input_layernorm_f16: {e}")))?;
+                let norm_w_f32_host = self
+                    .stream
+                    .clone_dtoh(weights.input_layernorm)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh input_layernorm_f32: {e}")))?;
+                let last_row_start = (num_tokens - 1) * hidden;
+                let residual_last = &residual_host[last_row_start..last_row_start + hidden];
+                trace.attention_norm_ref_host_f16_weight_f16_output =
+                    rms_norm_host_last_token_f16_weight_f16_output(
+                        residual_last,
+                        &norm_w_f16_host,
+                        cfg.rms_norm_eps,
+                    );
+                trace.attention_norm_ref_host_f16_weight_f32_output =
+                    rms_norm_host_last_token_f16_weight_f32_output(
+                        residual_last,
+                        &norm_w_f16_host,
+                        cfg.rms_norm_eps,
+                    );
+                trace.attention_norm_ref_host_f32_weight_f32_output =
+                    rms_norm_host_last_token_f32_weight_f32_output(
+                        residual_last,
+                        &norm_w_f32_host,
+                        cfg.rms_norm_eps,
+                    );
+            }
 
             // 2. QKV projections: hgemm f16 x f16 -> f16.
             let q_dim = num_heads * head_dim;
@@ -886,16 +1022,94 @@ mod inner {
             // 3. Apply fused QKV bias (f16) in-place.
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let host = self
+                    .stream
+                    .clone_dtoh(&qkv)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh qkv_pre_bias: {e}")))?;
+                let (q, k, v) = split_qkv_last_token(&host, num_tokens, q_dim, kv_dim);
+                trace.q_proj_pre_bias = q;
+                trace.k_proj_pre_bias = k;
+                trace.v_proj_pre_bias = v;
+
+                if weights.fused_qkv.is_none() {
+                    let q_control = hgemm(&normed, weights.q_proj, num_tokens, q_dim, hidden)?;
+                    let k_control = hgemm(&normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
+                    let v_control = hgemm(&normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
+                    let q_host = self.stream.clone_dtoh(&q_control).map_err(|e| {
+                        LLMError::GpuError(format!("trace dtoh q_control_pre_bias: {e}"))
+                    })?;
+                    let k_host = self.stream.clone_dtoh(&k_control).map_err(|e| {
+                        LLMError::GpuError(format!("trace dtoh k_control_pre_bias: {e}"))
+                    })?;
+                    let v_host = self.stream.clone_dtoh(&v_control).map_err(|e| {
+                        LLMError::GpuError(format!("trace dtoh v_control_pre_bias: {e}"))
+                    })?;
+                    trace.q_proj_pre_bias_control = host_last_row_f16(&q_host, num_tokens, q_dim);
+                    trace.k_proj_pre_bias_control = host_last_row_f16(&k_host, num_tokens, kv_dim);
+                    trace.v_proj_pre_bias_control = host_last_row_f16(&v_host, num_tokens, kv_dim);
+                }
+            }
             if let Some(bias) = weights.fused_qkv_bias {
-                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                Self::add_bias_f16_view(
-                    &self.stream,
-                    &self.loader,
-                    &mut qkv_view,
-                    bias,
-                    num_tokens,
-                    qkv_dim,
-                )?;
+                if weights.fused_qkv.is_some() {
+                    let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                    let bias_view = bias.slice(..qkv_dim);
+                    Self::add_bias_f16_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut qkv_view,
+                        &bias_view,
+                        num_tokens,
+                        qkv_dim,
+                    )?;
+                } else {
+                    let q_bias = bias.slice(..q_dim);
+                    let k_bias = bias.slice(q_dim..q_dim + kv_dim);
+                    let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
+                    {
+                        let mut q_view = qkv.slice_mut(..q_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut q_view,
+                            &q_bias,
+                            num_tokens,
+                            q_dim,
+                        )?;
+                    }
+                    {
+                        let mut k_view = qkv.slice_mut(q_end..k_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut k_view,
+                            &k_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                    {
+                        let mut v_view = qkv.slice_mut(k_end..num_tokens * qkv_dim);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut v_view,
+                            &v_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                }
+            }
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let host = self
+                    .stream
+                    .clone_dtoh(&qkv)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh qkv_post_bias: {e}")))?;
+                let (q, k, v) = split_qkv_last_token(&host, num_tokens, q_dim, kv_dim);
+                trace.q_proj = q;
+                trace.k_proj = k;
+                trace.v_proj = v;
             }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
@@ -924,6 +1138,15 @@ mod inner {
                     num_kv_heads,
                     head_dim,
                 )?;
+            }
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let host = self
+                    .stream
+                    .clone_dtoh(&qkv)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh qkv_post_rope: {e}")))?;
+                let (q, k, _) = split_qkv_last_token(&host, num_tokens, q_dim, kv_dim);
+                trace.q_rope = q;
+                trace.k_rope = k;
             }
             let rope_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "rope")?;
@@ -1042,6 +1265,13 @@ mod inner {
                     input.block_size,
                 )?
             };
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let host = self
+                    .stream
+                    .clone_dtoh(&attn_out)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh attention_context: {e}")))?;
+                trace.attention_context = host_last_row_f16(&host, num_tokens, q_dim);
+            }
             let attention_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "attention")?;
                 stage_start
@@ -1055,6 +1285,13 @@ mod inner {
             // 7. Output projection: hgemm f16
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let host = self
+                    .stream
+                    .clone_dtoh(&attn_proj)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh o_proj: {e}")))?;
+                trace.o_proj = host_last_row_f16(&host, num_tokens, hidden);
+            }
             let attn_proj_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "attn_proj")?;
                 stage_start
@@ -1076,6 +1313,18 @@ mod inner {
                 num_tokens,
                 hidden,
             )?;
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let residual_host = self
+                    .stream
+                    .clone_dtoh(&residual)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh post_attn_residual: {e}")))?;
+                trace.post_attn_residual = host_last_row_f16(&residual_host, num_tokens, hidden);
+                let normed_host = self
+                    .stream
+                    .clone_dtoh(&normed2)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh post_attn_norm_output: {e}")))?;
+                trace.post_attn_norm_output = host_last_row_f16(&normed_host, num_tokens, hidden);
+            }
             let post_attn_norm_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "post_attn_norm")?;
                 stage_start
@@ -2478,7 +2727,7 @@ mod inner {
             stream: &Arc<CudaStream>,
             loader: &KernelLoader,
             tensor: &mut CudaViewMut<'_, f16>,
-            bias: &CudaSlice<f16>,
+            bias: &CudaView<'_, f16>,
             num_tokens: usize,
             dim: usize,
         ) -> Result<()> {

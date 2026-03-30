@@ -163,8 +163,10 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
     context = torch.einsum("hmqk,khmd->qhmd", probs[..., :-1], V).reshape(n_tokens, -1)
     o_proj = attn.out(context)
     residual_add = x + o_proj
+    post_attn_norm_output = model.block[0].mlp.norm(residual_add)
 
     return ({
+        "residual_input": last_token(x),
         "attention_norm_input": last_token(norm_input),
         "attention_norm_output": last_token(normed),
         "qkv_pre_bias": flatten_last_token(qkv_pre_bias),
@@ -180,6 +182,7 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
         "o_proj": flatten_last_token(o_proj),
         "residual_add": flatten_last_token(residual_add),
         "post_attn_residual": last_token(residual_add),
+        "post_attn_norm_output": last_token(post_attn_norm_output),
     }, residual_add)
 
 
@@ -255,6 +258,7 @@ def main() -> int:
         oracle_attention = oracle_layer.get("attention")
         if cuda_attention and oracle_attention:
             for key in (
+                "residual_input",
                 "attention_norm_input",
                 "attention_norm_output",
                 "qkv_pre_bias",
@@ -269,16 +273,35 @@ def main() -> int:
                 "attention_context",
                 "o_proj",
                 "residual_add",
+                "post_attn_norm_output",
             ):
+                if key not in cuda_attention or key not in oracle_attention:
+                    continue
+                    stage_diffs.append(
+                        compare_stage(
+                            f"layer{cuda_layer['layer_idx']}.{key}",
+                            cuda_attention[key],
+                            oracle_attention[key],
+                        )
+                    )
+            for key in (
+                "attention_norm_ref_host_f16_weight_f16_output",
+                "attention_norm_ref_host_f16_weight_f32_output",
+                "attention_norm_ref_host_f32_weight_f32_output",
+            ):
+                if key not in cuda_attention:
+                    continue
                 stage_diffs.append(
                     compare_stage(
                         f"layer{cuda_layer['layer_idx']}.{key}",
                         cuda_attention[key],
-                        oracle_attention[key],
+                        oracle_attention["attention_norm_output"],
                     )
                 )
             if "manual_from_cuda_norm" in oracle_attention:
                 for key in ("qkv_pre_bias", "qkv_post_bias", "q_proj", "k_proj", "v_proj"):
+                    if key not in cuda_attention or key not in oracle_attention["manual_from_cuda_norm"]:
+                        continue
                     stage_diffs.append(
                         compare_stage(
                             f"layer{cuda_layer['layer_idx']}.manual_from_cuda_norm.{key}",
@@ -287,6 +310,8 @@ def main() -> int:
                         )
                     )
             for key in ("qkv_pre_bias", "qkv_post_bias", "q_proj", "k_proj", "v_proj"):
+                if key not in cuda_attention or key not in oracle_attention["manual_from_oracle_norm"]:
+                    continue
                 stage_diffs.append(
                     compare_stage(
                         f"layer{cuda_layer['layer_idx']}.manual_from_oracle_norm.{key}",

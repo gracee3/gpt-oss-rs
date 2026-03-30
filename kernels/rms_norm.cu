@@ -34,13 +34,19 @@ __global__ void rms_norm_kernel(
     sdata[tid] = local_ss;
     __syncthreads();
 
-    // Parallel reduction in shared memory (handles non-power-of-2 block sizes)
-    for (int s = stride / 2; s > 0; s >>= 1) {
-        if (tid < s && tid + s < stride) {
+    // Fold any non-power-of-two tail once, then use a standard tree reduction.
+    int active = stride;
+    int power2 = 1;
+    while ((power2 << 1) <= active) {
+        power2 <<= 1;
+    }
+    if (tid < active - power2) {
+        sdata[tid] += sdata[tid + power2];
+    }
+    __syncthreads();
+    for (int s = power2 >> 1; s > 0; s >>= 1) {
+        if (tid < s) {
             sdata[tid] += sdata[tid + s];
-        }
-        if (s * 2 < stride && tid == 0) {
-            sdata[0] += sdata[s * 2];
         }
         __syncthreads();
     }

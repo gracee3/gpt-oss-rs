@@ -13,6 +13,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 gpt-oss-core.workspace = true
 gpt-oss-engine.workspace = true
 gpt-oss-tokenizer.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+memmap2.workspace = true
+safetensors.workspace = true
 
 [features]
 default = []
@@ -42,4 +46,9 @@ required-features = ["cuda"]
 [[bin]]
 name = "restricted_logit_diff"
 path = "src/bin/restricted_logit_diff.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "layer0_qk_split"
+path = "src/bin/layer0_qk_split.rs"
 required-features = ["cuda"]

@@ -24,9 +24,35 @@ pub enum ForwardOutput {
     TokenIdsPending { actual_batch: usize },
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PrefillAttentionTrace {
+    pub attention_norm_output: Vec<f32>,
+    pub attention_norm_ref_host_f16_weight_f16_output: Vec<f32>,
+    pub attention_norm_ref_host_f16_weight_f32_output: Vec<f32>,
+    pub attention_norm_ref_host_f32_weight_f32_output: Vec<f32>,
+    pub q_proj_pre_bias: Vec<f32>,
+    pub k_proj_pre_bias: Vec<f32>,
+    pub v_proj_pre_bias: Vec<f32>,
+    pub q_proj_pre_bias_control: Vec<f32>,
+    pub k_proj_pre_bias_control: Vec<f32>,
+    pub v_proj_pre_bias_control: Vec<f32>,
+    pub q_proj: Vec<f32>,
+    pub k_proj: Vec<f32>,
+    pub v_proj: Vec<f32>,
+    pub q_rope: Vec<f32>,
+    pub k_rope: Vec<f32>,
+    pub attention_context: Vec<f32>,
+    pub o_proj: Vec<f32>,
+    pub residual_input: Vec<f32>,
+    pub post_attn_residual: Vec<f32>,
+    pub post_attn_norm_output: Vec<f32>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrefillLayerTrace {
     pub layer_idx: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attention: Option<PrefillAttentionTrace>,
     pub post_attn_residual: Vec<f32>,
     pub mlp_out: Vec<f32>,
     pub layer_output: Vec<f32>,
@@ -36,6 +62,20 @@ pub struct PrefillLayerTrace {
 pub struct PrefillActivationTrace {
     pub embedding: Vec<f32>,
     pub layers: Vec<PrefillLayerTrace>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Layer0ProjectionSnapshot {
+    pub uses_fused_qkv: bool,
+    pub hidden_size: usize,
+    pub q_dim: usize,
+    pub kv_dim: usize,
+    pub q_weight: Vec<f32>,
+    pub k_weight: Vec<f32>,
+    pub v_weight: Vec<f32>,
+    pub q_bias: Option<Vec<f32>>,
+    pub k_bias: Option<Vec<f32>>,
+    pub v_bias: Option<Vec<f32>>,
 }
 
 #[cfg(feature = "cuda")]
@@ -66,7 +106,10 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::{ForwardOutput, PrefillActivationTrace, PrefillLayerTrace};
+    use super::{
+        ForwardOutput, Layer0ProjectionSnapshot, PrefillActivationTrace, PrefillAttentionTrace,
+        PrefillLayerTrace,
+    };
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -680,6 +723,7 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
+                    let mut attention_trace = (layer_idx == 0).then(PrefillAttentionTrace::default);
                     let (residual, mlp_out) = layer.forward_f16(
                         &input,
                         &weights,
@@ -687,6 +731,7 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        attention_trace.as_mut(),
                     )?;
                     let post_attn_residual =
                         self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
@@ -698,6 +743,7 @@ mod cuda_impl {
                         .collect();
                     trace.layers.push(PrefillLayerTrace {
                         layer_idx,
+                        attention: attention_trace,
                         post_attn_residual,
                         mlp_out: mlp_out_last,
                         layer_output,
@@ -751,12 +797,72 @@ mod cuda_impl {
                 hidden_states = layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
                 trace.layers.push(PrefillLayerTrace {
                     layer_idx,
+                    attention: None,
                     post_attn_residual: Vec::new(),
                     mlp_out: Vec::new(),
                     layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
                 });
             }
             Ok(trace)
+        }
+
+        pub fn debug_layer0_projection_snapshot(&self) -> Result<Layer0ProjectionSnapshot> {
+            let weights = self.layer_weights_f16(0)?;
+            let hidden_size = self.config.hidden_size;
+            let q_dim = self.config.num_heads * self.config.head_dim;
+            let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+
+            let to_f32_vec = |data: Vec<f16>| data.into_iter().map(|v| v.to_f32()).collect();
+            let clone_f16 = |tensor: &CudaSlice<f16>, label: &str| -> Result<Vec<f32>> {
+                self.stream
+                    .clone_dtoh(tensor)
+                    .map(to_f32_vec)
+                    .map_err(|e| LLMError::GpuError(format!("debug dtoh {label}: {e}")))
+            };
+            let clone_f32 = |tensor: Option<&CudaSlice<f32>>, label: &str| -> Result<Option<Vec<f32>>> {
+                tensor
+                    .map(|buf| {
+                        self.stream
+                            .clone_dtoh(buf)
+                            .map_err(|e| LLMError::GpuError(format!("debug dtoh {label}: {e}")))
+                    })
+                    .transpose()
+            };
+
+            let (q_weight, k_weight, v_weight, uses_fused_qkv) =
+                if let Some(fused_qkv) = weights.fused_qkv {
+                    let fused = self
+                        .stream
+                        .clone_dtoh(fused_qkv)
+                        .map_err(|e| LLMError::GpuError(format!("debug dtoh fused_qkv: {e}")))?;
+                    let q_elems = q_dim * hidden_size;
+                    let k_elems = kv_dim * hidden_size;
+                    let q_weight = to_f32_vec(fused[..q_elems].to_vec());
+                    let k_weight = to_f32_vec(fused[q_elems..q_elems + k_elems].to_vec());
+                    let v_weight =
+                        to_f32_vec(fused[q_elems + k_elems..q_elems + 2 * k_elems].to_vec());
+                    (q_weight, k_weight, v_weight, true)
+                } else {
+                    (
+                        clone_f16(weights.q_proj, "q_proj.weight")?,
+                        clone_f16(weights.k_proj, "k_proj.weight")?,
+                        clone_f16(weights.v_proj, "v_proj.weight")?,
+                        false,
+                    )
+                };
+
+            Ok(Layer0ProjectionSnapshot {
+                uses_fused_qkv,
+                hidden_size,
+                q_dim,
+                kv_dim,
+                q_weight,
+                k_weight,
+                v_weight,
+                q_bias: clone_f32(weights.q_proj_bias, "q_proj.bias")?,
+                k_bias: clone_f32(weights.k_proj_bias, "k_proj.bias")?,
+                v_bias: clone_f32(weights.v_proj_bias, "v_proj.bias")?,
+            })
         }
 
         /// Extended forward: when `greedy_only` is true, runs argmax on GPU and
@@ -846,6 +952,7 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1260,6 +1367,7 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1605,6 +1713,7 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -3018,6 +3127,12 @@ mod mock_impl {
             _positions: &[u32],
             _attn_meta: &crate::bridge::AttentionMetadata,
         ) -> Result<PrefillActivationTrace> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_layer0_projection_snapshot(&self) -> Result<Layer0ProjectionSnapshot> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))

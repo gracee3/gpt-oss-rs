@@ -19,7 +19,9 @@ use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
 use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
-use gpt_oss_model_runner::gpu_runner::{ForwardOutput, PrefillActivationTrace};
+use gpt_oss_model_runner::gpu_runner::{
+    ForwardOutput, Layer0ProjectionSnapshot, PrefillActivationTrace,
+};
 use gpt_oss_model_runner::input::ModelInput;
 use gpt_oss_model_runner::kv_cache::CacheEngine;
 use gpt_oss_model_runner::sampling::batch::make_rng;
@@ -1266,6 +1268,13 @@ impl GpuWorker {
             &model_input.position_ids,
             &model_input.attention_metadata,
         )
+    }
+
+    pub fn debug_runner_layer0_projection_snapshot(&self) -> Result<Layer0ProjectionSnapshot> {
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError("GPU model runner not initialized -- build with --features cuda".into())
+        })?;
+        runner.debug_layer0_projection_snapshot()
     }
     /// Run the raw model forward pass (no graph logic).
     fn raw_gpu_forward(&self, model_input: &ModelInput) -> Result<Vec<f32>> {
