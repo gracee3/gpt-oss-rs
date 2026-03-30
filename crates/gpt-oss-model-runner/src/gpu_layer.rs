@@ -226,7 +226,7 @@ mod inner {
             let mut expert_activation = Vec::with_capacity(top_indices.len());
             let mut expert_down = Vec::with_capacity(top_indices.len());
             for &expert_idx in &top_indices {
-                let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16(
+                let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16_dense(
                     expert_idx,
                     input,
                     &self.gate_up_blocks,
@@ -519,7 +519,7 @@ mod inner {
         }
 
         pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
-            let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16(
+            let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16_dense(
                 expert_idx,
                 input,
                 &self.gate_up_blocks,
