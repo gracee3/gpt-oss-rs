@@ -44,6 +44,12 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         "model.embed_tokens.weight" | "model.norm.weight" | "lm_head.weight"
     ) || name.ends_with("input_layernorm.weight")
         || name.ends_with("post_attention_layernorm.weight")
+        || matches!(
+            name,
+            "model.layers.0.self_attn.q_proj.weight"
+                | "model.layers.0.self_attn.k_proj.weight"
+                | "model.layers.0.self_attn.v_proj.weight"
+        )
         || name.ends_with("self_attn.q_proj.bias")
         || name.ends_with("self_attn.k_proj.bias")
         || name.ends_with("self_attn.v_proj.bias")

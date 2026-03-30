@@ -128,6 +128,9 @@ mod inner {
     /// remain f32 since RMSNorm and bias-add operate in f32.
     pub struct GpuLayerWeightsF16<'a> {
         pub input_layernorm: &'a CudaSlice<f32>,
+        pub q_proj_f32: Option<&'a CudaSlice<f32>>,
+        pub k_proj_f32: Option<&'a CudaSlice<f32>>,
+        pub v_proj_f32: Option<&'a CudaSlice<f32>>,
         pub q_proj: &'a CudaSlice<f16>,
         pub k_proj: &'a CudaSlice<f16>,
         pub v_proj: &'a CudaSlice<f16>,
@@ -770,6 +773,32 @@ mod inner {
                     acc += bias[out.len()].to_f32();
                 }
                 out.push(f16::from_f32(acc).to_f32());
+            }
+            out
+        }
+
+        fn round_f32_to_bf16_value(x: f32) -> f32 {
+            half::bf16::from_f32(x).to_f32()
+        }
+
+        fn oracle_like_split_projection_host(
+            input: &[f32],
+            weight: &[f32],
+            bias: Option<&[f32]>,
+        ) -> Vec<f16> {
+            let hidden = input.len();
+            let rows = weight.len() / hidden;
+            let mut out = Vec::with_capacity(rows);
+            for row_idx in 0..rows {
+                let row = &weight[row_idx * hidden..(row_idx + 1) * hidden];
+                let mut acc = 0.0f32;
+                for (w, x) in row.iter().zip(input.iter()) {
+                    acc += Self::round_f32_to_bf16_value(*w) * *x;
+                }
+                if let Some(bias) = bias {
+                    acc += Self::round_f32_to_bf16_value(bias[row_idx]);
+                }
+                out.push(f16::from_f32(Self::round_f32_to_bf16_value(acc)));
             }
             out
         }
@@ -1582,21 +1611,142 @@ mod inner {
                     &self.loader,
                 )
             };
-            let q_proj_gemm_backend = format!("cublas(m={num_tokens},n={q_dim},k={hidden})");
-            let k_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
-            let v_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
-            let q_standalone =
-                Self::hgemm_alloc(&self.stream, blas, &normed, weights.q_proj, num_tokens, q_dim, hidden)?;
-            let k_standalone =
-                Self::hgemm_alloc(&self.stream, blas, &normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
-            let v_standalone =
-                Self::hgemm_alloc(&self.stream, blas, &normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
-            let q_proj_standalone =
-                Self::copy_last_row_f16(&self.stream, &q_standalone, num_tokens, q_dim)?;
-            let k_proj_standalone =
-                Self::copy_last_row_f16(&self.stream, &k_standalone, num_tokens, kv_dim)?;
-            let v_proj_standalone =
-                Self::copy_last_row_f16(&self.stream, &v_standalone, num_tokens, kv_dim)?;
+            let use_oracle_like_projection = cfg.layer_idx == 0 && input.is_prefill;
+            let (q_proj_gemm_backend, k_proj_gemm_backend, v_proj_gemm_backend);
+            let (q_standalone, k_standalone, v_standalone, q_proj_standalone, k_proj_standalone, v_proj_standalone);
+            if use_oracle_like_projection {
+                let q_weight_f32 = weights.q_proj_f32.ok_or_else(|| {
+                    LLMError::GpuError("missing f32 q_proj for oracle-like prefill trace".into())
+                })?;
+                let k_weight_f32 = weights.k_proj_f32.ok_or_else(|| {
+                    LLMError::GpuError("missing f32 k_proj for oracle-like prefill trace".into())
+                })?;
+                let v_weight_f32 = weights.v_proj_f32.ok_or_else(|| {
+                    LLMError::GpuError("missing f32 v_proj for oracle-like prefill trace".into())
+                })?;
+                let normed_host = self
+                    .stream
+                    .clone_dtoh(&normed)
+                    .map_err(|e| LLMError::GpuError(format!("trace normed dtoh: {e}")))?;
+                let q_weight_host = self
+                    .stream
+                    .clone_dtoh(q_weight_f32)
+                    .map_err(|e| LLMError::GpuError(format!("trace q weight f32 dtoh: {e}")))?;
+                let k_weight_host = self
+                    .stream
+                    .clone_dtoh(k_weight_f32)
+                    .map_err(|e| LLMError::GpuError(format!("trace k weight f32 dtoh: {e}")))?;
+                let v_weight_host = self
+                    .stream
+                    .clone_dtoh(v_weight_f32)
+                    .map_err(|e| LLMError::GpuError(format!("trace v weight f32 dtoh: {e}")))?;
+                let q_bias_host = weights
+                    .q_proj_bias
+                    .map(|bias| {
+                        self.stream
+                            .clone_dtoh(bias)
+                            .map_err(|e| LLMError::GpuError(format!("trace q bias dtoh: {e}")))
+                    })
+                    .transpose()?;
+                let k_bias_host = weights
+                    .k_proj_bias
+                    .map(|bias| {
+                        self.stream
+                            .clone_dtoh(bias)
+                            .map_err(|e| LLMError::GpuError(format!("trace k bias dtoh: {e}")))
+                    })
+                    .transpose()?;
+                let v_bias_host = weights
+                    .v_proj_bias
+                    .map(|bias| {
+                        self.stream
+                            .clone_dtoh(bias)
+                            .map_err(|e| LLMError::GpuError(format!("trace v bias dtoh: {e}")))
+                    })
+                    .transpose()?;
+                let mut q_host_pre = Vec::with_capacity(num_tokens * q_dim);
+                let mut k_host_pre = Vec::with_capacity(num_tokens * kv_dim);
+                let mut v_host_pre = Vec::with_capacity(num_tokens * kv_dim);
+                let mut q_host_post = Vec::with_capacity(num_tokens * q_dim);
+                let mut k_host_post = Vec::with_capacity(num_tokens * kv_dim);
+                let mut v_host_post = Vec::with_capacity(num_tokens * kv_dim);
+                for row in normed_host.chunks_exact(hidden) {
+                    let row_f32: Vec<f32> = row.iter().map(|x| x.to_f32()).collect();
+                    q_host_pre.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &q_weight_host,
+                        None,
+                    ));
+                    k_host_pre.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &k_weight_host,
+                        None,
+                    ));
+                    v_host_pre.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &v_weight_host,
+                        None,
+                    ));
+                    q_host_post.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &q_weight_host,
+                        q_bias_host.as_deref(),
+                    ));
+                    k_host_post.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &k_weight_host,
+                        k_bias_host.as_deref(),
+                    ));
+                    v_host_post.extend(Self::oracle_like_split_projection_host(
+                        &row_f32,
+                        &v_weight_host,
+                        v_bias_host.as_deref(),
+                    ));
+                }
+                q_proj_gemm_backend = format!("oracle_host_split_bf16(m={num_tokens},n={q_dim},k={hidden})");
+                k_proj_gemm_backend = format!("oracle_host_split_bf16(m={num_tokens},n={kv_dim},k={hidden})");
+                v_proj_gemm_backend = format!("oracle_host_split_bf16(m={num_tokens},n={kv_dim},k={hidden})");
+                q_standalone = self
+                    .stream
+                    .clone_htod(&q_host_post)
+                    .map_err(|e| LLMError::GpuError(format!("trace q host->device: {e}")))?;
+                k_standalone = self
+                    .stream
+                    .clone_htod(&k_host_post)
+                    .map_err(|e| LLMError::GpuError(format!("trace k host->device: {e}")))?;
+                v_standalone = self
+                    .stream
+                    .clone_htod(&v_host_post)
+                    .map_err(|e| LLMError::GpuError(format!("trace v host->device: {e}")))?;
+                q_proj_standalone = q_host_pre[q_host_pre.len() - q_dim..]
+                    .iter()
+                    .map(|x| x.to_f32())
+                    .collect();
+                k_proj_standalone = k_host_pre[k_host_pre.len() - kv_dim..]
+                    .iter()
+                    .map(|x| x.to_f32())
+                    .collect();
+                v_proj_standalone = v_host_pre[v_host_pre.len() - kv_dim..]
+                    .iter()
+                    .map(|x| x.to_f32())
+                    .collect();
+            } else {
+                q_proj_gemm_backend = format!("cublas(m={num_tokens},n={q_dim},k={hidden})");
+                k_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
+                v_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
+                q_standalone =
+                    Self::hgemm_alloc(&self.stream, blas, &normed, weights.q_proj, num_tokens, q_dim, hidden)?;
+                k_standalone =
+                    Self::hgemm_alloc(&self.stream, blas, &normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
+                v_standalone =
+                    Self::hgemm_alloc(&self.stream, blas, &normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
+                q_proj_standalone =
+                    Self::copy_last_row_f16(&self.stream, &q_standalone, num_tokens, q_dim)?;
+                k_proj_standalone =
+                    Self::copy_last_row_f16(&self.stream, &k_standalone, num_tokens, kv_dim)?;
+                v_proj_standalone =
+                    Self::copy_last_row_f16(&self.stream, &v_standalone, num_tokens, kv_dim)?;
+            }
             let q_weight_host = self
                 .stream
                 .clone_dtoh(weights.q_proj)

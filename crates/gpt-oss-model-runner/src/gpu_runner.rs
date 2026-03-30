@@ -2563,6 +2563,16 @@ mod cuda_impl {
                     "mlp.router.weight",
                     "mlp.router.bias",
                 ] {
+                    if i == 0
+                        && matches!(
+                            suffix,
+                            "self_attn.q_proj.weight"
+                                | "self_attn.k_proj.weight"
+                                | "self_attn.v_proj.weight"
+                        )
+                    {
+                        continue;
+                    }
                     let name = format!("model.layers.{i}.{suffix}");
                     if self.weights.remove(&name).is_some() {
                         removed += 1;
@@ -2611,6 +2621,9 @@ mod cuda_impl {
             };
             Ok(GpuLayerWeightsF16 {
                 input_layernorm: g_f32(&format!("model.layers.{i}.input_layernorm.weight"))?,
+                q_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.q_proj.weight")),
+                k_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.k_proj.weight")),
+                v_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.v_proj.weight")),
                 q_proj: g_f16(&format!("model.layers.{i}.self_attn.q_proj.weight"))?,
                 k_proj: g_f16(&format!("model.layers.{i}.self_attn.k_proj.weight"))?,
                 v_proj: g_f16(&format!("model.layers.{i}.self_attn.v_proj.weight"))?,
