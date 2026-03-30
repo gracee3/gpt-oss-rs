@@ -242,8 +242,15 @@ mod inner {
                     self.intermediate_size * 2,
                     self.hidden_size,
                 );
-                let gate_up =
-                    self.apply_projection_bias(&gate_up_pre_bias, expert_idx, &self.gate_up_bias);
+                let gate_up = self.quantized_projection_bf16_dense_with_bias(
+                    expert_idx,
+                    input,
+                    &self.gate_up_blocks,
+                    &self.gate_up_scales,
+                    &self.gate_up_bias,
+                    self.intermediate_size * 2,
+                    self.hidden_size,
+                );
                 let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
                 let down = self.quantized_projection(
                     expert_idx,
@@ -527,7 +534,15 @@ mod inner {
                 self.intermediate_size * 2,
                 self.hidden_size,
             );
-            let gate_up = self.apply_projection_bias(&gate_up_pre_bias, expert_idx, &self.gate_up_bias);
+            let gate_up = self.quantized_projection_bf16_dense_with_bias(
+                expert_idx,
+                input,
+                &self.gate_up_blocks,
+                &self.gate_up_scales,
+                &self.gate_up_bias,
+                self.intermediate_size * 2,
+                self.hidden_size,
+            );
             let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
             self.quantized_projection(
                 expert_idx,
@@ -618,6 +633,81 @@ mod inner {
                 }
 
                 output[out_idx] = acc;
+            }
+
+            output
+        }
+
+        fn quantized_projection_bf16_dense_with_bias(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            blocks: &[u8],
+            scales: &[u8],
+            bias: &[f32],
+            out_features: usize,
+            in_features: usize,
+        ) -> Vec<f32> {
+            let groups = in_features.div_ceil(32);
+            let expert_blocks_stride = out_features * groups * 16;
+            let expert_scales_stride = out_features * groups;
+            let bias_base = expert_idx * out_features;
+
+            let input_bf16: Vec<f32> = input
+                .iter()
+                .copied()
+                .map(|x| bf16::from_f32(x).to_f32())
+                .collect();
+            let mut row = vec![0.0f32; in_features];
+            let mut output = vec![0.0f32; out_features];
+            let blocks_base = expert_idx * expert_blocks_stride;
+            let scales_base = expert_idx * expert_scales_stride;
+
+            for out_idx in 0..out_features {
+                let row_blocks = blocks_base + out_idx * groups * 16;
+                let row_scales = scales_base + out_idx * groups;
+
+                for group_idx in 0..groups {
+                    let scale = decode_mxfp_scale(scales[row_scales + group_idx]);
+                    let block_offset = row_blocks + group_idx * 16;
+                    let input_offset = group_idx * 32;
+                    for packed_idx in 0..16 {
+                        let packed = blocks[block_offset + packed_idx];
+                        let input_idx0 = input_offset + packed_idx * 2;
+                        if input_idx0 < in_features {
+                            row[input_idx0] =
+                                bf16::from_f32(MXFP4_VALUES[(packed & 0x0F) as usize] * scale)
+                                    .to_f32();
+                        }
+                        let input_idx1 = input_idx0 + 1;
+                        if input_idx1 < in_features {
+                            row[input_idx1] =
+                                bf16::from_f32(MXFP4_VALUES[(packed >> 4) as usize] * scale)
+                                    .to_f32();
+                        }
+                    }
+                }
+
+                let mut acc0 = 0.0f32;
+                let mut acc1 = 0.0f32;
+                let mut acc2 = 0.0f32;
+                let mut acc3 = 0.0f32;
+                let chunks = in_features / 8;
+                for chunk_idx in 0..chunks {
+                    let base = chunk_idx * 8;
+                    acc0 += row[base] * input_bf16[base] + row[base + 1] * input_bf16[base + 1];
+                    acc1 +=
+                        row[base + 2] * input_bf16[base + 2] + row[base + 3] * input_bf16[base + 3];
+                    acc2 +=
+                        row[base + 4] * input_bf16[base + 4] + row[base + 5] * input_bf16[base + 5];
+                    acc3 +=
+                        row[base + 6] * input_bf16[base + 6] + row[base + 7] * input_bf16[base + 7];
+                }
+                for idx in chunks * 8..in_features {
+                    acc0 += row[idx] * input_bf16[idx];
+                }
+                output[out_idx] =
+                    bf16::from_f32(acc0 + acc1 + acc2 + acc3 + bias[bias_base + out_idx]).to_f32();
             }
 
             output
