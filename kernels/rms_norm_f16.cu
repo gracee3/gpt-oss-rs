@@ -9,6 +9,14 @@
 
 #include <cuda_fp16.h>
 
+__device__ __forceinline__ float round_to_bf16(float x) {
+    unsigned int bits = __float_as_uint(x);
+    unsigned int lsb = (bits >> 16) & 1u;
+    bits += 0x7FFFu + lsb;
+    bits &= 0xFFFF0000u;
+    return __uint_as_float(bits);
+}
+
 extern "C"
 __global__ void rms_norm_f16_kernel(
     __half* __restrict__ output,
@@ -48,6 +56,47 @@ __global__ void rms_norm_f16_kernel(
     // Pass 2: normalize and scale, write f16
     for (int i = tid; i < hidden_size; i += stride) {
         float val = __half2float(x[i]) * __half2float(weight[i]) * rms_scale;
+        y[i] = __float2half(val);
+    }
+}
+
+extern "C"
+__global__ void rms_norm_oracle_f16_kernel(
+    __half* __restrict__ output,
+    const __half* __restrict__ input,
+    const float* __restrict__ weight,
+    float eps,
+    int hidden_size
+) {
+    const int token_idx = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
+
+    const __half* x = input + token_idx * hidden_size;
+    __half* y = output + token_idx * hidden_size;
+
+    extern __shared__ float sdata[];
+
+    float local_ss = 0.0f;
+    for (int i = tid; i < hidden_size; i += stride) {
+        float val = round_to_bf16(__half2float(x[i]));
+        local_ss += val * val;
+    }
+    sdata[tid] = local_ss;
+    __syncthreads();
+
+    for (int s = stride / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float rms_scale = rsqrtf(sdata[0] / (float)hidden_size + eps);
+
+    for (int i = tid; i < hidden_size; i += stride) {
+        float x_bf16 = round_to_bf16(__half2float(x[i]));
+        float val = round_to_bf16(x_bf16 * weight[i] * rms_scale);
         y[i] = __float2half(val);
     }
 }
