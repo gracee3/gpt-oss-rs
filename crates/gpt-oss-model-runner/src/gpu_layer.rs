@@ -69,6 +69,7 @@ mod inner {
         pub attention_norm_output: Vec<f32>,
         pub attention_norm_manual_f16: Vec<f32>,
         pub attention_norm_manual_f32_weight: Vec<f32>,
+        pub attention_norm_manual_oracle_policy: Vec<f32>,
         pub qkv_pre_bias: Vec<f32>,
         pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
@@ -720,6 +721,24 @@ mod inner {
                 .iter()
                 .zip(weight.iter())
                 .map(|(x, w)| x.to_f32() * *w * rms_scale)
+                .collect()
+        }
+
+        fn manual_rms_norm_oracle_policy(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
+            let input_bf16: Vec<f32> = input
+                .iter()
+                .copied()
+                .map(|x| half::bf16::from_f32(x).to_f32())
+                .collect();
+            let mut sum_sq = 0.0f32;
+            for value in &input_bf16 {
+                sum_sq += value * value;
+            }
+            let rms_scale = (sum_sq / input.len() as f32 + eps).sqrt().recip();
+            input_bf16
+                .iter()
+                .zip(weight.iter())
+                .map(|(x, w)| half::bf16::from_f32(x * *w * rms_scale).to_f32())
                 .collect()
         }
 
@@ -1505,6 +1524,11 @@ mod inner {
                 &norm_weight_f32_host,
                 cfg.rms_norm_eps,
             );
+            let attention_norm_manual_oracle_policy = Self::manual_rms_norm_oracle_policy(
+                &attention_norm_input,
+                &norm_weight_f32_host,
+                cfg.rms_norm_eps,
+            );
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
             let qkv_dim = q_dim + kv_dim + kv_dim;
@@ -1794,6 +1818,7 @@ mod inner {
                     attention_norm_output,
                     attention_norm_manual_f16,
                     attention_norm_manual_f32_weight,
+                    attention_norm_manual_oracle_policy,
                     qkv_pre_bias,
                     qkv_post_bias,
                     q_proj: q_pre,
