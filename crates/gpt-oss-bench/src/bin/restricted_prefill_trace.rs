@@ -133,6 +133,38 @@ fn build_worker_config(
         "head_dim",
         hidden_size.checked_div(num_attention_heads).unwrap_or(64),
     );
+    let rope_scaling = value.get("rope_scaling");
+    let rope_scaling_type = rope_scaling
+        .and_then(|v| v.get("rope_type"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let rope_scaling_factor = rope_scaling
+        .and_then(|v| v.get("factor"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(1.0);
+    let rope_ntk_alpha = rope_scaling
+        .and_then(|v| v.get("beta_slow"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(1.0);
+    let rope_ntk_beta = rope_scaling
+        .and_then(|v| v.get("beta_fast"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(32.0);
+    let rope_scaling_truncate = rope_scaling
+        .and_then(|v| v.get("truncate"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let initial_context_length = get_usize(
+        "initial_context_length",
+        rope_scaling
+            .and_then(|v| v.get("original_max_position_embeddings"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(max_model_len),
+    );
 
     Ok(WorkerConfig {
         model_name: model_path.display().to_string(),
@@ -146,6 +178,7 @@ fn build_worker_config(
         intermediate_size: get_usize("intermediate_size", 2880),
         vocab_size: get_usize("vocab_size", 201088),
         max_model_len: max_model_len.min(get_usize("max_position_embeddings", max_model_len)),
+        initial_context_length,
         rms_norm_eps: get_f32("rms_norm_eps", 1e-5),
         block_size: 16,
         gpu_memory_utilization,
@@ -161,6 +194,11 @@ fn build_worker_config(
             .to_string(),
         dtype: Dtype::Float16,
         rope_theta: get_f32("rope_theta", 150000.0),
+        rope_scaling_type,
+        rope_scaling_factor,
+        rope_ntk_alpha,
+        rope_ntk_beta,
+        rope_scaling_truncate,
         partial_rotary_factor: get_f32("partial_rotary_factor", 1.0),
         attn_logit_softcapping: get_f32("attn_logit_softcapping", 0.0),
         attention_bias: get_bool("attention_bias", false),

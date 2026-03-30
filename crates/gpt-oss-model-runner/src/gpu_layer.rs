@@ -64,6 +64,10 @@ mod inner {
         host[start..start + row_width].to_vec()
     }
 
+    fn host_all_f16(host: &[f16]) -> Vec<f32> {
+        host.iter().map(|value| value.to_f32()).collect()
+    }
+
     fn split_qkv_last_token(
         host: &[f16],
         num_tokens: usize,
@@ -76,6 +80,31 @@ mod inner {
         let k = host_last_row_f16(&host[q_end..k_end], num_tokens, kv_dim);
         let v = host_last_row_f16(&host[k_end..], num_tokens, kv_dim);
         (q, k, v)
+    }
+
+    fn flatten_cache_path_f16(
+        host_cache: &[f16],
+        block_tables: &[i32],
+        context_len: usize,
+        max_blocks_per_seq: usize,
+        block_size: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let kv_dim = num_kv_heads * head_dim;
+        let mut flattened = Vec::with_capacity(context_len * kv_dim);
+        for token_idx in 0..context_len {
+            let page_idx = token_idx / block_size;
+            let page_off = token_idx % block_size;
+            let phys_block = block_tables[page_idx] as usize;
+            let base = ((phys_block * block_size + page_off) * num_kv_heads) * head_dim;
+            let end = base + kv_dim;
+            if end > host_cache.len() || page_idx >= max_blocks_per_seq {
+                break;
+            }
+            flattened.extend(host_cache[base..end].iter().map(|value| value.to_f32()));
+        }
+        flattened
     }
 
     fn rms_norm_host_last_token_f16_weight_f16_output(
@@ -1110,6 +1139,9 @@ mod inner {
                 trace.q_proj = q;
                 trace.k_proj = k;
                 trace.v_proj = v;
+                let q_end = num_tokens * q_dim;
+                let k_end = q_end + num_tokens * kv_dim;
+                trace.k_after_proj = host_all_f16(&host[q_end..k_end]);
             }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
@@ -1140,6 +1172,13 @@ mod inner {
                 )?;
             }
             if let Some(trace) = debug_trace.as_deref_mut() {
+                let k_host = self
+                    .stream
+                    .clone_dtoh(&qkv.slice(q_end..k_end))
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh k_pre_write: {e}")))?;
+                let k_path = host_all_f16(&k_host);
+                trace.k_after_rope_unpacked = k_path.clone();
+                trace.pre_write_k_path = k_path;
                 let host = self
                     .stream
                     .clone_dtoh(&qkv)
@@ -1174,6 +1213,46 @@ mod inner {
                     num_kv_heads,
                     head_dim,
                 )?;
+            }
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let context_lens = self
+                    .stream
+                    .clone_dtoh(&input.context_lens)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh context_lens: {e}")))?;
+                let block_tables = self
+                    .stream
+                    .clone_dtoh(&input.block_tables)
+                    .map_err(|e| LLMError::GpuError(format!("trace dtoh block_tables: {e}")))?;
+                if let Some(&context_len_i32) = context_lens.first() {
+                    let context_len = context_len_i32.max(0) as usize;
+                    let max_blocks_per_seq = block_tables.len() / input.num_seqs.max(1);
+                    let key_cache_host = self
+                        .stream
+                        .clone_dtoh(input.key_cache)
+                        .map_err(|e| LLMError::GpuError(format!("trace dtoh key_cache: {e}")))?;
+                    let value_cache_host = self
+                        .stream
+                        .clone_dtoh(input.value_cache)
+                        .map_err(|e| LLMError::GpuError(format!("trace dtoh value_cache: {e}")))?;
+                    trace.cache_k_path = flatten_cache_path_f16(
+                        &key_cache_host,
+                        &block_tables[..max_blocks_per_seq],
+                        context_len,
+                        max_blocks_per_seq,
+                        input.block_size,
+                        num_kv_heads,
+                        head_dim,
+                    );
+                    trace.cache_v_path = flatten_cache_path_f16(
+                        &value_cache_host,
+                        &block_tables[..max_blocks_per_seq],
+                        context_len,
+                        max_blocks_per_seq,
+                        input.block_size,
+                        num_kv_heads,
+                        head_dim,
+                    );
+                }
             }
             let cache_write_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "cache_write")?;

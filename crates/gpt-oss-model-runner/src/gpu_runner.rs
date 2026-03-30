@@ -41,6 +41,11 @@ pub struct PrefillAttentionTrace {
     pub v_proj: Vec<f32>,
     pub q_rope: Vec<f32>,
     pub k_rope: Vec<f32>,
+    pub k_after_proj: Vec<f32>,
+    pub k_after_rope_unpacked: Vec<f32>,
+    pub pre_write_k_path: Vec<f32>,
+    pub cache_k_path: Vec<f32>,
+    pub cache_v_path: Vec<f32>,
     pub attention_context: Vec<f32>,
     pub o_proj: Vec<f32>,
     pub residual_input: Vec<f32>,
@@ -81,6 +86,7 @@ pub struct Layer0ProjectionSnapshot {
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::cell::RefCell;
+    use std::f32::consts::PI;
     use std::sync::Arc;
 
     use std::cell::Cell;
@@ -115,6 +121,59 @@ mod cuda_impl {
     /// allocations on the hot decode path.
     struct ReusableGpuBuf {
         buf: Option<CudaSlice<i32>>,
+    }
+
+    fn build_rope_tables(config: &ModelRunnerConfig, max_pos: usize) -> (Vec<f32>, Vec<f32>) {
+        let head_dim = config.head_dim;
+        let half_dim = head_dim / 2;
+        let mut inv_freq = vec![0.0f32; half_dim];
+        let mut concentration = 1.0f32;
+        let use_yarn = matches!(config.rope_scaling_type.as_deref(), Some("yarn"))
+            && config.rope_scaling_factor > 1.0;
+
+        if use_yarn {
+            concentration = 0.1 * config.rope_scaling_factor.ln() + 1.0;
+            let d_half = head_dim as f32 / 2.0;
+            let base_ln = config.rope_theta.ln();
+            let context_len = config.initial_context_length.max(1) as f32;
+            let mut low = d_half
+                * (context_len / (config.rope_ntk_beta * 2.0 * PI)).ln()
+                / base_ln;
+            let mut high = d_half
+                * (context_len / (config.rope_ntk_alpha * 2.0 * PI)).ln()
+                / base_ln;
+            if config.rope_scaling_truncate {
+                low = low.floor();
+                high = high.ceil();
+            }
+            if (high - low).abs() < f32::EPSILON {
+                high = low + 0.001;
+            }
+            for (i, inv) in inv_freq.iter_mut().enumerate() {
+                let freq = config.rope_theta.powf(2.0 * i as f32 / head_dim as f32);
+                let extrapolation = 1.0 / freq;
+                let interpolation = 1.0 / (config.rope_scaling_factor * freq);
+                let ramp = ((i as f32 - low) / (high - low)).clamp(0.0, 1.0);
+                let mask = 1.0 - ramp;
+                *inv = interpolation * (1.0 - mask) + extrapolation * mask;
+            }
+        } else {
+            for (i, inv) in inv_freq.iter_mut().enumerate() {
+                *inv = 1.0 / config.rope_theta.powf(2.0 * i as f32 / head_dim as f32);
+            }
+        }
+
+        let mut cos_table = vec![0.0f32; max_pos * half_dim];
+        let mut sin_table = vec![0.0f32; max_pos * half_dim];
+        for pos in 0..max_pos {
+            for (i, freq) in inv_freq.iter().enumerate() {
+                let theta = pos as f32 * freq;
+                cos_table[pos * half_dim + i] = theta.cos() * concentration;
+                sin_table[pos * half_dim + i] = theta.sin() * concentration;
+            }
+        }
+
+        (cos_table, sin_table)
     }
 
     impl ReusableGpuBuf {
@@ -306,20 +365,9 @@ mod cuda_impl {
             }
 
             // Precompute RoPE cos/sin tables
-            let head_dim = config.head_dim;
             let max_pos = config.max_position.min(8192);
-            let half_dim = head_dim / 2;
-            let rope_theta = config.rope_theta;
-            let mut cos_table = vec![0.0f32; max_pos * half_dim];
-            let mut sin_table = vec![0.0f32; max_pos * half_dim];
-            for pos in 0..max_pos {
-                for i in 0..half_dim {
-                    let freq = 1.0 / rope_theta.powf(2.0 * i as f32 / head_dim as f32);
-                    let theta = pos as f32 * freq;
-                    cos_table[pos * half_dim + i] = theta.cos();
-                    sin_table[pos * half_dim + i] = theta.sin();
-                }
-            }
+            let half_dim = config.head_dim / 2;
+            let (cos_table, sin_table) = build_rope_tables(&config, max_pos);
             let rope_cos = stream
                 .clone_htod(&cos_table)
                 .map_err(|e| LLMError::GpuError(format!("rope cos HtoD: {e}")))?;
@@ -3221,20 +3269,26 @@ mod tests {
         {
             let config = ModelRunnerConfig {
                 tensor_parallel_rank: 0,
-                tensor_parallel_size: 1,
-                num_layers: 2,
-                hidden_size: 64,
-                num_heads: 4,
-                num_kv_heads: 4,
-                head_dim: 16,
-                intermediate_size: 128,
-                vocab_size: 100,
-                max_position: 512,
-                rms_norm_eps: 1e-5,
-                rope_theta: 10000.0,
-                partial_rotary_factor: 1.0,
-                attn_logit_softcapping: 0.0,
-                attention_bias: false,
+            tensor_parallel_size: 1,
+            num_layers: 2,
+            hidden_size: 64,
+            num_heads: 4,
+            num_kv_heads: 4,
+            head_dim: 16,
+            intermediate_size: 128,
+            vocab_size: 100,
+            max_position: 512,
+            initial_context_length: 512,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            rope_scaling_type: None,
+            rope_scaling_factor: 1.0,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
+            rope_scaling_truncate: false,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
                 sliding_window: None,
                 layer_types: Vec::new(),
                 num_local_experts: 2,

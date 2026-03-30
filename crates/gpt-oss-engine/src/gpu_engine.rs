@@ -48,10 +48,16 @@ mod inner {
         num_hidden_layers: usize,
         vocab_size: usize,
         max_position_embeddings: usize,
+        initial_context_length: usize,
         rms_norm_eps: f32,
         tie_word_embeddings: bool,
         architecture: String,
         rope_theta: f32,
+        rope_scaling_type: Option<String>,
+        rope_scaling_factor: f32,
+        rope_ntk_alpha: f32,
+        rope_ntk_beta: f32,
+        rope_scaling_truncate: bool,
         partial_rotary_factor: f32,
         attn_logit_softcapping: f32,
         attention_bias: bool,
@@ -77,6 +83,7 @@ mod inner {
                 .model
                 .max_model_len
                 .min(hf_config.max_position_embeddings),
+            initial_context_length: hf_config.initial_context_length,
             rms_norm_eps: hf_config.rms_norm_eps,
             block_size: config.cache.block_size,
             gpu_memory_utilization: config.cache.gpu_memory_utilization,
@@ -86,6 +93,11 @@ mod inner {
             architecture: hf_config.architecture.clone(),
             dtype: config.model.dtype,
             rope_theta: hf_config.rope_theta,
+            rope_scaling_type: hf_config.rope_scaling_type.clone(),
+            rope_scaling_factor: hf_config.rope_scaling_factor,
+            rope_ntk_alpha: hf_config.rope_ntk_alpha,
+            rope_ntk_beta: hf_config.rope_ntk_beta,
+            rope_scaling_truncate: hf_config.rope_scaling_truncate,
             partial_rotary_factor: hf_config.partial_rotary_factor,
             attn_logit_softcapping: hf_config.attn_logit_softcapping,
             attention_bias: hf_config.attention_bias,
@@ -179,6 +191,38 @@ mod inner {
             "head_dim",
             hidden_size.checked_div(num_attention_heads).unwrap_or(0),
         );
+        let rope_scaling = json.get("rope_scaling");
+        let rope_scaling_type = rope_scaling
+            .and_then(|v| v.get("rope_type"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let rope_scaling_factor = rope_scaling
+            .and_then(|v| v.get("factor"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(1.0);
+        let rope_ntk_alpha = rope_scaling
+            .and_then(|v| v.get("beta_slow"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(1.0);
+        let rope_ntk_beta = rope_scaling
+            .and_then(|v| v.get("beta_fast"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(32.0);
+        let rope_scaling_truncate = rope_scaling
+            .and_then(|v| v.get("truncate"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let initial_context_length = get_usize(
+            "initial_context_length",
+            rope_scaling
+                .and_then(|v| v.get("original_max_position_embeddings"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or_else(|| get_usize("max_position_embeddings", 2048)),
+        );
 
         let architecture = json
             .get("architectures")
@@ -198,6 +242,7 @@ mod inner {
             num_hidden_layers: get_usize("num_hidden_layers", 32),
             vocab_size: get_usize("vocab_size", 32000),
             max_position_embeddings: get_usize("max_position_embeddings", 2048),
+            initial_context_length,
             rms_norm_eps: get_f32("rms_norm_eps", 1e-5),
             tie_word_embeddings: json
                 .get("tie_word_embeddings")
@@ -205,6 +250,11 @@ mod inner {
                 .unwrap_or(false),
             architecture,
             rope_theta: get_f32("rope_theta", 10000.0),
+            rope_scaling_type,
+            rope_scaling_factor,
+            rope_ntk_alpha,
+            rope_ntk_beta,
+            rope_scaling_truncate,
             partial_rotary_factor: get_f32("partial_rotary_factor", 1.0),
             attn_logit_softcapping: get_f32("attn_logit_softcapping", 0.0),
             attention_bias: json
@@ -1457,10 +1507,16 @@ mod inner {
                 num_hidden_layers: 24,
                 vocab_size: 200000,
                 max_position_embeddings: 131072,
+                initial_context_length: 4096,
                 rms_norm_eps: 1e-5,
                 tie_word_embeddings: true,
                 architecture: "GptOssForCausalLM".into(),
                 rope_theta: 150000.0,
+                rope_scaling_type: Some("yarn".into()),
+                rope_scaling_factor: 32.0,
+                rope_ntk_alpha: 1.0,
+                rope_ntk_beta: 32.0,
+                rope_scaling_truncate: false,
                 partial_rotary_factor: 1.0,
                 attn_logit_softcapping: 0.0,
                 attention_bias: false,

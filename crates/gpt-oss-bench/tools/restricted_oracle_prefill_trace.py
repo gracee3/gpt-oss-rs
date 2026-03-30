@@ -176,6 +176,11 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
         "v_proj": flatten_last_token(v),
         "q_rope": flatten_last_token(q_rope),
         "k_rope": flatten_last_token(k_rope),
+        "k_after_proj": k.reshape(n_tokens, -1).float().cpu().reshape(-1).tolist(),
+        "k_after_rope_unpacked": k_rope.reshape(n_tokens, -1).float().cpu().reshape(-1).tolist(),
+        "pre_write_k_path": k_rope.reshape(n_tokens, -1).float().cpu().reshape(-1).tolist(),
+        "cache_k_path": k_rope.reshape(n_tokens, -1).float().cpu().reshape(-1).tolist(),
+        "cache_v_path": v_heads.reshape(n_tokens, -1).float().cpu().reshape(-1).tolist(),
         "masked_scores": qk_with_sink[:, :, -1, :].reshape(-1).float().cpu().tolist(),
         "attention_probs": probs[:, :, -1, :].reshape(-1).float().cpu().tolist(),
         "attention_context": flatten_last_token(context),
@@ -268,6 +273,11 @@ def main() -> int:
                 "v_proj",
                 "q_rope",
                 "k_rope",
+                "k_after_proj",
+                "k_after_rope_unpacked",
+                "pre_write_k_path",
+                "cache_k_path",
+                "cache_v_path",
                 "masked_scores",
                 "attention_probs",
                 "attention_context",
@@ -277,13 +287,13 @@ def main() -> int:
             ):
                 if key not in cuda_attention or key not in oracle_attention:
                     continue
-                    stage_diffs.append(
-                        compare_stage(
-                            f"layer{cuda_layer['layer_idx']}.{key}",
-                            cuda_attention[key],
-                            oracle_attention[key],
-                        )
+                stage_diffs.append(
+                    compare_stage(
+                        f"layer{cuda_layer['layer_idx']}.{key}",
+                        cuda_attention[key],
+                        oracle_attention[key],
                     )
+                )
             for key in (
                 "attention_norm_ref_host_f16_weight_f16_output",
                 "attention_norm_ref_host_f16_weight_f32_output",
