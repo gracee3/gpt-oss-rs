@@ -86,6 +86,10 @@ mod inner {
         pub q_proj_standalone: Vec<f32>,
         pub k_proj_standalone: Vec<f32>,
         pub v_proj_standalone: Vec<f32>,
+        pub q_rope_manual_f16: Vec<f32>,
+        pub k_rope_manual_f16: Vec<f32>,
+        pub q_rope_manual_oracle: Vec<f32>,
+        pub k_rope_manual_oracle: Vec<f32>,
         pub q_rope: Vec<f32>,
         pub k_rope: Vec<f32>,
         pub masked_scores: Vec<f32>,
@@ -801,6 +805,108 @@ mod inner {
                 out.push(f16::from_f32(Self::round_f32_to_bf16_value(acc)));
             }
             out
+        }
+
+        fn apply_rotary_host_variant(
+            query: &[f16],
+            key: &[f16],
+            positions: &[i32],
+            rope_cos: &[f32],
+            rope_sin: &[f32],
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+            oracle_bf16: bool,
+        ) -> (Vec<f16>, Vec<f16>) {
+            let half_dim = head_dim / 2;
+            let mut q_out = query.to_vec();
+            let mut k_out = key.to_vec();
+
+            for token_idx in 0..num_tokens {
+                let pos = positions[token_idx] as usize;
+                for head_idx in 0..num_heads {
+                    let base = (token_idx * num_heads + head_idx) * head_dim;
+                    for pair_idx in 0..half_dim {
+                        let cos_val = rope_cos[pos * half_dim + pair_idx];
+                        let sin_val = rope_sin[pos * half_dim + pair_idx];
+                        let (cos_val, sin_val) = if oracle_bf16 {
+                            (
+                                half::bf16::from_f32(cos_val).to_f32(),
+                                half::bf16::from_f32(sin_val).to_f32(),
+                            )
+                        } else {
+                            (cos_val, sin_val)
+                        };
+                        let i0 = base + pair_idx;
+                        let i1 = base + half_dim + pair_idx;
+                        let x0 = if oracle_bf16 {
+                            half::bf16::from_f32(query[i0].to_f32()).to_f32()
+                        } else {
+                            query[i0].to_f32()
+                        };
+                        let x1 = if oracle_bf16 {
+                            half::bf16::from_f32(query[i1].to_f32()).to_f32()
+                        } else {
+                            query[i1].to_f32()
+                        };
+                        let y0 = x0 * cos_val - x1 * sin_val;
+                        let y1 = x0 * sin_val + x1 * cos_val;
+                        q_out[i0] = if oracle_bf16 {
+                            f16::from_f32(half::bf16::from_f32(y0).to_f32())
+                        } else {
+                            f16::from_f32(y0)
+                        };
+                        q_out[i1] = if oracle_bf16 {
+                            f16::from_f32(half::bf16::from_f32(y1).to_f32())
+                        } else {
+                            f16::from_f32(y1)
+                        };
+                    }
+                }
+
+                for head_idx in 0..num_kv_heads {
+                    let base = (token_idx * num_kv_heads + head_idx) * head_dim;
+                    for pair_idx in 0..half_dim {
+                        let cos_val = rope_cos[pos * half_dim + pair_idx];
+                        let sin_val = rope_sin[pos * half_dim + pair_idx];
+                        let (cos_val, sin_val) = if oracle_bf16 {
+                            (
+                                half::bf16::from_f32(cos_val).to_f32(),
+                                half::bf16::from_f32(sin_val).to_f32(),
+                            )
+                        } else {
+                            (cos_val, sin_val)
+                        };
+                        let i0 = base + pair_idx;
+                        let i1 = base + half_dim + pair_idx;
+                        let x0 = if oracle_bf16 {
+                            half::bf16::from_f32(key[i0].to_f32()).to_f32()
+                        } else {
+                            key[i0].to_f32()
+                        };
+                        let x1 = if oracle_bf16 {
+                            half::bf16::from_f32(key[i1].to_f32()).to_f32()
+                        } else {
+                            key[i1].to_f32()
+                        };
+                        let y0 = x0 * cos_val - x1 * sin_val;
+                        let y1 = x0 * sin_val + x1 * cos_val;
+                        k_out[i0] = if oracle_bf16 {
+                            f16::from_f32(half::bf16::from_f32(y0).to_f32())
+                        } else {
+                            f16::from_f32(y0)
+                        };
+                        k_out[i1] = if oracle_bf16 {
+                            f16::from_f32(half::bf16::from_f32(y1).to_f32())
+                        } else {
+                            f16::from_f32(y1)
+                        };
+                    }
+                }
+            }
+
+            (q_out, k_out)
         }
 
         fn last_query_scores_probs_from_host_f16(
@@ -1891,7 +1997,71 @@ mod inner {
                 .copied()
                 .collect::<Vec<_>>();
 
-            {
+            let rope_cos_host = self
+                .stream
+                .clone_dtoh(input.rope_cos)
+                .map_err(|e| LLMError::GpuError(format!("trace rope cos dtoh: {e}")))?;
+            let rope_sin_host = self
+                .stream
+                .clone_dtoh(input.rope_sin)
+                .map_err(|e| LLMError::GpuError(format!("trace rope sin dtoh: {e}")))?;
+            let positions_host = self
+                .stream
+                .clone_dtoh(&input.positions)
+                .map_err(|e| LLMError::GpuError(format!("trace positions dtoh: {e}")))?;
+            let (q_rope_manual_f16_host, k_rope_manual_f16_host) = Self::apply_rotary_host_variant(
+                &q_host_post_bias,
+                &k_host_post_bias,
+                &positions_host,
+                &rope_cos_host,
+                &rope_sin_host,
+                num_tokens,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+                false,
+            );
+            let (q_rope_manual_oracle_host, k_rope_manual_oracle_host) =
+                Self::apply_rotary_host_variant(
+                    &q_host_post_bias,
+                    &k_host_post_bias,
+                    &positions_host,
+                    &rope_cos_host,
+                    &rope_sin_host,
+                    num_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    true,
+                );
+            let q_rope_manual_f16 = q_rope_manual_f16_host[q_end - q_dim..q_end]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let k_rope_manual_f16 = k_rope_manual_f16_host[k_rope_manual_f16_host.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let q_rope_manual_oracle = q_rope_manual_oracle_host[q_end - q_dim..q_end]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let k_rope_manual_oracle =
+                k_rope_manual_oracle_host[k_rope_manual_oracle_host.len() - kv_dim..]
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>();
+
+            if use_oracle_like_projection {
+                q_proj = self
+                    .stream
+                    .clone_htod(&q_rope_manual_oracle_host)
+                    .map_err(|e| LLMError::GpuError(format!("trace q_rope host->device: {e}")))?;
+                k_proj = self
+                    .stream
+                    .clone_htod(&k_rope_manual_oracle_host)
+                    .map_err(|e| LLMError::GpuError(format!("trace k_rope host->device: {e}")))?;
+            } else {
                 let mut q_view = q_proj.slice_mut(..q_end);
                 let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
                 Self::apply_rotary_embedding_f16_views(
@@ -2108,6 +2278,10 @@ mod inner {
                     q_proj_standalone,
                     k_proj_standalone,
                     v_proj_standalone,
+                    q_rope_manual_f16,
+                    k_rope_manual_f16,
+                    q_rope_manual_oracle,
+                    k_rope_manual_oracle,
                     q_rope,
                     k_rope,
                     masked_scores,
