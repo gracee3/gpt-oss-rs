@@ -23,7 +23,7 @@ mod inner {
         CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice,
         LaunchConfig, PushKernelArg,
     };
-    use half::f16;
+    use half::{bf16, f16};
     use tracing::{info, trace};
 
     use gpt_oss_core::error::{LLMError, Result};
@@ -224,7 +224,7 @@ mod inner {
             let mut expert_activation = Vec::with_capacity(top_indices.len());
             let mut expert_down = Vec::with_capacity(top_indices.len());
             for &expert_idx in &top_indices {
-                let gate_up_pre_bias = self.quantized_projection_pre_bias(
+                let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16(
                     expert_idx,
                     input,
                     &self.gate_up_blocks,
@@ -507,15 +507,15 @@ mod inner {
         }
 
         pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
-            let gate_up = self.quantized_projection(
+            let gate_up_pre_bias = self.quantized_projection_pre_bias_bf16(
                 expert_idx,
                 input,
                 &self.gate_up_blocks,
                 &self.gate_up_scales,
-                &self.gate_up_bias,
                 self.intermediate_size * 2,
                 self.hidden_size,
             );
+            let gate_up = self.apply_projection_bias(&gate_up_pre_bias, expert_idx, &self.gate_up_bias);
             let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
             self.quantized_projection(
                 expert_idx,
@@ -601,6 +601,54 @@ mod inner {
                         let input_idx1 = input_idx0 + 1;
                         if input_idx1 < in_features {
                             acc += input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
+                        }
+                    }
+                }
+
+                output[out_idx] = acc;
+            }
+
+            output
+        }
+
+        fn quantized_projection_pre_bias_bf16(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            blocks: &[u8],
+            scales: &[u8],
+            out_features: usize,
+            in_features: usize,
+        ) -> Vec<f32> {
+            let groups = in_features.div_ceil(32);
+            let expert_blocks_stride = out_features * groups * 16;
+            let expert_scales_stride = out_features * groups;
+
+            let input_bf16: Vec<bf16> = input.iter().copied().map(bf16::from_f32).collect();
+            let mut output = vec![0.0f32; out_features];
+            let blocks_base = expert_idx * expert_blocks_stride;
+            let scales_base = expert_idx * expert_scales_stride;
+
+            for out_idx in 0..out_features {
+                let mut acc = 0.0f32;
+                let row_blocks = blocks_base + out_idx * groups * 16;
+                let row_scales = scales_base + out_idx * groups;
+
+                for group_idx in 0..groups {
+                    let scale = decode_mxfp_scale(scales[row_scales + group_idx]);
+                    let block_offset = row_blocks + group_idx * 16;
+                    let input_offset = group_idx * 32;
+                    for packed_idx in 0..16 {
+                        let packed = blocks[block_offset + packed_idx];
+                        let input_idx0 = input_offset + packed_idx * 2;
+                        if input_idx0 < in_features {
+                            acc += input_bf16[input_idx0].to_f32()
+                                * (MXFP4_VALUES[(packed & 0x0F) as usize] * scale);
+                        }
+                        let input_idx1 = input_idx0 + 1;
+                        if input_idx1 < in_features {
+                            acc += input_bf16[input_idx1].to_f32()
+                                * (MXFP4_VALUES[(packed >> 4) as usize] * scale);
                         }
                     }
                 }
