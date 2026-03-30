@@ -1825,7 +1825,8 @@ mod inner {
                 .copied()
                 .collect();
 
-            if let Some(bias) = weights.fused_qkv_bias {
+            if !use_oracle_like_projection {
+                if let Some(bias) = weights.fused_qkv_bias {
                 let q_bias = bias.slice(..q_dim);
                 let k_bias = bias.slice(q_dim..q_dim + kv_dim);
                 let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
@@ -1856,6 +1857,7 @@ mod inner {
                     num_tokens,
                     kv_dim,
                 )?;
+                }
             }
 
             let q_host_post_bias = self
