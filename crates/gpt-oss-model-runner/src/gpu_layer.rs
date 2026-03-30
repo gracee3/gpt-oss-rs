@@ -65,6 +65,8 @@ mod inner {
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct PrefillAttentionSubtrace {
+        pub attention_norm_input: Vec<f32>,
+        pub attention_norm_output: Vec<f32>,
         pub qkv_pre_bias: Vec<f32>,
         pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
@@ -1322,6 +1324,10 @@ mod inner {
                 (n, None)
             };
             let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
+            let attention_norm_input =
+                Self::copy_last_row_f16(&self.stream, residual_ref, num_tokens, hidden)?;
+            let attention_norm_output =
+                Self::copy_last_row_f16(&self.stream, &normed, num_tokens, hidden)?;
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
             let qkv_dim = q_dim + kv_dim + kv_dim;
@@ -1411,22 +1417,26 @@ mod inner {
                 .stream
                 .clone_dtoh(&qkv)
                 .map_err(|e| LLMError::GpuError(format!("trace qkv pre dtoh: {e}")))?;
-            let last_token_base = (num_tokens - 1) * qkv_dim;
-            let qkv_pre_bias = qkv_host_pre[last_token_base..last_token_base + qkv_dim]
+            let last_q_base = (num_tokens - 1) * q_dim;
+            let last_k_base = q_end + (num_tokens - 1) * kv_dim;
+            let last_v_base = k_end + (num_tokens - 1) * kv_dim;
+            let q_pre: Vec<f32> = qkv_host_pre[last_q_base..last_q_base + q_dim]
                 .iter()
                 .map(|value| value.to_f32())
                 .collect();
-            let q_pre = qkv_host_pre[last_token_base..last_token_base + q_dim]
+            let k_pre: Vec<f32> = qkv_host_pre[last_k_base..last_k_base + kv_dim]
                 .iter()
                 .map(|value| value.to_f32())
                 .collect();
-            let k_pre = qkv_host_pre[last_token_base + q_dim..last_token_base + q_dim + kv_dim]
+            let v_pre: Vec<f32> = qkv_host_pre[last_v_base..last_v_base + kv_dim]
                 .iter()
                 .map(|value| value.to_f32())
                 .collect();
-            let v_pre = qkv_host_pre[last_token_base + q_dim + kv_dim..last_token_base + qkv_dim]
+            let qkv_pre_bias = q_pre
                 .iter()
-                .map(|value| value.to_f32())
+                .chain(k_pre.iter())
+                .chain(v_pre.iter())
+                .copied()
                 .collect();
 
             {
@@ -1451,12 +1461,19 @@ mod inner {
                 .stream
                 .clone_dtoh(&qkv)
                 .map_err(|e| LLMError::GpuError(format!("trace qkv post dtoh: {e}")))?;
-            let qkv_post_bias = qkv_host_post[last_token_base..last_token_base + qkv_dim]
-                .iter()
-                .map(|value| value.to_f32())
-                .collect();
             let q_host = &qkv_host_post[..q_end];
             let k_host = &qkv_host_post[q_end..k_end];
+            let v_host = &qkv_host_post[k_end..];
+            let q_post = q_host[q_end - q_dim..q_end]
+                .iter()
+                .map(|value| value.to_f32());
+            let k_post = k_host[k_host.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32());
+            let v_post = v_host[v_host.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32());
+            let qkv_post_bias = q_post.chain(k_post).chain(v_post).collect();
             let sinks_host = match weights.sinks {
                 Some(sinks) => Some(
                     self.stream
@@ -1623,6 +1640,8 @@ mod inner {
                 residual,
                 mlp_out,
                 PrefillAttentionSubtrace {
+                    attention_norm_input,
+                    attention_norm_output,
                     qkv_pre_bias,
                     qkv_post_bias,
                     q_proj: q_pre,

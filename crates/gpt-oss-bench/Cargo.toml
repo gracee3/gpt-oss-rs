@@ -43,3 +43,8 @@ required-features = ["cuda"]
 name = "restricted_prefill_trace"
 path = "src/bin/restricted_prefill_trace.rs"
 required-features = ["cuda"]
+
+[[bin]]
+name = "restricted_layer0_qkv_device_dump"
+path = "src/bin/restricted_layer0_qkv_device_dump.rs"
+required-features = ["cuda"]

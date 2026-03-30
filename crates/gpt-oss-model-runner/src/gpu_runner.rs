@@ -39,6 +39,21 @@ pub struct PrefillActivationTrace {
     pub layers: Vec<PrefillLayerTrace>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LayerProjectionDeviceDump {
+    pub rows: usize,
+    pub cols: usize,
+    pub weight: Vec<f32>,
+    pub bias: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0QkvDeviceDump {
+    pub q_proj: LayerProjectionDeviceDump,
+    pub k_proj: LayerProjectionDeviceDump,
+    pub v_proj: LayerProjectionDeviceDump,
+}
+
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::cell::RefCell;
@@ -67,7 +82,10 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::{ForwardOutput, PrefillActivationTrace, PrefillLayerTrace};
+    use super::{
+        ForwardOutput, Layer0QkvDeviceDump, LayerProjectionDeviceDump, PrefillActivationTrace,
+        PrefillLayerTrace,
+    };
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -774,6 +792,57 @@ mod cuda_impl {
                 });
             }
             Ok(trace)
+        }
+
+        pub fn debug_layer0_qkv_device_dump(&self) -> Result<Layer0QkvDeviceDump> {
+            let weights = self.layer_weights_f16(0)?;
+            let dump_proj = |name: &str,
+                             weight: &CudaSlice<f16>,
+                             bias: Option<&CudaSlice<f32>>|
+             -> Result<LayerProjectionDeviceDump> {
+                let shape = self.weights.require_shape(name)?;
+                if shape.len() != 2 {
+                    return Err(LLMError::GpuError(format!(
+                        "expected 2D projection weight for {name}, got shape {shape:?}"
+                    )));
+                }
+                let weight_host = self
+                    .stream
+                    .clone_dtoh(weight)
+                    .map_err(|e| LLMError::GpuError(format!("dtoh {name}: {e}")))?;
+                let bias_host = match bias {
+                    Some(buf) => Some(
+                        self.stream
+                            .clone_dtoh(buf)
+                            .map_err(|e| LLMError::GpuError(format!("dtoh {name} bias: {e}")))?,
+                    ),
+                    None => None,
+                };
+                Ok(LayerProjectionDeviceDump {
+                    rows: shape[0],
+                    cols: shape[1],
+                    weight: weight_host.into_iter().map(|value| value.to_f32()).collect(),
+                    bias: bias_host,
+                })
+            };
+
+            Ok(Layer0QkvDeviceDump {
+                q_proj: dump_proj(
+                    "model.layers.0.self_attn.q_proj.weight",
+                    weights.q_proj,
+                    weights.q_proj_bias,
+                )?,
+                k_proj: dump_proj(
+                    "model.layers.0.self_attn.k_proj.weight",
+                    weights.k_proj,
+                    weights.k_proj_bias,
+                )?,
+                v_proj: dump_proj(
+                    "model.layers.0.self_attn.v_proj.weight",
+                    weights.v_proj,
+                    weights.v_proj_bias,
+                )?,
+            })
         }
 
         /// Extended forward: when `greedy_only` is true, runs argmax on GPU and
@@ -2740,6 +2809,12 @@ mod mock_impl {
             _positions: &[u32],
             _attn_meta: &crate::bridge::AttentionMetadata,
         ) -> Result<PrefillActivationTrace> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_layer0_qkv_device_dump(&self) -> Result<Layer0QkvDeviceDump> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))
