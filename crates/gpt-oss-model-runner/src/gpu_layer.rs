@@ -67,6 +67,8 @@ mod inner {
     pub struct PrefillAttentionSubtrace {
         pub attention_norm_input: Vec<f32>,
         pub attention_norm_output: Vec<f32>,
+        pub attention_norm_manual_f16: Vec<f32>,
+        pub attention_norm_manual_f32_weight: Vec<f32>,
         pub qkv_pre_bias: Vec<f32>,
         pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
@@ -689,6 +691,36 @@ mod inner {
                 .iter()
                 .map(|value| value.to_f32())
                 .collect())
+        }
+
+        fn manual_rms_norm_f16(input: &[f32], weight: &[f16], eps: f32) -> Vec<f32> {
+            let input_f16: Vec<f16> = input.iter().copied().map(f16::from_f32).collect();
+            let mut sum_sq = 0.0f32;
+            for value in &input_f16 {
+                let x = value.to_f32();
+                sum_sq += x * x;
+            }
+            let rms_scale = (sum_sq / input.len() as f32 + eps).sqrt().recip();
+            input_f16
+                .iter()
+                .zip(weight.iter())
+                .map(|(x, w)| f16::from_f32(x.to_f32() * w.to_f32() * rms_scale).to_f32())
+                .collect()
+        }
+
+        fn manual_rms_norm_f32_weight(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
+            let input_f16: Vec<f16> = input.iter().copied().map(f16::from_f32).collect();
+            let mut sum_sq = 0.0f32;
+            for value in &input_f16 {
+                let x = value.to_f32();
+                sum_sq += x * x;
+            }
+            let rms_scale = (sum_sq / input.len() as f32 + eps).sqrt().recip();
+            input_f16
+                .iter()
+                .zip(weight.iter())
+                .map(|(x, w)| x.to_f32() * *w * rms_scale)
+                .collect()
         }
 
         fn last_query_scores_probs_from_host_f16(
@@ -1458,6 +1490,21 @@ mod inner {
                 Self::copy_last_row_f16(&self.stream, residual_ref, num_tokens, hidden)?;
             let attention_norm_output =
                 Self::copy_last_row_f16(&self.stream, &normed, num_tokens, hidden)?;
+            let norm_weight_f16_host = self
+                .stream
+                .clone_dtoh(norm_w)
+                .map_err(|e| LLMError::GpuError(format!("trace norm weight f16 dtoh: {e}")))?;
+            let norm_weight_f32_host = self
+                .stream
+                .clone_dtoh(weights.input_layernorm)
+                .map_err(|e| LLMError::GpuError(format!("trace norm weight f32 dtoh: {e}")))?;
+            let attention_norm_manual_f16 =
+                Self::manual_rms_norm_f16(&attention_norm_input, &norm_weight_f16_host, cfg.rms_norm_eps);
+            let attention_norm_manual_f32_weight = Self::manual_rms_norm_f32_weight(
+                &attention_norm_input,
+                &norm_weight_f32_host,
+                cfg.rms_norm_eps,
+            );
             let q_dim = num_heads * head_dim;
             let kv_dim = num_kv_heads * head_dim;
             let qkv_dim = q_dim + kv_dim + kv_dim;
@@ -1745,6 +1792,8 @@ mod inner {
                 PrefillAttentionSubtrace {
                     attention_norm_input,
                     attention_norm_output,
+                    attention_norm_manual_f16,
+                    attention_norm_manual_f32_weight,
                     qkv_pre_bias,
                     qkv_post_bias,
                     q_proj: q_pre,
