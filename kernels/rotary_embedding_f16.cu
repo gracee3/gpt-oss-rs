@@ -34,11 +34,12 @@ __global__ void rotary_embedding_f16_kernel(
     const float cos_val = cos_cache[pos * half_dim + pair_idx];
     const float sin_val = sin_cache[pos * half_dim + pair_idx];
 
-    // Apply to query
+    // GPT-OSS RoPE rotates the first half of the head against the second half,
+    // not adjacent even/odd pairs.
     {
         const int base = (token_idx * num_heads + head_idx) * head_dim;
-        const int i0 = base + 2 * pair_idx;
-        const int i1 = base + 2 * pair_idx + 1;
+        const int i0 = base + pair_idx;
+        const int i1 = base + half_dim + pair_idx;
 
         float x0 = __half2float(query[i0]);
         float x1 = __half2float(query[i1]);
@@ -49,8 +50,8 @@ __global__ void rotary_embedding_f16_kernel(
     // Apply to key (only if this head maps to a KV head, for GQA support)
     if (head_idx < num_kv_heads) {
         const int base = (token_idx * num_kv_heads + head_idx) * head_dim;
-        const int i0 = base + 2 * pair_idx;
-        const int i1 = base + 2 * pair_idx + 1;
+        const int i0 = base + pair_idx;
+        const int i1 = base + half_dim + pair_idx;
 
         float x0 = __half2float(key[i0]);
         float x1 = __half2float(key[i1]);
