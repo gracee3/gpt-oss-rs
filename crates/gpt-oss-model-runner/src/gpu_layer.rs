@@ -1858,6 +1858,37 @@ mod inner {
                 )?;
             }
 
+            let q_host_post_bias = self
+                .stream
+                .clone_dtoh(&q_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace q post-bias dtoh: {e}")))?;
+            let k_host_post_bias = self
+                .stream
+                .clone_dtoh(&k_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace k post-bias dtoh: {e}")))?;
+            let v_host_post_bias = self
+                .stream
+                .clone_dtoh(&v_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace v post-bias dtoh: {e}")))?;
+            let q_post_bias = q_host_post_bias[q_end - q_dim..q_end]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let k_post_bias = k_host_post_bias[k_host_post_bias.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let v_post_bias = v_host_post_bias[v_host_post_bias.len() - kv_dim..]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let qkv_post_bias = q_post_bias
+                .iter()
+                .chain(k_post_bias.iter())
+                .chain(v_post_bias.iter())
+                .copied()
+                .collect::<Vec<_>>();
+
             {
                 let mut q_view = q_proj.slice_mut(..q_end);
                 let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
@@ -1888,16 +1919,6 @@ mod inner {
                 .stream
                 .clone_dtoh(&v_proj)
                 .map_err(|e| LLMError::GpuError(format!("trace v dtoh: {e}")))?;
-            let q_post = q_host_post[q_end - q_dim..q_end]
-                .iter()
-                .map(|value| value.to_f32());
-            let k_post = k_host_post[k_host_post.len() - kv_dim..]
-                .iter()
-                .map(|value| value.to_f32());
-            let v_post = v_host_post[v_host_post.len() - kv_dim..]
-                .iter()
-                .map(|value| value.to_f32());
-            let qkv_post_bias = q_post.chain(k_post).chain(v_post).collect();
             let sinks_host = match weights.sinks {
                 Some(sinks) => Some(
                     self.stream
@@ -2079,9 +2100,9 @@ mod inner {
                     runtime_contract_v_proj,
                     qkv_pre_bias,
                     qkv_post_bias,
-                    q_proj: q_pre,
-                    k_proj: k_pre,
-                    v_proj: v_pre,
+                    q_proj: q_post_bias,
+                    k_proj: k_post_bias,
+                    v_proj: v_post_bias,
                     q_proj_standalone,
                     k_proj_standalone,
                     v_proj_standalone,
