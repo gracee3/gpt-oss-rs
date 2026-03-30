@@ -267,7 +267,12 @@ Use `scripts/probe_validation_tier.sh` for the smallest useful tiered check.
 - Validation: Tier 0 pass
 - Notes: added `crates/gpt-oss-bench/tools/restricted_oracle_prefill.py` (standalone prefill logit comparator helper)
 
+### `gpt-oss/full-attention-next-case` (selected parity-case enrichments)
+- Action: cherry-picked `ae9a5bd`, `adb0174`, `8d974de`, `7be518b`
+- Validation: Tier 0 pass
+- Notes: added `restricted_logit_diff` binary plus three conformance MoE parity tests/cases for biased routed middle-layer 3-layer coverage without changing runtime behavior
+
 ### `gpt-oss/full-attention-next-case` (remaining high-risk/value commits)
-- Action: skipped (`0eef46e` and downstream parity commits including `ae9a5bd`, `e269212`, etc.)
+- Action: skipped (`e269212` and downstream semantic commits)
 - Validation: N/A (not merged)
-- Notes: skipped to keep this pass narrowly probe-centric; remaining commits are either already superseded by the current richer prefill oracle helper or are broader semantic-runtime changes
+- Notes: kept for later integration; remaining commits are parity diagnostics plus runtime semantic edits (`e269212` and later) that would expand scope past probe-enablement
