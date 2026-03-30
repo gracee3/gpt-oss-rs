@@ -85,6 +85,7 @@ mod inner {
         pub v_proj: Vec<f32>,
         pub q_proj_full: Vec<f32>,
         pub k_proj_full: Vec<f32>,
+        pub v_proj_full: Vec<f32>,
         pub q_proj_standalone: Vec<f32>,
         pub k_proj_standalone: Vec<f32>,
         pub v_proj_standalone: Vec<f32>,
@@ -987,6 +988,35 @@ mod inner {
             }
 
             (scores, probs)
+        }
+
+        fn last_query_attention_context_from_host_f16(
+            probs_host: &[f32],
+            v_host: &[f16],
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Vec<f32> {
+            let heads_per_kv = num_heads / num_kv_heads;
+            let row_width = num_tokens + 1; // includes sink lane
+            let kv_stride = num_kv_heads * head_dim;
+            let mut context = Vec::with_capacity(num_heads * head_dim);
+
+            for h in 0..num_heads {
+                let kv_h = h / heads_per_kv;
+                let row = &probs_host[h * row_width..(h + 1) * row_width];
+                for d in 0..head_dim {
+                    let mut acc = 0.0f32;
+                    for ki in 0..num_tokens {
+                        let k_idx = ki * kv_stride + kv_h * head_dim + d;
+                        acc += row[ki] * v_host[k_idx].to_f32();
+                    }
+                    context.push(Self::round_f32_to_bf16_value(acc));
+                }
+            }
+
+            context
         }
 
         pub fn new(
@@ -2033,6 +2063,10 @@ mod inner {
                 .iter()
                 .map(|value| value.to_f32())
                 .collect::<Vec<_>>();
+            let v_proj_full = v_host_post_bias
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
 
             let rope_cos_host = self
                 .stream
@@ -2224,8 +2258,14 @@ mod inner {
                     "attention trace only supports prefill/sink-aware path".into(),
                 ));
             };
-            let attention_context =
-                Self::copy_last_row_f16(&self.stream, &attn_out, num_tokens, q_dim)?;
+            let attention_context = Self::last_query_attention_context_from_host_f16(
+                &attention_probs,
+                &v_host_post,
+                num_tokens,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+            );
 
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
@@ -2322,6 +2362,7 @@ mod inner {
                     v_proj: v_post_bias,
                     q_proj_full,
                     k_proj_full,
+                    v_proj_full,
                     q_proj_standalone,
                     k_proj_standalone,
                     v_proj_standalone,
