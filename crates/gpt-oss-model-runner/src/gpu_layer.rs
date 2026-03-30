@@ -70,6 +70,9 @@ mod inner {
         pub attention_norm_manual_f16: Vec<f32>,
         pub attention_norm_manual_f32_weight: Vec<f32>,
         pub attention_norm_manual_oracle_policy: Vec<f32>,
+        pub q_proj_gemm_backend: String,
+        pub k_proj_gemm_backend: String,
+        pub v_proj_gemm_backend: String,
         pub qkv_pre_bias: Vec<f32>,
         pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
@@ -1550,9 +1553,15 @@ mod inner {
                     &self.loader,
                 )
             };
-            let q_standalone = hgemm(&normed, weights.q_proj, num_tokens, q_dim, hidden)?;
-            let k_standalone = hgemm(&normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
-            let v_standalone = hgemm(&normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
+            let q_proj_gemm_backend = format!("cublas(m={num_tokens},n={q_dim},k={hidden})");
+            let k_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
+            let v_proj_gemm_backend = format!("cublas(m={num_tokens},n={kv_dim},k={hidden})");
+            let q_standalone =
+                Self::hgemm_alloc(&self.stream, blas, &normed, weights.q_proj, num_tokens, q_dim, hidden)?;
+            let k_standalone =
+                Self::hgemm_alloc(&self.stream, blas, &normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
+            let v_standalone =
+                Self::hgemm_alloc(&self.stream, blas, &normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
             let q_proj_standalone =
                 Self::copy_last_row_f16(&self.stream, &q_standalone, num_tokens, q_dim)?;
             let k_proj_standalone =
@@ -1819,6 +1828,9 @@ mod inner {
                     attention_norm_manual_f16,
                     attention_norm_manual_f32_weight,
                     attention_norm_manual_oracle_policy,
+                    q_proj_gemm_backend,
+                    k_proj_gemm_backend,
+                    v_proj_gemm_backend,
                     qkv_pre_bias,
                     qkv_post_bias,
                     q_proj: q_pre,
