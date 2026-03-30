@@ -59,9 +59,9 @@ fn is_gpt_oss_sink_weight(name: &str) -> bool {
 fn has_nonzero_gpt_oss_sink_tensor<'a>(
     tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
 ) -> bool {
-    tensors
-        .into_iter()
-        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
+    tensors.into_iter().any(|(name, values)| {
+        is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0)
+    })
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1382,10 +1382,7 @@ impl GpuWorker {
                 graph_padded_batch_size,
                 self.config.dtype,
             )
-            .with_attention_config(
-                self.config.layer_types.clone(),
-                self.config.sliding_window,
-            ),
+            .with_attention_config(self.config.layer_types.clone(), self.config.sliding_window),
         )
         .map_err(|e| LLMError::ConfigError(e.to_string()))?;
         trace!(
@@ -2461,13 +2458,15 @@ fn gpu_err(e: impl std::fmt::Display) -> LLMError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
     use std::path::{Path, PathBuf};
 
-    use gpt_oss_core::prelude::{RequestId, SequenceId};
+    use gpt_oss_core::prelude::{BlockId, RequestId, SamplingParams, SequenceId};
     use gpt_oss_core::types::Dtype;
     use gpt_oss_runtime_plan::RuntimeMode;
+    use half::f16;
 
     #[test]
     fn sink_tensor_detector_ignores_zero_sinks() {
@@ -2477,7 +2476,9 @@ mod tests {
         ];
 
         assert!(!has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2489,7 +2490,9 @@ mod tests {
         ];
 
         assert!(has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2580,7 +2583,8 @@ mod tests {
     }
 
     #[cfg(feature = "cuda")]
-    fn test_worker_config() -> WorkerConfig {
+    #[cfg(feature = "cuda")]
+    fn test_worker_config_sliding() -> WorkerConfig {
         WorkerConfig {
             model_name: "openai/gpt-oss-20b".into(),
             runtime_mode: RuntimeMode::Experimental,
@@ -2705,7 +2709,7 @@ mod tests {
             std::env::set_var("GPT_OSS_RS_PTX_DIR", &ptx_dir);
         }
 
-        let mut worker = match GpuWorker::new(test_worker_config()) {
+        let mut worker = match GpuWorker::new(test_worker_config_sliding()) {
             Ok(worker) => worker,
             Err(err) => {
                 eprintln!("skipping: CUDA worker unavailable: {err}");
@@ -2736,8 +2740,7 @@ mod tests {
             vec![],
             (0..8).map(BlockId).collect(),
         );
-        let prefill_input =
-            input::prepare_input(&[prefill_group], worker.config.block_size).unwrap();
+        let prefill_input = input::prepare_input(&[prefill_group], worker.config.block_size).unwrap();
         assert!(prefill_input.is_prefill);
         assert_eq!(prefill_input.position_ids.len(), 128);
         assert_eq!(prefill_input.attention_metadata.context_lens, vec![128]);
@@ -2753,8 +2756,7 @@ mod tests {
             vec![0],
             (0..9).map(BlockId).collect(),
         );
-        let decode_input =
-            input::prepare_input(&[decode_group], worker.config.block_size).unwrap();
+        let decode_input = input::prepare_input(&[decode_group], worker.config.block_size).unwrap();
         assert!(!decode_input.is_prefill);
         assert_eq!(decode_input.token_ids, vec![0]);
         assert_eq!(decode_input.position_ids, vec![128]);
@@ -2774,5 +2776,295 @@ mod tests {
         };
         assert_eq!(decode_logits.len(), 4);
         assert!(decode_logits.iter().all(|value| value.is_finite()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    fn test_worker_config() -> WorkerConfig {
+        WorkerConfig {
+            model_name: "openai/gpt-oss-20b".into(),
+            runtime_mode: gpt_oss_runtime_plan::RuntimeMode::Experimental,
+            device_id: 0,
+            num_layers: 1,
+            num_kv_heads: 2,
+            head_dim: 4,
+            hidden_size: 8,
+            num_attention_heads: 2,
+            intermediate_size: 16,
+            vocab_size: 32,
+            max_model_len: 256,
+            rms_norm_eps: 1e-5,
+            block_size: 16,
+            gpu_memory_utilization: 0.5,
+            rank: 0,
+            tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            architecture: "GptOssForCausalLM".into(),
+            dtype: Dtype::Float16,
+            rope_theta: 10_000.0,
+            kv_cache_dtype: "auto".into(),
+            enable_prefix_caching: false,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
+            sliding_window: None,
+            layer_types: vec!["full_attention".into()],
+            num_local_experts: 2,
+            num_experts_per_tok: 1,
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    fn make_seq_metadata(is_prompt: bool) -> SequenceGroupMetadata {
+        let seq_id = SequenceId(1);
+        let seq_data = SequenceData {
+            prompt_token_ids: vec![1],
+            output_token_ids: if is_prompt { Vec::new() } else { vec![2] },
+            cumulative_logprob: 0.0,
+        };
+        let mut seq_map = HashMap::new();
+        seq_map.insert(seq_id, seq_data);
+        let mut block_tables = HashMap::new();
+        block_tables.insert(seq_id, vec![BlockId(0)]);
+        SequenceGroupMetadata {
+            request_id: RequestId(7),
+            is_prompt,
+            seq_data: seq_map,
+            sampling_params: SamplingParams::default(),
+            block_tables,
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    fn make_f32_weights(
+        worker: &GpuWorker,
+    ) -> (
+        HashMap<String, CudaSlice<f32>>,
+        HashMap<String, Vec<usize>>,
+        HashMap<String, CudaSlice<f16>>,
+    ) {
+        let hidden = 8usize;
+        let vocab = 32usize;
+        let intermediate = 16usize;
+        let q_dim = 8usize;
+        let kv_dim = 8usize;
+
+        let mut f32_weights = HashMap::new();
+        let mut shapes = HashMap::new();
+        let mut f16_weights = HashMap::new();
+
+        let mut embed = vec![0.0f32; vocab * hidden];
+        for token in 0..vocab {
+            embed[token * hidden + (token % hidden)] = 1.0;
+        }
+        let lm_head = embed.clone();
+
+        let insert_f32 = |map: &mut HashMap<String, CudaSlice<f32>>,
+                          shapes: &mut HashMap<String, Vec<usize>>,
+                          name: &str,
+                          data: Vec<f32>,
+                          shape: Vec<usize>,
+                          worker: &GpuWorker| {
+            map.insert(name.into(), worker.stream.clone_htod(&data).unwrap());
+            shapes.insert(name.into(), shape);
+        };
+        let insert_f16 = |map: &mut HashMap<String, CudaSlice<f16>>,
+                          shapes: &mut HashMap<String, Vec<usize>>,
+                          name: &str,
+                          data: Vec<f16>,
+                          shape: Vec<usize>,
+                          worker: &GpuWorker| {
+            map.insert(name.into(), worker.stream.clone_htod(&data).unwrap());
+            shapes.insert(name.into(), shape);
+        };
+
+        insert_f32(
+            &mut f32_weights,
+            &mut shapes,
+            "model.embed_tokens.weight",
+            embed,
+            vec![vocab, hidden],
+            worker,
+        );
+        insert_f32(
+            &mut f32_weights,
+            &mut shapes,
+            "lm_head.weight",
+            lm_head,
+            vec![vocab, hidden],
+            worker,
+        );
+        insert_f32(
+            &mut f32_weights,
+            &mut shapes,
+            "model.norm.weight",
+            vec![1.0; hidden],
+            vec![hidden],
+            worker,
+        );
+        insert_f32(
+            &mut f32_weights,
+            &mut shapes,
+            "model.layers.0.input_layernorm.weight",
+            vec![1.0; hidden],
+            vec![hidden],
+            worker,
+        );
+        insert_f32(
+            &mut f32_weights,
+            &mut shapes,
+            "model.layers.0.post_attention_layernorm.weight",
+            vec![1.0; hidden],
+            vec![hidden],
+            worker,
+        );
+
+        let zeros_q = vec![f16::from_f32(0.0); q_dim * hidden];
+        let zeros_kv = vec![f16::from_f32(0.0); kv_dim * hidden];
+        let zeros_gate = vec![f16::from_f32(0.0); intermediate * hidden];
+        let zeros_down = vec![f16::from_f32(0.0); hidden * intermediate];
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.self_attn.q_proj.weight",
+            zeros_q.clone(),
+            vec![q_dim, hidden],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.self_attn.k_proj.weight",
+            zeros_kv.clone(),
+            vec![kv_dim, hidden],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.self_attn.v_proj.weight",
+            zeros_kv,
+            vec![kv_dim, hidden],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.self_attn.o_proj.weight",
+            zeros_q,
+            vec![hidden, q_dim],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.mlp.gate_proj.weight",
+            zeros_gate.clone(),
+            vec![intermediate, hidden],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.mlp.up_proj.weight",
+            zeros_gate,
+            vec![intermediate, hidden],
+            worker,
+        );
+        insert_f16(
+            &mut f16_weights,
+            &mut shapes,
+            "model.layers.0.mlp.down_proj.weight",
+            zeros_down,
+            vec![hidden, intermediate],
+            worker,
+        );
+
+        (f32_weights, shapes, f16_weights)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    fn seed_test_weights(worker: &mut GpuWorker) {
+        let (f32_weights, shapes, f16_weights) = make_f32_weights(worker);
+        worker.raw_weight_map = Some(f32_weights);
+        worker.raw_weight_shapes = Some(shapes);
+        worker.raw_weight_map_f16 = Some(f16_weights);
+        worker.raw_weight_map_u8 = None;
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    fn ensure_test_ptx_dir() -> bool {
+        if GpuWorker::find_ptx_dir().is_some() {
+            return true;
+        }
+
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let search_roots = [
+            manifest_dir.join("../../target/debug/build"),
+            manifest_dir.join("../../target/release/build"),
+        ];
+
+        for root in search_roots {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let ptx = entry.path().join("out/ptx");
+                if ptx.join("rotary_embedding.ptx").exists() {
+                    std::env::set_var("GPT_OSS_RS_PTX_DIR", &ptx);
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-graphs"))]
+    #[test]
+    fn dense_decode_graph_replay_matches_eager_on_cuda() {
+        if !ensure_test_ptx_dir() {
+            eprintln!("skipping: PTX directory not found");
+            return;
+        }
+
+        let mut worker = GpuWorker::new(test_worker_config()).unwrap();
+        seed_test_weights(&mut worker);
+        worker.init_cache(4, 0).unwrap();
+
+        let prefill = input::prepare_input(&[make_seq_metadata(true)], worker.config.block_size).unwrap();
+        match worker.gpu_forward_ex(&prefill, true).unwrap() {
+            ForwardOutput::TokenIds(ids) => assert_eq!(ids.len(), 1),
+            other => panic!("expected eager greedy prefill token ids, got {other:?}"),
+        }
+
+        let decode = input::prepare_input(&[make_seq_metadata(false)], worker.config.block_size).unwrap();
+
+        let eager_ids = match worker.gpu_forward_ex(&decode, true).unwrap() {
+            ForwardOutput::TokenIds(ids) => ids,
+            other => panic!("expected eager decode token ids before graph capture, got {other:?}"),
+        };
+        assert_eq!(eager_ids.len(), 1);
+
+        match worker.gpu_forward_ex(&decode, true).unwrap() {
+            ForwardOutput::TokenIds(ids) => assert_eq!(ids, eager_ids),
+            other => panic!("expected warmup decode token ids, got {other:?}"),
+        }
+
+        match worker.gpu_forward_ex(&decode, true).unwrap() {
+            ForwardOutput::TokenIds(ids) => assert_eq!(ids, eager_ids),
+            other => panic!("expected capture decode token ids, got {other:?}"),
+        }
+
+        assert!(worker.graph_runner.has_graph_for(1));
+        assert!(worker.graph_runner.was_capture_attempted(1));
+
+        match worker.gpu_forward_ex(&decode, true).unwrap() {
+            ForwardOutput::TokenIdsPending { actual_batch } => {
+                assert_eq!(actual_batch, 1);
+                let replay_ids = worker.collect_pending_tokens(actual_batch).unwrap();
+                assert_eq!(replay_ids, eager_ids);
+            }
+            other => panic!("expected graph replay pending token ids, got {other:?}"),
+        }
     }
 }

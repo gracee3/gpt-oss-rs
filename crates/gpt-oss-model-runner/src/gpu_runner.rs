@@ -2482,14 +2482,21 @@ mod cuda_impl {
                         removed += 1;
                     }
                 }
-                for suffix in [
-                    "mlp.gate_proj.weight",
-                    "mlp.up_proj.weight",
-                    "mlp.down_proj.weight",
-                ] {
-                    let name = format!("model.layers.{i}.{suffix}");
-                    if self.weights.remove_f16(&name).is_some() {
-                        removed += 1;
+                if self
+                    .gpt_oss_moe_layers
+                    .get(i)
+                    .and_then(|layer| layer.as_ref())
+                    .is_some()
+                {
+                    for suffix in [
+                        "mlp.gate_proj.weight",
+                        "mlp.up_proj.weight",
+                        "mlp.down_proj.weight",
+                    ] {
+                        let name = format!("model.layers.{i}.{suffix}");
+                        if self.weights.remove_f16(&name).is_some() {
+                            removed += 1;
+                        }
                     }
                 }
             }

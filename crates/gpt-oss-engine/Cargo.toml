@@ -43,6 +43,7 @@ axum.workspace = true
 [features]
 default = []
 cuda = ["dep:cudarc", "gpt-oss-gpu/cuda", "gpt-oss-model-runner/cuda"]
+cuda-graphs = ["cuda", "gpt-oss-gpu/cuda-graphs"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-model-runner/cublaslt"]
 
 [dev-dependencies]
