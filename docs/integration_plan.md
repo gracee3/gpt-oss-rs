@@ -134,3 +134,33 @@
   - running against stock `/data/models/openai/gpt-oss-20b` fails at trusted admission with:
     - `config error: trusted GPT-OSS mode rejects attention sinks until runtime support and parity are proven: model.layers.6.self_attn.sinks`
   - so the current branch is probe-ready at the code level, but still needs a restricted/admissible model view (or equivalent narrow model-view preparation step) before future semantic cherry-picks can be safely validated from `main`
+
+## Restricted Model View Enablement
+
+### Step 5
+- Action: added a tiny local restricted-model-view generator for probe use only
+- Files/commits added:
+  - `crates/gpt-oss-bench/tools/create_restricted_probe_model_view.py`
+- Result:
+  - generator now creates a derived model directory that:
+    - symlinks the real checkpoint/tokenizer assets
+    - rewrites `config.json` to full-attention-only with sliding disabled
+    - adds `zzzz-sinks-override.safetensors` so all `self_attn.sinks` tensors load as zeros
+- Remaining blocker: none at the model-view preparation stage
+
+### Step 6
+- Action: generated a restricted probe model view and reran the trace on GPU1
+- Files/commits added:
+  - generated local model view (not committed): `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+  - generated trace artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-cuda-prefill-trace.integration.json`
+- Result:
+  - `restricted_prefill_trace` now runs end-to-end on GPU1 against the restricted model view
+  - it progresses through:
+    - trusted admission
+    - f32 + f16 weight load
+    - KV cache initialization
+    - prefill execution
+    - trace export
+- Remaining blocker:
+  - probe enablement itself is no longer blocked
+  - next safe integration step is still separate: bring over only the smallest oracle-side comparison helper needed for measured semantic cherry-picks
