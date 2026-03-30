@@ -261,7 +261,10 @@ impl ReferenceExecutor {
             || (self.config.num_local_experts > 0
                 && self.effective_top_k() > 0
                 && self.config.moe_layer_indices.iter().all(|layer| {
-                    matches!(self.layer_type(*layer), "full_attention" | "global_attention")
+                    matches!(
+                        self.layer_type(*layer),
+                        "full_attention" | "global_attention"
+                    )
                 }))
     }
 
@@ -272,7 +275,10 @@ impl ReferenceExecutor {
         token_count: usize,
     ) -> AttentionTrace {
         let visible = self.visible_tokens(layer_type, query_index, token_count);
-        if self.config.sink_tokens > 0 && layer_type != "full_attention" && layer_type != "global_attention" {
+        if self.config.sink_tokens > 0
+            && layer_type != "full_attention"
+            && layer_type != "global_attention"
+        {
             AttentionTrace::sink(visible)
         } else if layer_type == "sliding_attention" || layer_type == "local_attention" {
             AttentionTrace::sliding(visible)
@@ -281,7 +287,12 @@ impl ReferenceExecutor {
         }
     }
 
-    fn visible_tokens(&self, layer_type: &str, query_index: usize, token_count: usize) -> Vec<usize> {
+    fn visible_tokens(
+        &self,
+        layer_type: &str,
+        query_index: usize,
+        token_count: usize,
+    ) -> Vec<usize> {
         if token_count == 0 {
             return Vec::new();
         }
@@ -309,7 +320,8 @@ impl ReferenceExecutor {
         if visible.is_empty() {
             return 0.0;
         }
-        let positional_mean = visible.iter().map(|idx| *idx as f32).sum::<f32>() / visible.len() as f32;
+        let positional_mean =
+            visible.iter().map(|idx| *idx as f32).sum::<f32>() / visible.len() as f32;
         hidden_value + positional_mean * 0.01
     }
 
@@ -319,7 +331,13 @@ impl ReferenceExecutor {
                 let synthetic = attention_signal * ((expert_index + 1) as f32 * 0.1)
                     + hidden_value * (((expert_index % 3) + 1) as f32 * 0.05)
                     - expert_index as f32 * 0.02;
-                synthetic + self.config.router_bias.get(expert_index).copied().unwrap_or(0.0)
+                synthetic
+                    + self
+                        .config
+                        .router_bias
+                        .get(expert_index)
+                        .copied()
+                        .unwrap_or(0.0)
             })
             .collect()
     }
@@ -391,7 +409,8 @@ impl ReferenceExecutor {
                     })
                     .collect::<Vec<_>>();
                 if !self.config.expert_output_rows.is_empty() {
-                    let mut moe_output = vec![vec![0.0; hidden.first().map_or(0, Vec::len)]; token_count];
+                    let mut moe_output =
+                        vec![vec![0.0; hidden.first().map_or(0, Vec::len)]; token_count];
                     for (token_index, token_routes) in routes.iter().enumerate() {
                         for (expert_index, weight) in token_routes {
                             if let Some(expert_row) =
@@ -408,8 +427,7 @@ impl ReferenceExecutor {
                     }
                     for (hidden_row, moe_row) in hidden.iter_mut().zip(moe_output.iter()) {
                         for (hidden_value, moe_value) in hidden_row.iter_mut().zip(moe_row.iter()) {
-                            *hidden_value =
-                                f16::from_f32(*hidden_value + *moe_value).to_f32();
+                            *hidden_value = f16::from_f32(*hidden_value + *moe_value).to_f32();
                         }
                     }
                 }

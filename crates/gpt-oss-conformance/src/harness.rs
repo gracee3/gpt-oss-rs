@@ -80,6 +80,9 @@ impl ConformanceHarness {
             ParityOutcome::Mismatch
         };
 
-        ContinuityReport { outcome, comparison }
+        ContinuityReport {
+            outcome,
+            comparison,
+        }
     }
 }
