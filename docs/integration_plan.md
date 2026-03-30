@@ -164,3 +164,33 @@
 - Remaining blocker:
   - probe enablement itself is no longer blocked
   - next safe integration step is still separate: bring over only the smallest oracle-side comparison helper needed for measured semantic cherry-picks
+
+## Oracle Comparison Enablement
+
+### Step 7
+- Action: restored the smallest oracle-side comparison helper from `gpt-oss/full-attention-next-case`
+- Files/commits added:
+  - `crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py`
+- Result:
+  - helper now:
+    - reads the integration-branch restricted prefill trace artifact
+    - uses the restricted model view for config
+    - uses the original monolithic GPT-OSS checkpoint for oracle weights
+    - tolerates the minimal integration trace shape without deeper attention subtraces
+- Remaining blocker:
+  - helper execution depends on an existing Python environment with `torch`
+  - current successful run used `/home/emmy/openai/worktrees/full-attention-next-case/.venv-oracle/bin/python`
+
+### Step 8
+- Action: ran the trace-vs-oracle comparison on the integration branch artifacts
+- Files/commits added:
+  - generated trace artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-cuda-prefill-trace.integration.json`
+  - generated oracle diff artifact (not committed): `/home/emmy/openai/gpt-oss-rs/.live/restricted-prefill-trace-diff.integration.json`
+- Result:
+  - trace-vs-oracle comparison now runs successfully
+  - earliest divergence boundary reported by the minimal compare surface:
+    - `layer0.post_attn_residual`
+    - `max_abs_diff = 26.2617188`
+    - `mean_abs_diff = 0.31712404078090667`
+- Remaining blocker:
+  - safe semantic cherry-picks deeper than this still need additional selective trace/detail promotion if they must be measured below the coarse per-layer surfaces now available
