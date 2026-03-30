@@ -92,6 +92,8 @@ mod inner {
         pub k_rope_manual_f16: Vec<f32>,
         pub q_rope_manual_oracle: Vec<f32>,
         pub k_rope_manual_oracle: Vec<f32>,
+        pub q_rope_full: Vec<f32>,
+        pub k_rope_full: Vec<f32>,
         pub q_rope: Vec<f32>,
         pub k_rope: Vec<f32>,
         pub masked_scores: Vec<f32>,
@@ -960,6 +962,9 @@ mod inner {
                         let k_idx = ki * kv_stride + kv_h * head_dim + d;
                         dot += q_host[q_idx].to_f32() * k_host[k_idx].to_f32();
                     }
+                    // The oracle attention score path preserves bf16 score semantics
+                    // before scale/mask, even though we only export scores as f32.
+                    let dot = Self::round_f32_to_bf16_value(dot);
                     row.push(dot * scale);
                 }
                 if let Some(sinks) = sinks_host {
@@ -2121,6 +2126,14 @@ mod inner {
                 .stream
                 .clone_dtoh(&v_proj)
                 .map_err(|e| LLMError::GpuError(format!("trace v dtoh: {e}")))?;
+            let q_rope_full = q_host_post
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let k_rope_full = k_host_post
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
             let sinks_host = match weights.sinks {
                 Some(sinks) => Some(
                     self.stream
@@ -2314,6 +2327,8 @@ mod inner {
                     k_rope_manual_f16,
                     q_rope_manual_oracle,
                     k_rope_manual_oracle,
+                    q_rope_full,
+                    k_rope_full,
                     q_rope,
                     k_rope,
                     masked_scores,
