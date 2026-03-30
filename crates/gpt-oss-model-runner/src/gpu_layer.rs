@@ -73,6 +73,11 @@ mod inner {
         pub q_proj_gemm_backend: String,
         pub k_proj_gemm_backend: String,
         pub v_proj_gemm_backend: String,
+        pub runtime_contract_qkv_pre_bias: Vec<f32>,
+        pub runtime_contract_qkv_post_bias: Vec<f32>,
+        pub runtime_contract_q_proj: Vec<f32>,
+        pub runtime_contract_k_proj: Vec<f32>,
+        pub runtime_contract_v_proj: Vec<f32>,
         pub qkv_pre_bias: Vec<f32>,
         pub qkv_post_bias: Vec<f32>,
         pub q_proj: Vec<f32>,
@@ -743,6 +748,30 @@ mod inner {
                 .zip(weight.iter())
                 .map(|(x, w)| half::bf16::from_f32(x * *w * rms_scale).to_f32())
                 .collect()
+        }
+
+        fn manual_projection_runtime_contract(
+            input: &[f32],
+            weight: &[f16],
+            bias: Option<&[f16]>,
+        ) -> Vec<f32> {
+            let input_f16: Vec<f32> = input
+                .iter()
+                .copied()
+                .map(|x| f16::from_f32(x).to_f32())
+                .collect();
+            let mut out = Vec::with_capacity(weight.len() / input.len());
+            for row in weight.chunks_exact(input.len()) {
+                let mut acc = 0.0f32;
+                for (w, x) in row.iter().zip(input_f16.iter()) {
+                    acc += w.to_f32() * *x;
+                }
+                if let Some(bias) = bias {
+                    acc += bias[out.len()].to_f32();
+                }
+                out.push(f16::from_f32(acc).to_f32());
+            }
+            out
         }
 
         fn last_query_scores_probs_from_host_f16(
@@ -1568,6 +1597,68 @@ mod inner {
                 Self::copy_last_row_f16(&self.stream, &k_standalone, num_tokens, kv_dim)?;
             let v_proj_standalone =
                 Self::copy_last_row_f16(&self.stream, &v_standalone, num_tokens, kv_dim)?;
+            let q_weight_host = self
+                .stream
+                .clone_dtoh(weights.q_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace q weight dtoh: {e}")))?;
+            let k_weight_host = self
+                .stream
+                .clone_dtoh(weights.k_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace k weight dtoh: {e}")))?;
+            let v_weight_host = self
+                .stream
+                .clone_dtoh(weights.v_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace v weight dtoh: {e}")))?;
+            let (q_bias_host, k_bias_host, v_bias_host) = if let Some(bias) = weights.fused_qkv_bias
+            {
+                let bias_host = self
+                    .stream
+                    .clone_dtoh(bias)
+                    .map_err(|e| LLMError::GpuError(format!("trace fused qkv bias dtoh: {e}")))?;
+                let (q_bias, tail) = bias_host.split_at(q_dim);
+                let (k_bias, v_bias) = tail.split_at(kv_dim);
+                (Some(q_bias.to_vec()), Some(k_bias.to_vec()), Some(v_bias.to_vec()))
+            } else {
+                (None, None, None)
+            };
+            let runtime_contract_q_proj = Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &q_weight_host,
+                q_bias_host.as_deref(),
+            );
+            let runtime_contract_k_proj = Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &k_weight_host,
+                k_bias_host.as_deref(),
+            );
+            let runtime_contract_v_proj = Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &v_weight_host,
+                v_bias_host.as_deref(),
+            );
+            let runtime_contract_qkv_pre_bias = Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &q_weight_host,
+                None,
+            )
+            .into_iter()
+            .chain(Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &k_weight_host,
+                None,
+            ))
+            .chain(Self::manual_projection_runtime_contract(
+                &attention_norm_output,
+                &v_weight_host,
+                None,
+            ))
+            .collect();
+            let runtime_contract_qkv_post_bias = runtime_contract_q_proj
+                .iter()
+                .chain(runtime_contract_k_proj.iter())
+                .chain(runtime_contract_v_proj.iter())
+                .copied()
+                .collect();
 
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
@@ -1831,6 +1922,11 @@ mod inner {
                     q_proj_gemm_backend,
                     k_proj_gemm_backend,
                     v_proj_gemm_backend,
+                    runtime_contract_qkv_pre_bias,
+                    runtime_contract_qkv_post_bias,
+                    runtime_contract_q_proj,
+                    runtime_contract_k_proj,
+                    runtime_contract_v_proj,
                     qkv_pre_bias,
                     qkv_post_bias,
                     q_proj: q_pre,
