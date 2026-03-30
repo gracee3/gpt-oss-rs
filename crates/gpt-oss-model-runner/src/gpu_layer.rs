@@ -83,6 +83,8 @@ mod inner {
         pub q_proj: Vec<f32>,
         pub k_proj: Vec<f32>,
         pub v_proj: Vec<f32>,
+        pub q_proj_full: Vec<f32>,
+        pub k_proj_full: Vec<f32>,
         pub q_proj_standalone: Vec<f32>,
         pub k_proj_standalone: Vec<f32>,
         pub v_proj_standalone: Vec<f32>,
@@ -850,8 +852,18 @@ mod inner {
                         } else {
                             query[i1].to_f32()
                         };
-                        let y0 = x0 * cos_val - x1 * sin_val;
-                        let y1 = x0 * sin_val + x1 * cos_val;
+                        let (y0, y1) = if oracle_bf16 {
+                            let prod00 = Self::round_f32_to_bf16_value(x0 * cos_val);
+                            let prod01 = Self::round_f32_to_bf16_value(x1 * sin_val);
+                            let prod10 = Self::round_f32_to_bf16_value(x0 * sin_val);
+                            let prod11 = Self::round_f32_to_bf16_value(x1 * cos_val);
+                            (
+                                Self::round_f32_to_bf16_value(prod00 - prod01),
+                                Self::round_f32_to_bf16_value(prod10 + prod11),
+                            )
+                        } else {
+                            (x0 * cos_val - x1 * sin_val, x0 * sin_val + x1 * cos_val)
+                        };
                         q_out[i0] = if oracle_bf16 {
                             f16::from_f32(half::bf16::from_f32(y0).to_f32())
                         } else {
@@ -890,8 +902,18 @@ mod inner {
                         } else {
                             key[i1].to_f32()
                         };
-                        let y0 = x0 * cos_val - x1 * sin_val;
-                        let y1 = x0 * sin_val + x1 * cos_val;
+                        let (y0, y1) = if oracle_bf16 {
+                            let prod00 = Self::round_f32_to_bf16_value(x0 * cos_val);
+                            let prod01 = Self::round_f32_to_bf16_value(x1 * sin_val);
+                            let prod10 = Self::round_f32_to_bf16_value(x0 * sin_val);
+                            let prod11 = Self::round_f32_to_bf16_value(x1 * cos_val);
+                            (
+                                Self::round_f32_to_bf16_value(prod00 - prod01),
+                                Self::round_f32_to_bf16_value(prod10 + prod11),
+                            )
+                        } else {
+                            (x0 * cos_val - x1 * sin_val, x0 * sin_val + x1 * cos_val)
+                        };
                         k_out[i0] = if oracle_bf16 {
                             f16::from_f32(half::bf16::from_f32(y0).to_f32())
                         } else {
@@ -1996,6 +2018,14 @@ mod inner {
                 .chain(v_post_bias.iter())
                 .copied()
                 .collect::<Vec<_>>();
+            let q_proj_full = q_host_post_bias
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
+            let k_proj_full = k_host_post_bias
+                .iter()
+                .map(|value| value.to_f32())
+                .collect::<Vec<_>>();
 
             let rope_cos_host = self
                 .stream
@@ -2275,6 +2305,8 @@ mod inner {
                     q_proj: q_post_bias,
                     k_proj: k_post_bias,
                     v_proj: v_post_bias,
+                    q_proj_full,
+                    k_proj_full,
                     q_proj_standalone,
                     k_proj_standalone,
                     v_proj_standalone,
