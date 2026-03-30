@@ -922,69 +922,8 @@ mod inner {
                     &self.loader,
                 )
             };
-            let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
-                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
-            } else {
-                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
-                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
-                let q_end = num_tokens * q_dim;
-                let k_end = q_end + num_tokens * kv_dim;
-                {
-                    let mut q_dst = qkv_buf.slice_mut(..q_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        q_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.q_proj,
-                        0.0,
-                        &mut q_dst,
-                    )?;
-                }
-                {
-                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.k_proj,
-                        0.0,
-                        &mut k_dst,
-                    )?;
-                }
-                {
-                    let mut v_dst = qkv_buf.slice_mut(k_end..);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.v_proj,
-                        0.0,
-                        &mut v_dst,
-                    )?;
-                }
-                qkv_buf
-            };
-
-            // 3. Apply fused QKV bias (f16) in-place.
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
-            if let Some(bias) = weights.fused_qkv_bias {
-                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                Self::add_bias_f16_view(
-                    &self.stream,
-                    &self.loader,
-                    &mut qkv_view,
-                    bias,
-                    num_tokens,
-                    qkv_dim,
-                )?;
-            }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
                 stage_start
@@ -994,102 +933,143 @@ mod inner {
             } else {
                 0
             };
+            let rope_ms;
+            let cache_write_ms;
 
-            // 4. RoPE f16 in-place on Q and K regions.
-            {
-                let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
-                let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
-                Self::apply_rotary_embedding_f16_views(
-                    &self.stream,
-                    &self.loader,
-                    &mut q_part,
-                    &mut k_view,
-                    &input.positions,
-                    input.rope_cos,
-                    input.rope_sin,
-                    num_tokens,
-                    num_heads,
-                    num_kv_heads,
-                    head_dim,
-                )?;
-            }
-            let rope_ms = if trace_layer_timings {
-                sync_for_timing(&self.stream, "rope")?;
-                stage_start
-                    .replace(Instant::now())
-                    .map(|start| start.elapsed().as_millis())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            // 5. KV cache write: f16 K/V -> f16 cache.
-            {
-                let k_view = qkv.slice(q_end..k_end);
-                let v_view = qkv.slice(k_end..);
-                Self::cache_write_f16_views(
-                    &self.stream,
-                    &self.loader,
-                    &k_view,
-                    &v_view,
-                    input.key_cache,
-                    input.value_cache,
-                    &input.slot_mapping,
-                    num_tokens,
-                    num_kv_heads,
-                    head_dim,
-                )?;
-            }
-            let cache_write_ms = if trace_layer_timings {
-                sync_for_timing(&self.stream, "cache_write")?;
-                stage_start
-                    .replace(Instant::now())
-                    .map(|start| start.elapsed().as_millis())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            // 6. Attention.
-            let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
-            let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
-            let attn_out = if input.is_prefill || use_sink_attention {
-                let cast_f16_f32 = self
-                    .loader
-                    .get_func("cast_fp", "cast_f16_to_f32_kernel")
-                    .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
-                let cast_f32_f16 = self
-                    .loader
-                    .get_func("cast_fp", "cast_f32_to_f16_kernel")
-                    .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
-                let q_f16 = qkv.slice(..q_end);
-                let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
-                let attn_f32 = if input.is_prefill {
-                    Self::prefill_attention(
+            let attn_out = if let Some(fused_qkv) = weights.fused_qkv {
+                let mut qkv = hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?;
+                if let Some(bias) = weights.fused_qkv_bias {
+                    let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                    Self::add_bias_f16_view(
                         &self.stream,
                         &self.loader,
-                        &q_f32.as_view(),
-                        input.key_cache,
-                        input.value_cache,
-                        &input.block_tables,
-                        &input.context_lens,
-                        &input.seq_start_pos,
+                        &mut qkv_view,
+                        bias,
                         num_tokens,
-                        input.num_seqs,
+                        qkv_dim,
+                    )?;
+                }
+
+                {
+                    let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
+                    let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
+                    Self::apply_rotary_embedding_f16_views(
+                        &self.stream,
+                        &self.loader,
+                        &mut q_part,
+                        &mut k_view,
+                        &input.positions,
+                        input.rope_cos,
+                        input.rope_sin,
+                        num_tokens,
                         num_heads,
                         num_kv_heads,
                         head_dim,
-                        input.max_context_len,
-                        input.block_size,
-                        sinks,
-                        weights.sinks.is_some(),
-                        cfg.sliding_window,
+                    )?;
+                }
+                rope_ms = if trace_layer_timings {
+                    sync_for_timing(&self.stream, "rope")?;
+                    stage_start
+                        .replace(Instant::now())
+                        .map(|start| start.elapsed().as_millis())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                {
+                    let k_view = qkv.slice(q_end..k_end);
+                    let v_view = qkv.slice(k_end..);
+                    Self::cache_write_f16_views(
+                        &self.stream,
+                        &self.loader,
+                        &k_view,
+                        &v_view,
+                        input.key_cache,
+                        input.value_cache,
+                        &input.slot_mapping,
+                        num_tokens,
+                        num_kv_heads,
+                        head_dim,
+                    )?;
+                }
+                cache_write_ms = if trace_layer_timings {
+                    sync_for_timing(&self.stream, "cache_write")?;
+                    stage_start
+                        .replace(Instant::now())
+                        .map(|start| start.elapsed().as_millis())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+                let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+                let attn_out = if input.is_prefill || use_sink_attention {
+                    let cast_f16_f32 = self
+                        .loader
+                        .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                        .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                    let cast_f32_f16 = self
+                        .loader
+                        .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                        .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
+                    let q_f16 = qkv.slice(..q_end);
+                    let q_f32 =
+                        Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
+                    let attn_f32 = if input.is_prefill {
+                        Self::prefill_attention(
+                            &self.stream,
+                            &self.loader,
+                            &q_f32.as_view(),
+                            input.key_cache,
+                            input.value_cache,
+                            &input.block_tables,
+                            &input.context_lens,
+                            &input.seq_start_pos,
+                            num_tokens,
+                            input.num_seqs,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            input.max_context_len,
+                            input.block_size,
+                            sinks,
+                            weights.sinks.is_some(),
+                            cfg.sliding_window,
+                        )?
+                    } else {
+                        Self::decode_attention(
+                            &self.stream,
+                            &self.loader,
+                            &q_f32.as_view(),
+                            input.key_cache,
+                            input.value_cache,
+                            &input.block_tables,
+                            &input.context_lens,
+                            num_tokens,
+                            input.num_seqs,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            input.max_context_len,
+                            input.block_size,
+                            sinks,
+                            weights.sinks.is_some(),
+                            cfg.sliding_window,
+                        )?
+                    };
+                    Self::cast_f32_to_f16(
+                        &self.stream,
+                        &attn_f32,
+                        num_tokens * num_heads * head_dim,
+                        &cast_f32_f16,
                     )?
                 } else {
-                    Self::decode_attention(
+                    Self::decode_attention_f16io(
                         &self.stream,
                         &self.loader,
-                        &q_f32.as_view(),
+                        &qkv.slice(..q_end),
                         input.key_cache,
                         input.value_cache,
                         &input.block_tables,
@@ -1101,34 +1081,181 @@ mod inner {
                         head_dim,
                         input.max_context_len,
                         input.block_size,
-                        sinks,
-                        weights.sinks.is_some(),
-                        cfg.sliding_window,
                     )?
                 };
-                Self::cast_f32_to_f16(
-                    &self.stream,
-                    &attn_f32,
-                    num_tokens * num_heads * head_dim,
-                    &cast_f32_f16,
-                )?
+                attn_out
             } else {
-                Self::decode_attention_f16io(
-                    &self.stream,
-                    &self.loader,
-                    &qkv.slice(..q_end),
-                    input.key_cache,
-                    input.value_cache,
-                    &input.block_tables,
-                    &input.context_lens,
-                    num_tokens,
-                    input.num_seqs,
-                    num_heads,
-                    num_kv_heads,
-                    head_dim,
-                    input.max_context_len,
-                    input.block_size,
-                )?
+                let mut q_proj = hgemm(&normed, weights.q_proj, num_tokens, q_dim, hidden)?;
+                let mut k_proj = hgemm(&normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
+                let mut v_proj = hgemm(&normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
+                if let Some(bias) = weights.fused_qkv_bias {
+                    let q_bias = bias.slice(..q_dim);
+                    let k_bias = bias.slice(q_dim..q_dim + kv_dim);
+                    let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
+                    let mut q_view = q_proj.slice_mut(..q_end);
+                    Self::add_bias_f16_view_from_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut q_view,
+                        &q_bias,
+                        num_tokens,
+                        q_dim,
+                    )?;
+                    let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
+                    Self::add_bias_f16_view_from_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut k_view,
+                        &k_bias,
+                        num_tokens,
+                        kv_dim,
+                    )?;
+                    let mut v_view = v_proj.slice_mut(..num_tokens * kv_dim);
+                    Self::add_bias_f16_view_from_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut v_view,
+                        &v_bias,
+                        num_tokens,
+                        kv_dim,
+                    )?;
+                }
+
+                {
+                    let mut q_view = q_proj.slice_mut(..q_end);
+                    let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
+                    Self::apply_rotary_embedding_f16_views(
+                        &self.stream,
+                        &self.loader,
+                        &mut q_view,
+                        &mut k_view,
+                        &input.positions,
+                        input.rope_cos,
+                        input.rope_sin,
+                        num_tokens,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                    )?;
+                }
+                rope_ms = if trace_layer_timings {
+                    sync_for_timing(&self.stream, "rope")?;
+                    stage_start
+                        .replace(Instant::now())
+                        .map(|start| start.elapsed().as_millis())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                {
+                    let k_view = k_proj.slice(..num_tokens * kv_dim);
+                    let v_view = v_proj.slice(..num_tokens * kv_dim);
+                    Self::cache_write_f16_views(
+                        &self.stream,
+                        &self.loader,
+                        &k_view,
+                        &v_view,
+                        input.key_cache,
+                        input.value_cache,
+                        &input.slot_mapping,
+                        num_tokens,
+                        num_kv_heads,
+                        head_dim,
+                    )?;
+                }
+                cache_write_ms = if trace_layer_timings {
+                    sync_for_timing(&self.stream, "cache_write")?;
+                    stage_start
+                        .replace(Instant::now())
+                        .map(|start| start.elapsed().as_millis())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
+                let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+                let attn_out = if input.is_prefill || use_sink_attention {
+                    let cast_f16_f32 = self
+                        .loader
+                        .get_func("cast_fp", "cast_f16_to_f32_kernel")
+                        .map_err(|e| LLMError::GpuError(format!("load cast f16->f32: {e}")))?;
+                    let cast_f32_f16 = self
+                        .loader
+                        .get_func("cast_fp", "cast_f32_to_f16_kernel")
+                        .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
+                    let q_f16 = q_proj.slice(..q_end);
+                    let q_f32 =
+                        Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
+                    let attn_f32 = if input.is_prefill {
+                        Self::prefill_attention(
+                            &self.stream,
+                            &self.loader,
+                            &q_f32.as_view(),
+                            input.key_cache,
+                            input.value_cache,
+                            &input.block_tables,
+                            &input.context_lens,
+                            &input.seq_start_pos,
+                            num_tokens,
+                            input.num_seqs,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            input.max_context_len,
+                            input.block_size,
+                            sinks,
+                            weights.sinks.is_some(),
+                            cfg.sliding_window,
+                        )?
+                    } else {
+                        Self::decode_attention(
+                            &self.stream,
+                            &self.loader,
+                            &q_f32.as_view(),
+                            input.key_cache,
+                            input.value_cache,
+                            &input.block_tables,
+                            &input.context_lens,
+                            num_tokens,
+                            input.num_seqs,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            input.max_context_len,
+                            input.block_size,
+                            sinks,
+                            weights.sinks.is_some(),
+                            cfg.sliding_window,
+                        )?
+                    };
+                    Self::cast_f32_to_f16(
+                        &self.stream,
+                        &attn_f32,
+                        num_tokens * num_heads * head_dim,
+                        &cast_f32_f16,
+                    )?
+                } else {
+                    let q_view = q_proj.slice(..q_end);
+                    Self::decode_attention_f16io(
+                        &self.stream,
+                        &self.loader,
+                        &q_view,
+                        input.key_cache,
+                        input.value_cache,
+                        &input.block_tables,
+                        &input.context_lens,
+                        num_tokens,
+                        input.num_seqs,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                        input.max_context_len,
+                        input.block_size,
+                    )?
+                };
+                attn_out
             };
             let attention_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "attention")?;
@@ -1362,88 +1489,14 @@ mod inner {
             let v_proj_standalone =
                 Self::copy_last_row_f16(&self.stream, &v_standalone, num_tokens, kv_dim)?;
 
-            let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
-                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
-            } else {
-                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
-                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
-                let q_end = num_tokens * q_dim;
-                let k_end = q_end + num_tokens * kv_dim;
-                {
-                    let mut q_dst = qkv_buf.slice_mut(..q_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        q_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.q_proj,
-                        0.0,
-                        &mut q_dst,
-                    )?;
-                }
-                {
-                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.k_proj,
-                        0.0,
-                        &mut k_dst,
-                    )?;
-                }
-                {
-                    let mut v_dst = qkv_buf.slice_mut(k_end..);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.v_proj,
-                        0.0,
-                        &mut v_dst,
-                    )?;
-                }
-                qkv_buf
-            };
-
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
-            if let Some(bias) = weights.fused_qkv_bias {
-                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                Self::add_bias_f16_view(
-                    &self.stream,
-                    &self.loader,
-                    &mut qkv_view,
-                    bias,
-                    num_tokens,
-                    qkv_dim,
-                )?;
-            }
-
-            let qkv_host_pre = self
-                .stream
-                .clone_dtoh(&qkv)
-                .map_err(|e| LLMError::GpuError(format!("trace qkv pre dtoh: {e}")))?;
-            let last_q_base = (num_tokens - 1) * q_dim;
-            let last_k_base = q_end + (num_tokens - 1) * kv_dim;
-            let last_v_base = k_end + (num_tokens - 1) * kv_dim;
-            let q_pre: Vec<f32> = qkv_host_pre[last_q_base..last_q_base + q_dim]
-                .iter()
-                .map(|value| value.to_f32())
-                .collect();
-            let k_pre: Vec<f32> = qkv_host_pre[last_k_base..last_k_base + kv_dim]
-                .iter()
-                .map(|value| value.to_f32())
-                .collect();
-            let v_pre: Vec<f32> = qkv_host_pre[last_v_base..last_v_base + kv_dim]
-                .iter()
-                .map(|value| value.to_f32())
-                .collect();
+            let mut q_proj = q_standalone;
+            let mut k_proj = k_standalone;
+            let mut v_proj = v_standalone;
+            let q_pre = q_proj_standalone.clone();
+            let k_pre = k_proj_standalone.clone();
+            let v_pre = v_proj_standalone.clone();
             let qkv_pre_bias = q_pre
                 .iter()
                 .chain(k_pre.iter())
@@ -1451,13 +1504,46 @@ mod inner {
                 .copied()
                 .collect();
 
+            if let Some(bias) = weights.fused_qkv_bias {
+                let q_bias = bias.slice(..q_dim);
+                let k_bias = bias.slice(q_dim..q_dim + kv_dim);
+                let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
+                let mut q_view = q_proj.slice_mut(..q_end);
+                Self::add_bias_f16_view_from_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut q_view,
+                    &q_bias,
+                    num_tokens,
+                    q_dim,
+                )?;
+                let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
+                Self::add_bias_f16_view_from_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut k_view,
+                    &k_bias,
+                    num_tokens,
+                    kv_dim,
+                )?;
+                let mut v_view = v_proj.slice_mut(..num_tokens * kv_dim);
+                Self::add_bias_f16_view_from_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut v_view,
+                    &v_bias,
+                    num_tokens,
+                    kv_dim,
+                )?;
+            }
+
             {
-                let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
-                let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
+                let mut q_view = q_proj.slice_mut(..q_end);
+                let mut k_view = k_proj.slice_mut(..num_tokens * kv_dim);
                 Self::apply_rotary_embedding_f16_views(
                     &self.stream,
                     &self.loader,
-                    &mut q_part,
+                    &mut q_view,
                     &mut k_view,
                     &input.positions,
                     input.rope_cos,
@@ -1469,20 +1555,25 @@ mod inner {
                 )?;
             }
 
-            let qkv_host_post = self
+            let q_host_post = self
                 .stream
-                .clone_dtoh(&qkv)
-                .map_err(|e| LLMError::GpuError(format!("trace qkv post dtoh: {e}")))?;
-            let q_host = &qkv_host_post[..q_end];
-            let k_host = &qkv_host_post[q_end..k_end];
-            let v_host = &qkv_host_post[k_end..];
-            let q_post = q_host[q_end - q_dim..q_end]
+                .clone_dtoh(&q_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace q dtoh: {e}")))?;
+            let k_host_post = self
+                .stream
+                .clone_dtoh(&k_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace k dtoh: {e}")))?;
+            let v_host_post = self
+                .stream
+                .clone_dtoh(&v_proj)
+                .map_err(|e| LLMError::GpuError(format!("trace v dtoh: {e}")))?;
+            let q_post = q_host_post[q_end - q_dim..q_end]
                 .iter()
                 .map(|value| value.to_f32());
-            let k_post = k_host[k_host.len() - kv_dim..]
+            let k_post = k_host_post[k_host_post.len() - kv_dim..]
                 .iter()
                 .map(|value| value.to_f32());
-            let v_post = v_host[v_host.len() - kv_dim..]
+            let v_post = v_host_post[v_host_post.len() - kv_dim..]
                 .iter()
                 .map(|value| value.to_f32());
             let qkv_post_bias = q_post.chain(k_post).chain(v_post).collect();
@@ -1495,8 +1586,8 @@ mod inner {
                 None => None,
             };
             let (masked_scores, attention_probs) = Self::last_query_scores_probs_from_host_f16(
-                q_host,
-                k_host,
+                &q_host_post,
+                &k_host_post,
                 sinks_host.as_deref(),
                 num_tokens,
                 num_heads,
@@ -1504,18 +1595,18 @@ mod inner {
                 head_dim,
             );
 
-            let q_rope = q_host[q_end - q_dim..q_end]
+            let q_rope = q_host_post[q_end - q_dim..q_end]
                 .iter()
                 .map(|value| value.to_f32())
                 .collect();
-            let k_rope = k_host[k_host.len() - kv_dim..]
+            let k_rope = k_host_post[k_host_post.len() - kv_dim..]
                 .iter()
                 .map(|value| value.to_f32())
                 .collect();
 
             {
-                let k_view = qkv.slice(q_end..k_end);
-                let v_view = qkv.slice(k_end..);
+                let k_view = k_proj.slice(..num_tokens * kv_dim);
+                let v_view = v_proj.slice(..num_tokens * kv_dim);
                 Self::cache_write_f16_views(
                     &self.stream,
                     &self.loader,
@@ -1541,7 +1632,7 @@ mod inner {
                     .loader
                     .get_func("cast_fp", "cast_f32_to_f16_kernel")
                     .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
-                let q_f16 = qkv.slice(..q_end);
+                let q_f16 = q_proj.slice(..q_end);
                 let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
                 let attn_f32 = Self::prefill_attention(
                     &self.stream,
@@ -2963,6 +3054,32 @@ mod inner {
             loader: &KernelLoader,
             tensor: &mut CudaViewMut<'_, f16>,
             bias: &CudaSlice<f16>,
+            num_tokens: usize,
+            dim: usize,
+        ) -> Result<()> {
+            let kernel = loader.get_func("add_bias_f16", "add_bias_f16_kernel")?;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (dim.min(1024) as u32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(tensor)
+                    .arg(bias)
+                    .arg(&(dim as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("add_bias_f16 launch: {e}")))?;
+            }
+            Ok(())
+        }
+
+        fn add_bias_f16_view_from_view(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            tensor: &mut CudaViewMut<'_, f16>,
+            bias: &CudaView<'_, f16>,
             num_tokens: usize,
             dim: usize,
         ) -> Result<()> {
