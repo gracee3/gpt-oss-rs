@@ -887,15 +887,55 @@ mod inner {
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
             if let Some(bias) = weights.fused_qkv_bias {
-                let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                Self::add_bias_f16_view(
-                    &self.stream,
-                    &self.loader,
-                    &mut qkv_view,
-                    bias,
-                    num_tokens,
-                    qkv_dim,
-                )?;
+                if weights.fused_qkv.is_some() {
+                    let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                    let bias_view = bias.slice(..qkv_dim);
+                    Self::add_bias_f16_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut qkv_view,
+                        &bias_view,
+                        num_tokens,
+                        qkv_dim,
+                    )?;
+                } else {
+                    let q_bias = bias.slice(..q_dim);
+                    let k_bias = bias.slice(q_dim..q_dim + kv_dim);
+                    let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
+                    {
+                        let mut q_view = qkv.slice_mut(..q_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut q_view,
+                            &q_bias,
+                            num_tokens,
+                            q_dim,
+                        )?;
+                    }
+                    {
+                        let mut k_view = qkv.slice_mut(q_end..k_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut k_view,
+                            &k_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                    {
+                        let mut v_view = qkv.slice_mut(k_end..num_tokens * qkv_dim);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut v_view,
+                            &v_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                }
             }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
@@ -2478,7 +2518,7 @@ mod inner {
             stream: &Arc<CudaStream>,
             loader: &KernelLoader,
             tensor: &mut CudaViewMut<'_, f16>,
-            bias: &CudaSlice<f16>,
+            bias: &CudaView<'_, f16>,
             num_tokens: usize,
             dim: usize,
         ) -> Result<()> {
