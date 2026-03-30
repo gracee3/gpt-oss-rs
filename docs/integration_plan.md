@@ -75,10 +75,62 @@
 - Notes: useful deferred vertical slice, not safe to promote into current trusted baseline
 
 ## Final State
-- Final `main` after integration: `f5e6b6d`
+- Final `main` after integration: `8313225`
 - Promoted work:
   - `DEFERRED_FRONTIER.md`
 - Post-integration validation:
   - `cargo test -p gpt-oss-conformance`: pass (`43/43`)
 - Regressions observed: none
 - Current oracle/traced frontier on `main`: still not directly measurable because `main` does not yet contain the restricted prefill/oracle probe toolchain
+
+## Probe Enablement Plan
+
+| Item | Needed? | Source branch/commit | Reason | Notes |
+|------|---------|----------------------|--------|-------|
+| `restricted_prefill_trace` bench binary | yes | `gpt-oss/full-attention-next-case` `ea3bc93` | restores smallest useful restricted trace entrypoint | highest-priority extraction target |
+| `GpuWorker::debug_runner_prefill_trace` plumbing | yes | `gpt-oss/full-attention-next-case` `ea3bc93` | allows bench binary to invoke trace surface through existing worker setup | probe-only entrypoint |
+| `PrefillActivationTrace` / `PrefillLayerTrace` runner structs and `debug_prefill_trace` | yes | `gpt-oss/full-attention-next-case` `ea3bc93` | minimal useful trace surface for embedding + per-layer outputs | broadest dependency in first extraction |
+| oracle helper script updates | maybe | `gpt-oss/full-attention-next-case` `0eef46e` | improves later oracle-side comparison | defer unless trace surface is working |
+| `restricted_logit_diff` | no | `gpt-oss/full-attention-next-case` `ae9a5bd` | lower-priority differential tool | not needed for first viable milestone |
+| `restricted_oracle_prefill.py` | no | `gpt-oss/full-attention-next-case` `f4ac565` | direct oracle comparator | optional follow-up after trace runs |
+| deeper layer/substage tracing | no | later `gpt-oss/full-attention-next-case` commits | parity debugging, not probe enablement | explicitly deferred |
+
+## Probe Enablement Log
+
+### Step 1
+- Action: created `integration/probe-enablement` from `main`
+- Files/commits brought over: none yet
+- Result: isolated integration branch ready
+- Remaining blocker: `main` still lacks the restricted prefill trace binary and trace plumbing
+
+### Step 2
+- Action: inventoried minimal probe dependencies from `gpt-oss/full-attention-next-case`
+- Files/commits brought over: none yet
+- Result: identified `ea3bc93` as the smallest likely viable extraction target for trace enablement
+- Remaining blocker: need to cherry-pick or manually extract the probe surface and test whether it builds/runs without semantic-parity commits
+
+### Step 3
+- Action: cherry-picked the core restricted prefill trace probe surface from `gpt-oss/full-attention-next-case`
+- Files/commits brought over:
+  - `ea3bc93` (manually resolved to keep only probe surface)
+  - retained files:
+    - `crates/gpt-oss-bench/src/bin/restricted_prefill_trace.rs`
+    - `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+    - `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+  - deliberately excluded:
+    - `crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py`
+- Result: restricted trace plumbing landed on `integration/probe-enablement`
+- Remaining blocker: validate that the binary builds cleanly on top of `main`-based dependencies
+
+### Step 4
+- Action: added the missing bench dependency and validated the minimal probe path
+- Files/commits brought over:
+  - local follow-up: `crates/gpt-oss-bench/Cargo.toml` adds `gpt-oss-tokenizer.workspace = true`
+- Result:
+  - `cargo build --release --features cuda -p gpt-oss-bench --bin restricted_prefill_trace`: passes
+  - `cargo build --release --features cuda -p gpt-oss-engine`: passes
+  - live probe startup on GPU1 works through tokenizer load, worker creation, model init, and weight load
+- Remaining blocker:
+  - running against stock `/data/models/openai/gpt-oss-20b` fails at trusted admission with:
+    - `config error: trusted GPT-OSS mode rejects attention sinks until runtime support and parity are proven: model.layers.6.self_attn.sinks`
+  - so the current branch is probe-ready at the code level, but still needs a restricted/admissible model view (or equivalent narrow model-view preparation step) before future semantic cherry-picks can be safely validated from `main`
