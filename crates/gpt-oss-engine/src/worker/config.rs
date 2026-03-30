@@ -36,6 +36,8 @@ pub struct WorkerConfig {
     pub vocab_size: usize,
     /// Maximum sequence length.
     pub max_model_len: usize,
+    /// Original pretraining context length used for YaRN scaling.
+    pub initial_context_length: usize,
     /// RMSNorm epsilon.
     pub rms_norm_eps: f32,
     /// Tokens per KV cache block.
@@ -54,6 +56,16 @@ pub struct WorkerConfig {
     pub dtype: Dtype,
     /// RoPE theta parameter.
     pub rope_theta: f32,
+    /// RoPE scaling type from config, for example `yarn`.
+    pub rope_scaling_type: Option<String>,
+    /// YaRN scaling factor.
+    pub rope_scaling_factor: f32,
+    /// YaRN slow boundary parameter.
+    pub rope_ntk_alpha: f32,
+    /// YaRN fast boundary parameter.
+    pub rope_ntk_beta: f32,
+    /// Whether YaRN correction bounds are truncated.
+    pub rope_scaling_truncate: bool,
     /// Fraction of head_dim that gets RoPE (Phi: 0.5, others: 1.0).
     pub partial_rotary_factor: f32,
     /// Soft-capping value for attention logits (Gemma 2). 0.0 = disabled.
@@ -139,10 +151,16 @@ impl WorkerConfig {
             intermediate_size: tp_dims.intermediate_size,
             vocab_size: self.vocab_size,
             max_position: self.max_model_len,
+            initial_context_length: self.initial_context_length,
             rms_norm_eps: self.rms_norm_eps,
             dtype: self.dtype,
             architecture: self.architecture.clone(),
             rope_theta: self.rope_theta,
+            rope_scaling_type: self.rope_scaling_type.clone(),
+            rope_scaling_factor: self.rope_scaling_factor,
+            rope_ntk_alpha: self.rope_ntk_alpha,
+            rope_ntk_beta: self.rope_ntk_beta,
+            rope_scaling_truncate: self.rope_scaling_truncate,
             partial_rotary_factor: self.partial_rotary_factor,
             attn_logit_softcapping: self.attn_logit_softcapping,
             attention_bias: self.attention_bias,
@@ -182,6 +200,7 @@ mod tests {
             intermediate_size: 4096,
             vocab_size: 32000,
             max_model_len: 8192,
+            initial_context_length: 8192,
             rms_norm_eps: 1e-5,
             block_size: 16,
             gpu_memory_utilization: 0.9,
@@ -191,6 +210,11 @@ mod tests {
             architecture: "GptOssForCausalLM".into(),
             dtype: Dtype::Float16,
             rope_theta: 10000.0,
+            rope_scaling_type: None,
+            rope_scaling_factor: 1.0,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
+            rope_scaling_truncate: false,
             partial_rotary_factor: 1.0,
             attn_logit_softcapping: 0.0,
             attention_bias: false,
