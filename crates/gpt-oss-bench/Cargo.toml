@@ -12,6 +12,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 gpt-oss-core.workspace = true
 gpt-oss-engine.workspace = true
+gpt-oss-tokenizer.workspace = true
 
 [features]
 default = []
