@@ -54,6 +54,14 @@ pub struct WorkerConfig {
     pub dtype: Dtype,
     /// RoPE theta parameter.
     pub rope_theta: f32,
+    /// YaRN scaling factor. 1.0 disables scaling.
+    pub rope_scaling_factor: f32,
+    /// Original context length used to derive YaRN ramp bounds.
+    pub rope_initial_context_length: usize,
+    /// YaRN low-frequency bound parameter.
+    pub rope_ntk_alpha: f32,
+    /// YaRN high-frequency bound parameter.
+    pub rope_ntk_beta: f32,
     /// Fraction of head_dim that gets RoPE (Phi: 0.5, others: 1.0).
     pub partial_rotary_factor: f32,
     /// Soft-capping value for attention logits (Gemma 2). 0.0 = disabled.
@@ -143,6 +151,10 @@ impl WorkerConfig {
             dtype: self.dtype,
             architecture: self.architecture.clone(),
             rope_theta: self.rope_theta,
+            rope_scaling_factor: self.rope_scaling_factor,
+            rope_initial_context_length: self.rope_initial_context_length,
+            rope_ntk_alpha: self.rope_ntk_alpha,
+            rope_ntk_beta: self.rope_ntk_beta,
             partial_rotary_factor: self.partial_rotary_factor,
             attn_logit_softcapping: self.attn_logit_softcapping,
             attention_bias: self.attention_bias,
@@ -191,6 +203,10 @@ mod tests {
             architecture: "GptOssForCausalLM".into(),
             dtype: Dtype::Float16,
             rope_theta: 10000.0,
+            rope_scaling_factor: 1.0,
+            rope_initial_context_length: 4096,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
             partial_rotary_factor: 1.0,
             attn_logit_softcapping: 0.0,
             attention_bias: false,

@@ -52,6 +52,10 @@ mod inner {
         tie_word_embeddings: bool,
         architecture: String,
         rope_theta: f32,
+        rope_scaling_factor: f32,
+        rope_initial_context_length: usize,
+        rope_ntk_alpha: f32,
+        rope_ntk_beta: f32,
         partial_rotary_factor: f32,
         attn_logit_softcapping: f32,
         attention_bias: bool,
@@ -86,6 +90,10 @@ mod inner {
             architecture: hf_config.architecture.clone(),
             dtype: config.model.dtype,
             rope_theta: hf_config.rope_theta,
+            rope_scaling_factor: hf_config.rope_scaling_factor,
+            rope_initial_context_length: hf_config.rope_initial_context_length,
+            rope_ntk_alpha: hf_config.rope_ntk_alpha,
+            rope_ntk_beta: hf_config.rope_ntk_beta,
             partial_rotary_factor: hf_config.partial_rotary_factor,
             attn_logit_softcapping: hf_config.attn_logit_softcapping,
             attention_bias: hf_config.attention_bias,
@@ -175,6 +183,7 @@ mod inner {
 
         let hidden_size = get_usize("hidden_size", 4096);
         let num_attention_heads = get_usize("num_attention_heads", 32);
+        let rope_scaling = json.get("rope_scaling");
         let head_dim = get_usize(
             "head_dim",
             hidden_size.checked_div(num_attention_heads).unwrap_or(0),
@@ -205,6 +214,26 @@ mod inner {
                 .unwrap_or(false),
             architecture,
             rope_theta: get_f32("rope_theta", 10000.0),
+            rope_scaling_factor: rope_scaling
+                .and_then(|v| v.get("factor"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32)
+                .unwrap_or(1.0),
+            rope_initial_context_length: rope_scaling
+                .and_then(|v| v.get("original_max_position_embeddings"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(get_usize("max_position_embeddings", 2048)),
+            rope_ntk_alpha: rope_scaling
+                .and_then(|v| v.get("beta_slow"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32)
+                .unwrap_or(1.0),
+            rope_ntk_beta: rope_scaling
+                .and_then(|v| v.get("beta_fast"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32)
+                .unwrap_or(32.0),
             partial_rotary_factor: get_f32("partial_rotary_factor", 1.0),
             attn_logit_softcapping: get_f32("attn_logit_softcapping", 0.0),
             attention_bias: json

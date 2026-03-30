@@ -281,19 +281,56 @@ mod cuda_impl {
                 ));
             }
 
-            // Precompute RoPE cos/sin tables
+            // Precompute RoPE cos/sin tables using the same YaRN-scaled contract
+            // as the Python oracle.
             let head_dim = config.head_dim;
             let max_pos = config.max_position.min(8192);
             let half_dim = head_dim / 2;
-            let rope_theta = config.rope_theta;
             let mut cos_table = vec![0.0f32; max_pos * half_dim];
             let mut sin_table = vec![0.0f32; max_pos * half_dim];
+            let base = config.rope_theta.max(f32::MIN_POSITIVE);
+            let scaling_factor = config.rope_scaling_factor.max(1.0);
+            let initial_context_length = config.rope_initial_context_length.max(1) as f32;
+            let ntk_alpha = config.rope_ntk_alpha.max(f32::MIN_POSITIVE);
+            let ntk_beta = config.rope_ntk_beta.max(f32::MIN_POSITIVE);
+            let concentration = if scaling_factor > 1.0 {
+                0.1 * scaling_factor.ln() + 1.0
+            } else {
+                1.0
+            };
+            let inv_freqs = if scaling_factor > 1.0 {
+                let d_half = half_dim as f32;
+                let log_base = base.ln();
+                let low = d_half
+                    * (initial_context_length / (ntk_beta * 2.0 * std::f32::consts::PI)).ln()
+                    / log_base;
+                let high = d_half
+                    * (initial_context_length / (ntk_alpha * 2.0 * std::f32::consts::PI)).ln()
+                    / log_base;
+                (0..half_dim)
+                    .map(|i| {
+                        let freq = base.powf(2.0 * i as f32 / head_dim as f32);
+                        let interpolation = 1.0 / (scaling_factor * freq);
+                        let extrapolation = 1.0 / freq;
+                        let ramp = if high > low {
+                            (i as f32 - low) / (high - low)
+                        } else {
+                            1.0
+                        };
+                        let mask = 1.0 - ramp.clamp(0.0, 1.0);
+                        interpolation * (1.0 - mask) + extrapolation * mask
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                (0..half_dim)
+                    .map(|i| 1.0 / base.powf(2.0 * i as f32 / head_dim as f32))
+                    .collect::<Vec<_>>()
+            };
             for pos in 0..max_pos {
                 for i in 0..half_dim {
-                    let freq = 1.0 / rope_theta.powf(2.0 * i as f32 / head_dim as f32);
-                    let theta = pos as f32 * freq;
-                    cos_table[pos * half_dim + i] = theta.cos();
-                    sin_table[pos * half_dim + i] = theta.sin();
+                    let theta = pos as f32 * inv_freqs[i];
+                    cos_table[pos * half_dim + i] = theta.cos() * concentration;
+                    sin_table[pos * half_dim + i] = theta.sin() * concentration;
                 }
             }
             let rope_cos = stream
