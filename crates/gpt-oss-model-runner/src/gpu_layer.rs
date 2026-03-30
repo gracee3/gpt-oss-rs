@@ -110,6 +110,7 @@ mod inner {
         pub router_logits: Vec<f32>,
         pub topk_indices: Vec<usize>,
         pub route_weights: Vec<f32>,
+        pub expert_gate_up_pre_bias: Vec<Vec<f32>>,
         pub expert_gate_up: Vec<Vec<f32>>,
         pub expert_activation: Vec<Vec<f32>>,
         pub expert_down: Vec<Vec<f32>>,
@@ -218,19 +219,21 @@ mod inner {
             let top_indices = stable_top_k_indices(&logits, top_k);
             let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
             let route_weights = softmax_weights(&top_logits);
+            let mut expert_gate_up_pre_bias = Vec::with_capacity(top_indices.len());
             let mut expert_gate_up = Vec::with_capacity(top_indices.len());
             let mut expert_activation = Vec::with_capacity(top_indices.len());
             let mut expert_down = Vec::with_capacity(top_indices.len());
             for &expert_idx in &top_indices {
-                let gate_up = self.quantized_projection(
+                let gate_up_pre_bias = self.quantized_projection_pre_bias(
                     expert_idx,
                     input,
                     &self.gate_up_blocks,
                     &self.gate_up_scales,
-                    &self.gate_up_bias,
                     self.intermediate_size * 2,
                     self.hidden_size,
                 );
+                let gate_up =
+                    self.apply_projection_bias(&gate_up_pre_bias, expert_idx, &self.gate_up_bias);
                 let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
                 let down = self.quantized_projection(
                     expert_idx,
@@ -241,6 +244,7 @@ mod inner {
                     self.hidden_size,
                     self.intermediate_size,
                 );
+                expert_gate_up_pre_bias.push(gate_up_pre_bias);
                 expert_gate_up.push(gate_up);
                 expert_activation.push(activated);
                 expert_down.push(down);
@@ -250,6 +254,7 @@ mod inner {
                 router_logits: logits,
                 topk_indices: top_indices,
                 route_weights,
+                expert_gate_up_pre_bias,
                 expert_gate_up,
                 expert_activation,
                 expert_down,
@@ -533,18 +538,52 @@ mod inner {
             out_features: usize,
             in_features: usize,
         ) -> Vec<f32> {
+            let output = self.quantized_projection_pre_bias(
+                expert_idx,
+                input,
+                blocks,
+                scales,
+                out_features,
+                in_features,
+            );
+            self.apply_projection_bias(&output, expert_idx, bias)
+        }
+
+        fn apply_projection_bias(
+            &self,
+            input: &[f32],
+            expert_idx: usize,
+            bias: &[f32],
+        ) -> Vec<f32> {
+            let out_features = input.len();
+            let expert_bias_stride = out_features;
+            let bias_base = expert_idx * expert_bias_stride;
+            let mut output = input.to_vec();
+            for out_idx in 0..out_features {
+                output[out_idx] += bias[bias_base + out_idx];
+            }
+            output
+        }
+
+        fn quantized_projection_pre_bias(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            blocks: &[u8],
+            scales: &[u8],
+            out_features: usize,
+            in_features: usize,
+        ) -> Vec<f32> {
             let groups = in_features.div_ceil(32);
             let expert_blocks_stride = out_features * groups * 16;
             let expert_scales_stride = out_features * groups;
-            let expert_bias_stride = out_features;
 
             let mut output = vec![0.0f32; out_features];
             let blocks_base = expert_idx * expert_blocks_stride;
             let scales_base = expert_idx * expert_scales_stride;
-            let bias_base = expert_idx * expert_bias_stride;
 
             for out_idx in 0..out_features {
-                let mut acc = bias[bias_base + out_idx];
+                let mut acc = 0.0f32;
                 let row_blocks = blocks_base + out_idx * groups * 16;
                 let row_scales = scales_base + out_idx * groups;
 
