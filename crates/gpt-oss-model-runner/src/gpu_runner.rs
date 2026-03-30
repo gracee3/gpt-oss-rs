@@ -772,8 +772,14 @@ mod cuda_impl {
                         )?;
                         (residual, mlp_out, None)
                     };
-                    let post_attn_residual =
-                        self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
+                    let post_attn_residual = if layer_idx == 0 {
+                        attention
+                            .as_ref()
+                            .map(|trace| trace.residual_add.clone())
+                            .unwrap_or(self.copy_last_token_f16(&residual, num_tokens, hidden_size)?)
+                    } else {
+                        self.copy_last_token_f16(&residual, num_tokens, hidden_size)?
+                    };
                     let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
                     let layer_output = post_attn_residual
                         .iter()
