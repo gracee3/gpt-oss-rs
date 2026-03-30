@@ -2620,6 +2620,7 @@ mod cuda_impl {
                             "self_attn.q_proj.weight"
                                 | "self_attn.k_proj.weight"
                                 | "self_attn.v_proj.weight"
+                                | "self_attn.o_proj.weight"
                         )
                     {
                         continue;
@@ -2675,6 +2676,7 @@ mod cuda_impl {
                 q_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.q_proj.weight")),
                 k_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.k_proj.weight")),
                 v_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.v_proj.weight")),
+                o_proj_f32: self.weights.get(&format!("model.layers.{i}.self_attn.o_proj.weight")),
                 q_proj: g_f16(&format!("model.layers.{i}.self_attn.q_proj.weight"))?,
                 k_proj: g_f16(&format!("model.layers.{i}.self_attn.k_proj.weight"))?,
                 v_proj: g_f16(&format!("model.layers.{i}.self_attn.v_proj.weight"))?,
@@ -2688,6 +2690,9 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                o_proj_bias: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.o_proj.bias")),
                 sinks: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.sinks")),

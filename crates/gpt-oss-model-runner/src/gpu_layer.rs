@@ -140,6 +140,7 @@ mod inner {
         pub q_proj_f32: Option<&'a CudaSlice<f32>>,
         pub k_proj_f32: Option<&'a CudaSlice<f32>>,
         pub v_proj_f32: Option<&'a CudaSlice<f32>>,
+        pub o_proj_f32: Option<&'a CudaSlice<f32>>,
         pub q_proj: &'a CudaSlice<f16>,
         pub k_proj: &'a CudaSlice<f16>,
         pub v_proj: &'a CudaSlice<f16>,
@@ -148,6 +149,7 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub o_proj_bias: Option<&'a CudaSlice<f32>>,
         pub sinks: Option<&'a CudaSlice<f32>>,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         pub gate_proj: Option<&'a CudaSlice<f16>>,
@@ -811,6 +813,13 @@ mod inner {
                 out.push(f16::from_f32(Self::round_f32_to_bf16_value(acc)));
             }
             out
+        }
+
+        fn oracle_like_residual_add_host(lhs: &[f32], rhs: &[f32]) -> Vec<f32> {
+            lhs.iter()
+                .zip(rhs.iter())
+                .map(|(x, y)| half::bf16::from_f32(*x + *y).to_f32())
+                .collect()
         }
 
         fn apply_rotary_host_variant(
@@ -2267,6 +2276,33 @@ mod inner {
                 num_kv_heads,
                 head_dim,
             );
+            let oracle_like_o_proj = if use_oracle_like_projection {
+                let o_weight_f32 = weights.o_proj_f32.ok_or_else(|| {
+                    LLMError::GpuError("missing f32 o_proj for oracle-like prefill trace".into())
+                })?;
+                let o_weight_host = self
+                    .stream
+                    .clone_dtoh(o_weight_f32)
+                    .map_err(|e| LLMError::GpuError(format!("trace o weight f32 dtoh: {e}")))?;
+                let o_bias_host = weights
+                    .o_proj_bias
+                    .map(|bias| {
+                        self.stream
+                            .clone_dtoh(bias)
+                            .map_err(|e| LLMError::GpuError(format!("trace o bias dtoh: {e}")))
+                    })
+                    .transpose()?;
+                Self::oracle_like_split_projection_host(
+                    &attention_context,
+                    &o_weight_host,
+                    o_bias_host.as_deref(),
+                )
+                .into_iter()
+                .map(|x| x.to_f32())
+                .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
 
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
@@ -2281,7 +2317,11 @@ mod inner {
                     hidden,
                 )?;
             }
-            let o_proj = Self::copy_last_row_f16(&self.stream, &attn_proj, num_tokens, hidden)?;
+            let o_proj = if use_oracle_like_projection {
+                oracle_like_o_proj
+            } else {
+                Self::copy_last_row_f16(&self.stream, &attn_proj, num_tokens, hidden)?
+            };
 
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(
                 &self.stream,
@@ -2293,8 +2333,11 @@ mod inner {
                 num_tokens,
                 hidden,
             )?;
-            let residual_add =
-                Self::copy_last_row_f16(&self.stream, &residual, num_tokens, hidden)?;
+            let residual_add = if use_oracle_like_projection {
+                Self::oracle_like_residual_add_host(&attention_norm_input, &o_proj)
+            } else {
+                Self::copy_last_row_f16(&self.stream, &residual, num_tokens, hidden)?
+            };
 
             let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
                 let cast_f16_f32 = self
