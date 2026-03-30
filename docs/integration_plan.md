@@ -194,3 +194,68 @@
     - `mean_abs_diff = 0.31712404078090667`
 - Remaining blocker:
   - safe semantic cherry-picks deeper than this still need additional selective trace/detail promotion if they must be measured below the coarse per-layer surfaces now available
+
+## Probe Validation Tiers
+
+### Objective
+Reduce rerun cost by running only what is informative for each edit.
+
+Use `scripts/probe_validation_tier.sh` for the smallest useful tiered check.
+
+### Tier 0 — Compile-only
+- Scope: tiny edits or infrastructure/CLI changes
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 0`
+- Mandatory steps:
+  - compile `gpt-oss-engine`
+  - compile `restricted_prefill_trace`
+
+### Tier 1 — Targeted local/stage check
+- Scope: narrow frontier edits where full oracle rerun is not yet justified
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 1`
+- Mandatory steps:
+  - Tier 0 compile
+  - trace capture on the fixed prompt/model (or reuse existing artifact)
+- Artifact reuse policy:
+  - safe to reuse when trace metadata matches:
+    - same `restricted_model_path`
+    - same `prompt`
+  - if either changes, or if trace-generation code changed, rerun trace
+  - if uncertain, disable reuse with `--no-reuse`
+- Oracle compare: skipped unless explicitly requested
+
+### Tier 2 — Full restricted trace + oracle compare
+- Scope: merge candidates, frontier moves, newly added trace depth
+- Command:
+  - `./scripts/probe_validation_tier.sh --tier 2`
+- Mandatory steps:
+  - Tier 1 checks
+  - oracle compare step
+
+### Minimal compare-only path
+- Command:
+  - `./scripts/probe_validation_tier.sh --compare-only`
+- Use when:
+  - trace artifact is known-good and unchanged
+  - only oracle-side helper logic changed
+
+### Mandatory full rerun rules
+- Always run Tier 2 for:
+  - semantic cherry-pick certification
+  - first time a frontier appears to move
+  - when trace surfaces are modified beyond prompt/model/pure formatting
+- Tier 2 can remain not required only for tooling-only edits that do not change runtime outputs
+
+## Probe Validation Log
+
+### Step 9
+- Action: added tiered validation helper
+- Files/commits added:
+  - `scripts/probe_validation_tier.sh`
+- Result:
+  - enabled smallest viable compile/trace/compare decision workflow
+  - added explicit artifact reuse checks keyed on model/prompt metadata
+  - added one-click compare-only rerun path
+- Remaining blocker:
+  - not a replacement for full semantic confidence; deeper trace surfaces still need separate selective promotions before broad frontier-level certainty
