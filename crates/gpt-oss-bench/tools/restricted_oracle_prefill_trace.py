@@ -86,6 +86,7 @@ def flatten_last_token(tensor: torch.Tensor) -> list[float]:
 
 def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, torch.Tensor]:
     attn = model.block[0].attn
+    norm_input = x
     normed = attn.norm(x)
     qkv = attn.qkv(normed)
     qkv_pre_bias = torch.nn.functional.linear(normed, attn.qkv.weight, bias=None)
@@ -132,6 +133,8 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
     residual_add = x + o_proj
 
     return ({
+        "attention_norm_input": last_token(norm_input),
+        "attention_norm_output": last_token(normed),
         "qkv_pre_bias": flatten_last_token(qkv_pre_bias),
         "qkv_post_bias": flatten_last_token(qkv_post_bias),
         "q_proj": flatten_last_token(q),
@@ -146,6 +149,22 @@ def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, t
         "residual_add": flatten_last_token(residual_add),
         "post_attn_residual": last_token(residual_add),
     }, residual_add)
+
+
+def manual_qkv_from_norm(attn: torch.nn.Module, norm_last: list[float]) -> dict:
+    norm = torch.tensor(norm_last, dtype=torch.float32, device=attn.qkv.weight.device)
+    norm = norm.to(attn.qkv.weight.dtype)
+    qkv_pre = torch.nn.functional.linear(norm, attn.qkv.weight, bias=None)
+    qkv_post = torch.nn.functional.linear(norm, attn.qkv.weight, bias=attn.qkv.bias)
+    q_dim = attn.num_attention_heads * attn.head_dim
+    kv_dim = attn.num_key_value_heads * attn.head_dim
+    return {
+        "qkv_pre_bias": qkv_pre.float().cpu().tolist(),
+        "qkv_post_bias": qkv_post.float().cpu().tolist(),
+        "q_proj": qkv_post[:q_dim].float().cpu().tolist(),
+        "k_proj": qkv_post[q_dim:q_dim + kv_dim].float().cpu().tolist(),
+        "v_proj": qkv_post[q_dim + kv_dim:].float().cpu().tolist(),
+    }
 
 
 def main() -> int:
@@ -167,6 +186,13 @@ def main() -> int:
         for layer_idx, block in enumerate(model.block):
             if layer_idx == 0:
                 attention_trace, attn_hidden = layer0_attention_trace(model, x)
+                cuda_attention = cuda_trace["trace"]["layers"][0].get("attention") or {}
+                attention_trace["manual_from_cuda_norm"] = manual_qkv_from_norm(
+                    model.block[0].attn, cuda_attention.get("attention_norm_output", [])
+                )
+                attention_trace["manual_from_oracle_norm"] = manual_qkv_from_norm(
+                    model.block[0].attn, attention_trace["attention_norm_output"]
+                )
             else:
                 attention_trace = None
                 attn_hidden = block.attn(x)
@@ -192,6 +218,8 @@ def main() -> int:
         oracle_attention = oracle_layer.get("attention")
         if cuda_attention and oracle_attention:
             for key in (
+                "attention_norm_input",
+                "attention_norm_output",
                 "qkv_pre_bias",
                 "qkv_post_bias",
                 "q_proj",
@@ -210,6 +238,21 @@ def main() -> int:
                         f"layer{cuda_layer['layer_idx']}.{key}",
                         cuda_attention[key],
                         oracle_attention[key],
+                    )
+                )
+            for key in ("qkv_pre_bias", "qkv_post_bias", "q_proj", "k_proj", "v_proj"):
+                stage_diffs.append(
+                    compare_stage(
+                        f"layer{cuda_layer['layer_idx']}.manual_from_cuda_norm.{key}",
+                        cuda_attention[key],
+                        oracle_attention["manual_from_cuda_norm"][key],
+                    )
+                )
+                stage_diffs.append(
+                    compare_stage(
+                        f"layer{cuda_layer['layer_idx']}.manual_from_oracle_norm.{key}",
+                        cuda_attention[key],
+                        oracle_attention["manual_from_oracle_norm"][key],
                     )
                 )
         for key in ("post_attn_residual", "mlp_out", "layer_output"):
