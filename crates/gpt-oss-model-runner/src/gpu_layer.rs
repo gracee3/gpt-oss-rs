@@ -144,6 +144,7 @@ mod inner {
         pub k_proj: &'a CudaSlice<f16>,
         pub v_proj: &'a CudaSlice<f16>,
         pub o_proj: &'a CudaSlice<f16>,
+        pub o_proj_bias_f16: Option<&'a CudaSlice<f16>>,
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
@@ -2269,6 +2270,17 @@ mod inner {
 
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            if let Some(bias) = weights.o_proj_bias_f16 {
+                let mut attn_proj_view = attn_proj.slice_mut(..num_tokens * hidden);
+                Self::add_bias_f16_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut attn_proj_view,
+                    bias,
+                    num_tokens,
+                    hidden,
+                )?;
+            }
             let o_proj = Self::copy_last_row_f16(&self.stream, &attn_proj, num_tokens, hidden)?;
 
             let (normed2, residual) = Self::fused_residual_rmsnorm_f16(

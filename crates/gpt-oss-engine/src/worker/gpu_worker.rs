@@ -53,6 +53,7 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         || name.ends_with("self_attn.q_proj.bias")
         || name.ends_with("self_attn.k_proj.bias")
         || name.ends_with("self_attn.v_proj.bias")
+        || name.ends_with("self_attn.o_proj.bias")
         || name.ends_with("self_attn.sinks")
         || name.ends_with("mlp.router.weight")
         || name.ends_with("mlp.router.bias")

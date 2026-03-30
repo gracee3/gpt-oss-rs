@@ -206,6 +206,8 @@ mod cuda_impl {
         fused_post_norm_f16: Vec<CudaSlice<f16>>,
         /// Pre-converted f16 fused QKV bias per layer (None if model has no QKV bias).
         fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>,
+        /// Pre-converted f16 attention output projection bias per layer.
+        o_proj_bias_f16: Vec<Option<CudaSlice<f16>>>,
         /// Pre-converted f16 final norm weight.
         final_norm_weight_f16: Option<CudaSlice<f16>>,
         /// Pre-converted f16 embed tokens table for f16 embedding lookup.
@@ -384,6 +386,7 @@ mod cuda_impl {
                 fused_layernorm_f16: Vec::new(),
                 fused_post_norm_f16: Vec::new(),
                 fused_qkv_bias_f16: Vec::new(),
+                o_proj_bias_f16: Vec::new(),
                 final_norm_weight_f16: None,
                 embed_tokens_f16: None,
                 f16_scratch: None,
@@ -571,6 +574,17 @@ mod cuda_impl {
                     self.fused_qkv_bias_f16.push(Some(bias_f16));
                 } else {
                     self.fused_qkv_bias_f16.push(None);
+                }
+
+                let o_bias = self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.o_proj.bias"));
+                if let Some(ob) = o_bias {
+                    let bias_f16 =
+                        Self::gpu_cast_f32_to_f16_static(&self.stream, ob, hidden, &cast_kernel)?;
+                    self.o_proj_bias_f16.push(Some(bias_f16));
+                } else {
+                    self.o_proj_bias_f16.push(None);
                 }
             }
 
@@ -2695,6 +2709,7 @@ mod cuda_impl {
                 input_layernorm_f16: self.fused_layernorm_f16.get(i),
                 post_attention_layernorm_f16: self.fused_post_norm_f16.get(i),
                 fused_qkv_bias: self.fused_qkv_bias_f16.get(i).and_then(|o| o.as_ref()),
+                o_proj_bias_f16: self.o_proj_bias_f16.get(i).and_then(|o| o.as_ref()),
             })
         }
 
