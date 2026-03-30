@@ -72,6 +72,9 @@ mod inner {
         pub q_proj: Vec<f32>,
         pub k_proj: Vec<f32>,
         pub v_proj: Vec<f32>,
+        pub q_proj_standalone: Vec<f32>,
+        pub k_proj_standalone: Vec<f32>,
+        pub v_proj_standalone: Vec<f32>,
         pub q_rope: Vec<f32>,
         pub k_rope: Vec<f32>,
         pub masked_scores: Vec<f32>,
@@ -1349,6 +1352,15 @@ mod inner {
                     &self.loader,
                 )
             };
+            let q_standalone = hgemm(&normed, weights.q_proj, num_tokens, q_dim, hidden)?;
+            let k_standalone = hgemm(&normed, weights.k_proj, num_tokens, kv_dim, hidden)?;
+            let v_standalone = hgemm(&normed, weights.v_proj, num_tokens, kv_dim, hidden)?;
+            let q_proj_standalone =
+                Self::copy_last_row_f16(&self.stream, &q_standalone, num_tokens, q_dim)?;
+            let k_proj_standalone =
+                Self::copy_last_row_f16(&self.stream, &k_standalone, num_tokens, kv_dim)?;
+            let v_proj_standalone =
+                Self::copy_last_row_f16(&self.stream, &v_standalone, num_tokens, kv_dim)?;
 
             let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
                 hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
@@ -1647,6 +1659,9 @@ mod inner {
                     q_proj: q_pre,
                     k_proj: k_pre,
                     v_proj: v_pre,
+                    q_proj_standalone,
+                    k_proj_standalone,
+                    v_proj_standalone,
                     q_rope,
                     k_rope,
                     masked_scores,
