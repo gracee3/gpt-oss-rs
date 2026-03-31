@@ -146,7 +146,7 @@ matched = (
     data.get("restricted_model_path") == expected_model
     and data.get("prompt") == expected_prompt
 )
-  print("1" if matched else "0")
+print("1" if matched else "0")
 PY
   return 0
 }
