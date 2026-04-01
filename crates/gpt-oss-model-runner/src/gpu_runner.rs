@@ -25,11 +25,54 @@ pub enum ForwardOutput {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrefillAttentionTrace {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention_norm_input_full: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw_v_proj: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub biased_v_proj: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub v_compact_for_context: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub v_for_context: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention_context_pre_cast: Vec<f32>,
+    pub last_q_for_scores: Vec<f32>,
+    pub raw_k_proj: Vec<f32>,
+    pub biased_k_proj: Vec<f32>,
+    pub k_after_proj: Vec<f32>,
+    pub k_after_rope_unpacked: Vec<f32>,
+    pub pre_write_k_path: Vec<f32>,
+    pub k_for_scores: Vec<f32>,
+    pub attention_scores: Vec<f32>,
+    pub attention_probs: Vec<f32>,
+    pub attention_context: Vec<f32>,
+    pub o_proj: Vec<f32>,
+    pub post_attn_norm_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrefillLayerTrace {
     pub layer_idx: usize,
+    pub attention: Option<PrefillAttentionTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlp: Option<PrefillMlpTrace>,
     pub post_attn_residual: Vec<f32>,
     pub mlp_out: Vec<f32>,
     pub layer_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrefillMlpTrace {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub router_logits: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub router_topk_indices: Vec<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub router_topk_weights: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expert_weighted_sum_pre_cast: Vec<f32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -66,7 +109,35 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::{ForwardOutput, PrefillActivationTrace, PrefillLayerTrace};
+    use super::{
+        ForwardOutput, PrefillActivationTrace, PrefillAttentionTrace, PrefillLayerTrace,
+        PrefillMlpTrace,
+    };
+
+    fn trace_seed_layer_enabled(layer_idx: usize) -> bool {
+        if let Some(value) = std::env::var_os("GPT_OSS_TRACE_SEED_LAYERS") {
+            if let Some(spec) = value.to_str() {
+                let wanted = layer_idx.to_string();
+                if spec
+                    .split(',')
+                    .map(str::trim)
+                    .any(|entry| !entry.is_empty() && entry == wanted)
+                {
+                    return true;
+                }
+            }
+        }
+
+        match layer_idx {
+            12 => std::env::var_os("GPT_OSS_TRACE_LAYER12_SEED")
+                .map(|value| value != "0")
+                .unwrap_or(false),
+            23 => std::env::var_os("GPT_OSS_TRACE_LAYER23_SEED")
+                .map(|value| value != "0")
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -187,6 +258,8 @@ mod cuda_impl {
         fused_post_norm_f16: Vec<CudaSlice<f16>>,
         /// Pre-converted f16 fused QKV bias per layer (None if model has no QKV bias).
         fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>,
+        /// Pre-converted f16 o_proj bias per layer (None if model has no bias).
+        fused_o_proj_bias_f16: Vec<Option<CudaSlice<f16>>>,
         /// Pre-converted f16 final norm weight.
         final_norm_weight_f16: Option<CudaSlice<f16>>,
         /// Pre-converted f16 embed tokens table for f16 embedding lookup.
@@ -328,6 +401,7 @@ mod cuda_impl {
                 fused_layernorm_f16: Vec::new(),
                 fused_post_norm_f16: Vec::new(),
                 fused_qkv_bias_f16: Vec::new(),
+                fused_o_proj_bias_f16: Vec::new(),
                 final_norm_weight_f16: None,
                 embed_tokens_f16: None,
                 f16_scratch: None,
@@ -516,6 +590,17 @@ mod cuda_impl {
                 } else {
                     self.fused_qkv_bias_f16.push(None);
                 }
+
+                let o_bias = self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.o_proj.bias"));
+                if let Some(ob) = o_bias {
+                    let bias_f16 =
+                        Self::gpu_cast_f32_to_f16_static(&self.stream, ob, hidden, &cast_kernel)?;
+                    self.fused_o_proj_bias_f16.push(Some(bias_f16));
+                } else {
+                    self.fused_o_proj_bias_f16.push(None);
+                }
             }
 
             // Final norm weight: f32 -> f16
@@ -680,6 +765,34 @@ mod cuda_impl {
                         rope_sin: &self.rope_sin,
                     };
                     let weights = self.layer_weights_f16(layer_idx)?;
+                    let capture_layer_seed = trace_seed_layer_enabled(layer_idx);
+                    let mut mlp_trace = capture_layer_seed.then(|| PrefillMlpTrace {
+                        router_logits: Vec::new(),
+                        router_topk_indices: Vec::new(),
+                        router_topk_weights: Vec::new(),
+                        expert_weighted_sum_pre_cast: Vec::new(),
+                    });
+                    let mut attention_trace =
+                        (layer_idx == 0 || capture_layer_seed).then(|| PrefillAttentionTrace {
+                        attention_norm_input_full: Vec::new(),
+                        raw_v_proj: Vec::new(),
+                        biased_v_proj: Vec::new(),
+                        v_compact_for_context: Vec::new(),
+                        v_for_context: Vec::new(),
+                        attention_context_pre_cast: Vec::new(),
+                        last_q_for_scores: Vec::new(),
+                        raw_k_proj: Vec::new(),
+                        biased_k_proj: Vec::new(),
+                        k_after_proj: Vec::new(),
+                        k_after_rope_unpacked: Vec::new(),
+                        pre_write_k_path: Vec::new(),
+                        k_for_scores: Vec::new(),
+                        attention_scores: Vec::new(),
+                        attention_probs: Vec::new(),
+                        attention_context: Vec::new(),
+                        o_proj: Vec::new(),
+                        post_attn_norm_output: Vec::new(),
+                    });
                     let (residual, mlp_out) = layer.forward_f16(
                         &input,
                         &weights,
@@ -687,10 +800,13 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        attention_trace.as_mut(),
+                        mlp_trace.as_mut(),
                     )?;
                     let post_attn_residual =
                         self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
-                    let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
+                    let mlp_out_last =
+                        self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
                     let layer_output = post_attn_residual
                         .iter()
                         .zip(mlp_out_last.iter())
@@ -698,6 +814,8 @@ mod cuda_impl {
                         .collect();
                     trace.layers.push(PrefillLayerTrace {
                         layer_idx,
+                        attention: attention_trace,
+                        mlp: mlp_trace,
                         post_attn_residual,
                         mlp_out: mlp_out_last,
                         layer_output,
@@ -748,12 +866,19 @@ mod cuda_impl {
                     rope_sin: &self.rope_sin,
                 };
                 let weights = self.layer_weights(layer_idx)?;
-                hidden_states = layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
                 trace.layers.push(PrefillLayerTrace {
                     layer_idx,
+                    attention: None,
+                    mlp: None,
                     post_attn_residual: Vec::new(),
                     mlp_out: Vec::new(),
-                    layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
+                    layer_output: self.copy_last_token_f32(
+                        &hidden_states,
+                        num_tokens,
+                        hidden_size,
+                    )?,
                 });
             }
             Ok(trace)
@@ -846,6 +971,8 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1260,6 +1387,8 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -1605,6 +1734,8 @@ mod cuda_impl {
                         prev_mlp_out.as_ref(),
                         self.cublaslt_ref(),
                         self.tp_comm.as_ref(),
+                        None,
+                        None,
                     )?;
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
@@ -2095,6 +2226,9 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                o_proj_bias: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.o_proj.bias")),
                 sinks: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.sinks")),
@@ -2538,6 +2672,10 @@ mod cuda_impl {
                 v_proj_bias: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.v_proj.bias")),
+                o_proj_bias: self
+                    .weights
+                    .get(&format!("model.layers.{i}.self_attn.o_proj.bias")),
+                o_proj_bias_f16: self.fused_o_proj_bias_f16.get(i).and_then(|o| o.as_ref()),
                 sinks: self
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.sinks")),

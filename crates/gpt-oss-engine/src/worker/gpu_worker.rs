@@ -45,6 +45,7 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         || name.ends_with("self_attn.q_proj.bias")
         || name.ends_with("self_attn.k_proj.bias")
         || name.ends_with("self_attn.v_proj.bias")
+        || name.ends_with("self_attn.o_proj.bias")
         || name.ends_with("self_attn.sinks")
         || name.ends_with("mlp.router.weight")
         || name.ends_with("mlp.router.bias")
@@ -59,9 +60,9 @@ fn is_gpt_oss_sink_weight(name: &str) -> bool {
 fn has_nonzero_gpt_oss_sink_tensor<'a>(
     tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
 ) -> bool {
-    tensors
-        .into_iter()
-        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
+    tensors.into_iter().any(|(name, values)| {
+        is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0)
+    })
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1226,17 +1227,16 @@ impl GpuWorker {
     /// model runner directly on the same prepared input. Comparing this against
     /// `debug_logits()` isolates whether the live worker path itself introduces
     /// divergence before any broader checkpoint-faithfulness questions.
-    pub fn debug_runner_logits(
-        &self,
-        metadata: &[SequenceGroupMetadata],
-    ) -> Result<Vec<f32>> {
+    pub fn debug_runner_logits(&self, metadata: &[SequenceGroupMetadata]) -> Result<Vec<f32>> {
         if metadata.is_empty() {
             return Ok(Vec::new());
         }
 
         let model_input = input::prepare_input(metadata, self.config.block_size)?;
         let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
-            LLMError::GpuError("GPU model runner not initialized -- build with --features cuda".into())
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
         })?;
         runner.forward(
             &model_input.token_ids,
@@ -1259,7 +1259,9 @@ impl GpuWorker {
 
         let model_input = input::prepare_input(metadata, self.config.block_size)?;
         let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
-            LLMError::GpuError("GPU model runner not initialized -- build with --features cuda".into())
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
         })?;
         runner.debug_prefill_trace(
             &model_input.token_ids,
@@ -1382,10 +1384,7 @@ impl GpuWorker {
                 graph_padded_batch_size,
                 self.config.dtype,
             )
-            .with_attention_config(
-                self.config.layer_types.clone(),
-                self.config.sliding_window,
-            ),
+            .with_attention_config(self.config.layer_types.clone(), self.config.sliding_window),
         )
         .map_err(|e| LLMError::ConfigError(e.to_string()))?;
         trace!(
@@ -2472,7 +2471,9 @@ mod tests {
         ];
 
         assert!(!has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2484,7 +2485,9 @@ mod tests {
         ];
 
         assert!(has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 

@@ -17,6 +17,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.live/
 
 # LaTeX build artifacts
 *.aux
