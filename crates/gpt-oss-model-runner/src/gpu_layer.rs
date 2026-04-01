@@ -1169,12 +1169,11 @@ mod inner {
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
             if let Some(bias) = weights.o_proj_bias_f16 {
                 let mut attn_proj_view = attn_proj.slice_mut(..num_tokens * hidden);
-                let bias_view = bias.slice(..hidden);
                 Self::add_bias_f16_view(
                     &self.stream,
                     &self.loader,
                     &mut attn_proj_view,
-                    &bias_view,
+                    bias,
                     num_tokens,
                     hidden,
                 )?;
