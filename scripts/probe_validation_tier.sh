@@ -80,6 +80,8 @@ USAGE
 
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+ARTIFACT_METADATA_SCHEMA_VERSION="probe_validation_artifact_meta.v1"
+LEGACY_TRACE_SCHEMA_VERSION="legacy-unversioned"
 
 TIER="0"
 MODEL_PATH="/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
@@ -118,141 +120,330 @@ csv_contains_value() {
   return 1
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -t|--tier)
-      TIER="$2"
-      shift 2
-      ;;
-    --model)
-      MODEL_PATH="$2"
-      shift 2
-      ;;
-    --trace-json)
-      TRACE_JSON="$2"
-      shift 2
-      ;;
-    --oracle-output)
-      ORACLE_OUTPUT="$2"
-      shift 2
-      ;;
-    --original-model)
-      ORIGINAL_MODEL="$2"
-      shift 2
-      ;;
-    --compare-mode)
-      COMPARE_MODE="$2"
-      shift 2
-      ;;
-    --prompt)
-      PROMPT="$2"
-      shift 2
-      ;;
-    --max-model-len)
-      MAX_MODEL_LEN="$2"
-      shift 2
-      ;;
-    --gpu)
-      GPU="$2"
-      shift 2
-      ;;
-    --seed-layers)
-      SEED_LAYERS="$2"
-      shift 2
-      ;;
-    --local-replay-layer)
-      LOCAL_REPLAY_LAYER="$2"
-      shift 2
-      ;;
-    --local-replay-path)
-      LOCAL_REPLAY_PATH="$2"
-      shift 2
-      ;;
-    --no-reuse)
-      REUSE_TRACE="0"
-      shift
-      ;;
-    --compare-only)
-      COMPARE_ONLY="1"
-      shift
-      ;;
-    --warm-oracle)
-      WARM_ORACLE="1"
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage
-      exit 1
-      ;;
-  esac
-done
+parse_cli_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -t|--tier)
+        TIER="$2"
+        shift 2
+        ;;
+      --model)
+        MODEL_PATH="$2"
+        shift 2
+        ;;
+      --trace-json)
+        TRACE_JSON="$2"
+        shift 2
+        ;;
+      --oracle-output)
+        ORACLE_OUTPUT="$2"
+        shift 2
+        ;;
+      --original-model)
+        ORIGINAL_MODEL="$2"
+        shift 2
+        ;;
+      --compare-mode)
+        COMPARE_MODE="$2"
+        shift 2
+        ;;
+      --prompt)
+        PROMPT="$2"
+        shift 2
+        ;;
+      --max-model-len)
+        MAX_MODEL_LEN="$2"
+        shift 2
+        ;;
+      --gpu)
+        GPU="$2"
+        shift 2
+        ;;
+      --seed-layers)
+        SEED_LAYERS="$2"
+        shift 2
+        ;;
+      --local-replay-layer)
+        LOCAL_REPLAY_LAYER="$2"
+        shift 2
+        ;;
+      --local-replay-path)
+        LOCAL_REPLAY_PATH="$2"
+        shift 2
+        ;;
+      --no-reuse)
+        REUSE_TRACE="0"
+        shift
+        ;;
+      --compare-only)
+        COMPARE_ONLY="1"
+        shift
+        ;;
+      --warm-oracle)
+        WARM_ORACLE="1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        usage
+        exit 1
+        ;;
+    esac
+  done
+}
 
-if [[ "$COMPARE_ONLY" == "1" ]]; then
-  TIER="2"
-fi
+normalize_csv() {
+  local csv="$1"
 
-if [[ "$TIER" != "0" && "$TIER" != "1" && "$TIER" != "2" ]]; then
-  usage_error "Invalid tier: $TIER"
-fi
-
-if [[ "$WARM_ORACLE" == "1" && "$TIER" != "2" ]]; then
-  usage_error "--warm-oracle is only available for Tier 2 / compare-only runs"
-fi
-
-if [[ -n "$LOCAL_REPLAY_LAYER" || -n "$LOCAL_REPLAY_PATH" ]]; then
-  if [[ -z "$LOCAL_REPLAY_LAYER" || -z "$LOCAL_REPLAY_PATH" ]]; then
-    usage_error "--local-replay-layer and --local-replay-path must be provided together"
+  if [[ -z "$csv" ]]; then
+    echo ""
+    return 0
   fi
-  if [[ "$TIER" != "2" ]]; then
-    usage_error "local replay is only available for Tier 2 / compare-only runs"
-  fi
-  if [[ "$COMPARE_ONLY" != "1" ]]; then
-    if [[ -z "$SEED_LAYERS" ]]; then
-      usage_error "local replay in the same run requires --seed-layers so the trace captures an exact runtime seed"
-    fi
-    if ! csv_contains_value "$SEED_LAYERS" "$LOCAL_REPLAY_LAYER"; then
-      usage_error "--seed-layers must include --local-replay-layer when capture and replay happen in the same run"
-    fi
-  fi
-fi
+
+  python3 - "$csv" <<'PY'
+import sys
+
+parts = [item.strip() for item in sys.argv[1].split(",")]
+parts = [item for item in parts if item]
+print(",".join(parts))
+PY
+}
 
 have_python3() {
   command -v python3 >/dev/null 2>&1
 }
 
+trace_metadata_path() {
+  echo "$1.meta.json"
+}
+
+oracle_metadata_path() {
+  echo "$1.meta.json"
+}
+
+validate_cli_args() {
+  if [[ "$COMPARE_ONLY" == "1" ]]; then
+    TIER="2"
+  fi
+
+  if [[ "$TIER" != "0" && "$TIER" != "1" && "$TIER" != "2" ]]; then
+    usage_error "Invalid tier: $TIER"
+  fi
+
+  if [[ "$WARM_ORACLE" == "1" && "$TIER" != "2" ]]; then
+    usage_error "--warm-oracle is only available for Tier 2 / compare-only runs"
+  fi
+
+  if [[ -n "$LOCAL_REPLAY_LAYER" || -n "$LOCAL_REPLAY_PATH" ]]; then
+    if [[ -z "$LOCAL_REPLAY_LAYER" || -z "$LOCAL_REPLAY_PATH" ]]; then
+      usage_error "--local-replay-layer and --local-replay-path must be provided together"
+    fi
+    if [[ "$TIER" != "2" ]]; then
+      usage_error "local replay is only available for Tier 2 / compare-only runs"
+    fi
+    if [[ "$COMPARE_ONLY" != "1" ]]; then
+      if [[ -z "$SEED_LAYERS" ]]; then
+        usage_error "local replay in the same run requires --seed-layers so the trace captures an exact runtime seed"
+      fi
+      if ! csv_contains_value "$SEED_LAYERS" "$LOCAL_REPLAY_LAYER"; then
+        usage_error "--seed-layers must include --local-replay-layer when capture and replay happen in the same run"
+      fi
+    fi
+  fi
+}
+
+write_trace_metadata() {
+  local trace_path="$1"
+  local metadata_path=""
+  local normalized_seed_layers=""
+
+  if ! have_python3; then
+    echo "[tier] trace metadata sidecar skipped because python3 is unavailable; future reuse will fail closed" >&2
+    return 0
+  fi
+
+  metadata_path="$(trace_metadata_path "$trace_path")"
+  normalized_seed_layers="$(normalize_csv "$SEED_LAYERS")"
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$normalized_seed_layers" "$TIER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+trace_path, metadata_path, model_path, prompt, max_model_len, seed_layers, tier, metadata_schema_version, legacy_trace_schema = sys.argv[1:10]
+with open(trace_path, "r", encoding="utf-8") as handle:
+    trace = json.load(handle)
+
+prompt_token_ids = trace.get("prompt_token_ids") or []
+trace_schema_version = trace.get("trace_schema_version") or trace.get("schema_version") or legacy_trace_schema
+seed_layer_values = [item for item in seed_layers.split(",") if item]
+
+metadata = {
+    "metadata_schema_version": metadata_schema_version,
+    "artifact_type": "restricted_prefill_trace",
+    "trace_json": str(Path(trace_path)),
+    "restricted_model_path": trace.get("restricted_model_path", model_path),
+    "prompt": trace.get("prompt", prompt),
+    "prompt_sha256": hashlib.sha256((trace.get("prompt", prompt)).encode("utf-8")).hexdigest(),
+    "prompt_token_ids_sha256": hashlib.sha256(
+        json.dumps(prompt_token_ids, separators=(",", ":")).encode("utf-8")
+    ).hexdigest(),
+    "max_model_len": int(max_model_len),
+    "capture_tier": tier,
+    "seed_layers": seed_layer_values,
+    "trace_schema_version": trace_schema_version,
+}
+
+Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
+with open(metadata_path, "w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
+write_oracle_metadata() {
+  local oracle_output="$1"
+  local trace_path="$2"
+  local metadata_path=""
+
+  if ! have_python3; then
+    return 0
+  fi
+
+  metadata_path="$(oracle_metadata_path "$oracle_output")"
+  python3 - "$oracle_output" "$trace_path" "$metadata_path" "$TIER" "$COMPARE_MODE" "$LOCAL_REPLAY_LAYER" "$LOCAL_REPLAY_PATH" "$WARM_ORACLE" "$ARTIFACT_METADATA_SCHEMA_VERSION" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+oracle_output, trace_path, metadata_path, tier, compare_mode, local_replay_layer, local_replay_path, warm_oracle, metadata_schema_version = sys.argv[1:10]
+with open(oracle_output, "r", encoding="utf-8") as handle:
+    report = json.load(handle)
+
+prompt = report.get("prompt", "")
+prompt_token_ids = report.get("prompt_token_ids") or []
+metadata = {
+    "metadata_schema_version": metadata_schema_version,
+    "artifact_type": "restricted_oracle_report",
+    "oracle_output": str(Path(oracle_output)),
+    "trace_json": str(Path(trace_path)),
+    "restricted_model_path": report.get("restricted_model_path"),
+    "original_model_path": report.get("original_model_path"),
+    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    "prompt_token_ids_sha256": hashlib.sha256(
+        json.dumps(prompt_token_ids, separators=(",", ":")).encode("utf-8")
+    ).hexdigest(),
+    "requested_tier": tier,
+    "compare_mode": compare_mode,
+    "local_replay_layer": None if not local_replay_layer else int(local_replay_layer),
+    "local_replay_path": local_replay_path or None,
+    "warm_oracle": warm_oracle == "1",
+    "oracle_schema_version": report.get("tool_schema_version", "missing"),
+}
+
+Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
+with open(metadata_path, "w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
 can_reuse_trace() {
   local trace_path="$1"
-  local expected_model="$2"
-  local expected_prompt="$3"
+  local metadata_path=""
 
   if [[ ! -f "$trace_path" ]]; then
-    echo "0"
-    return 0
+    echo "[tier] trace reuse rejected: trace artifact is missing: $trace_path" >&2
+    return 1
   fi
   if ! have_python3; then
-    echo "0"
-    return 0
+    echo "[tier] trace reuse rejected: python3 is unavailable, so trace provenance cannot be validated" >&2
+    return 1
   fi
-  python3 - "$trace_path" "$expected_model" "$expected_prompt" <<'PY'
+  metadata_path="$(trace_metadata_path "$trace_path")"
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" <<'PY'
+import hashlib
 import json
 import sys
 
-trace_path, expected_model, expected_prompt = sys.argv[1:4]
+(
+    trace_path,
+    metadata_path,
+    expected_model,
+    expected_prompt,
+    expected_max_model_len,
+    expected_seed_layers,
+    expected_local_replay_layer,
+    expected_metadata_schema_version,
+    legacy_trace_schema,
+) = sys.argv[1:10]
 with open(trace_path, "r", encoding="utf-8") as handle:
-    data = json.load(handle)
+    trace = json.load(handle)
 
-matched = (
-    data.get("restricted_model_path") == expected_model
-    and data.get("prompt") == expected_prompt
-)
-print("1" if matched else "0")
+reasons = []
+try:
+    with open(metadata_path, "r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+except FileNotFoundError:
+    reasons.append(f"missing trace metadata sidecar: {metadata_path}")
+    metadata = {}
+
+trace_schema_version = trace.get("trace_schema_version") or trace.get("schema_version") or legacy_trace_schema
+prompt = trace.get("prompt", "")
+prompt_token_ids = trace.get("prompt_token_ids") or []
+prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+prompt_token_ids_sha256 = hashlib.sha256(
+    json.dumps(prompt_token_ids, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+
+if trace.get("restricted_model_path") != expected_model:
+    reasons.append("restricted model path mismatch")
+if prompt != expected_prompt:
+    reasons.append("prompt mismatch")
+
+if metadata.get("metadata_schema_version") != expected_metadata_schema_version:
+    reasons.append(
+        f"trace metadata schema mismatch (have {metadata.get('metadata_schema_version')!r}, expected {expected_metadata_schema_version!r})"
+    )
+if metadata.get("artifact_type") != "restricted_prefill_trace":
+    reasons.append("trace metadata artifact_type mismatch")
+if metadata.get("restricted_model_path") != expected_model:
+    reasons.append("trace metadata restricted model path mismatch")
+if metadata.get("prompt_sha256") != prompt_sha256:
+    reasons.append("trace metadata prompt identity mismatch")
+if metadata.get("prompt_token_ids_sha256") != prompt_token_ids_sha256:
+    reasons.append("trace metadata token identity mismatch")
+if str(metadata.get("max_model_len")) != expected_max_model_len:
+    reasons.append(
+        f"trace metadata max-model-len mismatch (have {metadata.get('max_model_len')!r}, expected {expected_max_model_len!r})"
+    )
+if metadata.get("trace_schema_version") != trace_schema_version:
+    reasons.append(
+        f"trace schema marker mismatch (metadata {metadata.get('trace_schema_version')!r}, trace {trace_schema_version!r})"
+    )
+
+metadata_seed_layers = [str(item) for item in (metadata.get("seed_layers") or [])]
+expected_seed_layer_values = [item for item in expected_seed_layers.split(",") if item]
+if expected_seed_layer_values and metadata_seed_layers != expected_seed_layer_values:
+    reasons.append(
+        f"trace metadata seed-layers mismatch (have {','.join(metadata_seed_layers) or '<none>'}, expected {','.join(expected_seed_layer_values)})"
+    )
+if expected_local_replay_layer and expected_local_replay_layer not in metadata_seed_layers:
+    reasons.append(
+        f"trace metadata does not include requested local replay layer {expected_local_replay_layer} in seed-layers"
+    )
+
+if reasons:
+    print("[tier] trace reuse rejected:", file=sys.stderr)
+    for reason in reasons:
+        print(f"[tier]   - {reason}", file=sys.stderr)
+    raise SystemExit(1)
 PY
-  return 0
 }
 
 run_builds() {
@@ -336,6 +527,7 @@ run_trace() {
       --output "$trace_output" \
       --log-level info)
   fi
+  write_trace_metadata "$trace_output"
 }
 
 run_oracle_compare() {
@@ -361,6 +553,8 @@ run_oracle_compare() {
     --compare-mode "$COMPARE_MODE" \
     "${oracle_args[@]}" \
     --device cpu
+
+  write_oracle_metadata "$oracle_output" "$trace_output"
 
   if have_python3; then
     python3 - "$oracle_output" <<'PY'
@@ -491,6 +685,8 @@ PY
     exit 1
   fi
   echo "[tier] warm_oracle repeated_request_reports_match=1"
+  write_oracle_metadata "$oracle_output" "$trace_output"
+  write_oracle_metadata "$reuse_output" "$trace_output"
 
   if have_python3; then
   python3 - "$oracle_output" <<'PY'
@@ -508,43 +704,56 @@ PY
   fi
 }
 
-if [[ "$COMPARE_ONLY" == "1" ]]; then
-  if [[ ! -f "$TRACE_JSON" ]]; then
-    echo "compare-only requires existing trace artifact: $TRACE_JSON" >&2
-    exit 1
+main() {
+  parse_cli_args "$@"
+  validate_cli_args
+
+  if [[ "$COMPARE_ONLY" == "1" ]]; then
+    if [[ ! -f "$TRACE_JSON" ]]; then
+      echo "compare-only requires existing trace artifact: $TRACE_JSON" >&2
+      exit 1
+    fi
+    if ! can_reuse_trace "$TRACE_JSON"; then
+      echo "[tier] compare-only requires a trace artifact with matching provenance; rerun capture or use compatible metadata" >&2
+      exit 1
+    fi
+    echo "[tier] reusing existing trace artifact with matching metadata: $TRACE_JSON"
+    print_run_summary
+    if [[ "$WARM_ORACLE" == "1" ]]; then
+      run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+    else
+      run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+    fi
+    return 0
   fi
+
   print_run_summary
-  if [[ "$WARM_ORACLE" == "1" ]]; then
-    run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
-  else
-    run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+
+  if [[ "$TIER" == "0" || "$TIER" == "1" || "$TIER" == "2" ]]; then
+    run_builds
   fi
-  exit 0
-fi
 
-print_run_summary
-
-if [[ "$TIER" == "0" || "$TIER" == "1" || "$TIER" == "2" ]]; then
-  run_builds
-fi
-
-if [[ "$TIER" == "1" || "$TIER" == "2" ]]; then
-  if [[ "$REUSE_TRACE" == "1" ]]; then
-    can_reuse=$(can_reuse_trace "$TRACE_JSON" "$MODEL_PATH" "$PROMPT" | tr -d '[:space:]')
-    if [[ "$can_reuse" == "1" ]]; then
-      echo "[tier] reusing existing trace artifact: $TRACE_JSON"
+  if [[ "$TIER" == "1" || "$TIER" == "2" ]]; then
+    if [[ "$REUSE_TRACE" == "1" ]]; then
+      if can_reuse_trace "$TRACE_JSON"; then
+        echo "[tier] reusing existing trace artifact with matching metadata: $TRACE_JSON"
+      else
+        run_trace "$TRACE_JSON"
+      fi
     else
       run_trace "$TRACE_JSON"
     fi
-  else
-    run_trace "$TRACE_JSON"
   fi
-fi
 
-if [[ "$TIER" == "2" ]]; then
-  if [[ "$WARM_ORACLE" == "1" ]]; then
-    run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
-  else
-    run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  if [[ "$TIER" == "2" ]]; then
+    if [[ "$WARM_ORACLE" == "1" ]]; then
+      run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+    else
+      run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+    fi
   fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
