@@ -49,9 +49,24 @@ Useful entry points:
 - `crates/gpt-oss-bench`: repository-level Rust benchmarks
 - `kernels/`: CUDA kernels loaded by the GPU path
 
+## Tier-2 Workflow
+
+Restricted fp16 CUDA Tier 2 now uses an explicit three-step contract:
+
+- raw global compare = telemetry
+- runtime-emulated global compare = localization
+- same-input local replay = ownership proof
+
+Current docs:
+
+- `docs/TIER2_FP16_CUDA_WORKFLOW.md`: canonical harness usage, compare modes, seed capture, and local replay
+- `docs/TIER2_RESULTS_AND_STATUS.md`: current findings and what remains unresolved
+- `docs/REPO_ALIGNMENT_AND_WORKSTREAMS.md`: active branch/worktree policy and forward workstreams
+
 ## Notes
 
 - The workspace intentionally stays narrow. If a new script, test harness, or package format is not part of the Rust serving path, it should not live here by default.
+- A narrow Tier-2 validation harness is intentionally retained under `crates/gpt-oss-bench` and `scripts/` because it is the current source of truth for restricted fp16 CUDA investigation and live testing.
 - Historical optimization notes and fork migration collateral were removed to keep the repository easier to maintain. Add new docs only when they are current and directly useful.
 - Related project: [m0at/rvllm](https://github.com/m0at/rvllm)
 

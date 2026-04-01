@@ -1,0 +1,85 @@
+# Repo Alignment And Workstreams
+
+## Alignment Summary
+
+This repo is organized around three active workstreams only:
+
+1. `integration/mainline-alignment`
+2. `harness/tier2-workflow`
+3. `feature/runtime-forward`
+
+The operating rule is simple:
+
+- land safe harness, docs, validation plumbing, and narrow correctness fixes aggressively
+- keep speculative runtime/semantic work isolated
+- preserve exploratory history, but do not merge it wholesale
+
+## What Landed On Main
+
+The current mainline landing batch is the safe probe/harness stack plus narrow fp16 correctness fixes:
+
+- restricted prefill trace probe and restricted logit diff entrypoints
+- restricted model-view generator and oracle compare helpers
+- tiered validation script and Tier-2 workflow docs
+- bounded decode and representative parity cases that support harness validation
+- fp16 QKV bias layout fix
+- RoPE half-split pairing fix
+- GPT-OSS YaRN RoPE table support
+- Tier-2 compare-mode, seed-capture, and same-input local replay workflow
+
+These changes are intended to make live testing and future extraction disciplined. They do not claim a settled runtime root cause.
+
+## What Stays On Integration
+
+`integration/mainline-alignment` is the branch reserved for:
+
+- follow-up cherry-picks that are coherent but not yet ready for direct mainline landing
+- post-merge validation batches
+- cleanup needed to keep archived branches and active worktrees understandable
+
+## What Was Archived Or Left As History
+
+The following branch families are historical reference unless explicitly reopened:
+
+- `debug/*`
+- `gpt-oss/*first-case`
+- `gpt-oss/sink-*`
+- `gpt-oss/deferred-*`
+
+They contain useful investigation history, but their durable knowledge should live in docs and extracted commits rather than wholesale merges.
+
+## Active Workstreams
+
+### 1. Mainline Hygiene / Integration Alignment
+
+- Branch: `integration/mainline-alignment`
+- Worktree: `~/openai/worktrees/mainline-alignment`
+- Scope:
+  - post-merge hygiene
+  - remaining safe extraction and validation batches
+  - branch/archive cleanup
+
+### 2. Harness / Live Testing / Contract Follow-Up
+
+- Branch: `harness/tier2-workflow`
+- Worktree: `~/openai/worktrees/tier2-workflow`
+- Scope:
+  - seed-capture and local-replay ergonomics
+  - compare-mode and live-testing workflow polish
+  - representative sentinel-layer reruns and harness-only improvements
+
+### 3. Forward Implementation / Runtime Work
+
+- Branch: `feature/runtime-forward`
+- Worktree: `~/openai/worktrees/runtime-forward`
+- Scope:
+  - runtime/semantic implementation work that is still incomplete
+  - selective extraction from deeper investigative branches
+  - future integration candidates that are not yet mainline-safe
+
+## Worktree Policy
+
+- Keep only the minimum active set of named worktrees.
+- Push or otherwise preserve important branches before pruning worktrees.
+- Do not delete dirty or unpushed work without an explicit preservation step.
+- Prefer archive branches or untouched historical refs over merging noisy debug stacks.
