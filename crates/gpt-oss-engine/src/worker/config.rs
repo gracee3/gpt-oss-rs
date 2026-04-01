@@ -2,13 +2,24 @@
 
 use gpt_oss_core::prelude::{LLMError, Result};
 use gpt_oss_core::types::Dtype;
+use gpt_oss_kv_model::{CacheLayoutSpec, CacheVisibility};
 use gpt_oss_runtime_plan::RuntimeMode;
+use gpt_oss_semantics::{AttentionKind, SinkBehavior};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TensorParallelDims {
     pub num_attention_heads: usize,
     pub num_kv_heads: usize,
     pub intermediate_size: usize,
+}
+
+/// How aggressively to project the current runtime config into semantic KV visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticCacheLayoutFlavor {
+    /// Safe extraction candidate: reflect only sliding-window visibility from config metadata.
+    Conservative,
+    /// Runtime-forward only: allow an explicit sink-token count for sliding layers.
+    ExperimentalSinkAware { sink_tokens: usize },
 }
 
 /// Configuration for a single GPU worker instance.
@@ -171,6 +182,62 @@ impl WorkerConfig {
         })
     }
 
+    /// Build the semantic GPT-OSS model view implied by this worker config.
+    pub fn semantic_model_spec(&self) -> Result<gpt_oss_semantics::ModelSpec> {
+        self.model_runner_config()?
+            .semantic_model_spec()
+            .map_err(|e| LLMError::ConfigError(e.to_string()))
+    }
+
+    /// Build an attention-aware semantic KV layout without changing runtime cache behavior.
+    pub fn semantic_cache_layout(&self) -> Result<CacheLayoutSpec> {
+        self.semantic_cache_layout_with_flavor(SemanticCacheLayoutFlavor::Conservative)
+    }
+
+    /// Build an attention-aware semantic KV layout with an explicit experimental flavor.
+    pub fn semantic_cache_layout_with_flavor(
+        &self,
+        flavor: SemanticCacheLayoutFlavor,
+    ) -> Result<CacheLayoutSpec> {
+        let model = self.semantic_model_spec()?;
+        let mut layout = CacheLayoutSpec::new(model.num_layers, self.block_size);
+
+        for layer in &model.layers {
+            let visibility = match layer.attention.kind {
+                AttentionKind::Full => CacheVisibility::Full,
+                AttentionKind::Sliding => {
+                    let window_tokens = layer.attention.sliding_window.unwrap_or(0);
+                    match flavor {
+                        SemanticCacheLayoutFlavor::Conservative => {
+                            CacheVisibility::Sliding { window_tokens }
+                        }
+                        SemanticCacheLayoutFlavor::ExperimentalSinkAware { sink_tokens }
+                            if sink_tokens > 0
+                                && matches!(
+                                    layer.attention.sink_behavior,
+                                    SinkBehavior::Available
+                                ) =>
+                        {
+                            CacheVisibility::SinkSliding {
+                                sink_tokens,
+                                window_tokens,
+                            }
+                        }
+                        SemanticCacheLayoutFlavor::ExperimentalSinkAware { .. } => {
+                            CacheVisibility::Sliding { window_tokens }
+                        }
+                    }
+                }
+            };
+
+            layout = layout
+                .with_layer_visibility(layer.index, visibility)
+                .map_err(|e| LLMError::ConfigError(e.to_string()))?;
+        }
+
+        Ok(layout)
+    }
+
     /// Build a `CacheConfig` from this worker config.
     pub fn cache_config(&self) -> Result<gpt_oss_model_runner::kv_cache::CacheConfig> {
         let tp_dims = self.tensor_parallel_dims()?;
@@ -272,5 +339,66 @@ mod tests {
         let rank1 = cfg.for_rank(1, 3).unwrap();
         assert_eq!(rank1.rank, 1);
         assert_eq!(rank1.device_id, 3);
+    }
+
+    #[test]
+    fn semantic_cache_layout_defaults_to_full_visibility() {
+        let cfg = make_config();
+        let layout = cfg.semantic_cache_layout().unwrap();
+
+        assert!(matches!(
+            layout.layer(0).unwrap().visibility,
+            CacheVisibility::Full
+        ));
+    }
+
+    #[test]
+    fn semantic_cache_layout_marks_sliding_layers_conservatively() {
+        let mut cfg = make_config();
+        cfg.num_layers = 2;
+        cfg.layer_types = vec!["full_attention".into(), "sliding_attention".into()];
+        cfg.sliding_window = Some(128);
+
+        let layout = cfg.semantic_cache_layout().unwrap();
+
+        assert!(matches!(
+            layout.layer(0).unwrap().visibility,
+            CacheVisibility::Full
+        ));
+        assert!(matches!(
+            layout.layer(1).unwrap().visibility,
+            CacheVisibility::Sliding { window_tokens: 128 }
+        ));
+    }
+
+    #[test]
+    fn semantic_cache_layout_supports_explicit_experimental_sink_projection() {
+        let mut cfg = make_config();
+        cfg.layer_types = vec!["sliding_attention".into(); cfg.num_layers];
+        cfg.sliding_window = Some(64);
+
+        let layout = cfg
+            .semantic_cache_layout_with_flavor(SemanticCacheLayoutFlavor::ExperimentalSinkAware {
+                sink_tokens: 2,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            layout.layer(0).unwrap().visibility,
+            CacheVisibility::SinkSliding {
+                sink_tokens: 2,
+                window_tokens: 64
+            }
+        ));
+    }
+
+    #[test]
+    fn semantic_model_spec_reports_layer_type_mismatches() {
+        let mut cfg = make_config();
+        cfg.num_layers = 2;
+        cfg.layer_types = vec!["full_attention".into()];
+
+        let err = cfg.semantic_model_spec().unwrap_err().to_string();
+        assert!(err.contains("layer_types length mismatch"));
     }
 }
