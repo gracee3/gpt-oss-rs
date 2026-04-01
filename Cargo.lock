@@ -1416,6 +1416,7 @@ dependencies = [
  "gpt-oss-kv-model",
  "gpt-oss-model-runner",
  "gpt-oss-runtime-plan",
+ "gpt-oss-semantics",
  "gpt-oss-tokenizer",
  "half",
  "hf-hub",
