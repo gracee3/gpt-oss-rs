@@ -12,12 +12,17 @@ Purpose:
 - same-input local replay
 - live-testing workflow and operator ergonomics
 
+Completed in this pass:
+
+- tightened `scripts/probe_validation_tier.sh` help text with operator-first examples
+- added bounded validation for local replay flag combinations in the wrapper script
+- documented a representative sentinel-layer operator flow and a short live-testing checklist
+
 Immediate next steps:
 
-- document exact live restricted-fp16 CUDA run commands and expected artifacts
-- tighten `scripts/probe_validation_tier.sh` help/output around `--seed-layers`, `--compare-mode`, and local replay
-- add a short operator checklist for when to run Tier 0, Tier 1, and Tier 2
-- identify any harness-only cleanup that reduces rerun cost without changing default compare behavior
+- consider a bounded performance-only short-circuit for explicit local replay requests if it stays opt-in and does not change default behavior
+- keep script output and docs aligned if additional operator-facing flags are added
+- add any further example commands only where they reduce real operator ambiguity
 - keep the Tier-2 contract docs aligned with actual harness flags and outputs
 
 Guardrails:

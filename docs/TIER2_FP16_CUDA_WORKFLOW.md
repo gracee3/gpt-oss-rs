@@ -122,6 +122,67 @@ Treat the following as the minimum bar:
 
 If step 3 fails, downgrade the claim from "runtime bug" to "not yet owned."
 
+## Operator-First Flow
+
+Use the current workflow in this order:
+
+1. Start with a representative Tier 2 run that captures telemetry and localization together.
+2. Only escalate to same-input local replay for the specific layer/path that still looks worth owning.
+3. Treat local replay as the gate before claiming a real runtime bug.
+
+Representative layers usually start with:
+
+- shallow: `0`
+- mid: `12`
+- late: `23`
+
+Add `1` when you specifically want a second shallow check, but do not default to exhaustive per-layer reruns.
+
+Recommended first run:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --tier 2 \
+  --compare-mode runtime-emulated \
+  --seed-layers 0,12,23
+```
+
+What this gives you:
+
+- raw global telemetry
+- runtime-emulated localization
+- exact traced runtime seeds for the representative layers you may replay later
+
+Recommended escalation from an existing trace artifact:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --compare-only \
+  --compare-mode runtime-emulated \
+  --local-replay-layer 12 \
+  --local-replay-path attention
+```
+
+Use this only after the representative run leaves a specific layer/path worth checking. If that replay does not survive, stop calling that surface a runtime owner.
+
+## Live-Testing Checklist
+
+Before the first live run:
+
+- confirm you are in `~/openai/worktrees/tier2-workflow`
+- confirm the branch is `harness/tier2-workflow`
+- confirm the restricted model view path is the one you intend to test
+- reserve GPU1 in `~/openai/AGENT_CHANGELOG.md` if needed
+
+Suggested operator sequence:
+
+1. `--tier 0` after script/help-only edits
+2. representative `--tier 2 --compare-mode runtime-emulated --seed-layers 0,12,23`
+3. `--compare-only` local replay for the one remaining candidate layer/path
+4. write down whether the result is telemetry only, localized, or actually owned
+
+Do not escalate to broad runtime debugging until step 3 leaves a surviving same-input local owner.
+
 ## Operational Notes
 
 - Use Tier 0 for compile-only plumbing checks.
