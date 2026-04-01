@@ -122,9 +122,16 @@ What the script does in warm mode:
 - submits the current compare request twice in one session
 - writes the primary report to `--oracle-output`
 - writes a second reuse-check report beside it as `*.warm-reuse-check.json`
+- writes `*.meta.json` sidecars beside generated trace and oracle artifacts
 - prints whether the second request reused the already-loaded session
 
 This is still a bounded harness path. It is meant to prove script-level session reuse without changing compare semantics or claiming broad live-run speedups.
+
+Artifact reuse guardrail:
+
+- trace reuse is now metadata-gated, not filename-gated
+- `compare-only` fails closed if the trace sidecar does not match the current model path, prompt identity, `max-model-len`, trace schema marker, or requested local replay layer coverage
+- a plain mismatch means recapture or use a compatible artifact; it does not silently widen reuse
 
 Start the listener:
 
