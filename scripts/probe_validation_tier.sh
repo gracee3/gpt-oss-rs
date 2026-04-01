@@ -43,6 +43,8 @@ Options:
       force trace rerun even if existing artifact is reusable
   --compare-only
       run oracle compare only (uses existing trace file, skips compile/trace)
+  --warm-oracle
+      opt-in: run the current compare request twice through one warm oracle session and emit a reuse-check artifact
   -h, --help
       show help
 
@@ -67,6 +69,12 @@ Common operator flows:
        --seed-layers 12 \
        --local-replay-layer 12 \
        --local-replay-path coarse
+
+  4) Warm-oracle reuse check for the current compare request:
+     ./scripts/probe_validation_tier.sh \
+       --compare-only \
+       --compare-mode runtime-emulated \
+       --warm-oracle
 USAGE
 }
 
@@ -87,6 +95,7 @@ LOCAL_REPLAY_LAYER=""
 LOCAL_REPLAY_PATH=""
 REUSE_TRACE="1"
 COMPARE_ONLY="0"
+WARM_ORACLE="0"
 
 usage_error() {
   echo "$1" >&2
@@ -167,6 +176,10 @@ while [[ $# -gt 0 ]]; do
       COMPARE_ONLY="1"
       shift
       ;;
+    --warm-oracle)
+      WARM_ORACLE="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -185,6 +198,10 @@ fi
 
 if [[ "$TIER" != "0" && "$TIER" != "1" && "$TIER" != "2" ]]; then
   usage_error "Invalid tier: $TIER"
+fi
+
+if [[ "$WARM_ORACLE" == "1" && "$TIER" != "2" ]]; then
+  usage_error "--warm-oracle is only available for Tier 2 / compare-only runs"
 fi
 
 if [[ -n "$LOCAL_REPLAY_LAYER" || -n "$LOCAL_REPLAY_PATH" ]]; then
@@ -244,8 +261,39 @@ run_builds() {
   (cd "$REPO_ROOT" && cargo build --release --features cuda -p gpt-oss-bench --bin restricted_prefill_trace)
 }
 
+resolve_oracle_python() {
+  local candidate=""
+
+  if [[ -n "${GPT_OSS_ORACLE_PYTHON:-}" ]]; then
+    candidate="$GPT_OSS_ORACLE_PYTHON"
+    if "$candidate" -c 'import torch' >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+    echo "GPT_OSS_ORACLE_PYTHON does not have a working torch install: $candidate" >&2
+    exit 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    candidate="python3"
+    if "$candidate" -c 'import torch' >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+
+  candidate="/data/models/.venv-awq/bin/python"
+  if [[ -x "$candidate" ]] && "$candidate" -c 'import torch' >/dev/null 2>&1; then
+    echo "$candidate"
+    return 0
+  fi
+
+  echo "no python interpreter with torch is available for oracle comparison; set GPT_OSS_ORACLE_PYTHON if needed" >&2
+  exit 1
+}
+
 print_run_summary() {
-  echo "[tier] tier=$TIER compare_mode=$COMPARE_MODE compare_only=$COMPARE_ONLY"
+  echo "[tier] tier=$TIER compare_mode=$COMPARE_MODE compare_only=$COMPARE_ONLY warm_oracle=$WARM_ORACLE"
   echo "[tier] model=$MODEL_PATH trace_json=$TRACE_JSON oracle_output=$ORACLE_OUTPUT"
   if [[ -n "$SEED_LAYERS" ]]; then
     echo "[tier] seed_layers=$SEED_LAYERS"
@@ -253,6 +301,15 @@ print_run_summary() {
   if [[ -n "$LOCAL_REPLAY_LAYER" ]]; then
     echo "[tier] local_replay=layer:$LOCAL_REPLAY_LAYER path:$LOCAL_REPLAY_PATH"
   fi
+}
+
+reuse_check_output_path() {
+  local oracle_output="$1"
+  local stem="$oracle_output"
+  if [[ "$oracle_output" == *.json ]]; then
+    stem="${oracle_output%.json}"
+  fi
+  echo "${stem}.warm-reuse-check.json"
 }
 
 run_trace() {
@@ -287,12 +344,7 @@ run_oracle_compare() {
   local python_bin=""
   local oracle_args=()
 
-  if command -v python3 >/dev/null 2>&1; then
-    python_bin="python3"
-  else
-    echo "python3 is required for oracle comparison and is not installed in PATH" >&2
-    exit 1
-  fi
+  python_bin="$(resolve_oracle_python)"
 
   echo "[tier] running oracle compare"
   if [[ -n "$LOCAL_REPLAY_LAYER" ]]; then
@@ -326,13 +378,147 @@ PY
   fi
 }
 
+build_oracle_compare_request() {
+  local python_bin="$1"
+  local trace_output="$2"
+  local oracle_output="$3"
+
+  "$python_bin" - "$trace_output" "$oracle_output" "$COMPARE_MODE" "$LOCAL_REPLAY_LAYER" "$LOCAL_REPLAY_PATH" <<'PY'
+import json
+import sys
+
+trace_output, oracle_output, compare_mode, local_replay_layer, local_replay_path = sys.argv[1:6]
+request = {
+    "op": "compare",
+    "cuda_trace_json": trace_output,
+    "output": oracle_output,
+    "compare_mode": compare_mode,
+}
+if local_replay_layer:
+    request["local_replay_layer"] = int(local_replay_layer)
+if local_replay_path:
+    request["local_replay_path"] = local_replay_path
+print(json.dumps(request))
+PY
+}
+
+compare_json_reports() {
+  local python_bin="$1"
+  local lhs="$2"
+  local rhs="$3"
+
+  "$python_bin" - "$lhs" "$rhs" <<'PY'
+import json
+import sys
+
+lhs_path, rhs_path = sys.argv[1:3]
+with open(lhs_path, "r", encoding="utf-8") as lhs_handle:
+    lhs = json.load(lhs_handle)
+with open(rhs_path, "r", encoding="utf-8") as rhs_handle:
+    rhs = json.load(rhs_handle)
+print("1" if lhs == rhs else "0")
+PY
+}
+
+run_warm_oracle_compare() {
+  local trace_output="$1"
+  local oracle_output="$2"
+  local python_bin=""
+  local oracle_tool=""
+  local reuse_output=""
+  local request_primary=""
+  local request_reuse=""
+  local response_primary=""
+  local response_reuse=""
+  local response_shutdown=""
+  local reports_match=""
+
+  python_bin="$(resolve_oracle_python)"
+  oracle_tool="$REPO_ROOT/crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py"
+  reuse_output="$(reuse_check_output_path "$oracle_output")"
+  request_primary="$(build_oracle_compare_request "$python_bin" "$trace_output" "$oracle_output")"
+  request_reuse="$(build_oracle_compare_request "$python_bin" "$trace_output" "$reuse_output")"
+
+  echo "[tier] running warm oracle compare"
+  echo "[tier] warm_oracle primary_output=$oracle_output reuse_output=$reuse_output"
+
+  coproc WARM_ORACLE_LISTENER {
+    "$python_bin" "$oracle_tool" \
+      --listen \
+      --original-model "$ORIGINAL_MODEL" \
+      --device cpu
+  }
+
+  printf '%s\n' "$request_primary" >&"${WARM_ORACLE_LISTENER[1]}"
+  IFS= read -r response_primary <&"${WARM_ORACLE_LISTENER[0]}"
+
+  printf '%s\n' "$request_reuse" >&"${WARM_ORACLE_LISTENER[1]}"
+  IFS= read -r response_reuse <&"${WARM_ORACLE_LISTENER[0]}"
+
+  printf '%s\n' '{"op":"shutdown"}' >&"${WARM_ORACLE_LISTENER[1]}"
+  exec {WARM_ORACLE_LISTENER[1]}>&-
+  IFS= read -r response_shutdown <&"${WARM_ORACLE_LISTENER[0]}"
+  wait "$WARM_ORACLE_LISTENER_PID"
+
+  if have_python3; then
+    python3 - "$response_primary" "$response_reuse" "$response_shutdown" <<'PY'
+import json
+import sys
+
+primary = json.loads(sys.argv[1])
+reuse = json.loads(sys.argv[2])
+shutdown = json.loads(sys.argv[3])
+
+print(
+    "[tier] warm_oracle first_request"
+    f" session_reused={primary.get('session_reused')}"
+    f" session_load_count={primary.get('session_load_count')}"
+    f" output={primary.get('output')}"
+)
+print(
+    "[tier] warm_oracle second_request"
+    f" session_reused={reuse.get('session_reused')}"
+    f" session_load_count={reuse.get('session_load_count')}"
+    f" output={reuse.get('output')}"
+)
+print(f"[tier] warm_oracle shutdown_ok={shutdown.get('shutdown')}")
+PY
+  fi
+
+  reports_match="$(compare_json_reports "$python_bin" "$oracle_output" "$reuse_output" | tr -d '[:space:]')"
+  if [[ "$reports_match" != "1" ]]; then
+    echo "[tier] warm_oracle repeated request reports diverged between $oracle_output and $reuse_output" >&2
+    exit 1
+  fi
+  echo "[tier] warm_oracle repeated_request_reports_match=1"
+
+  if have_python3; then
+  python3 - "$oracle_output" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as handle:
+    report = json.load(handle)
+
+print("first_divergence_stage=", report.get('first_divergence_stage'))
+print("compare_mode=", report.get('compare_mode'))
+print("diff_count=", len(report.get('stage_diffs', [])))
+PY
+  fi
+}
+
 if [[ "$COMPARE_ONLY" == "1" ]]; then
   if [[ ! -f "$TRACE_JSON" ]]; then
     echo "compare-only requires existing trace artifact: $TRACE_JSON" >&2
     exit 1
   fi
   print_run_summary
-  run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  if [[ "$WARM_ORACLE" == "1" ]]; then
+    run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  else
+    run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  fi
   exit 0
 fi
 
@@ -356,5 +542,9 @@ if [[ "$TIER" == "1" || "$TIER" == "2" ]]; then
 fi
 
 if [[ "$TIER" == "2" ]]; then
-  run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  if [[ "$WARM_ORACLE" == "1" ]]; then
+    run_warm_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  else
+    run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
+  fi
 fi
