@@ -2,50 +2,49 @@
 
 ## Alignment Summary
 
-The repo is now organized around exactly three active workstreams:
+This repo is organized around three active workstreams only:
 
 1. `integration/mainline-alignment`
 2. `harness/tier2-workflow`
 3. `feature/runtime-forward`
 
-The policy is:
+The operating rule is simple:
 
-- land safe docs and workflow clarification on `main`
-- stage broader harness/tooling extraction on `integration/mainline-alignment`
-- keep unfinished runtime/semantic work isolated from mainline hygiene
+- land safe harness, docs, validation plumbing, and narrow correctness fixes aggressively
+- keep speculative runtime/semantic work isolated
+- preserve exploratory history, but do not merge it wholesale
 
-## What Was Merged To Main
+## What Landed On Main
 
-`main` now carries the canonical Tier-2 docs:
+The current mainline landing batch is the safe probe/harness stack plus narrow fp16 correctness fixes:
 
-- `docs/TIER2_FP16_CUDA_WORKFLOW.md`
-- `docs/TIER2_RESULTS_AND_STATUS.md`
-- README/doc index pointers to the Tier-2 workflow and status docs
+- restricted prefill trace probe and restricted logit diff entrypoints
+- restricted model-view generator and oracle compare helpers
+- tiered validation script and Tier-2 workflow docs
+- bounded decode and representative parity cases that support harness validation
+- fp16 QKV bias layout fix
+- RoPE half-split pairing fix
+- GPT-OSS YaRN RoPE table support
+- Tier-2 compare-mode, seed-capture, and same-input local replay workflow
 
-This is an intentional documentation landing, not a claim that the runtime root cause is settled.
+These changes are intended to make live testing and future extraction disciplined. They do not claim a settled runtime root cause.
 
-## What Was Staged On Integration
+## What Stays On Integration
 
-`integration/mainline-alignment` is the staging lane for the safe extracted harness/tooling stack that is broader than a docs-only mainline landing.
+`integration/mainline-alignment` is the branch reserved for:
 
-Current staged content on that branch includes:
-
-- restricted prefill activation trace probe plumbing
-- restricted model-view and oracle compare helpers
-- tiered validation script
-- representative parity/supporting cases already used by the investigation
-- Tier-2 seed-capture and same-input local-replay workflow plumbing
-
-The integration lane exists so these changes can stay coherent and testable without pretending they all belong on `main` yet.
+- follow-up cherry-picks that are coherent but not yet ready for direct mainline landing
+- post-merge validation batches
+- cleanup needed to keep archived branches and active worktrees understandable
 
 ## What Was Archived Or Preserved Only
 
-The following branches were preserved and pushed as historical or reference lanes, but are not the new canonical active workstreams:
+The following branches were preserved and pushed as historical or reference lanes, but are not the canonical active workstreams:
 
+- `archive/replay-probe-enablement-proven-fixes`
+- `codex/cleanup-2026-04-01`
 - `debug/probe-enablement-k-rope-preserve-20260330`
 - `debug/replay-k-seam-audit-20260331`
-- `replay/probe-enablement-proven-fixes`
-- `codex/cleanup-2026-04-01`
 - `gpt-oss/deferred-frontier-recon`
 - `gpt-oss/deferred-frontier-shape-audit`
 - `gpt-oss/full-attention-next-case`
@@ -56,59 +55,49 @@ The following branches were preserved and pushed as historical or reference lane
 - `gpt-oss/tier2-warm-oracle-core`
 - `integration/tier01-lane`
 
-These branches contain useful history, but they should be mined selectively rather than merged wholesale.
+## What Was Archived Or Left As History
 
-## What Was Pruned
+The following branch families are historical reference unless explicitly reopened:
 
-The following local worktrees were removed after their branch state was merged, pushed, or otherwise preserved:
+- `debug/*`
+- `gpt-oss/*first-case`
+- `gpt-oss/sink-*`
+- `gpt-oss/deferred-*`
 
-- `/home/emmy/openai/worktrees/codex-cleanup-ops`
-- `/home/emmy/openai/worktrees/deferred-doc-curation`
-- `/home/emmy/openai/worktrees/deferred-frontier-recon`
-- `/home/emmy/openai/worktrees/deferred-frontier-shape-audit`
-- `/home/emmy/openai/worktrees/full-attention-next-case`
-- `/home/emmy/openai/worktrees/graph-first-case`
-- `/home/emmy/openai/worktrees/integration-tier01-lane-repro`
-- `/home/emmy/openai/worktrees/replay-k-seam-audit-20260331`
-- `/home/emmy/openai/worktrees/sink-first-case`
-- `/home/emmy/openai/worktrees/sink-gating-fix`
-- `/home/emmy/openai/worktrees/sliding-attention-first-case`
-- `/home/emmy/openai/worktrees/tier2-warm-oracle-core`
+They contain useful investigation history, but their durable knowledge should live in docs and extracted commits rather than wholesale merges.
 
 ## Active Workstreams
 
-### Mainline Hygiene / Integration Alignment
+### 1. Mainline Hygiene / Integration Alignment
 
 - Branch: `integration/mainline-alignment`
-- Worktree: `/home/emmy/openai/gpt-oss-rs`
+- Worktree: `~/openai/worktrees/mainline-alignment`
 - Scope:
-  - safe extraction/cherry-picks
-  - merge-risk reduction
-  - integration validation batches
-  - branch/worktree hygiene and docs upkeep
+  - post-merge hygiene
+  - remaining safe extraction and validation batches
+  - branch/archive cleanup
 
-### Harness / Live Testing / Contract Follow-Up
+### 2. Harness / Live Testing / Contract Follow-Up
 
 - Branch: `harness/tier2-workflow`
-- Worktree: `/home/emmy/openai/worktrees/tier2-workflow`
+- Worktree: `~/openai/worktrees/tier2-workflow`
 - Scope:
-  - Tier-2 contract follow-up
   - seed-capture and local-replay ergonomics
-  - live-testing workflow polish
-  - representative sentinel-layer reruns
+  - compare-mode and live-testing workflow polish
+  - representative sentinel-layer reruns and harness-only improvements
 
-### Forward Implementation / Feature / Integration
+### 3. Forward Implementation / Runtime Work
 
 - Branch: `feature/runtime-forward`
-- Worktree: `/home/emmy/openai/worktrees/runtime-forward`
+- Worktree: `~/openai/worktrees/runtime-forward`
 - Scope:
-  - unfinished runtime/semantic work
-  - future selective extraction from preserved branches
-  - integration candidates that are not yet ready for mainline promotion
+  - runtime/semantic implementation work that is still incomplete
+  - selective extraction from deeper investigative branches
+  - future integration candidates that are not yet mainline-safe
 
 ## Worktree Policy
 
-- Keep only the minimum active worktree set.
-- Push important branch state before pruning local worktrees.
+- Keep only the minimum active set of named worktrees.
+- Push or otherwise preserve important branches before pruning worktrees.
 - Do not delete dirty or unpushed work without an explicit preservation step.
-- Prefer extracted commits and docs over long-lived noisy debug merges.
+- Prefer archive branches or untouched historical refs over merging noisy debug stacks.
