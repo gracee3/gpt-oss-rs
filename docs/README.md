@@ -1,5 +1,8 @@
 # Docs
 
-The repository no longer carries long-lived fork-era planning notes or benchmark comparison writeups.
+Current maintained docs:
 
-Keep the source of truth in the root [README](../README.md) and [CONTRIBUTING](../CONTRIBUTING.md) unless a document is current, specific, and worth maintaining on its own.
+- `TIER2_FP16_CUDA_WORKFLOW.md`: canonical Tier-2 contract, seed capture, and local replay workflow
+- `TIER2_RESULTS_AND_STATUS.md`: current findings and unresolved status
+- `REPO_ALIGNMENT_AND_WORKSTREAMS.md`: current branch/worktree policy and active workstreams
+- `integration_plan.md`: older integration history retained for context

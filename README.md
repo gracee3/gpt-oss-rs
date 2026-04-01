@@ -49,6 +49,10 @@ Useful entry points:
 - `crates/gpt-oss-bench`: repository-level Rust benchmarks
 - `kernels/`: CUDA kernels loaded by the GPU path
 
+Current Tier-2 restricted-fp16 CUDA workflow lives in [docs/TIER2_FP16_CUDA_WORKFLOW.md](docs/TIER2_FP16_CUDA_WORKFLOW.md).
+Current Tier-2 status and findings live in [docs/TIER2_RESULTS_AND_STATUS.md](docs/TIER2_RESULTS_AND_STATUS.md).
+Current branch/worktree alignment and active workstreams live in [docs/REPO_ALIGNMENT_AND_WORKSTREAMS.md](docs/REPO_ALIGNMENT_AND_WORKSTREAMS.md).
+
 ## Notes
 
 - The workspace intentionally stays narrow. If a new script, test harness, or package format is not part of the Rust serving path, it should not live here by default.
