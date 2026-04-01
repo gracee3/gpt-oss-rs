@@ -135,6 +135,7 @@ Artifact reuse guardrail:
 - newly captured traces now write wrapper-owned capture metadata in the sidecar, so operators can tell current wrapper captures apart from older legacy-unversioned artifacts
 - older artifacts remain explicitly labeled as legacy at reuse time; they are not silently upgraded to the new wrapper-capture contract
 - `--inspect-trace-artifact` prints the reuse classification, checked provenance fields, and exact accept/reject reasons without recapturing or comparing
+- `--require-current-trace-contract` is an opt-in strict mode that rejects legacy artifacts even when older provenance fields still match
 - `./scripts/test_probe_validation_wrapper.sh` runs the bounded wrapper-only regression path for current metadata, legacy metadata, incompatible metadata, and warm-oracle test-mode reuse
 
 Start the listener:

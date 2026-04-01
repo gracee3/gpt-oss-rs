@@ -23,6 +23,7 @@ Completed in this pass:
 - distinguished current wrapper-captured trace sidecars from legacy-unversioned artifacts with an explicit wrapper-owned capture contract marker
 - added a dry-run trace inspection mode so operators can see reuse classification and exact provenance reasons before running compare-only or recapture paths
 - added `scripts/test_probe_validation_wrapper.sh` so the wrapper-only provenance/inspection/warm-oracle paths can be rerun without ad hoc temp-shell setup
+- added an opt-in strict mode that requires the current wrapper-owned trace capture contract instead of allowing legacy artifact reuse
 
 Immediate next steps:
 

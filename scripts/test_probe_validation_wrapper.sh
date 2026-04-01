@@ -51,6 +51,7 @@ main() {
   local oracle_output=""
   local current_json=""
   local legacy_json=""
+  local legacy_strict_json=""
   local bad_json=""
   local warm_stdout=""
   local python_bin=""
@@ -68,6 +69,7 @@ main() {
   oracle_output="$tmpdir/oracle-report.json"
   current_json="$tmpdir/current-inspect.json"
   legacy_json="$tmpdir/legacy-inspect.json"
+  legacy_strict_json="$tmpdir/legacy-strict-inspect.json"
   bad_json="$tmpdir/bad-inspect.json"
   warm_stdout="$tmpdir/warm.out"
 
@@ -158,6 +160,21 @@ PY
 
   if "$WRAPPER_SCRIPT" \
     --inspect-trace-artifact \
+    --require-current-trace-contract \
+    --trace-json "$trace_legacy" \
+    --model /tmp/restricted-model \
+    --prompt "test prompt" \
+    --max-model-len 128 \
+    --compare-mode runtime-emulated \
+    --seed-layers 12 \
+    --local-replay-layer 12 \
+    --local-replay-path attention > "$legacy_strict_json" 2>/dev/null; then
+    echo "legacy artifact unexpectedly passed strict inspection" >&2
+    exit 1
+  fi
+
+  if "$WRAPPER_SCRIPT" \
+    --inspect-trace-artifact \
     --trace-json "$trace_bad" \
     --model /tmp/restricted-model \
     --prompt "test prompt" \
@@ -172,6 +189,7 @@ PY
 
   "$WRAPPER_SCRIPT" \
     --compare-only \
+    --require-current-trace-contract \
     --trace-json "$trace_current" \
     --oracle-output "$oracle_output" \
     --original-model /tmp/original-model \
@@ -184,7 +202,7 @@ PY
     --local-replay-path attention \
     --warm-oracle > "$warm_stdout" 2>&1
 
-  python3 - "$current_json" "$legacy_json" "$bad_json" <<'PY'
+  python3 - "$current_json" "$legacy_json" "$legacy_strict_json" "$bad_json" <<'PY'
 import json
 import sys
 
@@ -193,16 +211,22 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
 with open(sys.argv[2], "r", encoding="utf-8") as handle:
     legacy = json.load(handle)
 with open(sys.argv[3], "r", encoding="utf-8") as handle:
+    legacy_strict = json.load(handle)
+with open(sys.argv[4], "r", encoding="utf-8") as handle:
     bad = json.load(handle)
 
 assert current["artifact_classification"] == "current-wrapper-captured"
 assert current["reusable_for_requested_run"] is True
 assert legacy["artifact_classification"] == "legacy"
 assert "not upgraded" in legacy["note"]
+assert legacy_strict["artifact_classification"] == "legacy"
+assert legacy_strict["reusable_for_requested_run"] is False
+assert any("--require-current-trace-contract" in reason for reason in legacy_strict["reasons"])
 assert bad["reusable_for_requested_run"] is False
 assert any("max-model-len mismatch" in reason for reason in bad["reasons"])
 print("current_wrapper_captured=ok")
 print("legacy_artifact_note=ok")
+print("legacy_strict_rejection=ok")
 print("incompatible_artifact_reason=ok")
 PY
 
@@ -224,6 +248,7 @@ PY
 
   echo "wrapper_regression: current_wrapper_captured=ok"
   echo "wrapper_regression: legacy_artifact_note=ok"
+  echo "wrapper_regression: legacy_strict_rejection=ok"
   echo "wrapper_regression: incompatible_artifact_reason=ok"
   echo "wrapper_regression: warm_oracle_test_mode=ok"
 }

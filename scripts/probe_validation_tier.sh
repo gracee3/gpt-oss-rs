@@ -47,6 +47,8 @@ Options:
       opt-in: run the current compare request twice through one warm oracle session and emit a reuse-check artifact
   --inspect-trace-artifact
       dry-run: inspect whether the trace artifact is reusable for the current requested run without recapturing or comparing
+  --require-current-trace-contract
+      opt-in strict mode: require the current wrapper-owned trace capture contract and reject legacy artifacts
   -h, --help
       show help
 
@@ -85,6 +87,12 @@ Common operator flows:
        --compare-mode runtime-emulated \
        --local-replay-layer 12 \
        --local-replay-path attention
+
+  6) Strictly require the current wrapper-owned trace contract:
+     ./scripts/probe_validation_tier.sh \
+       --inspect-trace-artifact \
+       --require-current-trace-contract \
+       --trace-json .live/restricted-cuda-prefill-trace.integration.json
 USAGE
 }
 
@@ -110,6 +118,7 @@ REUSE_TRACE="1"
 COMPARE_ONLY="0"
 WARM_ORACLE="0"
 INSPECT_TRACE_ARTIFACT="0"
+REQUIRE_CURRENT_TRACE_CONTRACT="0"
 
 usage_error() {
   echo "$1" >&2
@@ -197,6 +206,10 @@ parse_cli_args() {
         ;;
       --inspect-trace-artifact)
         INSPECT_TRACE_ARTIFACT="1"
+        shift
+        ;;
+      --require-current-trace-contract)
+        REQUIRE_CURRENT_TRACE_CONTRACT="1"
         shift
         ;;
       -h|--help)
@@ -406,7 +419,7 @@ can_reuse_trace() {
     return 1
   fi
   metadata_path="$(trace_metadata_path "$trace_path")"
-  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" <<'PY'
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" "$REQUIRE_CURRENT_TRACE_CONTRACT" <<'PY'
 import hashlib
 import json
 import sys
@@ -422,7 +435,8 @@ import sys
     expected_metadata_schema_version,
     legacy_trace_schema,
     expected_wrapper_capture_contract_version,
-) = sys.argv[1:11]
+    require_current_trace_contract,
+) = sys.argv[1:12]
 
 with open(trace_path, "r", encoding="utf-8") as handle:
     trace = json.load(handle)
@@ -446,6 +460,7 @@ capture_contract_version = metadata.get("trace_capture_contract_version")
 capture_origin = metadata.get("trace_capture_origin")
 is_wrapper_captured = capture_contract_version == expected_wrapper_capture_contract_version and capture_origin == "wrapper-captured-current"
 is_legacy_metadata = not capture_contract_version and not capture_origin
+strict_current_contract = require_current_trace_contract == "1"
 
 if trace.get("restricted_model_path") != expected_model:
     reasons.append("restricted model path mismatch")
@@ -484,7 +499,8 @@ if is_wrapper_captured:
     if metadata.get("wrapper_capture_generation") != "current-wrapper-sidecar":
         reasons.append("wrapper capture generation mismatch")
 elif is_legacy_metadata:
-    pass
+    if strict_current_contract:
+        reasons.append("legacy artifact rejected by --require-current-trace-contract: current wrapper-owned trace capture contract is missing")
 else:
     reasons.append(
         "trace capture contract metadata is incomplete or incompatible; treat artifact as legacy and recapture with the current wrapper if needed"
@@ -537,7 +553,7 @@ inspect_trace_artifact() {
     return 1
   fi
   metadata_path="$(trace_metadata_path "$trace_path")"
-  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$COMPARE_MODE" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" <<'PY'
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$COMPARE_MODE" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" "$REQUIRE_CURRENT_TRACE_CONTRACT" <<'PY'
 import hashlib
 import json
 import sys
@@ -554,7 +570,8 @@ import sys
     expected_metadata_schema_version,
     legacy_trace_schema,
     expected_wrapper_capture_contract_version,
-) = sys.argv[1:12]
+    require_current_trace_contract,
+) = sys.argv[1:13]
 
 with open(trace_path, "r", encoding="utf-8") as handle:
     trace = json.load(handle)
@@ -581,6 +598,7 @@ capture_contract_version = metadata.get("trace_capture_contract_version")
 capture_origin = metadata.get("trace_capture_origin")
 is_wrapper_captured = capture_contract_version == expected_wrapper_capture_contract_version and capture_origin == "wrapper-captured-current"
 is_legacy_metadata = metadata_present and not capture_contract_version and not capture_origin
+strict_current_contract = require_current_trace_contract == "1"
 
 if trace.get("restricted_model_path") != expected_model:
     reasons.append("restricted model path mismatch")
@@ -620,7 +638,8 @@ if is_wrapper_captured:
     if metadata.get("wrapper_capture_generation") != "current-wrapper-sidecar":
         reasons.append("wrapper capture generation mismatch")
 elif is_legacy_metadata:
-    pass
+    if strict_current_contract:
+        reasons.append("legacy artifact rejected by --require-current-trace-contract: current wrapper-owned trace capture contract is missing")
 else:
     reasons.append(
         "trace capture contract metadata is incomplete or incompatible; treat artifact as legacy and recapture with the current wrapper if needed"
@@ -657,6 +676,7 @@ report = {
         "compare_mode": requested_compare_mode,
         "seed_layers": expected_seed_layer_values,
         "local_replay_layer": None if not expected_local_replay_layer else int(expected_local_replay_layer),
+        "require_current_trace_contract": strict_current_contract,
     },
     "artifact_classification": classification,
     "reusable_for_requested_run": not reasons,
@@ -687,6 +707,8 @@ if classification == "legacy":
     )
 elif classification == "current-wrapper-captured":
     report["note"] = "current wrapper-owned capture contract present"
+elif classification == "legacy" and strict_current_contract:
+    report["note"] = "legacy artifact is explicitly rejected in strict mode because the current wrapper-owned capture contract is missing"
 else:
     report["note"] = "artifact is not reusable for the requested run"
 
