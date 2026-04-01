@@ -25,12 +25,20 @@ Options:
       oracle diff artifact path (default: .live/restricted-prefill-trace-diff.integration.json)
   --original-model <path>
       original/oracle checkpoint path (default: /data/models/openai/gpt-oss-20b)
+  --compare-mode <raw|runtime-emulated>
+      comparison contract for Tier 2 oracle compare (default: raw)
   --prompt <text>
       prompt text used for trace capture
   --max-model-len <n>
       model max length for trace capture (default: 128)
   --gpu <idx>
       CUDA_VISIBLE_DEVICES index (default: 1)
+  --seed-layers <csv>
+      comma-separated layer indices for opt-in full-sequence seed capture during trace
+  --local-replay-layer <n>
+      opt-in same-input local replay layer for oracle compare
+  --local-replay-path <coarse|attention|mlp>
+      local replay path used with --local-replay-layer
   --no-reuse
       force trace rerun even if existing artifact is reusable
   --compare-only
@@ -48,9 +56,13 @@ MODEL_PATH="/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
 TRACE_JSON="$REPO_ROOT/.live/restricted-cuda-prefill-trace.integration.json"
 ORACLE_OUTPUT="$REPO_ROOT/.live/restricted-prefill-trace-diff.integration.json"
 ORIGINAL_MODEL="/data/models/openai/gpt-oss-20b"
+COMPARE_MODE="raw"
 PROMPT="Explain tensor parallelism in one short sentence."
 MAX_MODEL_LEN="128"
 GPU="1"
+SEED_LAYERS=""
+LOCAL_REPLAY_LAYER=""
+LOCAL_REPLAY_PATH=""
 REUSE_TRACE="1"
 COMPARE_ONLY="0"
 
@@ -76,6 +88,10 @@ while [[ $# -gt 0 ]]; do
       ORIGINAL_MODEL="$2"
       shift 2
       ;;
+    --compare-mode)
+      COMPARE_MODE="$2"
+      shift 2
+      ;;
     --prompt)
       PROMPT="$2"
       shift 2
@@ -86,6 +102,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gpu)
       GPU="$2"
+      shift 2
+      ;;
+    --seed-layers)
+      SEED_LAYERS="$2"
+      shift 2
+      ;;
+    --local-replay-layer)
+      LOCAL_REPLAY_LAYER="$2"
+      shift 2
+      ;;
+    --local-replay-path)
+      LOCAL_REPLAY_PATH="$2"
       shift 2
       ;;
     --no-reuse)
@@ -160,15 +188,27 @@ run_builds() {
 run_trace() {
   local trace_output="$1"
   echo "[tier] running restricted prefill trace"
-  (cd "$REPO_ROOT" && \
-    CUDA_VISIBLE_DEVICES="$GPU" GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
-    target/release/restricted_prefill_trace \
-    --model "$MODEL_PATH" \
-    --prompt "$PROMPT" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    --gpu-memory-utilization 0.75 \
-    --output "$trace_output" \
-    --log-level info)
+  if [[ -n "$SEED_LAYERS" ]]; then
+    (cd "$REPO_ROOT" && \
+      CUDA_VISIBLE_DEVICES="$GPU" GPT_OSS_DISABLE_CUDA_GRAPHS=1 GPT_OSS_TRACE_SEED_LAYERS="$SEED_LAYERS" \
+      target/release/restricted_prefill_trace \
+      --model "$MODEL_PATH" \
+      --prompt "$PROMPT" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --gpu-memory-utilization 0.75 \
+      --output "$trace_output" \
+      --log-level info)
+  else
+    (cd "$REPO_ROOT" && \
+      CUDA_VISIBLE_DEVICES="$GPU" GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+      target/release/restricted_prefill_trace \
+      --model "$MODEL_PATH" \
+      --prompt "$PROMPT" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --gpu-memory-utilization 0.75 \
+      --output "$trace_output" \
+      --log-level info)
+  fi
 }
 
 run_oracle_compare() {
@@ -188,6 +228,9 @@ run_oracle_compare() {
     --cuda-trace-json "$trace_output" \
     --original-model "$ORIGINAL_MODEL" \
     --output "$oracle_output" \
+    --compare-mode "$COMPARE_MODE" \
+    ${LOCAL_REPLAY_LAYER:+--local-replay-layer "$LOCAL_REPLAY_LAYER"} \
+    ${LOCAL_REPLAY_PATH:+--local-replay-path "$LOCAL_REPLAY_PATH"} \
     --device cpu
 
   if have_python3; then
@@ -200,6 +243,7 @@ with open(path, 'r', encoding='utf-8') as handle:
     report = json.load(handle)
 
 print("first_divergence_stage=", report.get('first_divergence_stage'))
+print("compare_mode=", report.get('compare_mode'))
 print("diff_count=", len(report.get('stage_diffs', [])))
 PY
   fi

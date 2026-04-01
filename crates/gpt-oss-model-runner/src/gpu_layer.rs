@@ -26,6 +26,7 @@ mod inner {
     use half::f16;
     use tracing::{info, trace};
 
+    use crate::gpu_runner::{PrefillAttentionTrace, PrefillMlpTrace};
     use gpt_oss_core::error::{LLMError, Result};
     use gpt_oss_gpu::cublas::CublasHandle;
     use gpt_oss_gpu::kernel_loader::KernelLoader;
@@ -79,6 +80,7 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub o_proj_bias: Option<&'a CudaSlice<f32>>,
         // Optional sink logits (GPT-OSS)
         pub sinks: Option<&'a CudaSlice<f32>>,
         // Post-attention norm
@@ -103,6 +105,8 @@ mod inner {
         pub q_proj_bias: Option<&'a CudaSlice<f32>>,
         pub k_proj_bias: Option<&'a CudaSlice<f32>>,
         pub v_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub o_proj_bias: Option<&'a CudaSlice<f32>>,
+        pub o_proj_bias_f16: Option<&'a CudaSlice<f16>>,
         pub sinks: Option<&'a CudaSlice<f32>>,
         pub post_attention_layernorm: &'a CudaSlice<f32>,
         pub gate_proj: Option<&'a CudaSlice<f16>>,
@@ -150,6 +154,7 @@ mod inner {
             &self,
             stream: &Arc<CudaStream>,
             input: &CudaSlice<f32>,
+            mut debug_trace: Option<&mut PrefillMlpTrace>,
         ) -> Result<CudaSlice<f32>> {
             let host_input = stream
                 .clone_dtoh(input)
@@ -188,6 +193,18 @@ mod inner {
                     let route_weight = route_weights[rank];
                     for hidden_idx in 0..self.hidden_size {
                         output[dst_offset + hidden_idx] += expert_out[hidden_idx] * route_weight;
+                    }
+                }
+
+                if token_idx + 1 == num_tokens {
+                    if let Some(trace) = debug_trace.as_deref_mut() {
+                        trace.router_logits = logits;
+                        trace.router_topk_indices =
+                            top_indices.iter().map(|&idx| idx as i32).collect();
+                        trace.router_topk_weights = route_weights;
+                        trace.expert_weighted_sum_pre_cast = output
+                            [token_idx * self.hidden_size..(token_idx + 1) * self.hidden_size]
+                            .to_vec();
                     }
                 }
             }
@@ -753,6 +770,8 @@ mod inner {
             prev_mlp_out: Option<&CudaSlice<f16>>,
             lt: Option<&crate::CublasLtRef>,
             tp_comm: &dyn crate::tensor_parallel::TensorParallelComm,
+            mut debug_trace: Option<&mut PrefillAttentionTrace>,
+            mut mlp_debug_trace: Option<&mut PrefillMlpTrace>,
         ) -> Result<(CudaSlice<f16>, CudaSlice<f16>)> {
             let cfg = &self.config;
             let num_tokens = input.num_tokens;
@@ -811,6 +830,12 @@ mod inner {
                 0
             };
             let residual_ref = fused_residual.as_ref().unwrap_or(hidden_f16);
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                if cfg.layer_idx == 12 || cfg.layer_idx == 23 {
+                    trace.attention_norm_input_full =
+                        Self::copy_f16_slice_to_f32(&self.stream, residual_ref)?;
+                }
+            }
 
             // 2. QKV projections: hgemm f16 x f16 -> f16.
             let q_dim = num_heads * head_dim;
@@ -886,6 +911,14 @@ mod inner {
             // 3. Apply fused QKV bias (f16) in-place.
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let k_view = qkv.slice(q_end..k_end);
+                trace.raw_k_proj = Self::copy_f16_view_to_f32(&self.stream, &k_view)?;
+                if cfg.layer_idx == 12 {
+                    let v_view = qkv.slice(k_end..num_tokens * qkv_dim);
+                    trace.raw_v_proj = Self::copy_f16_view_to_f32(&self.stream, &v_view)?;
+                }
+            }
             if let Some(bias) = weights.fused_qkv_bias {
                 if weights.fused_qkv.is_some() {
                     let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
@@ -937,6 +970,24 @@ mod inner {
                     }
                 }
             }
+
+            if let Some(trace) = debug_trace.as_deref_mut() {
+                let k_view = qkv.slice(q_end..k_end);
+                trace.biased_k_proj = Self::copy_f16_view_to_f32(&self.stream, &k_view)?;
+                trace.k_after_proj = Self::expand_k_for_score_heads_f16(
+                    &self.stream,
+                    &k_view,
+                    num_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                )?;
+                if cfg.layer_idx == 12 {
+                    let v_view = qkv.slice(k_end..num_tokens * qkv_dim);
+                    trace.biased_v_proj =
+                        Self::copy_f16_view_to_f32(&self.stream, &v_view)?;
+                }
+            }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
                 stage_start
@@ -978,7 +1029,33 @@ mod inner {
             // 5. KV cache write: f16 K/V -> f16 cache.
             {
                 let k_view = qkv.slice(q_end..k_end);
+                if let Some(trace) = debug_trace.as_deref_mut() {
+                    let expanded_k = Self::expand_k_for_score_heads_f16(
+                        &self.stream,
+                        &k_view,
+                        num_tokens,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                    )?;
+                    trace.k_after_rope_unpacked = expanded_k.clone();
+                    trace.pre_write_k_path = expanded_k;
+                }
                 let v_view = qkv.slice(k_end..);
+                if let Some(trace) = debug_trace.as_deref_mut() {
+                    if cfg.layer_idx == 12 {
+                        trace.v_compact_for_context =
+                            Self::copy_f16_view_to_f32(&self.stream, &v_view)?;
+                        trace.v_for_context = Self::expand_v_for_context_f16(
+                            &self.stream,
+                            &v_view,
+                            num_tokens,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                        )?;
+                    }
+                }
                 Self::cache_write_f16_views(
                     &self.stream,
                     &self.loader,
@@ -1005,6 +1082,8 @@ mod inner {
             // 6. Attention.
             let use_sink_attention = weights.sinks.is_some() || cfg.sliding_window.is_some();
             let sinks = weights.sinks.unwrap_or(weights.input_layernorm);
+            let mut attention_scores = None;
+            let mut attention_probs = None;
             let attn_out = if input.is_prefill || use_sink_attention {
                 let cast_f16_f32 = self
                     .loader
@@ -1016,6 +1095,33 @@ mod inner {
                     .map_err(|e| LLMError::GpuError(format!("load cast f32->f16: {e}")))?;
                 let q_f16 = qkv.slice(..q_end);
                 let q_f32 = Self::cast_f16_to_f32(&self.stream, &q_f16, q_end, &cast_f16_f32)?;
+                if input.is_prefill && debug_trace.is_some() {
+                    let (last_q, k_inputs, scores, probs) =
+                        Self::trace_prefill_attention_last_token(
+                            &self.stream,
+                            &q_f32.as_view(),
+                            input.key_cache,
+                            input.value_cache,
+                            &input.block_tables,
+                            &input.context_lens,
+                            &input.seq_start_pos,
+                            num_tokens,
+                            input.num_seqs,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            input.block_size,
+                            sinks,
+                            weights.sinks.is_some(),
+                            cfg.sliding_window,
+                        )?;
+                    if let Some(trace) = debug_trace.as_deref_mut() {
+                        trace.last_q_for_scores = last_q;
+                        trace.k_for_scores = k_inputs;
+                    }
+                    attention_scores = Some(scores);
+                    attention_probs = Some(probs);
+                }
                 let attn_f32 = if input.is_prefill {
                     Self::prefill_attention(
                         &self.stream,
@@ -1058,6 +1164,12 @@ mod inner {
                         cfg.sliding_window,
                     )?
                 };
+                if let Some(trace) = debug_trace.as_deref_mut() {
+                    if cfg.layer_idx == 12 {
+                        trace.attention_context_pre_cast =
+                            Self::copy_last_token_f32(&self.stream, &attn_f32, num_tokens, q_dim)?;
+                    }
+                }
                 Self::cast_f32_to_f16(
                     &self.stream,
                     &attn_f32,
@@ -1095,6 +1207,18 @@ mod inner {
             // 7. Output projection: hgemm f16
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
             tp_comm.all_reduce_f16(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            if let Some(bias) = weights.o_proj_bias_f16 {
+                let mut attn_proj_view = attn_proj.slice_mut(..num_tokens * hidden);
+                let bias_view = bias.slice(..hidden);
+                Self::add_bias_f16_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut attn_proj_view,
+                    &bias_view,
+                    num_tokens,
+                    hidden,
+                )?;
+            }
             let attn_proj_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "attn_proj")?;
                 stage_start
@@ -1116,6 +1240,16 @@ mod inner {
                 num_tokens,
                 hidden,
             )?;
+            if let Some(trace) = debug_trace {
+                trace.attention_scores = attention_scores.unwrap_or_default();
+                trace.attention_probs = attention_probs.unwrap_or_default();
+                trace.attention_context =
+                    Self::copy_last_token_f16(&self.stream, &attn_out, num_tokens, q_dim)?;
+                trace.o_proj =
+                    Self::copy_last_token_f16(&self.stream, &attn_proj, num_tokens, hidden)?;
+                trace.post_attn_norm_output =
+                    Self::copy_last_token_f16(&self.stream, &normed2, num_tokens, hidden)?;
+            }
             let post_attn_norm_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "post_attn_norm")?;
                 stage_start
@@ -1143,7 +1277,7 @@ mod inner {
                     &cast_f16_f32,
                 )?;
                 let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
-                    moe.forward(&self.stream, &normed2_f32)?
+                    moe.forward(&self.stream, &normed2_f32, mlp_debug_trace.as_deref_mut())?
                 } else {
                     moe.forward_decode_gpu(
                         &self.stream,
@@ -1409,6 +1543,17 @@ mod inner {
                 q_dim,
             )?;
             tp_comm.all_reduce_f32(&mut attn_proj, num_tokens * hidden, "self_attn.o_proj")?;
+            if let Some(bias) = weights.o_proj_bias {
+                let mut attn_proj_view = attn_proj.slice_mut(..num_tokens * hidden);
+                Self::add_bias_view(
+                    &self.stream,
+                    &self.loader,
+                    &mut attn_proj_view,
+                    bias,
+                    num_tokens,
+                    hidden,
+                )?;
+            }
 
             // ---------------------------------------------------------------
             // Fused residual + post-attention RMSNorm (1 kernel instead of 2)
@@ -1431,7 +1576,7 @@ mod inner {
             // 7. MLP / routed MoE
             // ---------------------------------------------------------------
             let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
-                moe.forward(&self.stream, &normed2)?
+                moe.forward(&self.stream, &normed2, None)?
             } else {
                 let gate_proj = weights.gate_proj.ok_or_else(|| {
                     LLMError::GpuError(format!(
@@ -2120,6 +2265,221 @@ mod inner {
             }
 
             Ok(output)
+        }
+
+        fn trace_prefill_attention_last_token(
+            stream: &Arc<CudaStream>,
+            q: &CudaView<'_, f32>,
+            key_cache: &CudaSlice<f16>,
+            _value_cache: &CudaSlice<f16>,
+            block_tables: &CudaView<'_, i32>,
+            context_lens: &CudaView<'_, i32>,
+            seq_start_pos: &CudaView<'_, i32>,
+            num_tokens: usize,
+            num_seqs: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+            block_size: usize,
+            sinks: &CudaSlice<f32>,
+            use_sinks: bool,
+            sliding_window: Option<usize>,
+        ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
+            let q_host: Vec<f32> = stream
+                .clone_dtoh(q)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn q dtoh: {e}")))?;
+            let key_cache_host: Vec<f16> = stream
+                .clone_dtoh(key_cache)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn key_cache dtoh: {e}")))?;
+            let block_tables_host: Vec<i32> = stream
+                .clone_dtoh(block_tables)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn block_tables dtoh: {e}")))?;
+            let context_lens_host: Vec<i32> = stream
+                .clone_dtoh(context_lens)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn context_lens dtoh: {e}")))?;
+            let seq_start_pos_host: Vec<i32> = stream
+                .clone_dtoh(seq_start_pos)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn seq_start_pos dtoh: {e}")))?;
+            let sinks_host: Vec<f32> = stream
+                .clone_dtoh(sinks)
+                .map_err(|e| LLMError::GpuError(format!("trace_attn sinks dtoh: {e}")))?;
+
+            if num_tokens == 0 || num_seqs == 0 || seq_start_pos_host.len() < num_seqs + 1 {
+                return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            }
+
+            let q_global_pos = num_tokens - 1;
+            let seq_idx = seq_start_pos_host
+                .windows(2)
+                .position(|w| {
+                    let start = w[0].max(0) as usize;
+                    let end = w[1].max(0) as usize;
+                    q_global_pos >= start && q_global_pos < end
+                })
+                .unwrap_or(num_seqs - 1);
+            let q_len = seq_start_pos_host[seq_idx + 1]
+                .saturating_sub(seq_start_pos_host[seq_idx])
+                .max(0) as usize;
+            if q_len == 0 {
+                return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            }
+            let context_len = context_lens_host
+                .get(seq_idx)
+                .copied()
+                .unwrap_or_default()
+                .max(0) as usize;
+            if context_len == 0 {
+                return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            }
+            let q_context_pos = context_len - 1;
+            let window_start = sliding_window
+                .map(|window| q_context_pos.saturating_sub(window.saturating_sub(1)))
+                .unwrap_or(0);
+            let max_blocks_per_seq = block_tables_host.len() / num_seqs.max(1);
+            let scale = 1.0f32 / (head_dim as f32).sqrt();
+            let heads_per_kv = num_heads / num_kv_heads.max(1);
+
+            let mut last_q = Vec::with_capacity(num_heads * head_dim);
+            let mut k_inputs = Vec::with_capacity(num_heads * context_len * head_dim);
+            let mut scores = Vec::with_capacity(num_heads * (context_len + usize::from(use_sinks)));
+            let mut probs = Vec::with_capacity(num_heads * (context_len + usize::from(use_sinks)));
+
+            for head_idx in 0..num_heads {
+                let kv_head_idx = if num_kv_heads == num_heads {
+                    head_idx
+                } else {
+                    head_idx / heads_per_kv
+                };
+                let q_base = (q_global_pos * num_heads + head_idx) * head_dim;
+                let q_slice = &q_host[q_base..q_base + head_dim];
+                last_q.extend_from_slice(q_slice);
+                let mut row_scores = Vec::with_capacity(context_len + usize::from(use_sinks));
+                for kv_pos in 0..context_len {
+                    if kv_pos < window_start {
+                        row_scores.push(f32::NEG_INFINITY);
+                        continue;
+                    }
+                    let page_idx = kv_pos / block_size;
+                    let page_off = kv_pos % block_size;
+                    let phys_block =
+                        block_tables_host[seq_idx * max_blocks_per_seq + page_idx] as usize;
+                    let k_base = ((phys_block * block_size + page_off) * num_kv_heads
+                        + kv_head_idx)
+                        * head_dim;
+                    for d in 0..head_dim {
+                        k_inputs.push(key_cache_host[k_base + d].to_f32());
+                    }
+                    let mut dot = 0.0f32;
+                    for d in 0..head_dim {
+                        dot += q_slice[d] * scale * key_cache_host[k_base + d].to_f32();
+                    }
+                    row_scores.push(dot);
+                }
+                if use_sinks {
+                    row_scores.push(*sinks_host.get(head_idx).unwrap_or(&0.0));
+                }
+
+                let row_max = row_scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut row_probs = Vec::with_capacity(row_scores.len());
+                let mut row_sum = 0.0f32;
+                for &score in &row_scores {
+                    let prob = if score.is_finite() {
+                        (score - row_max).exp()
+                    } else {
+                        0.0
+                    };
+                    row_probs.push(prob);
+                    row_sum += prob;
+                }
+                if row_sum > 0.0 {
+                    for prob in &mut row_probs {
+                        *prob /= row_sum;
+                    }
+                }
+
+                scores.extend(row_scores);
+                probs.extend(row_probs);
+            }
+
+            Ok((last_q, k_inputs, scores, probs))
+        }
+
+        fn expand_k_for_score_heads_f16(
+            stream: &Arc<CudaStream>,
+            k: &CudaView<'_, f16>,
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<Vec<f32>> {
+            let k_host: Vec<f16> = stream
+                .clone_dtoh(k)
+                .map_err(|e| LLMError::GpuError(format!("expand_k_for_scores dtoh: {e}")))?;
+            let heads_per_kv = num_heads / num_kv_heads.max(1);
+            let mut expanded = Vec::with_capacity(num_heads * num_tokens * head_dim);
+            for head_idx in 0..num_heads {
+                let kv_head_idx = if num_kv_heads == num_heads {
+                    head_idx
+                } else {
+                    head_idx / heads_per_kv
+                };
+                for token_idx in 0..num_tokens {
+                    let base = (token_idx * num_kv_heads + kv_head_idx) * head_dim;
+                    for d in 0..head_dim {
+                        expanded.push(k_host[base + d].to_f32());
+                    }
+                }
+            }
+            Ok(expanded)
+        }
+
+        fn expand_v_for_context_f16(
+            stream: &Arc<CudaStream>,
+            v: &CudaView<'_, f16>,
+            num_tokens: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<Vec<f32>> {
+            let v_host: Vec<f16> = stream
+                .clone_dtoh(v)
+                .map_err(|e| LLMError::GpuError(format!("expand_v_for_context dtoh: {e}")))?;
+            let heads_per_kv = num_heads / num_kv_heads.max(1);
+            let mut expanded = Vec::with_capacity(num_heads * num_tokens * head_dim);
+            for head_idx in 0..num_heads {
+                let kv_head_idx = if num_kv_heads == num_heads {
+                    head_idx
+                } else {
+                    head_idx / heads_per_kv
+                };
+                for token_idx in 0..num_tokens {
+                    let base = (token_idx * num_kv_heads + kv_head_idx) * head_dim;
+                    for d in 0..head_dim {
+                        expanded.push(v_host[base + d].to_f32());
+                    }
+                }
+            }
+            Ok(expanded)
+        }
+
+        fn copy_f16_view_to_f32(
+            stream: &Arc<CudaStream>,
+            view: &CudaView<'_, f16>,
+        ) -> Result<Vec<f32>> {
+            let host: Vec<f16> = stream
+                .clone_dtoh(view)
+                .map_err(|e| LLMError::GpuError(format!("copy_f16_view_to_f32 dtoh: {e}")))?;
+            Ok(host.into_iter().map(|v| v.to_f32()).collect())
+        }
+
+        fn copy_f16_slice_to_f32(
+            stream: &Arc<CudaStream>,
+            buf: &CudaSlice<f16>,
+        ) -> Result<Vec<f32>> {
+            let host: Vec<f16> = stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("copy_f16_slice_to_f32 dtoh: {e}")))?;
+            Ok(host.into_iter().map(|v| v.to_f32()).collect())
         }
 
         /// Decode attention: read f16 K/V from paged cache, one FA2 decode kernel per layer.
@@ -2836,6 +3196,35 @@ mod inner {
                     .map_err(|e| LLMError::GpuError(format!("add_f16 launch: {e}")))?;
             }
             Ok(output)
+        }
+
+        fn copy_last_token_f16(
+            stream: &Arc<CudaStream>,
+            buf: &CudaSlice<f16>,
+            num_tokens: usize,
+            width: usize,
+        ) -> Result<Vec<f32>> {
+            let host = stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("copy_last_token_f16 dtoh: {e}")))?;
+            let start = (num_tokens - 1) * width;
+            Ok(host[start..start + width]
+                .iter()
+                .map(|x| x.to_f32())
+                .collect())
+        }
+
+        fn copy_last_token_f32(
+            stream: &Arc<CudaStream>,
+            buf: &CudaSlice<f32>,
+            num_tokens: usize,
+            width: usize,
+        ) -> Result<Vec<f32>> {
+            let host = stream
+                .clone_dtoh(buf)
+                .map_err(|e| LLMError::GpuError(format!("copy_last_token_f32 dtoh: {e}")))?;
+            let start = (num_tokens - 1) * width;
+            Ok(host[start..start + width].to_vec())
         }
 
         /// Cast f16 -> f32 (used only for prefill fallback).
