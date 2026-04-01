@@ -22,6 +22,7 @@ Completed in this pass:
 - added metadata sidecars plus fail-closed provenance checks so trace reuse only happens when key capture/replay inputs still match
 - distinguished current wrapper-captured trace sidecars from legacy-unversioned artifacts with an explicit wrapper-owned capture contract marker
 - added a dry-run trace inspection mode so operators can see reuse classification and exact provenance reasons before running compare-only or recapture paths
+- added `scripts/test_probe_validation_wrapper.sh` so the wrapper-only provenance/inspection/warm-oracle paths can be rerun without ad hoc temp-shell setup
 
 Immediate next steps:
 
