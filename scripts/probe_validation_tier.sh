@@ -45,6 +45,8 @@ Options:
       run oracle compare only (uses existing trace file, skips compile/trace)
   --warm-oracle
       opt-in: run the current compare request twice through one warm oracle session and emit a reuse-check artifact
+  --inspect-trace-artifact
+      dry-run: inspect whether the trace artifact is reusable for the current requested run without recapturing or comparing
   -h, --help
       show help
 
@@ -75,6 +77,14 @@ Common operator flows:
        --compare-only \
        --compare-mode runtime-emulated \
        --warm-oracle
+
+  5) Inspect an existing trace artifact for reuse compatibility:
+     ./scripts/probe_validation_tier.sh \
+       --inspect-trace-artifact \
+       --trace-json .live/restricted-cuda-prefill-trace.integration.json \
+       --compare-mode runtime-emulated \
+       --local-replay-layer 12 \
+       --local-replay-path attention
 USAGE
 }
 
@@ -99,6 +109,7 @@ LOCAL_REPLAY_PATH=""
 REUSE_TRACE="1"
 COMPARE_ONLY="0"
 WARM_ORACLE="0"
+INSPECT_TRACE_ARTIFACT="0"
 
 usage_error() {
   echo "$1" >&2
@@ -184,6 +195,10 @@ parse_cli_args() {
         WARM_ORACLE="1"
         shift
         ;;
+      --inspect-trace-artifact)
+        INSPECT_TRACE_ARTIFACT="1"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -231,12 +246,19 @@ validate_cli_args() {
     TIER="2"
   fi
 
+  if [[ "$INSPECT_TRACE_ARTIFACT" == "1" ]]; then
+    TIER="2"
+  fi
+
   if [[ "$TIER" != "0" && "$TIER" != "1" && "$TIER" != "2" ]]; then
     usage_error "Invalid tier: $TIER"
   fi
 
   if [[ "$WARM_ORACLE" == "1" && "$TIER" != "2" ]]; then
     usage_error "--warm-oracle is only available for Tier 2 / compare-only runs"
+  fi
+  if [[ "$INSPECT_TRACE_ARTIFACT" == "1" && "$WARM_ORACLE" == "1" ]]; then
+    usage_error "--inspect-trace-artifact cannot be combined with --warm-oracle"
   fi
 
   if [[ -n "$LOCAL_REPLAY_LAYER" || -n "$LOCAL_REPLAY_PATH" ]]; then
@@ -501,6 +523,178 @@ else:
 PY
 }
 
+inspect_trace_artifact() {
+  local trace_path="$1"
+  local metadata_path=""
+
+  if [[ ! -f "$trace_path" ]]; then
+    echo "[tier] trace inspection rejected: trace artifact is missing: $trace_path" >&2
+    return 1
+  fi
+  if ! have_python3; then
+    echo "[tier] trace inspection rejected: python3 is unavailable, so trace provenance cannot be inspected" >&2
+    return 1
+  fi
+  metadata_path="$(trace_metadata_path "$trace_path")"
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$COMPARE_MODE" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" <<'PY'
+import hashlib
+import json
+import sys
+
+(
+    trace_path,
+    metadata_path,
+    expected_model,
+    expected_prompt,
+    expected_max_model_len,
+    expected_seed_layers,
+    expected_local_replay_layer,
+    requested_compare_mode,
+    expected_metadata_schema_version,
+    legacy_trace_schema,
+    expected_wrapper_capture_contract_version,
+) = sys.argv[1:12]
+
+with open(trace_path, "r", encoding="utf-8") as handle:
+    trace = json.load(handle)
+
+reasons = []
+try:
+    with open(metadata_path, "r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    metadata_present = True
+except FileNotFoundError:
+    reasons.append(f"missing trace metadata sidecar: {metadata_path}")
+    metadata = {}
+    metadata_present = False
+
+trace_schema_version = trace.get("trace_schema_version") or trace.get("schema_version") or legacy_trace_schema
+prompt = trace.get("prompt", "")
+prompt_token_ids = trace.get("prompt_token_ids") or []
+prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+prompt_token_ids_sha256 = hashlib.sha256(
+    json.dumps(prompt_token_ids, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+
+capture_contract_version = metadata.get("trace_capture_contract_version")
+capture_origin = metadata.get("trace_capture_origin")
+is_wrapper_captured = capture_contract_version == expected_wrapper_capture_contract_version and capture_origin == "wrapper-captured-current"
+is_legacy_metadata = metadata_present and not capture_contract_version and not capture_origin
+
+if trace.get("restricted_model_path") != expected_model:
+    reasons.append("restricted model path mismatch")
+if prompt != expected_prompt:
+    reasons.append("prompt mismatch")
+
+if metadata.get("metadata_schema_version") != expected_metadata_schema_version:
+    reasons.append(
+        f"trace metadata schema mismatch (have {metadata.get('metadata_schema_version')!r}, expected {expected_metadata_schema_version!r})"
+    )
+if metadata.get("artifact_type") != "restricted_prefill_trace":
+    reasons.append("trace metadata artifact_type mismatch")
+if metadata.get("restricted_model_path") != expected_model:
+    reasons.append("trace metadata restricted model path mismatch")
+if metadata.get("prompt_sha256") != prompt_sha256:
+    reasons.append("trace metadata prompt identity mismatch")
+if metadata.get("prompt_token_ids_sha256") != prompt_token_ids_sha256:
+    reasons.append("trace metadata token identity mismatch")
+if str(metadata.get("max_model_len")) != expected_max_model_len:
+    reasons.append(
+        f"trace metadata max-model-len mismatch (have {metadata.get('max_model_len')!r}, expected {expected_max_model_len!r})"
+    )
+if metadata.get("trace_schema_version") != trace_schema_version:
+    reasons.append(
+        f"trace schema marker mismatch (metadata {metadata.get('trace_schema_version')!r}, trace {trace_schema_version!r})"
+    )
+
+if is_wrapper_captured:
+    raw_trace_schema_status = metadata.get("raw_trace_schema_status")
+    expected_raw_trace_schema_status = (
+        "raw-trace-embedded-versioned" if trace.get("trace_schema_version") or trace.get("schema_version") else "raw-trace-legacy-unversioned"
+    )
+    if raw_trace_schema_status != expected_raw_trace_schema_status:
+        reasons.append(
+            f"raw trace schema status mismatch (have {raw_trace_schema_status!r}, expected {expected_raw_trace_schema_status!r})"
+        )
+    if metadata.get("wrapper_capture_generation") != "current-wrapper-sidecar":
+        reasons.append("wrapper capture generation mismatch")
+elif is_legacy_metadata:
+    pass
+else:
+    reasons.append(
+        "trace capture contract metadata is incomplete or incompatible; treat artifact as legacy and recapture with the current wrapper if needed"
+    )
+
+metadata_seed_layers = [str(item) for item in (metadata.get("seed_layers") or [])]
+expected_seed_layer_values = [item for item in expected_seed_layers.split(",") if item]
+if expected_seed_layer_values and metadata_seed_layers != expected_seed_layer_values:
+    reasons.append(
+        f"trace metadata seed-layers mismatch (have {','.join(metadata_seed_layers) or '<none>'}, expected {','.join(expected_seed_layer_values)})"
+    )
+if expected_local_replay_layer and expected_local_replay_layer not in metadata_seed_layers:
+    reasons.append(
+        f"trace metadata does not include requested local replay layer {expected_local_replay_layer} in seed-layers"
+    )
+
+if not metadata_present:
+    classification = "incompatible"
+elif is_wrapper_captured:
+    classification = "current-wrapper-captured"
+elif is_legacy_metadata:
+    classification = "legacy"
+else:
+    classification = "incompatible"
+
+report = {
+    "trace_json": trace_path,
+    "trace_metadata": metadata_path,
+    "requested_run": {
+        "restricted_model_path": expected_model,
+        "prompt": expected_prompt,
+        "prompt_sha256": hashlib.sha256(expected_prompt.encode("utf-8")).hexdigest(),
+        "max_model_len": int(expected_max_model_len),
+        "compare_mode": requested_compare_mode,
+        "seed_layers": expected_seed_layer_values,
+        "local_replay_layer": None if not expected_local_replay_layer else int(expected_local_replay_layer),
+    },
+    "artifact_classification": classification,
+    "reusable_for_requested_run": not reasons,
+    "wrapper_contract": {
+        "metadata_schema_version": metadata.get("metadata_schema_version"),
+        "trace_capture_contract_version": metadata.get("trace_capture_contract_version"),
+        "trace_capture_origin": metadata.get("trace_capture_origin"),
+        "wrapper_capture_generation": metadata.get("wrapper_capture_generation"),
+        "raw_trace_schema_status": metadata.get("raw_trace_schema_status"),
+        "trace_schema_version": metadata.get("trace_schema_version", trace_schema_version),
+    },
+    "provenance_checked": {
+        "restricted_model_path": metadata.get("restricted_model_path"),
+        "prompt_sha256": metadata.get("prompt_sha256"),
+        "prompt_token_ids_sha256": metadata.get("prompt_token_ids_sha256"),
+        "max_model_len": metadata.get("max_model_len"),
+        "capture_tier": metadata.get("capture_tier"),
+        "seed_layers": metadata.get("seed_layers"),
+        "artifact_type": metadata.get("artifact_type"),
+    },
+    "reasons": reasons,
+    "note": None,
+}
+
+if classification == "legacy":
+    report["note"] = (
+        "legacy artifact: wrapper-owned capture contract is missing; artifact may still be reusable if older provenance fields match, but it is not upgraded to the current wrapper-captured contract"
+    )
+elif classification == "current-wrapper-captured":
+    report["note"] = "current wrapper-owned capture contract present"
+else:
+    report["note"] = "artifact is not reusable for the requested run"
+
+print(json.dumps(report, indent=2))
+if reasons:
+    raise SystemExit(1)
+PY
+}
+
 run_builds() {
   echo "[tier] compiling workspace tools"
   (cd "$REPO_ROOT" && cargo build --release --features cuda -p gpt-oss-engine)
@@ -762,6 +956,11 @@ PY
 main() {
   parse_cli_args "$@"
   validate_cli_args
+
+  if [[ "$INSPECT_TRACE_ARTIFACT" == "1" ]]; then
+    inspect_trace_artifact "$TRACE_JSON"
+    return 0
+  fi
 
   if [[ "$COMPARE_ONLY" == "1" ]]; then
     if [[ ! -f "$TRACE_JSON" ]]; then
