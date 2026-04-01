@@ -194,6 +194,7 @@ mod inner {
         let rope_scaling = json.get("rope_scaling");
         let rope_scaling_type = rope_scaling
             .and_then(|v| v.get("rope_type"))
+            .or_else(|| rope_scaling.and_then(|v| v.get("type")))
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let rope_scaling_factor = rope_scaling
@@ -1507,10 +1508,16 @@ mod inner {
                 num_hidden_layers: 24,
                 vocab_size: 200000,
                 max_position_embeddings: 131072,
+                initial_context_length: 4096,
                 rms_norm_eps: 1e-5,
                 tie_word_embeddings: true,
                 architecture: "GptOssForCausalLM".into(),
                 rope_theta: 150000.0,
+                rope_scaling_type: Some("yarn".into()),
+                rope_scaling_factor: 32.0,
+                rope_ntk_alpha: 1.0,
+                rope_ntk_beta: 32.0,
+                rope_scaling_truncate: false,
                 partial_rotary_factor: 1.0,
                 attn_logit_softcapping: 0.0,
                 attention_bias: false,
@@ -1538,6 +1545,57 @@ mod inner {
             let configs =
                 build_worker_configs(&make_engine_config(2, 1, 200000), &make_hf_config()).unwrap();
             assert_eq!(configs[0].max_model_len, 131072);
+        }
+
+        #[test]
+        fn build_worker_configs_preserves_yarn_fields() {
+            let configs =
+                build_worker_configs(&make_engine_config(1, 1, 16384), &make_hf_config()).unwrap();
+            let cfg = &configs[0];
+            assert_eq!(cfg.initial_context_length, 4096);
+            assert_eq!(cfg.rope_scaling_type.as_deref(), Some("yarn"));
+            assert_eq!(cfg.rope_scaling_factor, 32.0);
+            assert_eq!(cfg.rope_ntk_alpha, 1.0);
+            assert_eq!(cfg.rope_ntk_beta, 32.0);
+            assert!(!cfg.rope_scaling_truncate);
+        }
+
+        #[test]
+        fn read_model_config_accepts_legacy_rope_scaling_type_key() {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_path = tmp.path().join("config.json");
+            std::fs::write(
+                &config_path,
+                r#"{
+                    "hidden_size": 128,
+                    "intermediate_size": 256,
+                    "num_attention_heads": 8,
+                    "head_dim": 16,
+                    "num_key_value_heads": 4,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 4096,
+                    "max_position_embeddings": 32768,
+                    "architectures": ["GptOssForCausalLM"],
+                    "rope_theta": 150000.0,
+                    "rope_scaling": {
+                        "type": "yarn",
+                        "factor": 8.0,
+                        "beta_slow": 1.0,
+                        "beta_fast": 16.0,
+                        "truncate": true,
+                        "original_max_position_embeddings": 4096
+                    }
+                }"#,
+            )
+            .unwrap();
+
+            let cfg = read_model_config(tmp.path()).unwrap();
+            assert_eq!(cfg.rope_scaling_type.as_deref(), Some("yarn"));
+            assert_eq!(cfg.rope_scaling_factor, 8.0);
+            assert_eq!(cfg.rope_ntk_alpha, 1.0);
+            assert_eq!(cfg.rope_ntk_beta, 16.0);
+            assert!(cfg.rope_scaling_truncate);
+            assert_eq!(cfg.initial_context_length, 4096);
         }
 
         #[test]

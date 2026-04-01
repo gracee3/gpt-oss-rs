@@ -46,6 +46,40 @@ pub struct ModelRunnerConfig {
     pub architecture: String,
 }
 
+impl Default for ModelRunnerConfig {
+    fn default() -> Self {
+        Self {
+            tensor_parallel_rank: 0,
+            tensor_parallel_size: 1,
+            num_layers: 1,
+            hidden_size: 4096,
+            num_heads: 32,
+            num_kv_heads: 32,
+            head_dim: 128,
+            intermediate_size: 11008,
+            vocab_size: 32000,
+            max_position: 2048,
+            initial_context_length: 2048,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            rope_scaling_type: None,
+            rope_scaling_factor: 1.0,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
+            rope_scaling_truncate: false,
+            partial_rotary_factor: 1.0,
+            attn_logit_softcapping: 0.0,
+            attention_bias: false,
+            sliding_window: None,
+            layer_types: Vec::new(),
+            num_local_experts: 0,
+            num_experts_per_tok: 0,
+            dtype: Dtype::Float16,
+            architecture: "GptOssForCausalLM".into(),
+        }
+    }
+}
+
 impl ModelRunnerConfig {
     /// Build the canonical GPT-OSS semantic model description for this runner config.
     pub fn semantic_model_spec(&self) -> gpt_oss_semantics::Result<ModelSpec> {

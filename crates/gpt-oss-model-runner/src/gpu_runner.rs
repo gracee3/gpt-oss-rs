@@ -88,8 +88,7 @@ mod cuda_impl {
             let d_half = head_dim as f32 / 2.0;
             let base_ln = config.rope_theta.ln();
             let context_len = config.initial_context_length.max(1) as f32;
-            let mut low =
-                d_half * (context_len / (config.rope_ntk_beta * 2.0 * PI)).ln() / base_ln;
+            let mut low = d_half * (context_len / (config.rope_ntk_beta * 2.0 * PI)).ln() / base_ln;
             let mut high =
                 d_half * (context_len / (config.rope_ntk_alpha * 2.0 * PI)).ln() / base_ln;
             if config.rope_scaling_truncate {
@@ -731,7 +730,8 @@ mod cuda_impl {
                     )?;
                     let post_attn_residual =
                         self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
-                    let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
+                    let mlp_out_last =
+                        self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
                     let layer_output = post_attn_residual
                         .iter()
                         .zip(mlp_out_last.iter())
@@ -789,12 +789,17 @@ mod cuda_impl {
                     rope_sin: &self.rope_sin,
                 };
                 let weights = self.layer_weights(layer_idx)?;
-                hidden_states = layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
                 trace.layers.push(PrefillLayerTrace {
                     layer_idx,
                     post_attn_residual: Vec::new(),
                     mlp_out: Vec::new(),
-                    layer_output: self.copy_last_token_f32(&hidden_states, num_tokens, hidden_size)?,
+                    layer_output: self.copy_last_token_f32(
+                        &hidden_states,
+                        num_tokens,
+                        hidden_size,
+                    )?,
                 });
             }
             Ok(trace)
@@ -2851,8 +2856,6 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         {
             let config = ModelRunnerConfig {
-                tensor_parallel_rank: 0,
-                tensor_parallel_size: 1,
                 num_layers: 2,
                 hidden_size: 64,
                 num_heads: 4,
@@ -2861,17 +2864,10 @@ mod tests {
                 intermediate_size: 128,
                 vocab_size: 100,
                 max_position: 512,
-                rms_norm_eps: 1e-5,
-                rope_theta: 10000.0,
-                partial_rotary_factor: 1.0,
-                attn_logit_softcapping: 0.0,
-                attention_bias: false,
-                sliding_window: None,
-                layer_types: Vec::new(),
                 num_local_experts: 2,
                 num_experts_per_tok: 1,
                 dtype: Dtype::Float32,
-                architecture: "GptOssForCausalLM".to_string(),
+                ..ModelRunnerConfig::default()
             };
             let runner = GpuModelRunner { config };
             let result = runner.forward(&[1, 2, 3], &[0, 1, 2], &[], &[]);
@@ -2886,8 +2882,6 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         {
             let config = ModelRunnerConfig {
-                tensor_parallel_rank: 0,
-                tensor_parallel_size: 1,
                 num_layers: 4,
                 hidden_size: 256,
                 num_heads: 8,
@@ -2896,17 +2890,10 @@ mod tests {
                 intermediate_size: 512,
                 vocab_size: 32000,
                 max_position: 2048,
-                rms_norm_eps: 1e-5,
-                rope_theta: 10000.0,
-                partial_rotary_factor: 1.0,
-                attn_logit_softcapping: 0.0,
-                attention_bias: false,
-                sliding_window: None,
-                layer_types: Vec::new(),
                 num_local_experts: 2,
                 num_experts_per_tok: 1,
                 dtype: Dtype::Float16,
-                architecture: "GptOssForCausalLM".to_string(),
+                ..ModelRunnerConfig::default()
             };
             let runner = GpuModelRunner { config };
             assert_eq!(runner.config().num_layers, 4);
