@@ -82,6 +82,7 @@ SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ARTIFACT_METADATA_SCHEMA_VERSION="probe_validation_artifact_meta.v1"
 LEGACY_TRACE_SCHEMA_VERSION="legacy-unversioned"
+WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION="probe_validation_trace_capture_meta.v1"
 
 TIER="0"
 MODEL_PATH="/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
@@ -268,13 +269,24 @@ write_trace_metadata() {
 
   metadata_path="$(trace_metadata_path "$trace_path")"
   normalized_seed_layers="$(normalize_csv "$SEED_LAYERS")"
-  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$normalized_seed_layers" "$TIER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" <<'PY'
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$normalized_seed_layers" "$TIER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-trace_path, metadata_path, model_path, prompt, max_model_len, seed_layers, tier, metadata_schema_version, legacy_trace_schema = sys.argv[1:10]
+(
+    trace_path,
+    metadata_path,
+    model_path,
+    prompt,
+    max_model_len,
+    seed_layers,
+    tier,
+    metadata_schema_version,
+    legacy_trace_schema,
+    wrapper_capture_contract_version,
+) = sys.argv[1:11]
 with open(trace_path, "r", encoding="utf-8") as handle:
     trace = json.load(handle)
 
@@ -296,6 +308,12 @@ metadata = {
     "capture_tier": tier,
     "seed_layers": seed_layer_values,
     "trace_schema_version": trace_schema_version,
+    "trace_capture_contract_version": wrapper_capture_contract_version,
+    "trace_capture_origin": "wrapper-captured-current",
+    "raw_trace_schema_status": (
+        "raw-trace-embedded-versioned" if trace.get("trace_schema_version") or trace.get("schema_version") else "raw-trace-legacy-unversioned"
+    ),
+    "wrapper_capture_generation": "current-wrapper-sidecar",
 }
 
 Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
@@ -366,7 +384,7 @@ can_reuse_trace() {
     return 1
   fi
   metadata_path="$(trace_metadata_path "$trace_path")"
-  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" <<'PY'
+  python3 - "$trace_path" "$metadata_path" "$MODEL_PATH" "$PROMPT" "$MAX_MODEL_LEN" "$(normalize_csv "$SEED_LAYERS")" "$LOCAL_REPLAY_LAYER" "$ARTIFACT_METADATA_SCHEMA_VERSION" "$LEGACY_TRACE_SCHEMA_VERSION" "$WRAPPER_TRACE_CAPTURE_CONTRACT_VERSION" <<'PY'
 import hashlib
 import json
 import sys
@@ -381,7 +399,8 @@ import sys
     expected_local_replay_layer,
     expected_metadata_schema_version,
     legacy_trace_schema,
-) = sys.argv[1:10]
+    expected_wrapper_capture_contract_version,
+) = sys.argv[1:11]
 with open(trace_path, "r", encoding="utf-8") as handle:
     trace = json.load(handle)
 
@@ -400,6 +419,10 @@ prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 prompt_token_ids_sha256 = hashlib.sha256(
     json.dumps(prompt_token_ids, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+capture_contract_version = metadata.get("trace_capture_contract_version")
+capture_origin = metadata.get("trace_capture_origin")
+is_wrapper_captured = capture_contract_version == expected_wrapper_capture_contract_version and capture_origin == "wrapper-captured-current"
+is_legacy_metadata = not capture_contract_version and not capture_origin
 
 if trace.get("restricted_model_path") != expected_model:
     reasons.append("restricted model path mismatch")
@@ -426,6 +449,23 @@ if metadata.get("trace_schema_version") != trace_schema_version:
     reasons.append(
         f"trace schema marker mismatch (metadata {metadata.get('trace_schema_version')!r}, trace {trace_schema_version!r})"
     )
+if is_wrapper_captured:
+    raw_trace_schema_status = metadata.get("raw_trace_schema_status")
+    expected_raw_trace_schema_status = (
+        "raw-trace-embedded-versioned" if trace.get("trace_schema_version") or trace.get("schema_version") else "raw-trace-legacy-unversioned"
+    )
+    if raw_trace_schema_status != expected_raw_trace_schema_status:
+        reasons.append(
+            f"raw trace schema status mismatch (have {raw_trace_schema_status!r}, expected {expected_raw_trace_schema_status!r})"
+        )
+    if metadata.get("wrapper_capture_generation") != "current-wrapper-sidecar":
+        reasons.append("wrapper capture generation mismatch")
+elif is_legacy_metadata:
+    pass
+else:
+    reasons.append(
+        "trace capture contract metadata is incomplete or incompatible; treat artifact as legacy and recapture with the current wrapper if needed"
+    )
 
 metadata_seed_layers = [str(item) for item in (metadata.get("seed_layers") or [])]
 expected_seed_layer_values = [item for item in expected_seed_layers.split(",") if item]
@@ -443,6 +483,21 @@ if reasons:
     for reason in reasons:
         print(f"[tier]   - {reason}", file=sys.stderr)
     raise SystemExit(1)
+
+if is_wrapper_captured:
+    print(
+        "[tier] trace reuse accepted: wrapper-captured metadata"
+        f" contract={capture_contract_version}"
+        f" raw_trace_schema_status={metadata.get('raw_trace_schema_status')}",
+        file=sys.stderr,
+    )
+else:
+    print(
+        "[tier] trace reuse accepted with legacy metadata:"
+        " wrapper-owned capture contract not present;"
+        f" raw_trace_schema_version={trace_schema_version}",
+        file=sys.stderr,
+    )
 PY
 }
 

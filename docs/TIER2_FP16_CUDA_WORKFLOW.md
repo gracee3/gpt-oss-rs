@@ -132,6 +132,8 @@ Artifact reuse guardrail:
 - trace reuse is now metadata-gated, not filename-gated
 - `compare-only` fails closed if the trace sidecar does not match the current model path, prompt identity, `max-model-len`, trace schema marker, or requested local replay layer coverage
 - a plain mismatch means recapture or use a compatible artifact; it does not silently widen reuse
+- newly captured traces now write wrapper-owned capture metadata in the sidecar, so operators can tell current wrapper captures apart from older legacy-unversioned artifacts
+- older artifacts remain explicitly labeled as legacy at reuse time; they are not silently upgraded to the new wrapper-capture contract
 
 Start the listener:
 
