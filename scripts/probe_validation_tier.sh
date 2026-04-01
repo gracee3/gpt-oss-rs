@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $(basename \"$0\") [--tier 0|1|2] [options]"
+  echo "Usage: $(basename "$0") [--tier 0|1|2] [options]"
   cat <<'USAGE'
 Tier 0:
   compile only.
@@ -45,6 +45,28 @@ Options:
       run oracle compare only (uses existing trace file, skips compile/trace)
   -h, --help
       show help
+
+Common operator flows:
+  1) Representative telemetry + localization capture:
+     ./scripts/probe_validation_tier.sh \
+       --tier 2 \
+       --compare-mode runtime-emulated \
+       --seed-layers 0,12,23
+
+  2) Same-input local replay from an existing trace artifact:
+     ./scripts/probe_validation_tier.sh \
+       --compare-only \
+       --compare-mode runtime-emulated \
+       --local-replay-layer 12 \
+       --local-replay-path attention
+
+  3) Capture and replay the same representative layer in one run:
+     ./scripts/probe_validation_tier.sh \
+       --tier 2 \
+       --compare-mode runtime-emulated \
+       --seed-layers 12 \
+       --local-replay-layer 12 \
+       --local-replay-path coarse
 USAGE
 }
 
@@ -65,6 +87,27 @@ LOCAL_REPLAY_LAYER=""
 LOCAL_REPLAY_PATH=""
 REUSE_TRACE="1"
 COMPARE_ONLY="0"
+
+usage_error() {
+  echo "$1" >&2
+  echo >&2
+  usage >&2
+  exit 1
+}
+
+csv_contains_value() {
+  local csv="$1"
+  local needle="$2"
+  local item=""
+
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    if [[ "$(echo "$item" | tr -d '[:space:]')" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -141,8 +184,24 @@ if [[ "$COMPARE_ONLY" == "1" ]]; then
 fi
 
 if [[ "$TIER" != "0" && "$TIER" != "1" && "$TIER" != "2" ]]; then
-  echo "Invalid tier: $TIER" >&2
-  exit 1
+  usage_error "Invalid tier: $TIER"
+fi
+
+if [[ -n "$LOCAL_REPLAY_LAYER" || -n "$LOCAL_REPLAY_PATH" ]]; then
+  if [[ -z "$LOCAL_REPLAY_LAYER" || -z "$LOCAL_REPLAY_PATH" ]]; then
+    usage_error "--local-replay-layer and --local-replay-path must be provided together"
+  fi
+  if [[ "$TIER" != "2" ]]; then
+    usage_error "local replay is only available for Tier 2 / compare-only runs"
+  fi
+  if [[ "$COMPARE_ONLY" != "1" ]]; then
+    if [[ -z "$SEED_LAYERS" ]]; then
+      usage_error "local replay in the same run requires --seed-layers so the trace captures an exact runtime seed"
+    fi
+    if ! csv_contains_value "$SEED_LAYERS" "$LOCAL_REPLAY_LAYER"; then
+      usage_error "--seed-layers must include --local-replay-layer when capture and replay happen in the same run"
+    fi
+  fi
 fi
 
 have_python3() {
@@ -183,6 +242,17 @@ run_builds() {
   echo "[tier] compiling workspace tools"
   (cd "$REPO_ROOT" && cargo build --release --features cuda -p gpt-oss-engine)
   (cd "$REPO_ROOT" && cargo build --release --features cuda -p gpt-oss-bench --bin restricted_prefill_trace)
+}
+
+print_run_summary() {
+  echo "[tier] tier=$TIER compare_mode=$COMPARE_MODE compare_only=$COMPARE_ONLY"
+  echo "[tier] model=$MODEL_PATH trace_json=$TRACE_JSON oracle_output=$ORACLE_OUTPUT"
+  if [[ -n "$SEED_LAYERS" ]]; then
+    echo "[tier] seed_layers=$SEED_LAYERS"
+  fi
+  if [[ -n "$LOCAL_REPLAY_LAYER" ]]; then
+    echo "[tier] local_replay=layer:$LOCAL_REPLAY_LAYER path:$LOCAL_REPLAY_PATH"
+  fi
 }
 
 run_trace() {
@@ -254,9 +324,12 @@ if [[ "$COMPARE_ONLY" == "1" ]]; then
     echo "compare-only requires existing trace artifact: $TRACE_JSON" >&2
     exit 1
   fi
+  print_run_summary
   run_oracle_compare "$TRACE_JSON" "$ORACLE_OUTPUT"
   exit 0
 fi
+
+print_run_summary
 
 if [[ "$TIER" == "0" || "$TIER" == "1" || "$TIER" == "2" ]]; then
   run_builds
