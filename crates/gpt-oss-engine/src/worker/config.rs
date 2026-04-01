@@ -38,6 +38,8 @@ pub struct WorkerConfig {
     pub vocab_size: usize,
     /// Maximum sequence length.
     pub max_model_len: usize,
+    /// Original pre-YaRN context length, when present in HF config.
+    pub initial_context_length: usize,
     /// RMSNorm epsilon.
     pub rms_norm_eps: f32,
     /// Tokens per KV cache block.
@@ -56,6 +58,16 @@ pub struct WorkerConfig {
     pub dtype: Dtype,
     /// RoPE theta parameter.
     pub rope_theta: f32,
+    /// Optional HF rope scaling type marker, including legacy `type`.
+    pub rope_scaling_type: Option<String>,
+    /// HF rope scaling factor.
+    pub rope_scaling_factor: f32,
+    /// HF YaRN beta_slow parameter.
+    pub rope_ntk_alpha: f32,
+    /// HF YaRN beta_fast parameter.
+    pub rope_ntk_beta: f32,
+    /// HF rope scaling truncate marker.
+    pub rope_scaling_truncate: bool,
     /// Fraction of head_dim that gets RoPE (Phi: 0.5, others: 1.0).
     pub partial_rotary_factor: f32,
     /// Soft-capping value for attention logits (Gemma 2). 0.0 = disabled.
@@ -212,6 +224,7 @@ mod tests {
             intermediate_size: 4096,
             vocab_size: 32000,
             max_model_len: 8192,
+            initial_context_length: 8192,
             rms_norm_eps: 1e-5,
             block_size: 16,
             gpu_memory_utilization: 0.9,
@@ -221,6 +234,11 @@ mod tests {
             architecture: "GptOssForCausalLM".into(),
             dtype: Dtype::Float16,
             rope_theta: 10000.0,
+            rope_scaling_type: None,
+            rope_scaling_factor: 1.0,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
+            rope_scaling_truncate: false,
             partial_rotary_factor: 1.0,
             attn_logit_softcapping: 0.0,
             attention_bias: false,

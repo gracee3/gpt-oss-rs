@@ -346,6 +346,10 @@ fn build_worker_config(
         intermediate_size: get_usize("intermediate_size", 2880),
         vocab_size: get_usize("vocab_size", 201088),
         max_model_len: max_model_len.min(get_usize("max_position_embeddings", max_model_len)),
+        initial_context_length: get_usize(
+            "initial_context_length",
+            get_usize("max_position_embeddings", max_model_len),
+        ),
         rms_norm_eps: get_f32("rms_norm_eps", 1e-5),
         block_size: 16,
         gpu_memory_utilization,
@@ -361,6 +365,35 @@ fn build_worker_config(
             .to_string(),
         dtype: Dtype::Float16,
         rope_theta: get_f32("rope_theta", 150000.0),
+        rope_scaling_type: value
+            .get("rope_scaling")
+            .and_then(|v| v.get("rope_type"))
+            .or_else(|| value.get("rope_scaling").and_then(|v| v.get("type")))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        rope_scaling_factor: value
+            .get("rope_scaling")
+            .and_then(|v| v.get("factor"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(1.0),
+        rope_ntk_alpha: value
+            .get("rope_scaling")
+            .and_then(|v| v.get("beta_slow"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(1.0),
+        rope_ntk_beta: value
+            .get("rope_scaling")
+            .and_then(|v| v.get("beta_fast"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(32.0),
+        rope_scaling_truncate: value
+            .get("rope_scaling")
+            .and_then(|v| v.get("truncate"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         partial_rotary_factor: get_f32("partial_rotary_factor", 1.0),
         attn_logit_softcapping: get_f32("attn_logit_softcapping", 0.0),
         attention_bias: get_bool("attention_bias", false),
