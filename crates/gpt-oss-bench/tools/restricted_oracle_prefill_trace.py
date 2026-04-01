@@ -11,6 +11,7 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+TOOL_SCHEMA_VERSION = "restricted_oracle_prefill_trace.v3"
 
 
 def find_openai_gpt_oss_root(repo_root: Path) -> Path:
@@ -35,10 +36,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare restricted CUDA prefill activation trace against an independent PyTorch oracle."
     )
-    parser.add_argument("--cuda-trace-json", type=Path, required=True)
-    parser.add_argument("--original-model", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cuda-trace-json", type=Path)
+    parser.add_argument("--original-model", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--listen",
+        action="store_true",
+        help="opt-in NDJSON stdin listener that reuses one loaded oracle session across multiple compare requests",
+    )
     parser.add_argument(
         "--compare-mode",
         choices=("raw", "runtime-emulated"),
@@ -844,19 +850,59 @@ def build_local_replay_report(
     raise SystemExit(f"unknown local replay path: {path}")
 
 
-def main() -> int:
-    args = parse_args()
-    if (args.local_replay_layer is None) != (args.local_replay_path is None):
-        raise SystemExit("--local-replay-layer and --local-replay-path must be provided together")
+def load_cuda_trace(trace_path: Path) -> dict:
+    with trace_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
 
-    with args.cuda_trace_json.open("r", encoding="utf-8") as handle:
-        cuda_trace = json.load(handle)
 
-    prompt_token_ids = cuda_trace["prompt_token_ids"]
-    device = torch.device(args.device)
+def create_oracle_session(device: torch.device) -> dict:
+    return {
+        "device": device,
+        "restricted_model_path": None,
+        "original_model_path": None,
+        "model": None,
+        "config": None,
+        "runtime_checkpoint": None,
+        "load_count": 0,
+    }
+
+
+def ensure_oracle_session(session: dict, cuda_trace: dict, original_model: Path) -> tuple[Transformer, ModelConfig, Checkpoint, Path, bool]:
     restricted_model_path = Path(cuda_trace["restricted_model_path"])
-    model = load_restricted_transformer(restricted_model_path, args.original_model, device)
-    runtime_checkpoint = Checkpoint(str(resolve_oracle_checkpoint_dir(args.original_model)), device)
+    reuse_ready = (
+        session["model"] is not None
+        and session["restricted_model_path"] == restricted_model_path
+        and session["original_model_path"] == original_model
+    )
+    if not reuse_ready:
+        session["restricted_model_path"] = restricted_model_path
+        session["original_model_path"] = original_model
+        session["config"] = load_restricted_config(restricted_model_path)
+        session["model"] = load_restricted_transformer(restricted_model_path, original_model, session["device"])
+        session["runtime_checkpoint"] = Checkpoint(str(resolve_oracle_checkpoint_dir(original_model)), session["device"])
+        session["load_count"] += 1
+    return (
+        session["model"],
+        session["config"],
+        session["runtime_checkpoint"],
+        restricted_model_path,
+        reuse_ready,
+    )
+
+
+def build_compare_report(
+    cuda_trace: dict,
+    model: Transformer,
+    config: ModelConfig,
+    runtime_checkpoint: Checkpoint,
+    restricted_model_path: Path,
+    original_model: Path,
+    device: torch.device,
+    compare_mode: str,
+    local_replay_layer: int | None,
+    local_replay_path: str | None,
+) -> dict:
+    prompt_token_ids = cuda_trace["prompt_token_ids"]
     input_ids = torch.tensor(prompt_token_ids, dtype=torch.int64, device=device)
 
     with torch.inference_mode():
@@ -892,47 +938,174 @@ def main() -> int:
 
     raw_stage_diffs = build_stage_diffs(cuda_trace, oracle_trace)
     gating_oracle_trace = oracle_trace
-    if args.compare_mode == "runtime-emulated":
+    if compare_mode == "runtime-emulated":
         gating_oracle_trace = copy.deepcopy(oracle_trace)
         gating_oracle_trace["layers"][0]["attention"].update(runtime_emulated_attention)
         gating_oracle_trace["layers"][0]["post_attn_residual"] = last_token(runtime_emulated_attn_hidden)
     stage_diffs = build_stage_diffs(cuda_trace, gating_oracle_trace)
 
     tolerance = 1e-2
-    non_gating_stages = RUNTIME_EMULATED_NON_GATING_STAGES if args.compare_mode == "runtime-emulated" else set()
+    non_gating_stages = RUNTIME_EMULATED_NON_GATING_STAGES if compare_mode == "runtime-emulated" else set()
     first_divergence = next((stage for stage in stage_diffs if stage["stage"] not in non_gating_stages and stage["max_abs_diff"] > tolerance), None)
     raw_first_divergence = next((stage for stage in raw_stage_diffs if stage["max_abs_diff"] > tolerance), None)
     report = {
         "prompt": cuda_trace["prompt"],
         "prompt_token_ids": prompt_token_ids,
         "restricted_model_path": str(restricted_model_path),
-        "original_model_path": str(args.original_model),
+        "original_model_path": str(original_model),
         "oracle_device": str(device),
-        "compare_mode": args.compare_mode,
+        "tool_schema_version": TOOL_SCHEMA_VERSION,
+        "compare_mode": compare_mode,
         "non_gating_stages": sorted(non_gating_stages),
         "first_divergence_stage": first_divergence["stage"] if first_divergence else None,
         "raw_first_divergence_stage": raw_first_divergence["stage"] if raw_first_divergence else None,
         "stage_diffs": stage_diffs,
-        "raw_stage_diffs": raw_stage_diffs if args.compare_mode != "raw" else None,
+        "raw_stage_diffs": raw_stage_diffs if compare_mode != "raw" else None,
         "conclusion": (
             "Shared lower-level CUDA runner/model semantic bug is favored." if first_divergence else "No prefill-stage activation divergence detected."
         ),
         "local_replay": None,
     }
-    if args.local_replay_layer is not None:
+    if local_replay_layer is not None:
         report["local_replay"] = build_local_replay_report(
             cuda_trace,
             model,
-            load_restricted_config(restricted_model_path),
+            config,
             runtime_checkpoint,
             restricted_model_path,
-            args.local_replay_layer,
-            args.local_replay_path,
+            local_replay_layer,
+            local_replay_path,
         )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", encoding="utf-8") as handle:
+    return report
+
+
+def write_report(output_path: Path, report: dict) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
         handle.write("\n")
+
+
+def run_compare_request(
+    session: dict,
+    trace_path: Path,
+    original_model: Path,
+    output_path: Path,
+    compare_mode: str,
+    local_replay_layer: int | None,
+    local_replay_path: str | None,
+) -> tuple[dict, bool]:
+    cuda_trace = load_cuda_trace(trace_path)
+    model, config, runtime_checkpoint, restricted_model_path, reused_session = ensure_oracle_session(
+        session, cuda_trace, original_model
+    )
+    report = build_compare_report(
+        cuda_trace,
+        model,
+        config,
+        runtime_checkpoint,
+        restricted_model_path,
+        original_model,
+        session["device"],
+        compare_mode,
+        local_replay_layer,
+        local_replay_path,
+    )
+    write_report(output_path, report)
+    return report, reused_session
+
+
+def build_listener_response(
+    report: dict,
+    trace_path: Path,
+    output_path: Path,
+    compare_mode: str,
+    reused_session: bool,
+    session: dict,
+) -> dict:
+    return {
+        "ok": True,
+        "tool_schema_version": TOOL_SCHEMA_VERSION,
+        "warm_oracle": True,
+        "session_reused": reused_session,
+        "session_load_count": session["load_count"],
+        "compare_mode": compare_mode,
+        "trace_json": str(trace_path),
+        "output": str(output_path),
+        "first_divergence_stage": report["first_divergence_stage"],
+        "raw_first_divergence_stage": report["raw_first_divergence_stage"],
+        "local_replay": report["local_replay"] is not None,
+        "conclusion": report["conclusion"],
+    }
+
+
+def validate_one_shot_args(args: argparse.Namespace) -> None:
+    if args.original_model is None:
+        raise SystemExit("--original-model is required")
+    if args.cuda_trace_json is None:
+        raise SystemExit("--cuda-trace-json is required unless --listen is used")
+    if args.output is None:
+        raise SystemExit("--output is required unless --listen is used")
+
+
+def validate_local_replay_args(local_replay_layer: int | None, local_replay_path: str | None) -> None:
+    if (local_replay_layer is None) != (local_replay_path is None):
+        raise SystemExit("--local-replay-layer and --local-replay-path must be provided together")
+
+
+def run_listen(args: argparse.Namespace) -> int:
+    if args.original_model is None:
+        raise SystemExit("--original-model is required with --listen")
+    session = create_oracle_session(torch.device(args.device))
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        request = json.loads(line)
+        op = request.get("op", "compare")
+        if op == "shutdown":
+            print(json.dumps({"ok": True, "shutdown": True}))
+            return 0
+        if op != "compare":
+            raise SystemExit(f"unsupported listen op: {op}")
+
+        local_replay_layer = request.get("local_replay_layer")
+        local_replay_path = request.get("local_replay_path")
+        validate_local_replay_args(local_replay_layer, local_replay_path)
+        trace_path = Path(request["cuda_trace_json"])
+        output_path = Path(request["output"])
+        compare_mode = request.get("compare_mode", args.compare_mode)
+        report, reused_session = run_compare_request(
+            session,
+            trace_path,
+            args.original_model,
+            output_path,
+            compare_mode,
+            local_replay_layer,
+            local_replay_path,
+        )
+        print(json.dumps(build_listener_response(report, trace_path, output_path, compare_mode, reused_session, session)))
+        sys.stdout.flush()
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+    validate_local_replay_args(args.local_replay_layer, args.local_replay_path)
+    if args.listen:
+        return run_listen(args)
+
+    validate_one_shot_args(args)
+    session = create_oracle_session(torch.device(args.device))
+    report, _ = run_compare_request(
+        session,
+        args.cuda_trace_json,
+        args.original_model,
+        args.output,
+        args.compare_mode,
+        args.local_replay_layer,
+        args.local_replay_path,
+    )
     print(json.dumps(report, indent=2))
     return 0
 

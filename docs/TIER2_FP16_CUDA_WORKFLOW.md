@@ -101,6 +101,41 @@ python3 crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py \
   --device cpu
 ```
 
+## Opt-In Warm Oracle Reuse
+
+Default behavior stays one-shot: one trace compare per Python process.
+
+When you need to compare several traces or several replay variants against the same oracle checkpoint, you can opt into a warm listener session that reuses one loaded Python oracle process.
+
+Start the listener:
+
+```bash
+python3 crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py \
+  --listen \
+  --original-model /data/models/openai/gpt-oss-20b \
+  --device cpu
+```
+
+Send compare requests on stdin as NDJSON:
+
+```json
+{"op":"compare","cuda_trace_json":".live/restricted-cuda-prefill-trace.integration.json","output":".live/restricted-prefill-trace-diff.raw.json","compare_mode":"raw"}
+{"op":"compare","cuda_trace_json":".live/restricted-cuda-prefill-trace.integration.json","output":".live/restricted-prefill-trace-diff.layer12-attention.json","compare_mode":"runtime-emulated","local_replay_layer":12,"local_replay_path":"attention"}
+{"op":"shutdown"}
+```
+
+What this does:
+
+- keeps today’s one-shot path unchanged
+- reuses one loaded oracle session across repeated compare requests
+- keeps compare semantics identical to the existing one-shot report path
+
+What this does not do:
+
+- it does not change default compare behavior
+- it does not change any runtime or model math
+- it does not add a new correctness claim beyond reducing harness process startup cost
+
 ```bash
 python3 crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py \
   --cuda-trace-json .live/restricted-cuda-prefill-trace.integration.json \
@@ -188,5 +223,6 @@ Do not escalate to broad runtime debugging until step 3 leaves a surviving same-
 - Use Tier 0 for compile-only plumbing checks.
 - Use Tier 1 for trace capture and artifact reuse.
 - Use Tier 2 for merge candidates, contract changes, or any run where a compare claim matters.
+- Use the warm listener only when you have multiple compare requests against the same oracle checkpoint and want bounded harness-side process reuse.
 - Prefer representative sentinel layers over exhaustive layer-by-layer reruns unless a concrete hypothesis needs more depth.
 - Keep generated `.live/` artifacts local and out of commits unless a task explicitly asks for checked-in fixtures.
