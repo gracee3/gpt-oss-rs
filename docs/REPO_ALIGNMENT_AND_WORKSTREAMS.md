@@ -58,12 +58,29 @@ The following branches were preserved and pushed as historical or reference lane
 
 These branches contain useful history, but they should be mined selectively rather than merged wholesale.
 
+## What Was Pruned
+
+The following local worktrees were removed after their branch state was merged, pushed, or otherwise preserved:
+
+- `/home/emmy/openai/worktrees/codex-cleanup-ops`
+- `/home/emmy/openai/worktrees/deferred-doc-curation`
+- `/home/emmy/openai/worktrees/deferred-frontier-recon`
+- `/home/emmy/openai/worktrees/deferred-frontier-shape-audit`
+- `/home/emmy/openai/worktrees/full-attention-next-case`
+- `/home/emmy/openai/worktrees/graph-first-case`
+- `/home/emmy/openai/worktrees/integration-tier01-lane-repro`
+- `/home/emmy/openai/worktrees/replay-k-seam-audit-20260331`
+- `/home/emmy/openai/worktrees/sink-first-case`
+- `/home/emmy/openai/worktrees/sink-gating-fix`
+- `/home/emmy/openai/worktrees/sliding-attention-first-case`
+- `/home/emmy/openai/worktrees/tier2-warm-oracle-core`
+
 ## Active Workstreams
 
 ### Mainline Hygiene / Integration Alignment
 
 - Branch: `integration/mainline-alignment`
-- Worktree: canonical active checkout
+- Worktree: `/home/emmy/openai/gpt-oss-rs`
 - Scope:
   - safe extraction/cherry-picks
   - merge-risk reduction
@@ -73,7 +90,7 @@ These branches contain useful history, but they should be mined selectively rath
 ### Harness / Live Testing / Contract Follow-Up
 
 - Branch: `harness/tier2-workflow`
-- Worktree: canonical active checkout
+- Worktree: `/home/emmy/openai/worktrees/tier2-workflow`
 - Scope:
   - Tier-2 contract follow-up
   - seed-capture and local-replay ergonomics
@@ -83,7 +100,7 @@ These branches contain useful history, but they should be mined selectively rath
 ### Forward Implementation / Feature / Integration
 
 - Branch: `feature/runtime-forward`
-- Worktree: canonical active checkout
+- Worktree: `/home/emmy/openai/worktrees/runtime-forward`
 - Scope:
   - unfinished runtime/semantic work
   - future selective extraction from preserved branches
