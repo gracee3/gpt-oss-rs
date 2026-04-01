@@ -2,9 +2,9 @@
 
 Current aligned checkpoint:
 
-- `main`: `da8f86a`
-- `integration/mainline-alignment`: `da8f86a`
-- `harness/tier2-workflow`: `da8f86a`
+- `main`: `b4c2efa`
+- `integration/mainline-alignment`: `b4c2efa`
+- `harness/tier2-workflow`: `b4c2efa`
 - `feature/runtime-forward`: `bd49d35`
 
 Active workstreams:
@@ -20,6 +20,8 @@ Near-term milestones:
 - keep the three-worktree layout intact
 - promote only small validated batches from active lanes
 - keep workstream docs and TODOs current as branch tips move
+- fix integration-safe validation harness defects without changing compare semantics
+- current small ready extraction: `integration/tier01-lane` commit `391a975`
 
 ## M2. Make the Tier-2 harness operator-ready
 

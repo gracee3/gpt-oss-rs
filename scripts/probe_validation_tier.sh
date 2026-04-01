@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $(basename \"$0\") [--tier 0|1|2] [options]"
+  echo "Usage: $(basename "$0") [--tier 0|1|2] [options]"
   cat <<'USAGE'
 Tier 0:
   compile only.
@@ -174,7 +174,7 @@ matched = (
     data.get("restricted_model_path") == expected_model
     and data.get("prompt") == expected_prompt
 )
-  print("1" if matched else "0")
+print("1" if matched else "0")
 PY
   return 0
 }
@@ -215,6 +215,7 @@ run_oracle_compare() {
   local trace_output="$1"
   local oracle_output="$2"
   local python_bin=""
+  local oracle_args=()
 
   if command -v python3 >/dev/null 2>&1; then
     python_bin="python3"
@@ -224,17 +225,23 @@ run_oracle_compare() {
   fi
 
   echo "[tier] running oracle compare"
+  if [[ -n "$LOCAL_REPLAY_LAYER" ]]; then
+    oracle_args+=(--local-replay-layer "$LOCAL_REPLAY_LAYER")
+  fi
+  if [[ -n "$LOCAL_REPLAY_PATH" ]]; then
+    oracle_args+=(--local-replay-path "$LOCAL_REPLAY_PATH")
+  fi
+
   "$python_bin" "$REPO_ROOT/crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py" \
     --cuda-trace-json "$trace_output" \
     --original-model "$ORIGINAL_MODEL" \
     --output "$oracle_output" \
     --compare-mode "$COMPARE_MODE" \
-    ${LOCAL_REPLAY_LAYER:+--local-replay-layer "$LOCAL_REPLAY_LAYER"} \
-    ${LOCAL_REPLAY_PATH:+--local-replay-path "$LOCAL_REPLAY_PATH"} \
+    "${oracle_args[@]}" \
     --device cpu
 
   if have_python3; then
-  python3 - "$oracle_output" <<'PY'
+    python3 - "$oracle_output" <<'PY'
 import json
 import sys
 
