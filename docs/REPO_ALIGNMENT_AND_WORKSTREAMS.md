@@ -65,7 +65,7 @@ They contain useful investigation history, but their durable knowledge should li
 
 ## What Was Pruned
 
-The following local worktrees are intended to be pruned after their branch state is merged, pushed, or otherwise preserved:
+The following local worktrees were pruned after their branch state was merged, pushed, or otherwise preserved:
 
 - `/home/emmy/openai/worktrees/codex-cleanup-ops`
 - `/home/emmy/openai/worktrees/deferred-doc-curation`
@@ -85,7 +85,7 @@ The following local worktrees are intended to be pruned after their branch state
 ### 1. Mainline Hygiene / Integration Alignment
 
 - Branch: `integration/mainline-alignment`
-- Worktree: `~/openai/worktrees/mainline-alignment`
+- Worktree: `~/openai/gpt-oss-rs`
 - Scope:
   - post-merge hygiene
   - remaining safe extraction and validation batches
@@ -112,6 +112,7 @@ The following local worktrees are intended to be pruned after their branch state
 ## Worktree Policy
 
 - Keep only the minimum active set of named worktrees.
+- The root checkout serves as the active `integration/mainline-alignment` worktree so the repo ends with exactly three active worktrees total.
 - Push or otherwise preserve important branches before pruning worktrees.
 - Do not delete dirty or unpushed work without an explicit preservation step.
 - Prefer archive branches or untouched historical refs over merging noisy debug stacks.
