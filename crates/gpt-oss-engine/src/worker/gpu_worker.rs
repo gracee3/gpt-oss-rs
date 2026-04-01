@@ -19,7 +19,7 @@ use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
 use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
-use gpt_oss_model_runner::gpu_runner::ForwardOutput;
+use gpt_oss_model_runner::gpu_runner::{ForwardOutput, PrefillActivationTrace};
 use gpt_oss_model_runner::input::ModelInput;
 use gpt_oss_model_runner::kv_cache::CacheEngine;
 use gpt_oss_model_runner::sampling::batch::make_rng;
@@ -45,6 +45,7 @@ fn keep_gpt_oss_fp16_f32_weight(name: &str) -> bool {
         || name.ends_with("self_attn.q_proj.bias")
         || name.ends_with("self_attn.k_proj.bias")
         || name.ends_with("self_attn.v_proj.bias")
+        || name.ends_with("self_attn.o_proj.bias")
         || name.ends_with("self_attn.sinks")
         || name.ends_with("mlp.router.weight")
         || name.ends_with("mlp.router.bias")
@@ -59,9 +60,9 @@ fn is_gpt_oss_sink_weight(name: &str) -> bool {
 fn has_nonzero_gpt_oss_sink_tensor<'a>(
     tensors: impl IntoIterator<Item = (&'a str, &'a [f32])>,
 ) -> bool {
-    tensors
-        .into_iter()
-        .any(|(name, values)| is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0))
+    tensors.into_iter().any(|(name, values)| {
+        is_gpt_oss_sink_weight(name) && values.iter().any(|value| *value != 0.0)
+    })
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1201,6 +1202,73 @@ impl GpuWorker {
         self.execute(metadata)
     }
 
+    /// Debug-only logits capture for one prepared worker step.
+    ///
+    /// This uses the same worker input preparation and forward routing as the
+    /// live eager path, but returns full logits before sampling so offline
+    /// differential probes can localize the first divergence boundary.
+    pub fn debug_logits(&mut self, metadata: &[SequenceGroupMetadata]) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        match self.gpu_forward_ex(&model_input, false)? {
+            ForwardOutput::Logits(logits) => Ok(logits),
+            ForwardOutput::TokenIds(_) | ForwardOutput::TokenIdsPending { .. } => {
+                unreachable!("greedy_only=false must return full logits")
+            }
+        }
+    }
+
+    /// Debug-only direct runner logits capture for one prepared worker step.
+    ///
+    /// This bypasses worker planning and sampling and calls the underlying CUDA
+    /// model runner directly on the same prepared input. Comparing this against
+    /// `debug_logits()` isolates whether the live worker path itself introduces
+    /// divergence before any broader checkpoint-faithfulness questions.
+    pub fn debug_runner_logits(&self, metadata: &[SequenceGroupMetadata]) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.forward(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            model_input.is_prefill,
+        )
+    }
+
+    pub fn debug_runner_prefill_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<PrefillActivationTrace> {
+        if metadata.is_empty() {
+            return Ok(PrefillActivationTrace {
+                embedding: Vec::new(),
+                layers: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+        )
+    }
     /// Run the raw model forward pass (no graph logic).
     fn raw_gpu_forward(&self, model_input: &ModelInput) -> Result<Vec<f32>> {
         #[cfg(feature = "cuda")]
@@ -1316,10 +1384,7 @@ impl GpuWorker {
                 graph_padded_batch_size,
                 self.config.dtype,
             )
-            .with_attention_config(
-                self.config.layer_types.clone(),
-                self.config.sliding_window,
-            ),
+            .with_attention_config(self.config.layer_types.clone(), self.config.sliding_window),
         )
         .map_err(|e| LLMError::ConfigError(e.to_string()))?;
         trace!(
@@ -2406,7 +2471,9 @@ mod tests {
         ];
 
         assert!(!has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
@@ -2418,7 +2485,9 @@ mod tests {
         ];
 
         assert!(has_nonzero_gpt_oss_sink_tensor(
-            tensors.iter().map(|(name, values)| (*name, values.as_slice()))
+            tensors
+                .iter()
+                .map(|(name, values)| (*name, values.as_slice()))
         ));
     }
 
