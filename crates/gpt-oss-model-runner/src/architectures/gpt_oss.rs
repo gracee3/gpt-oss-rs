@@ -635,8 +635,6 @@ mod tests {
 
     fn test_config(layer_type: &str) -> ModelRunnerConfig {
         ModelRunnerConfig {
-            tensor_parallel_rank: 0,
-            tensor_parallel_size: 1,
             num_layers: 1,
             hidden_size: 4,
             num_heads: 2,
@@ -645,17 +643,12 @@ mod tests {
             intermediate_size: 2,
             vocab_size: 8,
             max_position: 32,
-            rms_norm_eps: 1e-5,
-            rope_theta: 10000.0,
-            partial_rotary_factor: 1.0,
-            attn_logit_softcapping: 0.0,
-            attention_bias: false,
             sliding_window: Some(128),
             layer_types: vec![layer_type.to_string()],
             num_local_experts: 1,
             num_experts_per_tok: 1,
             dtype: gpt_oss_core::types::Dtype::Float16,
-            architecture: "GptOssForCausalLM".into(),
+            ..ModelRunnerConfig::default()
         }
     }
 
