@@ -134,6 +134,7 @@ Artifact reuse guardrail:
 - a plain mismatch means recapture or use a compatible artifact; it does not silently widen reuse
 - newly captured traces now write wrapper-owned capture metadata in the sidecar, so operators can tell current wrapper captures apart from older legacy-unversioned artifacts
 - older artifacts remain explicitly labeled as legacy at reuse time; they are not silently upgraded to the new wrapper-capture contract
+- `--inspect-trace-artifact` prints the reuse classification, checked provenance fields, and exact accept/reject reasons without recapturing or comparing
 
 Start the listener:
 

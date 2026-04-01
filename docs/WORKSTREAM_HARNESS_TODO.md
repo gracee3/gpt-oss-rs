@@ -21,6 +21,7 @@ Completed in this pass:
 - wired an opt-in `--warm-oracle` shell path that exercises two compare requests in one listener session and emits a reuse-check artifact
 - added metadata sidecars plus fail-closed provenance checks so trace reuse only happens when key capture/replay inputs still match
 - distinguished current wrapper-captured trace sidecars from legacy-unversioned artifacts with an explicit wrapper-owned capture contract marker
+- added a dry-run trace inspection mode so operators can see reuse classification and exact provenance reasons before running compare-only or recapture paths
 
 Immediate next steps:
 
