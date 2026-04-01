@@ -20,6 +20,7 @@ Completed in this pass:
 - added an opt-in warm-oracle listener scaffold so multiple compare requests can reuse one Python oracle session without changing one-shot defaults
 - wired an opt-in `--warm-oracle` shell path that exercises two compare requests in one listener session and emits a reuse-check artifact
 - added metadata sidecars plus fail-closed provenance checks so trace reuse only happens when key capture/replay inputs still match
+- distinguished current wrapper-captured trace sidecars from legacy-unversioned artifacts with an explicit wrapper-owned capture contract marker
 
 Immediate next steps:
 
