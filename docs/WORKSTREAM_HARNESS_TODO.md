@@ -27,12 +27,10 @@ Completed in this pass:
 
 Immediate next steps:
 
-- decide whether `--warm-oracle` should stay as a bounded reuse-check path or grow into a more general multi-request operator flow after real use
-- consider a bounded performance-only short-circuit for explicit local replay requests only if it stays opt-in and does not change default behavior
+- keep the current docs/help/examples aligned if any operator-facing flags or artifact sidecars change
+- keep `--warm-oracle` bounded unless real operator use justifies a broader multi-request flow
 - keep trace/oracle sidecar metadata narrow and honest; do not turn it into a broad batching protocol
-- keep script output and docs aligned if additional operator-facing flags are added
-- add any further example commands only where they reduce real operator ambiguity
-- keep the Tier-2 contract docs aligned with actual harness flags and outputs
+- use `scripts/test_probe_validation_wrapper.sh` as the lightweight wrapper regression check after future harness-only polish
 
 Guardrails:
 

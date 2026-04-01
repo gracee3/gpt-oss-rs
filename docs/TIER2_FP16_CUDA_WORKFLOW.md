@@ -138,6 +138,55 @@ Artifact reuse guardrail:
 - `--require-current-trace-contract` is an opt-in strict mode that rejects legacy artifacts even when older provenance fields still match
 - `./scripts/test_probe_validation_wrapper.sh` runs the bounded wrapper-only regression path for current metadata, legacy metadata, incompatible metadata, and warm-oracle test-mode reuse
 
+## Operator Quick Reference
+
+Use these commands as the default operator entrypoints:
+
+- representative Tier 2 run:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --tier 2 \
+  --compare-mode runtime-emulated \
+  --seed-layers 0,12,23
+```
+
+- compare an existing trace artifact without recapturing:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --compare-only \
+  --compare-mode runtime-emulated \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json
+```
+
+- inspect whether an artifact is reusable before running compare-only:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --inspect-trace-artifact \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json \
+  --compare-mode runtime-emulated
+```
+
+- inspect in strict mode when legacy artifacts must be refused:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --inspect-trace-artifact \
+  --require-current-trace-contract \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json \
+  --compare-mode runtime-emulated
+```
+
+- run the bounded wrapper regression script:
+
+```bash
+./scripts/test_probe_validation_wrapper.sh
+```
+
+Use `--warm-oracle` only when you intentionally want the bounded reuse-check flow against one existing trace artifact.
+
 Start the listener:
 
 ```bash
