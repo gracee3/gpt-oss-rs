@@ -107,6 +107,25 @@ Default behavior stays one-shot: one trace compare per Python process.
 
 When you need to compare several traces or several replay variants against the same oracle checkpoint, you can opt into a warm listener session that reuses one loaded Python oracle process.
 
+The smallest operator-facing path is now available in the shell harness:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --compare-only \
+  --compare-mode runtime-emulated \
+  --warm-oracle
+```
+
+What the script does in warm mode:
+
+- starts one warm oracle listener
+- submits the current compare request twice in one session
+- writes the primary report to `--oracle-output`
+- writes a second reuse-check report beside it as `*.warm-reuse-check.json`
+- prints whether the second request reused the already-loaded session
+
+This is still a bounded harness path. It is meant to prove script-level session reuse without changing compare semantics or claiming broad live-run speedups.
+
 Start the listener:
 
 ```bash
@@ -129,6 +148,7 @@ What this does:
 - keeps today’s one-shot path unchanged
 - reuses one loaded oracle session across repeated compare requests
 - keeps compare semantics identical to the existing one-shot report path
+- now has a shell-level opt-in path for bounded reuse verification via `--warm-oracle`
 
 What this does not do:
 

@@ -4,6 +4,7 @@ import copy
 import inspect
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -855,6 +856,10 @@ def load_cuda_trace(trace_path: Path) -> dict:
         return json.load(handle)
 
 
+def test_mode_enabled() -> bool:
+    return os.environ.get("GPT_OSS_ORACLE_TEST_MODE") == "1"
+
+
 def create_oracle_session(device: torch.device) -> dict:
     return {
         "device": device,
@@ -996,6 +1001,44 @@ def run_compare_request(
     local_replay_path: str | None,
 ) -> tuple[dict, bool]:
     cuda_trace = load_cuda_trace(trace_path)
+    if test_mode_enabled():
+        reused_session = session["load_count"] > 0
+        if not reused_session:
+            session["load_count"] = 1
+        report = {
+            "prompt": cuda_trace["prompt"],
+            "prompt_token_ids": cuda_trace["prompt_token_ids"],
+            "restricted_model_path": str(cuda_trace["restricted_model_path"]),
+            "original_model_path": str(original_model),
+            "oracle_device": str(session["device"]),
+            "tool_schema_version": TOOL_SCHEMA_VERSION,
+            "compare_mode": compare_mode,
+            "non_gating_stages": sorted(
+                RUNTIME_EMULATED_NON_GATING_STAGES if compare_mode == "runtime-emulated" else []
+            ),
+            "first_divergence_stage": None,
+            "raw_first_divergence_stage": None,
+            "stage_diffs": [
+                {
+                    "stage": "embedding",
+                    "max_abs_diff": 0.0,
+                    "mean_abs_diff": 0.0,
+                }
+            ],
+            "raw_stage_diffs": None,
+            "conclusion": "No prefill-stage activation divergence detected.",
+            "local_replay": (
+                None
+                if local_replay_layer is None
+                else {
+                    "layer": local_replay_layer,
+                    "path": local_replay_path,
+                    "test_mode": True,
+                }
+            ),
+        }
+        write_report(output_path, report)
+        return report, reused_session
     model, config, runtime_checkpoint, restricted_model_path, reused_session = ensure_oracle_session(
         session, cuda_trace, original_model
     )
