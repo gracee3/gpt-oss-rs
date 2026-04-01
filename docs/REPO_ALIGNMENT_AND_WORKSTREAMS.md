@@ -86,6 +86,7 @@ The following local worktrees were pruned after their branch state was merged, p
 
 - Branch: `integration/mainline-alignment`
 - Worktree: `~/openai/gpt-oss-rs`
+- TODO file: `docs/WORKSTREAM_INTEGRATION_TODO.md`
 - Scope:
   - post-merge hygiene
   - remaining safe extraction and validation batches
@@ -95,6 +96,7 @@ The following local worktrees were pruned after their branch state was merged, p
 
 - Branch: `harness/tier2-workflow`
 - Worktree: `~/openai/worktrees/tier2-workflow`
+- TODO file: `docs/WORKSTREAM_HARNESS_TODO.md`
 - Scope:
   - seed-capture and local-replay ergonomics
   - compare-mode and live-testing workflow polish
@@ -104,6 +106,7 @@ The following local worktrees were pruned after their branch state was merged, p
 
 - Branch: `feature/runtime-forward`
 - Worktree: `~/openai/worktrees/runtime-forward`
+- TODO file: `docs/WORKSTREAM_RUNTIME_TODO.md`
 - Scope:
   - runtime/semantic implementation work that is still incomplete
   - selective extraction from deeper investigative branches
