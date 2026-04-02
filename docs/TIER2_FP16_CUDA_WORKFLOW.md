@@ -273,6 +273,45 @@ What to expect:
 - `state=timed_out` means the current seam is still too heavy in the allotted window, but the timeout is now reproducible and captured explicitly
 - `state=failed` means the proof stopped before the bounded runtime observation completed; inspect the per-case `run.stderr`
 
+## Bounded GPU0 Live-Smoke Workflow
+
+Use the live-smoke runner when you want an operator-clear GPU0 command path without turning it into a proof claim yet:
+
+```bash
+./scripts/run_gpu0_live_smoke.sh \
+  --build-only \
+  --gpu 0 \
+  --tree /home/emmy/openai/gpt-oss-rs \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prompt-file /tmp/gpu0-live-prompt.txt \
+  --timeout 1800 \
+  --output-dir .live/gpu0-live-smoke \
+  --env GPT_OSS_PROBE_MODE=layer0-mlp
+```
+
+Then reuse the warmed binary for the bounded run:
+
+```bash
+./scripts/run_gpu0_live_smoke.sh \
+  --run-only \
+  --gpu 0 \
+  --tree /home/emmy/openai/gpt-oss-rs \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prompt-file /tmp/gpu0-live-prompt.txt \
+  --timeout 1800 \
+  --output-dir .live/gpu0-live-smoke \
+  --env GPT_OSS_PROBE_MODE=layer0-mlp
+```
+
+This runner only captures the bounded live-smoke surface:
+
+- exact build/run commands
+- env passthrough
+- GPU snapshot
+- stdout/stderr
+- exit state and timeout state
+- outer artifact path and `summary.json`
+
 Start the listener:
 
 ```bash
