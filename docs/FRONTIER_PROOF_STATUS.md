@@ -73,8 +73,10 @@ Evidence already present:
 
 Evidence still required before promotion:
 
-- A same-input sink-free `>4096` safe-vs-variant comparison that reaches the first selected MLP expert/down-proj chunk for the last token on the same bounded case.
-- Or, if that seam is not honestly reachable, a decode-style single-position continuation from a warmed 4096-token prefill state.
+- A true retained-state 4096-token prefill on the same bounded sink-free case.
+- One continuation/decode step on that retained state.
+- A localized layer-0 continuation-token artifact, preferably post-attention residual.
+- If the preferred continuation-token target is not honestly reachable, a fallback localized continuation-token artifact at post-attention context or post-RoPE q/k.
 - Evidence strong enough to show propagation through the runtime path beyond post-attention residual, not just divergence at earlier seams.
 
 Proof-method boundary:
@@ -82,6 +84,12 @@ Proof-method boundary:
 - The full 4100-token `restricted_prefill_trace` path is no longer the preferred way to push one hop later downstream.
 - The next honest proof path is a true retained-state continuation seam, not prompt replay.
 - Failure to emit even the safe-side artifact for post-MLP or fallback early layer-output on that broader path should be treated as a proof-method boundary, not as evidence against `bd49d35`.
+
+Current retained-state blocker:
+
+- The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
+- The current blocker is a scratch-only packed metadata / block-table sizing panic in `gpu_runner.rs` on the `4096 + 1` continuation row.
+- Promotion remains paused until that retained-state path emits a real continuation-token artifact.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
@@ -96,6 +104,8 @@ Reopen promotion discussion for `bd49d35` only when the submitted proof set incl
 - localized post-RoPE runtime evidence above the activation boundary
 - a localized post-attention context last-token artifact
 - a localized post-attention residual last-token artifact
+- a true retained-state continuation comparison on the same case
+- a localized continuation-token artifact, preferably layer-0 post-attention residual
 - evidence that the observed difference or parity propagates through the runtime path, not just through YaRN table construction, the post-RoPE boundary, the post-attention context boundary, or the post-attention residual boundary
 
 If any of those conditions are missing, the result is still useful harness evidence but not yet promotion-gating proof.
