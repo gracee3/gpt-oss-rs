@@ -51,6 +51,8 @@ Do not reopen `838d3f8` unless all of the following are observed:
 - At least one bounded case with nonzero sink tensors where the sink-aware projection better matches the effective runtime path.
 - At least one bounded control case with zero or absent sink tensors where the conservative path remains the honest predictor.
 
+`838d3f8` is closed/deferred on the current runtime seam and is not a live promotion target. Do not reopen it without a new runtime implementation seam or equally direct contradictory evidence.
+
 Until then, no sub-slice beyond `992a741` is honest to promote.
 
 ## Advancement Criteria For `bd49d35`
@@ -71,6 +73,19 @@ Evidence still required before promotion:
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
+## Promotion Gate For `bd49d35`
+
+Reopen promotion discussion for `bd49d35` only when the submitted proof set includes all of the following:
+
+- the same prompt/input exercised in both the safe and variant runs
+- a sink-free restricted model for the compared long-context case
+- at least one case above 4096 tokens
+- a safe-vs-variant comparison on the same bounded observation seam
+- at least one localized runtime artifact or value above the table-construction boundary
+- evidence that the observed difference or parity propagates through the runtime path, not just through YaRN table construction
+
+If any of those conditions are missing, the result is still useful harness evidence but not yet promotion-gating proof.
+
 ## Proof-Backed Promotion Bar
 
 A frontier runtime-forward candidate is promotion-eligible only when all of the following are true:
@@ -79,6 +94,18 @@ A frontier runtime-forward candidate is promotion-eligible only when all of the 
 - The proof is same-input and localized to the claimed runtime boundary.
 - The proof includes a control case that would fail or stay conservative if the claim were wrong.
 - The evidence supports the promoted behavior directly, not just metadata carry-through or parser acceptance.
+
+## Next Accepted Artifact Set
+
+The next frontier handoff from harness/feature to integration is accepted only if it contains:
+
+- the exact prompt/input identity used for the safe and variant runs
+- sink-free model confirmation for the restricted comparison case
+- an explicit `>4096` token count record
+- the paired safe and variant command plans or exact invoked commands
+- at least one localized runtime artifact or value above the table boundary
+- a short operator summary stating whether the evidence shows runtime-path propagation or stops at table construction
+- a clear pass/fail statement on whether the result is promotion-gating proof for `bd49d35`
 
 ## GPU0 Live-Test Readiness
 
