@@ -279,6 +279,27 @@ builtins = {
         "RETAINED_PROOF_ENTER",
         "RETAINED_PROOF_CAPTURED",
     ],
+    "retained-mlp-v1": [
+        "RETAINED_CHILD_START",
+        "RETAINED_CHILD_TOKENIZED",
+        "RETAINED_CHILD_BUILD_WORKER_DONE",
+        "RETAINED_STEP_BEGIN",
+        "RETAINED_STEP_FORWARD_BEGIN",
+        "RETAINED_PREFILL_STAGE layer=0 stage=layer_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=attention_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=attention_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=residual_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=mlp_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=router_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=router_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=expert_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=expert_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=mlp_done",
+        "RETAINED_STEP_FORWARD_DONE",
+        "DECODE1_BEGIN",
+        "RETAINED_PROOF_ENTER",
+        "RETAINED_PROOF_CAPTURED",
+    ],
 }
 unknown = [name for name in profiles if name not in builtins]
 if unknown:
