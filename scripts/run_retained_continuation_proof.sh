@@ -491,6 +491,44 @@ builtins = {
         "RETAINED_PROOF_ENTER",
         "RETAINED_PROOF_CAPTURED",
     ],
+    "retained-router-late-samples-v1": [
+        "RETAINED_CHILD_START",
+        "RETAINED_CHILD_TOKENIZED",
+        "RETAINED_CHILD_BUILD_WORKER_DONE",
+        "RETAINED_STEP_BEGIN",
+        "RETAINED_STEP_FORWARD_BEGIN",
+        "RETAINED_PREFILL_STAGE layer=0 stage=layer_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=attention_begin",
+        "RETAINED_PREFILL_STAGE layer=0 stage=attention_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=residual_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=mlp_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=router_input_ready",
+        "RETAINED_MLP_STAGE layer=0 stage=topk_zero_guard_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=topk_zero_guard_done",
+        "RETAINED_MLP_STAGE layer=0 stage=score_loop_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_1024",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_1536",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_2048",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_2560",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_3072",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_3584",
+        "RETAINED_MLP_STAGE layer=0 stage=token_idx_4095",
+        "RETAINED_MLP_STAGE layer=0 stage=last_token_score_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=router_score_alloc_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=router_score_alloc_done",
+        "RETAINED_MLP_STAGE layer=0 stage=router_score_first_accum_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=router_score_first_accum_done",
+        "RETAINED_MLP_STAGE layer=0 stage=router_topk_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=router_topk_done",
+        "RETAINED_MLP_STAGE layer=0 stage=first_expert_dispatch_begin",
+        "RETAINED_MLP_STAGE layer=0 stage=first_expert_dispatch_done",
+        "RETAINED_MLP_STAGE layer=0 stage=aggregate_done",
+        "RETAINED_PREFILL_STAGE layer=0 stage=mlp_done",
+        "RETAINED_STEP_FORWARD_DONE",
+        "DECODE1_BEGIN",
+        "RETAINED_PROOF_ENTER",
+        "RETAINED_PROOF_CAPTURED",
+    ],
 }
 unknown = [name for name in profiles if name not in builtins]
 if unknown:
@@ -910,12 +948,30 @@ for marker in markers:
         next_missing = marker
         break
 stall = f"stalled_before={next_missing}" if next_missing else (f"completed_through={last}" if last else "no_markers_seen")
+sample_pairs = []
+for marker in seen:
+    if "stage=token_idx_" not in marker:
+        continue
+    try:
+        token_idx = int(marker.rsplit("stage=token_idx_", 1)[1])
+    except ValueError:
+        continue
+    sample_pairs.append((token_idx, marker))
+highest_sampled_token_idx = None
+highest_sampled_token_idx_marker = None
+sampled_progress_fraction = None
+if sample_pairs:
+    highest_sampled_token_idx, highest_sampled_token_idx_marker = max(sample_pairs, key=lambda item: item[0])
+    sampled_progress_fraction = highest_sampled_token_idx / 4095.0
 summary = {
     "configured_markers": markers,
     "seen_markers": seen,
     "last_progress_marker": last,
     "next_expected_marker": next_missing,
     "stall_classification": stall,
+    "highest_sampled_token_idx_seen": highest_sampled_token_idx,
+    "highest_sampled_token_idx_marker": highest_sampled_token_idx_marker,
+    "sampled_progress_fraction": sampled_progress_fraction,
 }
 Path(os.environ["RETAINED_PROGRESS_JSON_FILE"]).write_text(json.dumps(summary, indent=2) + "\n")
 PY
@@ -938,6 +994,9 @@ PY
   "last_progress_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["last_progress_marker"]))'),
   "next_expected_progress_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["next_expected_marker"]))'),
   "progress_stall_classification": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["stall_classification"]))'),
+  "highest_sampled_token_idx_seen": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["highest_sampled_token_idx_seen"]))'),
+  "highest_sampled_token_idx_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["highest_sampled_token_idx_marker"]))'),
+  "sampled_progress_fraction": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["sampled_progress_fraction"]))'),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "command_file": $(json_escape "${command_file}")
