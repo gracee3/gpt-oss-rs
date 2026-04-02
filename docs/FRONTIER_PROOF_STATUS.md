@@ -89,7 +89,9 @@ Current retained-state blocker:
 
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
 - The earlier metadata-upload panic is no longer the primary blocker once the honest `--max-model-len 4608` setting is used.
-- The current blocker is runner-side continuation artifact non-emission before bounded completion.
+- The current blocker is that the retained child path is not reaching the decode1 proof entry in bounded time.
+- No safe-side continuation-token artifact has been emitted yet.
+- The next required evidence is progress-boundary localization inside the retained child path on the same exact `4096 + 1` case, still targeting `post_attention_residual`.
 - Promotion remains paused until that retained-state path emits a real continuation-token artifact.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
@@ -150,6 +152,7 @@ The current residual result is strong enough to reopen bounded live-test plannin
 That still does not justify a claim of full runtime correctness or promotion readiness. It only clears the bar for planning the next bounded live-test step.
 
 Code promotion remains paused pending either one of the narrower downstream proofs above or an explicit decision to proceed with a bounded live-smoke anyway.
+Bounded live-test planning can stay open, but it is still blocked by missing continuation-token artifact emission on the retained-state seam.
 
 ## GPU0 Live-Test Readiness
 
