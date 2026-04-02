@@ -35,6 +35,7 @@ Options:
   --proof-artifact-env <name>     env var name used to pass a compact continuation proof artifact path
   --proof-artifact-name <file>    filename for per-side compact continuation proof artifacts
   --compare-vector-key <key>      compact numeric vector field to diff when present
+  --progress-marker <string>      retained child progress marker to scan for; repeatable
   --emit-forced-output-tokens     emit command-ready forced-output token args from verified continuation ids
   --verify-tokenization           verify prefix/continuation tokenization against the selected model
   --python <path>                 python interpreter for token verification (default: python3)
@@ -104,6 +105,7 @@ BUILD_ONLY=0
 RUN_ONLY=0
 SETUP_ONLY=0
 declare -a EXTRA_ENVS=()
+declare -a PROGRESS_MARKERS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -162,6 +164,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compare-vector-key)
       COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
+      shift 2
+      ;;
+    --progress-marker)
+      PROGRESS_MARKERS+=("${2:?missing value for --progress-marker}")
       shift 2
       ;;
     --emit-forced-output-tokens)
@@ -385,6 +391,22 @@ if [[ "${EMIT_FORCED_OUTPUT_TOKENS}" -eq 1 && "${VERIFY_TOKENIZATION}" -eq 1 ]];
   FORCED_OUTPUT_TOKENS_ARG=$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("forced_output_tokens_arg",""))' "${TOKENIZATION_JSON_FILE}")
 fi
 
+PROGRESS_MARKERS_JSON_FILE="${PLAN_DIR}/progress_markers.json"
+export RETAINED_PROGRESS_MARKERS_JSON_FILE="${PROGRESS_MARKERS_JSON_FILE}"
+if ((${#PROGRESS_MARKERS[@]} > 0)); then
+  export RETAINED_PROGRESS_MARKERS_RAW="$(printf '%s\n' "${PROGRESS_MARKERS[@]}")"
+else
+  export RETAINED_PROGRESS_MARKERS_RAW=""
+fi
+python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+markers = [line for line in os.environ.get("RETAINED_PROGRESS_MARKERS_RAW", "").splitlines() if line]
+Path(os.environ["RETAINED_PROGRESS_MARKERS_JSON_FILE"]).write_text(json.dumps(markers, indent=2) + "\n")
+PY
+
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi >"${GPU_SNAPSHOT_FILE}" 2>&1 || true
 else
@@ -445,6 +467,7 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "required_prefix_token_count": ${REQUIRED_PREFIX_TOKEN_COUNT:-null},
   "required_continuation_token_count": ${REQUIRED_CONTINUATION_TOKEN_COUNT:-null},
   "tokenization_summary_file": "${TOKENIZATION_JSON_FILE}",
+  "progress_markers_file": "${PROGRESS_MARKERS_JSON_FILE}",
   "env_file": "${ENV_FILE}",
   "env_json_file": "${ENV_JSON_FILE}",
   "build_timeout_seconds": ${BUILD_TIMEOUT_SECONDS},
@@ -552,6 +575,7 @@ run_case() {
   local stderr_file="${case_dir}/run.stderr"
   local status_file="${case_dir}/status.json"
   local start_epoch end_epoch duration rc state artifact_state proof_state primary_artifact
+  local progress_json_file="${case_dir}/progress-status.json"
   mkdir -p "${case_dir}"
 
   [[ -x "${binary_path}" ]] || die "prebuilt binary missing for ${label}: ${binary_path}; run with --build-only first"
@@ -603,6 +627,29 @@ run_case() {
     primary_artifact="${outer_artifact}"
   fi
 
+  export RETAINED_PROGRESS_STDOUT_FILE="${stdout_file}"
+  export RETAINED_PROGRESS_STDERR_FILE="${stderr_file}"
+  export RETAINED_PROGRESS_MARKERS_RAW="$(printf '%s\n' "${PROGRESS_MARKERS[@]}")"
+  export RETAINED_PROGRESS_JSON_FILE="${progress_json_file}"
+  python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+stdout_text = Path(os.environ["RETAINED_PROGRESS_STDOUT_FILE"]).read_text() if Path(os.environ["RETAINED_PROGRESS_STDOUT_FILE"]).exists() else ""
+stderr_text = Path(os.environ["RETAINED_PROGRESS_STDERR_FILE"]).read_text() if Path(os.environ["RETAINED_PROGRESS_STDERR_FILE"]).exists() else ""
+combined = stdout_text + "\n" + stderr_text
+markers = [line for line in os.environ.get("RETAINED_PROGRESS_MARKERS_RAW", "").splitlines() if line]
+seen = [marker for marker in markers if marker in combined]
+last = seen[-1] if seen else None
+summary = {
+    "configured_markers": markers,
+    "seen_markers": seen,
+    "last_progress_marker": last,
+}
+Path(os.environ["RETAINED_PROGRESS_JSON_FILE"]).write_text(json.dumps(summary, indent=2) + "\n")
+PY
+
   cat >"${status_file}" <<EOF
 {
   "label": $(json_escape "${label}"),
@@ -615,6 +662,10 @@ run_case() {
   "proof_artifact_state": $(json_escape "${proof_state}"),
   "proof_artifact_path": $(json_escape "${proof_artifact}"),
   "primary_artifact_file": $(json_escape "${primary_artifact}"),
+  "progress_markers_file": $(json_escape "${progress_json_file}"),
+  "configured_progress_markers": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["configured_markers"]))'),
+  "seen_progress_markers": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["seen_markers"]))'),
+  "last_progress_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["last_progress_marker"]))'),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "command_file": $(json_escape "${command_file}")
@@ -638,6 +689,12 @@ fi
 
 run_case safe "${SAFE_TREE}" "${SAFE_BINARY}" "${SAFE_OUTER_ARTIFACT}" "${SAFE_PROOF_ARTIFACT}" "${SAFE_RUN_CMD_FILE}"
 run_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}" "${VARIANT_OUTER_ARTIFACT}" "${VARIANT_PROOF_ARTIFACT}" "${VARIANT_RUN_CMD_FILE}"
+
+write_summary \
+  "$( if [[ -f "${OUTPUT_DIR}/safe/build-status.json" ]]; then cat "${OUTPUT_DIR}/safe/build-status.json"; else printf 'null'; fi )" \
+  "$( if [[ -f "${OUTPUT_DIR}/variant/build-status.json" ]]; then cat "${OUTPUT_DIR}/variant/build-status.json"; else printf 'null'; fi )" \
+  "$(cat "${OUTPUT_DIR}/safe/status.json")" \
+  "$(cat "${OUTPUT_DIR}/variant/status.json")"
 
 export RETAINED_OUTPUT_DIR="${OUTPUT_DIR}"
 export RETAINED_COMPARE_VECTOR_KEY="${COMPARE_VECTOR_KEY}"
