@@ -68,13 +68,19 @@ Evidence already present:
 - Safe-vs-variant divergence preserved at the post-attention context last-token seam.
 - Same-input `>4096` sink-free GPU0 case with localized post-attention residual last-token artifacts.
 - Safe-vs-variant divergence preserved at the post-attention residual seam, with attenuation relative to post-attention context but not disappearance.
+- The residual result is strong enough to support bounded live-test planning discussion.
 - Safe additive parser/config/support-plumbing sub-slices are already mirrored on integration.
 
 Evidence still required before promotion:
 
-- A same-input sink-free `>4096` safe-vs-variant comparison that reaches a localized layer-0 MLP output last-token artifact on the same bounded case.
-- Or, if that seam is not honestly reachable, a localized final layer-0 output last-token artifact on the same bounded case.
+- A same-input sink-free `>4096` safe-vs-variant comparison that reaches the first selected MLP expert/down-proj chunk for the last token on the same bounded case.
+- Or, if that seam is not honestly reachable, a decode-style single-position continuation from a warmed 4096-token prefill state.
 - Evidence strong enough to show propagation through the runtime path beyond post-attention residual, not just divergence at earlier seams.
+
+Proof-method boundary:
+
+- The full 4100-token `restricted_prefill_trace` path is no longer the preferred way to push one hop later downstream.
+- Failure to emit even the safe-side artifact for post-MLP or fallback early layer-output on that broader path should be treated as a proof-method boundary, not as evidence against `bd49d35`.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
@@ -117,9 +123,10 @@ The next frontier handoff from harness/feature to integration is accepted only i
 - the post-RoPE last-token artifact or value already observed
 - the post-attention context last-token artifact or value already observed
 - the post-attention residual last-token artifact or value already observed
-- the next preferred downstream localized artifact: layer-0 MLP output last-token
-- the fallback downstream localized artifact: final layer-0 output last-token
+- the next preferred downstream localized seam: first selected MLP expert/down-proj chunk for the last token
+- the fallback downstream localized seam: decode-style single-position continuation from a warmed 4096-token prefill state
 - a short operator summary stating whether the evidence shows runtime-path propagation beyond post-attention residual or still stops at that boundary
+- a short note if the broader 4100-token `restricted_prefill_trace` path failed to emit safe-side artifacts, explicitly marking that as a proof-method boundary rather than negative semantic evidence
 - a clear pass/fail statement on whether the result is promotion-gating proof for `bd49d35`
 
 ## Bounded Live-Test Planning Gate
@@ -127,6 +134,8 @@ The next frontier handoff from harness/feature to integration is accepted only i
 The current residual result is strong enough to reopen bounded live-test planning discussion.
 
 That still does not justify a claim of full runtime correctness or promotion readiness. It only clears the bar for planning the next bounded live-test step.
+
+Code promotion remains paused pending either one of the narrower downstream proofs above or an explicit decision to proceed with a bounded live-smoke anyway.
 
 ## GPU0 Live-Test Readiness
 
@@ -140,6 +149,6 @@ Already ready:
 Frontier result required to unlock the next live promotion decision:
 
 - For `838d3f8`: no live promotion target on the current seam. Reopen only if a new runtime seam explicitly carries extra visible KV offsets, or equally direct contrary evidence appears.
-- For `bd49d35`: the next downstream same-input proof artifact above 4096 tokens on GPU0, preferably a localized layer-0 MLP output last-token artifact, with localized final layer-0 output last-token artifact as the fallback if the preferred seam is not honestly reachable.
+- For `bd49d35`: the next downstream same-input proof seam above 4096 tokens on GPU0, preferably the first selected MLP expert/down-proj chunk for the last token, with decode-style single-position continuation from a warmed 4096-token prefill state as the fallback if the preferred seam is not honestly reachable.
 
 Until the `bd49d35` frontier clears that bar, integration stays paused on additional runtime-forward promotion.
