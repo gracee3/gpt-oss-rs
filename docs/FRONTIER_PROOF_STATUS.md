@@ -1,0 +1,90 @@
+# Frontier Proof Status
+
+This file tracks which integration-held subsets are ready for `main`, which frontier candidates remain paused, and what proof is still required before any further runtime-forward promotion.
+
+## Ready For Main
+
+### Safe Harness Wrapper Chain Already Mirrored On Integration
+
+- `402924a` Improve Tier-2 harness operator workflow
+- `ae4ef08` Add opt-in warm oracle listener scaffold
+- `746fe7c` Wire warm oracle into probe validation wrapper
+- `645b6eb` Add artifact provenance guardrails for trace reuse
+- `480cd08` Version wrapper-owned trace capture metadata
+- `ae3c9bd` Add dry-run trace artifact inspection mode
+- `dd050b0` Add wrapper regression script for harness metadata paths
+- `ae5bf7d` Add strict current-contract mode for trace reuse
+
+### Safe Runtime-Forward Extraction Chain Already Mirrored On Integration
+
+- `7ba163c` conservative semantic cache projection helpers
+- `e174797` rope-scaling config parsing hardening
+- `38f692e` worker-config rope field carry-through
+- Coupled default/support-plumbing subset:
+  - `5c30e56` Add `ModelRunnerConfig` default
+  - `7bdf268` Add `ModelRunnerConfig` default for architecture tests
+  - `dfc6abe` Carry `ModelRunnerConfig` rope fields through test fixtures
+
+These subsets are the current integration-held runtime-forward ceiling. No additional runtime-forward cherry-picks should be promoted from integration until a new candidate clears the proof bar below.
+
+## Paused / Deferred
+
+- Pause additional runtime-forward cherry-picks until a proof-backed candidate exists beyond the already-mirrored safe chain.
+- `838d3f8`: deferred and currently unjustified.
+- `bd49d35`: partially supported only at the YaRN table-construction boundary; not yet proven by bounded long-context runtime evidence above 4096 tokens.
+
+## Reopen Criteria For `838d3f8`
+
+Current evidence weakens the claim rather than supporting it because the proposed sink-aware semantic cache layout projects runtime KV visibility from model metadata (`SinkBehavior` plus sink token count) without same-input confirmation that the runtime actually exposes those sink tensors in the compared path.
+
+Do not reopen `838d3f8` unless all of the following are observed:
+
+- Same-input evidence comparing conservative vs sink-aware projection against observed runtime/cache behavior, not just config metadata.
+- At least one bounded case with nonzero sink tensors where the sink-aware projection better matches the effective runtime path.
+- At least one bounded control case with zero or absent sink tensors where the conservative path remains the honest predictor.
+- The observed boundary is local enough to justify the sink-aware semantic projection as a runtime-facing claim rather than a speculative helper.
+
+Until then, no sub-slice beyond `992a741` is honest to promote.
+
+## Advancement Criteria For `bd49d35`
+
+Current evidence supports `bd49d35` only at the YaRN table-construction boundary. That is not yet enough to promote the remaining runtime-forward slice because the missing proof is still end-to-end runtime behavior under active long-context scaling.
+
+Evidence already present:
+
+- Positive support at the YaRN table-construction boundary.
+- Safe additive parser/config/support-plumbing sub-slices are already mirrored on integration.
+
+Evidence still required before promotion:
+
+- A bounded same-input runtime check above 4096 tokens where YaRN scaling is active.
+- A matched control case where YaRN scaling is inactive.
+- Localized observation that the implemented GPU-runner YaRN table usage reproduces expected GPT-OSS behavior on the same prompt/input data.
+- Evidence strong enough to distinguish "table construction looks plausible" from "runtime long-context behavior is correct."
+
+Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
+
+## Proof-Backed Promotion Bar
+
+A frontier runtime-forward candidate is promotion-eligible only when all of the following are true:
+
+- The candidate is bounded enough to extract without dragging in speculative neighboring work.
+- The proof is same-input and localized to the claimed runtime boundary.
+- The proof includes a control case that would fail or stay conservative if the claim were wrong.
+- The evidence supports the promoted behavior directly, not just metadata carry-through or parser acceptance.
+
+## GPU0 Live-Test Readiness
+
+Already ready:
+
+- Tier-2 harness workflow and wrapper chain on integration.
+- Current-contract trace reuse guardrails.
+- Dry-run inspection and wrapper regression coverage.
+- The safe runtime-forward extraction chain already mirrored on integration.
+
+Frontier result required to unlock the next live promotion decision:
+
+- For `838d3f8`: a bounded same-input sink-aware runtime/cache visibility proof meeting the reopen criteria above.
+- For `bd49d35`: a bounded long-context runtime proof above 4096 tokens showing that YaRN-active behavior matches expectation and localizes correctly against a control case.
+
+Until one of those frontier results exists, integration stays paused on additional runtime-forward promotion.
