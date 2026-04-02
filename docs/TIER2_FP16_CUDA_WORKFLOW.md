@@ -238,6 +238,18 @@ For a bounded post-RoPE or post-attention seam that still uses `restricted_prefi
   --output-dir .live/yarn-long-context-proof
 ```
 
+When the compact proof artifact contains a small numeric head such as `values_head`, ask the runner to summarize the direct vector diff in `summary.json`:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --run-only \
+  --bin restricted_prefill_trace \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name post_attention_probe.json \
+  --compare-vector-key values_head \
+  --output-dir .live/yarn-long-context-proof
+```
+
 What it does:
 
 - generates or verifies one deterministic prompt whose tokenized length is above 4096
@@ -245,6 +257,7 @@ What it does:
 - can prebuild both worktrees once, then rerun the proof with the warmed `target/release/restricted_logit_diff` binaries
 - records the selected proof binary and any repeated `--env KEY=VALUE` passthrough in the generated plan files
 - can assign a per-side compact proof artifact path through `--proof-artifact-env` while keeping the outer binary's normal `--output` artifact intact
+- can summarize `max_abs_diff`, `mean_abs_diff`, and `first_diff_index` directly when both compact proof artifacts expose the selected numeric vector key
 - runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
 - records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
 
