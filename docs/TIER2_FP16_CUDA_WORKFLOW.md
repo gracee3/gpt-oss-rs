@@ -654,6 +654,32 @@ For late-loop sampled progress on the next GPU-bound run, switch to `retained-ro
 ```
 
 `retained-router-late-samples-v1` emphasizes later sampled milestones like `token_idx_2560`, `token_idx_3072`, `token_idx_3584`, and `token_idx_4095`. When those markers are present, `summary.json` now also records `highest_sampled_token_idx_seen`, `highest_sampled_token_idx_marker`, and a coarse `sampled_progress_fraction`.
+For the post-layer-0 handoff frontier on the next GPU-bound run, switch to `retained-layer-handoff-v1` and keep the run on GPU1:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --gpu 1 \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-layer-handoff-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-layer-handoff-v1` extends the ordered sequence beyond `layer=0 stage=mlp_done` into `RETAINED_LAYER_BOUNDARY` markers, so `summary.json` can report whether execution returned from layer 0 and whether it actually entered layer 1 before stalling.
 Start the listener:
 
 ```bash
