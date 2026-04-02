@@ -35,6 +35,7 @@ Options:
   --proof-artifact-env <name>     env var name used to pass a compact continuation proof artifact path
   --proof-artifact-name <file>    filename for per-side compact continuation proof artifacts
   --compare-vector-key <key>      compact numeric vector field to diff when present
+  --emit-forced-output-tokens     emit command-ready forced-output token args from verified continuation ids
   --verify-tokenization           verify prefix/continuation tokenization against the selected model
   --python <path>                 python interpreter for token verification (default: python3)
   --required-prefix-token-count <n>
@@ -92,6 +93,7 @@ PROOF_BIN="${DEFAULT_BIN}"
 PROOF_ARTIFACT_ENV=""
 PROOF_ARTIFACT_NAME=""
 COMPARE_VECTOR_KEY=""
+EMIT_FORCED_OUTPUT_TOKENS=0
 MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
 PYTHON_BIN="${DEFAULT_PYTHON}"
 VERIFY_TOKENIZATION=0
@@ -160,6 +162,10 @@ while [[ $# -gt 0 ]]; do
     --compare-vector-key)
       COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
       shift 2
+      ;;
+    --emit-forced-output-tokens)
+      EMIT_FORCED_OUTPUT_TOKENS=1
+      shift
       ;;
     --verify-tokenization)
       VERIFY_TOKENIZATION=1
@@ -264,6 +270,7 @@ export RETAINED_VARIANT_PROOF_ARTIFACT="${VARIANT_PROOF_ARTIFACT}"
 export RETAINED_TOKEN_MODEL_PATH="${MODEL_PATH}"
 export RETAINED_PREFIX_PROMPT_FILE="${PREFIX_PROMPT_FILE}"
 export RETAINED_CONTINUATION_PROMPT_FILE="${CONTINUATION_PROMPT_FILE}"
+export RETAINED_EMIT_FORCED_OUTPUT_TOKENS="${EMIT_FORCED_OUTPUT_TOKENS}"
 if ((${#EXTRA_ENVS[@]} > 0)); then
   export RETAINED_EXTRA_ENVS="$(printf '%s\n' "${EXTRA_ENVS[@]}")"
 else
@@ -320,8 +327,14 @@ summary = {
     "prefix_token_count": len(prefix_ids),
     "continuation_token_count": len(continuation_ids),
     "continuation_token_ids": continuation_ids,
+    "continuation_token_ids_csv": ",".join(str(token) for token in continuation_ids),
+    "forced_output_tokens_arg": "",
     "continuation_text_repr": repr(continuation_text),
 }
+if os.environ.get("RETAINED_EMIT_FORCED_OUTPUT_TOKENS") == "1":
+    summary["forced_output_tokens_arg"] = " ".join(
+        f"--forced-output-tokens {token}" for token in continuation_ids
+    )
 output_path.write_text(json.dumps(summary, indent=2) + "\n")
 
 if required_prefix and len(prefix_ids) != int(required_prefix):
@@ -341,9 +354,16 @@ else
   "prefix_token_count": null,
   "continuation_token_count": null,
   "continuation_token_ids": [],
+  "continuation_token_ids_csv": "",
+  "forced_output_tokens_arg": "",
   "continuation_text_repr": null
 }
 EOF
+fi
+
+FORCED_OUTPUT_TOKENS_ARG=""
+if [[ "${EMIT_FORCED_OUTPUT_TOKENS}" -eq 1 && "${VERIFY_TOKENIZATION}" -eq 1 ]]; then
+  FORCED_OUTPUT_TOKENS_ARG=$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("forced_output_tokens_arg",""))' "${TOKENIZATION_JSON_FILE}")
 fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -368,14 +388,14 @@ cat >"${SAFE_RUN_CMD_FILE}" <<EOF
 cd ${SAFE_TREE}
 . ${ENV_FILE}
 $( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${SAFE_PROOF_ARTIFACT}")"; fi )
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${SAFE_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} --output ${SAFE_OUTER_ARTIFACT}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${SAFE_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} $( if [[ "${PROOF_BIN}" == "restricted_logit_diff" && -n "${FORCED_OUTPUT_TOKENS_ARG}" ]]; then printf '%s ' "${FORCED_OUTPUT_TOKENS_ARG}"; fi )--output ${SAFE_OUTER_ARTIFACT}
 EOF
 
 cat >"${VARIANT_RUN_CMD_FILE}" <<EOF
 cd ${VARIANT_TREE}
 . ${ENV_FILE}
 $( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${VARIANT_PROOF_ARTIFACT}")"; fi )
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${VARIANT_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} --output ${VARIANT_OUTER_ARTIFACT}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${VARIANT_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} $( if [[ "${PROOF_BIN}" == "restricted_logit_diff" && -n "${FORCED_OUTPUT_TOKENS_ARG}" ]]; then printf '%s ' "${FORCED_OUTPUT_TOKENS_ARG}"; fi )--output ${VARIANT_OUTER_ARTIFACT}
 EOF
 
 chmod +x "${SAFE_BUILD_CMD_FILE}" "${VARIANT_BUILD_CMD_FILE}" "${SAFE_RUN_CMD_FILE}" "${VARIANT_RUN_CMD_FILE}"
@@ -397,7 +417,9 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "safe_proof_artifact_path": "${SAFE_PROOF_ARTIFACT}",
   "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
   "compare_vector_key": "${COMPARE_VECTOR_KEY}",
+  "forced_output_tokens_arg": $(json_escape "${FORCED_OUTPUT_TOKENS_ARG}"),
   "verify_tokenization": ${VERIFY_TOKENIZATION},
+  "emit_forced_output_tokens": ${EMIT_FORCED_OUTPUT_TOKENS},
   "python": "${PYTHON_BIN}",
   "required_prefix_token_count": ${REQUIRED_PREFIX_TOKEN_COUNT:-null},
   "required_continuation_token_count": ${REQUIRED_CONTINUATION_TOKEN_COUNT:-null},
