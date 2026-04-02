@@ -30,6 +30,7 @@ Options:
   --bin <name>               proof binary name to build/run (default: restricted_logit_diff)
   --proof-artifact-env <n>   env var name used to pass a compact proof artifact path
   --proof-artifact-name <f>  filename for env-driven proof artifacts inside each case dir
+  --compare-vector-key <k>   compact numeric vector field to diff when present
   --max-model-len <n>        requested max-model-len passed to restricted_logit_diff
   --prompt-file <path>       existing prompt file to use
   --env KEY=VALUE            bounded env passthrough for proof-only runs; repeatable
@@ -81,6 +82,7 @@ MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
 PROOF_BIN="${DEFAULT_BIN}"
 PROOF_ARTIFACT_ENV=""
 PROOF_ARTIFACT_NAME=""
+COMPARE_VECTOR_KEY=""
 PROMPT_FILE=""
 SETUP_ONLY=0
 BUILD_ONLY=0
@@ -127,6 +129,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --proof-artifact-name)
       PROOF_ARTIFACT_NAME="${2:?missing value for --proof-artifact-name}"
+      shift 2
+      ;;
+    --compare-vector-key)
+      COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
       shift 2
       ;;
     --max-model-len)
@@ -358,6 +364,7 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "artifact_name": "${ARTIFACT_NAME}",
   "proof_artifact_env": "${PROOF_ARTIFACT_ENV}",
   "proof_artifact_name": "${PROOF_ARTIFACT_NAME}",
+  "compare_vector_key": "${COMPARE_VECTOR_KEY}",
   "safe_proof_artifact_path": "${SAFE_PROOF_ARTIFACT}",
   "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
   "prompt_file": "${PROMPT_FILE}",
@@ -593,12 +600,15 @@ run_case safe "${SAFE_TREE}" "${SAFE_BINARY}"
 run_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}"
 
 export PROOF_OUTPUT_DIR="${OUTPUT_DIR}"
+export PROOF_COMPARE_VECTOR_KEY="${COMPARE_VECTOR_KEY}"
 python3 <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
 
 output_dir = Path(os.environ["PROOF_OUTPUT_DIR"])
+compare_vector_key = os.environ.get("PROOF_COMPARE_VECTOR_KEY", "")
 summary = {
     "safe_build": json.loads((output_dir / "safe" / "build-status.json").read_text()) if (output_dir / "safe" / "build-status.json").exists() else None,
     "variant_build": json.loads((output_dir / "variant" / "build-status.json").read_text()) if (output_dir / "variant" / "build-status.json").exists() else None,
@@ -635,8 +645,8 @@ if safe_report.exists() and variant_report.exists():
         "artifact_name": artifact_name,
         "safe_primary_artifact": str(safe_report),
         "variant_primary_artifact": str(variant_report),
-        "safe_sha256": __import__("hashlib").sha256(safe_text.encode("utf-8")).hexdigest(),
-        "variant_sha256": __import__("hashlib").sha256(variant_text.encode("utf-8")).hexdigest(),
+        "safe_sha256": hashlib.sha256(safe_text.encode("utf-8")).hexdigest(),
+        "variant_sha256": hashlib.sha256(variant_text.encode("utf-8")).hexdigest(),
         "json_equal": safe == variant,
         "safe_top_level_keys": safe_keys,
         "variant_top_level_keys": variant_keys,
@@ -650,6 +660,25 @@ if safe_report.exists() and variant_report.exists():
         "same_prompt_token_ids": safe.get("prompt_token_ids") == variant.get("prompt_token_ids") if isinstance(safe, dict) and isinstance(variant, dict) else None,
         "same_conclusion": safe.get("conclusion") == variant.get("conclusion") if isinstance(safe, dict) and isinstance(variant, dict) else None,
     }
+    if (
+        compare_vector_key
+        and isinstance(safe, dict)
+        and isinstance(variant, dict)
+        and isinstance(safe.get(compare_vector_key), list)
+        and isinstance(variant.get(compare_vector_key), list)
+        and len(safe[compare_vector_key]) == len(variant[compare_vector_key])
+        and all(isinstance(v, (int, float)) for v in safe[compare_vector_key])
+        and all(isinstance(v, (int, float)) for v in variant[compare_vector_key])
+    ):
+        diffs = [abs(float(a) - float(b)) for a, b in zip(safe[compare_vector_key], variant[compare_vector_key])]
+        first_diff_index = next((idx for idx, value in enumerate(diffs) if value > 0.0), None)
+        summary["comparison"]["vector_diff"] = {
+            "vector_key": compare_vector_key,
+            "vector_length": len(diffs),
+            "max_abs_diff": max(diffs) if diffs else 0.0,
+            "mean_abs_diff": (sum(diffs) / len(diffs)) if diffs else 0.0,
+            "first_diff_index": first_diff_index,
+        }
 else:
     summary["comparison"] = {
         "comparable": False,
