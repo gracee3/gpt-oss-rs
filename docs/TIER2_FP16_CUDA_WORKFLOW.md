@@ -193,6 +193,20 @@ For the `bd49d35` frontier, use the bounded harness seam instead of ad hoc long-
 
 ```bash
 ./scripts/run_yarn_long_context_proof.sh \
+  --build-only \
+  --build-timeout 1800 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --output-dir .live/yarn-long-context-proof
+```
+
+Then run the warmed proof without paying the same cold `cargo` startup cost again:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --run-only \
   --gpu 0 \
   --safe-tree /home/emmy/openai/gpt-oss-rs \
   --variant-tree /home/emmy/openai/worktrees/runtime-forward \
@@ -205,6 +219,7 @@ What it does:
 
 - generates or verifies one deterministic prompt whose tokenized length is above 4096
 - verifies the restricted-model view is sink-free before running
+- can prebuild both worktrees once, then rerun the proof with the warmed `target/release/restricted_logit_diff` binaries
 - runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
 - records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
 
