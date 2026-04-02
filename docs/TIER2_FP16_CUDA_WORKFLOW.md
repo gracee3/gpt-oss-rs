@@ -646,6 +646,33 @@ For the first outer-loop / top-k guard frontier, switch to `retained-router-loop
 
 `retained-router-loop-v1` narrows the ordered sequence further into the zero-top-k guard and first outer scoring-loop statements after `router_input_ready`, so `summary.json` can report stalls such as `stalled_before=RETAINED_MLP_STAGE layer=0 stage=router_score_begin` with the next loop/guard boundaries immediately after it.
 
+For sampled token-index progress through the outer router loop, switch to `retained-router-samples-v1`:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-router-samples-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-router-samples-v1` narrows the ordered sequence further into sampled token-index checkpoints inside the outer score loop, so `summary.json` can distinguish “entered the loop” from “made it through sampled positions like `token_idx_2048`” before stalling.
+
 Start the listener:
 
 ```bash
