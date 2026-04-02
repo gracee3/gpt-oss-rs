@@ -365,6 +365,34 @@ What this prepares:
 - one optional compact continuation proof-artifact path per tree
 - the same build/run split, env capture, GPU snapshot, and compact vector-diff summary path used elsewhere in the harness
 
+To prove the split is really the intended `4096 + 1` case before running anything live, enable tokenizer verification and strict count guards:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --output-dir .live/retained-continuation-proof
+```
+
+The resulting `summary.json` records:
+
+- prefix token count
+- continuation token count
+- continuation token id list
+- continuation text repr
+
 Start the listener:
 
 ```bash
