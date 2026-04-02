@@ -28,6 +28,8 @@ Options:
   --timeout <seconds>        per-run timeout in seconds (default: 1800)
   --build-timeout <seconds>  per-build timeout in seconds (default: 1800)
   --bin <name>               proof binary name to build/run (default: restricted_logit_diff)
+  --proof-artifact-env <n>   env var name used to pass a compact proof artifact path
+  --proof-artifact-name <f>  filename for env-driven proof artifacts inside each case dir
   --max-model-len <n>        requested max-model-len passed to restricted_logit_diff
   --prompt-file <path>       existing prompt file to use
   --env KEY=VALUE            bounded env passthrough for proof-only runs; repeatable
@@ -77,6 +79,8 @@ BUILD_TIMEOUT_SECONDS="${DEFAULT_BUILD_TIMEOUT}"
 GPU_ID="${DEFAULT_GPU}"
 MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
 PROOF_BIN="${DEFAULT_BIN}"
+PROOF_ARTIFACT_ENV=""
+PROOF_ARTIFACT_NAME=""
 PROMPT_FILE=""
 SETUP_ONLY=0
 BUILD_ONLY=0
@@ -115,6 +119,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bin)
       PROOF_BIN="${2:?missing value for --bin}"
+      shift 2
+      ;;
+    --proof-artifact-env)
+      PROOF_ARTIFACT_ENV="${2:?missing value for --proof-artifact-env}"
+      shift 2
+      ;;
+    --proof-artifact-name)
+      PROOF_ARTIFACT_NAME="${2:?missing value for --proof-artifact-name}"
       shift 2
       ;;
     --max-model-len)
@@ -258,10 +270,15 @@ VARIANT_CMD_FILE="${PLAN_DIR}/variant_command.sh"
 SAFE_BUILD_CMD_FILE="${PLAN_DIR}/safe_build_command.sh"
 VARIANT_BUILD_CMD_FILE="${PLAN_DIR}/variant_build_command.sh"
 ARTIFACT_NAME="$(normalize_artifact_name "${PROOF_BIN}")"
+if [[ -z "${PROOF_ARTIFACT_NAME}" ]]; then
+  PROOF_ARTIFACT_NAME="$(normalize_artifact_name "${PROOF_BIN}-proof")"
+fi
 SAFE_BINARY="${SAFE_TREE}/target/release/${PROOF_BIN}"
 VARIANT_BINARY="${VARIANT_TREE}/target/release/${PROOF_BIN}"
 ENV_FILE="${PLAN_DIR}/proof_env.sh"
 ENV_JSON_FILE="${PLAN_DIR}/proof_env.json"
+SAFE_PROOF_ARTIFACT="${OUTPUT_DIR}/safe/${PROOF_ARTIFACT_NAME}"
+VARIANT_PROOF_ARTIFACT="${OUTPUT_DIR}/variant/${PROOF_ARTIFACT_NAME}"
 
 {
   for env_kv in "${EXTRA_ENVS[@]}"; do
@@ -269,6 +286,10 @@ ENV_JSON_FILE="${PLAN_DIR}/proof_env.json"
     value=${env_kv#*=}
     printf 'export %s=%s\n' "${key}" "$(shell_escape "${value}")"
   done
+  if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+    printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}_SAFE" "$(shell_escape "${SAFE_PROOF_ARTIFACT}")"
+    printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}_VARIANT" "$(shell_escape "${VARIANT_PROOF_ARTIFACT}")"
+  fi
 } >"${ENV_FILE}"
 
 export PROOF_ENV_JSON_FILE="${ENV_JSON_FILE}"
@@ -277,6 +298,9 @@ if ((${#EXTRA_ENVS[@]} > 0)); then
 else
   export PROOF_EXTRA_ENVS=""
 fi
+export PROOF_ARTIFACT_ENV_NAME="${PROOF_ARTIFACT_ENV}"
+export PROOF_ARTIFACT_SAFE_PATH="${SAFE_PROOF_ARTIFACT}"
+export PROOF_ARTIFACT_VARIANT_PATH="${VARIANT_PROOF_ARTIFACT}"
 python3 <<'PY'
 import json
 import os
@@ -289,18 +313,24 @@ for line in raw.splitlines():
         continue
     key, value = line.split("=", 1)
     envs.append({"key": key, "value": value})
+proof_artifact_env = os.environ.get("PROOF_ARTIFACT_ENV_NAME")
+if proof_artifact_env:
+    envs.append({"key": f"{proof_artifact_env}_SAFE", "value": os.environ["PROOF_ARTIFACT_SAFE_PATH"]})
+    envs.append({"key": f"{proof_artifact_env}_VARIANT", "value": os.environ["PROOF_ARTIFACT_VARIANT_PATH"]})
 Path(os.environ["PROOF_ENV_JSON_FILE"]).write_text(json.dumps(envs, indent=2) + "\n")
 PY
 
 cat >"${SAFE_CMD_FILE}" <<EOF
 cd ${SAFE_TREE}
 . ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${SAFE_PROOF_ARTIFACT}")"; fi )
 PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${SAFE_BINARY} --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/safe/${ARTIFACT_NAME} --log-level info
 EOF
 
 cat >"${VARIANT_CMD_FILE}" <<EOF
 cd ${VARIANT_TREE}
 . ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${VARIANT_PROOF_ARTIFACT}")"; fi )
 PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${VARIANT_BINARY} --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/variant/${ARTIFACT_NAME} --log-level info
 EOF
 
@@ -326,6 +356,10 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "model_path": "${MODEL_PATH}",
   "proof_bin": "${PROOF_BIN}",
   "artifact_name": "${ARTIFACT_NAME}",
+  "proof_artifact_env": "${PROOF_ARTIFACT_ENV}",
+  "proof_artifact_name": "${PROOF_ARTIFACT_NAME}",
+  "safe_proof_artifact_path": "${SAFE_PROOF_ARTIFACT}",
+  "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
   "prompt_file": "${PROMPT_FILE}",
   "env_file": "${ENV_FILE}",
   "env_json_file": "${ENV_JSON_FILE}",
@@ -426,17 +460,27 @@ run_case() {
   local stdout_file="${case_dir}/run.stdout"
   local command_file="${case_dir}/command.sh"
   local report_file="${case_dir}/${ARTIFACT_NAME}"
+  local proof_artifact_file=""
   local status_file="${case_dir}/status.json"
-  local start_epoch end_epoch duration rc state artifact_state
+  local start_epoch end_epoch duration rc state artifact_state primary_artifact
   mkdir -p "${case_dir}"
 
   [[ -x "${binary_path}" ]] || die "prebuilt binary missing for ${label}: ${binary_path}; run with --build-only first"
+
+  if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+    if [[ "${label}" == "safe" ]]; then
+      proof_artifact_file="${SAFE_PROOF_ARTIFACT}"
+    else
+      proof_artifact_file="${VARIANT_PROOF_ARTIFACT}"
+    fi
+  fi
 
   cat >"${command_file}" <<EOF
 cd ${tree}
 PROMPT_FILE=${PROMPT_FILE}
 PROMPT=\$(cat "\${PROMPT_FILE}")
 . ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${proof_artifact_file}")"; fi )
 PATH="/data/models/.venv-awq/bin:\$PATH" \
 CUDA_VISIBLE_DEVICES=${GPU_ID} \
 GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
@@ -455,6 +499,9 @@ EOF
     cd "${tree}"
     PROMPT=$(cat "${PROMPT_FILE}")
     . "${ENV_FILE}"
+    if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+      export "${PROOF_ARTIFACT_ENV}=${proof_artifact_file}"
+    fi
     PATH="/data/models/.venv-awq/bin:${PATH}" \
     CUDA_VISIBLE_DEVICES="${GPU_ID}" \
     GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
@@ -477,7 +524,11 @@ EOF
     state="failed"
   fi
 
-  if [[ -f "${report_file}" ]]; then
+  primary_artifact="${report_file}"
+  if [[ -n "${proof_artifact_file}" && -f "${proof_artifact_file}" ]]; then
+    artifact_state="usable_artifact"
+    primary_artifact="${proof_artifact_file}"
+  elif [[ -f "${report_file}" ]]; then
     artifact_state="usable_artifact"
   else
     artifact_state="no_artifact"
@@ -499,6 +550,10 @@ EOF
   "duration_seconds": ${duration},
   "artifact_state": $(json_escape "${artifact_state}"),
   "artifact_name": $(json_escape "${ARTIFACT_NAME}"),
+  "proof_artifact_env": $(json_escape "${PROOF_ARTIFACT_ENV}"),
+  "proof_artifact_name": $(json_escape "${PROOF_ARTIFACT_NAME}"),
+  "proof_artifact_file": $(json_escape "${proof_artifact_file}"),
+  "primary_artifact_file": $(json_escape "${primary_artifact}"),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "report_file": $(json_escape "${report_file}"),
@@ -554,14 +609,19 @@ summary = {
 safe_report = output_dir / "safe" / "restricted-logit-diff.json"
 variant_report = output_dir / "variant" / "restricted-logit-diff.json"
 artifact_name = None
+primary_safe_artifact = None
+primary_variant_artifact = None
 if summary.get("safe"):
     artifact_name = summary["safe"].get("artifact_name")
+    primary_safe_artifact = summary["safe"].get("primary_artifact_file")
 if artifact_name is None and summary.get("variant"):
     artifact_name = summary["variant"].get("artifact_name")
+if summary.get("variant"):
+    primary_variant_artifact = summary["variant"].get("primary_artifact_file")
 if artifact_name is None:
     artifact_name = "artifact.json"
-safe_report = output_dir / "safe" / artifact_name
-variant_report = output_dir / "variant" / artifact_name
+safe_report = Path(primary_safe_artifact) if primary_safe_artifact else output_dir / "safe" / artifact_name
+variant_report = Path(primary_variant_artifact) if primary_variant_artifact else output_dir / "variant" / artifact_name
 
 if safe_report.exists() and variant_report.exists():
     safe_text = safe_report.read_text()
@@ -573,6 +633,8 @@ if safe_report.exists() and variant_report.exists():
     summary["comparison"] = {
         "comparable": True,
         "artifact_name": artifact_name,
+        "safe_primary_artifact": str(safe_report),
+        "variant_primary_artifact": str(variant_report),
         "safe_sha256": __import__("hashlib").sha256(safe_text.encode("utf-8")).hexdigest(),
         "variant_sha256": __import__("hashlib").sha256(variant_text.encode("utf-8")).hexdigest(),
         "json_equal": safe == variant,
@@ -592,6 +654,8 @@ else:
     summary["comparison"] = {
         "comparable": False,
         "artifact_name": artifact_name,
+        "safe_primary_artifact": str(safe_report),
+        "variant_primary_artifact": str(variant_report),
         "reason": "both safe and variant artifacts were not produced within the bounded run",
     }
 
