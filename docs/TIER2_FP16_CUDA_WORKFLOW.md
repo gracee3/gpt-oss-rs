@@ -226,18 +226,32 @@ When a lighter post-4096 proof seam is available, reuse the same runner with a d
   --output-dir .live/yarn-long-context-proof
 ```
 
+For a bounded post-RoPE or post-attention seam that still uses `restricted_prefill_trace` as the outer binary, let the runner allocate a compact proof artifact path through an env var while preserving the normal `--output` trace path:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --build-only \
+  --bin restricted_prefill_trace \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name post_attention_probe.json \
+  --env GPT_OSS_PROBE_MODE=post-attention \
+  --output-dir .live/yarn-long-context-proof
+```
+
 What it does:
 
 - generates or verifies one deterministic prompt whose tokenized length is above 4096
 - verifies the restricted-model view is sink-free before running
 - can prebuild both worktrees once, then rerun the proof with the warmed `target/release/restricted_logit_diff` binaries
 - records the selected proof binary and any repeated `--env KEY=VALUE` passthrough in the generated plan files
+- can assign a per-side compact proof artifact path through `--proof-artifact-env` while keeping the outer binary's normal `--output` artifact intact
 - runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
 - records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
 
 Contract for alternate proof binaries:
 
 - keep the bounded `--model`, `--prompt`, `--max-model-len`, and `--output` surface so the same runner can warm, execute, and compare both sides
+- if the proof seam emits a smaller side artifact through an env-provided path, use `--proof-artifact-env` and `--proof-artifact-name` so the runner compares that compact artifact first
 - emit one compact JSON artifact to the requested `--output` path if you want generic artifact comparison in `summary.json`
 
 What to expect:
