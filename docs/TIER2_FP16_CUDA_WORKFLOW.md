@@ -404,7 +404,7 @@ For the retained-state `restricted_logit_diff` path, also set an explicit run bu
 
 With strict token verification enabled, the runner now fails closed if `--max-model-len` is omitted or smaller than the verified minimum.
 
-If the retained child emits progress markers on stdout/stderr, add repeated `--progress-marker` flags so the runner records which stages were seen and the deepest marker reached without manual log grepping:
+If the retained child emits progress markers on stdout/stderr, prefer the built-in retained debug profile so the runner records the ordered stage sequence, the deepest marker reached, the next missing marker, and a short stall classification without manual log grepping:
 
 ```bash
 ./scripts/run_retained_continuation_proof.sh \
@@ -425,14 +425,24 @@ If the retained child emits progress markers on stdout/stderr, add repeated `--p
   --proof-artifact-env GPT_OSS_PROOF_JSON \
   --proof-artifact-name continuation-head.json \
   --compare-vector-key values_head \
-  --progress-marker PREFILL_BEGIN \
-  --progress-marker PREFILL_DONE \
-  --progress-marker DECODE1_BEGIN \
-  --progress-marker PROOF_CAPTURED \
+  --marker-profile retained-debug-v1 \
   --output-dir .live/retained-continuation-proof
 ```
 
-When those markers are configured, `summary.json` records the configured marker list, the markers seen for each side, and the last observed marker so operators can answer whether prefill finished or decode1 started without hand-inspecting stderr.
+The built-in `retained-debug-v1` profile currently covers:
+
+- `RETAINED_CHILD_START`
+- `RETAINED_CHILD_TOKENIZED`
+- `RETAINED_CHILD_BUILD_WORKER_BEGIN`
+- `RETAINED_CHILD_BUILD_WORKER_DONE`
+- `RETAINED_STEP_BEGIN`
+- `RETAINED_STEP_FORWARD_BEGIN`
+- `RETAINED_STEP_FORWARD_DONE`
+- `DECODE1_BEGIN`
+- `RETAINED_PROOF_ENTER`
+- `RETAINED_PROOF_CAPTURED`
+
+With that profile enabled, `summary.json` records the configured marker sequence, seen markers, deepest marker reached, the next expected marker not yet seen, and a stall label such as `stalled_before=RETAINED_STEP_FORWARD_BEGIN`.
 Start the listener:
 
 ```bash
