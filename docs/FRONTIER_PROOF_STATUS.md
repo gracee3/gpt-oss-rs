@@ -37,7 +37,7 @@ These subsets are the current integration-held runtime-forward ceiling. No addit
 
 - Pause additional runtime-forward cherry-picks until a proof-backed candidate exists beyond the already-mirrored safe chain.
 - `838d3f8`: closed and deferred on the current runtime seam.
-- `bd49d35`: supported through localized post-RoPE and post-attention context runtime seams above 4096 tokens on GPU0, but not yet proven downstream of those boundaries.
+- `bd49d35`: supported through localized post-RoPE, post-attention context, and post-attention residual runtime seams above 4096 tokens on GPU0, but not yet proven downstream of those boundaries.
 - `bd49d35` remains the only live semantic frontier.
 
 ## Reopen Criteria For `838d3f8`
@@ -57,7 +57,7 @@ Until then, no sub-slice beyond `992a741` is honest to promote.
 
 ## Advancement Criteria For `bd49d35`
 
-Current evidence supports `bd49d35` through the localized post-RoPE and post-attention context runtime seams above 4096 tokens on GPU0. That is still not enough to promote the remaining runtime-forward slice because downstream propagation has not yet been shown.
+Current evidence supports `bd49d35` through the localized post-RoPE, post-attention context, and post-attention residual runtime seams above 4096 tokens on GPU0. That is still not enough to promote the remaining runtime-forward slice because downstream propagation has not yet been shown.
 
 Evidence already present:
 
@@ -66,12 +66,15 @@ Evidence already present:
 - Safe-vs-variant divergence localized at the post-RoPE q/k last-token seam above the activation boundary.
 - Same-input `>4096` sink-free GPU0 case with localized post-attention context last-token artifacts.
 - Safe-vs-variant divergence preserved at the post-attention context last-token seam.
+- Same-input `>4096` sink-free GPU0 case with localized post-attention residual last-token artifacts.
+- Safe-vs-variant divergence preserved at the post-attention residual seam, with attenuation relative to post-attention context but not disappearance.
 - Safe additive parser/config/support-plumbing sub-slices are already mirrored on integration.
 
 Evidence still required before promotion:
 
-- A same-input sink-free `>4096` safe-vs-variant comparison that reaches a localized post-attention residual last-token artifact on the same bounded case.
-- Evidence strong enough to show propagation through the runtime path beyond post-attention context, not just divergence at post-RoPE or post-attention context.
+- A same-input sink-free `>4096` safe-vs-variant comparison that reaches a localized layer-0 MLP output last-token artifact on the same bounded case.
+- Or, if that seam is not honestly reachable, a localized final layer-0 output last-token artifact on the same bounded case.
+- Evidence strong enough to show propagation through the runtime path beyond post-attention residual, not just divergence at earlier seams.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
@@ -86,12 +89,13 @@ Reopen promotion discussion for `bd49d35` only when the submitted proof set incl
 - localized post-RoPE runtime evidence above the activation boundary
 - a localized post-attention context last-token artifact
 - a localized post-attention residual last-token artifact
-- evidence that the observed difference or parity propagates through the runtime path, not just through YaRN table construction, the post-RoPE boundary, or the post-attention context boundary
+- evidence that the observed difference or parity propagates through the runtime path, not just through YaRN table construction, the post-RoPE boundary, the post-attention context boundary, or the post-attention residual boundary
 
 If any of those conditions are missing, the result is still useful harness evidence but not yet promotion-gating proof.
 
 Post-RoPE runtime evidence is now a satisfied checklist item for `bd49d35`. It is necessary but not sufficient for promotion discussion.
 Post-attention context runtime evidence is now also a satisfied checklist item for `bd49d35`. It is necessary but not sufficient for promotion discussion.
+Post-attention residual runtime evidence is now also a satisfied checklist item for `bd49d35`. It is necessary but not sufficient for promotion discussion.
 
 ## Proof-Backed Promotion Bar
 
@@ -112,15 +116,17 @@ The next frontier handoff from harness/feature to integration is accepted only i
 - the paired safe and variant command plans or exact invoked commands
 - the post-RoPE last-token artifact or value already observed
 - the post-attention context last-token artifact or value already observed
-- the next downstream localized artifact: post-attention residual last-token
-- a short operator summary stating whether the evidence shows runtime-path propagation beyond post-attention context or still stops at that boundary
+- the post-attention residual last-token artifact or value already observed
+- the next preferred downstream localized artifact: layer-0 MLP output last-token
+- the fallback downstream localized artifact: final layer-0 output last-token
+- a short operator summary stating whether the evidence shows runtime-path propagation beyond post-attention residual or still stops at that boundary
 - a clear pass/fail statement on whether the result is promotion-gating proof for `bd49d35`
 
-## Near-Live-Test Readiness
+## Bounded Live-Test Planning Gate
 
-If the same bounded sink-free `>4096` case also preserves safe-vs-variant divergence at the localized post-attention residual last-token seam, that is strong enough to reopen bounded live-test planning discussion.
+The current residual result is strong enough to reopen bounded live-test planning discussion.
 
-That still does not justify a claim of full runtime correctness. It only clears the bar for planning the next bounded live-test step.
+That still does not justify a claim of full runtime correctness or promotion readiness. It only clears the bar for planning the next bounded live-test step.
 
 ## GPU0 Live-Test Readiness
 
@@ -134,6 +140,6 @@ Already ready:
 Frontier result required to unlock the next live promotion decision:
 
 - For `838d3f8`: no live promotion target on the current seam. Reopen only if a new runtime seam explicitly carries extra visible KV offsets, or equally direct contrary evidence appears.
-- For `bd49d35`: the next downstream same-input proof artifact above 4096 tokens on GPU0, specifically a localized post-attention residual last-token artifact.
+- For `bd49d35`: the next downstream same-input proof artifact above 4096 tokens on GPU0, preferably a localized layer-0 MLP output last-token artifact, with localized final layer-0 output last-token artifact as the fallback if the preferred seam is not honestly reachable.
 
 Until the `bd49d35` frontier clears that bar, integration stays paused on additional runtime-forward promotion.
