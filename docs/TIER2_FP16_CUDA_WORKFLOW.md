@@ -418,6 +418,32 @@ For the retained-state `restricted_logit_diff` path, add forced-output token emi
 
 This records the exact continuation token ids and the command-ready forced-output token argument string, for example `--forced-output-tokens 6602`.
 
+For the retained-state `restricted_logit_diff` path, also set an explicit run budget above the verified minimum. For the current `4096 + 1` split, the runner records a required minimum model length of `4097`, so the bounded operator path should keep using `--max-model-len 4608`:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --output-dir .live/retained-continuation-proof
+```
+
+With strict token verification enabled, the runner now fails closed if `--max-model-len` is omitted or smaller than the verified minimum.
+
 Start the listener:
 
 ```bash
