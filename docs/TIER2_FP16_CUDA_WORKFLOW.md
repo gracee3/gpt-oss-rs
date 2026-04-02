@@ -312,6 +312,31 @@ This runner only captures the bounded live-smoke surface:
 - exit state and timeout state
 - outer artifact path and `summary.json`
 
+## Staged Boundary-Isolation Workflow
+
+When the likely fallback path is "warm the boundary first, then capture a narrow continuation artifact", use the staged runner to keep both stages in one summary directory:
+
+```bash
+./scripts/run_staged_boundary_smoke.sh \
+  --setup-only \
+  --gpu 0 \
+  --tree /home/emmy/openai/gpt-oss-rs \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name layer0-mlp.json \
+  --output-dir .live/staged-boundary-smoke \
+  --env GPT_OSS_PROBE_MODE=layer0-mlp
+```
+
+What this prepares:
+
+- one build plan shared by both stages
+- a prefix stage with its own command, stdout/stderr, and outer artifact path
+- a continuation stage with its own command, stdout/stderr, outer artifact path, and optional proof-side artifact path
+- one stage-aware `summary.json` so the operator can see the intended prefix/continuation flow before the downstream feature seam is fully wired
+
 Start the listener:
 
 ```bash
