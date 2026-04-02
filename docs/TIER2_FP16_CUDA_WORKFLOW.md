@@ -187,6 +187,33 @@ Use these commands as the default operator entrypoints:
 
 Use `--warm-oracle` only when you intentionally want the bounded reuse-check flow against one existing trace artifact.
 
+## Long-Context YaRN Proof Seam
+
+For the `bd49d35` frontier, use the bounded harness seam instead of ad hoc long-context commands:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --output-dir .live/yarn-long-context-proof \
+  --timeout 1800
+```
+
+What it does:
+
+- generates or verifies one deterministic prompt whose tokenized length is above 4096
+- verifies the restricted-model view is sink-free before running
+- runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
+- records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
+
+What to expect:
+
+- `state=completed` with both reports present means the seam produced a comparable same-input summary
+- `state=timed_out` means the current seam is still too heavy in the allotted window, but the timeout is now reproducible and captured explicitly
+- `state=failed` means the proof stopped before the bounded runtime observation completed; inspect the per-case `run.stderr`
+
 Start the listener:
 
 ```bash
