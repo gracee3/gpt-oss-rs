@@ -138,6 +138,82 @@ Artifact reuse guardrail:
 - `--require-current-trace-contract` is an opt-in strict mode that rejects legacy artifacts even when older provenance fields still match
 - `./scripts/test_probe_validation_wrapper.sh` runs the bounded wrapper-only regression path for current metadata, legacy metadata, incompatible metadata, and warm-oracle test-mode reuse
 
+## Operator Quick Reference
+
+Use these commands as the default operator entrypoints:
+
+- representative Tier 2 run:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --tier 2 \
+  --compare-mode runtime-emulated \
+  --seed-layers 0,12,23
+```
+
+- compare an existing trace artifact without recapturing:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --compare-only \
+  --compare-mode runtime-emulated \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json
+```
+
+- inspect whether an artifact is reusable before running compare-only:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --inspect-trace-artifact \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json \
+  --compare-mode runtime-emulated
+```
+
+- inspect in strict mode when legacy artifacts must be refused:
+
+```bash
+./scripts/probe_validation_tier.sh \
+  --inspect-trace-artifact \
+  --require-current-trace-contract \
+  --trace-json .live/restricted-cuda-prefill-trace.integration.json \
+  --compare-mode runtime-emulated
+```
+
+- run the bounded wrapper regression script:
+
+```bash
+./scripts/test_probe_validation_wrapper.sh
+```
+
+Use `--warm-oracle` only when you intentionally want the bounded reuse-check flow against one existing trace artifact.
+
+## Long-Context YaRN Proof Seam
+
+For the `bd49d35` frontier, use the bounded harness seam instead of ad hoc long-context commands:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --output-dir .live/yarn-long-context-proof \
+  --timeout 1800
+```
+
+What it does:
+
+- generates or verifies one deterministic prompt whose tokenized length is above 4096
+- verifies the restricted-model view is sink-free before running
+- runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
+- records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
+
+What to expect:
+
+- `state=completed` with both reports present means the seam produced a comparable same-input summary
+- `state=timed_out` means the current seam is still too heavy in the allotted window, but the timeout is now reproducible and captured explicitly
+- `state=failed` means the proof stopped before the bounded runtime observation completed; inspect the per-case `run.stderr`
+
 Start the listener:
 
 ```bash
