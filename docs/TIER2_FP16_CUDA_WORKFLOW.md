@@ -470,6 +470,33 @@ For the next layer-0 retained prefill frontier, switch to the finer-grained `ret
 ```
 
 `retained-mlp-v1` extends the retained sequence through layer-0 attention, residual, router, expert, and `mlp_done` substages, so `summary.json` can report boundaries such as `stalled_before=RETAINED_PREFILL_STAGE layer=0 stage=expert_begin` directly.
+
+For the tighter pre-router frontier, switch to `retained-mlp-prerouter-v1`:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-mlp-prerouter-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-mlp-prerouter-v1` narrows the ordered sequence further by splitting the layer-0 MLP into pre-router, router-topk, first-expert, and aggregate boundaries, so `summary.json` can report stalls such as `stalled_before=RETAINED_MLP_STAGE layer=0 stage=prerouter_begin` directly.
 Start the listener:
 
 ```bash
