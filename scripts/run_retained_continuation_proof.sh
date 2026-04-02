@@ -12,6 +12,7 @@ DEFAULT_BUILD_TIMEOUT="1800"
 DEFAULT_GPU="0"
 DEFAULT_BIN="restricted_prefill_trace"
 DEFAULT_MAX_MODEL_LEN="4608"
+DEFAULT_PYTHON="python3"
 
 usage() {
   cat <<'EOF'
@@ -34,6 +35,12 @@ Options:
   --proof-artifact-env <name>     env var name used to pass a compact continuation proof artifact path
   --proof-artifact-name <file>    filename for per-side compact continuation proof artifacts
   --compare-vector-key <key>      compact numeric vector field to diff when present
+  --verify-tokenization           verify prefix/continuation tokenization against the selected model
+  --python <path>                 python interpreter for token verification (default: python3)
+  --required-prefix-token-count <n>
+                                  fail closed unless the prefix token count matches
+  --required-continuation-token-count <n>
+                                  fail closed unless the continuation token count matches
   --max-model-len <n>             max-model-len passed to the binary
   --build-only                    prepare/warm both trees, then stop before execution
   --run-only                      execute using prebuilt binaries only
@@ -86,6 +93,10 @@ PROOF_ARTIFACT_ENV=""
 PROOF_ARTIFACT_NAME=""
 COMPARE_VECTOR_KEY=""
 MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
+PYTHON_BIN="${DEFAULT_PYTHON}"
+VERIFY_TOKENIZATION=0
+REQUIRED_PREFIX_TOKEN_COUNT=""
+REQUIRED_CONTINUATION_TOKEN_COUNT=""
 BUILD_ONLY=0
 RUN_ONLY=0
 SETUP_ONLY=0
@@ -148,6 +159,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compare-vector-key)
       COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
+      shift 2
+      ;;
+    --verify-tokenization)
+      VERIFY_TOKENIZATION=1
+      shift
+      ;;
+    --python)
+      PYTHON_BIN="${2:?missing value for --python}"
+      shift 2
+      ;;
+    --required-prefix-token-count)
+      REQUIRED_PREFIX_TOKEN_COUNT="${2:?missing value for --required-prefix-token-count}"
+      shift 2
+      ;;
+    --required-continuation-token-count)
+      REQUIRED_CONTINUATION_TOKEN_COUNT="${2:?missing value for --required-continuation-token-count}"
       shift 2
       ;;
     --max-model-len)
@@ -234,6 +261,9 @@ export RETAINED_ENV_JSON_FILE="${ENV_JSON_FILE}"
 export RETAINED_PROOF_ARTIFACT_ENV="${PROOF_ARTIFACT_ENV}"
 export RETAINED_SAFE_PROOF_ARTIFACT="${SAFE_PROOF_ARTIFACT}"
 export RETAINED_VARIANT_PROOF_ARTIFACT="${VARIANT_PROOF_ARTIFACT}"
+export RETAINED_TOKEN_MODEL_PATH="${MODEL_PATH}"
+export RETAINED_PREFIX_PROMPT_FILE="${PREFIX_PROMPT_FILE}"
+export RETAINED_CONTINUATION_PROMPT_FILE="${CONTINUATION_PROMPT_FILE}"
 if ((${#EXTRA_ENVS[@]} > 0)); then
   export RETAINED_EXTRA_ENVS="$(printf '%s\n' "${EXTRA_ENVS[@]}")"
 else
@@ -257,6 +287,64 @@ if proof_key:
     envs.append({"key": f"{proof_key}_VARIANT", "value": os.environ["RETAINED_VARIANT_PROOF_ARTIFACT"]})
 Path(os.environ["RETAINED_ENV_JSON_FILE"]).write_text(json.dumps(envs, indent=2) + "\n")
 PY
+
+TOKENIZATION_JSON_FILE="${PLAN_DIR}/tokenization_summary.json"
+if [[ "${VERIFY_TOKENIZATION}" -eq 1 ]]; then
+  export RETAINED_TOKENIZATION_JSON_FILE="${TOKENIZATION_JSON_FILE}"
+  export RETAINED_REQUIRED_PREFIX_TOKEN_COUNT="${REQUIRED_PREFIX_TOKEN_COUNT}"
+  export RETAINED_REQUIRED_CONTINUATION_TOKEN_COUNT="${REQUIRED_CONTINUATION_TOKEN_COUNT}"
+  export RETAINED_PYTHON_BIN="${PYTHON_BIN}"
+  PATH="/data/models/.venv-awq/bin:${PATH}" "${PYTHON_BIN}" <<'PY'
+import json
+import os
+from pathlib import Path
+
+from transformers import AutoTokenizer
+
+model = os.environ["RETAINED_TOKEN_MODEL_PATH"]
+prefix_path = Path(os.environ["RETAINED_PREFIX_PROMPT_FILE"])
+continuation_path = Path(os.environ["RETAINED_CONTINUATION_PROMPT_FILE"])
+output_path = Path(os.environ["RETAINED_TOKENIZATION_JSON_FILE"])
+required_prefix = os.environ.get("RETAINED_REQUIRED_PREFIX_TOKEN_COUNT", "")
+required_cont = os.environ.get("RETAINED_REQUIRED_CONTINUATION_TOKEN_COUNT", "")
+
+tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+prefix_text = prefix_path.read_text()
+continuation_text = continuation_path.read_text()
+prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+continuation_ids = tokenizer.encode(continuation_text, add_special_tokens=False)
+
+summary = {
+    "verified": True,
+    "python": os.environ.get("RETAINED_PYTHON_BIN"),
+    "prefix_token_count": len(prefix_ids),
+    "continuation_token_count": len(continuation_ids),
+    "continuation_token_ids": continuation_ids,
+    "continuation_text_repr": repr(continuation_text),
+}
+output_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+if required_prefix and len(prefix_ids) != int(required_prefix):
+    raise SystemExit(
+        f"prefix token count {len(prefix_ids)} did not match required {required_prefix}"
+    )
+if required_cont and len(continuation_ids) != int(required_cont):
+    raise SystemExit(
+        f"continuation token count {len(continuation_ids)} did not match required {required_cont}"
+    )
+PY
+else
+  cat >"${TOKENIZATION_JSON_FILE}" <<EOF
+{
+  "verified": false,
+  "python": $(json_escape "${PYTHON_BIN}"),
+  "prefix_token_count": null,
+  "continuation_token_count": null,
+  "continuation_token_ids": [],
+  "continuation_text_repr": null
+}
+EOF
+fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi >"${GPU_SNAPSHOT_FILE}" 2>&1 || true
@@ -309,6 +397,11 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "safe_proof_artifact_path": "${SAFE_PROOF_ARTIFACT}",
   "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
   "compare_vector_key": "${COMPARE_VECTOR_KEY}",
+  "verify_tokenization": ${VERIFY_TOKENIZATION},
+  "python": "${PYTHON_BIN}",
+  "required_prefix_token_count": ${REQUIRED_PREFIX_TOKEN_COUNT:-null},
+  "required_continuation_token_count": ${REQUIRED_CONTINUATION_TOKEN_COUNT:-null},
+  "tokenization_summary_file": "${TOKENIZATION_JSON_FILE}",
   "env_file": "${ENV_FILE}",
   "env_json_file": "${ENV_JSON_FILE}",
   "build_timeout_seconds": ${BUILD_TIMEOUT_SECONDS},
@@ -335,6 +428,7 @@ write_summary() {
   cat >"${OUTPUT_DIR}/summary.json" <<EOF
 {
   "setup": $(cat "${PLAN_DIR}/setup_summary.json"),
+  "tokenization": $(cat "${TOKENIZATION_JSON_FILE}"),
   "safe_build": ${safe_build_json},
   "variant_build": ${variant_build_json},
   "safe": ${safe_run_json},
