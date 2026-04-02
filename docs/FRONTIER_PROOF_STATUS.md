@@ -89,9 +89,9 @@ Current retained-state blocker:
 
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
 - The current blocker is no longer metadata upload or artifact-exit handling.
-- On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child reaches child start, tokenization, worker build done, prefill step begin, prefill forward begin, layer 0 begin, attention begin, attention done, residual done, mlp_begin, prerouter_begin, prerouter_setup_done, prerouter_cast_done, router_invoke_begin, and router_call_entered.
-- It does not yet reach any inner router/top-k marker, any expert-dispatch marker, mlp_done, prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
-- The current blocker is now localized inside host-side `moe.forward(...)` at or immediately after `router_call_entered`, before router score/top-k logic begins, during retained prefill on the exact `4096 + 1` case.
+- On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child reaches child start, tokenization, worker build done, prefill step begin, prefill forward begin, layer 0 begin, attention begin, attention done, residual done, mlp_begin, prerouter_begin, prerouter_setup_done, prerouter_cast_done, router_invoke_begin, router_call_entered, router_dtoh_begin, router_dtoh_done, and router_input_ready.
+- It does not yet reach router_score_begin, router_begin, router_topk_begin, router_topk_done, first_expert_begin, first_expert_done, aggregate_done, mlp_done, prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
+- The current blocker is now localized after host DtoH/router-input preparation and before router score computation begins inside host-side `moe.forward(...)`, during retained prefill on the exact `4096 + 1` case.
 - No safe-side continuation-token artifact has been emitted yet.
 - The next required evidence is progress-boundary localization inside the retained child path on the same exact `4096 + 1` case, still targeting `post_attention_residual`.
 - Promotion remains paused until that retained-state path emits a real continuation-token artifact.
