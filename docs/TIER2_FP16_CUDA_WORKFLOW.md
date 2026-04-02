@@ -337,6 +337,34 @@ What this prepares:
 - a continuation stage with its own command, stdout/stderr, outer artifact path, and optional proof-side artifact path
 - one stage-aware `summary.json` so the operator can see the intended prefix/continuation flow before the downstream feature seam is fully wired
 
+## Retained-Continuation Proof Workflow
+
+For the honest retained-state continuation path, use the dedicated retained runner instead of replay-based staging. Its contract is one binary invocation per tree with both the prefix boundary and the continuation step supplied together:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_prefill_trace \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --output-dir .live/retained-continuation-proof \
+  --env GPT_OSS_PROBE_MODE=retained-continuation
+```
+
+What this prepares:
+
+- one retained-state invocation plan per tree, not two prompt replays from scratch
+- one outer artifact path per tree
+- one optional compact continuation proof-artifact path per tree
+- the same build/run split, env capture, GPU snapshot, and compact vector-diff summary path used elsewhere in the harness
+
 Start the listener:
 
 ```bash
