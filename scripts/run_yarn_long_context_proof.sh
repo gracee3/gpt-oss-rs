@@ -8,6 +8,7 @@ DEFAULT_SAFE_TREE="/home/emmy/openai/gpt-oss-rs"
 DEFAULT_VARIANT_TREE="/home/emmy/openai/worktrees/runtime-forward"
 DEFAULT_OUTPUT_DIR="${REPO_ROOT}/.live/yarn-long-context-proof"
 DEFAULT_TIMEOUT="1800"
+DEFAULT_BUILD_TIMEOUT="1800"
 DEFAULT_GPU="0"
 DEFAULT_MAX_MODEL_LEN="4608"
 
@@ -24,8 +25,11 @@ Options:
   --model <path>             restricted sink-free model view to use
   --output-dir <path>        output directory for prompt, logs, reports, and summary
   --timeout <seconds>        per-run timeout in seconds (default: 1800)
+  --build-timeout <seconds>  per-build timeout in seconds (default: 1800)
   --max-model-len <n>        requested max-model-len passed to restricted_logit_diff
   --prompt-file <path>       existing prompt file to use
+  --build-only               prepare/warm both trees, then stop before executing the proof
+  --run-only                 execute the proof using prebuilt binaries only
   --setup-only               stop after prompt/setup verification and command planning
   -h, --help                 show this help text
 EOF
@@ -55,10 +59,13 @@ VARIANT_TREE="${DEFAULT_VARIANT_TREE}"
 MODEL_PATH="${DEFAULT_MODEL}"
 OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
 TIMEOUT_SECONDS="${DEFAULT_TIMEOUT}"
+BUILD_TIMEOUT_SECONDS="${DEFAULT_BUILD_TIMEOUT}"
 GPU_ID="${DEFAULT_GPU}"
 MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
 PROMPT_FILE=""
 SETUP_ONLY=0
+BUILD_ONLY=0
+RUN_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -86,6 +93,10 @@ while [[ $# -gt 0 ]]; do
       TIMEOUT_SECONDS="${2:?missing value for --timeout}"
       shift 2
       ;;
+    --build-timeout)
+      BUILD_TIMEOUT_SECONDS="${2:?missing value for --build-timeout}"
+      shift 2
+      ;;
     --max-model-len)
       MAX_MODEL_LEN="${2:?missing value for --max-model-len}"
       shift 2
@@ -98,6 +109,14 @@ while [[ $# -gt 0 ]]; do
       SETUP_ONLY=1
       shift
       ;;
+    --build-only)
+      BUILD_ONLY=1
+      shift
+      ;;
+    --run-only)
+      RUN_ONLY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -107,6 +126,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${BUILD_ONLY}" -eq 1 && "${RUN_ONLY}" -eq 1 ]]; then
+  die "--build-only and --run-only are mutually exclusive"
+fi
 
 require_dir "${SAFE_TREE}"
 require_dir "${VARIANT_TREE}"
@@ -207,18 +230,32 @@ fi
 
 SAFE_CMD_FILE="${PLAN_DIR}/safe_command.sh"
 VARIANT_CMD_FILE="${PLAN_DIR}/variant_command.sh"
+SAFE_BUILD_CMD_FILE="${PLAN_DIR}/safe_build_command.sh"
+VARIANT_BUILD_CMD_FILE="${PLAN_DIR}/variant_build_command.sh"
+SAFE_BINARY="${SAFE_TREE}/target/release/restricted_logit_diff"
+VARIANT_BINARY="${VARIANT_TREE}/target/release/restricted_logit_diff"
 
 cat >"${SAFE_CMD_FILE}" <<EOF
 cd ${SAFE_TREE}
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/safe/restricted-logit-diff.json --log-level info
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${SAFE_BINARY} --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/safe/restricted-logit-diff.json --log-level info
 EOF
 
 cat >"${VARIANT_CMD_FILE}" <<EOF
 cd ${VARIANT_TREE}
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/variant/restricted-logit-diff.json --log-level info
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${VARIANT_BINARY} --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/variant/restricted-logit-diff.json --log-level info
 EOF
 
-chmod +x "${SAFE_CMD_FILE}" "${VARIANT_CMD_FILE}"
+cat >"${SAFE_BUILD_CMD_FILE}" <<EOF
+cd ${SAFE_TREE}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo build --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff
+EOF
+
+cat >"${VARIANT_BUILD_CMD_FILE}" <<EOF
+cd ${VARIANT_TREE}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo build --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff
+EOF
+
+chmod +x "${SAFE_CMD_FILE}" "${VARIANT_CMD_FILE}" "${SAFE_BUILD_CMD_FILE}" "${VARIANT_BUILD_CMD_FILE}"
 
 cat >"${PLAN_DIR}/setup_summary.json" <<EOF
 {
@@ -227,14 +264,19 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "variant_tree": "${VARIANT_TREE}",
   "model_path": "${MODEL_PATH}",
   "prompt_file": "${PROMPT_FILE}",
+  "build_timeout_seconds": ${BUILD_TIMEOUT_SECONDS},
   "timeout_seconds": ${TIMEOUT_SECONDS},
   "max_model_len": ${MAX_MODEL_LEN},
+  "build_only": ${BUILD_ONLY},
+  "run_only": ${RUN_ONLY},
   "setup_only": ${SETUP_ONLY}
 }
 EOF
 
 echo "prepared long-context proof setup under ${OUTPUT_DIR}"
 echo "prompt token summary: ${PROMPT_DIR}/prompt_token_count.json"
+echo "safe build plan: ${SAFE_BUILD_CMD_FILE}"
+echo "variant build plan: ${VARIANT_BUILD_CMD_FILE}"
 echo "safe command plan: ${SAFE_CMD_FILE}"
 echo "variant command plan: ${VARIANT_CMD_FILE}"
 
@@ -242,9 +284,74 @@ if [[ "${SETUP_ONLY}" -eq 1 ]]; then
   exit 0
 fi
 
+build_case() {
+  local label="$1"
+  local tree="$2"
+  local binary_path="$3"
+  local case_dir="${OUTPUT_DIR}/${label}"
+  local stdout_file="${case_dir}/build.stdout"
+  local stderr_file="${case_dir}/build.stderr"
+  local command_file="${case_dir}/build-command.sh"
+  local status_file="${case_dir}/build-status.json"
+  local start_epoch end_epoch duration rc state binary_state
+  mkdir -p "${case_dir}"
+
+  cat >"${command_file}" <<EOF
+cd ${tree}
+PATH="/data/models/.venv-awq/bin:\$PATH" \
+CUDA_VISIBLE_DEVICES=${GPU_ID} \
+GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+cargo build --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff
+EOF
+  chmod +x "${command_file}"
+
+  start_epoch=$(date +%s)
+  rc=0
+  (
+    cd "${tree}"
+    PATH="/data/models/.venv-awq/bin:${PATH}" \
+    CUDA_VISIBLE_DEVICES="${GPU_ID}" \
+    GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+    timeout "${BUILD_TIMEOUT_SECONDS}" \
+      cargo build --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff
+  ) >"${stdout_file}" 2>"${stderr_file}" || rc=$?
+  end_epoch=$(date +%s)
+  duration=$((end_epoch - start_epoch))
+
+  if [[ "${rc}" -eq 0 ]]; then
+    state="completed"
+  elif [[ "${rc}" -eq 124 ]]; then
+    state="timed_out"
+  else
+    state="failed"
+  fi
+
+  if [[ -x "${binary_path}" ]]; then
+    binary_state="ready"
+  else
+    binary_state="missing"
+  fi
+
+  cat >"${status_file}" <<EOF
+{
+  "label": $(json_escape "${label}"),
+  "tree": $(json_escape "${tree}"),
+  "state": $(json_escape "${state}"),
+  "exit_code": ${rc},
+  "duration_seconds": ${duration},
+  "binary_state": $(json_escape "${binary_state}"),
+  "binary_path": $(json_escape "${binary_path}"),
+  "stdout_file": $(json_escape "${stdout_file}"),
+  "stderr_file": $(json_escape "${stderr_file}"),
+  "command_file": $(json_escape "${command_file}")
+}
+EOF
+}
+
 run_case() {
   local label="$1"
   local tree="$2"
+  local binary_path="$3"
   local case_dir="${OUTPUT_DIR}/${label}"
   local log_file="${case_dir}/run.log"
   local stderr_file="${case_dir}/run.stderr"
@@ -255,6 +362,8 @@ run_case() {
   local start_epoch end_epoch duration rc state artifact_state
   mkdir -p "${case_dir}"
 
+  [[ -x "${binary_path}" ]] || die "prebuilt binary missing for ${label}: ${binary_path}; run with --build-only first"
+
   cat >"${command_file}" <<EOF
 cd ${tree}
 PROMPT_FILE=${PROMPT_FILE}
@@ -262,7 +371,7 @@ PROMPT=\$(cat "\${PROMPT_FILE}")
 PATH="/data/models/.venv-awq/bin:\$PATH" \
 CUDA_VISIBLE_DEVICES=${GPU_ID} \
 GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
-cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- \
+${binary_path} \
   --model ${MODEL_PATH} \
   --prompt "\${PROMPT}" \
   --max-model-len ${MAX_MODEL_LEN} \
@@ -280,7 +389,7 @@ EOF
     CUDA_VISIBLE_DEVICES="${GPU_ID}" \
     GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
     timeout "${TIMEOUT_SECONDS}" \
-      cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- \
+      "${binary_path}" \
       --model "${MODEL_PATH}" \
       --prompt "${PROMPT}" \
       --max-model-len "${MAX_MODEL_LEN}" \
@@ -327,8 +436,35 @@ EOF
 EOF
 }
 
-run_case safe "${SAFE_TREE}"
-run_case variant "${VARIANT_TREE}"
+if [[ "${RUN_ONLY}" -ne 1 ]]; then
+  build_case safe "${SAFE_TREE}" "${SAFE_BINARY}"
+  build_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}"
+fi
+
+if [[ "${BUILD_ONLY}" -eq 1 ]]; then
+  export PROOF_OUTPUT_DIR="${OUTPUT_DIR}"
+  python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+output_dir = Path(os.environ["PROOF_OUTPUT_DIR"])
+summary = {
+    "safe_build": json.loads((output_dir / "safe" / "build-status.json").read_text()),
+    "variant_build": json.loads((output_dir / "variant" / "build-status.json").read_text()),
+    "comparison": {
+        "comparable": False,
+        "reason": "build-only mode stops after prewarming both trees",
+    },
+}
+(output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+print(json.dumps(summary, indent=2))
+PY
+  exit 0
+fi
+
+run_case safe "${SAFE_TREE}" "${SAFE_BINARY}"
+run_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}"
 
 export PROOF_OUTPUT_DIR="${OUTPUT_DIR}"
 python3 <<'PY'
@@ -338,6 +474,8 @@ from pathlib import Path
 
 output_dir = Path(os.environ["PROOF_OUTPUT_DIR"])
 summary = {
+    "safe_build": json.loads((output_dir / "safe" / "build-status.json").read_text()) if (output_dir / "safe" / "build-status.json").exists() else None,
+    "variant_build": json.loads((output_dir / "variant" / "build-status.json").read_text()) if (output_dir / "variant" / "build-status.json").exists() else None,
     "safe": json.loads((output_dir / "safe" / "status.json").read_text()),
     "variant": json.loads((output_dir / "variant" / "status.json").read_text()),
 }
