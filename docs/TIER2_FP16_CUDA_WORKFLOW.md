@@ -377,6 +377,62 @@ For the retained-state `restricted_logit_diff` path, add forced-output token emi
 ```
 
 This records the exact continuation token ids and the command-ready forced-output token argument string, for example `--forced-output-tokens 6602`.
+
+For the retained-state `restricted_logit_diff` path, also set an explicit run budget above the verified minimum. For the current `4096 + 1` split, the runner records a required minimum model length of `4097`, so the bounded operator path should keep using `--max-model-len 4608`:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --output-dir .live/retained-continuation-proof
+```
+
+With strict token verification enabled, the runner now fails closed if `--max-model-len` is omitted or smaller than the verified minimum.
+
+If the retained child emits progress markers on stdout/stderr, add repeated `--progress-marker` flags so the runner records which stages were seen and the deepest marker reached without manual log grepping:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --progress-marker PREFILL_BEGIN \
+  --progress-marker PREFILL_DONE \
+  --progress-marker DECODE1_BEGIN \
+  --progress-marker PROOF_CAPTURED \
+  --output-dir .live/retained-continuation-proof
+```
+
+When those markers are configured, `summary.json` records the configured marker list, the markers seen for each side, and the last observed marker so operators can answer whether prefill finished or decode1 started without hand-inspecting stderr.
 Start the listener:
 
 ```bash
