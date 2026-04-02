@@ -88,8 +88,10 @@ Proof-method boundary:
 Current retained-state blocker:
 
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
-- The earlier metadata-upload panic is no longer the primary blocker once the honest `--max-model-len 4608` setting is used.
-- The current blocker is that the retained child path is not reaching the decode1 proof entry in bounded time.
+- The current blocker is no longer metadata upload or artifact-exit handling.
+- On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child reaches child start, tokenization, worker build done, prefill step begin, and prefill forward begin.
+- It does not yet reach prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
+- The current blocker is retained prefill forward non-completion before decode1 entry on the exact `4096 + 1` case.
 - No safe-side continuation-token artifact has been emitted yet.
 - The next required evidence is progress-boundary localization inside the retained child path on the same exact `4096 + 1` case, still targeting `post_attention_residual`.
 - Promotion remains paused until that retained-state path emits a real continuation-token artifact.
