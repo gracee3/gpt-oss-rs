@@ -215,13 +215,30 @@ Then run the warmed proof without paying the same cold `cargo` startup cost agai
   --timeout 1800
 ```
 
+When a lighter post-4096 proof seam is available, reuse the same runner with a different proof binary and bounded proof-only env knobs:
+
+```bash
+./scripts/run_yarn_long_context_proof.sh \
+  --build-only \
+  --bin restricted_logit_diff \
+  --env PROOF_MODE=compact \
+  --env PROOF_LABEL=gpu0-yarn \
+  --output-dir .live/yarn-long-context-proof
+```
+
 What it does:
 
 - generates or verifies one deterministic prompt whose tokenized length is above 4096
 - verifies the restricted-model view is sink-free before running
 - can prebuild both worktrees once, then rerun the proof with the warmed `target/release/restricted_logit_diff` binaries
+- records the selected proof binary and any repeated `--env KEY=VALUE` passthrough in the generated plan files
 - runs the same bounded `restricted_logit_diff` observation seam in the safe and variant worktrees
 - records stdout, stderr, exact commands, GPU snapshot, and a compact `summary.json`
+
+Contract for alternate proof binaries:
+
+- keep the bounded `--model`, `--prompt`, `--max-model-len`, and `--output` surface so the same runner can warm, execute, and compare both sides
+- emit one compact JSON artifact to the requested `--output` path if you want generic artifact comparison in `summary.json`
 
 What to expect:
 
