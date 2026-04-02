@@ -592,6 +592,33 @@ For the host-transfer/router-input frontier, switch to `retained-router-host-v1`
 
 `retained-router-host-v1` narrows the ordered sequence further to the host-side router transfer and input-preparation boundary, so `summary.json` can report stalls such as `stalled_before=RETAINED_MLP_STAGE layer=0 stage=router_dtoh_begin` directly.
 
+For the router-score loop frontier, switch to `retained-router-score-v1`:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-router-score-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-router-score-v1` narrows the ordered sequence further into score-buffer allocation and first-accum boundaries, so `summary.json` can report stalls such as `stalled_before=RETAINED_MLP_STAGE layer=0 stage=router_score_begin` directly.
+
 Start the listener:
 
 ```bash
