@@ -95,6 +95,7 @@ PROOF_ARTIFACT_NAME=""
 COMPARE_VECTOR_KEY=""
 EMIT_FORCED_OUTPUT_TOKENS=0
 MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
+MAX_MODEL_LEN_EXPLICIT=0
 PYTHON_BIN="${DEFAULT_PYTHON}"
 VERIFY_TOKENIZATION=0
 REQUIRED_PREFIX_TOKEN_COUNT=""
@@ -185,6 +186,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-model-len)
       MAX_MODEL_LEN="${2:?missing value for --max-model-len}"
+      MAX_MODEL_LEN_EXPLICIT=1
       shift 2
       ;;
     --build-only)
@@ -297,10 +299,12 @@ PY
 
 TOKENIZATION_JSON_FILE="${PLAN_DIR}/tokenization_summary.json"
 if [[ "${VERIFY_TOKENIZATION}" -eq 1 ]]; then
-  export RETAINED_TOKENIZATION_JSON_FILE="${TOKENIZATION_JSON_FILE}"
-  export RETAINED_REQUIRED_PREFIX_TOKEN_COUNT="${REQUIRED_PREFIX_TOKEN_COUNT}"
-  export RETAINED_REQUIRED_CONTINUATION_TOKEN_COUNT="${REQUIRED_CONTINUATION_TOKEN_COUNT}"
-  export RETAINED_PYTHON_BIN="${PYTHON_BIN}"
+export RETAINED_TOKENIZATION_JSON_FILE="${TOKENIZATION_JSON_FILE}"
+export RETAINED_REQUIRED_PREFIX_TOKEN_COUNT="${REQUIRED_PREFIX_TOKEN_COUNT}"
+export RETAINED_REQUIRED_CONTINUATION_TOKEN_COUNT="${REQUIRED_CONTINUATION_TOKEN_COUNT}"
+export RETAINED_PYTHON_BIN="${PYTHON_BIN}"
+export RETAINED_MAX_MODEL_LEN="${MAX_MODEL_LEN}"
+export RETAINED_MAX_MODEL_LEN_EXPLICIT="${MAX_MODEL_LEN_EXPLICIT}"
   PATH="/data/models/.venv-awq/bin:${PATH}" "${PYTHON_BIN}" <<'PY'
 import json
 import os
@@ -326,6 +330,9 @@ summary = {
     "python": os.environ.get("RETAINED_PYTHON_BIN"),
     "prefix_token_count": len(prefix_ids),
     "continuation_token_count": len(continuation_ids),
+    "required_min_model_len": len(prefix_ids) + len(continuation_ids),
+    "max_model_len": int(os.environ["RETAINED_MAX_MODEL_LEN"]),
+    "max_model_len_explicit": os.environ.get("RETAINED_MAX_MODEL_LEN_EXPLICIT") == "1",
     "continuation_token_ids": continuation_ids,
     "continuation_token_ids_csv": ",".join(str(token) for token in continuation_ids),
     "forced_output_tokens_arg": "",
@@ -337,6 +344,15 @@ if os.environ.get("RETAINED_EMIT_FORCED_OUTPUT_TOKENS") == "1":
     )
 output_path.write_text(json.dumps(summary, indent=2) + "\n")
 
+if not summary["max_model_len_explicit"]:
+    raise SystemExit(
+        "strict token verification requires an explicit --max-model-len"
+    )
+if summary["max_model_len"] < summary["required_min_model_len"]:
+    raise SystemExit(
+        f"--max-model-len {summary['max_model_len']} is below required minimum "
+        f"{summary['required_min_model_len']}"
+    )
 if required_prefix and len(prefix_ids) != int(required_prefix):
     raise SystemExit(
         f"prefix token count {len(prefix_ids)} did not match required {required_prefix}"
@@ -353,6 +369,9 @@ else
   "python": $(json_escape "${PYTHON_BIN}"),
   "prefix_token_count": null,
   "continuation_token_count": null,
+  "required_min_model_len": null,
+  "max_model_len": ${MAX_MODEL_LEN},
+  "max_model_len_explicit": ${MAX_MODEL_LEN_EXPLICIT},
   "continuation_token_ids": [],
   "continuation_token_ids_csv": "",
   "forced_output_tokens_arg": "",
@@ -421,6 +440,8 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "verify_tokenization": ${VERIFY_TOKENIZATION},
   "emit_forced_output_tokens": ${EMIT_FORCED_OUTPUT_TOKENS},
   "python": "${PYTHON_BIN}",
+  "max_model_len": ${MAX_MODEL_LEN},
+  "max_model_len_explicit": ${MAX_MODEL_LEN_EXPLICIT},
   "required_prefix_token_count": ${REQUIRED_PREFIX_TOKEN_COUNT:-null},
   "required_continuation_token_count": ${REQUIRED_CONTINUATION_TOKEN_COUNT:-null},
   "tokenization_summary_file": "${TOKENIZATION_JSON_FILE}",
