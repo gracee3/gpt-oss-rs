@@ -673,6 +673,33 @@ For sampled token-index progress through the outer router loop, switch to `retai
 
 `retained-router-samples-v1` narrows the ordered sequence further into sampled token-index checkpoints inside the outer score loop, so `summary.json` can distinguish “entered the loop” from “made it through sampled positions like `token_idx_2048`” before stalling.
 
+For late-loop sampled progress on the next GPU-bound run, switch to `retained-router-late-samples-v1` and keep the run on GPU1:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --gpu 1 \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-router-late-samples-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-router-late-samples-v1` emphasizes later sampled milestones like `token_idx_2560`, `token_idx_3072`, `token_idx_3584`, and `token_idx_4095`. When those markers are present, `summary.json` now also records `highest_sampled_token_idx_seen`, `highest_sampled_token_idx_marker`, and a coarse `sampled_progress_fraction`.
+
 Start the listener:
 
 ```bash
