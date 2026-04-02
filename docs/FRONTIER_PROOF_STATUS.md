@@ -80,6 +80,7 @@ Evidence still required before promotion:
 Proof-method boundary:
 
 - The full 4100-token `restricted_prefill_trace` path is no longer the preferred way to push one hop later downstream.
+- The next honest proof path is a true retained-state continuation seam, not prompt replay.
 - Failure to emit even the safe-side artifact for post-MLP or fallback early layer-output on that broader path should be treated as a proof-method boundary, not as evidence against `bd49d35`.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
@@ -123,8 +124,10 @@ The next frontier handoff from harness/feature to integration is accepted only i
 - the post-RoPE last-token artifact or value already observed
 - the post-attention context last-token artifact or value already observed
 - the post-attention residual last-token artifact or value already observed
-- the next preferred downstream localized seam: first selected MLP expert/down-proj chunk for the last token
-- the fallback downstream localized seam: decode-style single-position continuation from a warmed 4096-token prefill state
+- retained-state 4096-token prefill on the same bounded case
+- one continuation/decode step on that retained state
+- the next preferred localized continuation-token artifact: layer-0 post-attention residual
+- the fallback localized continuation-token artifact only if needed: layer-0 post-attention context or post-RoPE q/k
 - a short operator summary stating whether the evidence shows runtime-path propagation beyond post-attention residual or still stops at that boundary
 - a short note if the broader 4100-token `restricted_prefill_trace` path failed to emit safe-side artifacts, explicitly marking that as a proof-method boundary rather than negative semantic evidence
 - a clear pass/fail statement on whether the result is promotion-gating proof for `bd49d35`
@@ -149,6 +152,6 @@ Already ready:
 Frontier result required to unlock the next live promotion decision:
 
 - For `838d3f8`: no live promotion target on the current seam. Reopen only if a new runtime seam explicitly carries extra visible KV offsets, or equally direct contrary evidence appears.
-- For `bd49d35`: the next downstream same-input proof seam above 4096 tokens on GPU0, preferably the first selected MLP expert/down-proj chunk for the last token, with decode-style single-position continuation from a warmed 4096-token prefill state as the fallback if the preferred seam is not honestly reachable.
+- For `bd49d35`: the next accepted proof path is a true retained-state continuation seam above 4096 tokens on GPU0: retained-state 4096-token prefill, one continuation/decode step on the same case, and a localized layer-0 continuation-token artifact, preferably post-attention residual, with post-attention context or post-RoPE q/k only as fallback localized targets if needed.
 
 Until the `bd49d35` frontier clears that bar, integration stays paused on additional runtime-forward promotion.
