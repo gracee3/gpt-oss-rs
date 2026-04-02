@@ -484,6 +484,33 @@ The built-in `retained-debug-v1` profile currently covers:
 
 With that profile enabled, `summary.json` records the configured marker sequence, seen markers, deepest marker reached, the next expected marker not yet seen, and a stall label such as `stalled_before=RETAINED_STEP_FORWARD_BEGIN`.
 
+For the next layer-0 retained prefill frontier, switch to the finer-grained `retained-mlp-v1` profile:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-mlp-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-mlp-v1` extends the retained sequence through layer-0 attention, residual, router, expert, and `mlp_done` substages, so `summary.json` can report boundaries such as `stalled_before=RETAINED_PREFILL_STAGE layer=0 stage=expert_begin` directly.
+
 Start the listener:
 
 ```bash
