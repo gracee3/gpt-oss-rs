@@ -393,6 +393,31 @@ The resulting `summary.json` records:
 - continuation token id list
 - continuation text repr
 
+For the retained-state `restricted_logit_diff` path, add forced-output token emission so the runner writes the exact command-ready continuation token surface into both `summary.json` and the generated run plans:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --gpu 0 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --output-dir .live/retained-continuation-proof
+```
+
+This records the exact continuation token ids and the command-ready forced-output token argument string, for example `--forced-output-tokens 6602`.
+
 Start the listener:
 
 ```bash
