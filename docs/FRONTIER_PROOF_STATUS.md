@@ -88,7 +88,8 @@ Proof-method boundary:
 Current retained-state blocker:
 
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
-- The current blocker is a scratch-only packed metadata / block-table sizing panic in `gpu_runner.rs` on the `4096 + 1` continuation row.
+- The earlier metadata-upload panic is no longer the primary blocker once the honest `--max-model-len 4608` setting is used.
+- The current blocker is runner-side continuation artifact non-emission before bounded completion.
 - Promotion remains paused until that retained-state path emits a real continuation-token artifact.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
