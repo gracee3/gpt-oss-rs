@@ -15,6 +15,12 @@ This file tracks which integration-held subsets are ready for `main`, which fron
 - `dd050b0` Add wrapper regression script for harness metadata paths
 - `ae5bf7d` Add strict current-contract mode for trace reuse
 
+### Safe Harness Proof-Tooling Chain Already Mirrored On Integration
+
+- `7c115dc` Add long-context proof setup scaffold
+- `def25f2` Add bounded YaRN proof execution summary
+- `63f0ecc` Document bounded YaRN proof seam
+
 ### Safe Runtime-Forward Extraction Chain Already Mirrored On Integration
 
 - `7ba163c` conservative semantic cache projection helpers
@@ -30,19 +36,20 @@ These subsets are the current integration-held runtime-forward ceiling. No addit
 ## Paused / Deferred
 
 - Pause additional runtime-forward cherry-picks until a proof-backed candidate exists beyond the already-mirrored safe chain.
-- `838d3f8`: deferred and currently unjustified.
+- `838d3f8`: closed and deferred on the current runtime seam.
 - `bd49d35`: partially supported only at the YaRN table-construction boundary; not yet proven by bounded long-context runtime evidence above 4096 tokens.
+- `bd49d35` remains the only live semantic frontier.
 
 ## Reopen Criteria For `838d3f8`
 
-Current evidence weakens the claim rather than supporting it because the proposed sink-aware semantic cache layout projects runtime KV visibility from model metadata (`SinkBehavior` plus sink token count) without same-input confirmation that the runtime actually exposes those sink tensors in the compared path.
+Current same-input CUDA seam evidence argues against `838d3f8` on the current runtime path: when sink counts were nonzero, the observed GPU boundary still showed no extra visible KV token offsets. That closes the proposed sink-aware semantic cache claim on the current seam rather than merely leaving it unproven.
 
 Do not reopen `838d3f8` unless all of the following are observed:
 
+- A new runtime implementation seam that explicitly carries extra visible KV offsets for sink tokens, or equally direct contrary evidence at the same boundary.
 - Same-input evidence comparing conservative vs sink-aware projection against observed runtime/cache behavior, not just config metadata.
 - At least one bounded case with nonzero sink tensors where the sink-aware projection better matches the effective runtime path.
 - At least one bounded control case with zero or absent sink tensors where the conservative path remains the honest predictor.
-- The observed boundary is local enough to justify the sink-aware semantic projection as a runtime-facing claim rather than a speculative helper.
 
 Until then, no sub-slice beyond `992a741` is honest to promote.
 
@@ -57,7 +64,7 @@ Evidence already present:
 
 Evidence still required before promotion:
 
-- A bounded same-input runtime check above 4096 tokens where YaRN scaling is active.
+- A completed bounded same-input runtime check above 4096 tokens where YaRN scaling is active on GPU0.
 - A matched control case where YaRN scaling is inactive.
 - Localized observation that the implemented GPU-runner YaRN table usage reproduces expected GPT-OSS behavior on the same prompt/input data.
 - Evidence strong enough to distinguish "table construction looks plausible" from "runtime long-context behavior is correct."
@@ -84,7 +91,7 @@ Already ready:
 
 Frontier result required to unlock the next live promotion decision:
 
-- For `838d3f8`: a bounded same-input sink-aware runtime/cache visibility proof meeting the reopen criteria above.
-- For `bd49d35`: a bounded long-context runtime proof above 4096 tokens showing that YaRN-active behavior matches expectation and localizes correctly against a control case.
+- For `838d3f8`: no live promotion target on the current seam. Reopen only if a new runtime seam explicitly carries extra visible KV offsets, or equally direct contrary evidence appears.
+- For `bd49d35`: a completed same-input runtime proof above 4096 tokens on GPU0 showing that YaRN-active behavior matches expectation and localizes correctly against a control case.
 
-Until one of those frontier results exists, integration stays paused on additional runtime-forward promotion.
+Until the `bd49d35` frontier clears that bar, integration stays paused on additional runtime-forward promotion.
