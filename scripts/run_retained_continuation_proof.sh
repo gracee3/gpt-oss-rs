@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+DEFAULT_MODEL="/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+DEFAULT_SAFE_TREE="/home/emmy/openai/gpt-oss-rs"
+DEFAULT_VARIANT_TREE="/home/emmy/openai/worktrees/runtime-forward"
+DEFAULT_OUTPUT_DIR="${REPO_ROOT}/.live/retained-continuation-proof"
+DEFAULT_TIMEOUT="1800"
+DEFAULT_BUILD_TIMEOUT="1800"
+DEFAULT_GPU="0"
+DEFAULT_BIN="restricted_prefill_trace"
+DEFAULT_MAX_MODEL_LEN="4608"
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/run_retained_continuation_proof.sh [options]
+
+Prepare or run a bounded retained-state continuation proof workflow.
+
+Options:
+  --gpu <id>                      CUDA_VISIBLE_DEVICES value to use (default: 0)
+  --safe-tree <path>              worktree for the conservative baseline
+  --variant-tree <path>           worktree for the candidate variant
+  --model <path>                  restricted sink-free model view to use
+  --prefix-prompt-file <path>     prefix/prefill prompt file for the retained-state invocation
+  --continuation-prompt-file <p>  continuation prompt file for the retained-state invocation
+  --bin <name>                    proof binary name to build/run (default: restricted_prefill_trace)
+  --timeout <seconds>             per-run timeout in seconds (default: 1800)
+  --build-timeout <seconds>       per-build timeout in seconds (default: 1800)
+  --output-dir <path>             output directory for plans, logs, artifacts, and summary
+  --env KEY=VALUE                 bounded env passthrough; repeatable
+  --proof-artifact-env <name>     env var name used to pass a compact continuation proof artifact path
+  --proof-artifact-name <file>    filename for per-side compact continuation proof artifacts
+  --compare-vector-key <key>      compact numeric vector field to diff when present
+  --max-model-len <n>             max-model-len passed to the binary
+  --build-only                    prepare/warm both trees, then stop before execution
+  --run-only                      execute using prebuilt binaries only
+  --setup-only                    stop after writing plans and summary
+  -h, --help                      show this help text
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+shell_escape() {
+  python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$1"
+}
+
+normalize_artifact_name() {
+  local name="$1"
+  name=${name//\//-}
+  name=${name// /-}
+  printf '%s.json' "${name}"
+}
+
+require_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || die "required file not found: ${path}"
+}
+
+require_dir() {
+  local path="$1"
+  [[ -d "${path}" ]] || die "required directory not found: ${path}"
+}
+
+SAFE_TREE="${DEFAULT_SAFE_TREE}"
+VARIANT_TREE="${DEFAULT_VARIANT_TREE}"
+MODEL_PATH="${DEFAULT_MODEL}"
+PREFIX_PROMPT_FILE=""
+CONTINUATION_PROMPT_FILE=""
+OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
+TIMEOUT_SECONDS="${DEFAULT_TIMEOUT}"
+BUILD_TIMEOUT_SECONDS="${DEFAULT_BUILD_TIMEOUT}"
+GPU_ID="${DEFAULT_GPU}"
+PROOF_BIN="${DEFAULT_BIN}"
+PROOF_ARTIFACT_ENV=""
+PROOF_ARTIFACT_NAME=""
+COMPARE_VECTOR_KEY=""
+MAX_MODEL_LEN="${DEFAULT_MAX_MODEL_LEN}"
+BUILD_ONLY=0
+RUN_ONLY=0
+SETUP_ONLY=0
+declare -a EXTRA_ENVS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu)
+      GPU_ID="${2:?missing value for --gpu}"
+      shift 2
+      ;;
+    --safe-tree)
+      SAFE_TREE="${2:?missing value for --safe-tree}"
+      shift 2
+      ;;
+    --variant-tree)
+      VARIANT_TREE="${2:?missing value for --variant-tree}"
+      shift 2
+      ;;
+    --model)
+      MODEL_PATH="${2:?missing value for --model}"
+      shift 2
+      ;;
+    --prefix-prompt-file)
+      PREFIX_PROMPT_FILE="${2:?missing value for --prefix-prompt-file}"
+      shift 2
+      ;;
+    --continuation-prompt-file)
+      CONTINUATION_PROMPT_FILE="${2:?missing value for --continuation-prompt-file}"
+      shift 2
+      ;;
+    --bin)
+      PROOF_BIN="${2:?missing value for --bin}"
+      shift 2
+      ;;
+    --timeout)
+      TIMEOUT_SECONDS="${2:?missing value for --timeout}"
+      shift 2
+      ;;
+    --build-timeout)
+      BUILD_TIMEOUT_SECONDS="${2:?missing value for --build-timeout}"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="${2:?missing value for --output-dir}"
+      shift 2
+      ;;
+    --env)
+      [[ "${2:-}" == *=* ]] || die "--env requires KEY=VALUE"
+      EXTRA_ENVS+=("${2}")
+      shift 2
+      ;;
+    --proof-artifact-env)
+      PROOF_ARTIFACT_ENV="${2:?missing value for --proof-artifact-env}"
+      shift 2
+      ;;
+    --proof-artifact-name)
+      PROOF_ARTIFACT_NAME="${2:?missing value for --proof-artifact-name}"
+      shift 2
+      ;;
+    --compare-vector-key)
+      COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
+      shift 2
+      ;;
+    --max-model-len)
+      MAX_MODEL_LEN="${2:?missing value for --max-model-len}"
+      shift 2
+      ;;
+    --build-only)
+      BUILD_ONLY=1
+      shift
+      ;;
+    --run-only)
+      RUN_ONLY=1
+      shift
+      ;;
+    --setup-only)
+      SETUP_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+if [[ "${BUILD_ONLY}" -eq 1 && "${RUN_ONLY}" -eq 1 ]]; then
+  die "--build-only and --run-only are mutually exclusive"
+fi
+
+[[ -n "${PREFIX_PROMPT_FILE}" ]] || die "--prefix-prompt-file is required"
+[[ -n "${CONTINUATION_PROMPT_FILE}" ]] || die "--continuation-prompt-file is required"
+
+require_dir "${SAFE_TREE}"
+require_dir "${VARIANT_TREE}"
+require_dir "${MODEL_PATH}"
+require_file "${MODEL_PATH}/config.json"
+require_file "${MODEL_PATH}/RESTRICTED_MODEL_VIEW.json"
+require_file "${PREFIX_PROMPT_FILE}"
+require_file "${CONTINUATION_PROMPT_FILE}"
+require_file "${SAFE_TREE}/crates/gpt-oss-bench/src/bin/${PROOF_BIN}.rs"
+require_file "${VARIANT_TREE}/crates/gpt-oss-bench/src/bin/${PROOF_BIN}.rs"
+
+OUTPUT_DIR=$(mkdir -p "${OUTPUT_DIR}" && cd -- "${OUTPUT_DIR}" && pwd)
+PREFIX_PROMPT_FILE=$(cd -- "$(dirname -- "${PREFIX_PROMPT_FILE}")" && pwd)/$(basename -- "${PREFIX_PROMPT_FILE}")
+CONTINUATION_PROMPT_FILE=$(cd -- "$(dirname -- "${CONTINUATION_PROMPT_FILE}")" && pwd)/$(basename -- "${CONTINUATION_PROMPT_FILE}")
+PLAN_DIR="${OUTPUT_DIR}/plan"
+mkdir -p "${PLAN_DIR}" "${OUTPUT_DIR}/safe" "${OUTPUT_DIR}/variant"
+
+ARTIFACT_NAME="$(normalize_artifact_name "${PROOF_BIN}")"
+if [[ -z "${PROOF_ARTIFACT_NAME}" ]]; then
+  PROOF_ARTIFACT_NAME="$(normalize_artifact_name "${PROOF_BIN}-continuation-proof")"
+fi
+
+SAFE_BINARY="${SAFE_TREE}/target/release/${PROOF_BIN}"
+VARIANT_BINARY="${VARIANT_TREE}/target/release/${PROOF_BIN}"
+SAFE_OUTER_ARTIFACT="${OUTPUT_DIR}/safe/${ARTIFACT_NAME}"
+VARIANT_OUTER_ARTIFACT="${OUTPUT_DIR}/variant/${ARTIFACT_NAME}"
+SAFE_PROOF_ARTIFACT="${OUTPUT_DIR}/safe/${PROOF_ARTIFACT_NAME}"
+VARIANT_PROOF_ARTIFACT="${OUTPUT_DIR}/variant/${PROOF_ARTIFACT_NAME}"
+ENV_FILE="${PLAN_DIR}/retained_env.sh"
+ENV_JSON_FILE="${PLAN_DIR}/retained_env.json"
+SAFE_BUILD_CMD_FILE="${PLAN_DIR}/safe_build_command.sh"
+VARIANT_BUILD_CMD_FILE="${PLAN_DIR}/variant_build_command.sh"
+SAFE_RUN_CMD_FILE="${PLAN_DIR}/safe_run_command.sh"
+VARIANT_RUN_CMD_FILE="${PLAN_DIR}/variant_run_command.sh"
+GPU_SNAPSHOT_FILE="${PLAN_DIR}/gpu_snapshot.txt"
+
+{
+  for env_kv in "${EXTRA_ENVS[@]}"; do
+    key=${env_kv%%=*}
+    value=${env_kv#*=}
+    printf 'export %s=%s\n' "${key}" "$(shell_escape "${value}")"
+  done
+  if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+    printf 'export %s_SAFE=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${SAFE_PROOF_ARTIFACT}")"
+    printf 'export %s_VARIANT=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${VARIANT_PROOF_ARTIFACT}")"
+  fi
+} >"${ENV_FILE}"
+
+export RETAINED_ENV_JSON_FILE="${ENV_JSON_FILE}"
+export RETAINED_PROOF_ARTIFACT_ENV="${PROOF_ARTIFACT_ENV}"
+export RETAINED_SAFE_PROOF_ARTIFACT="${SAFE_PROOF_ARTIFACT}"
+export RETAINED_VARIANT_PROOF_ARTIFACT="${VARIANT_PROOF_ARTIFACT}"
+if ((${#EXTRA_ENVS[@]} > 0)); then
+  export RETAINED_EXTRA_ENVS="$(printf '%s\n' "${EXTRA_ENVS[@]}")"
+else
+  export RETAINED_EXTRA_ENVS=""
+fi
+python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+envs = []
+raw = os.environ.get("RETAINED_EXTRA_ENVS", "")
+for line in raw.splitlines():
+    if not line:
+        continue
+    key, value = line.split("=", 1)
+    envs.append({"key": key, "value": value})
+proof_key = os.environ.get("RETAINED_PROOF_ARTIFACT_ENV", "")
+if proof_key:
+    envs.append({"key": f"{proof_key}_SAFE", "value": os.environ["RETAINED_SAFE_PROOF_ARTIFACT"]})
+    envs.append({"key": f"{proof_key}_VARIANT", "value": os.environ["RETAINED_VARIANT_PROOF_ARTIFACT"]})
+Path(os.environ["RETAINED_ENV_JSON_FILE"]).write_text(json.dumps(envs, indent=2) + "\n")
+PY
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi >"${GPU_SNAPSHOT_FILE}" 2>&1 || true
+else
+  printf 'nvidia-smi unavailable\n' >"${GPU_SNAPSHOT_FILE}"
+fi
+
+cat >"${SAFE_BUILD_CMD_FILE}" <<EOF
+cd ${SAFE_TREE}
+. ${ENV_FILE}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo build --release -p gpt-oss-bench --features cuda --bin ${PROOF_BIN}
+EOF
+
+cat >"${VARIANT_BUILD_CMD_FILE}" <<EOF
+cd ${VARIANT_TREE}
+. ${ENV_FILE}
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo build --release -p gpt-oss-bench --features cuda --bin ${PROOF_BIN}
+EOF
+
+cat >"${SAFE_RUN_CMD_FILE}" <<EOF
+cd ${SAFE_TREE}
+. ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${SAFE_PROOF_ARTIFACT}")"; fi )
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${SAFE_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} --output ${SAFE_OUTER_ARTIFACT}
+EOF
+
+cat >"${VARIANT_RUN_CMD_FILE}" <<EOF
+cd ${VARIANT_TREE}
+. ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${VARIANT_PROOF_ARTIFACT}")"; fi )
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${VARIANT_BINARY} --model ${MODEL_PATH} --prefix-prompt-file ${PREFIX_PROMPT_FILE} --continuation-prompt-file ${CONTINUATION_PROMPT_FILE} --max-model-len ${MAX_MODEL_LEN} --output ${VARIANT_OUTER_ARTIFACT}
+EOF
+
+chmod +x "${SAFE_BUILD_CMD_FILE}" "${VARIANT_BUILD_CMD_FILE}" "${SAFE_RUN_CMD_FILE}" "${VARIANT_RUN_CMD_FILE}"
+
+cat >"${PLAN_DIR}/setup_summary.json" <<EOF
+{
+  "gpu_id": "${GPU_ID}",
+  "safe_tree": "${SAFE_TREE}",
+  "variant_tree": "${VARIANT_TREE}",
+  "model_path": "${MODEL_PATH}",
+  "proof_bin": "${PROOF_BIN}",
+  "prefix_prompt_file": "${PREFIX_PROMPT_FILE}",
+  "continuation_prompt_file": "${CONTINUATION_PROMPT_FILE}",
+  "outer_artifact_name": "${ARTIFACT_NAME}",
+  "proof_artifact_env": "${PROOF_ARTIFACT_ENV}",
+  "proof_artifact_name": "${PROOF_ARTIFACT_NAME}",
+  "safe_outer_artifact_path": "${SAFE_OUTER_ARTIFACT}",
+  "variant_outer_artifact_path": "${VARIANT_OUTER_ARTIFACT}",
+  "safe_proof_artifact_path": "${SAFE_PROOF_ARTIFACT}",
+  "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
+  "compare_vector_key": "${COMPARE_VECTOR_KEY}",
+  "env_file": "${ENV_FILE}",
+  "env_json_file": "${ENV_JSON_FILE}",
+  "build_timeout_seconds": ${BUILD_TIMEOUT_SECONDS},
+  "timeout_seconds": ${TIMEOUT_SECONDS},
+  "max_model_len": ${MAX_MODEL_LEN},
+  "build_only": ${BUILD_ONLY},
+  "run_only": ${RUN_ONLY},
+  "setup_only": ${SETUP_ONLY}
+}
+EOF
+
+echo "prepared retained continuation setup under ${OUTPUT_DIR}"
+echo "env plan: ${ENV_FILE}"
+echo "safe build plan: ${SAFE_BUILD_CMD_FILE}"
+echo "variant build plan: ${VARIANT_BUILD_CMD_FILE}"
+echo "safe run plan: ${SAFE_RUN_CMD_FILE}"
+echo "variant run plan: ${VARIANT_RUN_CMD_FILE}"
+
+write_summary() {
+  local safe_build_json="$1"
+  local variant_build_json="$2"
+  local safe_run_json="$3"
+  local variant_run_json="$4"
+  cat >"${OUTPUT_DIR}/summary.json" <<EOF
+{
+  "setup": $(cat "${PLAN_DIR}/setup_summary.json"),
+  "safe_build": ${safe_build_json},
+  "variant_build": ${variant_build_json},
+  "safe": ${safe_run_json},
+  "variant": ${variant_run_json}
+}
+EOF
+}
+
+if [[ "${SETUP_ONLY}" -eq 1 ]]; then
+  write_summary 'null' 'null' 'null' 'null'
+  exit 0
+fi
+
+build_case() {
+  local label="$1"
+  local tree="$2"
+  local binary_path="$3"
+  local command_file="$4"
+  local case_dir="${OUTPUT_DIR}/${label}"
+  local stdout_file="${case_dir}/build.stdout"
+  local stderr_file="${case_dir}/build.stderr"
+  local status_file="${case_dir}/build-status.json"
+  local start_epoch end_epoch duration rc state binary_state
+  mkdir -p "${case_dir}"
+
+  start_epoch=$(date +%s)
+  rc=0
+  (
+    cd "${tree}"
+    . "${ENV_FILE}"
+    PATH="/data/models/.venv-awq/bin:${PATH}" \
+    CUDA_VISIBLE_DEVICES="${GPU_ID}" \
+    GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+    timeout "${BUILD_TIMEOUT_SECONDS}" \
+      cargo build --release -p gpt-oss-bench --features cuda --bin "${PROOF_BIN}"
+  ) >"${stdout_file}" 2>"${stderr_file}" || rc=$?
+  end_epoch=$(date +%s)
+  duration=$((end_epoch - start_epoch))
+
+  if [[ "${rc}" -eq 0 ]]; then
+    state="completed"
+  elif [[ "${rc}" -eq 124 ]]; then
+    state="timed_out"
+  else
+    state="failed"
+  fi
+
+  if [[ -x "${binary_path}" ]]; then
+    binary_state="ready"
+  else
+    binary_state="missing"
+  fi
+
+  cat >"${status_file}" <<EOF
+{
+  "label": $(json_escape "${label}"),
+  "state": $(json_escape "${state}"),
+  "exit_code": ${rc},
+  "duration_seconds": ${duration},
+  "binary_state": $(json_escape "${binary_state}"),
+  "binary_path": $(json_escape "${binary_path}"),
+  "stdout_file": $(json_escape "${stdout_file}"),
+  "stderr_file": $(json_escape "${stderr_file}"),
+  "command_file": $(json_escape "${command_file}")
+}
+EOF
+}
+
+run_case() {
+  local label="$1"
+  local tree="$2"
+  local binary_path="$3"
+  local outer_artifact="$4"
+  local proof_artifact="$5"
+  local command_file="$6"
+  local case_dir="${OUTPUT_DIR}/${label}"
+  local stdout_file="${case_dir}/run.stdout"
+  local stderr_file="${case_dir}/run.stderr"
+  local status_file="${case_dir}/status.json"
+  local start_epoch end_epoch duration rc state artifact_state proof_state primary_artifact
+  mkdir -p "${case_dir}"
+
+  [[ -x "${binary_path}" ]] || die "prebuilt binary missing for ${label}: ${binary_path}; run with --build-only first"
+
+  start_epoch=$(date +%s)
+  rc=0
+  (
+    cd "${tree}"
+    . "${ENV_FILE}"
+    if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+      export "${PROOF_ARTIFACT_ENV}=${proof_artifact}"
+    fi
+    PATH="/data/models/.venv-awq/bin:${PATH}" \
+    CUDA_VISIBLE_DEVICES="${GPU_ID}" \
+    GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+    timeout "${TIMEOUT_SECONDS}" \
+      "${binary_path}" \
+      --model "${MODEL_PATH}" \
+      --prefix-prompt-file "${PREFIX_PROMPT_FILE}" \
+      --continuation-prompt-file "${CONTINUATION_PROMPT_FILE}" \
+      --max-model-len "${MAX_MODEL_LEN}" \
+      --output "${outer_artifact}"
+  ) >"${stdout_file}" 2>"${stderr_file}" || rc=$?
+  end_epoch=$(date +%s)
+  duration=$((end_epoch - start_epoch))
+
+  if [[ "${rc}" -eq 0 ]]; then
+    state="completed"
+  elif [[ "${rc}" -eq 124 ]]; then
+    state="timed_out"
+  else
+    state="failed"
+  fi
+
+  if [[ -f "${outer_artifact}" ]]; then
+    artifact_state="usable_artifact"
+  else
+    artifact_state="no_artifact"
+  fi
+
+  if [[ -n "${PROOF_ARTIFACT_ENV}" && -f "${proof_artifact}" ]]; then
+    proof_state="usable_artifact"
+    primary_artifact="${proof_artifact}"
+  elif [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+    proof_state="no_artifact"
+    primary_artifact="${outer_artifact}"
+  else
+    proof_state="not_requested"
+    primary_artifact="${outer_artifact}"
+  fi
+
+  cat >"${status_file}" <<EOF
+{
+  "label": $(json_escape "${label}"),
+  "state": $(json_escape "${state}"),
+  "exit_code": ${rc},
+  "duration_seconds": ${duration},
+  "artifact_state": $(json_escape "${artifact_state}"),
+  "outer_artifact_path": $(json_escape "${outer_artifact}"),
+  "proof_artifact_env": $(json_escape "${PROOF_ARTIFACT_ENV}"),
+  "proof_artifact_state": $(json_escape "${proof_state}"),
+  "proof_artifact_path": $(json_escape "${proof_artifact}"),
+  "primary_artifact_file": $(json_escape "${primary_artifact}"),
+  "stdout_file": $(json_escape "${stdout_file}"),
+  "stderr_file": $(json_escape "${stderr_file}"),
+  "command_file": $(json_escape "${command_file}")
+}
+EOF
+}
+
+if [[ "${RUN_ONLY}" -ne 1 ]]; then
+  build_case safe "${SAFE_TREE}" "${SAFE_BINARY}" "${SAFE_BUILD_CMD_FILE}"
+  build_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}" "${VARIANT_BUILD_CMD_FILE}"
+fi
+
+if [[ "${BUILD_ONLY}" -eq 1 ]]; then
+  write_summary \
+    "$(cat "${OUTPUT_DIR}/safe/build-status.json")" \
+    "$(cat "${OUTPUT_DIR}/variant/build-status.json")" \
+    'null' \
+    'null'
+  exit 0
+fi
+
+run_case safe "${SAFE_TREE}" "${SAFE_BINARY}" "${SAFE_OUTER_ARTIFACT}" "${SAFE_PROOF_ARTIFACT}" "${SAFE_RUN_CMD_FILE}"
+run_case variant "${VARIANT_TREE}" "${VARIANT_BINARY}" "${VARIANT_OUTER_ARTIFACT}" "${VARIANT_PROOF_ARTIFACT}" "${VARIANT_RUN_CMD_FILE}"
+
+export RETAINED_OUTPUT_DIR="${OUTPUT_DIR}"
+export RETAINED_COMPARE_VECTOR_KEY="${COMPARE_VECTOR_KEY}"
+python3 <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+output_dir = Path(os.environ["RETAINED_OUTPUT_DIR"])
+compare_vector_key = os.environ.get("RETAINED_COMPARE_VECTOR_KEY", "")
+summary = json.loads((output_dir / "summary.json").read_text())
+
+safe_status = json.loads((output_dir / "safe" / "status.json").read_text())
+variant_status = json.loads((output_dir / "variant" / "status.json").read_text())
+summary["safe"] = safe_status
+summary["variant"] = variant_status
+
+safe_artifact = Path(safe_status["primary_artifact_file"])
+variant_artifact = Path(variant_status["primary_artifact_file"])
+
+if safe_artifact.exists() and variant_artifact.exists():
+    safe_text = safe_artifact.read_text()
+    variant_text = variant_artifact.read_text()
+    safe = json.loads(safe_text)
+    variant = json.loads(variant_text)
+    safe_keys = sorted(safe.keys()) if isinstance(safe, dict) else None
+    variant_keys = sorted(variant.keys()) if isinstance(variant, dict) else None
+    comparison = {
+        "comparable": True,
+        "safe_primary_artifact": str(safe_artifact),
+        "variant_primary_artifact": str(variant_artifact),
+        "safe_sha256": hashlib.sha256(safe_text.encode("utf-8")).hexdigest(),
+        "variant_sha256": hashlib.sha256(variant_text.encode("utf-8")).hexdigest(),
+        "json_equal": safe == variant,
+        "safe_top_level_keys": safe_keys,
+        "variant_top_level_keys": variant_keys,
+        "same_top_level_keys": safe_keys == variant_keys,
+    }
+    if (
+        compare_vector_key
+        and isinstance(safe, dict)
+        and isinstance(variant, dict)
+        and isinstance(safe.get(compare_vector_key), list)
+        and isinstance(variant.get(compare_vector_key), list)
+        and len(safe[compare_vector_key]) == len(variant[compare_vector_key])
+        and all(isinstance(v, (int, float)) for v in safe[compare_vector_key])
+        and all(isinstance(v, (int, float)) for v in variant[compare_vector_key])
+    ):
+        diffs = [abs(float(a) - float(b)) for a, b in zip(safe[compare_vector_key], variant[compare_vector_key])]
+        first_diff_index = next((idx for idx, value in enumerate(diffs) if value > 0.0), None)
+        comparison["vector_diff"] = {
+            "vector_key": compare_vector_key,
+            "vector_length": len(diffs),
+            "max_abs_diff": max(diffs) if diffs else 0.0,
+            "mean_abs_diff": (sum(diffs) / len(diffs)) if diffs else 0.0,
+            "first_diff_index": first_diff_index,
+        }
+    summary["comparison"] = comparison
+else:
+    summary["comparison"] = {
+        "comparable": False,
+        "safe_primary_artifact": str(safe_artifact),
+        "variant_primary_artifact": str(variant_artifact),
+        "reason": "both retained-continuation artifacts were not produced within the bounded run",
+    }
+
+(output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+print(json.dumps(summary, indent=2))
+PY
