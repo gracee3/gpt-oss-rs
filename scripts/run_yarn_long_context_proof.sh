@@ -36,6 +36,10 @@ die() {
   exit 1
 }
 
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
 require_file() {
   local path="$1"
   [[ -f "${path}" ]] || die "required file not found: ${path}"
@@ -118,6 +122,7 @@ PLAN_DIR="${OUTPUT_DIR}/plan"
 mkdir -p "${PROMPT_DIR}" "${PLAN_DIR}"
 
 PROMPT_FILE=${PROMPT_FILE:-"${PROMPT_DIR}/deterministic_over_4096.txt"}
+PROMPT_FILE=$(cd -- "$(dirname -- "${PROMPT_FILE}")" && pwd)/$(basename -- "${PROMPT_FILE}")
 
 export PROOF_MODEL_PATH="${MODEL_PATH}"
 export PROOF_PROMPT_FILE="${PROMPT_FILE}"
@@ -205,12 +210,12 @@ VARIANT_CMD_FILE="${PLAN_DIR}/variant_command.sh"
 
 cat >"${SAFE_CMD_FILE}" <<EOF
 cd ${SAFE_TREE}
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/safe/restricted-logit-diff.json --log-level info
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/safe/restricted-logit-diff.json --log-level info
 EOF
 
 cat >"${VARIANT_CMD_FILE}" <<EOF
 cd ${VARIANT_TREE}
-PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/variant/restricted-logit-diff.json --log-level info
+PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- --model ${MODEL_PATH} --prompt "\$(cat "${PROMPT_FILE}")" --max-model-len ${MAX_MODEL_LEN} --output ${OUTPUT_DIR}/variant/restricted-logit-diff.json --log-level info
 EOF
 
 chmod +x "${SAFE_CMD_FILE}" "${VARIANT_CMD_FILE}"
@@ -237,4 +242,129 @@ if [[ "${SETUP_ONLY}" -eq 1 ]]; then
   exit 0
 fi
 
-echo "run execution is not wired yet in this scaffold"
+run_case() {
+  local label="$1"
+  local tree="$2"
+  local case_dir="${OUTPUT_DIR}/${label}"
+  local log_file="${case_dir}/run.log"
+  local stderr_file="${case_dir}/run.stderr"
+  local stdout_file="${case_dir}/run.stdout"
+  local command_file="${case_dir}/command.sh"
+  local report_file="${case_dir}/restricted-logit-diff.json"
+  local status_file="${case_dir}/status.json"
+  local start_epoch end_epoch duration rc state artifact_state
+  mkdir -p "${case_dir}"
+
+  cat >"${command_file}" <<EOF
+cd ${tree}
+PROMPT_FILE=${PROMPT_FILE}
+PROMPT=\$(cat "\${PROMPT_FILE}")
+PATH="/data/models/.venv-awq/bin:\$PATH" \
+CUDA_VISIBLE_DEVICES=${GPU_ID} \
+GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- \
+  --model ${MODEL_PATH} \
+  --prompt "\${PROMPT}" \
+  --max-model-len ${MAX_MODEL_LEN} \
+  --output ${report_file} \
+  --log-level info
+EOF
+  chmod +x "${command_file}"
+
+  start_epoch=$(date +%s)
+  rc=0
+  (
+    cd "${tree}"
+    PROMPT=$(cat "${PROMPT_FILE}")
+    PATH="/data/models/.venv-awq/bin:${PATH}" \
+    CUDA_VISIBLE_DEVICES="${GPU_ID}" \
+    GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
+    timeout "${TIMEOUT_SECONDS}" \
+      cargo run --release -p gpt-oss-bench --features cuda --bin restricted_logit_diff -- \
+      --model "${MODEL_PATH}" \
+      --prompt "${PROMPT}" \
+      --max-model-len "${MAX_MODEL_LEN}" \
+      --output "${report_file}" \
+      --log-level info
+  ) >"${stdout_file}" 2>"${stderr_file}" || rc=$?
+  end_epoch=$(date +%s)
+  duration=$((end_epoch - start_epoch))
+
+  if [[ "${rc}" -eq 0 ]]; then
+    state="completed"
+  elif [[ "${rc}" -eq 124 ]]; then
+    state="timed_out"
+  else
+    state="failed"
+  fi
+
+  if [[ -f "${report_file}" ]]; then
+    artifact_state="usable_artifact"
+  else
+    artifact_state="no_artifact"
+  fi
+
+  {
+    echo "state=${state}"
+    echo "exit_code=${rc}"
+    echo "duration_seconds=${duration}"
+    echo "artifact_state=${artifact_state}"
+  } >"${log_file}"
+
+  cat >"${status_file}" <<EOF
+{
+  "label": $(json_escape "${label}"),
+  "tree": $(json_escape "${tree}"),
+  "state": $(json_escape "${state}"),
+  "exit_code": ${rc},
+  "duration_seconds": ${duration},
+  "artifact_state": $(json_escape "${artifact_state}"),
+  "stdout_file": $(json_escape "${stdout_file}"),
+  "stderr_file": $(json_escape "${stderr_file}"),
+  "report_file": $(json_escape "${report_file}"),
+  "command_file": $(json_escape "${command_file}")
+}
+EOF
+}
+
+run_case safe "${SAFE_TREE}"
+run_case variant "${VARIANT_TREE}"
+
+export PROOF_OUTPUT_DIR="${OUTPUT_DIR}"
+python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+output_dir = Path(os.environ["PROOF_OUTPUT_DIR"])
+summary = {
+    "safe": json.loads((output_dir / "safe" / "status.json").read_text()),
+    "variant": json.loads((output_dir / "variant" / "status.json").read_text()),
+}
+
+safe_report = output_dir / "safe" / "restricted-logit-diff.json"
+variant_report = output_dir / "variant" / "restricted-logit-diff.json"
+
+if safe_report.exists() and variant_report.exists():
+    safe = json.loads(safe_report.read_text())
+    variant = json.loads(variant_report.read_text())
+    summary["comparison"] = {
+        "comparable": True,
+        "safe_conclusion": safe.get("conclusion"),
+        "variant_conclusion": variant.get("conclusion"),
+        "safe_first_mismatch_boundary": safe.get("first_mismatch_boundary"),
+        "variant_first_mismatch_boundary": variant.get("first_mismatch_boundary"),
+        "safe_prompt_token_count": len(safe.get("prompt_token_ids", [])),
+        "variant_prompt_token_count": len(variant.get("prompt_token_ids", [])),
+        "same_prompt_token_ids": safe.get("prompt_token_ids") == variant.get("prompt_token_ids"),
+        "same_conclusion": safe.get("conclusion") == variant.get("conclusion"),
+    }
+else:
+    summary["comparison"] = {
+        "comparable": False,
+        "reason": "both safe and variant reports were not produced within the bounded run",
+    }
+
+(output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+print(json.dumps(summary, indent=2))
+PY
