@@ -35,6 +35,7 @@ Options:
   --proof-artifact-env <name>     env var name used to pass a compact continuation proof artifact path
   --proof-artifact-name <file>    filename for per-side compact continuation proof artifacts
   --compare-vector-key <key>      compact numeric vector field to diff when present
+  --marker-profile <name>         built-in ordered progress-marker profile; repeatable
   --progress-marker <string>      retained child progress marker to scan for; repeatable
   --emit-forced-output-tokens     emit command-ready forced-output token args from verified continuation ids
   --verify-tokenization           verify prefix/continuation tokenization against the selected model
@@ -104,6 +105,7 @@ BUILD_ONLY=0
 RUN_ONLY=0
 SETUP_ONLY=0
 declare -a EXTRA_ENVS=()
+declare -a MARKER_PROFILES=()
 declare -a PROGRESS_MARKERS=()
 
 while [[ $# -gt 0 ]]; do
@@ -163,6 +165,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compare-vector-key)
       COMPARE_VECTOR_KEY="${2:?missing value for --compare-vector-key}"
+      shift 2
+      ;;
+    --marker-profile)
+      MARKER_PROFILES+=("${2:?missing value for --marker-profile}")
       shift 2
       ;;
     --progress-marker)
@@ -237,6 +243,68 @@ PREFIX_PROMPT_FILE=$(cd -- "$(dirname -- "${PREFIX_PROMPT_FILE}")" && pwd)/$(bas
 CONTINUATION_PROMPT_FILE=$(cd -- "$(dirname -- "${CONTINUATION_PROMPT_FILE}")" && pwd)/$(basename -- "${CONTINUATION_PROMPT_FILE}")
 PLAN_DIR="${OUTPUT_DIR}/plan"
 mkdir -p "${PLAN_DIR}" "${OUTPUT_DIR}/safe" "${OUTPUT_DIR}/variant"
+
+MARKER_PROFILES_JSON_FILE="${PLAN_DIR}/marker_profiles.json"
+export RETAINED_MARKER_PROFILES_JSON_FILE="${MARKER_PROFILES_JSON_FILE}"
+if ((${#MARKER_PROFILES[@]} > 0)); then
+  export RETAINED_MARKER_PROFILES_RAW="$(printf '%s\n' "${MARKER_PROFILES[@]}")"
+else
+  export RETAINED_MARKER_PROFILES_RAW=""
+fi
+if ((${#PROGRESS_MARKERS[@]} > 0)); then
+  export RETAINED_PROGRESS_MARKERS_RAW="$(printf '%s\n' "${PROGRESS_MARKERS[@]}")"
+else
+  export RETAINED_PROGRESS_MARKERS_RAW=""
+fi
+python3 <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+profiles = [line for line in os.environ.get("RETAINED_MARKER_PROFILES_RAW", "").splitlines() if line]
+manual_markers = [line for line in os.environ.get("RETAINED_PROGRESS_MARKERS_RAW", "").splitlines() if line]
+builtins = {
+    "retained-debug-v1": [
+        "RETAINED_CHILD_START",
+        "RETAINED_CHILD_TOKENIZED",
+        "RETAINED_CHILD_BUILD_WORKER_BEGIN",
+        "RETAINED_CHILD_BUILD_WORKER_DONE",
+        "RETAINED_STEP_BEGIN",
+        "RETAINED_STEP_FORWARD_BEGIN",
+        "RETAINED_STEP_FORWARD_DONE",
+        "DECODE1_BEGIN",
+        "RETAINED_PROOF_ENTER",
+        "RETAINED_PROOF_CAPTURED",
+    ],
+}
+unknown = [name for name in profiles if name not in builtins]
+if unknown:
+    print(f"error: unknown --marker-profile value(s): {', '.join(unknown)}", file=sys.stderr)
+    sys.exit(1)
+sequence = []
+for name in profiles:
+    for marker in builtins[name]:
+        if marker not in sequence:
+            sequence.append(marker)
+for marker in manual_markers:
+    if marker not in sequence:
+        sequence.append(marker)
+Path(os.environ["RETAINED_MARKER_PROFILES_JSON_FILE"]).write_text(
+    json.dumps(
+        {
+            "selected_profiles": profiles,
+            "configured_marker_sequence": sequence,
+            "builtin_profiles": {name: builtins[name] for name in profiles},
+            "manual_markers": manual_markers,
+        },
+        indent=2,
+    )
+    + "\n"
+)
+PY
+
+mapfile -t PROGRESS_MARKERS < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["configured_marker_sequence"]))' "${MARKER_PROFILES_JSON_FILE}")
 
 ARTIFACT_NAME="$(normalize_artifact_name "${PROOF_BIN}")"
 if [[ -z "${PROOF_ARTIFACT_NAME}" ]]; then
@@ -374,18 +442,16 @@ fi
 
 PROGRESS_MARKERS_JSON_FILE="${PLAN_DIR}/progress_markers.json"
 export RETAINED_PROGRESS_MARKERS_JSON_FILE="${PROGRESS_MARKERS_JSON_FILE}"
-if ((${#PROGRESS_MARKERS[@]} > 0)); then
-  export RETAINED_PROGRESS_MARKERS_RAW="$(printf '%s\n' "${PROGRESS_MARKERS[@]}")"
-else
-  export RETAINED_PROGRESS_MARKERS_RAW=""
-fi
+export RETAINED_MARKER_PROFILES_JSON_FILE="${MARKER_PROFILES_JSON_FILE}"
 python3 <<'PY'
 import json
 import os
 from pathlib import Path
 
-markers = [line for line in os.environ.get("RETAINED_PROGRESS_MARKERS_RAW", "").splitlines() if line]
-Path(os.environ["RETAINED_PROGRESS_MARKERS_JSON_FILE"]).write_text(json.dumps(markers, indent=2) + "\n")
+profile_data = json.loads(Path(os.environ["RETAINED_MARKER_PROFILES_JSON_FILE"]).read_text())
+Path(os.environ["RETAINED_PROGRESS_MARKERS_JSON_FILE"]).write_text(
+    json.dumps(profile_data["configured_marker_sequence"], indent=2) + "\n"
+)
 PY
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -440,6 +506,9 @@ cat >"${PLAN_DIR}/setup_summary.json" <<EOF
   "variant_proof_artifact_path": "${VARIANT_PROOF_ARTIFACT}",
   "compare_vector_key": "${COMPARE_VECTOR_KEY}",
   "forced_output_tokens_arg": $(json_escape "${FORCED_OUTPUT_TOKENS_ARG}"),
+  "marker_profiles_file": "${MARKER_PROFILES_JSON_FILE}",
+  "selected_marker_profiles": $(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["selected_profiles"]))' "${MARKER_PROFILES_JSON_FILE}"),
+  "configured_progress_markers": $(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["configured_marker_sequence"]))' "${MARKER_PROFILES_JSON_FILE}"),
   "verify_tokenization": ${VERIFY_TOKENIZATION},
   "emit_forced_output_tokens": ${EMIT_FORCED_OUTPUT_TOKENS},
   "python": "${PYTHON_BIN}",
@@ -621,10 +690,18 @@ combined = stdout_text + "\n" + stderr_text
 markers = [line for line in os.environ.get("RETAINED_PROGRESS_MARKERS_RAW", "").splitlines() if line]
 seen = [marker for marker in markers if marker in combined]
 last = seen[-1] if seen else None
+next_missing = None
+for marker in markers:
+    if marker not in seen:
+        next_missing = marker
+        break
+stall = f"stalled_before={next_missing}" if next_missing else (f"completed_through={last}" if last else "no_markers_seen")
 summary = {
     "configured_markers": markers,
     "seen_markers": seen,
     "last_progress_marker": last,
+    "next_expected_marker": next_missing,
+    "stall_classification": stall,
 }
 Path(os.environ["RETAINED_PROGRESS_JSON_FILE"]).write_text(json.dumps(summary, indent=2) + "\n")
 PY
@@ -645,6 +722,8 @@ PY
   "configured_progress_markers": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["configured_markers"]))'),
   "seen_progress_markers": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["seen_markers"]))'),
   "last_progress_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["last_progress_marker"]))'),
+  "next_expected_progress_marker": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["next_expected_marker"]))'),
+  "progress_stall_classification": $(cat "${progress_json_file}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["stall_classification"]))'),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "command_file": $(json_escape "${command_file}")
