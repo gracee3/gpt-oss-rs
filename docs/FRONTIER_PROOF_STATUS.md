@@ -90,8 +90,8 @@ Current retained-state blocker:
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
 - The current blocker is no longer metadata upload or artifact-exit handling.
 - On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child reaches child start, tokenization, worker build done, prefill step begin, prefill forward begin, layer 0 begin, attention begin, attention done, residual done, mlp_begin, prerouter_begin, prerouter_setup_done, prerouter_cast_done, router_invoke_begin, router_call_entered, router_dtoh_begin, router_dtoh_done, and router_input_ready.
-- It does not yet reach router_score_begin, router_begin, router_topk_begin, router_topk_done, first_expert_begin, first_expert_done, aggregate_done, mlp_done, prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
-- The current blocker is now localized after host DtoH/router-input preparation and before router score computation begins inside host-side `moe.forward(...)`, during retained prefill on the exact `4096 + 1` case.
+- It does not yet reach router_score_begin, router_score_alloc_begin, router_score_alloc_done, router_score_first_accum_begin, router_score_first_accum_done, router_begin, router_topk_begin, router_topk_done, first_expert_begin, first_expert_done, aggregate_done, mlp_done, prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
+- The current blocker is now localized at the handoff from `router_input_ready` into the outer router scoring loop / top-k guard, before score allocation begins, during retained prefill on the exact `4096 + 1` case.
 - No safe-side continuation-token artifact has been emitted yet.
 - The next required evidence is progress-boundary localization inside the retained child path on the same exact `4096 + 1` case, still targeting `post_attention_residual`.
 - Promotion remains paused until that retained-state path emits a real continuation-token artifact.
