@@ -91,17 +91,20 @@ Current retained-state blocker:
 - The current blocker is no longer metadata upload or artifact-exit handling.
 - The retained seam has already established meaningful runtime propagation for `bd49d35` through post-RoPE, post-attention context, post-attention residual, retained layer-0 completion, retained layer-1 attention and post-attention residual handoff, and retained layer-1 MLP entry through `RETAINED_MLP_STAGE layer=1 stage=router_input_ready`.
 - On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child still does not emit `RETAINED_LAYER_BOUNDARY layer=1 stage=mlp_done`, `RETAINED_STEP_FORWARD_DONE`, `DECODE1_BEGIN`, `RETAINED_PROOF_ENTER`, or `RETAINED_PROOF_CAPTURED`.
-- A first honest `bd49d35` boundary smoke has now been exercised as a verified 4097-token single-prompt prefill whose last token is continuation token `6602` (`' token'`). This was the closest honest current live-smoke equivalent to the retained `4096 + 1` boundary using existing tooling only.
-- Baseline `/home/emmy/openai/gpt-oss-rs` and candidate `/home/emmy/openai/worktrees/runtime-live-smoke-candidate` both built successfully and both entered the real 4097-token prefill path cleanly.
-- Both sides timed out at about `241`-`242` seconds with no outer `restricted_prefill_trace` JSON artifact emitted. Deepest visible progress on both sides was structured progress through `prefill_attention` with `num_tokens=4097` and `max_context_len=4097`.
-- `stderr` was empty and no candidate-only corruption or failure was observed. Treat this as operator-clean live-smoke evidence only, not correctness proof or promotion evidence.
+- The exact `4096 + 1` boundary tokenization is now verified and is no longer the blocker.
+- The first honest exact-boundary live attempts on existing proof surfaces remained behaviorally matched across baseline `/home/emmy/openai/gpt-oss-rs` and candidate `/home/emmy/openai/worktrees/runtime-live-smoke-candidate`: `restricted_logit_diff` timed out at `300s` on both sides with no artifact, and `restricted_prefill_trace` timed out at about `480s` on both sides with no artifact.
+- The timing evidence now points to the monolithic `restricted_prefill_trace` call itself as the dominant long-case cost after roughly similar worker bring-up, not final JSON serialization or output write.
+- The current live-path blocker is therefore runtime / in-call trace heaviness at the exact `4097`-token boundary, not token split ambiguity and not end-of-process serialization.
+- A plain no-trace live surface (`gpt-oss-server serve` plus HTTP request) was shown to launch successfully on both baseline and candidate and return `HTTP 200` quickly on a short control prompt.
+- The short control response text was non-normal on both baseline and candidate, so that smoke counts as availability-only evidence, not semantic correctness evidence and not promotion evidence.
 - Retained seam chasing is paused unless the live-smoke results indicate a specific need to resume it.
 - The retained seam findings above are part of the decision record and should be preserved for future follow-up even if the workflow pivots to live-smoke.
-- The current bottleneck appears to be the heaviness of the present live-smoke surface, including CPU-side orchestration and trace handling, not boundary-token ambiguity.
-- The next preferred action is the lightest honest boundary-capable live-smoke surface first; only secondarily consider a modestly longer bounded timeout on the current full-trace path.
+- The next preferred action is:
+  1. validate the semantically correct GPT-OSS request/protocol surface for no-trace live smoke
+  2. then run a boundary-relevant no-trace live smoke on that correct surface
 - Both GPUs are now available, but parallel paired runs should remain optional until CPU contention is better understood.
-- The next gate is one boundary-relevant long-context live-smoke at the actual `bd49d35` boundary, preferably the exact `4096` / `4096+1` case or the closest harness-supported equivalent.
-- Promotion remains paused until that boundary-relevant long-context GPU1 live-smoke result is in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
+- The next gate is one boundary-relevant no-trace live smoke at the actual `bd49d35` boundary, preferably the exact `4096` / `4096+1` case or the closest harness-supported equivalent on the correct GPT-OSS request surface.
+- Promotion remains paused until those results are in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
