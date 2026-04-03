@@ -171,6 +171,32 @@ ENV_JSON_FILE="${PLAN_DIR}/live_env.json"
 BUILD_CMD_FILE="${PLAN_DIR}/build_command.sh"
 RUN_CMD_FILE="${PLAN_DIR}/run_command.sh"
 GPU_SNAPSHOT_FILE="${PLAN_DIR}/gpu_snapshot.txt"
+RESOLVED_BINARY_PATH=""
+
+resolve_binary_path() {
+  local primary="${TREE}/target/release/${LIVE_BIN}"
+  local deps_dir="${TREE}/target/release/deps"
+  local primary_kind=""
+  local candidate=""
+
+  if [[ -x "${primary}" ]]; then
+    primary_kind=$(file -b "${primary}" 2>/dev/null || true)
+    if [[ "${primary_kind}" != *"shell script"* ]]; then
+      printf '%s\n' "${primary}"
+      return 0
+    fi
+  fi
+
+  if [[ -d "${deps_dir}" ]]; then
+    candidate=$(find "${deps_dir}" -maxdepth 1 -type f -name "${LIVE_BIN}-*" -perm -111 ! -name '*.d' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)
+    if [[ -n "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${primary}"
+}
 
 {
   for env_kv in "${EXTRA_ENVS[@]}"; do
@@ -284,7 +310,8 @@ build_phase() {
     state="failed"
   fi
 
-  if [[ -x "${BINARY_PATH}" ]]; then
+  RESOLVED_BINARY_PATH=$(resolve_binary_path)
+  if [[ -x "${RESOLVED_BINARY_PATH}" ]]; then
     binary_state="ready"
   else
     binary_state="missing"
@@ -297,6 +324,7 @@ build_phase() {
   "duration_seconds": ${duration},
   "binary_state": $(json_escape "${binary_state}"),
   "binary_path": $(json_escape "${BINARY_PATH}"),
+  "resolved_binary_path": $(json_escape "${RESOLVED_BINARY_PATH}"),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "command_file": $(json_escape "${BUILD_CMD_FILE}")
@@ -310,7 +338,8 @@ run_phase() {
   local status_file="${RUN_DIR}/run-status.json"
   local start_epoch end_epoch duration rc state artifact_state
 
-  [[ -x "${BINARY_PATH}" ]] || die "prebuilt binary missing: ${BINARY_PATH}; run with --build-only first"
+  RESOLVED_BINARY_PATH=$(resolve_binary_path)
+  [[ -x "${RESOLVED_BINARY_PATH}" ]] || die "prebuilt binary missing: ${RESOLVED_BINARY_PATH}; run with --build-only first"
 
   start_epoch=$(date +%s)
   rc=0
@@ -322,7 +351,7 @@ run_phase() {
     CUDA_VISIBLE_DEVICES="${GPU_ID}" \
     GPT_OSS_DISABLE_CUDA_GRAPHS=1 \
     timeout "${TIMEOUT_SECONDS}" \
-      "${BINARY_PATH}" \
+      "${RESOLVED_BINARY_PATH}" \
       --model "${MODEL_PATH}" \
       --prompt "${PROMPT}" \
       --max-model-len "${MAX_MODEL_LEN}" \
@@ -352,6 +381,7 @@ run_phase() {
   "duration_seconds": ${duration},
   "artifact_state": $(json_escape "${artifact_state}"),
   "artifact_path": $(json_escape "${ARTIFACT_PATH}"),
+  "resolved_binary_path": $(json_escape "${RESOLVED_BINARY_PATH}"),
   "stdout_file": $(json_escape "${stdout_file}"),
   "stderr_file": $(json_escape "${stderr_file}"),
   "command_file": $(json_escape "${RUN_CMD_FILE}")
