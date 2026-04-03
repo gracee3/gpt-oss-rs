@@ -96,19 +96,22 @@ Current retained-state blocker:
 - The timing evidence now points to the monolithic `restricted_prefill_trace` call itself as the dominant long-case cost after roughly similar worker bring-up, not final JSON serialization or output write.
 - The current live-path blocker is therefore runtime / in-call trace heaviness at the exact `4097`-token boundary, not token split ambiguity and not end-of-process serialization.
 - Raw `/v1/completions` remains liveness-only for GPT-OSS in this tree.
-- The semantically relevant no-trace server surfaces remain Harmony-backed `/v1/chat/completions` and `/v1/responses`.
-- The corrected no-trace Harmony-native control used `POST /v1/responses` with `max_output_tokens=32` on isolated GPUs.
-- Baseline on GPU0 and candidate on GPU1 both launched, both reached `/health`, and candidate no longer OOMed once the runs were isolated.
-- Both then returned the same long-latency `HTTP 500` with the same Harmony parse error body.
-- Baseline and candidate are therefore behaviorally matched on this server-side failure.
-- This still does not make the server surface usable for semantic boundary smoke.
+- The Harmony route/mode matrix now shows no Harmony-backed no-trace server surface is semantically usable on this model/config today.
+- Baseline and candidate are behaviorally matched on the relevant live-only failures:
+  - `/v1/responses` `stream=false` -> long-latency `HTTP 500` Harmony parse error on both
+  - `/v1/responses` `stream=true` -> `HTTP 200` but only protocol scaffolding / empty text, with no usable assistant text
+  - `/v1/chat/completions` `stream=false` -> `HTTP 200` with visible assistant text, but malformed garbage on both
+- `/v1/chat/completions` `stream=true` did not establish a semantically usable control surface.
+- Therefore, Harmony-backed server routes should be treated as liveness-only for now, not as semantic-smoke candidates.
 - Retained seam chasing is paused unless the live-smoke results indicate a specific need to resume it.
 - The retained seam findings above are part of the decision record and should be preserved for future follow-up even if the workflow pivots to live-smoke.
 - The next preferred action is:
-  1. a bounded Harmony route/mode matrix on short control to determine whether the current failure is specific to `/v1/responses` non-streaming or broader across Harmony-backed server surfaces
-  2. only if a semantically sane short control exists, verify Harmony-rendered prompt token count for that exact server request shape before any no-trace boundary claim
+  1. a harness-only minimal live-side boundary-capture surface that reuses the existing worker/config path
+  2. exercises the verified exact `4097`-token single-prompt boundary
+  3. emits a tiny artifact after prefill
+  4. avoids full trace materialization and avoids Harmony/server parse
 - Both GPUs are now available, but parallel paired runs should remain optional until CPU contention is better understood.
-- The next gate is that bounded Harmony route/mode matrix first, and only then a boundary-relevant no-trace smoke at the actual `bd49d35` boundary if the protocol surface yields a semantically sane short control.
+- The next gate is that minimal harness-only live-side boundary-capture result.
 - Promotion remains paused until those results are in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
