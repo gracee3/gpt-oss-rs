@@ -158,6 +158,35 @@ Current Harmony server route note:
   - exact-boundary no-trace server smoke is still truthful only after Harmony-rendered token count is verified
   - the blocker is not missing core render/count codepaths, but that current harness/tooling does not yet expose that rendered-count verification as a normal smoke step
 
+Current live-side boundary-capture-lite recommendation:
+
+- the recommended minimal capture point is the first honest point after the exact `4097`-token prefill returns logits and before any decode, Harmony/server parse, retained continuation logic, or oracle/compare subprocess flow
+- for the first harness pass, that means:
+  - build prompt-only `SequenceGroupMetadata`
+  - run one live worker prefill through `GpuWorker::debug_logits(...)`
+  - slice only the final-position logits in bench code via `last_token_logits(...)`
+- the recommended minimal artifact is:
+  - prompt token count / final position
+  - restricted model path
+  - visible devices
+  - final-position argmax token id/text/logit
+  - final-position top-k entries as `{ token_id, token_text, logit }`
+- this is the next honest step after the failed server matrix because it keeps the worker/config and model-runner runtime path under smoke while removing:
+  - full `PrefillActivationTrace` materialization from `restricted_prefill_trace`
+  - multi-step child/oracle/decode flow from `restricted_logit_diff`
+  - Harmony render/parse confounds from server routes
+- first-pass implementation can stay bench-layer only:
+  - `GpuWorker::debug_logits(...)` already exposes the live prefill logits surface
+  - `restricted_logit_diff.rs` already contains `last_token_logits(...)`, `argmax_token(...)`, and `top_k_logits(...)`
+  - no new runner API is required to produce the first tiny comparable artifact
+- one tiny model-runner/worker exposure would only be a later optimization if full-logits DtoH still proves too heavy:
+  - narrowest useful shape would be a last-position-only logits/top-k surface, not another full trace
+- first harness-pass success means:
+  - short control exits with the tiny final-position artifact
+  - exact-boundary baseline exits with the same tiny artifact
+  - candidate can then be run on the identical artifact surface
+- retained chase remains paused unless this lite surface exposes a new specific gap
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
