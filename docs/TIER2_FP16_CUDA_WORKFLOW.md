@@ -312,6 +312,35 @@ This runner only captures the bounded live-smoke surface:
 - exit state and timeout state
 - outer artifact path and `summary.json`
 
+For a lighter truthful boundary surface than `restricted_prefill_trace`, point the same runner at `restricted_prefill_topk`. It keeps the live worker-path prefill invocation but emits only a tiny final-position artifact:
+
+```bash
+./scripts/run_gpu0_live_smoke.sh \
+  --run-only \
+  --gpu 1 \
+  --tree /home/emmy/openai/gpt-oss-rs \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prompt-file /tmp/prompt-4097-live.txt \
+  --timeout 180 \
+  --bin restricted_prefill_topk \
+  --max-model-len 4608 \
+  --output-dir .live/restricted-prefill-topk-boundary-baseline
+```
+
+`restricted_prefill_topk` writes only:
+
+- `prompt_token_count`
+- `last_input_token_id`
+- `last_input_token_text`
+- `chosen_token_id`
+- `chosen_token_text`
+- `restricted_model_path`
+- `visible_devices`
+- `wall_clock_seconds`
+- `final_position_top_k`
+
+Use it when you need an honest `>4096` live prefill smoke without paying for a full per-layer trace or any retained/oracle machinery.
+
 ## Staged Boundary-Isolation Workflow
 
 When the likely fallback path is "warm the boundary first, then capture a narrow continuation artifact", use the staged runner to keep both stages in one summary directory:
