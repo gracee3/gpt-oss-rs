@@ -95,15 +95,19 @@ Current retained-state blocker:
 - The first honest exact-boundary live attempts on existing proof surfaces remained behaviorally matched across baseline `/home/emmy/openai/gpt-oss-rs` and candidate `/home/emmy/openai/worktrees/runtime-live-smoke-candidate`: `restricted_logit_diff` timed out at `300s` on both sides with no artifact, and `restricted_prefill_trace` timed out at about `480s` on both sides with no artifact.
 - The timing evidence now points to the monolithic `restricted_prefill_trace` call itself as the dominant long-case cost after roughly similar worker bring-up, not final JSON serialization or output write.
 - The current live-path blocker is therefore runtime / in-call trace heaviness at the exact `4097`-token boundary, not token split ambiguity and not end-of-process serialization.
-- A plain no-trace live surface (`gpt-oss-server serve` plus HTTP request) was shown to launch successfully on both baseline and candidate and return `HTTP 200` quickly on a short control prompt.
-- The short control response text was non-normal on both baseline and candidate, so that smoke counts as availability-only evidence, not semantic correctness evidence and not promotion evidence.
+- Raw `/v1/completions` remains liveness-only for GPT-OSS in this tree.
+- The semantically correct no-trace server surface is Harmony-backed `/v1/chat/completions` or `/v1/responses`.
+- The first `/v1/responses` control is not yet decision-grade for frontier judgment because it used a very small `max_output_tokens` budget and the baseline/candidate runs were not yet isolated onto separate clean GPU instances.
+- Therefore, the current server findings should be treated as provisional live-only blockers pending one corrected rerun.
+- Do not yet classify the baseline Harmony parse error as a model/runtime semantic failure.
+- Do not yet classify the candidate GPU1 OOM as candidate-specific.
 - Retained seam chasing is paused unless the live-smoke results indicate a specific need to resume it.
 - The retained seam findings above are part of the decision record and should be preserved for future follow-up even if the workflow pivots to live-smoke.
 - The next preferred action is:
-  1. validate the semantically correct GPT-OSS request/protocol surface for no-trace live smoke
-  2. then run a boundary-relevant no-trace live smoke on that correct surface
+  1. a corrected Harmony-native short control with adequate output budget and isolated GPU launches
+  2. only then, a truthful boundary-relevant no-trace smoke if protocol token accounting supports it
 - Both GPUs are now available, but parallel paired runs should remain optional until CPU contention is better understood.
-- The next gate is one boundary-relevant no-trace live smoke at the actual `bd49d35` boundary, preferably the exact `4096` / `4096+1` case or the closest harness-supported equivalent on the correct GPT-OSS request surface.
+- The next gate is that corrected Harmony-native short control first, and only then a boundary-relevant no-trace smoke at the actual `bd49d35` boundary if the protocol surface supports truthful accounting.
 - Promotion remains paused until those results are in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
