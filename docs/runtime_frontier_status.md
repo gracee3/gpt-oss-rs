@@ -96,6 +96,20 @@ Decision trigger after the next bounded live-smoke:
   - no new runtime code
   - let bounded live-smoke drive the next decision
 
+Current boundary-smoke timing note:
+
+- a scratch-only timing audit of `restricted_prefill_trace` on the same restricted model and `--max-model-len 4608` showed:
+  - short control prompt:
+    - about `35.2s` to `worker_ready`
+    - about `24.0s` inside `prefill_trace`
+    - about `20ms` total for final JSON serialization and output write
+  - exact 4097-token boundary prompt:
+    - about `34.8s` to `worker_ready`
+    - then the bounded run spent the remaining wall-clock inside `prefill_trace` until timeout
+- the heaviest observed stage is therefore the monolithic prefill-trace path itself, not final JSON serialization/output
+- if a lighter honest boundary-smoke surface becomes necessary later, the smallest boundary-relevant change would be a surface that reuses the same worker/config path but exits after one localized boundary capture instead of materializing the full prefill trace
+- default action still remains no new runtime code until the bounded live-smoke lane clearly justifies it
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
