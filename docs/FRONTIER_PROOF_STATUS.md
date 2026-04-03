@@ -95,6 +95,13 @@ Current retained-state blocker:
 - The first honest exact-boundary live attempts on existing proof surfaces remained behaviorally matched across baseline `/home/emmy/openai/gpt-oss-rs` and candidate `/home/emmy/openai/worktrees/runtime-live-smoke-candidate`: `restricted_logit_diff` timed out at `300s` on both sides with no artifact, and `restricted_prefill_trace` timed out at about `480s` on both sides with no artifact.
 - The timing evidence now points to the monolithic `restricted_prefill_trace` call itself as the dominant long-case cost after roughly similar worker bring-up, not final JSON serialization or output write.
 - The current live-path blocker is therefore runtime / in-call trace heaviness at the exact `4097`-token boundary, not token split ambiguity and not end-of-process serialization.
+- The new live-side lite surface `restricted_prefill_topk` now exists and succeeds on a short control prompt.
+- On the short control, baseline emitted a tiny artifact cleanly.
+- On the exact verified `4097`-token boundary, baseline still timed out at about `181s` with no artifact emitted.
+- Deepest visible progress on that boundary run still reached `prefill_attention` with `num_tokens=4097` and `max_context_len=4097`.
+- Candidate confirmation was intentionally not run after baseline failed to emit the tiny artifact.
+- This means full trace materialization is no longer the sole blocker.
+- However, the current lite surface still does not prove that post-prefill/logit-return overhead has been minimized, because it still depends on the existing debug-logits path.
 - Raw `/v1/completions` remains liveness-only for GPT-OSS in this tree.
 - The Harmony route/mode matrix now shows no Harmony-backed no-trace server surface is semantically usable on this model/config today.
 - Baseline and candidate are behaviorally matched on the relevant live-only failures:
@@ -105,13 +112,9 @@ Current retained-state blocker:
 - Therefore, Harmony-backed server routes should be treated as liveness-only for now, not as semantic-smoke candidates.
 - Retained seam chasing is paused unless the live-smoke results indicate a specific need to resume it.
 - The retained seam findings above are part of the decision record and should be preserved for future follow-up even if the workflow pivots to live-smoke.
-- The next preferred action is:
-  1. a harness-only minimal live-side boundary-capture surface that reuses the existing worker/config path
-  2. exercises the verified exact `4097`-token single-prompt boundary
-  3. emits a tiny artifact after prefill
-  4. avoids full trace materialization and avoids Harmony/server parse
+- The next preferred action is a narrower live-side boundary surface that captures only last-position data after prefill, with no full prompt-step logits bulk returned to the bench.
 - Both GPUs are now available, but parallel paired runs should remain optional until CPU contention is better understood.
-- The next gate is that minimal harness-only live-side boundary-capture result.
+- The next gate is that narrower last-position-only live-side boundary result.
 - Promotion remains paused until those results are in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
