@@ -89,13 +89,12 @@ Current retained-state blocker:
 
 - The retained-state `restricted_logit_diff` decode1 seam is confirmed as the next honest proof path.
 - The current blocker is no longer metadata upload or artifact-exit handling.
-- On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child reaches child start, tokenization, worker build done, prefill step begin, prefill forward begin, layer 0 begin, attention begin, attention done, residual done, mlp_begin, prerouter_begin, prerouter_setup_done, prerouter_cast_done, router_invoke_begin, router_call_entered, router_dtoh_begin, router_dtoh_done, and router_input_ready.
-- It does not yet reach router_score_begin, router_score_alloc_begin, router_score_alloc_done, router_score_first_accum_begin, router_score_first_accum_done, router_begin, router_topk_begin, router_topk_done, first_expert_begin, first_expert_done, aggregate_done, mlp_done, prefill forward done, decode1 begin, proof hook entry, or proof artifact write.
-- The current blocker is no longer layer-1 MLP entry: on the exact `4096 + 1` retained case, the run now reaches `RETAINED_LAYER_BOUNDARY layer=1 stage=mlp_begin`, `RETAINED_MLP_STAGE layer=1 stage=prerouter_begin`, `RETAINED_MLP_STAGE layer=1 stage=prerouter_setup_done`, `RETAINED_MLP_STAGE layer=1 stage=prerouter_cast_done`, `RETAINED_MLP_STAGE layer=1 stage=router_invoke_begin`, `RETAINED_MLP_STAGE layer=1 stage=router_call_entered`, `RETAINED_MLP_STAGE layer=1 stage=router_dtoh_begin`, `RETAINED_MLP_STAGE layer=1 stage=router_dtoh_done`, and `RETAINED_MLP_STAGE layer=1 stage=router_input_ready`.
-- No safe-side continuation-token artifact has been emitted yet.
-- The current blocker is now beyond `RETAINED_MLP_STAGE layer=1 stage=router_input_ready` and before any layer-1 router score/top-k/expert-dispatch markers, `RETAINED_LAYER_BOUNDARY layer=1 stage=mlp_done`, or `RETAINED_STEP_FORWARD_DONE` on the same exact `4096 + 1` case.
-- The next accepted evidence is a real continuation-token artifact on that retained path or, if that still proves impractical, an explicit bounded live-smoke decision using the already-established post-RoPE, post-attention context, and post-attention residual evidence.
-- Promotion remains paused until that retained-state path emits a real continuation-token artifact, or until a live-smoke decision is made.
+- The retained seam has already established meaningful runtime propagation for `bd49d35` through post-RoPE, post-attention context, post-attention residual, retained layer-0 completion, retained layer-1 attention and post-attention residual handoff, and retained layer-1 MLP entry through `RETAINED_MLP_STAGE layer=1 stage=router_input_ready`.
+- On the exact `4096 + 1` case with honest `--max-model-len 4608`, the retained child still does not emit `RETAINED_LAYER_BOUNDARY layer=1 stage=mlp_done`, `RETAINED_STEP_FORWARD_DONE`, `DECODE1_BEGIN`, `RETAINED_PROOF_ENTER`, or `RETAINED_PROOF_CAPTURED`.
+- The next preferred action is now a bounded GPU1 live-smoke on a clean candidate tree rather than more retained-seam chasing by default.
+- Retained seam chasing is paused unless the live-smoke results indicate a specific need to resume it.
+- The retained seam findings above are part of the decision record and should be preserved for future follow-up even if the workflow pivots to live-smoke.
+- Promotion remains paused until bounded GPU1 live-smoke results are in hand, or until a real continuation-token artifact is emitted by resuming the retained seam deliberately.
 
 Do not treat restricted bench plumbing or compile/test success alone as proof of `bd49d35`.
 
