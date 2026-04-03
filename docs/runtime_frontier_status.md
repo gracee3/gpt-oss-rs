@@ -123,6 +123,21 @@ Current no-trace server smoke contract note:
   - a garbled short raw-completions output is only a liveness signal on this model/view in this tree
   - the semantically correct smoke surface is the Harmony/native request path, not plain raw completions
 
+Current `/v1/responses` boundary note:
+
+- the prior `/v1/responses` `500` is plausibly confounded by an undersized output budget
+- reason:
+  - for GPT-OSS, non-streaming `/v1/responses` always parses returned completion tokens through `HarmonyProtocol::parse_completion_tokens(...)` before building output items
+  - the rendered prompt already ends with `<|start|>assistant`, so `max_output_tokens=4` is not about emitting an assistant header; it is about whether there are enough generated tokens to form a parseable assistant body or tool-call fragment
+  - with only `4` output tokens, a Harmony parse failure or structurally useless partial completion is therefore plausible on inspection alone
+- exact-boundary server smoke is currently truthful only if the Harmony-rendered prompt length is verified, because a simple string `input` is first normalized to a user message and then rendered through Harmony before inference
+- that means a raw `4097`-token text input is not, by itself, a truthful statement about final model-input length on `/v1/responses`
+- rendered-length verification is available from existing codepaths:
+  - `CreateResponseRequest::normalize_input_items`
+  - `render_conversation_protocol_items(...)`
+  - `HarmonyProtocol::render_prompt(...)`, which returns both rendered text and token ids
+- until that rendered token count is checked for the exact server request shape, the no-trace server surface is valid for semantic control/liveness but not yet for an exact-boundary claim
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
