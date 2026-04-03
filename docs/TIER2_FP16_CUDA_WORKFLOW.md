@@ -732,6 +732,32 @@ For the post-attention layer-1 frontier on the next GPU-bound run, switch to `re
 ```
 
 `retained-layer1-postattn-v1` treats `layer=1 stage=attention_done` as the key boundary and then tracks whether execution reaches `layer=1 stage=residual_done`, `layer=1 stage=mlp_begin`, or `RETAINED_STEP_FORWARD_DONE`, so `summary.json` can classify post-attention layer-1 stalls directly.
+For the immediate post-attention residual handoff on the next GPU-bound run, switch to `retained-layer1-residual-v1` and keep the run on GPU1:
+
+```bash
+./scripts/run_retained_continuation_proof.sh \
+  --setup-only \
+  --gpu 1 \
+  --emit-forced-output-tokens \
+  --verify-tokenization \
+  --python /data/models/.venv-awq/bin/python \
+  --required-prefix-token-count 4096 \
+  --required-continuation-token-count 1 \
+  --safe-tree /home/emmy/openai/gpt-oss-rs \
+  --variant-tree /home/emmy/openai/worktrees/runtime-forward \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --prefix-prompt-file /tmp/prefix-4096.txt \
+  --continuation-prompt-file /tmp/continuation-step.txt \
+  --bin restricted_logit_diff \
+  --max-model-len 4608 \
+  --proof-artifact-env GPT_OSS_PROOF_JSON \
+  --proof-artifact-name continuation-head.json \
+  --compare-vector-key values_head \
+  --marker-profile retained-layer1-residual-v1 \
+  --output-dir .live/retained-continuation-proof
+```
+
+`retained-layer1-residual-v1` splits the post-attention boundary into `postattn_residual_begin`, `postattn_residual_done`, `residual_done`, and `mlp_begin`, so `summary.json` can report whether execution gets into the immediate residual update handoff or stalls before that residual path completes.
 Start the listener:
 
 ```bash
