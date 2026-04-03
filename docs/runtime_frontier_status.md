@@ -138,6 +138,26 @@ Current `/v1/responses` boundary note:
   - `HarmonyProtocol::render_prompt(...)`, which returns both rendered text and token ids
 - until that rendered token count is checked for the exact server request shape, the no-trace server surface is valid for semantic control/liveness but not yet for an exact-boundary claim
 
+Current Harmony server route note:
+
+- first-choice semantic short-control surface should be `POST /v1/chat/completions` with `stream=true` and no tools
+- why:
+  - it is Harmony-backed on input because `crates/gpt-oss-server/src/routes/chat.rs` maps request messages to `ProtocolMessage`s and renders through `HarmonyProtocol::render_prompt(...)`
+  - it exposes usable assistant deltas before full completion through `StreamedChatChoiceState::ingest(...)` and `visible_text_from_protocol_messages(...)`
+  - by contrast, `/v1/responses` with `stream=false` is currently more parse-bound because it waits for final completion output and then requires `HarmonyProtocol::parse_completion_tokens(...)` before building response items
+- exact server-side rendered-count verification is possible from existing codepaths:
+  - `/v1/responses`:
+    - `CreateResponseRequest::normalize_input_items`
+    - `render_conversation_protocol_items(...)`
+    - `HarmonyProtocol::render_prompt(...)` returning `RenderedPrompt { text, token_ids }`
+  - `/v1/chat/completions`:
+    - `ChatCompletionRequest.messages`
+    - per-message mapping to `ProtocolMessage::new(...)` in `crates/gpt-oss-server/src/routes/chat.rs`
+    - `HarmonyProtocol::render_prompt(...)` returning `RenderedPrompt { text, token_ids }`
+- frontier consequence:
+  - exact-boundary no-trace server smoke is still truthful only after Harmony-rendered token count is verified
+  - the blocker is not missing core render/count codepaths, but that current harness/tooling does not yet expose that rendered-count verification as a normal smoke step
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
