@@ -79,9 +79,8 @@ fn main() -> Result<()> {
     let model_path = Path::new(&cli.model);
     let mut worker = build_worker(model_path, cli.max_model_len, cli.gpu_memory_utilization)?;
     let metadata = build_single_sequence_metadata(&prompt_token_ids);
-    let logits = worker.debug_logits(&metadata)?;
-    let last_logits = last_token_logits(&logits, tokenizer.vocab_size())?;
-    let chosen_token_id = argmax_token(last_logits)?;
+    let last_logits = worker.debug_last_token_logits(&metadata)?;
+    let chosen_token_id = argmax_token(&last_logits)?;
     let chosen_token_text = tokenizer.decode(&[chosen_token_id]).unwrap_or_default();
     let capture = PrefillTopKCapture {
         prompt_token_count: prompt_token_ids.len(),
@@ -92,7 +91,7 @@ fn main() -> Result<()> {
         restricted_model_path: cli.model,
         visible_devices: std::env::var("CUDA_VISIBLE_DEVICES").unwrap_or_else(|_| "<unset>".into()),
         wall_clock_seconds: started.elapsed().as_secs_f64(),
-        final_position_top_k: top_k_logits(last_logits, cli.top_k, &tokenizer)?,
+        final_position_top_k: top_k_logits(&last_logits, cli.top_k, &tokenizer)?,
     };
 
     if let Some(parent) = cli.output.parent() {
@@ -231,15 +230,6 @@ fn build_single_sequence_metadata(prompt_token_ids: &[TokenId]) -> Vec<SequenceG
         },
         block_tables,
     }]
-}
-
-fn last_token_logits<'a>(logits: &'a [f32], vocab_size: usize) -> Result<&'a [f32]> {
-    if logits.len() < vocab_size {
-        bail!("logits buffer too small: {} < vocab {}", logits.len(), vocab_size);
-    }
-    let num_tokens = logits.len() / vocab_size;
-    let last_offset = (num_tokens - 1) * vocab_size;
-    Ok(&logits[last_offset..last_offset + vocab_size])
 }
 
 fn argmax_token(logits: &[f32]) -> Result<TokenId> {
