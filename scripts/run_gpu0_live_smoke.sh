@@ -178,6 +178,7 @@ resolve_binary_path() {
   local deps_dir="${TREE}/target/release/deps"
   local primary_kind=""
   local candidate=""
+  local candidate_kind=""
 
   if [[ -x "${primary}" ]]; then
     primary_kind=$(file -b "${primary}" 2>/dev/null || true)
@@ -188,11 +189,14 @@ resolve_binary_path() {
   fi
 
   if [[ -d "${deps_dir}" ]]; then
-    candidate=$(find "${deps_dir}" -maxdepth 1 -type f -name "${LIVE_BIN}-*" -perm -111 ! -name '*.d' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)
-    if [[ -n "${candidate}" ]]; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
+    while IFS= read -r candidate; do
+      [[ -n "${candidate}" ]] || continue
+      candidate_kind=$(file -b "${candidate}" 2>/dev/null || true)
+      if [[ "${candidate_kind}" != *"shell script"* ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done < <(find "${deps_dir}" -maxdepth 1 -type f -name "${LIVE_BIN}-*" -perm -111 ! -name '*.d' -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-)
   fi
 
   printf '%s\n' "${primary}"
