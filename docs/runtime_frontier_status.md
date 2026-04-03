@@ -45,19 +45,27 @@ Current positive evidence:
 
 - YaRN table-construction math matches the local HF/vLLM-style reference on the active GPT-OSS config
 - a no-YaRN control case did not perturb runtime traces
+- completed same-input sink-free `>4096` runtime evidence exists for:
+  - post-RoPE `q/k`
+  - post-attention context
+  - post-attention residual
+- retained-state `restricted_logit_diff` seam evidence now confirms the safe-side retained prefill reaches all of the following boundaries on the active `4096 + 1` case:
+  - retained layer-0 late-token router traversal through `mlp_done`
+  - retained layer-1 attention completion
+  - retained layer-1 post-attention residual handoff
+  - retained layer-1 `mlp_begin`
+  - retained layer-1 `router_input_ready`
 
 Current blocker:
 
-- completed post-4096 same-input runtime observation still does not emit a finished artifact in bounded time
+- the retained-state seam still does not emit a continuation-token artifact in bounded time
+- the retained-state seam still does not reach `decode1`
+- there is still no safe/variant retained continuation comparison for the continuation token
 
-Next honest proof target:
+Current retained-seam limitation:
 
-- the smallest post-4096 runtime seam that captures one localized last-token value and exits immediately
-- preferred order:
-  - post-RoPE `q`
-  - post-RoPE `k`
-  - post-attention context
-  - post-attention residual
+- none of the retained-state results above should be treated as proof of full runtime correctness
+- the retained-state findings are preserved here so future work can build on the confirmed boundaries even if the workflow pivots to a bounded live-smoke lane
 
 Guardrail:
 
