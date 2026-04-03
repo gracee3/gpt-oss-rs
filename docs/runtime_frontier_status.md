@@ -110,6 +110,19 @@ Current boundary-smoke timing note:
 - if a lighter honest boundary-smoke surface becomes necessary later, the smallest boundary-relevant change would be a surface that reuses the same worker/config path but exits after one localized boundary capture instead of materializing the full prefill trace
 - default action still remains no new runtime code until the bounded live-smoke lane clearly justifies it
 
+Current no-trace server smoke contract note:
+
+- inspection says plain `POST /v1/completions` with a raw text prompt is not the right semantic contract for GPT-OSS in this tree; use the native Harmony-backed `/v1/chat/completions` or `/v1/responses` path for semantic smoke
+- why:
+  - `crates/gpt-oss-server/src/routes/completions.rs` forwards `req.prompt` directly to `engine.generate(...)` with no Harmony normalization
+  - `crates/gpt-oss-server/src/routes/chat.rs` and `crates/gpt-oss-server/src/routes/responses.rs` both normalize inputs through `gpt_oss_tokenizer::HarmonyProtocol::gpt_oss().render_prompt(...)` before inference
+  - `crates/gpt-oss-tokenizer/src/protocol.rs` defines the intended seam explicitly as the "Harmony-native GPT-OSS protocol seam" and says the server should normalize API requests into `ProtocolMessage`s and treat the resulting structured parse state as the source of truth
+- serving runtime mode does not change that semantic contract:
+  - `trusted` vs `experimental` in `crates/gpt-oss-server/src/runtime_policy.rs` selects backend/admission behavior, not prompt-format semantics
+- interpretation:
+  - a garbled short raw-completions output is only a liveness signal on this model/view in this tree
+  - the semantically correct smoke surface is the Harmony/native request path, not plain raw completions
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
