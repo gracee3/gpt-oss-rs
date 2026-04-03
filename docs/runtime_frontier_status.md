@@ -67,6 +67,35 @@ Current retained-seam limitation:
 - none of the retained-state results above should be treated as proof of full runtime correctness
 - the retained-state findings are preserved here so future work can build on the confirmed boundaries even if the workflow pivots to a bounded live-smoke lane
 
+Current bounded live-smoke surface for `bd49d35`:
+
+- baseline smoke reference: `~/openai/gpt-oss-rs` at `95114af`
+- clean candidate smoke tree: `~/openai/worktrees/runtime-live-smoke-candidate` at `abdc358`
+- relative to that baseline, the current bounded smoke surface is exactly:
+  - `crates/gpt-oss-bench/src/bin/restricted_logit_diff.rs`
+  - `crates/gpt-oss-bench/src/bin/restricted_prefill_trace.rs`
+  - `crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py`
+  - `crates/gpt-oss-engine/src/worker/config.rs`
+  - `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+  - `crates/gpt-oss-model-runner/src/architectures/gpt_oss.rs`
+  - `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+  - `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- exercised binary path for the next boundary smoke remains `restricted_logit_diff` with the worker/config and model-runner chain above
+- the clean candidate reconfirms that the exercised binary paths exclude retained/proof instrumentation:
+  - no `RETAINED_`
+  - no `GPT_OSS_RETAINED_`
+  - no `PROOF_`
+
+Decision trigger after the next bounded live-smoke:
+
+- resume retained-seam chasing only if the boundary smoke produces a decision-forcing mismatch such as:
+  - baseline passes but candidate fails on the same `>4096` boundary case
+  - candidate emits a malformed or partial artifact only near the boundary
+  - candidate shows candidate-only decode or output corruption tied to the boundary
+- otherwise the default action remains:
+  - no new runtime code
+  - let bounded live-smoke drive the next decision
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
