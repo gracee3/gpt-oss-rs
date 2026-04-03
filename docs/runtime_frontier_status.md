@@ -187,6 +187,32 @@ Current live-side boundary-capture-lite recommendation:
   - candidate can then be run on the identical artifact surface
 - retained chase remains paused unless this lite surface exposes a new specific gap
 
+Current last-position-only narrowing note:
+
+- the current prefill-topk path still materializes full prompt-step logits in the following chain:
+  - `GpuWorker::debug_logits(...)`
+  - `GpuWorker::gpu_forward_ex(..., false)`
+  - `GpuModelRunner::forward_ex(..., greedy_only=false)`
+  - `CudaLinearLayer::forward_once(...)` for LM-head logits over `[num_tokens, vocab_size]`
+  - `stream.clone_dtoh(&logits_gpu)` returning the full `[num_tokens * vocab_size]` CPU buffer
+  - bench-side `last_token_logits(...)` and `top_k_logits(...)`
+- the exact recommended narrowing point is therefore the handoff inside `GpuModelRunner::forward_ex(...)` immediately after LM-head logits exist on GPU and before `clone_dtoh(&logits_gpu)` copies the whole prompt-step buffer back to CPU
+- the narrowest honest API exposure is:
+  - return final-position argmax + top-k directly from the same prefill forward
+  - this would replace the current `ForwardOutput::Logits(logits_cpu)` path for the lite smoke and bypass both full-buffer DtoH and bench-side last-row/top-k reduction
+- if that is judged too opinionated for a first cut, the next-narrowest exposure is:
+  - return last-position logits only
+  - this still removes prompt-length-scaled bulk while keeping CPU-side top-k selection in bench code
+- what this narrowing removes relative to the current prefill-topk path:
+  - full prompt-step logits DtoH/copy
+  - full CPU buffer materialization for `[num_tokens * vocab_size]`
+  - CPU-side slicing from a huge logits buffer down to the last row
+  - and, if top-k is returned directly, the remaining CPU sort over the full final-position vocab row
+- interpretation for the next harness pass:
+  - if the narrowed surface succeeds on short control and exact-boundary baseline, candidate confirmation should follow on the same artifact surface
+  - if the narrowed surface still times out before artifact emission, the remaining blocker is likely upstream of full-logits bulk and closer to prefill / LM-head execution before result return
+  - retained chase remains paused unless that narrower live surface reveals a new specific gap
+
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
