@@ -1246,6 +1246,33 @@ impl GpuWorker {
         )
     }
 
+    /// Debug-only last-position logits capture for one prepared worker step.
+    ///
+    /// This reuses the live worker input preparation but narrows device-to-host
+    /// transfer to just the final token row instead of the full
+    /// `[num_tokens, vocab_size]` logit matrix.
+    pub fn debug_last_token_logits(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.forward_last_token_logits(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            model_input.is_prefill,
+        )
+    }
+
     pub fn debug_runner_prefill_trace(
         &self,
         metadata: &[SequenceGroupMetadata],
