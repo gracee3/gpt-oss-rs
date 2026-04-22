@@ -236,6 +236,89 @@ impl KVCache {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ReferenceAttentionConfig {
+    sliding_window: Option<usize>,
+    q_start_pos: usize,
+}
+
+/// Slow, literal attention used as an oracle-oriented CPU fallback.
+fn reference_attention(
+    q: &[f32], // [num_q_tokens, num_heads * head_dim]
+    k: &[f32], // [total_kv_len, num_kv_heads * head_dim]
+    v: &[f32], // [total_kv_len, num_kv_heads * head_dim]
+    num_q_tokens: usize,
+    total_kv_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    config: ReferenceAttentionConfig,
+) -> Vec<f32> {
+    let q_stride = num_heads * head_dim;
+    let kv_stride = num_kv_heads * head_dim;
+    let heads_per_kv = num_heads / num_kv_heads;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+
+    let mut output = vec![0.0f32; num_q_tokens * q_stride];
+    if num_q_tokens == 0 || total_kv_len == 0 {
+        return output;
+    }
+
+    for h in 0..num_heads {
+        let kv_h = h / heads_per_kv;
+
+        for qi in 0..num_q_tokens {
+            let q_abs_pos = config.q_start_pos + qi;
+            let max_ki = q_abs_pos.min(total_kv_len - 1);
+            let window_start = config
+                .sliding_window
+                .map(|window| q_abs_pos.saturating_sub(window.saturating_sub(1)))
+                .unwrap_or(0)
+                .min(max_ki);
+
+            let mut max_score = f32::NEG_INFINITY;
+            let mut scores = Vec::with_capacity(max_ki - window_start + 1);
+
+            for ki in window_start..=max_ki {
+                let mut dot = 0.0f32;
+                for d in 0..head_dim {
+                    let q_val = q[qi * q_stride + h * head_dim + d];
+                    let k_val = k[ki * kv_stride + kv_h * head_dim + d];
+                    dot += q_val * k_val;
+                }
+                let score = dot * scale;
+                if score > max_score {
+                    max_score = score;
+                }
+                scores.push(score);
+            }
+
+            let mut sum = 0.0f32;
+            for score in &mut scores {
+                *score = (*score - max_score).exp();
+                sum += *score;
+            }
+            if sum > 0.0 {
+                let inv_sum = 1.0 / sum;
+                for score in &mut scores {
+                    *score *= inv_sum;
+                }
+            }
+
+            for d in 0..head_dim {
+                let mut val = 0.0f32;
+                for (offset, &weight) in scores.iter().enumerate() {
+                    let ki = window_start + offset;
+                    val += weight * v[ki * kv_stride + kv_h * head_dim + d];
+                }
+                output[qi * q_stride + h * head_dim + d] = val;
+            }
+        }
+    }
+
+    output
+}
+
 /// FP8-quantized KV cache: stores keys and values as u8 + f32 scales.
 struct Fp8KVCache {
     /// key_data[layer]: quantized u8 vec of [cached_tokens * num_kv_heads * head_dim]
@@ -1734,7 +1817,7 @@ impl GpuWorker {
         hidden: &CudaSlice<f32>,
         layer_idx: usize,
         position_ids: &[u32],
-        is_prefill: bool,
+        _is_prefill: bool,
         num_tokens: usize,
         hidden_size: usize,
         num_heads: usize,
@@ -1856,7 +1939,6 @@ impl GpuWorker {
             num_heads,
             num_kv_heads,
             head_dim,
-            is_prefill,
         );
 
         let attn_out_gpu = self.stream.clone_htod(&attn_output).map_err(gpu_err)?;
@@ -1945,8 +2027,8 @@ impl GpuWorker {
     }
 
     /// Multi-head attention with GQA support, operating on CPU host buffers.
-    /// Handles both prefill (causal mask over all Q positions) and decode (Q is just new tokens,
-    /// K/V includes full cache).
+    /// Uses absolute query positions so append-only decode and sliding-window
+    /// masking follow the same literal oracle path.
     fn cached_attention(
         &self,
         q: &[f32], // [num_q_tokens, num_heads * head_dim]
@@ -1957,75 +2039,21 @@ impl GpuWorker {
         num_heads: usize,
         num_kv_heads: usize,
         head_dim: usize,
-        is_prefill: bool,
     ) -> Vec<f32> {
-        let q_stride = num_heads * head_dim;
-        let kv_stride = num_kv_heads * head_dim;
-        let heads_per_kv = num_heads / num_kv_heads;
-        let scale = 1.0 / (head_dim as f32).sqrt();
-
-        let mut output = vec![0.0f32; num_q_tokens * q_stride];
-
-        for h in 0..num_heads {
-            let kv_h = h / heads_per_kv;
-
-            for qi in 0..num_q_tokens {
-                // Causal masking:
-                // During prefill, Q position qi can attend to K positions 0..=qi
-                // During decode, Q is the new token(s), can attend to all KV (full cache)
-                let max_ki = if is_prefill {
-                    // qi-th query token corresponds to the qi-th position in the sequence
-                    qi
-                } else {
-                    // decode: Q tokens can attend to everything in cache
-                    total_kv_len - 1
-                };
-
-                let attend_len = max_ki + 1;
-
-                // Compute attention scores
-                let mut max_score = f32::NEG_INFINITY;
-                let mut scores = Vec::with_capacity(attend_len);
-
-                for ki in 0..attend_len {
-                    let mut dot = 0.0f32;
-                    for d in 0..head_dim {
-                        let q_val = q[qi * q_stride + h * head_dim + d];
-                        let k_val = k[ki * kv_stride + kv_h * head_dim + d];
-                        dot += q_val * k_val;
-                    }
-                    let score = dot * scale;
-                    if score > max_score {
-                        max_score = score;
-                    }
-                    scores.push(score);
-                }
-
-                // Softmax
-                let mut sum = 0.0f32;
-                for s in scores.iter_mut() {
-                    *s = (*s - max_score).exp();
-                    sum += *s;
-                }
-                if sum > 0.0 {
-                    let inv_sum = 1.0 / sum;
-                    for s in scores.iter_mut() {
-                        *s *= inv_sum;
-                    }
-                }
-
-                // Weighted sum of values
-                for d in 0..head_dim {
-                    let mut val = 0.0f32;
-                    for (ki, &weight) in scores.iter().enumerate() {
-                        val += weight * v[ki * kv_stride + kv_h * head_dim + d];
-                    }
-                    output[qi * q_stride + h * head_dim + d] = val;
-                }
-            }
-        }
-
-        output
+        reference_attention(
+            q,
+            k,
+            v,
+            num_q_tokens,
+            total_kv_len,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            ReferenceAttentionConfig {
+                sliding_window: self.config.sliding_window,
+                q_start_pos: total_kv_len.saturating_sub(num_q_tokens),
+            },
+        )
     }
 
     /// RMS Norm via GPU kernel (no CPU round-trip when kernel is loaded).
@@ -2463,6 +2491,16 @@ mod tests {
     use super::*;
     use gpt_oss_core::prelude::{RequestId, SequenceId};
 
+    fn assert_close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (idx, (&lhs, &rhs)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (lhs - rhs).abs() < 1e-5,
+                "mismatch at index {idx}: actual={lhs}, expected={rhs}"
+            );
+        }
+    }
+
     #[test]
     fn sink_tensor_detector_ignores_zero_sinks() {
         let tensors = vec![
@@ -2575,5 +2613,220 @@ mod tests {
 
         // Layer 1 should still be empty
         assert_eq!(cache.keys(1).len(), 0);
+    }
+
+    #[test]
+    fn reference_attention_respects_sliding_window() {
+        let q = vec![1.0, 0.0];
+        let k = vec![10.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let v = vec![100.0, 100.0, 1.0, 1.0, 2.0, 2.0];
+
+        let full = reference_attention(
+            &q,
+            &k,
+            &v,
+            1,
+            3,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: None,
+                q_start_pos: 2,
+            },
+        );
+        let windowed = reference_attention(
+            &q,
+            &k,
+            &v,
+            1,
+            3,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: Some(2),
+                q_start_pos: 2,
+            },
+        );
+
+        assert!(full[0] > 50.0);
+        assert!((windowed[0] - 1.5).abs() < 1e-5);
+        assert!((windowed[1] - 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn reference_attention_keeps_decode_append_only() {
+        let q = vec![1.0, 0.0, -1.0, 0.0];
+        let k = vec![1.0, 0.0, 1.0, 0.0, 20.0, 0.0, -20.0, 0.0];
+        let v = vec![1.0, 1.0, 2.0, 2.0, 30.0, 30.0, -40.0, -40.0];
+
+        let out = reference_attention(
+            &q,
+            &k,
+            &v,
+            2,
+            4,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: None,
+                q_start_pos: 2,
+            },
+        );
+
+        assert!(out[0] > 20.0);
+        assert!(out[1] > 20.0);
+        assert!(out[2] < -30.0);
+        assert!(out[3] < -30.0);
+    }
+
+    #[test]
+    fn reference_attention_matches_full_and_windowed_multi_position_expectations() {
+        let q = vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let k = vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let v = vec![10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 40.0, 40.0, 50.0, 50.0];
+
+        let full = reference_attention(
+            &q,
+            &k,
+            &v,
+            3,
+            5,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: None,
+                q_start_pos: 2,
+            },
+        );
+        let windowed = reference_attention(
+            &q,
+            &k,
+            &v,
+            3,
+            5,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: Some(2),
+                q_start_pos: 2,
+            },
+        );
+
+        assert_close(&full, &[20.0, 20.0, 25.0, 25.0, 30.0, 30.0]);
+        assert_close(&windowed, &[25.0, 25.0, 35.0, 35.0, 45.0, 45.0]);
+    }
+
+    #[test]
+    fn reference_attention_uses_query_start_for_windowed_decode_single_query() {
+        let q = vec![1.0, 0.0];
+        let k_seq_a = vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let v_seq_a = vec![10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 40.0, 40.0];
+        let k_seq_b = vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let v_seq_b = vec![10.0, 10.0, 20.0, 20.0, 30.0, 30.0];
+
+        let seq_a = reference_attention(
+            &q,
+            &k_seq_a,
+            &v_seq_a,
+            1,
+            4,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: Some(2),
+                q_start_pos: 3,
+            },
+        );
+        let seq_b = reference_attention(
+            &q,
+            &k_seq_b,
+            &v_seq_b,
+            1,
+            3,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: Some(2),
+                q_start_pos: 2,
+            },
+        );
+
+        assert_eq!(seq_a, vec![35.0, 35.0]);
+        assert_eq!(seq_b, vec![25.0, 25.0]);
+    }
+
+    #[test]
+    fn reference_attention_respects_nonzero_rope_positions() {
+        let rope = RopeTable::new(2, 16, 10000.0);
+        let mut q_aligned = vec![1.0, 0.0];
+        let mut q_shifted = vec![1.0, 0.0];
+        let mut k = vec![1.0, 0.0, 1.0, 0.0];
+        let v = vec![5.0, 5.0, 60.0, 60.0];
+
+        rope.apply(&mut q_aligned, &[6], 1, 1, 2);
+        rope.apply(&mut q_shifted, &[3], 1, 1, 2);
+        rope.apply(&mut k, &[5, 6], 2, 1, 2);
+
+        let aligned = reference_attention(
+            &q_aligned,
+            &k,
+            &v,
+            1,
+            2,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: None,
+                q_start_pos: 1,
+            },
+        );
+        let shifted = reference_attention(
+            &q_shifted,
+            &k,
+            &v,
+            1,
+            2,
+            1,
+            1,
+            2,
+            ReferenceAttentionConfig {
+                sliding_window: None,
+                q_start_pos: 1,
+            },
+        );
+
+        assert!(aligned[0] > 30.0);
+        assert!(aligned[1] > 30.0);
+        assert!(aligned[0] > shifted[0] + 5.0);
+        assert!(aligned[1] > shifted[1] + 5.0);
+    }
+
+    #[test]
+    fn reference_attention_reuses_kv_heads_for_gqa() {
+        let q = vec![1.0, 0.0, 1.0, 0.0];
+        let k = vec![1.0, 0.0, 2.0, 0.0];
+        let v = vec![3.0, 4.0, 30.0, 40.0];
+
+        let out = reference_attention(
+            &q,
+            &k,
+            &v,
+            1,
+            1,
+            2,
+            1,
+            2,
+            ReferenceAttentionConfig::default(),
+        );
+
+        assert_eq!(out, vec![3.0, 4.0, 3.0, 4.0]);
     }
 }

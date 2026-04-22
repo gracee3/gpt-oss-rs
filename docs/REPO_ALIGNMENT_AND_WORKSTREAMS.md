@@ -51,6 +51,7 @@ The following branches were preserved and pushed as historical or reference lane
 - `gpt-oss/sliding-attention-first-case`
 - `gpt-oss/tier2-warm-oracle-core`
 - `integration/tier01-lane`
+- `oracle/attention-ref` (paused in quiet oracle-maintenance mode; reopen only for a concrete PPP or runtime-forward need addressable by one small synthetic bridge)
 
 ## What Was Archived Or Left As History
 
