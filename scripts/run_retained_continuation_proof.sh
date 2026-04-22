@@ -19,6 +19,8 @@ usage() {
 Usage: ./scripts/run_retained_continuation_proof.sh [options]
 
 Prepare or run a bounded retained-state continuation proof workflow.
+This runner compares matched prefix/continuation inputs across trees, but it is
+not the same-input local replay ownership gate used before claiming a runtime defect.
 
 Options:
   --gpu <id>                      CUDA_VISIBLE_DEVICES value to use (default: 0)
@@ -923,8 +925,16 @@ EOF
 fi
 
 FORCED_OUTPUT_TOKENS_ARG=""
+declare -a FORCED_OUTPUT_TOKENS_ARGS=()
 if [[ "${EMIT_FORCED_OUTPUT_TOKENS}" -eq 1 && "${VERIFY_TOKENIZATION}" -eq 1 ]]; then
   FORCED_OUTPUT_TOKENS_ARG=$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("forced_output_tokens_arg",""))' "${TOKENIZATION_JSON_FILE}")
+fi
+if [[ "${PROOF_BIN}" == "restricted_logit_diff" && -n "${FORCED_OUTPUT_TOKENS_ARG}" ]]; then
+  mapfile -t FORCED_OUTPUT_TOKEN_IDS < <("${PYTHON_BIN}" -c 'import json,sys; print("\n".join(str(token) for token in json.load(open(sys.argv[1])).get("continuation_token_ids", [])))' "${TOKENIZATION_JSON_FILE}")
+  for token in "${FORCED_OUTPUT_TOKEN_IDS[@]}"; do
+    [[ -n "${token}" ]] || continue
+    FORCED_OUTPUT_TOKENS_ARGS+=(--forced-output-tokens "${token}")
+  done
 fi
 
 PROGRESS_MARKERS_JSON_FILE="${PLAN_DIR}/progress_markers.json"
@@ -1134,6 +1144,7 @@ run_case() {
       --prefix-prompt-file "${PREFIX_PROMPT_FILE}" \
       --continuation-prompt-file "${CONTINUATION_PROMPT_FILE}" \
       --max-model-len "${MAX_MODEL_LEN}" \
+      "${FORCED_OUTPUT_TOKENS_ARGS[@]}" \
       --output "${outer_artifact}"
   ) >"${stdout_file}" 2>"${stderr_file}" || rc=$?
   end_epoch=$(date +%s)

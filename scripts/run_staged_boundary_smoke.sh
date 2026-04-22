@@ -205,9 +205,6 @@ GPU_SNAPSHOT_FILE="${PLAN_DIR}/gpu_snapshot.txt"
     value=${env_kv#*=}
     printf 'export %s=%s\n' "${key}" "$(shell_escape "${value}")"
   done
-  if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
-    printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${CONTINUATION_PROOF_ARTIFACT}")"
-  fi
 } >"${ENV_FILE}"
 
 export STAGED_ENV_JSON_FILE="${ENV_JSON_FILE}"
@@ -231,8 +228,6 @@ for line in raw.splitlines():
     key, value = line.split("=", 1)
     envs.append({"key": key, "value": value})
 proof_key = os.environ.get("STAGED_PROOF_ARTIFACT_ENV", "")
-if proof_key:
-    envs.append({"key": proof_key, "value": os.environ["STAGED_PROOF_ARTIFACT_PATH"]})
 Path(os.environ["STAGED_ENV_JSON_FILE"]).write_text(json.dumps(envs, indent=2) + "\n")
 PY
 
@@ -252,15 +247,24 @@ cat >"${PREFIX_CMD_FILE}" <<EOF
 cd ${TREE}
 PROMPT=\$(cat ${PREFIX_PROMPT_FILE})
 . ${ENV_FILE}
+$( if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then printf 'unset %s\n' "${PROOF_ARTIFACT_ENV}"; fi )
 PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${BINARY_PATH} --model ${MODEL_PATH} --prompt "\${PROMPT}" --max-model-len ${MAX_MODEL_LEN} --output ${PREFIX_ARTIFACT}
 EOF
 
-cat >"${CONTINUATION_CMD_FILE}" <<EOF
+{
+  cat <<EOF
 cd ${TREE}
 PROMPT=\$(cat ${CONTINUATION_PROMPT_FILE})
 . ${ENV_FILE}
+EOF
+  if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+    printf 'unset %s\n' "${PROOF_ARTIFACT_ENV}"
+    printf 'export %s=%s\n' "${PROOF_ARTIFACT_ENV}" "$(shell_escape "${CONTINUATION_PROOF_ARTIFACT}")"
+  fi
+  cat <<EOF
 PATH="/data/models/.venv-awq/bin:\$PATH" CUDA_VISIBLE_DEVICES=${GPU_ID} GPT_OSS_DISABLE_CUDA_GRAPHS=1 ${BINARY_PATH} --model ${MODEL_PATH} --prompt "\${PROMPT}" --max-model-len ${MAX_MODEL_LEN} --output ${CONTINUATION_ARTIFACT}
 EOF
+} >"${CONTINUATION_CMD_FILE}"
 
 chmod +x "${BUILD_CMD_FILE}" "${PREFIX_CMD_FILE}" "${CONTINUATION_CMD_FILE}"
 
@@ -385,6 +389,9 @@ run_stage() {
     cd "${TREE}"
     PROMPT=$(cat "${prompt_file}")
     . "${ENV_FILE}"
+    if [[ -n "${PROOF_ARTIFACT_ENV}" ]]; then
+      unset "${PROOF_ARTIFACT_ENV}"
+    fi
     if [[ -n "${proof_file}" ]]; then
       export "${PROOF_ARTIFACT_ENV}=${proof_file}"
     fi

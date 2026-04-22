@@ -14,6 +14,9 @@ Tier 1:
 Tier 2:
   compile + trace (or reuse) + oracle compare.
 
+This wrapper is the same-input local replay ownership gate before any runtime-defect claim.
+Bounded proof seams such as the YaRN, staged, and retained runners do not replace it.
+
 Options:
   -t, --tier <0|1|2>
       validation tier to run (default: 0)

@@ -17,7 +17,9 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/run_yarn_long_context_proof.sh [options]
 
-Prepare or run a bounded same-input long-context comparison for the YaRN frontier.
+Prepare or run a bounded long-context proof seam for the YaRN frontier.
+This runner compares matched prompt/model inputs, but it is not the
+same-input local replay ownership gate used before claiming a runtime defect.
 
 Options:
   --gpu <id>                 CUDA_VISIBLE_DEVICES value to use (default: 0)

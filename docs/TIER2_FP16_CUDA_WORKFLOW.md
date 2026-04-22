@@ -142,6 +142,8 @@ Artifact reuse guardrail:
 
 Use these commands as the default operator entrypoints:
 
+`./scripts/probe_validation_tier.sh` remains the only operator-facing same-input local replay ownership gate before calling a real runtime bug. The bounded proof-seam runners below stay useful for harness comparison and artifact capture, but they do not replace this wrapper.
+
 - representative Tier 2 run:
 
 ```bash
@@ -269,9 +271,19 @@ Contract for alternate proof binaries:
 
 What to expect:
 
-- `state=completed` with both reports present means the seam produced a comparable same-input summary
+- `state=completed` with both reports present means the seam produced a comparable proof summary for the matched long-context prompt
 - `state=timed_out` means the current seam is still too heavy in the allotted window, but the timeout is now reproducible and captured explicitly
 - `state=failed` means the proof stopped before the bounded runtime observation completed; inspect the per-case `run.stderr`
+
+This runner is a bounded harness seam for matched-prompt comparison. It does not replace the `probe_validation_tier.sh` same-input local replay ownership gate before calling a real runtime bug.
+
+For bounded harness-only regression coverage of this operator surface, run:
+
+```bash
+./scripts/test_run_yarn_long_context_proof.sh
+```
+
+It validates the prompt/setup outputs, per-side proof-env plans, and a prebuilt `--run-only` flow on fake safe/variant trees, including compact proof-artifact selection and `vector_diff` summary generation when the selected key is present.
 
 ## Bounded GPU0 Live-Smoke Workflow
 
@@ -341,6 +353,14 @@ For a lighter truthful boundary surface than `restricted_prefill_trace`, point t
 
 Use it when you need an honest `>4096` live prefill smoke without paying for a full per-layer trace or any retained/oracle machinery.
 
+For bounded harness-only regression coverage of the operator surface, run:
+
+```bash
+./scripts/test_run_gpu0_live_smoke.sh
+```
+
+It validates the generated setup plan plus a prebuilt `--run-only` path for `restricted_prefill_topk` on a fake tree, so the shell harness can be checked without a GPU build or live model run.
+
 ## Staged Boundary-Isolation Workflow
 
 When the likely fallback path is "warm the boundary first, then capture a narrow continuation artifact", use the staged runner to keep both stages in one summary directory:
@@ -366,9 +386,19 @@ What this prepares:
 - a continuation stage with its own command, stdout/stderr, outer artifact path, and optional proof-side artifact path
 - one stage-aware `summary.json` so the operator can see the intended prefix/continuation flow before the downstream feature seam is fully wired
 
+For bounded harness-only regression coverage of that staged operator surface, run:
+
+```bash
+./scripts/test_run_staged_boundary_smoke.sh
+```
+
+It validates the staged setup summary plus a prebuilt `--run-only` flow on a fake tree, and it checks that the continuation proof-artifact env stays scoped to the continuation stage instead of leaking into the prefix stage.
+
 ## Retained-Continuation Proof Workflow
 
 For the honest retained-state continuation path, use the dedicated retained runner instead of replay-based staging. Its contract is one binary invocation per tree with both the prefix boundary and the continuation step supplied together:
+
+This runner is a bounded harness seam for matched prefix/continuation inputs. It does not replace `probe_validation_tier.sh` as the same-input local replay ownership gate before calling a real runtime bug.
 
 ```bash
 ./scripts/run_retained_continuation_proof.sh \
@@ -446,6 +476,14 @@ For the retained-state `restricted_logit_diff` path, add forced-output token emi
 ```
 
 This records the exact continuation token ids and the command-ready forced-output token argument string, for example `--forced-output-tokens 6602`.
+
+For bounded harness-only regression coverage of the retained operator surface, run:
+
+```bash
+./scripts/test_run_retained_continuation_proof.sh
+```
+
+It validates verified tokenization, forced-output token plumbing for the `restricted_logit_diff` retained path, one marker-profile progress summary, and compact proof-artifact selection on fake safe/variant trees without any GPU run.
 
 For the retained-state `restricted_logit_diff` path, also set an explicit run budget above the verified minimum. For the current `4096 + 1` split, the runner records a required minimum model length of `4097`, so the bounded operator path should keep using `--max-model-len 4608`:
 
