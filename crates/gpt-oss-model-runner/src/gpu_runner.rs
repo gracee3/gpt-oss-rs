@@ -24,6 +24,12 @@ pub enum ForwardOutput {
     TokenIdsPending { actual_batch: usize },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogitsOutputMode {
+    Full,
+    LastToken,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrefillLayerTrace {
     pub layer_idx: usize,
@@ -43,6 +49,7 @@ mod cuda_impl {
     use std::cell::RefCell;
     use std::f32::consts::PI;
     use std::sync::Arc;
+    use std::time::Instant;
 
     use std::cell::Cell;
 
@@ -67,7 +74,7 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::{ForwardOutput, PrefillActivationTrace, PrefillLayerTrace};
+    use super::{ForwardOutput, LogitsOutputMode, PrefillActivationTrace, PrefillLayerTrace};
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -656,6 +663,28 @@ mod cuda_impl {
             }
         }
 
+        pub fn forward_last_token_logits(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+            is_prefill: bool,
+        ) -> Result<Vec<f32>> {
+            match self.forward_ex_with_mode(
+                token_ids,
+                positions,
+                attn_meta,
+                is_prefill,
+                false,
+                LogitsOutputMode::LastToken,
+            )? {
+                ForwardOutput::Logits(logits) => Ok(logits),
+                ForwardOutput::TokenIds(_) | ForwardOutput::TokenIdsPending { .. } => {
+                    unreachable!("greedy_only=false must return logits")
+                }
+            }
+        }
+
         pub fn debug_prefill_trace(
             &self,
             token_ids: &[u32],
@@ -816,6 +845,25 @@ mod cuda_impl {
             is_prefill: bool,
             greedy_only: bool,
         ) -> Result<ForwardOutput> {
+            self.forward_ex_with_mode(
+                token_ids,
+                positions,
+                attn_meta,
+                is_prefill,
+                greedy_only,
+                LogitsOutputMode::Full,
+            )
+        }
+
+        fn forward_ex_with_mode(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+            is_prefill: bool,
+            greedy_only: bool,
+            logits_output_mode: LogitsOutputMode,
+        ) -> Result<ForwardOutput> {
             let num_tokens = token_ids.len();
             let num_seqs = attn_meta.context_lens.len();
             let hidden_size = self.config.hidden_size;
@@ -828,8 +876,24 @@ mod cuda_impl {
 
             debug!(
                 num_tokens,
-                num_seqs, is_prefill, greedy_only, "GpuModelRunner::forward_ex"
+                num_seqs,
+                is_prefill,
+                greedy_only,
+                ?logits_output_mode,
+                "GpuModelRunner::forward_ex"
             );
+            let stage_start = Instant::now();
+            let log_last_token_stage = |stage: &'static str| {
+                if is_prefill && logits_output_mode == LogitsOutputMode::LastToken {
+                    info!(
+                        stage,
+                        num_tokens,
+                        num_seqs,
+                        elapsed_ms = stage_start.elapsed().as_millis(),
+                        "prefill last-token progress"
+                    );
+                }
+            };
 
             let max_context_len = attn_meta.max_context_len;
 
@@ -845,6 +909,11 @@ mod cuda_impl {
 
                 let gpu_cache = self.cache.gpu_cache();
                 let num_layers = self.layers.len();
+                let _prefill_progress_debug_guard =
+                    crate::gpu_layer::scoped_prefill_last_token_progress_debug(
+                        is_prefill && logits_output_mode == LogitsOutputMode::LastToken,
+                    );
+                log_last_token_stage("transformer_loop_start");
                 let meta_packed = self.meta_packed.borrow();
                 let packed_buf = meta_packed.slice();
                 let offsets = self.meta_packed_offsets.get();
@@ -896,6 +965,7 @@ mod cuda_impl {
                     hidden_f16 = residual;
                     prev_mlp_out = Some(mlp_out);
                 }
+                log_last_token_stage("transformer_layers_complete");
 
                 // Final: fuse last layer's residual add with final RMSNorm
                 let fn_w = self
@@ -917,6 +987,7 @@ mod cuda_impl {
                 } else {
                     self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
                 };
+                log_last_token_stage("final_rmsnorm_complete");
 
                 // LM head + argmax: f16 hidden -> fused argmax
                 if num_tokens == 1 && greedy_only {
@@ -1022,6 +1093,7 @@ mod cuda_impl {
                         )?
                     }
                 };
+                log_last_token_stage("lm_head_complete");
 
                 if greedy_only {
                     let token_ids_gpu = self.gpu_argmax(&logits_gpu, num_tokens, vocab_size)?;
@@ -1032,10 +1104,13 @@ mod cuda_impl {
                     return Ok(ForwardOutput::TokenIds(token_ids_cpu));
                 }
 
-                let logits_cpu = self
-                    .stream
-                    .clone_dtoh(&logits_gpu)
-                    .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}")))?;
+                let logits_cpu = self.copy_logits_to_host(
+                    &logits_gpu,
+                    num_tokens,
+                    vocab_size,
+                    logits_output_mode,
+                )?;
+                log_last_token_stage("pre_return_handoff_complete");
                 return Ok(ForwardOutput::Logits(logits_cpu));
             }
 
@@ -1086,6 +1161,7 @@ mod cuda_impl {
                     info!(layer = layer_idx, "gpu_runner: layer done");
                 }
             }
+            log_last_token_stage("transformer_layers_complete");
 
             // Step 3: final RMSNorm (all on stream 0, no sync needed)
             let normed = CudaRMSNorm::forward(
@@ -1096,6 +1172,7 @@ mod cuda_impl {
                 &self.loader,
                 &self.stream,
             )?;
+            log_last_token_stage("final_rmsnorm_complete");
 
             // Step 4+5: fused LM-head + argmax for single-token greedy decode
             if num_tokens == 1 && greedy_only {
@@ -1123,6 +1200,7 @@ mod cuda_impl {
                 hidden_size,
                 &self.blas,
             )?;
+            log_last_token_stage("lm_head_complete");
 
             // Step 5: greedy fast path -- argmax on GPU, copy only token IDs
             if greedy_only {
@@ -1140,17 +1218,57 @@ mod cuda_impl {
             }
 
             // Step 5 (fallback): full logits DtoH for temperature>0 sampling
-            let logits_cpu = self
-                .stream
-                .clone_dtoh(&logits_gpu)
-                .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}")))?;
+            let logits_cpu =
+                self.copy_logits_to_host(&logits_gpu, num_tokens, vocab_size, logits_output_mode)?;
+            log_last_token_stage("pre_return_handoff_complete");
 
             debug!(
                 logits_len = logits_cpu.len(),
-                expected = num_tokens * vocab_size,
+                expected = match logits_output_mode {
+                    LogitsOutputMode::Full => num_tokens * vocab_size,
+                    LogitsOutputMode::LastToken => vocab_size,
+                },
                 "forward_ex complete (full logits)"
             );
             Ok(ForwardOutput::Logits(logits_cpu))
+        }
+
+        fn copy_logits_to_host(
+            &self,
+            logits_gpu: &CudaSlice<f32>,
+            num_tokens: usize,
+            vocab_size: usize,
+            logits_output_mode: LogitsOutputMode,
+        ) -> Result<Vec<f32>> {
+            match logits_output_mode {
+                LogitsOutputMode::Full => self
+                    .stream
+                    .clone_dtoh(logits_gpu)
+                    .map_err(|e| LLMError::GpuError(format!("logits DtoH: {e}"))),
+                LogitsOutputMode::LastToken => {
+                    if num_tokens == 0 {
+                        return Err(LLMError::ModelError("empty input".into()));
+                    }
+                    let start = (num_tokens - 1) * vocab_size;
+                    let end = start + vocab_size;
+                    let last_token = logits_gpu.slice(start..end);
+                    info!(
+                        final_position = num_tokens - 1,
+                        host_copy_f32 = vocab_size,
+                        "prefill last-token dtoh start"
+                    );
+                    let host = self
+                        .stream
+                        .clone_dtoh(&last_token)
+                        .map_err(|e| LLMError::GpuError(format!("last-token logits DtoH: {e}")))?;
+                    info!(
+                        final_position = num_tokens - 1,
+                        host_copy_f32 = host.len(),
+                        "prefill last-token dtoh complete"
+                    );
+                    Ok(host)
+                }
+            }
         }
 
         /// Upload all per-step metadata into persistent GPU buffers.
@@ -2758,6 +2876,18 @@ mod mock_impl {
             _is_prefill: bool,
             _greedy_only: bool,
         ) -> Result<ForwardOutput> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn forward_last_token_logits(
+            &self,
+            _token_ids: &[u32],
+            _positions: &[u32],
+            _attn_meta: &crate::bridge::AttentionMetadata,
+            _is_prefill: bool,
+        ) -> Result<Vec<f32>> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))

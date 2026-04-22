@@ -1257,7 +1257,10 @@ fn response_output_items_from_protocol_messages(
     function_tools: &[crate::types::responses::ResponseFunctionTool],
     tool_choice: &ResponseToolChoice,
 ) -> Result<Vec<ResponseOutputItem>, ApiError> {
-    let allowed_tools: HashSet<&str> = function_tools.iter().map(|tool| tool.name.as_str()).collect();
+    let allowed_tools: HashSet<&str> = function_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
     let forced_tool_name = tool_choice.forced_tool_name();
     let mut output_items = Vec::new();
     let mut saw_function_call = false;
@@ -1303,10 +1306,12 @@ fn response_output_items_from_protocol_messages(
         }
 
         if !message.content.is_empty() {
-            output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
-                format!("msg_{}", uuid::Uuid::new_v4().simple()),
-                message.content.clone(),
-            )));
+            output_items.push(ResponseOutputItem::Message(
+                ResponseOutputMessage::completed(
+                    format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                    message.content.clone(),
+                ),
+            ));
         }
     }
 
@@ -1320,10 +1325,12 @@ fn response_output_items_from_protocol_messages(
     }
 
     if output_items.is_empty() && !req.tools_enabled() {
-        output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
-            format!("msg_{}", uuid::Uuid::new_v4().simple()),
-            String::new(),
-        )));
+        output_items.push(ResponseOutputItem::Message(
+            ResponseOutputMessage::completed(
+                format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                String::new(),
+            ),
+        ));
     }
 
     Ok(output_items)
@@ -2180,8 +2187,16 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
-        assert!(prompts[1].contains("<|channel|>commentary"), "{}", prompts[1]);
+        assert!(
+            prompts[1].contains("to=functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("<|channel|>commentary"),
+            "{}",
+            prompts[1]
+        );
         assert!(
             prompts[1].contains("<|start|>functions.get_weather"),
             "{}",
@@ -2318,20 +2333,34 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 3);
-        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
-        assert!(prompts[1].contains("<|start|>functions.get_weather"), "{}", prompts[1]);
+        assert!(
+            prompts[1].contains("to=functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("<|start|>functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
         assert!(prompts[1].contains("\"temp_c\":18"), "{}", prompts[1]);
-        assert!(prompts[2].contains("to=functions.get_weather"), "{}", prompts[2]);
-        assert!(prompts[2].contains("to=functions.get_time"), "{}", prompts[2]);
+        assert!(
+            prompts[2].contains("to=functions.get_weather"),
+            "{}",
+            prompts[2]
+        );
+        assert!(
+            prompts[2].contains("to=functions.get_time"),
+            "{}",
+            prompts[2]
+        );
         assert!(prompts[2].contains("\"temp_c\":18"), "{}", prompts[2]);
         assert!(prompts[2].contains("\"time\":\"09:00\""), "{}", prompts[2]);
 
         let weather_call_idx = prompts[2].find("to=functions.get_weather").unwrap();
         let weather_output_idx = prompts[2].find("<|start|>functions.get_weather").unwrap();
         let time_call_idx = prompts[2].find("to=functions.get_time").unwrap();
-        let time_output_idx = prompts[2]
-            .rfind("<|start|>functions.get_time")
-            .unwrap();
+        let time_output_idx = prompts[2].rfind("<|start|>functions.get_time").unwrap();
         assert!(weather_call_idx < weather_output_idx);
         assert!(weather_output_idx < time_call_idx);
         assert!(time_call_idx < time_output_idx);
@@ -2467,17 +2496,17 @@ mod tests {
         let body = response.text();
         let events = parse_sse_events(&body);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert!(names.contains(&"response.function_call_arguments.delta"), "{body}");
+        assert!(
+            names.contains(&"response.function_call_arguments.delta"),
+            "{body}"
+        );
         assert!(names.contains(&"response.function_call_arguments.done"));
 
         let completed = events
             .iter()
             .find(|(name, _)| name == "response.completed")
             .unwrap();
-        assert_eq!(
-            completed.1["response"]["output"][0]["name"],
-            "get_weather"
-        );
+        assert_eq!(completed.1["response"]["output"][0]["name"], "get_weather");
         assert_eq!(
             completed.1["response"]["output"][0]["arguments"],
             "{\"location\":\"Boston\"}"
@@ -2523,7 +2552,10 @@ mod tests {
         let events = parse_sse_events(&response.text());
         let event_names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
 
-        let created_idx = event_names.iter().position(|name| *name == "response.created").unwrap();
+        let created_idx = event_names
+            .iter()
+            .position(|name| *name == "response.created")
+            .unwrap();
         let in_progress_idx = event_names
             .iter()
             .position(|name| *name == "response.in_progress")
@@ -2568,7 +2600,13 @@ mod tests {
                     false,
                 ),
                 gpt_oss_stream_request_output_from_fragments(
-                    &["<|channel|>final", "<|message|>", "Hel", "lo world", "<|end|>"],
+                    &[
+                        "<|channel|>final",
+                        "<|message|>",
+                        "Hel",
+                        "lo world",
+                        "<|end|>",
+                    ],
                     "",
                     true,
                 ),

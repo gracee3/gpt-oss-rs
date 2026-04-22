@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
-use gpt_oss_moe_semantics::route_top_k;
-#[cfg(test)]
 use gpt_oss_model_runner::{
     bridge::AttentionMetadata as BridgeAttentionMetadata, ModelInput, ModelRunner,
 };
+#[cfg(test)]
+use gpt_oss_moe_semantics::route_top_k;
 
 pub trait ConformanceBackend {
     fn name(&self) -> &str;
@@ -65,11 +65,7 @@ impl ConformanceCase {
         }
     }
 
-    pub fn decode(
-        name: impl Into<String>,
-        seq_start_pos: u32,
-        inputs: Vec<u32>,
-    ) -> Self {
+    pub fn decode(name: impl Into<String>, seq_start_pos: u32, inputs: Vec<u32>) -> Self {
         Self {
             name: name.into(),
             inputs,
@@ -171,12 +167,8 @@ impl ConformanceBackend for PlaceholderBackend {
             format!("{}{}", case.name, self.trace_suffix),
             case.inputs.clone(),
         );
-        let sampled = sample_tokens_from_logits(
-            &logits,
-            &case.sampling_params,
-            &case.past_tokens,
-            case.seed,
-        );
+        let sampled =
+            sample_tokens_from_logits(&logits, &case.sampling_params, &case.past_tokens, case.seed);
 
         ExecutionSample {
             logits,
@@ -309,7 +301,8 @@ impl ConformanceBackend for ModelRunnerGreedyBackend {
         let traced_selected_experts = self.traced_router_bias.as_ref().map(|router_bias| {
             route_top_k(
                 router_bias,
-                self.traced_num_experts_per_tok.min(self.traced_num_local_experts),
+                self.traced_num_experts_per_tok
+                    .min(self.traced_num_local_experts),
             )
             .into_iter()
             .map(|(expert, _)| expert)

@@ -209,20 +209,24 @@ mod tests {
     #[test]
     fn spec_tracks_requested_and_effective_top_k() {
         let router_input = RouterInputSpec::new(4, 2, 4, true).unwrap();
-        let spec = MoeSemanticSpec::from_router_input(
-            router_input,
-            ExpertStorageBoundary::Unquantized,
-        )
-        .unwrap();
+        let spec =
+            MoeSemanticSpec::from_router_input(router_input, ExpertStorageBoundary::Unquantized)
+                .unwrap();
 
         assert_eq!(spec.top_k.requested, 4);
         assert_eq!(spec.top_k.effective, 2);
-        assert!(matches!(spec.routing_weights.normalization, RoutingNormalization::Softmax));
+        assert!(matches!(
+            spec.routing_weights.normalization,
+            RoutingNormalization::Softmax
+        ));
         assert!(matches!(
             spec.expert_ordering.ordering,
             ExpertOrdering::GroupedByExpertIndex
         ));
-        assert!(matches!(spec.accumulation.mode, AccumulationMode::WeightedSum));
+        assert!(matches!(
+            spec.accumulation.mode,
+            AccumulationMode::WeightedSum
+        ));
     }
 
     #[test]

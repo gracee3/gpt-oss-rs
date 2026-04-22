@@ -16,6 +16,7 @@
 
 #[cfg(feature = "cuda")]
 mod inner {
+    use std::cell::Cell;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -42,6 +43,102 @@ mod inner {
         std::env::var_os("GPT_OSS_TRACE_LAYER_TIMINGS")
             .map(|value| value != "0")
             .unwrap_or(false)
+    }
+
+    thread_local! {
+        static PREFILL_LAST_TOKEN_PROGRESS_DEBUG: Cell<bool> = const { Cell::new(false) };
+        static LAYER0_PREFILL_MOE_PROGRESS_DEBUG: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) struct ScopedPrefillLastTokenProgressDebug {
+        prev: bool,
+    }
+
+    impl Drop for ScopedPrefillLastTokenProgressDebug {
+        fn drop(&mut self) {
+            PREFILL_LAST_TOKEN_PROGRESS_DEBUG.with(|cell| cell.set(self.prev));
+        }
+    }
+
+    pub(crate) fn scoped_prefill_last_token_progress_debug(
+        enabled: bool,
+    ) -> ScopedPrefillLastTokenProgressDebug {
+        let prev = PREFILL_LAST_TOKEN_PROGRESS_DEBUG.with(|cell| {
+            let prev = cell.get();
+            cell.set(enabled);
+            prev
+        });
+        ScopedPrefillLastTokenProgressDebug { prev }
+    }
+
+    fn prefill_last_token_progress_debug_enabled() -> bool {
+        PREFILL_LAST_TOKEN_PROGRESS_DEBUG.with(Cell::get)
+    }
+
+    pub(crate) struct ScopedLayer0PrefillMoeProgressDebug {
+        prev: bool,
+    }
+
+    impl Drop for ScopedLayer0PrefillMoeProgressDebug {
+        fn drop(&mut self) {
+            LAYER0_PREFILL_MOE_PROGRESS_DEBUG.with(|cell| cell.set(self.prev));
+        }
+    }
+
+    pub(crate) fn scoped_layer0_prefill_moe_progress_debug(
+        enabled: bool,
+    ) -> ScopedLayer0PrefillMoeProgressDebug {
+        let prev = LAYER0_PREFILL_MOE_PROGRESS_DEBUG.with(|cell| {
+            let prev = cell.get();
+            cell.set(enabled);
+            prev
+        });
+        ScopedLayer0PrefillMoeProgressDebug { prev }
+    }
+
+    fn layer0_prefill_moe_progress_debug_enabled() -> bool {
+        LAYER0_PREFILL_MOE_PROGRESS_DEBUG.with(Cell::get)
+    }
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct MoeTimingTotals {
+        input_dtoh_us: u128,
+        routing_us: u128,
+        expert_us: u128,
+        expert_gate_up_us: u128,
+        expert_gate_up_row_overhead_us: u128,
+        expert_gate_up_core_us: u128,
+        expert_gate_up_core_group_setup_us: u128,
+        expert_gate_up_core_packed_body_us: u128,
+        expert_swiglu_us: u128,
+        expert_down_us: u128,
+        recombine_us: u128,
+        output_htod_us: u128,
+    }
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct ExpertTimingTotals {
+        gate_up_us: u128,
+        gate_up_row_overhead_us: u128,
+        gate_up_core_us: u128,
+        gate_up_core_group_setup_us: u128,
+        gate_up_core_packed_body_us: u128,
+        swiglu_us: u128,
+        down_us: u128,
+    }
+
+    impl ExpertTimingTotals {
+        fn total_us(&self) -> u128 {
+            self.gate_up_us + self.swiglu_us + self.down_us
+        }
+    }
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct ProjectionTimingTotals {
+        row_overhead_us: u128,
+        core_us: u128,
+        core_group_setup_us: u128,
+        core_packed_body_us: u128,
     }
 
     fn sync_for_timing(stream: &Arc<CudaStream>, stage: &str) -> Result<()> {
@@ -151,14 +248,82 @@ mod inner {
             stream: &Arc<CudaStream>,
             input: &CudaSlice<f32>,
         ) -> Result<CudaSlice<f32>> {
+            let input_dtoh_start = Instant::now();
             let host_input = stream
                 .clone_dtoh(input)
                 .map_err(|e| LLMError::GpuError(format!("gpt-oss moe DtoH failed: {e}")))?;
             let num_tokens = host_input.len() / self.hidden_size;
             let mut output = vec![0.0f32; num_tokens * self.hidden_size];
             let top_k = self.num_experts_per_tok.min(self.num_local_experts);
+            let moe_progress_debug = layer0_prefill_moe_progress_debug_enabled();
+            let moe_start = moe_progress_debug.then(Instant::now);
+            let mut timing_totals = MoeTimingTotals {
+                input_dtoh_us: input_dtoh_start.elapsed().as_micros(),
+                ..MoeTimingTotals::default()
+            };
+            let log_moe_progress =
+                |stage: &'static str, token_idx: Option<usize>, expert_idx: Option<usize>| {
+                    if moe_progress_debug {
+                        info!(
+                            stage,
+                            token_idx,
+                            expert_idx,
+                            num_tokens,
+                            hidden_size = self.hidden_size,
+                            top_k,
+                            num_local_experts = self.num_local_experts,
+                            elapsed_ms = moe_start
+                                .map(|start| start.elapsed().as_millis())
+                                .unwrap_or(0),
+                            "gpu_layer: layer0 prefill moe progress"
+                        );
+                    }
+                };
+            let log_moe_timing =
+                |stage: &'static str, token_idx: Option<usize>, totals: &MoeTimingTotals| {
+                    if moe_progress_debug {
+                        info!(
+                            stage,
+                            token_idx,
+                            processed_tokens = token_idx.map(|idx| idx + 1),
+                            num_tokens,
+                            hidden_size = self.hidden_size,
+                            top_k,
+                            num_local_experts = self.num_local_experts,
+                            input_dtoh_ms = totals.input_dtoh_us as f64 / 1000.0,
+                            routing_ms = totals.routing_us as f64 / 1000.0,
+                            expert_ms = totals.expert_us as f64 / 1000.0,
+                            expert_gate_up_ms = totals.expert_gate_up_us as f64 / 1000.0,
+                            expert_gate_up_row_overhead_ms =
+                                totals.expert_gate_up_row_overhead_us as f64 / 1000.0,
+                            expert_gate_up_core_ms =
+                                totals.expert_gate_up_core_us as f64 / 1000.0,
+                            expert_gate_up_core_group_setup_ms =
+                                totals.expert_gate_up_core_group_setup_us as f64 / 1000.0,
+                            expert_gate_up_core_packed_body_ms =
+                                totals.expert_gate_up_core_packed_body_us as f64 / 1000.0,
+                            expert_swiglu_ms = totals.expert_swiglu_us as f64 / 1000.0,
+                            expert_down_ms = totals.expert_down_us as f64 / 1000.0,
+                            recombine_ms = totals.recombine_us as f64 / 1000.0,
+                            output_htod_ms = totals.output_htod_us as f64 / 1000.0,
+                            elapsed_ms = moe_start
+                                .map(|start| start.elapsed().as_millis())
+                                .unwrap_or(0),
+                            "gpu_layer: layer0 prefill moe timing"
+                        );
+                    }
+                };
+            let should_log_token_checkpoint = |token_idx: usize| {
+                moe_progress_debug
+                    && (token_idx == 0
+                        || token_idx + 1 == num_tokens
+                        || ((token_idx + 1) % 512 == 0))
+            };
+            log_moe_progress("moe_forward_start", None, None);
+            log_moe_timing("moe_input_dtoh_complete", None, &timing_totals);
 
             if top_k == 0 {
+                log_moe_progress("moe_forward_zero_topk", None, None);
                 return stream
                     .clone_htod(&output)
                     .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")));
@@ -168,6 +333,7 @@ mod inner {
                 let input_offset = token_idx * self.hidden_size;
                 let token = &host_input[input_offset..input_offset + self.hidden_size];
 
+                let routing_start = Instant::now();
                 let mut logits = vec![0.0f32; self.num_local_experts];
                 for (expert_idx, logit) in logits.iter_mut().enumerate() {
                     let row = expert_idx * self.hidden_size;
@@ -181,20 +347,56 @@ mod inner {
                 let top_indices = stable_top_k_indices(&logits, top_k);
                 let top_logits: Vec<f32> = top_indices.iter().map(|&idx| logits[idx]).collect();
                 let route_weights = softmax_weights(&top_logits);
+                timing_totals.routing_us += routing_start.elapsed().as_micros();
+                if should_log_token_checkpoint(token_idx) {
+                    log_moe_progress("route_topk_complete", Some(token_idx), None);
+                }
 
                 for (rank, &expert_idx) in top_indices.iter().enumerate() {
-                    let expert_out = self.forward_expert(expert_idx, token);
+                    let log_first_expert = moe_progress_debug && token_idx == 0 && rank == 0;
+                    if log_first_expert {
+                        log_moe_progress("expert_call_start", Some(token_idx), Some(expert_idx));
+                    }
+                    let (expert_out, expert_timing) =
+                        self.forward_expert(expert_idx, token, log_first_expert);
+                    timing_totals.expert_us += expert_timing.total_us();
+                    timing_totals.expert_gate_up_us += expert_timing.gate_up_us;
+                    timing_totals.expert_gate_up_row_overhead_us +=
+                        expert_timing.gate_up_row_overhead_us;
+                    timing_totals.expert_gate_up_core_us += expert_timing.gate_up_core_us;
+                    timing_totals.expert_gate_up_core_group_setup_us +=
+                        expert_timing.gate_up_core_group_setup_us;
+                    timing_totals.expert_gate_up_core_packed_body_us +=
+                        expert_timing.gate_up_core_packed_body_us;
+                    timing_totals.expert_swiglu_us += expert_timing.swiglu_us;
+                    timing_totals.expert_down_us += expert_timing.down_us;
+                    if log_first_expert {
+                        log_moe_progress("expert_call_complete", Some(token_idx), Some(expert_idx));
+                    }
                     let dst_offset = token_idx * self.hidden_size;
                     let route_weight = route_weights[rank];
+                    let recombine_start = Instant::now();
                     for hidden_idx in 0..self.hidden_size {
                         output[dst_offset + hidden_idx] += expert_out[hidden_idx] * route_weight;
                     }
+                    timing_totals.recombine_us += recombine_start.elapsed().as_micros();
+                }
+                if should_log_token_checkpoint(token_idx) {
+                    log_moe_progress("token_recombine_complete", Some(token_idx), None);
+                    log_moe_timing("token_timing_checkpoint", Some(token_idx), &timing_totals);
                 }
             }
 
-            stream
+            log_moe_progress("moe_forward_complete", None, None);
+            log_moe_timing("moe_forward_complete", None, &timing_totals);
+            let output_htod_start = Instant::now();
+            let output_gpu = stream
                 .clone_htod(&output)
-                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")))
+                .map_err(|e| LLMError::GpuError(format!("gpt-oss moe HtoD failed: {e}")))?;
+            timing_totals.output_htod_us += output_htod_start.elapsed().as_micros();
+            log_moe_progress("moe_output_htod_complete", None, None);
+            log_moe_timing("moe_output_htod_complete", None, &timing_totals);
+            Ok(output_gpu)
         }
 
         pub fn supports_gpu_decode(&self) -> bool {
@@ -391,8 +593,22 @@ mod inner {
             Ok(output)
         }
 
-        pub(crate) fn forward_expert(&self, expert_idx: usize, input: &[f32]) -> Vec<f32> {
-            let gate_up = self.quantized_projection(
+        fn forward_expert(
+            &self,
+            expert_idx: usize,
+            input: &[f32],
+            log_progress: bool,
+        ) -> (Vec<f32>, ExpertTimingTotals) {
+            let mut timing = ExpertTimingTotals::default();
+            if log_progress {
+                info!(
+                    expert_idx,
+                    stage = "expert_gate_up_projection_start",
+                    "gpu_layer: layer0 prefill moe progress"
+                );
+            }
+            let gate_up_start = Instant::now();
+            let (gate_up, gate_up_projection_timing) = self.quantized_projection(
                 expert_idx,
                 input,
                 &self.gate_up_blocks,
@@ -400,9 +616,37 @@ mod inner {
                 &self.gate_up_bias,
                 self.intermediate_size * 2,
                 self.hidden_size,
+                true,
             );
+            timing.gate_up_us += gate_up_start.elapsed().as_micros();
+            timing.gate_up_row_overhead_us += gate_up_projection_timing.row_overhead_us;
+            timing.gate_up_core_us += gate_up_projection_timing.core_us;
+            timing.gate_up_core_group_setup_us += gate_up_projection_timing.core_group_setup_us;
+            timing.gate_up_core_packed_body_us += gate_up_projection_timing.core_packed_body_us;
+            if log_progress {
+                info!(
+                    expert_idx,
+                    stage = "expert_gate_up_projection_complete",
+                    "gpu_layer: layer0 prefill moe progress"
+                );
+            }
+            let swiglu_start = Instant::now();
             let activated = apply_gpt_oss_swiglu(&gate_up, self.intermediate_size);
-            self.quantized_projection(
+            timing.swiglu_us += swiglu_start.elapsed().as_micros();
+            if log_progress {
+                info!(
+                    expert_idx,
+                    stage = "expert_swiglu_complete",
+                    "gpu_layer: layer0 prefill moe progress"
+                );
+                info!(
+                    expert_idx,
+                    stage = "expert_down_projection_start",
+                    "gpu_layer: layer0 prefill moe progress"
+                );
+            }
+            let down_start = Instant::now();
+            let (down, _) = self.quantized_projection(
                 expert_idx,
                 &activated,
                 &self.down_blocks,
@@ -410,7 +654,17 @@ mod inner {
                 &self.down_bias,
                 self.hidden_size,
                 self.intermediate_size,
-            )
+                false,
+            );
+            timing.down_us += down_start.elapsed().as_micros();
+            if log_progress {
+                info!(
+                    expert_idx,
+                    stage = "expert_down_projection_complete",
+                    "gpu_layer: layer0 prefill moe progress"
+                );
+            }
+            (down, timing)
         }
 
         fn quantized_projection(
@@ -422,7 +676,8 @@ mod inner {
             bias: &[f32],
             out_features: usize,
             in_features: usize,
-        ) -> Vec<f32> {
+            capture_timing: bool,
+        ) -> (Vec<f32>, ProjectionTimingTotals) {
             let groups = in_features.div_ceil(32);
             let expert_blocks_stride = out_features * groups * 16;
             let expert_scales_stride = out_features * groups;
@@ -432,16 +687,27 @@ mod inner {
             let blocks_base = expert_idx * expert_blocks_stride;
             let scales_base = expert_idx * expert_scales_stride;
             let bias_base = expert_idx * expert_bias_stride;
+            let mut timing = ProjectionTimingTotals::default();
 
             for out_idx in 0..out_features {
+                let row_overhead_start = capture_timing.then(Instant::now);
                 let mut acc = bias[bias_base + out_idx];
                 let row_blocks = blocks_base + out_idx * groups * 16;
                 let row_scales = scales_base + out_idx * groups;
+                if let Some(start) = row_overhead_start {
+                    timing.row_overhead_us += start.elapsed().as_micros();
+                }
 
+                let core_start = capture_timing.then(Instant::now);
                 for group_idx in 0..groups {
+                    let group_setup_start = capture_timing.then(Instant::now);
                     let scale = decode_mxfp_scale(scales[row_scales + group_idx]);
                     let block_offset = row_blocks + group_idx * 16;
                     let input_offset = group_idx * 32;
+                    if let Some(start) = group_setup_start {
+                        timing.core_group_setup_us += start.elapsed().as_micros();
+                    }
+                    let packed_body_start = capture_timing.then(Instant::now);
                     for packed_idx in 0..16 {
                         let packed = blocks[block_offset + packed_idx];
                         let input_idx0 = input_offset + packed_idx * 2;
@@ -454,12 +720,22 @@ mod inner {
                             acc += input[input_idx1] * MXFP4_VALUES[(packed >> 4) as usize] * scale;
                         }
                     }
+                    if let Some(start) = packed_body_start {
+                        timing.core_packed_body_us += start.elapsed().as_micros();
+                    }
+                }
+                if let Some(start) = core_start {
+                    timing.core_us += start.elapsed().as_micros();
                 }
 
+                let writeback_start = capture_timing.then(Instant::now);
                 output[out_idx] = acc;
+                if let Some(start) = writeback_start {
+                    timing.row_overhead_us += start.elapsed().as_micros();
+                }
             }
 
-            output
+            (output, timing)
         }
 
         fn launch_route_topk(
@@ -764,6 +1040,39 @@ mod inner {
             let trace_layer_timings = trace_layer_timings_enabled();
             let layer_start = trace_layer_timings.then(Instant::now);
             let mut stage_start = trace_layer_timings.then(Instant::now);
+            let prefill_progress_debug =
+                input.is_prefill && prefill_last_token_progress_debug_enabled();
+            let progress_start = prefill_progress_debug.then(Instant::now);
+            let log_prefill_progress = |stage: &'static str| {
+                if prefill_progress_debug {
+                    info!(
+                        layer = cfg.layer_idx,
+                        stage,
+                        num_tokens,
+                        num_seqs = input.num_seqs,
+                        elapsed_ms = progress_start
+                            .map(|start| start.elapsed().as_millis())
+                            .unwrap_or(0),
+                        "gpu_layer: prefill last-token progress"
+                    );
+                }
+            };
+            let layer0_mlp_debug = prefill_progress_debug && cfg.layer_idx == 0;
+            let log_layer0_mlp_progress = |stage: &'static str| {
+                if layer0_mlp_debug {
+                    info!(
+                        layer = cfg.layer_idx,
+                        stage,
+                        num_tokens,
+                        num_seqs = input.num_seqs,
+                        elapsed_ms = progress_start
+                            .map(|start| start.elapsed().as_millis())
+                            .unwrap_or(0),
+                        "gpu_layer: layer0 mlp progress"
+                    );
+                }
+            };
+            log_prefill_progress("layer_enter");
 
             let hidden_f16 = input.hidden_states_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 hidden states required for f16 forward".into())
@@ -1091,6 +1400,7 @@ mod inner {
             } else {
                 0
             };
+            log_prefill_progress("attention_complete");
 
             // 7. Output projection: hgemm f16
             let mut attn_proj = hgemm(&attn_out, weights.o_proj, num_tokens, hidden, q_dim)?;
@@ -1125,9 +1435,11 @@ mod inner {
             } else {
                 0
             };
+            log_prefill_progress("post_attention_residual_complete");
 
             // 9. MLP / routed MoE.
             let mut mlp_out = if let Some(moe) = weights.gpt_oss_moe {
+                log_layer0_mlp_progress("mlp_branch_moe");
                 let cast_f16_f32 = self
                     .loader
                     .get_func("cast_fp", "cast_f16_to_f32_kernel")
@@ -1142,6 +1454,9 @@ mod inner {
                     num_tokens * hidden,
                     &cast_f16_f32,
                 )?;
+                log_layer0_mlp_progress("mlp_moe_input_cast_complete");
+                let _layer0_moe_progress_debug_guard =
+                    scoped_layer0_prefill_moe_progress_debug(layer0_mlp_debug);
                 let moe_out = if input.is_prefill || !moe.supports_gpu_decode() {
                     moe.forward(&self.stream, &normed2_f32)?
                 } else {
@@ -1153,6 +1468,7 @@ mod inner {
                         num_tokens,
                     )?
                 };
+                log_layer0_mlp_progress("mlp_moe_forward_complete");
                 Self::cast_f32_to_f16(&self.stream, &moe_out, num_tokens * hidden, &cast_f32_f16)?
             } else {
                 let down_proj = weights.down_proj.ok_or_else(|| {
@@ -1162,6 +1478,7 @@ mod inner {
                     ))
                 })?;
                 let fused = if let Some(fused_gate_up) = weights.fused_gate_up {
+                    log_layer0_mlp_progress("mlp_branch_dense_fused_gate_up");
                     let gate_up = hgemm(
                         &normed2,
                         fused_gate_up,
@@ -1169,6 +1486,7 @@ mod inner {
                         intermediate * 2,
                         hidden,
                     )?;
+                    log_layer0_mlp_progress("mlp_gate_up_projection_complete");
                     Self::fused_silu_mul_f16_split(
                         &self.stream,
                         &self.loader,
@@ -1176,6 +1494,7 @@ mod inner {
                         num_tokens * intermediate,
                     )?
                 } else {
+                    log_layer0_mlp_progress("mlp_branch_dense_split_gate_up");
                     let gate_proj = weights.gate_proj.ok_or_else(|| {
                         LLMError::GpuError(format!(
                             "missing dense gate_proj for layer {}",
@@ -1190,6 +1509,7 @@ mod inner {
                     })?;
                     let gate = hgemm(&normed2, gate_proj, num_tokens, intermediate, hidden)?;
                     let up = hgemm(&normed2, up_proj, num_tokens, intermediate, hidden)?;
+                    log_layer0_mlp_progress("mlp_gate_up_projection_complete");
                     Self::fused_silu_mul_f16(
                         &self.stream,
                         &self.loader,
@@ -1198,9 +1518,14 @@ mod inner {
                         num_tokens * intermediate,
                     )?
                 };
-                hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?
+                log_layer0_mlp_progress("mlp_fused_silu_mul_complete");
+                let down = hgemm(&fused, down_proj, num_tokens, hidden, intermediate)?;
+                log_layer0_mlp_progress("mlp_down_projection_complete");
+                down
             };
             tp_comm.all_reduce_f16(&mut mlp_out, num_tokens * hidden, "mlp.down_proj")?;
+            log_layer0_mlp_progress("mlp_all_reduce_complete");
+            log_prefill_progress("mlp_complete");
             if trace_layer_timings {
                 sync_for_timing(&self.stream, "mlp")?;
                 let mlp_ms = stage_start
@@ -1226,6 +1551,7 @@ mod inner {
                     "gpu_layer: f16 stage timings"
                 );
             }
+            log_prefill_progress("layer_exit");
             Ok((residual, mlp_out))
         }
 
@@ -2981,7 +3307,7 @@ mod tests {
 
         let mut input = vec![0.0f32; 32];
         input[0] = 1.0;
-        let output = moe.forward_expert(0, &input);
+        let (output, _) = moe.forward_expert(0, &input, false);
 
         let expected = 1.0 / (1.0 + (-1.702f32).exp());
         assert!((output[0] - expected).abs() < 1e-3, "got {}", output[0]);
