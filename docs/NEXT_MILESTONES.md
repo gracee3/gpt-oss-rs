@@ -3,9 +3,9 @@
 Current aligned checkpoint:
 
 - `main`: `b4c2efa`
-- `integration/mainline-alignment`: `b4c2efa`
-- `harness/tier2-workflow`: `b4c2efa`
-- `feature/runtime-forward`: `bd49d35`
+- `integration/mainline-alignment`: `3edeac8`
+- `harness/tier2-workflow`: `7fd5174`
+- `feature/runtime-forward`: `a8248b7`
 
 Active workstreams:
 
@@ -17,11 +17,12 @@ Near-term milestones:
 
 ## M1. Keep the aligned mainline stable
 
-- keep the three-worktree layout intact
-- promote only small validated batches from active lanes
+- keep the three canonical workstreams intact and keep scratch/proof worktrees clearly non-canonical
+- keep `integration/mainline-alignment` in hold/preservation mode until real drift or a genuinely new bounded extraction appears
+- if the lane reopens, promote only small validated batches from active lanes
 - keep workstream docs and TODOs current as branch tips move
-- fix integration-safe validation harness defects without changing compare semantics
-- current small ready extraction: `integration/tier01-lane` commit `391a975`
+- treat the current integration validation/proof stack as branch-local until a smaller promotion batch is intentionally carved out
+- keep integration-safe validation harness fixes small and explicitly justified before promotion
 
 ## M2. Make the Tier-2 harness operator-ready
 
