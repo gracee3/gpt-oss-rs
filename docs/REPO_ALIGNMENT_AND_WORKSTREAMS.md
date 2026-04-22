@@ -51,6 +51,9 @@ The following branches were preserved and pushed as historical or reference lane
 - `gpt-oss/sliding-attention-first-case`
 - `gpt-oss/tier2-warm-oracle-core`
 - `integration/tier01-lane`
+- `protocol/harmony-parity`
+
+`protocol/harmony-parity` is a protocol-first reference lane in quiet maintenance. Reopen active Harmony work only for demonstrated protocol drift or regression, such as a GPT-OSS route bypassing the shared protocol policy seam, parser/stop-token behavior diverging from the tokenizer seam, or hidden-analysis replay no longer being preserved correctly.
 
 ## What Was Archived Or Left As History
 

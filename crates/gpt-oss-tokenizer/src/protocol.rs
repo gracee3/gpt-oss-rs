@@ -11,7 +11,7 @@ use gpt_oss_core::prelude::{LLMError, Result, TokenId};
 use openai_harmony::chat::{
     Author, Content, Conversation, DeveloperContent, Message, Role, SystemContent, ToolDescription,
 };
-use openai_harmony::{load_harmony_encoding, HarmonyEncodingName, StreamableParser};
+use openai_harmony::{load_harmony_encoding, HarmonyEncodingName, ParseOptions, StreamableParser};
 
 use crate::tool_parser::ToolDefinition;
 
@@ -168,9 +168,28 @@ impl HarmonyProtocol {
     }
 
     pub fn parse_completion_tokens(&self, token_ids: &[TokenId]) -> Result<Vec<ParsedProtocolMessage>> {
+        self.parse_completion_tokens_with_options(token_ids, ParseOptions::default())
+    }
+
+    pub fn parse_completion_tokens_non_strict(
+        &self,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<ParsedProtocolMessage>> {
+        self.parse_completion_tokens_with_options(token_ids, ParseOptions { strict: false })
+    }
+
+    pub fn parse_completion_tokens_with_options(
+        &self,
+        token_ids: &[TokenId],
+        options: ParseOptions,
+    ) -> Result<Vec<ParsedProtocolMessage>> {
         let parsed = self
             .encoding
-            .parse_messages_from_completion_tokens(token_ids.iter().copied(), Some(Role::Assistant))
+            .parse_messages_from_completion_tokens_with_options(
+                token_ids.iter().copied(),
+                Some(Role::Assistant),
+                options,
+            )
             .map_err(map_harmony_error)?;
         parsed
             .into_iter()
@@ -211,7 +230,40 @@ impl HarmonyProtocol {
     }
 
     pub fn stream_parser(&self) -> Result<HarmonyStreamParser> {
-        HarmonyStreamParser::new(self.encoding.clone())
+        self.stream_parser_with_options(ParseOptions::default())
+    }
+
+    pub fn stream_parser_non_strict(&self) -> Result<HarmonyStreamParser> {
+        self.stream_parser_with_options(ParseOptions { strict: false })
+    }
+
+    pub fn stream_parser_with_options(&self, options: ParseOptions) -> Result<HarmonyStreamParser> {
+        HarmonyStreamParser::new(self.encoding.clone(), options)
+    }
+
+    pub fn stop_tokens(&self) -> Result<HashSet<TokenId>> {
+        self.encoding.stop_tokens().map_err(map_harmony_error)
+    }
+
+    pub fn stop_tokens_for_assistant_actions(&self) -> Result<HashSet<TokenId>> {
+        self.encoding
+            .stop_tokens_for_assistant_actions()
+            .map_err(map_harmony_error)
+    }
+
+    pub fn assistant_action_stop_strings(&self) -> Result<Vec<String>> {
+        let stop_tokens = self.stop_tokens_for_assistant_actions()?;
+        let mut stop_strings = Vec::new();
+        for marker in ["<|return|>", "<|call|>"] {
+            if self
+                .encode_completion_text(marker)
+                .first()
+                .is_some_and(|token| stop_tokens.contains(token))
+            {
+                stop_strings.push(marker.to_string());
+            }
+        }
+        Ok(stop_strings)
     }
 }
 
@@ -220,9 +272,9 @@ pub struct HarmonyStreamParser {
 }
 
 impl HarmonyStreamParser {
-    pub fn new(encoding: openai_harmony::HarmonyEncoding) -> Result<Self> {
-        let parser =
-            StreamableParser::new(encoding, Some(Role::Assistant)).map_err(map_harmony_error)?;
+    pub fn new(encoding: openai_harmony::HarmonyEncoding, options: ParseOptions) -> Result<Self> {
+        let parser = StreamableParser::new_with_options(encoding, Some(Role::Assistant), options)
+            .map_err(map_harmony_error)?;
         Ok(Self { parser })
     }
 
@@ -375,6 +427,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_completion_tokens_accepts_channel_before_recipient_and_adjacent_constrain() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let text = "<|channel|>commentary to=functions.get_weather<|constrain|>json<|message|>{\"latitude\":48.8566,\"longitude\":2.3522}<|call|>";
+        let token_ids = protocol.encode_completion_text(text);
+        let parsed = protocol.parse_completion_tokens(&token_ids).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].channel.as_deref(), Some("commentary"));
+        assert_eq!(parsed[0].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(parsed[0].content_type.as_deref(), Some("<|constrain|>json"));
+        assert_eq!(parsed[0].content, "{\"latitude\":48.8566,\"longitude\":2.3522}");
+    }
+
+    #[test]
+    fn parse_completion_tokens_strict_mode_rejects_malformed_header() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let malformed = "<|channel|>commentary Hello<|end|>";
+        let token_ids = protocol.encode_completion_text(malformed);
+        let err = protocol
+            .parse_completion_tokens_with_options(&token_ids, ParseOptions { strict: true })
+            .unwrap_err();
+
+        assert!(err.to_string().contains("harmony error:"));
+    }
+
+    #[test]
+    fn parse_completion_tokens_non_strict_recovers_malformed_header() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let malformed = "<|channel|>commentary Hello<|end|>";
+        let token_ids = protocol.encode_completion_text(malformed);
+        let parsed = protocol
+            .parse_completion_tokens_with_options(&token_ids, ParseOptions { strict: false })
+            .unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].channel.as_deref(), Some("commentary"));
+        assert_eq!(parsed[0].content, "Hello");
+    }
+
+    #[test]
     fn render_prompt_preserves_tool_author_and_recipient_history() {
         let protocol = HarmonyProtocol::gpt_oss().unwrap();
         let prompt = protocol
@@ -478,5 +570,41 @@ mod tests {
         assert_eq!(messages[1].recipient.as_deref(), Some("functions.get_weather"));
         assert_eq!(messages[1].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[1].content, "{\"location\":\"Boston\"}");
+    }
+
+    #[test]
+    fn stream_parser_non_strict_recovers_malformed_header() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let mut parser = protocol
+            .stream_parser_with_options(ParseOptions { strict: false })
+            .unwrap();
+
+        for token in protocol.encode_stream_fragment_text("<|channel|>commentary Hello<|end|>") {
+            parser.push_token(token).unwrap();
+        }
+        parser.finish().unwrap();
+
+        let messages = parser.messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].channel.as_deref(), Some("commentary"));
+        assert_eq!(messages[0].content, "Hello");
+    }
+
+    #[test]
+    fn stop_tokens_match_harmony_protocol_boundaries() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let stop_tokens = protocol.stop_tokens().unwrap();
+        let assistant_action_stop_tokens = protocol.stop_tokens_for_assistant_actions().unwrap();
+
+        let end_token = protocol.encode_completion_text("<|end|>")[0];
+        let return_token = protocol.encode_completion_text("<|return|>")[0];
+        let call_token = protocol.encode_completion_text("<|call|>")[0];
+
+        assert!(stop_tokens.contains(&end_token));
+        assert!(stop_tokens.contains(&return_token));
+        assert!(stop_tokens.contains(&call_token));
+        assert!(!assistant_action_stop_tokens.contains(&end_token));
+        assert!(assistant_action_stop_tokens.contains(&return_token));
+        assert!(assistant_action_stop_tokens.contains(&call_token));
     }
 }

@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::error::ApiError;
 use crate::protocol_stream::{
+    apply_gpt_oss_sampling_policy, load_harmony_protocol, parse_gpt_oss_completion,
     visible_text_from_protocol_messages, StreamedChatChoiceState,
 };
 use crate::routes::tools::ToolChoice;
@@ -37,7 +38,7 @@ pub async fn create_chat_completion(
         )));
     }
 
-    let sampling_params = req.to_sampling_params();
+    let mut sampling_params = req.to_sampling_params();
 
     // Check if tools are active
     let tools_active = req.tools.as_ref().map_or(false, |t| !t.is_empty())
@@ -65,8 +66,10 @@ pub async fn create_chat_completion(
         })
         .unwrap_or_default();
 
-    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+    let protocol = load_harmony_protocol()?;
+    if is_gpt_oss_model(&state.model_name) {
+        apply_gpt_oss_sampling_policy(&protocol, &mut sampling_params)?;
+    }
     let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
         .messages
         .iter()
@@ -235,8 +238,7 @@ pub async fn create_chat_completion(
             last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
         if is_gpt_oss_model(&state.model_name) && !tools_active {
-            let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-                .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+            let protocol = load_harmony_protocol()?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -247,9 +249,7 @@ pub async fn create_chat_completion(
                 .iter()
                 .map(|co| {
                     total_completion += co.token_ids.len();
-                    let parsed = protocol
-                        .parse_completion_tokens(&co.token_ids)
-                        .unwrap_or_default();
+                    let parsed = parse_gpt_oss_completion(&protocol, &co.token_ids).unwrap_or_default();
                     let content =
                         visible_text_from_protocol_messages(&parsed).unwrap_or_else(|| co.text.clone());
                     ChatChoice {
@@ -301,12 +301,9 @@ pub async fn create_chat_completion(
                         gpt_oss_core::prelude::FinishReason::Abort => "stop",
                     });
                     if is_gpt_oss_model(&state.model_name) {
-                        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-                            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
-                            .ok();
+                        let protocol = load_harmony_protocol().ok();
                         if let Some(protocol) = protocol {
-                            let parsed = protocol
-                                .parse_completion_tokens(&co.token_ids)
+                            let parsed = parse_gpt_oss_completion(&protocol, &co.token_ids)
                                 .unwrap_or_default();
                             let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = parsed
                                 .iter()

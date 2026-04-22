@@ -13,6 +13,10 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
+use crate::protocol_stream::{
+    apply_gpt_oss_sampling_policy, load_harmony_protocol, new_gpt_oss_stream_parser,
+    parse_gpt_oss_completion, visible_text_from_protocol_messages,
+};
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
@@ -26,6 +30,7 @@ use crate::types::responses::{
 pub enum StoredConversationItem {
     Input(ResponseInputItem),
     Output(ResponseOutputItem),
+    Protocol(gpt_oss_tokenizer::ProtocolMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -85,8 +90,7 @@ pub async fn create_response(
         .collect();
 
     let harmony_instructions = req.instructions.clone().filter(|value| !value.is_empty());
-    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+    let protocol = load_harmony_protocol()?;
     let prompt = protocol
         .render_prompt(
             &protocol_messages,
@@ -97,7 +101,10 @@ pub async fn create_response(
         .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?;
 
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
-    let sampling_params = req.to_sampling_params();
+    let mut sampling_params = req.to_sampling_params();
+    if is_gpt_oss_model(&state.model_name) {
+        apply_gpt_oss_sampling_policy(&protocol, &mut sampling_params)?;
+    }
     let tool_choice = req.effective_tool_choice();
     let response_tools = req.tools.clone().unwrap_or_default();
 
@@ -241,7 +248,9 @@ pub async fn create_response(
                 if let Some(choice) = output.outputs.first() {
                     let next_text = if let Some(state) = protocol_state.as_mut() {
                         match state.ingest(&choice.token_ids, output.finished) {
-                            Ok(messages) => visible_response_text(&messages),
+                            Ok(messages) => {
+                                visible_text_from_protocol_messages(&messages).unwrap_or_default()
+                            }
                             Err(_) => return,
                         }
                     } else {
@@ -438,13 +447,24 @@ pub async fn create_response(
 
         if req.store {
             let mut stored_items = conversation_items;
-            stored_items.extend(
-                response
-                    .output
-                    .iter()
-                    .cloned()
-                    .map(StoredConversationItem::Output),
-            );
+            if is_gpt_oss_model(&state.model_name) {
+                if let Some(completion) = output.outputs.first() {
+                    let protocol = load_harmony_protocol()?;
+                    let parsed = parse_gpt_oss_completion(&protocol, &completion.token_ids)?;
+                    stored_items.extend(stored_conversation_items_from_protocol_messages(
+                        &parsed,
+                        &response.output,
+                    ));
+                }
+            } else {
+                stored_items.extend(
+                    response
+                        .output
+                        .iter()
+                        .cloned()
+                        .map(StoredConversationItem::Output),
+                );
+            }
 
             let mut store = state.response_store.write().await;
             store.insert(
@@ -482,11 +502,8 @@ struct StreamedProtocolState {
 
 impl StreamedProtocolState {
     fn new() -> Result<Self, ApiError> {
-        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let parser = protocol
-            .stream_parser()
-            .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?;
+        let protocol = load_harmony_protocol()?;
+        let parser = new_gpt_oss_stream_parser(&protocol)?;
         Ok(Self {
             processed_tokens: 0,
             parser,
@@ -513,18 +530,6 @@ impl StreamedProtocolState {
             .messages()
             .map_err(|e| ApiError::Internal(format!("harmony stream read error: {}", e)))
     }
-}
-
-fn visible_response_text(messages: &[gpt_oss_tokenizer::ParsedProtocolMessage]) -> String {
-    messages
-        .iter()
-        .filter(|message| message.role == "assistant")
-        .filter(|message| message.recipient.is_none())
-        .filter(|message| message.channel.as_deref() != Some("analysis"))
-        .map(|message| message.content.as_str())
-        .filter(|content| !content.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 async fn stream_tool_response(
@@ -625,7 +630,8 @@ async fn stream_tool_response(
                         Ok(messages) => messages,
                         Err(_) => return,
                     };
-                    let prefix_text = visible_response_text(&messages);
+                    let prefix_text =
+                        visible_text_from_protocol_messages(&messages).unwrap_or_default();
                     full_text = prefix_text.clone();
                     let calls = messages
                         .iter()
@@ -1051,7 +1057,24 @@ async fn stream_tool_response(
 
         if req.store {
             let mut stored_items = conversation_items;
-            stored_items.extend(output_items.into_iter().map(StoredConversationItem::Output));
+            if is_gpt_oss {
+                if let Some(completion) = output.outputs.first() {
+                    let protocol = match load_harmony_protocol() {
+                        Ok(protocol) => protocol,
+                        Err(_) => return,
+                    };
+                    let parsed = match parse_gpt_oss_completion(&protocol, &completion.token_ids) {
+                        Ok(parsed) => parsed,
+                        Err(_) => return,
+                    };
+                    stored_items.extend(stored_conversation_items_from_protocol_messages(
+                        &parsed,
+                        &output_items,
+                    ));
+                }
+            } else {
+                stored_items.extend(output_items.into_iter().map(StoredConversationItem::Output));
+            }
 
             let mut store = response_store.write().await;
             store.insert(
@@ -1233,11 +1256,8 @@ fn response_output_items_from_completion(
     model_name: &str,
 ) -> Result<Vec<ResponseOutputItem>, ApiError> {
     if is_gpt_oss_model(model_name) {
-        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let parsed = protocol
-            .parse_completion_tokens(&output.token_ids)
-            .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
+        let protocol = load_harmony_protocol()?;
+        let parsed = parse_gpt_oss_completion(&protocol, &output.token_ids)?;
         return response_output_items_from_protocol_messages(
             response_id,
             &parsed,
@@ -1358,6 +1378,7 @@ fn render_conversation_items(
                     content: render_function_call(call, style),
                 });
             }
+            StoredConversationItem::Protocol(_) => {}
         }
     }
 
@@ -1413,10 +1434,64 @@ fn render_conversation_protocol_items(
                         .with_channel("commentary"),
                 );
             }
+            StoredConversationItem::Protocol(message) => {
+                messages.push(message.clone());
+            }
         }
     }
 
     messages
+}
+
+fn protocol_message_from_parsed(
+    message: &gpt_oss_tokenizer::ParsedProtocolMessage,
+) -> gpt_oss_tokenizer::ProtocolMessage {
+    let mut protocol = gpt_oss_tokenizer::ProtocolMessage::new(&message.role, message.content.clone());
+    if let Some(author_name) = &message.author_name {
+        protocol = protocol.with_author_name(author_name.clone());
+    }
+    if let Some(channel) = &message.channel {
+        protocol = protocol.with_channel(channel.clone());
+    }
+    if let Some(recipient) = &message.recipient {
+        protocol = protocol.with_recipient(recipient.clone());
+    }
+    if let Some(content_type) = &message.content_type {
+        protocol = protocol.with_content_type(content_type.clone());
+    }
+    protocol
+}
+
+fn stored_conversation_items_from_protocol_messages(
+    messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
+    output_items: &[ResponseOutputItem],
+) -> Vec<StoredConversationItem> {
+    let mut stored_items = Vec::new();
+    let mut visible_items = output_items.iter().cloned();
+
+    for message in messages {
+        if message.role != "assistant" {
+            continue;
+        }
+
+        if message.channel.as_deref() == Some("analysis") {
+            if !message.content.is_empty() {
+                stored_items.push(StoredConversationItem::Protocol(
+                    protocol_message_from_parsed(message),
+                ));
+            }
+            continue;
+        }
+
+        if message.recipient.is_some() || !message.content.is_empty() {
+            if let Some(item) = visible_items.next() {
+                stored_items.push(StoredConversationItem::Output(item));
+            }
+        }
+    }
+
+    stored_items.extend(visible_items.map(StoredConversationItem::Output));
+    stored_items
 }
 
 fn render_function_call(
@@ -1508,6 +1583,7 @@ mod tests {
     struct FakeEngine {
         outputs: AsyncMutex<VecDeque<Vec<RequestOutput>>>,
         prompts: Mutex<Vec<String>>,
+        sampling_params: Mutex<Vec<SamplingParams>>,
     }
 
     impl FakeEngine {
@@ -1515,11 +1591,16 @@ mod tests {
             Self {
                 outputs: AsyncMutex::new(outputs.into()),
                 prompts: Mutex::new(Vec::new()),
+                sampling_params: Mutex::new(Vec::new()),
             }
         }
 
         fn prompts(&self) -> Vec<String> {
             self.prompts.lock().unwrap().clone()
+        }
+
+        fn sampling_params(&self) -> Vec<SamplingParams> {
+            self.sampling_params.lock().unwrap().clone()
         }
     }
 
@@ -1528,9 +1609,10 @@ mod tests {
         async fn generate(
             &self,
             prompt: String,
-            _params: SamplingParams,
+            params: SamplingParams,
         ) -> gpt_oss_core::prelude::Result<(RequestId, ReceiverStream<RequestOutput>)> {
             self.prompts.lock().unwrap().push(prompt);
+            self.sampling_params.lock().unwrap().push(params);
             let maybe_outputs = self.outputs.lock().await.pop_front();
             let outputs = maybe_outputs.expect("fake engine ran out of queued outputs");
             let (tx, rx) = tokio::sync::mpsc::channel(outputs.len().max(1));
@@ -1719,6 +1801,38 @@ mod tests {
         assert!(rendered.contains("data: {\"ok\":true}\n\n"));
     }
 
+    #[tokio::test]
+    async fn create_response_route_adds_harmony_assistant_stop_strings_to_sampling_params() {
+        let (server, engine) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![vec![gpt_oss_request_output(
+                "<|channel|>final<|message|>Hello.<|return|>",
+                "Hello.",
+                true,
+            )]],
+        );
+
+        let response = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "Say hello.",
+                "stream": false,
+                "store": false,
+            }))
+            .await;
+
+        response.assert_status_ok();
+        let sampling_params = engine.sampling_params();
+        assert_eq!(sampling_params.len(), 1);
+        assert!(sampling_params[0]
+            .stop_strings
+            .contains(&"<|call|>".to_string()));
+        assert!(sampling_params[0]
+            .stop_strings
+            .contains(&"<|return|>".to_string()));
+    }
+
     #[test]
     fn response_output_items_parse_function_calls() {
         let req = make_tool_request(ResponseToolChoice::Mode("auto".into()));
@@ -1891,6 +2005,72 @@ mod tests {
                 assert_eq!(message.content[0].text, "It is 18C and sunny.");
             }
             _ => panic!("expected final message item"),
+        }
+    }
+
+    #[test]
+    fn stored_conversation_items_from_protocol_messages_preserve_hidden_analysis_order() {
+        let output_items = vec![
+            ResponseOutputItem::FunctionCall(ResponseFunctionCallItem::completed(
+                "fc_1",
+                "resp_test_0",
+                "get_weather",
+                "{\"location\":\"Boston\"}",
+            )),
+            ResponseOutputItem::Message(ResponseOutputMessage::completed(
+                "msg_1",
+                "It is 18C and sunny.",
+            )),
+        ];
+        let stored_items = stored_conversation_items_from_protocol_messages(
+            &[
+                gpt_oss_tokenizer::ParsedProtocolMessage {
+                    role: "assistant".into(),
+                    author_name: None,
+                    content: "Need weather lookup.".into(),
+                    channel: Some("analysis".into()),
+                    recipient: None,
+                    content_type: None,
+                },
+                gpt_oss_tokenizer::ParsedProtocolMessage {
+                    role: "assistant".into(),
+                    author_name: None,
+                    content: "{\"location\":\"Boston\"}".into(),
+                    channel: Some("commentary".into()),
+                    recipient: Some("functions.get_weather".into()),
+                    content_type: Some("<|constrain|>json".into()),
+                },
+                gpt_oss_tokenizer::ParsedProtocolMessage {
+                    role: "assistant".into(),
+                    author_name: None,
+                    content: "It is 18C and sunny.".into(),
+                    channel: Some("final".into()),
+                    recipient: None,
+                    content_type: None,
+                },
+            ],
+            &output_items,
+        );
+
+        assert_eq!(stored_items.len(), 3);
+        match &stored_items[0] {
+            StoredConversationItem::Protocol(message) => {
+                assert_eq!(message.channel.as_deref(), Some("analysis"));
+                assert_eq!(message.content, "Need weather lookup.");
+            }
+            _ => panic!("expected hidden protocol message"),
+        }
+        match &stored_items[1] {
+            StoredConversationItem::Output(ResponseOutputItem::FunctionCall(call)) => {
+                assert_eq!(call.call_id, "resp_test_0");
+            }
+            _ => panic!("expected function call output item"),
+        }
+        match &stored_items[2] {
+            StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
+                assert_eq!(message.content[0].text, "It is 18C and sunny.");
+            }
+            _ => panic!("expected visible message output item"),
         }
     }
 
@@ -2191,6 +2371,79 @@ mod tests {
         assert!(prompts[1].contains("\"temp_c\":18"));
         assert!(!prompts[1].contains("<tool_call>"));
         assert!(!prompts[1].contains("Tool output for function"));
+    }
+
+    #[tokio::test]
+    async fn previous_response_id_preserves_hidden_analysis_for_gpt_oss_replay() {
+        let (server, engine) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![
+                vec![gpt_oss_request_output(
+                    "<|channel|>analysis<|message|>Need weather lookup.<|end|><|start|>assistant to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"location\":\"Boston\"}<|call|>",
+                    "",
+                    true,
+                )],
+                vec![gpt_oss_request_output(
+                    "<|channel|>final<|message|>It is 18C and sunny.<|end|>",
+                    "It is 18C and sunny.",
+                    true,
+                )],
+            ],
+        );
+
+        let first = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "What's the weather?",
+                "store": true,
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object"},
+                }],
+            }))
+            .await;
+        first.assert_status_ok();
+        let first_body = first.json::<serde_json::Value>();
+        let first_id = first_body["id"].as_str().unwrap().to_string();
+        let call_id = first_body["output"][0]["call_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let second = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "previous_response_id": first_id,
+                "store": true,
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": {"temp_c": 18, "conditions": "sunny"},
+                }],
+            }))
+            .await;
+        second.assert_status_ok();
+        let second_body = second.json::<serde_json::Value>();
+
+        assert_eq!(
+            second_body["output"][0]["content"][0]["text"],
+            "It is 18C and sunny."
+        );
+        assert_ne!(
+            second_body["output"][0]["content"][0]["text"],
+            "Need weather lookup."
+        );
+
+        let prompts = engine.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("<|channel|>analysis"), "{}", prompts[1]);
+        assert!(prompts[1].contains("Need weather lookup."), "{}", prompts[1]);
+        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
+        assert!(prompts[1].contains("\"temp_c\":18"), "{}", prompts[1]);
     }
 
     #[tokio::test]
@@ -2602,6 +2855,47 @@ mod tests {
         assert_eq!(
             completed.1["response"]["output"][0]["content"][0]["text"],
             "Hello world"
+        );
+    }
+
+    #[tokio::test]
+    async fn gpt_oss_streaming_text_response_recovers_from_malformed_header() {
+        let (server, _) = make_server_with_model(
+            "openai/gpt-oss-20b",
+            vec![vec![gpt_oss_stream_request_output_from_fragments(
+                &["<|channel|>final Hello", "<|end|>"],
+                "",
+                true,
+            )]],
+        );
+
+        let response = server
+            .post("/v1/responses")
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "input": "Say hello.",
+                "stream": true,
+                "store": false,
+            }))
+            .await;
+
+        response.assert_status_ok();
+        let body = response.text();
+        let events = parse_sse_events(&body);
+        let text_deltas: Vec<String> = events
+            .iter()
+            .filter(|(name, _)| name == "response.output_text.delta")
+            .map(|(_, payload)| payload["delta"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(text_deltas, vec!["Hello".to_string()], "{body}");
+
+        let completed = events
+            .iter()
+            .find(|(name, _)| name == "response.completed")
+            .unwrap();
+        assert_eq!(
+            completed.1["response"]["output"][0]["content"][0]["text"],
+            "Hello"
         );
     }
 }

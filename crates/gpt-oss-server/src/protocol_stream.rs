@@ -3,6 +3,44 @@
 use gpt_oss_server::error::ApiError;
 use gpt_oss_server::types::streaming::{ChatFunctionCallDelta, ChatToolCallDelta};
 
+pub(crate) fn load_harmony_protocol() -> Result<gpt_oss_tokenizer::HarmonyProtocol, ApiError> {
+    gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
+}
+
+pub(crate) fn apply_gpt_oss_sampling_policy(
+    protocol: &gpt_oss_tokenizer::HarmonyProtocol,
+    sampling_params: &mut gpt_oss_core::prelude::SamplingParams,
+) -> Result<(), ApiError> {
+    let stop_strings = protocol
+        .assistant_action_stop_strings()
+        .map_err(|e| ApiError::Internal(format!("harmony stop token error: {}", e)))?;
+
+    for stop_string in stop_strings {
+        if !sampling_params.stop_strings.contains(&stop_string) {
+            sampling_params.stop_strings.push(stop_string);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_gpt_oss_completion(
+    protocol: &gpt_oss_tokenizer::HarmonyProtocol,
+    token_ids: &[u32],
+) -> Result<Vec<gpt_oss_tokenizer::ParsedProtocolMessage>, ApiError> {
+    protocol
+        .parse_completion_tokens_non_strict(token_ids)
+        .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))
+}
+
+pub(crate) fn new_gpt_oss_stream_parser(
+    protocol: &gpt_oss_tokenizer::HarmonyProtocol,
+) -> Result<gpt_oss_tokenizer::HarmonyStreamParser, ApiError> {
+    protocol
+        .stream_parser_non_strict()
+        .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))
+}
+
 pub(crate) fn visible_text_from_protocol_messages(
     messages: &[gpt_oss_tokenizer::ParsedProtocolMessage],
 ) -> Option<String> {
@@ -46,13 +84,10 @@ pub(crate) struct StreamedChatChoiceState {
 
 impl StreamedChatChoiceState {
     pub(crate) fn new() -> Result<Self, ApiError> {
-        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        let protocol = load_harmony_protocol()?;
         Ok(Self {
             processed_tokens: 0,
-            parser: protocol
-                .stream_parser()
-                .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?,
+            parser: new_gpt_oss_stream_parser(&protocol)?,
             visible_text: String::new(),
             tool_calls: Vec::new(),
         })
