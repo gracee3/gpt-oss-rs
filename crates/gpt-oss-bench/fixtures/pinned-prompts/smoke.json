@@ -1,0 +1,21 @@
+{
+  "schema_version": "pinned-prompt-manifest/v1",
+  "suite_id": "smoke",
+  "default_top_k": 4,
+  "default_capture_source": "runner",
+  "reference_kind": "local_candidate",
+  "authority_level": "scaffold",
+  "cases": [
+    {
+      "id": "developer-user-smoke",
+      "instructions": "Answer tersely.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Reply with exactly one word: hello"
+        }
+      ],
+      "tools": []
+    }
+  ]
+}

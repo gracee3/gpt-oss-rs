@@ -12,10 +12,11 @@ use openai_harmony::chat::{
     Author, Content, Conversation, DeveloperContent, Message, Role, SystemContent, ToolDescription,
 };
 use openai_harmony::{load_harmony_encoding, HarmonyEncodingName, StreamableParser};
+use serde::{Deserialize, Serialize};
 
 use crate::tool_parser::ToolDefinition;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolMessage {
     pub role: String,
     pub author_name: Option<String>,
@@ -70,7 +71,7 @@ impl ProtocolMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedProtocolMessage {
     pub role: String,
     pub author_name: Option<String>,
@@ -80,7 +81,7 @@ pub struct ParsedProtocolMessage {
     pub content_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedPrompt {
     pub text: String,
     pub token_ids: Vec<TokenId>,
@@ -92,8 +93,8 @@ pub struct HarmonyProtocol {
 
 impl HarmonyProtocol {
     pub fn gpt_oss() -> Result<Self> {
-        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)
-            .map_err(map_harmony_error)?;
+        let encoding =
+            load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).map_err(map_harmony_error)?;
         Ok(Self { encoding })
     }
 
@@ -116,7 +117,8 @@ impl HarmonyProtocol {
         }
 
         for message in messages {
-            if matches!(message.role.as_str(), "system" | "developer") && !message.content.is_empty()
+            if matches!(message.role.as_str(), "system" | "developer")
+                && !message.content.is_empty()
             {
                 developer_parts.push(message.content.clone());
             }
@@ -167,7 +169,10 @@ impl HarmonyProtocol {
         Ok(RenderedPrompt { text, token_ids })
     }
 
-    pub fn parse_completion_tokens(&self, token_ids: &[TokenId]) -> Result<Vec<ParsedProtocolMessage>> {
+    pub fn parse_completion_tokens(
+        &self,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<ParsedProtocolMessage>> {
         let parsed = self
             .encoding
             .parse_messages_from_completion_tokens(token_ids.iter().copied(), Some(Role::Assistant))
@@ -274,9 +279,10 @@ fn protocol_to_harmony_message(message: &ProtocolMessage) -> Result<Message> {
     })?;
     let mut converted = if role == Role::Tool {
         match &message.author_name {
-            Some(name) => {
-                Message::from_author_and_content(Author::new(Role::Tool, name.clone()), message.content.clone())
-            }
+            Some(name) => Message::from_author_and_content(
+                Author::new(Role::Tool, name.clone()),
+                message.content.clone(),
+            ),
             None => Message::from_role_and_content(Role::Tool, message.content.clone()),
         }
     } else {
@@ -369,7 +375,10 @@ mod tests {
         assert_eq!(parsed[0].role, "assistant");
         assert_eq!(parsed[0].author_name, None);
         assert_eq!(parsed[0].channel.as_deref(), Some("commentary"));
-        assert_eq!(parsed[0].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            parsed[0].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(parsed[0].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(parsed[0].content, "{\"location\":\"Tokyo\"}");
     }
@@ -395,8 +404,16 @@ mod tests {
             )
             .unwrap();
 
-        assert!(prompt.text.contains("to=functions.get_weather"), "{}", prompt.text);
-        assert!(prompt.text.contains("<|start|>functions.get_weather"), "{}", prompt.text);
+        assert!(
+            prompt.text.contains("to=functions.get_weather"),
+            "{}",
+            prompt.text
+        );
+        assert!(
+            prompt.text.contains("<|start|>functions.get_weather"),
+            "{}",
+            prompt.text
+        );
         assert!(prompt.text.contains("to=assistant"), "{}", prompt.text);
         assert!(prompt.text.contains("\"temp_c\":18"), "{}", prompt.text);
     }
@@ -414,7 +431,10 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].channel.as_deref(), Some("analysis"));
         assert_eq!(parsed[0].content, "Need weather lookup.");
-        assert_eq!(parsed[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            parsed[1].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(parsed[1].channel.as_deref(), Some("commentary"));
         assert_eq!(parsed[1].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(parsed[1].content, "{\"location\":\"Tokyo\"}");
@@ -442,8 +462,14 @@ mod tests {
         let messages = parser.messages().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].author_name, None);
-        assert_eq!(messages[0].recipient.as_deref(), Some("functions.get_weather"));
-        assert_eq!(messages[0].content_type.as_deref(), Some("<|constrain|>json"));
+        assert_eq!(
+            messages[0].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
+        assert_eq!(
+            messages[0].content_type.as_deref(),
+            Some("<|constrain|>json")
+        );
         assert_eq!(messages[0].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[0].content, "{\"location\":\"Tokyo\"}");
     }
@@ -475,7 +501,10 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].channel.as_deref(), Some("analysis"));
         assert_eq!(messages[0].content, "Need weather lookup.");
-        assert_eq!(messages[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            messages[1].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(messages[1].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[1].content, "{\"location\":\"Boston\"}");
     }

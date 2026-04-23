@@ -43,3 +43,8 @@ required-features = ["cuda"]
 name = "restricted_logit_diff"
 path = "src/bin/restricted_logit_diff.rs"
 required-features = ["cuda"]
+
+[[bin]]
+name = "pinned_prompt_parity"
+path = "src/bin/pinned_prompt_parity.rs"
+required-features = ["cuda"]
