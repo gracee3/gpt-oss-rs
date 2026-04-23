@@ -43,6 +43,14 @@ These overturned provisional owner claims that had looked plausible from global-
 - The remaining global-vs-local gap is still real even when provisional local owners were overturned.
 - Additional representative live testing may still expose a surviving owner, but that result has not been demonstrated yet.
 
+## Pinned Prompt Parity Status
+
+- The official PPP compare code path is implemented.
+- Exact local-vs-official mismatch is already proven on final output for the same `input_token_ids`, with different `argmax` and different top-k.
+- Official intermediate capture/import support is implemented.
+- The next authoritative compare is blocked on this host because official checkpoint load OOMs during `Transformer.from_checkpoint(...)` on available 24 GB GPUs.
+- Reopen PPP authoritative compare only on larger-memory GPUs or with a verified lower-memory official load path.
+
 ## What Is Incomplete Rather Than Proven Wrong
 
 - Forward runtime work is incomplete.
