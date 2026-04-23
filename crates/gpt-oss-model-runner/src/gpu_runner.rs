@@ -44,6 +44,21 @@ pub struct PrefillActivationTrace {
     pub layers: Vec<PrefillLayerTrace>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LastTokenHiddenStateCapture {
+    pub seam_identifier: String,
+    pub layer_idx: usize,
+    pub hidden_state_dim: usize,
+    pub hidden_state: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FinalTokenPreUnembeddingCapture {
+    pub boundary: String,
+    pub hidden_size: usize,
+    pub final_token_hidden_f32: Vec<f32>,
+}
+
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::cell::RefCell;
@@ -74,7 +89,10 @@ mod cuda_impl {
     use gpt_oss_model_runner::kv_cache::engine_cuda::CudaCacheEngine;
     use gpt_oss_model_runner::model_loader::gpu_weights::GpuModelWeights;
 
-    use super::{ForwardOutput, LogitsOutputMode, PrefillActivationTrace, PrefillLayerTrace};
+    use super::{
+        FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture,
+        LogitsOutputMode, PrefillActivationTrace, PrefillLayerTrace,
+    };
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
     /// allocations on the hot decode path.
@@ -832,6 +850,324 @@ mod cuda_impl {
                 });
             }
             Ok(trace)
+        }
+
+        pub fn debug_prefill_last_token_layer_output(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+            stop_after_layer: usize,
+        ) -> Result<LastTokenHiddenStateCapture> {
+            let num_tokens = token_ids.len();
+            let num_seqs = attn_meta.context_lens.len();
+            let hidden_size = self.config.hidden_size;
+            let block_size = self.cache.block_size();
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            if stop_after_layer >= self.layers.len() {
+                return Err(LLMError::ModelError(format!(
+                    "stop_after_layer {} out of range for {} transformer layers",
+                    stop_after_layer,
+                    self.layers.len()
+                )));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            if self.use_fp16 {
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+                let gpu_cache = self.cache.gpu_cache();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                let dummy_f32 = self
+                    .stream
+                    .alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf
+                            .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(
+                            offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                        ),
+                        context_lens: packed_buf.slice(
+                            offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                        ),
+                        slot_mapping: packed_buf.slice(
+                            offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                        ),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len: attn_meta.max_context_len,
+                        block_size,
+                        is_prefill: true,
+                        seq_start_pos: packed_buf.slice(
+                            offsets.seq_start_pos
+                                ..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                        ),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
+                    )?;
+                    if layer_idx == stop_after_layer {
+                        let post_attn_residual =
+                            self.copy_last_token_slice_f16(&residual, num_tokens, hidden_size)?;
+                        let mlp_out_last =
+                            self.copy_last_token_slice_f16(&mlp_out, num_tokens, hidden_size)?;
+                        let hidden_state = post_attn_residual
+                            .iter()
+                            .zip(mlp_out_last.iter())
+                            .map(|(lhs, rhs)| lhs + rhs)
+                            .collect();
+                        return Ok(LastTokenHiddenStateCapture {
+                            seam_identifier: "transformer_layer_output".to_string(),
+                            layer_idx,
+                            hidden_state_dim: hidden_size,
+                            hidden_state,
+                        });
+                    }
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+            } else {
+                let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
+                let gpu_cache = self.cache.gpu_cache();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &hidden_states,
+                        hidden_states_f16: None,
+                        positions: packed_buf
+                            .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(
+                            offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                        ),
+                        context_lens: packed_buf.slice(
+                            offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                        ),
+                        slot_mapping: packed_buf.slice(
+                            offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                        ),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len: attn_meta.max_context_len,
+                        block_size,
+                        is_prefill: true,
+                        seq_start_pos: packed_buf.slice(
+                            offsets.seq_start_pos
+                                ..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                        ),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights(layer_idx)?;
+                    hidden_states =
+                        layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
+                    if layer_idx == stop_after_layer {
+                        return Ok(LastTokenHiddenStateCapture {
+                            seam_identifier: "transformer_layer_output".to_string(),
+                            layer_idx,
+                            hidden_state_dim: hidden_size,
+                            hidden_state: self.copy_last_token_slice_f32(
+                                &hidden_states,
+                                num_tokens,
+                                hidden_size,
+                            )?,
+                        });
+                    }
+                }
+            }
+
+            Err(LLMError::ModelError(format!(
+                "failed to capture last-token hidden state at layer {stop_after_layer}"
+            )))
+        }
+
+        pub fn debug_final_token_post_final_norm_pre_unembedding(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+            is_prefill: bool,
+        ) -> Result<FinalTokenPreUnembeddingCapture> {
+            let num_tokens = token_ids.len();
+            let num_seqs = attn_meta.context_lens.len();
+            let hidden_size = self.config.hidden_size;
+            let block_size = self.cache.block_size();
+            let max_context_len = attn_meta.max_context_len;
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            if self.use_fp16 {
+                let mut hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+                let gpu_cache = self.cache.gpu_cache();
+                let meta_packed = self.meta_packed.borrow();
+                let packed_buf = meta_packed.slice();
+                let offsets = self.meta_packed_offsets.get();
+                let dummy_f32 = self
+                    .stream
+                    .alloc_zeros::<f32>(1)
+                    .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+                let mut prev_mlp_out: Option<CudaSlice<f16>> = None;
+
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                    let input = GpuLayerInput {
+                        hidden_states: &dummy_f32,
+                        hidden_states_f16: Some(&hidden_f16),
+                        positions: packed_buf
+                            .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                        key_cache,
+                        value_cache,
+                        block_tables: packed_buf.slice(
+                            offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                        ),
+                        context_lens: packed_buf.slice(
+                            offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                        ),
+                        slot_mapping: packed_buf.slice(
+                            offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                        ),
+                        num_tokens,
+                        num_seqs,
+                        max_context_len,
+                        block_size,
+                        is_prefill,
+                        seq_start_pos: packed_buf.slice(
+                            offsets.seq_start_pos
+                                ..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                        ),
+                        rope_cos: &self.rope_cos,
+                        rope_sin: &self.rope_sin,
+                    };
+                    let weights = self.layer_weights_f16(layer_idx)?;
+                    let (residual, mlp_out) = layer.forward_f16(
+                        &input,
+                        &weights,
+                        &self.blas,
+                        prev_mlp_out.as_ref(),
+                        self.cublaslt_ref(),
+                        self.tp_comm.as_ref(),
+                    )?;
+                    hidden_f16 = residual;
+                    prev_mlp_out = Some(mlp_out);
+                }
+
+                let fn_w = self
+                    .final_norm_weight_f16
+                    .as_ref()
+                    .ok_or_else(|| LLMError::GpuError("f16 final_norm not initialized".into()))?;
+                let normed_f16 = if let Some(ref last_mlp) = prev_mlp_out {
+                    let (n, _) = GpuTransformerLayer::fused_residual_rmsnorm_f16(
+                        &self.stream,
+                        &self.loader,
+                        &hidden_f16,
+                        last_mlp,
+                        fn_w,
+                        self.rms_norm_eps,
+                        num_tokens,
+                        hidden_size,
+                    )?;
+                    n
+                } else {
+                    self.rms_norm_f16_runner(&hidden_f16, fn_w, hidden_size)?
+                };
+
+                return Ok(FinalTokenPreUnembeddingCapture {
+                    boundary: "final_token_post_final_norm_pre_unembedding".to_string(),
+                    hidden_size,
+                    final_token_hidden_f32: self.copy_last_token_slice_f16(
+                        &normed_f16,
+                        num_tokens,
+                        hidden_size,
+                    )?,
+                });
+            }
+
+            let mut hidden_states = self.embedding_lookup_from_meta(num_tokens)?;
+            let gpu_cache = self.cache.gpu_cache();
+            let meta_packed = self.meta_packed.borrow();
+            let packed_buf = meta_packed.slice();
+            let offsets = self.meta_packed_offsets.get();
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                let (key_cache, value_cache) = &gpu_cache[layer_idx];
+                let input = GpuLayerInput {
+                    hidden_states: &hidden_states,
+                    hidden_states_f16: None,
+                    positions: packed_buf
+                        .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                    key_cache,
+                    value_cache,
+                    block_tables: packed_buf.slice(
+                        offsets.block_tables..offsets.block_tables + offsets.num_block_tables,
+                    ),
+                    context_lens: packed_buf.slice(
+                        offsets.context_lens..offsets.context_lens + offsets.num_context_lens,
+                    ),
+                    slot_mapping: packed_buf.slice(
+                        offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping,
+                    ),
+                    num_tokens,
+                    num_seqs,
+                    max_context_len,
+                    block_size,
+                    is_prefill,
+                    seq_start_pos: packed_buf.slice(
+                        offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                    ),
+                    rope_cos: &self.rope_cos,
+                    rope_sin: &self.rope_sin,
+                };
+                let weights = self.layer_weights(layer_idx)?;
+                hidden_states =
+                    layer.forward(&input, &weights, &self.blas, self.tp_comm.as_ref())?;
+            }
+
+            let normed = CudaRMSNorm::forward(
+                &hidden_states,
+                &self.final_norm_weight,
+                self.rms_norm_eps,
+                hidden_size,
+                &self.loader,
+                &self.stream,
+            )?;
+            Ok(FinalTokenPreUnembeddingCapture {
+                boundary: "final_token_post_final_norm_pre_unembedding".to_string(),
+                hidden_size,
+                final_token_hidden_f32: self.copy_last_token_slice_f32(
+                    &normed,
+                    num_tokens,
+                    hidden_size,
+                )?,
+            })
         }
 
         /// Extended forward: when `greedy_only` is true, runs argmax on GPU and
@@ -2380,6 +2716,25 @@ mod cuda_impl {
                 .collect())
         }
 
+        fn copy_last_token_slice_f16(
+            &self,
+            buf: &CudaSlice<f16>,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<Vec<f32>> {
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            let start = (num_tokens - 1) * hidden_size;
+            let end = start + hidden_size;
+            let last_token = buf.slice(start..end);
+            let host = self
+                .stream
+                .clone_dtoh(&last_token)
+                .map_err(|e| LLMError::GpuError(format!("trace last-token dtoh f16: {e}")))?;
+            Ok(host.iter().map(|value| value.to_f32()).collect())
+        }
+
         fn copy_last_token_f32(
             &self,
             buf: &CudaSlice<f32>,
@@ -2392,6 +2747,23 @@ mod cuda_impl {
                 .map_err(|e| LLMError::GpuError(format!("trace dtoh f32: {e}")))?;
             let start = (num_tokens - 1) * hidden_size;
             Ok(host[start..start + hidden_size].to_vec())
+        }
+
+        fn copy_last_token_slice_f32(
+            &self,
+            buf: &CudaSlice<f32>,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<Vec<f32>> {
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            let start = (num_tokens - 1) * hidden_size;
+            let end = start + hidden_size;
+            let last_token = buf.slice(start..end);
+            self.stream
+                .clone_dtoh(&last_token)
+                .map_err(|e| LLMError::GpuError(format!("trace last-token dtoh f32: {e}")))
         }
 
         /// GPU cast f32 -> f16 (static helper, does not need &self).
@@ -2842,7 +3214,10 @@ pub use cuda_impl::GpuModelRunner;
 // =========================================================================
 #[cfg(not(feature = "cuda"))]
 mod mock_impl {
-    use super::{ForwardOutput, PrefillActivationTrace};
+    use super::{
+        FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture,
+        PrefillActivationTrace,
+    };
     use crate::bridge::{LLMError, Result};
     use crate::runner::ModelRunnerConfig;
 
@@ -2899,6 +3274,30 @@ mod mock_impl {
             _positions: &[u32],
             _attn_meta: &crate::bridge::AttentionMetadata,
         ) -> Result<PrefillActivationTrace> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_prefill_last_token_layer_output(
+            &self,
+            _token_ids: &[u32],
+            _positions: &[u32],
+            _attn_meta: &crate::bridge::AttentionMetadata,
+            _stop_after_layer: usize,
+        ) -> Result<LastTokenHiddenStateCapture> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_final_token_post_final_norm_pre_unembedding(
+            &self,
+            _token_ids: &[u32],
+            _positions: &[u32],
+            _attn_meta: &crate::bridge::AttentionMetadata,
+            _is_prefill: bool,
+        ) -> Result<FinalTokenPreUnembeddingCapture> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))

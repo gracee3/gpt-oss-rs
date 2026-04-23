@@ -19,7 +19,10 @@ use gpt_oss_gpu::prelude::{CublasHandle, CudaGpuAllocator, GpuStream};
 use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
-use gpt_oss_model_runner::gpu_runner::{ForwardOutput, PrefillActivationTrace};
+use gpt_oss_model_runner::gpu_runner::{
+    FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture,
+    PrefillActivationTrace,
+};
 use gpt_oss_model_runner::input::ModelInput;
 use gpt_oss_model_runner::kv_cache::CacheEngine;
 use gpt_oss_model_runner::sampling::batch::make_rng;
@@ -1272,6 +1275,34 @@ impl GpuWorker {
         )
     }
 
+    /// Debug-only direct runner final-position logits capture for one prepared
+    /// worker step.
+    ///
+    /// This uses the same prepared model input as `debug_runner_logits()`, but
+    /// narrows the direct runner result before full prompt-step logits are
+    /// copied back to host memory.
+    pub fn debug_runner_last_token_logits(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Vec<f32>> {
+        if metadata.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.forward_last_token_logits(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            model_input.is_prefill,
+        )
+    }
+
     pub fn debug_runner_prefill_trace(
         &self,
         metadata: &[SequenceGroupMetadata],
@@ -1295,6 +1326,61 @@ impl GpuWorker {
             &model_input.attention_metadata,
         )
     }
+
+    pub fn debug_runner_prefill_last_token_layer_output(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+        stop_after_layer: usize,
+    ) -> Result<LastTokenHiddenStateCapture> {
+        if metadata.is_empty() {
+            return Ok(LastTokenHiddenStateCapture {
+                seam_identifier: "transformer_layer_output".to_string(),
+                layer_idx: stop_after_layer,
+                hidden_state_dim: 0,
+                hidden_state: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_last_token_layer_output(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            stop_after_layer,
+        )
+    }
+
+    pub fn debug_runner_final_token_post_final_norm_pre_unembedding(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<FinalTokenPreUnembeddingCapture> {
+        if metadata.is_empty() {
+            return Ok(FinalTokenPreUnembeddingCapture {
+                boundary: "final_token_post_final_norm_pre_unembedding".to_string(),
+                hidden_size: 0,
+                final_token_hidden_f32: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_final_token_post_final_norm_pre_unembedding(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+            model_input.is_prefill,
+        )
+    }
+
     /// Run the raw model forward pass (no graph logic).
     fn raw_gpu_forward(&self, model_input: &ModelInput) -> Result<Vec<f32>> {
         #[cfg(feature = "cuda")]
