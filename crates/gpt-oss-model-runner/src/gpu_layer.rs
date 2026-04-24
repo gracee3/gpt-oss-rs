@@ -24,9 +24,12 @@ mod inner {
         CudaFunction, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtrMut, DeviceSlice,
         LaunchConfig, PushKernelArg,
     };
-    use half::f16;
+    use half::{bf16, f16};
     use tracing::{info, trace};
 
+    use crate::gpu_runner::{
+        build_bf16_gemm_invocation_record, Bf16GemmInvocationRecord, Layer0KRopeDebugCapture,
+    };
     use gpt_oss_core::error::{LLMError, Result};
     use gpt_oss_gpu::cublas::CublasHandle;
     use gpt_oss_gpu::kernel_loader::KernelLoader;
@@ -98,6 +101,1183 @@ mod inner {
 
     fn layer0_prefill_moe_progress_debug_enabled() -> bool {
         LAYER0_PREFILL_MOE_PROGRESS_DEBUG.with(Cell::get)
+    }
+
+    fn layer0_bf16_dense_qkv_enabled() -> bool {
+        std::env::var_os("GPT_OSS_LAYER0_BF16_DENSE_QKV")
+            .map(|value| value != "0")
+            .unwrap_or(false)
+    }
+
+    fn cast_f16_slice_to_bf16(
+        stream: &Arc<CudaStream>,
+        input: &CudaSlice<f16>,
+        context: &str,
+    ) -> Result<CudaSlice<bf16>> {
+        let host_f16 = stream
+            .clone_dtoh(input)
+            .map_err(|e| LLMError::GpuError(format!("{context} dtoh f16 failed: {e}")))?;
+        let host_bf16: Vec<bf16> = host_f16
+            .into_iter()
+            .map(|value| bf16::from_f32(value.to_f32()))
+            .collect();
+        stream
+            .clone_htod(&host_bf16)
+            .map_err(|e| LLMError::GpuError(format!("{context} htod bf16 failed: {e}")))
+    }
+
+    fn cast_bf16_slice_to_f16(
+        stream: &Arc<CudaStream>,
+        input: &CudaSlice<bf16>,
+        context: &str,
+    ) -> Result<CudaSlice<f16>> {
+        let host_bf16 = stream
+            .clone_dtoh(input)
+            .map_err(|e| LLMError::GpuError(format!("{context} dtoh bf16 failed: {e}")))?;
+        let host_f16: Vec<f16> = host_bf16
+            .into_iter()
+            .map(|value| f16::from_f32(value.to_f32()))
+            .collect();
+        stream
+            .clone_htod(&host_f16)
+            .map_err(|e| LLMError::GpuError(format!("{context} htod f16 failed: {e}")))
+    }
+
+    fn bf16_slice_to_bits(values: &[bf16]) -> Vec<u16> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    fn bf16_row_major_slice_to_bits(
+        values: &[bf16],
+        row_width: usize,
+        slice_start: usize,
+        slice_len: usize,
+    ) -> Vec<u16> {
+        values
+            .chunks_exact(row_width)
+            .flat_map(|row| row[slice_start..slice_start + slice_len].iter())
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    fn bf16_contiguous_k_slice_to_bits(
+        values: &[bf16],
+        num_tokens: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) -> Vec<u16> {
+        let q_end = num_tokens * q_dim;
+        let k_end = q_end + num_tokens * kv_dim;
+        values[q_end..k_end]
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    fn add_bf16_bias_host(output: &mut [bf16], bias: &[bf16], num_tokens: usize, dim: usize) {
+        for token_idx in 0..num_tokens {
+            let row = token_idx * dim;
+            for i in 0..dim {
+                let sum = output[row + i].to_f32() + bias[i].to_f32();
+                output[row + i] = bf16::from_f32(sum);
+            }
+        }
+    }
+
+    fn add_bf16_bias_host_from_f32(
+        output: &mut [bf16],
+        bias: &[f32],
+        num_tokens: usize,
+        dim: usize,
+    ) {
+        for token_idx in 0..num_tokens {
+            let row = token_idx * dim;
+            for i in 0..dim {
+                let sum = output[row + i].to_f32() + bias[i];
+                output[row + i] = bf16::from_f32(sum);
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Layer0QkvProjectionInternalStages {
+        pub fused_qkv_pre_bias: Vec<f32>,
+        pub fused_qkv_post_bias: Vec<f32>,
+        pub packed_qkv_output: Vec<f32>,
+        pub standalone_activation_full_bf16_bits: Vec<u16>,
+        pub standalone_k_weight_bf16_bits: Vec<u16>,
+        pub fused_k_pre_bias_bf16_bits: Vec<u16>,
+        pub fused_k_post_bias_bf16_bits: Vec<u16>,
+        pub standalone_k_pre_bias_bf16_bits: Vec<u16>,
+        pub standalone_k_post_bias_bf16_bits: Vec<u16>,
+        pub fused_qkv_post_bias_combined_bf16_bits: Vec<u16>,
+        pub expected_standalone_qkv_post_bias_combined_bf16_bits: Vec<u16>,
+        pub fused_k_slice_bf16_bits: Vec<u16>,
+        pub standalone_k_gemm_output_full_bf16_bits: Vec<u16>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Layer0QGemmProjectionTrace {
+        pub standalone_activation_full_bf16_bits: Vec<u16>,
+        pub standalone_activation_bf16_bits: Vec<u16>,
+        pub fused_activation_bf16_bits: Vec<u16>,
+        pub standalone_q_weight_bf16_bits: Vec<u16>,
+        pub fused_q_slice_bf16_bits: Vec<u16>,
+        pub standalone_helper_invocation_state: Option<Bf16GemmInvocationRecord>,
+        pub standalone_q_gemm_output_full_bf16_bits: Vec<u16>,
+        pub standalone_q_gemm_output_bf16_bits: Vec<u16>,
+        pub activation_row: Vec<f32>,
+        pub q_weight: Vec<f32>,
+        pub raw_q_output: Vec<f32>,
+        pub standalone_q_gemm_output: Vec<f32>,
+        pub post_gemm_cast_distinct: bool,
+        pub post_gemm_cast_writeback: Option<Vec<f32>>,
+    }
+
+    struct QkvProjectionF16Result {
+        qkv: CudaSlice<f16>,
+        branch_taken: bool,
+        internal_stages: Option<Layer0QkvProjectionInternalStages>,
+    }
+
+    impl GpuTransformerLayer {
+        fn qkv_projection_f16_impl(
+            &self,
+            normed: &CudaSlice<f16>,
+            weights: &GpuLayerWeightsF16<'_>,
+            blas: &CublasHandle,
+            lt: Option<&crate::CublasLtRef>,
+            num_tokens: usize,
+            hidden: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            is_prefill: bool,
+            capture_internal_stages: bool,
+        ) -> Result<QkvProjectionF16Result> {
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            #[cfg(feature = "cublaslt")]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(&self.stream, blas, lt, input, weight, m, n, k, &self.loader)
+            };
+            #[cfg(not(feature = "cublaslt"))]
+            let hgemm = |input: &CudaSlice<f16>, weight: &CudaSlice<f16>, m, n, k| {
+                Self::hgemm_dispatch(
+                    &self.stream,
+                    blas,
+                    None,
+                    input,
+                    weight,
+                    m,
+                    n,
+                    k,
+                    &self.loader,
+                )
+            };
+            let use_layer0_bf16_dense_qkv =
+                layer0_bf16_dense_qkv_enabled() && self.config.layer_idx == 0 && is_prefill;
+            let mut internal_stages = None;
+
+            let mut qkv = if use_layer0_bf16_dense_qkv {
+                let normed_bf16 =
+                    cast_f16_slice_to_bf16(&self.stream, normed, "layer0 bf16 qkv input")?;
+                let mut standalone_activation_full_bf16_bits = Vec::new();
+                let mut standalone_k_weight_bf16_bits = Vec::new();
+                let mut fused_k_pre_bias_bf16_bits = Vec::new();
+                let mut fused_k_post_bias_bf16_bits = Vec::new();
+                let mut standalone_k_pre_bias_bf16_bits = Vec::new();
+                let mut standalone_k_post_bias_bf16_bits = Vec::new();
+                let mut fused_qkv_post_bias_combined_bf16_bits = Vec::new();
+                let mut expected_standalone_qkv_post_bias_combined_bf16_bits = Vec::new();
+                let mut fused_k_slice_bf16_bits = Vec::new();
+                let mut standalone_k_gemm_output_full_bf16_bits = Vec::new();
+                if capture_internal_stages {
+                    let activation_host = self.stream.clone_dtoh(&normed_bf16).map_err(|e| {
+                        LLMError::GpuError(format!("layer0 bf16 qkv input dtoh: {e}"))
+                    })?;
+                    standalone_activation_full_bf16_bits = bf16_slice_to_bits(&activation_host);
+                }
+                if let Some(fused_qkv) = weights.fused_qkv {
+                    let fused_qkv_bf16 =
+                        cast_f16_slice_to_bf16(&self.stream, fused_qkv, "layer0 bf16 qkv weight")?;
+                    let mut qkv_bf16 =
+                        unsafe { self.stream.alloc::<bf16>(num_tokens * qkv_dim) }
+                            .map_err(|e| LLMError::GpuError(format!("qkv bf16 alloc: {e}")))?;
+                    blas.hgemm_bf16(
+                        num_tokens,
+                        qkv_dim,
+                        hidden,
+                        bf16::ONE,
+                        &normed_bf16,
+                        &fused_qkv_bf16,
+                        bf16::ZERO,
+                        &mut qkv_bf16,
+                    )?;
+                    let pre_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&qkv_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("qkv bf16 pre-bias dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    if let Some(bias) = weights.fused_qkv_bias {
+                        let bias_bf16 =
+                            cast_f16_slice_to_bf16(&self.stream, bias, "layer0 bf16 qkv bias")?;
+                        let mut qkv_host = self
+                            .stream
+                            .clone_dtoh(&qkv_bf16)
+                            .map_err(|e| LLMError::GpuError(format!("qkv bf16 dtoh: {e}")))?;
+                        let bias_host = self
+                            .stream
+                            .clone_dtoh(&bias_bf16)
+                            .map_err(|e| LLMError::GpuError(format!("qkv bias bf16 dtoh: {e}")))?;
+                        add_bf16_bias_host(&mut qkv_host, &bias_host, num_tokens, qkv_dim);
+                        let qkv_f16_host: Vec<f16> = qkv_host
+                            .iter()
+                            .map(|value| f16::from_f32(value.to_f32()))
+                            .collect();
+                        if capture_internal_stages {
+                            let fused_qkv_weight_host =
+                                self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv fused weight dtoh: {e}"
+                                    ))
+                                })?;
+                            let k_weight_host =
+                                &fused_qkv_weight_host[q_dim * hidden..(q_dim + kv_dim) * hidden];
+                            let q_weight_host = &fused_qkv_weight_host[..q_dim * hidden];
+                            let v_weight_host = &fused_qkv_weight_host[(q_dim + kv_dim) * hidden..];
+                            standalone_k_weight_bf16_bits = bf16_slice_to_bits(k_weight_host);
+                            let standalone_q_weight_bf16 =
+                                self.stream.clone_htod(q_weight_host).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone q weight htod: {e}"
+                                    ))
+                                })?;
+                            let standalone_k_weight_bf16 =
+                                self.stream.clone_htod(k_weight_host).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone k weight htod: {e}"
+                                    ))
+                                })?;
+                            let standalone_v_weight_bf16 =
+                                self.stream.clone_htod(v_weight_host).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone v weight htod: {e}"
+                                    ))
+                                })?;
+                            let mut standalone_q_bf16 =
+                                unsafe { self.stream.alloc::<bf16>(num_tokens * q_dim) }.map_err(
+                                    |e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv standalone q alloc: {e}"
+                                        ))
+                                    },
+                                )?;
+                            let mut standalone_k_bf16 =
+                                unsafe { self.stream.alloc::<bf16>(num_tokens * kv_dim) }.map_err(
+                                    |e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv standalone k alloc: {e}"
+                                        ))
+                                    },
+                                )?;
+                            let mut standalone_v_bf16 =
+                                unsafe { self.stream.alloc::<bf16>(num_tokens * kv_dim) }.map_err(
+                                    |e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv standalone v alloc: {e}"
+                                        ))
+                                    },
+                                )?;
+                            blas.hgemm_bf16(
+                                num_tokens,
+                                q_dim,
+                                hidden,
+                                bf16::ONE,
+                                &normed_bf16,
+                                &standalone_q_weight_bf16,
+                                bf16::ZERO,
+                                &mut standalone_q_bf16,
+                            )?;
+                            blas.hgemm_bf16(
+                                num_tokens,
+                                kv_dim,
+                                hidden,
+                                bf16::ONE,
+                                &normed_bf16,
+                                &standalone_k_weight_bf16,
+                                bf16::ZERO,
+                                &mut standalone_k_bf16,
+                            )?;
+                            blas.hgemm_bf16(
+                                num_tokens,
+                                kv_dim,
+                                hidden,
+                                bf16::ONE,
+                                &normed_bf16,
+                                &standalone_v_weight_bf16,
+                                bf16::ZERO,
+                                &mut standalone_v_bf16,
+                            )?;
+                            let mut standalone_q_post_host =
+                                self.stream.clone_dtoh(&standalone_q_bf16).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone q dtoh: {e}"
+                                    ))
+                                })?;
+                            let standalone_k_host =
+                                self.stream.clone_dtoh(&standalone_k_bf16).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone k dtoh: {e}"
+                                    ))
+                                })?;
+                            let mut standalone_v_post_host =
+                                self.stream.clone_dtoh(&standalone_v_bf16).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv standalone v dtoh: {e}"
+                                    ))
+                                })?;
+                            let mut standalone_k_post_host = standalone_k_host.clone();
+                            let q_bias_host = &bias_host[..q_dim];
+                            let k_bias_host = &bias_host[q_dim..q_dim + kv_dim];
+                            let v_bias_host = &bias_host[q_dim + kv_dim..qkv_dim];
+                            add_bf16_bias_host(
+                                &mut standalone_q_post_host,
+                                q_bias_host,
+                                num_tokens,
+                                q_dim,
+                            );
+                            add_bf16_bias_host(
+                                &mut standalone_k_post_host,
+                                k_bias_host,
+                                num_tokens,
+                                kv_dim,
+                            );
+                            add_bf16_bias_host(
+                                &mut standalone_v_post_host,
+                                v_bias_host,
+                                num_tokens,
+                                kv_dim,
+                            );
+                            standalone_k_pre_bias_bf16_bits =
+                                bf16_slice_to_bits(&standalone_k_host);
+                            standalone_k_post_bias_bf16_bits =
+                                bf16_slice_to_bits(&standalone_k_post_host);
+                            expected_standalone_qkv_post_bias_combined_bf16_bits =
+                                bf16_slice_to_bits(&standalone_q_post_host);
+                            expected_standalone_qkv_post_bias_combined_bf16_bits
+                                .extend(bf16_slice_to_bits(&standalone_k_post_host));
+                            expected_standalone_qkv_post_bias_combined_bf16_bits
+                                .extend(bf16_slice_to_bits(&standalone_v_post_host));
+                            standalone_k_gemm_output_full_bf16_bits =
+                                bf16_slice_to_bits(&standalone_k_host);
+                            if let Some(pre_bias_host) = &pre_bias_host {
+                                fused_k_pre_bias_bf16_bits = bf16_row_major_slice_to_bits(
+                                    pre_bias_host,
+                                    qkv_dim,
+                                    q_dim,
+                                    kv_dim,
+                                );
+                            }
+                            fused_k_slice_bf16_bits =
+                                bf16_row_major_slice_to_bits(&qkv_host, qkv_dim, q_dim, kv_dim);
+                            fused_k_post_bias_bf16_bits = fused_k_slice_bf16_bits.clone();
+                            fused_qkv_post_bias_combined_bf16_bits = bf16_slice_to_bits(&qkv_host);
+                        }
+                        if let Some(pre_bias_host) = pre_bias_host {
+                            internal_stages = Some(Layer0QkvProjectionInternalStages {
+                                fused_qkv_pre_bias: pre_bias_host
+                                    .into_iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                fused_qkv_post_bias: qkv_host
+                                    .iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                packed_qkv_output: qkv_f16_host
+                                    .iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                standalone_activation_full_bf16_bits,
+                                standalone_k_weight_bf16_bits,
+                                fused_k_pre_bias_bf16_bits,
+                                fused_k_post_bias_bf16_bits,
+                                standalone_k_pre_bias_bf16_bits,
+                                standalone_k_post_bias_bf16_bits,
+                                fused_qkv_post_bias_combined_bf16_bits,
+                                expected_standalone_qkv_post_bias_combined_bf16_bits,
+                                fused_k_slice_bf16_bits,
+                                standalone_k_gemm_output_full_bf16_bits,
+                            });
+                        }
+                        self.stream
+                            .clone_htod(&qkv_f16_host)
+                            .map_err(|e| LLMError::GpuError(format!("qkv bf16 htod f16: {e}")))?
+                    } else {
+                        let qkv_f16 = cast_bf16_slice_to_f16(
+                            &self.stream,
+                            &qkv_bf16,
+                            "layer0 bf16 qkv output",
+                        )?;
+                        if let Some(pre_bias_host) = pre_bias_host {
+                            if capture_internal_stages {
+                                let fused_qkv_weight_host =
+                                    self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv fused weight dtoh: {e}"
+                                        ))
+                                    })?;
+                                let k_weight_host = &fused_qkv_weight_host
+                                    [q_dim * hidden..(q_dim + kv_dim) * hidden];
+                                standalone_k_weight_bf16_bits = bf16_slice_to_bits(k_weight_host);
+                                let standalone_k_weight_bf16 =
+                                    self.stream.clone_htod(k_weight_host).map_err(|e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv standalone k weight htod: {e}"
+                                        ))
+                                    })?;
+                                let mut standalone_k_bf16 =
+                                    unsafe { self.stream.alloc::<bf16>(num_tokens * kv_dim) }
+                                        .map_err(|e| {
+                                            LLMError::GpuError(format!(
+                                                "layer0 bf16 qkv standalone k alloc: {e}"
+                                            ))
+                                        })?;
+                                blas.hgemm_bf16(
+                                    num_tokens,
+                                    kv_dim,
+                                    hidden,
+                                    bf16::ONE,
+                                    &normed_bf16,
+                                    &standalone_k_weight_bf16,
+                                    bf16::ZERO,
+                                    &mut standalone_k_bf16,
+                                )?;
+                                let standalone_k_host =
+                                    self.stream.clone_dtoh(&standalone_k_bf16).map_err(|e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv standalone k dtoh: {e}"
+                                        ))
+                                    })?;
+                                standalone_k_pre_bias_bf16_bits =
+                                    bf16_slice_to_bits(&standalone_k_host);
+                                standalone_k_post_bias_bf16_bits =
+                                    standalone_k_pre_bias_bf16_bits.clone();
+                                standalone_k_gemm_output_full_bf16_bits =
+                                    bf16_slice_to_bits(&standalone_k_host);
+                                let qkv_bf16_host =
+                                    self.stream.clone_dtoh(&qkv_bf16).map_err(|e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 bf16 qkv fused output dtoh: {e}"
+                                        ))
+                                    })?;
+                                fused_k_slice_bf16_bits = bf16_row_major_slice_to_bits(
+                                    &qkv_bf16_host,
+                                    qkv_dim,
+                                    q_dim,
+                                    kv_dim,
+                                );
+                                fused_k_pre_bias_bf16_bits = fused_k_slice_bf16_bits.clone();
+                                fused_k_post_bias_bf16_bits = fused_k_slice_bf16_bits.clone();
+                                fused_qkv_post_bias_combined_bf16_bits =
+                                    bf16_slice_to_bits(&qkv_bf16_host);
+                                expected_standalone_qkv_post_bias_combined_bf16_bits =
+                                    fused_qkv_post_bias_combined_bf16_bits.clone();
+                            }
+                            let packed_qkv_host =
+                                self.stream.clone_dtoh(&qkv_f16).map_err(|e| {
+                                    LLMError::GpuError(format!("qkv bf16 packed dtoh: {e}"))
+                                })?;
+                            internal_stages = Some(Layer0QkvProjectionInternalStages {
+                                fused_qkv_pre_bias: pre_bias_host
+                                    .iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                fused_qkv_post_bias: pre_bias_host
+                                    .iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                packed_qkv_output: packed_qkv_host
+                                    .iter()
+                                    .map(|value| value.to_f32())
+                                    .collect(),
+                                standalone_activation_full_bf16_bits,
+                                standalone_k_weight_bf16_bits,
+                                fused_k_pre_bias_bf16_bits,
+                                fused_k_post_bias_bf16_bits,
+                                standalone_k_pre_bias_bf16_bits,
+                                standalone_k_post_bias_bf16_bits,
+                                fused_qkv_post_bias_combined_bf16_bits,
+                                expected_standalone_qkv_post_bias_combined_bf16_bits,
+                                fused_k_slice_bf16_bits,
+                                standalone_k_gemm_output_full_bf16_bits,
+                            });
+                        }
+                        qkv_f16
+                    }
+                } else {
+                    let q_proj_bf16 = cast_f16_slice_to_bf16(
+                        &self.stream,
+                        weights.q_proj,
+                        "layer0 bf16 q proj weight",
+                    )?;
+                    let k_proj_bf16 = cast_f16_slice_to_bf16(
+                        &self.stream,
+                        weights.k_proj,
+                        "layer0 bf16 k proj weight",
+                    )?;
+                    let v_proj_bf16 = cast_f16_slice_to_bf16(
+                        &self.stream,
+                        weights.v_proj,
+                        "layer0 bf16 v proj weight",
+                    )?;
+
+                    let mut q_bf16 = unsafe { self.stream.alloc::<bf16>(num_tokens * q_dim) }
+                        .map_err(|e| LLMError::GpuError(format!("q bf16 alloc: {e}")))?;
+                    let mut k_bf16 = unsafe { self.stream.alloc::<bf16>(num_tokens * kv_dim) }
+                        .map_err(|e| LLMError::GpuError(format!("k bf16 alloc: {e}")))?;
+                    let mut v_bf16 = unsafe { self.stream.alloc::<bf16>(num_tokens * kv_dim) }
+                        .map_err(|e| LLMError::GpuError(format!("v bf16 alloc: {e}")))?;
+
+                    blas.hgemm_bf16(
+                        num_tokens,
+                        q_dim,
+                        hidden,
+                        bf16::ONE,
+                        &normed_bf16,
+                        &q_proj_bf16,
+                        bf16::ZERO,
+                        &mut q_bf16,
+                    )?;
+                    blas.hgemm_bf16(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        bf16::ONE,
+                        &normed_bf16,
+                        &k_proj_bf16,
+                        bf16::ZERO,
+                        &mut k_bf16,
+                    )?;
+                    blas.hgemm_bf16(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        bf16::ONE,
+                        &normed_bf16,
+                        &v_proj_bf16,
+                        bf16::ZERO,
+                        &mut v_bf16,
+                    )?;
+
+                    let q_pre_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&q_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 q pre dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let k_pre_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&k_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 k pre dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let v_pre_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&v_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 v pre dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+
+                    if let Some(bias) = weights.q_proj_bias {
+                        let bias_host = self.stream.clone_dtoh(bias).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 q bias dtoh: {e}"))
+                        })?;
+                        let mut q_host = self
+                            .stream
+                            .clone_dtoh(&q_bf16)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q dtoh: {e}")))?;
+                        add_bf16_bias_host_from_f32(&mut q_host, &bias_host, num_tokens, q_dim);
+                        q_bf16 = self
+                            .stream
+                            .clone_htod(&q_host)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q htod: {e}")))?;
+                    }
+                    if let Some(bias) = weights.k_proj_bias {
+                        let bias_host = self.stream.clone_dtoh(bias).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 k bias dtoh: {e}"))
+                        })?;
+                        let mut k_host = self
+                            .stream
+                            .clone_dtoh(&k_bf16)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 k dtoh: {e}")))?;
+                        add_bf16_bias_host_from_f32(&mut k_host, &bias_host, num_tokens, kv_dim);
+                        k_bf16 = self
+                            .stream
+                            .clone_htod(&k_host)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 k htod: {e}")))?;
+                    }
+                    if let Some(bias) = weights.v_proj_bias {
+                        let bias_host = self.stream.clone_dtoh(bias).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 v bias dtoh: {e}"))
+                        })?;
+                        let mut v_host = self
+                            .stream
+                            .clone_dtoh(&v_bf16)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 v dtoh: {e}")))?;
+                        add_bf16_bias_host_from_f32(&mut v_host, &bias_host, num_tokens, kv_dim);
+                        v_bf16 = self
+                            .stream
+                            .clone_htod(&v_host)
+                            .map_err(|e| LLMError::GpuError(format!("layer0 bf16 v htod: {e}")))?;
+                    }
+
+                    let q_post_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&q_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 q post dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let k_post_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&k_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 k post dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let v_post_bias_host = if capture_internal_stages {
+                        Some(self.stream.clone_dtoh(&v_bf16).map_err(|e| {
+                            LLMError::GpuError(format!("layer0 bf16 v post dtoh: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+
+                    let mut qkv_host = self.stream.clone_dtoh(&q_bf16).map_err(|e| {
+                        LLMError::GpuError(format!("layer0 bf16 q final dtoh: {e}"))
+                    })?;
+                    qkv_host.extend(self.stream.clone_dtoh(&k_bf16).map_err(|e| {
+                        LLMError::GpuError(format!("layer0 bf16 k final dtoh: {e}"))
+                    })?);
+                    qkv_host.extend(self.stream.clone_dtoh(&v_bf16).map_err(|e| {
+                        LLMError::GpuError(format!("layer0 bf16 v final dtoh: {e}"))
+                    })?);
+                    let qkv_f16_host: Vec<f16> = qkv_host
+                        .iter()
+                        .map(|value| f16::from_f32(value.to_f32()))
+                        .collect();
+                    if let (
+                        Some(q_pre),
+                        Some(k_pre),
+                        Some(v_pre),
+                        Some(q_post),
+                        Some(k_post),
+                        Some(v_post),
+                    ) = (
+                        q_pre_bias_host,
+                        k_pre_bias_host,
+                        v_pre_bias_host,
+                        q_post_bias_host,
+                        k_post_bias_host,
+                        v_post_bias_host,
+                    ) {
+                        let k_pre_bits = bf16_slice_to_bits(&k_pre);
+                        let k_post_bits = bf16_slice_to_bits(&k_post);
+                        let mut fused_qkv_pre_bias = Vec::with_capacity(num_tokens * qkv_dim);
+                        fused_qkv_pre_bias.extend(q_pre.into_iter().map(|value| value.to_f32()));
+                        fused_qkv_pre_bias.extend(k_pre.into_iter().map(|value| value.to_f32()));
+                        fused_qkv_pre_bias.extend(v_pre.into_iter().map(|value| value.to_f32()));
+
+                        let mut fused_qkv_post_bias = Vec::with_capacity(num_tokens * qkv_dim);
+                        fused_qkv_post_bias.extend(q_post.into_iter().map(|value| value.to_f32()));
+                        fused_qkv_post_bias.extend(k_post.into_iter().map(|value| value.to_f32()));
+                        fused_qkv_post_bias.extend(v_post.into_iter().map(|value| value.to_f32()));
+
+                        if capture_internal_stages {
+                            let k_weight_host =
+                                self.stream.clone_dtoh(&k_proj_bf16).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 bf16 qkv k weight dtoh: {e}"
+                                    ))
+                                })?;
+                            standalone_k_weight_bf16_bits = bf16_slice_to_bits(&k_weight_host);
+                            fused_k_pre_bias_bf16_bits = k_pre_bits.clone();
+                            fused_k_post_bias_bf16_bits = k_post_bits.clone();
+                            standalone_k_pre_bias_bf16_bits = k_pre_bits.clone();
+                            standalone_k_post_bias_bf16_bits = k_post_bits.clone();
+                            fused_qkv_post_bias_combined_bf16_bits = bf16_slice_to_bits(&qkv_host);
+                            expected_standalone_qkv_post_bias_combined_bf16_bits =
+                                fused_qkv_post_bias_combined_bf16_bits.clone();
+                            fused_k_slice_bf16_bits = bf16_contiguous_k_slice_to_bits(
+                                &qkv_host, num_tokens, q_dim, kv_dim,
+                            );
+                            standalone_k_gemm_output_full_bf16_bits = k_post_bits;
+                        }
+
+                        internal_stages = Some(Layer0QkvProjectionInternalStages {
+                            fused_qkv_pre_bias,
+                            fused_qkv_post_bias,
+                            packed_qkv_output: qkv_f16_host
+                                .iter()
+                                .map(|value| value.to_f32())
+                                .collect(),
+                            standalone_activation_full_bf16_bits,
+                            standalone_k_weight_bf16_bits,
+                            fused_k_pre_bias_bf16_bits,
+                            fused_k_post_bias_bf16_bits,
+                            standalone_k_pre_bias_bf16_bits,
+                            standalone_k_post_bias_bf16_bits,
+                            fused_qkv_post_bias_combined_bf16_bits,
+                            expected_standalone_qkv_post_bias_combined_bf16_bits,
+                            fused_k_slice_bf16_bits,
+                            standalone_k_gemm_output_full_bf16_bits,
+                        });
+                    }
+                    self.stream
+                        .clone_htod(&qkv_f16_host)
+                        .map_err(|e| LLMError::GpuError(format!("layer0 bf16 qkv htod: {e}")))?
+                }
+            } else if let Some(fused_qkv) = weights.fused_qkv {
+                hgemm(normed, fused_qkv, num_tokens, qkv_dim, hidden)?
+            } else {
+                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
+                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
+                let q_end = num_tokens * q_dim;
+                let k_end = q_end + num_tokens * kv_dim;
+                {
+                    let mut q_dst = qkv_buf.slice_mut(..q_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        q_dim,
+                        hidden,
+                        1.0,
+                        normed,
+                        weights.q_proj,
+                        0.0,
+                        &mut q_dst,
+                    )?;
+                }
+                {
+                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        normed,
+                        weights.k_proj,
+                        0.0,
+                        &mut k_dst,
+                    )?;
+                }
+                {
+                    let mut v_dst = qkv_buf.slice_mut(k_end..);
+                    blas.hgemm_into(
+                        num_tokens,
+                        kv_dim,
+                        hidden,
+                        1.0,
+                        normed,
+                        weights.v_proj,
+                        0.0,
+                        &mut v_dst,
+                    )?;
+                }
+                qkv_buf
+            };
+
+            let q_end = num_tokens * q_dim;
+            let k_end = q_end + num_tokens * kv_dim;
+            if let Some(bias) = weights.fused_qkv_bias {
+                if use_layer0_bf16_dense_qkv {
+                    // Biases were already applied in the BF16 branch.
+                } else if weights.fused_qkv.is_some() {
+                    let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
+                    let bias_view = bias.slice(..qkv_dim);
+                    Self::add_bias_f16_view(
+                        &self.stream,
+                        &self.loader,
+                        &mut qkv_view,
+                        &bias_view,
+                        num_tokens,
+                        qkv_dim,
+                    )?;
+                } else {
+                    let q_bias = bias.slice(..q_dim);
+                    let k_bias = bias.slice(q_dim..q_dim + kv_dim);
+                    let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
+                    {
+                        let mut q_view = qkv.slice_mut(..q_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut q_view,
+                            &q_bias,
+                            num_tokens,
+                            q_dim,
+                        )?;
+                    }
+                    {
+                        let mut k_view = qkv.slice_mut(q_end..k_end);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut k_view,
+                            &k_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                    {
+                        let mut v_view = qkv.slice_mut(k_end..num_tokens * qkv_dim);
+                        Self::add_bias_f16_view(
+                            &self.stream,
+                            &self.loader,
+                            &mut v_view,
+                            &v_bias,
+                            num_tokens,
+                            kv_dim,
+                        )?;
+                    }
+                }
+            }
+
+            Ok(QkvProjectionF16Result {
+                qkv,
+                branch_taken: use_layer0_bf16_dense_qkv,
+                internal_stages,
+            })
+        }
+
+        pub(crate) fn qkv_projection_f16(
+            &self,
+            normed: &CudaSlice<f16>,
+            weights: &GpuLayerWeightsF16<'_>,
+            blas: &CublasHandle,
+            lt: Option<&crate::CublasLtRef>,
+            num_tokens: usize,
+            hidden: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            is_prefill: bool,
+        ) -> Result<(CudaSlice<f16>, bool)> {
+            let result = self.qkv_projection_f16_impl(
+                normed, weights, blas, lt, num_tokens, hidden, q_dim, kv_dim, is_prefill, false,
+            )?;
+            Ok((result.qkv, result.branch_taken))
+        }
+
+        pub(crate) fn debug_qkv_projection_f16_internal_stages(
+            &self,
+            normed: &CudaSlice<f16>,
+            weights: &GpuLayerWeightsF16<'_>,
+            blas: &CublasHandle,
+            lt: Option<&crate::CublasLtRef>,
+            num_tokens: usize,
+            hidden: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            is_prefill: bool,
+        ) -> Result<(
+            CudaSlice<f16>,
+            bool,
+            Option<Layer0QkvProjectionInternalStages>,
+        )> {
+            let result = self.qkv_projection_f16_impl(
+                normed, weights, blas, lt, num_tokens, hidden, q_dim, kv_dim, is_prefill, true,
+            )?;
+            Ok((result.qkv, result.branch_taken, result.internal_stages))
+        }
+
+        pub(crate) fn debug_apply_rope_f16_capture_k_post_rope_pre_cache(
+            &self,
+            qkv: &mut CudaSlice<f16>,
+            positions: CudaView<'_, i32>,
+            rope_cos: &CudaSlice<f32>,
+            rope_sin: &CudaSlice<f32>,
+            num_tokens: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            num_heads: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<(Vec<u16>, Vec<f32>, Layer0KRopeDebugCapture)> {
+            let q_end = num_tokens * q_dim;
+            let k_end = q_end + num_tokens * kv_dim;
+            let half_dim = head_dim / 2;
+            let final_token_index = num_tokens.saturating_sub(1);
+            let pre_rope_qkv = self
+                .stream
+                .clone_dtoh(qkv)
+                .map_err(|e| LLMError::GpuError(format!("layer0 k pre-rope dtoh f16: {e}")))?;
+            let runtime_position_ids = self
+                .stream
+                .clone_dtoh(&positions)
+                .map_err(|e| LLMError::GpuError(format!("layer0 k rope positions dtoh: {e}")))?;
+            let effective_position_id = *runtime_position_ids
+                .get(final_token_index)
+                .ok_or_else(|| LLMError::GpuError("missing final token position id".into()))?;
+            let rope_cos_host = self
+                .stream
+                .clone_dtoh(rope_cos)
+                .map_err(|e| LLMError::GpuError(format!("layer0 k rope cos dtoh: {e}")))?;
+            let rope_sin_host = self
+                .stream
+                .clone_dtoh(rope_sin)
+                .map_err(|e| LLMError::GpuError(format!("layer0 k rope sin dtoh: {e}")))?;
+            let max_rope_pos = if half_dim == 0 {
+                0
+            } else {
+                rope_cos_host.len() / half_dim
+            };
+            let effective_position_modulo = if max_rope_pos == 0 {
+                0
+            } else {
+                (effective_position_id.max(0) as usize) % max_rope_pos
+            };
+            let factor_row_start = effective_position_modulo * half_dim;
+            let factor_row_end = factor_row_start + half_dim;
+            if factor_row_end > rope_cos_host.len() || factor_row_end > rope_sin_host.len() {
+                return Err(LLMError::GpuError(format!(
+                    "layer0 k rope factor row out of bounds: pos={} half_dim={} cos_len={} sin_len={}",
+                    effective_position_modulo,
+                    half_dim,
+                    rope_cos_host.len(),
+                    rope_sin_host.len()
+                )));
+            }
+            let cos_half = &rope_cos_host[factor_row_start..factor_row_end];
+            let sin_half = &rope_sin_host[factor_row_start..factor_row_end];
+            let mut live_runtime_cos_row_f32 = Vec::with_capacity(head_dim);
+            live_runtime_cos_row_f32.extend_from_slice(cos_half);
+            live_runtime_cos_row_f32.extend_from_slice(cos_half);
+            let mut live_runtime_sin_row_f32 = Vec::with_capacity(head_dim);
+            live_runtime_sin_row_f32.extend_from_slice(sin_half);
+            live_runtime_sin_row_f32.extend_from_slice(sin_half);
+
+            {
+                let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
+                let mut k_view = kv_part.slice_mut(..num_tokens * kv_dim);
+                Self::apply_rotary_embedding_f16_views(
+                    &self.stream,
+                    &self.loader,
+                    &mut q_part,
+                    &mut k_view,
+                    &positions,
+                    rope_cos,
+                    rope_sin,
+                    num_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                )?;
+            }
+            let post_rope_qkv = self.stream.clone_dtoh(qkv).map_err(|e| {
+                LLMError::GpuError(format!("layer0 k post-rope pre-cache dtoh f16: {e}"))
+            })?;
+            let k_post_rope = &post_rope_qkv[q_end..k_end];
+            let k_post_rope_f16_bits = k_post_rope.iter().map(|value| value.to_bits()).collect();
+            let k_post_rope_f32 = k_post_rope.iter().map(|value| value.to_f32()).collect();
+            let final_k_start = q_end + final_token_index * kv_dim;
+            let final_k_end = final_k_start + kv_dim;
+            let final_token_k_pre_rope = &pre_rope_qkv[final_k_start..final_k_end];
+            let final_token_k_post_rope = &post_rope_qkv[final_k_start..final_k_end];
+            let k_rope_debug = Layer0KRopeDebugCapture {
+                final_token_index,
+                effective_position_id,
+                effective_position_modulo,
+                runtime_position_ids,
+                head_dim,
+                half_dim,
+                num_kv_heads,
+                final_token_k_pre_rope_f16_bits: final_token_k_pre_rope
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect(),
+                final_token_k_pre_rope_f32: final_token_k_pre_rope
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect(),
+                final_token_k_post_rope_f16_bits: final_token_k_post_rope
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect(),
+                final_token_k_post_rope_f32: final_token_k_post_rope
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect(),
+                live_runtime_cos_row_f32,
+                live_runtime_sin_row_f32,
+            };
+            Ok((k_post_rope_f16_bits, k_post_rope_f32, k_rope_debug))
+        }
+
+        pub(crate) fn debug_q_gemm_f16_trace(
+            &self,
+            normed: &CudaSlice<f16>,
+            weights: &GpuLayerWeightsF16<'_>,
+            blas: &CublasHandle,
+            _lt: Option<&crate::CublasLtRef>,
+            num_tokens: usize,
+            hidden: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            is_prefill: bool,
+        ) -> Result<(bool, Layer0QGemmProjectionTrace)> {
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            let use_layer0_bf16_dense_qkv =
+                layer0_bf16_dense_qkv_enabled() && self.config.layer_idx == 0 && is_prefill;
+            if !use_layer0_bf16_dense_qkv {
+                return Err(LLMError::ModelError(
+                    "layer0 q gemm trace requires the bf16 dense-qkv candidate branch".into(),
+                ));
+            }
+
+            let normed_bf16 =
+                cast_f16_slice_to_bf16(&self.stream, normed, "layer0 bf16 q gemm input")?;
+            let activation_host = self
+                .stream
+                .clone_dtoh(&normed_bf16)
+                .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q gemm input dtoh: {e}")))?;
+            let standalone_activation_full_bf16_bits = bf16_slice_to_bits(&activation_host);
+            let activation_row_start = (num_tokens - 1) * hidden;
+            let activation_row_host =
+                &activation_host[activation_row_start..activation_row_start + hidden];
+            let standalone_activation_bf16_bits = bf16_slice_to_bits(activation_row_host);
+            let fused_activation_bf16_bits = standalone_activation_bf16_bits.clone();
+            let activation_row = activation_row_host
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+
+            // The debug probe always runs a fused QKV GEMM and narrows to the Q slice,
+            // even if the runner is still holding separate Q/K/V projection tensors.
+            let fused_qkv_bf16 = if let Some(fused_qkv) = weights.fused_qkv {
+                cast_f16_slice_to_bf16(&self.stream, fused_qkv, "layer0 bf16 q gemm weight")?
+            } else {
+                let q_proj_bf16 = cast_f16_slice_to_bf16(
+                    &self.stream,
+                    weights.q_proj,
+                    "layer0 bf16 q gemm q weight",
+                )?;
+                let k_proj_bf16 = cast_f16_slice_to_bf16(
+                    &self.stream,
+                    weights.k_proj,
+                    "layer0 bf16 q gemm k weight",
+                )?;
+                let v_proj_bf16 = cast_f16_slice_to_bf16(
+                    &self.stream,
+                    weights.v_proj,
+                    "layer0 bf16 q gemm v weight",
+                )?;
+                let mut fused_host = self.stream.clone_dtoh(&q_proj_bf16).map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm q weight dtoh: {e}"))
+                })?;
+                fused_host.extend(self.stream.clone_dtoh(&k_proj_bf16).map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm k weight dtoh: {e}"))
+                })?);
+                fused_host.extend(self.stream.clone_dtoh(&v_proj_bf16).map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm v weight dtoh: {e}"))
+                })?);
+                self.stream.clone_htod(&fused_host).map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm fused weight htod: {e}"))
+                })?
+            };
+            let fused_qkv_host = self
+                .stream
+                .clone_dtoh(&fused_qkv_bf16)
+                .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q gemm weight dtoh: {e}")))?;
+            let fused_q_slice_host = &fused_qkv_host[..q_dim * hidden];
+            let fused_q_slice_bf16_bits = bf16_slice_to_bits(fused_q_slice_host);
+            let standalone_q_weight_host = fused_q_slice_host.to_vec();
+            let standalone_q_weight_bf16_bits = bf16_slice_to_bits(&standalone_q_weight_host);
+            let q_weight = standalone_q_weight_host
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let standalone_q_weight_bf16 = self
+                .stream
+                .clone_htod(&standalone_q_weight_host)
+                .map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm standalone q weight htod: {e}"))
+                })?;
+            let standalone_helper_invocation_state = Some(build_bf16_gemm_invocation_record(
+                blas, num_tokens, q_dim, hidden,
+            )?);
+
+            let mut qkv_bf16 = unsafe { self.stream.alloc::<bf16>(num_tokens * qkv_dim) }
+                .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q gemm alloc: {e}")))?;
+            blas.hgemm_bf16(
+                num_tokens,
+                qkv_dim,
+                hidden,
+                bf16::ONE,
+                &normed_bf16,
+                &fused_qkv_bf16,
+                bf16::ZERO,
+                &mut qkv_bf16,
+            )?;
+            let qkv_host = self
+                .stream
+                .clone_dtoh(&qkv_bf16)
+                .map_err(|e| LLMError::GpuError(format!("layer0 bf16 q gemm output dtoh: {e}")))?;
+            let q_row_start = (num_tokens - 1) * qkv_dim;
+            let raw_q_output = qkv_host[q_row_start..q_row_start + q_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let mut standalone_q_bf16 = unsafe { self.stream.alloc::<bf16>(num_tokens * q_dim) }
+                .map_err(|e| {
+                    LLMError::GpuError(format!("layer0 bf16 q gemm standalone output alloc: {e}"))
+                })?;
+            blas.hgemm_bf16(
+                num_tokens,
+                q_dim,
+                hidden,
+                bf16::ONE,
+                &normed_bf16,
+                &standalone_q_weight_bf16,
+                bf16::ZERO,
+                &mut standalone_q_bf16,
+            )?;
+            let standalone_q_host = self.stream.clone_dtoh(&standalone_q_bf16).map_err(|e| {
+                LLMError::GpuError(format!("layer0 bf16 q gemm standalone output dtoh: {e}"))
+            })?;
+            let standalone_q_gemm_output_full_bf16_bits = bf16_slice_to_bits(&standalone_q_host);
+            let standalone_q_row_start = (num_tokens - 1) * q_dim;
+            let standalone_q_gemm_output_bf16_bits = bf16_slice_to_bits(
+                &standalone_q_host[standalone_q_row_start..standalone_q_row_start + q_dim],
+            );
+            let standalone_q_gemm_output = standalone_q_host
+                [standalone_q_row_start..standalone_q_row_start + q_dim]
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+
+            Ok((
+                true,
+                Layer0QGemmProjectionTrace {
+                    standalone_activation_full_bf16_bits,
+                    standalone_activation_bf16_bits,
+                    fused_activation_bf16_bits,
+                    standalone_q_weight_bf16_bits,
+                    fused_q_slice_bf16_bits,
+                    standalone_helper_invocation_state,
+                    standalone_q_gemm_output_full_bf16_bits,
+                    standalone_q_gemm_output_bf16_bits,
+                    activation_row,
+                    q_weight,
+                    raw_q_output,
+                    standalone_q_gemm_output,
+                    post_gemm_cast_distinct: false,
+                    post_gemm_cast_writeback: None,
+                },
+            ))
+        }
     }
 
     #[derive(Debug, Default, Clone, Copy)]
@@ -296,8 +1476,7 @@ mod inner {
                             expert_gate_up_ms = totals.expert_gate_up_us as f64 / 1000.0,
                             expert_gate_up_row_overhead_ms =
                                 totals.expert_gate_up_row_overhead_us as f64 / 1000.0,
-                            expert_gate_up_core_ms =
-                                totals.expert_gate_up_core_us as f64 / 1000.0,
+                            expert_gate_up_core_ms = totals.expert_gate_up_core_us as f64 / 1000.0,
                             expert_gate_up_core_group_setup_ms =
                                 totals.expert_gate_up_core_group_setup_us as f64 / 1000.0,
                             expert_gate_up_core_packed_body_ms =
@@ -1143,109 +2322,19 @@ mod inner {
                     &self.loader,
                 )
             };
-            let mut qkv = if let Some(fused_qkv) = weights.fused_qkv {
-                hgemm(&normed, fused_qkv, num_tokens, qkv_dim, hidden)?
-            } else {
-                let mut qkv_buf = unsafe { self.stream.alloc::<f16>(num_tokens * qkv_dim) }
-                    .map_err(|e| LLMError::GpuError(format!("qkv f16 alloc: {e}")))?;
-                let q_end = num_tokens * q_dim;
-                let k_end = q_end + num_tokens * kv_dim;
-                {
-                    let mut q_dst = qkv_buf.slice_mut(..q_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        q_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.q_proj,
-                        0.0,
-                        &mut q_dst,
-                    )?;
-                }
-                {
-                    let mut k_dst = qkv_buf.slice_mut(q_end..k_end);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.k_proj,
-                        0.0,
-                        &mut k_dst,
-                    )?;
-                }
-                {
-                    let mut v_dst = qkv_buf.slice_mut(k_end..);
-                    blas.hgemm_into(
-                        num_tokens,
-                        kv_dim,
-                        hidden,
-                        1.0,
-                        &normed,
-                        weights.v_proj,
-                        0.0,
-                        &mut v_dst,
-                    )?;
-                }
-                qkv_buf
-            };
-
-            // 3. Apply fused QKV bias (f16) in-place.
+            let (mut qkv, _layer0_bf16_dense_qkv_taken) = self.qkv_projection_f16(
+                &normed,
+                weights,
+                blas,
+                lt,
+                num_tokens,
+                hidden,
+                q_dim,
+                kv_dim,
+                input.is_prefill,
+            )?;
             let q_end = num_tokens * q_dim;
             let k_end = q_end + num_tokens * kv_dim;
-            if let Some(bias) = weights.fused_qkv_bias {
-                if weights.fused_qkv.is_some() {
-                    let mut qkv_view = qkv.slice_mut(..num_tokens * qkv_dim);
-                    let bias_view = bias.slice(..qkv_dim);
-                    Self::add_bias_f16_view(
-                        &self.stream,
-                        &self.loader,
-                        &mut qkv_view,
-                        &bias_view,
-                        num_tokens,
-                        qkv_dim,
-                    )?;
-                } else {
-                    let q_bias = bias.slice(..q_dim);
-                    let k_bias = bias.slice(q_dim..q_dim + kv_dim);
-                    let v_bias = bias.slice(q_dim + kv_dim..qkv_dim);
-                    {
-                        let mut q_view = qkv.slice_mut(..q_end);
-                        Self::add_bias_f16_view(
-                            &self.stream,
-                            &self.loader,
-                            &mut q_view,
-                            &q_bias,
-                            num_tokens,
-                            q_dim,
-                        )?;
-                    }
-                    {
-                        let mut k_view = qkv.slice_mut(q_end..k_end);
-                        Self::add_bias_f16_view(
-                            &self.stream,
-                            &self.loader,
-                            &mut k_view,
-                            &k_bias,
-                            num_tokens,
-                            kv_dim,
-                        )?;
-                    }
-                    {
-                        let mut v_view = qkv.slice_mut(k_end..num_tokens * qkv_dim);
-                        Self::add_bias_f16_view(
-                            &self.stream,
-                            &self.loader,
-                            &mut v_view,
-                            &v_bias,
-                            num_tokens,
-                            kv_dim,
-                        )?;
-                    }
-                }
-            }
             let qkv_ms = if trace_layer_timings {
                 sync_for_timing(&self.stream, "qkv")?;
                 stage_start

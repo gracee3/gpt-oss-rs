@@ -3,6 +3,9 @@
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm as _, GemmConfig, Gemv as _, GemvConfig};
 use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
+use half::bf16;
+use serde::{Deserialize, Serialize};
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use crate::Result;
@@ -10,6 +13,15 @@ use crate::Result;
 /// Default cuBLAS workspace size for graph capture (4 MiB).
 /// NVIDIA recommends at least 4 KiB; 4 MiB covers all GEMM tile configs.
 const CUBLAS_GRAPH_WORKSPACE_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CublasHandleState {
+    pub pointer_mode: String,
+    pub math_mode: String,
+    pub atomics_mode: String,
+    pub graph_workspace_registered: bool,
+    pub graph_workspace_bytes: usize,
+}
 
 /// Wrapper around cuBLAS for matrix operations.
 pub struct CublasHandle {
@@ -36,6 +48,49 @@ impl CublasHandle {
     /// Returns a reference to the underlying stream.
     pub fn stream(&self) -> &Arc<CudaStream> {
         &self.stream
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn snapshot_state(&self) -> Result<CublasHandleState> {
+        use cudarc::cublas::sys::{
+            cublasAtomicsMode_t, cublasMath_t, cublasStatus_t::CUBLAS_STATUS_SUCCESS,
+        };
+
+        let pointer_mode = self
+            .blas
+            .get_pointer_mode()
+            .map_err(|e| crate::LLMError::GpuError(format!("cublas pointer mode query failed: {e}")))?;
+
+        let mut math_mode = MaybeUninit::<cublasMath_t>::uninit();
+        let mut atomics_mode = MaybeUninit::<cublasAtomicsMode_t>::uninit();
+        unsafe {
+            let math_status = cudarc::cublas::sys::cublasGetMathMode(
+                *self.blas.handle(),
+                math_mode.as_mut_ptr(),
+            );
+            if math_status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublas math mode query failed: {math_status:?}"
+                )));
+            }
+            let atomics_status = cudarc::cublas::sys::cublasGetAtomicsMode(
+                *self.blas.handle(),
+                atomics_mode.as_mut_ptr(),
+            );
+            if atomics_status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublas atomics mode query failed: {atomics_status:?}"
+                )));
+            }
+        }
+
+        Ok(CublasHandleState {
+            pointer_mode: format!("{pointer_mode:?}"),
+            math_mode: format!("{:?}", unsafe { math_mode.assume_init() }),
+            atomics_mode: format!("{:?}", unsafe { atomics_mode.assume_init() }),
+            graph_workspace_registered: self.graph_workspace.is_some(),
+            graph_workspace_bytes: self.graph_workspace.as_ref().map(|ws| ws.len()).unwrap_or(0),
+        })
     }
 
     /// Pre-allocate and register a cuBLAS workspace for CUDA graph capture.
@@ -346,6 +401,83 @@ impl CublasHandle {
                 )
                 .map_err(|e| crate::LLMError::GpuError(format!("cuBLAS hgemm failed: {e}")))?;
         }
+        Ok(())
+    }
+
+    /// HGEMM: bfloat16 precision GEMM for bf16.
+    ///
+    /// Same layout conventions as [`hgemm`](Self::hgemm) but operates on bf16
+    /// tensors. Internally uses f32 accumulation for numerical stability.
+    #[cfg(feature = "cuda")]
+    pub fn hgemm_bf16(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: bf16,
+        a: &CudaSlice<bf16>,
+        b: &CudaSlice<bf16>,
+        beta: bf16,
+        c: &mut CudaSlice<bf16>,
+    ) -> Result<()> {
+        use cudarc::cublas::sys::{
+            cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            cublasOperation_t::{CUBLAS_OP_N, CUBLAS_OP_T},
+            cublasStatus_t::CUBLAS_STATUS_SUCCESS,
+            cudaDataType_t::CUDA_R_16BF,
+        };
+
+        let alpha_f32 = alpha.to_f32();
+        let beta_f32 = beta.to_f32();
+        let (b_ptr, _bg) = DevicePtr::device_ptr(b, &self.stream);
+        let (a_ptr, _ag) = DevicePtr::device_ptr(a, &self.stream);
+        let (c_ptr, _cg) = DevicePtrMut::device_ptr_mut(c, &self.stream);
+
+        unsafe {
+            let status = cudarc::cublas::sys::cublasGemmEx(
+                *self.blas.handle(),
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha_f32 as *const f32 as *const std::ffi::c_void,
+                b_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                a_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                &beta_f32 as *const f32 as *const std::ffi::c_void,
+                c_ptr as *mut std::ffi::c_void,
+                CUDA_R_16BF,
+                n as i32,
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            );
+            if status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasGemmEx (bf16xbf16->bf16) failed: {status:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// No-op stub when cuda feature is off.
+    #[cfg(not(feature = "cuda"))]
+    pub fn hgemm_bf16(
+        &self,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _alpha: bf16,
+        _a: &CudaSlice<bf16>,
+        _b: &CudaSlice<bf16>,
+        _beta: bf16,
+        _c: &mut CudaSlice<bf16>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -701,6 +833,7 @@ impl CublasHandle {
 mod tests {
     use super::*;
     use cudarc::driver::CudaContext;
+    use half::bf16;
 
     #[test]
     fn sgemm_a_times_bt() {
@@ -740,6 +873,64 @@ mod tests {
             assert!(
                 (got - exp).abs() < 1e-4,
                 "mismatch at index {idx}: got {got}, expected {exp}"
+            );
+        }
+    }
+
+    #[test]
+    fn hgemm_bf16_a_times_bt() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let handle = CublasHandle::new(stream.clone()).unwrap();
+
+        let a_host: Vec<bf16> = vec![
+            bf16::from_f32(1.0),
+            bf16::from_f32(2.0),
+            bf16::from_f32(3.0),
+            bf16::from_f32(4.0),
+            bf16::from_f32(5.0),
+            bf16::from_f32(6.0),
+        ];
+        let b_host: Vec<bf16> = vec![
+            bf16::from_f32(1.0),
+            bf16::from_f32(2.0),
+            bf16::from_f32(3.0),
+            bf16::from_f32(4.0),
+            bf16::from_f32(5.0),
+            bf16::from_f32(6.0),
+            bf16::from_f32(7.0),
+            bf16::from_f32(8.0),
+            bf16::from_f32(9.0),
+            bf16::from_f32(10.0),
+            bf16::from_f32(11.0),
+            bf16::from_f32(12.0),
+        ];
+
+        let a_gpu = stream.clone_htod(&a_host).unwrap();
+        let b_gpu = stream.clone_htod(&b_host).unwrap();
+        let mut c_gpu = stream.alloc_zeros::<bf16>(2 * 4).unwrap();
+
+        handle
+            .hgemm_bf16(2, 4, 3, bf16::ONE, &a_gpu, &b_gpu, bf16::ZERO, &mut c_gpu)
+            .unwrap();
+
+        let c_host = stream.clone_dtoh(&c_gpu).unwrap();
+
+        let mut expected = vec![0.0f32; 8];
+        for i in 0..2 {
+            for j in 0..4 {
+                for kk in 0..3 {
+                    expected[i * 4 + j] +=
+                        a_host[i * 3 + kk].to_f32() * b_host[j * 3 + kk].to_f32();
+                }
+            }
+        }
+
+        for (idx, (got, exp)) in c_host.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got.to_f32() - exp).abs() < 1e-2,
+                "mismatch at index {idx}: got {}, expected {exp}",
+                got.to_f32()
             );
         }
     }

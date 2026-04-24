@@ -38,6 +38,8 @@ pub use cuda_allocator::CudaGpuAllocator;
 pub use cudarc::driver::CudaContext;
 #[cfg(feature = "cuda")]
 pub use cudarc::driver::CudaStream;
+#[cfg(feature = "cuda")]
+pub use cublas::CublasHandleState;
 
 pub mod prelude {
     pub use crate::allocator::GpuAllocator;
@@ -45,6 +47,8 @@ pub mod prelude {
     pub use crate::cpu_buffer::CpuBuffer;
     #[cfg(feature = "cuda")]
     pub use crate::cublas::CublasHandle;
+    #[cfg(feature = "cuda")]
+    pub use crate::cublas::CublasHandleState;
     #[cfg(feature = "cublaslt")]
     pub use crate::cublaslt_ops::{CublasLtOps, CUBLASLT_M_THRESHOLD};
     #[cfg(feature = "cuda")]

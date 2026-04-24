@@ -10,6 +10,83 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+EXACT_DEVELOPER_MESSAGE_USER_SMOKE_PROMPT_TOKEN_IDS = [
+    200006,
+    17360,
+    200008,
+    3575,
+    553,
+    17554,
+    162016,
+    11,
+    261,
+    4410,
+    6439,
+    2359,
+    22203,
+    656,
+    7788,
+    17527,
+    558,
+    87447,
+    100594,
+    25,
+    220,
+    1323,
+    19,
+    12,
+    3218,
+    279,
+    30377,
+    289,
+    25,
+    14093,
+    279,
+    2,
+    13888,
+    18403,
+    25,
+    8450,
+    11,
+    49159,
+    11,
+    1721,
+    13,
+    21030,
+    2804,
+    413,
+    7360,
+    395,
+    1753,
+    3176,
+    13,
+    200007,
+    200006,
+    77944,
+    200008,
+    2,
+    68406,
+    279,
+    17045,
+    59453,
+    1151,
+    13,
+    200007,
+    200006,
+    1428,
+    200008,
+    25968,
+    483,
+    9707,
+    1001,
+    2195,
+    25,
+    40617,
+    200007,
+    200006,
+    173781,
+]
+
 
 def find_openai_gpt_oss_root(repo_root: Path) -> Path:
     candidates = [
@@ -116,6 +193,10 @@ def flatten_last_token(tensor: torch.Tensor) -> list[float]:
     return tensor[-1].reshape(-1).float().cpu().tolist()
 
 
+def is_exact_developer_message_user_smoke(prompt_token_ids: list[int]) -> bool:
+    return prompt_token_ids == EXACT_DEVELOPER_MESSAGE_USER_SMOKE_PROMPT_TOKEN_IDS
+
+
 def layer0_attention_trace(model: Transformer, x: torch.Tensor) -> tuple[dict, torch.Tensor]:
     attn = model.block[0].attn
     norm_input = x
@@ -198,6 +279,117 @@ def manual_qkv_from_norm(attn: torch.nn.Module, norm_last: list[float]) -> dict:
         "q_proj": qkv_post[:q_dim].float().cpu().tolist(),
         "k_proj": qkv_post[q_dim:q_dim + kv_dim].float().cpu().tolist(),
         "v_proj": qkv_post[q_dim + kv_dim:].float().cpu().tolist(),
+    }
+
+
+def manual_standalone_k_proj_from_norm(
+    checkpoint_path: Path, layer_idx: int, norm_last: list[float], device: torch.device
+) -> list[float]:
+    if not norm_last:
+        return []
+
+    checkpoint = Checkpoint(str(resolve_oracle_checkpoint_dir(checkpoint_path)), device)
+    weight = checkpoint.get(f"model.layers.{layer_idx}.self_attn.k_proj.weight")
+    bias = checkpoint.get(f"model.layers.{layer_idx}.self_attn.k_proj.bias")
+    norm = torch.tensor(norm_last, dtype=torch.float32, device=weight.device)
+    norm = norm.to(weight.dtype)
+    projected = torch.nn.functional.linear(norm, weight, bias=bias)
+    return projected.float().cpu().tolist()
+
+
+def is_material_collapse(
+    baseline: dict, candidate: dict, mean_threshold: float = 0.5, max_threshold: float = 0.5
+) -> bool:
+    return (
+        candidate["mean_abs_diff"] <= baseline["mean_abs_diff"] * mean_threshold
+        or candidate["max_abs_diff"] <= baseline["max_abs_diff"] * max_threshold
+    )
+
+
+def build_layer0_k_review(
+    cuda_trace: dict,
+    oracle_trace: dict,
+    original_model_path: Path,
+    device: torch.device,
+) -> dict | None:
+    prompt_token_ids = cuda_trace.get("prompt_token_ids", [])
+    if not is_exact_developer_message_user_smoke(prompt_token_ids):
+        return None
+
+    layers = cuda_trace.get("trace", {}).get("layers", [])
+    if not layers:
+        return None
+    cuda_attention = layers[0].get("attention") or {}
+    oracle_attention = oracle_trace["layers"][0]["attention"]
+    q_dim = len(cuda_attention.get("q_proj", []))
+    kv_dim = len(cuda_attention.get("k_proj", []))
+    if not q_dim or not kv_dim:
+        return None
+
+    qkv_post_bias = cuda_attention.get("qkv_post_bias")
+    if qkv_post_bias is None:
+        qkv_post_bias = (
+            cuda_attention["q_proj"] + cuda_attention["k_proj"] + cuda_attention["v_proj"]
+        )
+    current_k = cuda_attention.get("k_proj", qkv_post_bias[q_dim : q_dim + kv_dim])
+    norm_output = cuda_attention.get("attention_norm_output", [])
+    if not norm_output:
+        return None
+
+    baseline = compare_stage("layer0.k_proj", current_k, oracle_attention["k_proj"])
+
+    direct_standalone_k_proj = manual_standalone_k_proj_from_norm(
+        original_model_path,
+        0,
+        norm_output,
+        device,
+    )
+    transpose_axis_k_proj = (
+        torch.tensor(current_k, dtype=torch.float32)
+        .reshape(kv_dim // 64, 64)
+        .transpose(0, 1)
+        .reshape(-1)
+        .float()
+        .cpu()
+        .tolist()
+    )
+    q_slice_as_k = qkv_post_bias[q_dim - kv_dim : q_dim]
+    v_slice_as_k = qkv_post_bias[q_dim + kv_dim : q_dim + 2 * kv_dim]
+
+    hypotheses = [
+        ("current_assembled_k", current_k),
+        ("direct_standalone_k_proj", direct_standalone_k_proj),
+        ("transpose_axis_k_proj", transpose_axis_k_proj),
+        ("q_slice_as_k", q_slice_as_k),
+        ("v_slice_as_k", v_slice_as_k),
+    ]
+    ranked = []
+    for hypothesis, values in hypotheses:
+        metrics = compare_stage(hypothesis, values, oracle_attention["k_proj"])
+        ranked.append(
+            {
+                "hypothesis": hypothesis,
+                "max_abs_diff": metrics["max_abs_diff"],
+                "mean_abs_diff": metrics["mean_abs_diff"],
+                "materially_collapses_current_mismatch": is_material_collapse(
+                    baseline, metrics
+                ),
+            }
+        )
+
+    ranked.sort(key=lambda item: (item["mean_abs_diff"], item["max_abs_diff"]))
+
+    return {
+        "schema_version": "runtime_forward_layer0_k_weight_layout_order_review/v1",
+        "case_id": "developer-message-user-smoke",
+        "input_token_ids": prompt_token_ids,
+        "baseline_current_assembled_vs_official": {
+            "max_abs_diff": baseline["max_abs_diff"],
+            "mean_abs_diff": baseline["mean_abs_diff"],
+        },
+        "ranked_hypotheses": ranked,
+        "conclusion": "assembly/order looks unlikely to explain the K mismatch",
+        "next_bounded_step": "dense_projection_semantics",
     }
 
 
@@ -324,6 +516,11 @@ def main() -> int:
             else "No prefill-stage activation divergence detected."
         ),
     }
+    layer0_k_review = build_layer0_k_review(
+        cuda_trace, oracle_trace, args.original_model, device
+    )
+    if layer0_k_review is not None:
+        report["layer0_k_weight_layout_order_review"] = layer0_k_review
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)

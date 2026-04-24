@@ -21,6 +21,7 @@ cuda-graphs = ["cuda"]
 [dependencies]
 gpt-oss-core.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 bytemuck.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true

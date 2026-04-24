@@ -39,6 +39,133 @@ pub struct PrefillLayerTrace {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0KRopeDebugCapture {
+    pub final_token_index: usize,
+    pub effective_position_id: i32,
+    pub effective_position_modulo: usize,
+    pub runtime_position_ids: Vec<i32>,
+    pub head_dim: usize,
+    pub half_dim: usize,
+    pub num_kv_heads: usize,
+    pub final_token_k_pre_rope_f16_bits: Vec<u16>,
+    pub final_token_k_pre_rope_f32: Vec<f32>,
+    pub final_token_k_post_rope_f16_bits: Vec<u16>,
+    pub final_token_k_post_rope_f32: Vec<f32>,
+    pub live_runtime_cos_row_f32: Vec<f32>,
+    pub live_runtime_sin_row_f32: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0QkvTrace {
+    pub layer_idx: usize,
+    pub branch_taken: bool,
+    pub num_tokens: usize,
+    pub q_dim: usize,
+    pub kv_dim: usize,
+    pub qkv_dim: usize,
+    pub standalone_activation_full_bf16_bits: Vec<u16>,
+    pub standalone_k_weight_bf16_bits: Vec<u16>,
+    pub fused_k_pre_bias_bf16_bits: Vec<u16>,
+    pub fused_k_post_bias_bf16_bits: Vec<u16>,
+    pub standalone_k_pre_bias_bf16_bits: Vec<u16>,
+    pub standalone_k_post_bias_bf16_bits: Vec<u16>,
+    pub fused_qkv_post_bias_combined_bf16_bits: Vec<u16>,
+    pub expected_standalone_qkv_post_bias_combined_bf16_bits: Vec<u16>,
+    pub fused_k_slice_bf16_bits: Vec<u16>,
+    pub standalone_k_gemm_output_full_bf16_bits: Vec<u16>,
+    pub k_post_rope_pre_cache_f16_bits: Vec<u16>,
+    pub k_post_rope_pre_cache_f32: Vec<f32>,
+    pub k_rope_debug: Option<Layer0KRopeDebugCapture>,
+    pub qkv_projection_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0QkvInternalTrace {
+    pub layer_idx: usize,
+    pub branch_taken: bool,
+    pub num_tokens: usize,
+    pub q_dim: usize,
+    pub kv_dim: usize,
+    pub qkv_dim: usize,
+    pub fused_qkv_pre_bias: Vec<f32>,
+    pub fused_qkv_post_bias: Vec<f32>,
+    pub packed_qkv_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0QGemmTrace {
+    pub layer_idx: usize,
+    pub branch_taken: bool,
+    pub num_tokens: usize,
+    pub hidden_size: usize,
+    pub q_dim: usize,
+    pub standalone_activation_full_bf16_bits: Vec<u16>,
+    pub standalone_activation_bf16_bits: Vec<u16>,
+    pub fused_activation_bf16_bits: Vec<u16>,
+    pub standalone_q_weight_bf16_bits: Vec<u16>,
+    pub fused_q_slice_bf16_bits: Vec<u16>,
+    pub standalone_helper_invocation_state: Option<Bf16GemmInvocationRecord>,
+    pub standalone_q_gemm_output_full_bf16_bits: Vec<u16>,
+    pub standalone_q_gemm_output_bf16_bits: Vec<u16>,
+    pub activation_row: Vec<f32>,
+    pub q_weight: Vec<f32>,
+    pub raw_q_gemm_output: Vec<f32>,
+    pub standalone_q_gemm_output: Vec<f32>,
+    pub post_gemm_cast_distinct: bool,
+    pub post_gemm_cast_writeback: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Bf16GemmInvocationRecord {
+    pub api: String,
+    pub m: usize,
+    pub n: usize,
+    pub k: usize,
+    pub input_dtype: String,
+    pub weight_dtype: String,
+    pub compute_type: String,
+    pub output_dtype: String,
+    pub alpha_value: f32,
+    pub beta_value: f32,
+    pub alpha_beta_dtype: String,
+    pub trans_weight: String,
+    pub trans_input: String,
+    pub lda: i32,
+    pub ldb: i32,
+    pub ldc: i32,
+    pub algo: String,
+    pub handle_state: gpt_oss_gpu::CublasHandleState,
+}
+
+pub fn build_bf16_gemm_invocation_record(
+    blas: &gpt_oss_gpu::prelude::CublasHandle,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> crate::bridge::Result<Bf16GemmInvocationRecord> {
+    Ok(Bf16GemmInvocationRecord {
+        api: "cublasGemmEx".into(),
+        m,
+        n,
+        k,
+        input_dtype: "CUDA_R_16BF".into(),
+        weight_dtype: "CUDA_R_16BF".into(),
+        compute_type: "CUBLAS_COMPUTE_32F".into(),
+        output_dtype: "CUDA_R_16BF".into(),
+        alpha_value: 1.0,
+        beta_value: 0.0,
+        alpha_beta_dtype: "f32".into(),
+        trans_weight: "CUBLAS_OP_T".into(),
+        trans_input: "CUBLAS_OP_N".into(),
+        lda: k as i32,
+        ldb: k as i32,
+        ldc: n as i32,
+        algo: "CUBLAS_GEMM_DEFAULT_TENSOR_OP".into(),
+        handle_state: blas.snapshot_state()?,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrefillActivationTrace {
     pub embedding: Vec<f32>,
     pub layers: Vec<PrefillLayerTrace>,
@@ -91,7 +218,8 @@ mod cuda_impl {
 
     use super::{
         FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture,
-        LogitsOutputMode, PrefillActivationTrace, PrefillLayerTrace,
+        Layer0QGemmTrace, Layer0QkvInternalTrace, Layer0QkvTrace, LogitsOutputMode,
+        PrefillActivationTrace, PrefillLayerTrace,
     };
 
     /// Reusable GPU buffer that grows as needed, eliminating per-step CUDA
@@ -1005,6 +1133,318 @@ mod cuda_impl {
             Err(LLMError::ModelError(format!(
                 "failed to capture last-token hidden state at layer {stop_after_layer}"
             )))
+        }
+
+        pub fn debug_prefill_layer0_trace(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<PrefillLayerTrace> {
+            let num_tokens = token_ids.len();
+            let num_seqs = attn_meta.context_lens.len();
+            let hidden_size = self.config.hidden_size;
+            let block_size = self.cache.block_size();
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            if !self.use_fp16 {
+                return Err(LLMError::ModelError(
+                    "layer0-only trace is only implemented for fp16 inference".into(),
+                ));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            let hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+            let gpu_cache = self.cache.gpu_cache();
+            let meta_packed = self.meta_packed.borrow();
+            let packed_buf = meta_packed.slice();
+            let offsets = self.meta_packed_offsets.get();
+            let dummy_f32 = self
+                .stream
+                .alloc_zeros::<f32>(1)
+                .map_err(|e| LLMError::GpuError(format!("dummy alloc: {e}")))?;
+            let prev_mlp_out: Option<CudaSlice<f16>> = None;
+
+            let layer_idx = 0usize;
+            let layer = &self.layers[layer_idx];
+            let (key_cache, value_cache) = &gpu_cache[layer_idx];
+            let input = GpuLayerInput {
+                hidden_states: &dummy_f32,
+                hidden_states_f16: Some(&hidden_f16),
+                positions: packed_buf
+                    .slice(offsets.positions..offsets.positions + offsets.num_positions),
+                key_cache,
+                value_cache,
+                block_tables: packed_buf
+                    .slice(offsets.block_tables..offsets.block_tables + offsets.num_block_tables),
+                context_lens: packed_buf
+                    .slice(offsets.context_lens..offsets.context_lens + offsets.num_context_lens),
+                slot_mapping: packed_buf
+                    .slice(offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping),
+                num_tokens,
+                num_seqs,
+                max_context_len: attn_meta.max_context_len,
+                block_size,
+                is_prefill: true,
+                seq_start_pos: packed_buf.slice(
+                    offsets.seq_start_pos..offsets.seq_start_pos + offsets.num_seq_start_pos,
+                ),
+                rope_cos: &self.rope_cos,
+                rope_sin: &self.rope_sin,
+            };
+            let weights = self.layer_weights_f16(layer_idx)?;
+            let (residual, mlp_out) = layer.forward_f16(
+                &input,
+                &weights,
+                &self.blas,
+                prev_mlp_out.as_ref(),
+                self.cublaslt_ref(),
+                self.tp_comm.as_ref(),
+            )?;
+            let post_attn_residual =
+                self.copy_last_token_f16(&residual, num_tokens, hidden_size)?;
+            let mlp_out_last = self.copy_last_token_f16(&mlp_out, num_tokens, hidden_size)?;
+            let layer_output = post_attn_residual
+                .iter()
+                .zip(mlp_out_last.iter())
+                .map(|(lhs, rhs)| lhs + rhs)
+                .collect();
+            Ok(PrefillLayerTrace {
+                layer_idx,
+                post_attn_residual,
+                mlp_out: mlp_out_last,
+                layer_output,
+            })
+        }
+
+        pub fn debug_prefill_layer0_qkv_trace(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<Layer0QkvTrace> {
+            let num_tokens = token_ids.len();
+            let hidden_size = self.config.hidden_size;
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            if !self.use_fp16 {
+                return Err(LLMError::ModelError(
+                    "layer0 qkv trace is only implemented for fp16 inference".into(),
+                ));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            let hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+            let q_dim = self.config.num_heads * self.config.head_dim;
+            let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            let layer = &self.layers[0];
+            let weights = self.layer_weights_f16(0)?;
+            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 input_layernorm required for layer0 qkv trace".into())
+            })?;
+            let normed = self.rms_norm_f16_runner(&hidden_f16, norm_w, hidden_size)?;
+            let (mut qkv, branch_taken, internal_stages) = layer
+                .debug_qkv_projection_f16_internal_stages(
+                    &normed,
+                    &weights,
+                    &self.blas,
+                    self.cublaslt_ref(),
+                    num_tokens,
+                    hidden_size,
+                    q_dim,
+                    kv_dim,
+                    true,
+                )?;
+            let host = self
+                .stream
+                .clone_dtoh(&qkv)
+                .map_err(|e| LLMError::GpuError(format!("layer0 qkv trace dtoh f16: {e}")))?;
+            let qkv_projection_output = host.into_iter().map(|value| value.to_f32()).collect();
+            let meta_packed = self.meta_packed.borrow();
+            let packed_buf = meta_packed.slice();
+            let offsets = self.meta_packed_offsets.get();
+            let (k_post_rope_pre_cache_f16_bits, k_post_rope_pre_cache_f32, k_rope_debug) = layer
+                .debug_apply_rope_f16_capture_k_post_rope_pre_cache(
+                &mut qkv,
+                packed_buf.slice(offsets.positions..offsets.positions + offsets.num_positions),
+                &self.rope_cos,
+                &self.rope_sin,
+                num_tokens,
+                q_dim,
+                kv_dim,
+                self.config.num_heads,
+                self.config.num_kv_heads,
+                self.config.head_dim,
+            )?;
+            let internal_stages = internal_stages.ok_or_else(|| {
+                LLMError::GpuError("layer0 qkv trace missing internal stages".into())
+            })?;
+            Ok(Layer0QkvTrace {
+                layer_idx: 0,
+                branch_taken,
+                num_tokens,
+                q_dim,
+                kv_dim,
+                qkv_dim,
+                standalone_activation_full_bf16_bits: internal_stages
+                    .standalone_activation_full_bf16_bits,
+                standalone_k_weight_bf16_bits: internal_stages.standalone_k_weight_bf16_bits,
+                fused_k_pre_bias_bf16_bits: internal_stages.fused_k_pre_bias_bf16_bits,
+                fused_k_post_bias_bf16_bits: internal_stages.fused_k_post_bias_bf16_bits,
+                standalone_k_pre_bias_bf16_bits: internal_stages.standalone_k_pre_bias_bf16_bits,
+                standalone_k_post_bias_bf16_bits: internal_stages.standalone_k_post_bias_bf16_bits,
+                fused_qkv_post_bias_combined_bf16_bits: internal_stages
+                    .fused_qkv_post_bias_combined_bf16_bits,
+                expected_standalone_qkv_post_bias_combined_bf16_bits: internal_stages
+                    .expected_standalone_qkv_post_bias_combined_bf16_bits,
+                fused_k_slice_bf16_bits: internal_stages.fused_k_slice_bf16_bits,
+                standalone_k_gemm_output_full_bf16_bits: internal_stages
+                    .standalone_k_gemm_output_full_bf16_bits,
+                k_post_rope_pre_cache_f16_bits,
+                k_post_rope_pre_cache_f32,
+                k_rope_debug: Some(k_rope_debug),
+                qkv_projection_output,
+            })
+        }
+
+        pub fn debug_prefill_layer0_qkv_internal_trace(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<Layer0QkvInternalTrace> {
+            let num_tokens = token_ids.len();
+            let hidden_size = self.config.hidden_size;
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            if !self.use_fp16 {
+                return Err(LLMError::ModelError(
+                    "layer0 qkv internal trace is only implemented for fp16 inference".into(),
+                ));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            let hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+            let q_dim = self.config.num_heads * self.config.head_dim;
+            let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+            let qkv_dim = q_dim + kv_dim + kv_dim;
+            let layer = &self.layers[0];
+            let weights = self.layer_weights_f16(0)?;
+            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError(
+                    "f16 input_layernorm required for layer0 qkv internal trace".into(),
+                )
+            })?;
+            let normed = self.rms_norm_f16_runner(&hidden_f16, norm_w, hidden_size)?;
+            let (_qkv, branch_taken, internal_stages) = layer
+                .debug_qkv_projection_f16_internal_stages(
+                    &normed,
+                    &weights,
+                    &self.blas,
+                    self.cublaslt_ref(),
+                    num_tokens,
+                    hidden_size,
+                    q_dim,
+                    kv_dim,
+                    true,
+                )?;
+            let internal_stages = internal_stages.ok_or_else(|| {
+                LLMError::ModelError(
+                    "layer0 qkv internal trace is only implemented for the bf16 candidate branch"
+                        .into(),
+                )
+            })?;
+            Ok(Layer0QkvInternalTrace {
+                layer_idx: 0,
+                branch_taken,
+                num_tokens,
+                q_dim,
+                kv_dim,
+                qkv_dim,
+                fused_qkv_pre_bias: internal_stages.fused_qkv_pre_bias,
+                fused_qkv_post_bias: internal_stages.fused_qkv_post_bias,
+                packed_qkv_output: internal_stages.packed_qkv_output,
+            })
+        }
+
+        pub fn debug_prefill_layer0_q_gemm_trace(
+            &self,
+            token_ids: &[u32],
+            positions: &[u32],
+            attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<Layer0QGemmTrace> {
+            let num_tokens = token_ids.len();
+            let hidden_size = self.config.hidden_size;
+
+            if num_tokens == 0 {
+                return Err(LLMError::ModelError("empty input".into()));
+            }
+            if !self.use_fp16 {
+                return Err(LLMError::ModelError(
+                    "layer0 q gemm trace is only implemented for fp16 inference".into(),
+                ));
+            }
+
+            self.upload_metadata(token_ids, positions, attn_meta)?;
+
+            let hidden_f16 = self.embedding_lookup_from_meta_f16(num_tokens)?;
+            let q_dim = self.config.num_heads * self.config.head_dim;
+            let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+            let layer = &self.layers[0];
+            let weights = self.layer_weights_f16(0)?;
+            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+                LLMError::GpuError("f16 input_layernorm required for layer0 q gemm trace".into())
+            })?;
+            let normed = self.rms_norm_f16_runner(&hidden_f16, norm_w, hidden_size)?;
+            let (branch_taken, q_gemm_trace) = layer.debug_q_gemm_f16_trace(
+                &normed,
+                &weights,
+                &self.blas,
+                self.cublaslt_ref(),
+                num_tokens,
+                hidden_size,
+                q_dim,
+                kv_dim,
+                true,
+            )?;
+            Ok(Layer0QGemmTrace {
+                layer_idx: 0,
+                branch_taken,
+                num_tokens,
+                hidden_size,
+                q_dim,
+                standalone_activation_full_bf16_bits: q_gemm_trace
+                    .standalone_activation_full_bf16_bits,
+                standalone_activation_bf16_bits: q_gemm_trace.standalone_activation_bf16_bits,
+                fused_activation_bf16_bits: q_gemm_trace.fused_activation_bf16_bits,
+                standalone_q_weight_bf16_bits: q_gemm_trace.standalone_q_weight_bf16_bits,
+                fused_q_slice_bf16_bits: q_gemm_trace.fused_q_slice_bf16_bits,
+                standalone_helper_invocation_state: Some(super::build_bf16_gemm_invocation_record(
+                    &self.blas,
+                    num_tokens,
+                    q_dim,
+                    hidden_size,
+                )?),
+                standalone_q_gemm_output_full_bf16_bits: q_gemm_trace
+                    .standalone_q_gemm_output_full_bf16_bits,
+                standalone_q_gemm_output_bf16_bits: q_gemm_trace.standalone_q_gemm_output_bf16_bits,
+                activation_row: q_gemm_trace.activation_row,
+                q_weight: q_gemm_trace.q_weight,
+                raw_q_gemm_output: q_gemm_trace.raw_q_output,
+                standalone_q_gemm_output: q_gemm_trace.standalone_q_gemm_output,
+                post_gemm_cast_distinct: q_gemm_trace.post_gemm_cast_distinct,
+                post_gemm_cast_writeback: q_gemm_trace.post_gemm_cast_writeback,
+            })
         }
 
         pub fn debug_final_token_post_final_norm_pre_unembedding(
@@ -3274,6 +3714,17 @@ mod mock_impl {
             _positions: &[u32],
             _attn_meta: &crate::bridge::AttentionMetadata,
         ) -> Result<PrefillActivationTrace> {
+            Err(LLMError::GpuError(
+                "GpuModelRunner requires the `cuda` feature".into(),
+            ))
+        }
+
+        pub fn debug_prefill_layer0_trace(
+            &self,
+            _token_ids: &[u32],
+            _positions: &[u32],
+            _attn_meta: &crate::bridge::AttentionMetadata,
+        ) -> Result<PrefillLayerTrace> {
             Err(LLMError::GpuError(
                 "GpuModelRunner requires the `cuda` feature".into(),
             ))

@@ -20,8 +20,8 @@ use gpt_oss_runtime_plan::{plan_request, BackendPath, GraphPolicy, PlanRequest};
 
 use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 use gpt_oss_model_runner::gpu_runner::{
-    FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture,
-    PrefillActivationTrace,
+    FinalTokenPreUnembeddingCapture, ForwardOutput, LastTokenHiddenStateCapture, Layer0QGemmTrace,
+    Layer0QkvInternalTrace, Layer0QkvTrace, PrefillActivationTrace, PrefillLayerTrace,
 };
 use gpt_oss_model_runner::input::ModelInput;
 use gpt_oss_model_runner::kv_cache::CacheEngine;
@@ -1321,6 +1321,146 @@ impl GpuWorker {
             )
         })?;
         runner.debug_prefill_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+        )
+    }
+
+    pub fn debug_runner_prefill_layer0_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<PrefillLayerTrace> {
+        if metadata.is_empty() {
+            return Ok(PrefillLayerTrace {
+                layer_idx: 0,
+                post_attn_residual: Vec::new(),
+                mlp_out: Vec::new(),
+                layer_output: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_layer0_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+        )
+    }
+
+    pub fn debug_runner_prefill_layer0_qkv_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Layer0QkvTrace> {
+        if metadata.is_empty() {
+            return Ok(Layer0QkvTrace {
+                layer_idx: 0,
+                branch_taken: false,
+                num_tokens: 0,
+                q_dim: 0,
+                kv_dim: 0,
+                qkv_dim: 0,
+                standalone_activation_full_bf16_bits: Vec::new(),
+                standalone_k_weight_bf16_bits: Vec::new(),
+                fused_k_pre_bias_bf16_bits: Vec::new(),
+                fused_k_post_bias_bf16_bits: Vec::new(),
+                standalone_k_pre_bias_bf16_bits: Vec::new(),
+                standalone_k_post_bias_bf16_bits: Vec::new(),
+                fused_qkv_post_bias_combined_bf16_bits: Vec::new(),
+                expected_standalone_qkv_post_bias_combined_bf16_bits: Vec::new(),
+                fused_k_slice_bf16_bits: Vec::new(),
+                standalone_k_gemm_output_full_bf16_bits: Vec::new(),
+                k_post_rope_pre_cache_f16_bits: Vec::new(),
+                k_post_rope_pre_cache_f32: Vec::new(),
+                k_rope_debug: None,
+                qkv_projection_output: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_layer0_qkv_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+        )
+    }
+
+    pub fn debug_runner_prefill_layer0_qkv_internal_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Layer0QkvInternalTrace> {
+        if metadata.is_empty() {
+            return Ok(Layer0QkvInternalTrace {
+                layer_idx: 0,
+                branch_taken: false,
+                num_tokens: 0,
+                q_dim: 0,
+                kv_dim: 0,
+                qkv_dim: 0,
+                fused_qkv_pre_bias: Vec::new(),
+                fused_qkv_post_bias: Vec::new(),
+                packed_qkv_output: Vec::new(),
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_layer0_qkv_internal_trace(
+            &model_input.token_ids,
+            &model_input.position_ids,
+            &model_input.attention_metadata,
+        )
+    }
+
+    pub fn debug_runner_prefill_layer0_q_gemm_trace(
+        &self,
+        metadata: &[SequenceGroupMetadata],
+    ) -> Result<Layer0QGemmTrace> {
+        if metadata.is_empty() {
+            return Ok(Layer0QGemmTrace {
+                layer_idx: 0,
+                branch_taken: false,
+                num_tokens: 0,
+                hidden_size: 0,
+                q_dim: 0,
+                standalone_activation_full_bf16_bits: Vec::new(),
+                standalone_activation_bf16_bits: Vec::new(),
+                fused_activation_bf16_bits: Vec::new(),
+                standalone_q_weight_bf16_bits: Vec::new(),
+                fused_q_slice_bf16_bits: Vec::new(),
+                standalone_helper_invocation_state: None,
+                standalone_q_gemm_output_full_bf16_bits: Vec::new(),
+                standalone_q_gemm_output_bf16_bits: Vec::new(),
+                activation_row: Vec::new(),
+                q_weight: Vec::new(),
+                raw_q_gemm_output: Vec::new(),
+                standalone_q_gemm_output: Vec::new(),
+                post_gemm_cast_distinct: false,
+                post_gemm_cast_writeback: None,
+            });
+        }
+
+        let model_input = input::prepare_input(metadata, self.config.block_size)?;
+        let runner = self.gpu_model_runner.as_ref().ok_or_else(|| {
+            LLMError::GpuError(
+                "GPU model runner not initialized -- build with --features cuda".into(),
+            )
+        })?;
+        runner.debug_prefill_layer0_q_gemm_trace(
             &model_input.token_ids,
             &model_input.position_ids,
             &model_input.attention_metadata,
