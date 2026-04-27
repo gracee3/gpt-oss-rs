@@ -316,3 +316,151 @@ Required future guardrails:
 
 This branch does not broaden RMSNorm routing beyond the current layer-0
 pre-attention call site.
+
+## cuBLAS / Pedantic BF16 Helper Promotion Plan
+
+Classification: `cublas_promotion_plan_defer_until_projection_policy_design`
+
+This is a plan only. No cuBLAS, GEMM, model-runner, kernel, proof harness, or
+debug code is extracted in this commit.
+
+### Source Files Inspected
+
+Compared from current `promotion/runtime-forward-runtime-candidates` to
+`feature/runtime-forward` milestone
+`5bcba1d2edcb9c15b1ed567700976dad03e12300`:
+
+- `crates/gpt-oss-gpu/src/cublas.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+
+The source diff is broad and proof-heavy: `cublas.rs` adds BF16 GEMM helpers,
+state snapshots, pedantic math/atomics mode handling, and CUDA tests; the
+model-runner diff routes those helpers through layer-0 BF16 QKV proof paths;
+the bench diff is the 45k-line runtime-forward proof binary. These files must
+not be copied wholesale.
+
+### Source Changes Found
+
+Actual runtime/helper changes:
+
+- Adds `hgemm_bf16` using `cublasGemmEx` with BF16 inputs/outputs, FP32
+  alpha/beta host scalars, `CUBLAS_COMPUTE_32F`, and
+  `CUBLAS_GEMM_DEFAULT_TENSOR_OP`.
+- Adds `hgemm_bf16_pedantic_no_tensor_op` using `CUBLAS_PEDANTIC_MATH`,
+  `CUBLAS_ATOMICS_NOT_ALLOWED`, `CUBLAS_COMPUTE_32F_PEDANTIC`, and
+  `CUBLAS_GEMM_DFALT`, with restoration of the previous handle math and atomics
+  modes after the call.
+- Adds `CublasHandleState` and `snapshot_state`, useful for diagnostics but not
+  required by default runtime GEMM.
+
+Proof/diagnostic path changes:
+
+- Layer-0 BF16 QKV candidate paths are env/proof-gated and include standalone K
+  proof logic, BF16 host readbacks, interaction masks, and oneDNN/PyTorch
+  projection-policy probes.
+- `gpu_runner.rs` and the bench binary add debug/proof plumbing around those
+  projection paths.
+- The source uses the pedantic helper as one K-projection proof variant, not as
+  a normal default GEMM policy.
+
+Performance-sensitive settings:
+
+- `CUBLAS_PEDANTIC_MATH`
+- `CUBLAS_COMPUTE_32F_PEDANTIC`
+- `CUBLAS_GEMM_DFALT`
+- `CUBLAS_ATOMICS_NOT_ALLOWED`
+- non-tensor-op algorithm selection
+
+These settings are likely slower than tensor-op BF16 GEMM and must not affect
+Q/K/V, O projection, MLP, LM head, or generic GEMM paths by default without
+dedicated benchmarks.
+
+### Proof Artifacts Considered
+
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-gemm-math-mode-status.json`
+  classified the issue as `multi_row_gemm_math_mode_identified`. The default
+  full m=74 BF16 tensor-op helper differed from CPU reference with max diff
+  `0.5`; a raw full m=74 pedantic/no-tensor-op replay matched CPU exactly.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-pedantic-runtime-fix-status.json`
+  classified `all_token_k_pedantic_runtime_fix_proven`; the fixed full m=74 K
+  helper matched CPU reference exactly, while the older tensor-op replay did
+  not.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-downstream-after-pedantic-fix-status.json`
+  classified `grouped_pre_rope_k_still_mismatches_after_helper_fix`, so the
+  pedantic helper did not clear the downstream K seam.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json`
+  classified `onednn_projection_oracle_confirms_helper_arithmetic_delta`.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json`
+  classified `scoped_onednn_oracle_k_projection_helper_fix_proven`.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-pytorch-bf16-linear-backend-policy-status.json`
+  classified `pytorch_bf16_linear_backend_or_threading_sensitive`.
+- `.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+  classified `final_readout_direct_module_logits_cleared`, but that full proof
+  also used proof-only mechanisms and does not by itself justify promoting
+  pedantic cuBLAS into default runtime.
+
+### Promotion Recommendation
+
+Recommendation D: keep cuBLAS/pedantic code proof-only until a dedicated CUDA
+projection-policy design exists.
+
+The pedantic helper proved that one full-shape K helper variant can reproduce a
+CPU BF16 reference, but it did not clear the downstream grouped K seam. The
+later oneDNN oracle artifacts became the stronger projection-policy evidence,
+and those oneDNN Q/K/V candidates remain proof-only rather than CUDA runtime
+fixes. Promoting pedantic cuBLAS now would risk encoding an intermediate helper
+proof as default runtime policy before the projection policy is resolved.
+
+Do not promote now:
+
+- broad `hgemm_bf16` default routing
+- `hgemm_bf16_pedantic_no_tensor_op` as a default GEMM path
+- layer-0 BF16 QKV env/proof paths
+- oneDNN Q/K/V projection candidates
+- selected expert readout corrections
+- debug capture/status plumbing
+- the runtime-forward proof bench
+
+### Required Guardrails Before Any cuBLAS Promotion
+
+Correctness:
+
+- deterministic BF16 GEMM comparison on small shapes
+- all-token K helper shape `[74 x 2880] x [512 x 2880]`
+- Q and V projection shapes if the future policy is not K-only
+- explicit comparison of tensor-op, pedantic/no-tensor-op, stitched m=1, and
+  CPU BF16 references
+- proof that the chosen policy improves downstream K/RoPE/score seams, not just
+  the isolated helper output
+
+Performance:
+
+- old vs pedantic latency for the relevant Q/K/V shapes
+- separate prefill and decode measurements if the path can affect both
+- confirmation that non-target GEMMs keep tensor-op throughput
+- no broad `CUBLAS_PEDANTIC_MATH` or atomics-mode leakage across the shared
+  handle
+
+Scope:
+
+- a guarded helper or policy-specific path only; no generic GEMM behavior change
+- explicit restoration of cuBLAS math and atomics modes after any scoped call
+- no server/protocol/Harmony behavior changes
+- no runtime-forward debug capture or proof harness imports
+
+Validation:
+
+- `cargo check -p gpt-oss-gpu --features cuda`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- focused unit or integration tests for alpha/beta scalar type and math-mode
+  restoration if a helper is extracted
+- optional GPU microbenchmark before review expansion
+
+### Next Bounded Step
+
+Do not extract cuBLAS/pedantic code on this runtime-candidate branch now. After
+the current RoPE/RMSNorm candidate has review visibility, prepare a standalone
+CUDA projection-policy design that decides whether a narrow K-only pedantic
+helper, an FP32 alpha/beta BF16 helper, or no cuBLAS promotion is appropriate.
