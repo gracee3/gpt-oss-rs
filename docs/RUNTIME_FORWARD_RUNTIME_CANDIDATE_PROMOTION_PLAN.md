@@ -273,3 +273,14 @@ The next bounded prompt should extract only commit 1: production BF16 RMSNorm
 kernel variant plus loader registration, then run CUDA compile validation and
 inspect symbols. The model-runner call-site selection should remain a separate
 follow-up commit.
+
+### Commit 1 Status
+
+Commit 1 extracts only the production `rms_norm_f16_bf16_policy_kernel` symbol
+and registers it with the kernel loader. No model-runner call site routes to the
+new kernel yet. The debug scalar-capture kernel and all debug runner/worker
+plumbing remain excluded.
+
+The next commit, if approved, should route only the GPT-OSS layer-0 attention
+RMSNorm call site to this BF16 policy variant. Performance guardrails remain
+required before broader promotion.
