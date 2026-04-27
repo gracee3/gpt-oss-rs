@@ -1,0 +1,24 @@
+{
+  "case_id_match": true,
+  "boundary_match": true,
+  "shape_match": true,
+  "length_match": true,
+  "runtime_artifact": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-qkv-bf16-candidate-20260423/developer-message.runner-layer0-next-k-consumer-seam-candidate.json",
+  "official_artifact": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json",
+  "max_abs_diff": 0.7742159999999956,
+  "mean_abs_diff": 0.07158433831145151,
+  "first_mismatch": {
+    "index": 0,
+    "runtime": -3.591619,
+    "official": -3.5625,
+    "abs_diff": 0.029119000000000117
+  },
+  "first_over_1e_2": {
+    "index": 0,
+    "runtime": -3.591619,
+    "official": -3.5625,
+    "abs_diff": 0.029119000000000117
+  },
+  "matched_within_1e_2": false,
+  "variant": "candidate"
+}

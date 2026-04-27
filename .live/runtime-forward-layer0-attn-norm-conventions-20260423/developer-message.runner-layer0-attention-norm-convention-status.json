@@ -1,0 +1,329 @@
+{
+  "schema_version": "runtime_forward_layer0_attention_norm_convention_status/v1",
+  "ppp_artifact_path": "/tmp/pinned-prompt-parity-official-reference/developer-message.official.json",
+  "local_residual_input_artifact_path": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json",
+  "local_attn_norm_artifact_path": ".live/runtime-forward-layer0-attn-bisect-20260423/developer-message.runner-layer0-attn-norm-output.json",
+  "official_attn_norm_artifact_path": "/tmp/pinned-prompt-parity-official-reference-20260423/developer-message.official-layer0-attn-norm-output.cpu.json",
+  "case_id": "developer-message-user-smoke",
+  "input_token_ids": [
+    200006,
+    17360,
+    200008,
+    3575,
+    553,
+    17554,
+    162016,
+    11,
+    261,
+    4410,
+    6439,
+    2359,
+    22203,
+    656,
+    7788,
+    17527,
+    558,
+    87447,
+    100594,
+    25,
+    220,
+    1323,
+    19,
+    12,
+    3218,
+    279,
+    30377,
+    289,
+    25,
+    14093,
+    279,
+    2,
+    13888,
+    18403,
+    25,
+    8450,
+    11,
+    49159,
+    11,
+    1721,
+    13,
+    21030,
+    2804,
+    413,
+    7360,
+    395,
+    1753,
+    3176,
+    13,
+    200007,
+    200006,
+    77944,
+    200008,
+    2,
+    68406,
+    279,
+    17045,
+    59453,
+    1151,
+    13,
+    200007,
+    200006,
+    1428,
+    200008,
+    25968,
+    483,
+    9707,
+    1001,
+    2195,
+    25,
+    40617,
+    200007,
+    200006,
+    173781
+  ],
+  "input_boundary": "layer0_residual_input",
+  "output_boundary": "layer0_attn_norm_output",
+  "hidden_size": 2880,
+  "rms_norm_eps": 0.00001,
+  "norm_weight": {
+    "tensor_name": "model.layers.0.input_layernorm.weight",
+    "shard_path": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors",
+    "dtype": "BF16",
+    "numel": 2880
+  },
+  "local_runner_vs_official": {
+    "max_abs_diff": 0.03125,
+    "mean_abs_diff": 0.00056832447,
+    "matched": false
+  },
+  "variant_metrics": [
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "vs_local_runner": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      },
+      "vs_official": {
+        "max_abs_diff": 0.03125,
+        "mean_abs_diff": 0.00056832447,
+        "matched": false
+      }
+    },
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_bf16_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "bf16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "vs_local_runner": {
+        "max_abs_diff": 0.03125,
+        "mean_abs_diff": 0.00056832447,
+        "matched": false
+      },
+      "vs_official": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      }
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f32_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "vs_local_runner": {
+        "max_abs_diff": 0.00365448,
+        "mean_abs_diff": 0.000068044406,
+        "matched": true
+      },
+      "vs_official": {
+        "max_abs_diff": 0.02759552,
+        "mean_abs_diff": 0.0005644843,
+        "matched": false
+      }
+    },
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_f32_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "vs_local_runner": {
+        "max_abs_diff": 0.00365448,
+        "mean_abs_diff": 0.000068044406,
+        "matched": true
+      },
+      "vs_official": {
+        "max_abs_diff": 0.02759552,
+        "mean_abs_diff": 0.0005644843,
+        "matched": false
+      }
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output_eps_inside_mean",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt((sum_sq + eps) / hidden)",
+      "vs_local_runner": {
+        "max_abs_diff": 0.0009765625,
+        "mean_abs_diff": 3.6027697e-7,
+        "matched": true
+      },
+      "vs_official": {
+        "max_abs_diff": 0.03125,
+        "mean_abs_diff": 0.0005686424,
+        "matched": false
+      }
+    }
+  ],
+  "local_runner_variant_ranking": [
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output_eps_inside_mean",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt((sum_sq + eps) / hidden)",
+      "max_abs_diff": 0.0009765625,
+      "mean_abs_diff": 3.6027697e-7,
+      "matched": true
+    },
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_f32_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.00365448,
+      "mean_abs_diff": 0.000068044406,
+      "matched": true
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f32_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.00365448,
+      "mean_abs_diff": 0.000068044406,
+      "matched": true
+    },
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_bf16_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "bf16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.00056832447,
+      "matched": false
+    }
+  ],
+  "official_variant_ranking": [
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_bf16_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "bf16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    {
+      "variant_name": "bf16_input_bf16_weight_f32_reduction_f32_output",
+      "input_precision": "bf16",
+      "weight_precision": "bf16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.02759552,
+      "mean_abs_diff": 0.0005644843,
+      "matched": false
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f32_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f32",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.02759552,
+      "mean_abs_diff": 0.0005644843,
+      "matched": false
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.00056832447,
+      "matched": false
+    },
+    {
+      "variant_name": "f16_input_f16_weight_f32_reduction_f16_output_eps_inside_mean",
+      "input_precision": "f16",
+      "weight_precision": "f16",
+      "reduction_precision": "f32",
+      "output_precision": "f16",
+      "epsilon_placement": "sqrt((sum_sq + eps) / hidden)",
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.0005686424,
+      "matched": false
+    }
+  ],
+  "best_local_variant": {
+    "variant_name": "f16_input_f16_weight_f32_reduction_f16_output",
+    "input_precision": "f16",
+    "weight_precision": "f16",
+    "reduction_precision": "f32",
+    "output_precision": "f16",
+    "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true
+  },
+  "best_official_variant": {
+    "variant_name": "bf16_input_bf16_weight_f32_reduction_bf16_output",
+    "input_precision": "bf16",
+    "weight_precision": "bf16",
+    "reduction_precision": "f32",
+    "output_precision": "bf16",
+    "epsilon_placement": "sqrt(sum_sq / hidden + eps)",
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true
+  },
+  "classification": "dtype_precision_convention",
+  "next_bounded_step": "Keep the same layer-0 norm boundary and run one bounded compare with the official-best dtype/output convention before considering any runner change."
+}

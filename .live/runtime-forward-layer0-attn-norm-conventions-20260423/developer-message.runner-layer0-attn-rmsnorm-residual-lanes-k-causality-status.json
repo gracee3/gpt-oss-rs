@@ -1,0 +1,356 @@
+{
+  "schema_version": "runtime_forward_layer0_attn_rmsnorm_residual_lanes_k_causality_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "input_token_ids": [
+      200006,
+      17360,
+      200008,
+      3575,
+      553,
+      17554,
+      162016,
+      11,
+      261,
+      4410,
+      6439,
+      2359,
+      22203,
+      656,
+      7788,
+      17527,
+      558,
+      87447,
+      100594,
+      25,
+      220,
+      1323,
+      19,
+      12,
+      3218,
+      279,
+      30377,
+      289,
+      25,
+      14093,
+      279,
+      2,
+      13888,
+      18403,
+      25,
+      8450,
+      11,
+      49159,
+      11,
+      1721,
+      13,
+      21030,
+      2804,
+      413,
+      7360,
+      395,
+      1753,
+      3176,
+      13,
+      200007,
+      200006,
+      77944,
+      200008,
+      2,
+      68406,
+      279,
+      17045,
+      59453,
+      1151,
+      13,
+      200007,
+      200006,
+      1428,
+      200008,
+      25968,
+      483,
+      9707,
+      1001,
+      2195,
+      25,
+      40617,
+      200007,
+      200006,
+      173781
+    ],
+    "hidden_size": 2880,
+    "num_tokens": 74,
+    "q_dim": 4096,
+    "kv_dim": 512,
+    "qkv_dim": 5120
+  },
+  "mode": "layer0-attn-rmsnorm-residual-lanes-k-causality-status",
+  "source_artifact_paths": {
+    "scalar_runtime_fix": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-scalar-runtime-fix-status.json",
+    "authoritative_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "k_pedantic_helper_fix": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-pedantic-runtime-fix-status.json",
+    "official_side_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json"
+  },
+  "active_rmsnorm_scalar_reduction_behavior": {
+    "reduction": "two-buffer shared-memory lane-order pairwise/tree f32 sum over BF16-expanded x*x, matching authoritative Rust/PyTorch replay",
+    "inverse_rms": "1.0f / sqrtf(mean_square + epsilon)",
+    "multiply_order": "x * inverse_rms, then multiply by BF16-expanded weight",
+    "shared_memory": "2 * hidden_size * sizeof(float)",
+    "output": "BF16 round-trip before existing __half store/capture path"
+  },
+  "active_k_helper_gemm_policy": {
+    "policy": "pedantic all-token K helper semantics replayed by cpu_bf16_row_major_gemm for injected RMSNorm inputs",
+    "source_fix_classification": "all_token_k_pedantic_runtime_fix_proven"
+  },
+  "rmsnorm_residual_metrics": {
+    "max_abs_diff": 1.1920928955078125e-7,
+    "mean_abs_diff": 1.2585440502255185e-12,
+    "matched": false,
+    "differing_tokens": 3,
+    "differing_lanes": 4,
+    "first_differing_token_lane": {
+      "token_index": 57,
+      "hidden_lane_index": 544,
+      "flat_index": 164704,
+      "runtime_value": 2.384185791015625e-6,
+      "official_value": 2.4437904357910156e-6,
+      "abs_diff": 5.960464477539063e-8
+    },
+    "worst_differing_token_lane": {
+      "token_index": 57,
+      "hidden_lane_index": 1914,
+      "flat_index": 166074,
+      "runtime_value": 0.000017404556274414062,
+      "official_value": 0.000017523765563964844,
+      "abs_diff": 1.1920928955078125e-7
+    }
+  },
+  "rmsnorm_residual_lane_table": [
+    {
+      "token_index": 57,
+      "hidden_lane": 544,
+      "flat_index": 164704,
+      "fixed_live_value": 2.384185791015625e-6,
+      "authoritative_replay_value": 2.4437904357910156e-6,
+      "official_value": 2.4437904357910156e-6,
+      "abs_diff": 5.960464477539063e-8,
+      "live_raw_stored_bits": "0x3620",
+      "live_raw_stored_value": 2.384185791015625e-6,
+      "captured_comparison_value": 2.384185791015625e-6,
+      "authoritative_bf16_bits": "0x3624",
+      "authoritative_bf16_value": 2.4437904357910156e-6,
+      "official_bf16_bits": "0x3624",
+      "official_bf16_value": 2.4437904357910156e-6,
+      "bit_equivalence": "bf16_bit_different",
+      "one_bf16_ulp_at_live_magnitude": 1.4901161193847656e-8,
+      "below_or_equal_one_bf16_ulp": false
+    },
+    {
+      "token_index": 57,
+      "hidden_lane": 1914,
+      "flat_index": 166074,
+      "fixed_live_value": 0.000017404556274414062,
+      "authoritative_replay_value": 0.000017523765563964844,
+      "official_value": 0.000017523765563964844,
+      "abs_diff": 1.1920928955078125e-7,
+      "live_raw_stored_bits": "0x3792",
+      "live_raw_stored_value": 0.000017404556274414062,
+      "captured_comparison_value": 0.000017404556274414062,
+      "authoritative_bf16_bits": "0x3793",
+      "authoritative_bf16_value": 0.000017523765563964844,
+      "official_bf16_bits": "0x3793",
+      "official_bf16_value": 0.000017523765563964844,
+      "bit_equivalence": "bf16_bit_different",
+      "one_bf16_ulp_at_live_magnitude": 1.1920928955078125e-7,
+      "below_or_equal_one_bf16_ulp": true
+    },
+    {
+      "token_index": 58,
+      "hidden_lane": 963,
+      "flat_index": 168003,
+      "fixed_live_value": 4.172325134277344e-7,
+      "authoritative_replay_value": 4.76837158203125e-7,
+      "official_value": 4.76837158203125e-7,
+      "abs_diff": 5.960464477539063e-8,
+      "live_raw_stored_bits": "0x34e0",
+      "live_raw_stored_value": 4.172325134277344e-7,
+      "captured_comparison_value": 4.172325134277344e-7,
+      "authoritative_bf16_bits": "0x3500",
+      "authoritative_bf16_value": 4.76837158203125e-7,
+      "official_bf16_bits": "0x3500",
+      "official_bf16_value": 4.76837158203125e-7,
+      "bit_equivalence": "bf16_bit_different",
+      "one_bf16_ulp_at_live_magnitude": 1.862645149230957e-9,
+      "below_or_equal_one_bf16_ulp": false
+    },
+    {
+      "token_index": 64,
+      "hidden_lane": 1565,
+      "flat_index": 185885,
+      "fixed_live_value": -2.205371856689453e-6,
+      "authoritative_replay_value": -2.2351741790771484e-6,
+      "official_value": -2.2351741790771484e-6,
+      "abs_diff": 2.9802322387695312e-8,
+      "live_raw_stored_bits": "0xb614",
+      "live_raw_stored_value": -2.205371856689453e-6,
+      "captured_comparison_value": -2.205371856689453e-6,
+      "authoritative_bf16_bits": "0xb616",
+      "authoritative_bf16_value": -2.2351741790771484e-6,
+      "official_bf16_bits": "0xb616",
+      "official_bf16_value": -2.2351741790771484e-6,
+      "bit_equivalence": "bf16_bit_different",
+      "one_bf16_ulp_at_live_magnitude": 1.4901161193847656e-8,
+      "below_or_equal_one_bf16_ulp": false
+    }
+  ],
+  "bf16_bit_equivalence_findings": {
+    "summary": "all_residual_lanes_are_bf16_bit_different",
+    "bf16_bit_different_count": 4,
+    "f32_only_drift_count": 0,
+    "all_below_or_equal_one_bf16_ulp_for_magnitude": false
+  },
+  "total_mismatching_token_count": 3,
+  "total_mismatching_lane_count": 4,
+  "authoritative_replay_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "differing_tokens": 0,
+    "differing_lanes": 0,
+    "first_differing_token_lane": null,
+    "worst_differing_token_lane": null
+  },
+  "final_token_confirmation": {
+    "final_token_index": 73,
+    "fixed_live_vs_authoritative": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    }
+  },
+  "k_causality_comparison_metrics": {
+    "fixed_live_norm_input_to_grouped_pre_rope_k_vs_official": {
+      "comparison": "fixed_live_norm_input_to_grouped_pre_rope_k_vs_official",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "authoritative_replay_norm_input_to_grouped_pre_rope_k_vs_official": {
+      "comparison": "authoritative_replay_norm_input_to_grouped_pre_rope_k_vs_official",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "official_norm_input_to_grouped_pre_rope_k_vs_official": {
+      "comparison": "official_norm_input_to_grouped_pre_rope_k_vs_official",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "fixed_live_norm_k_result_vs_authoritative_replay_norm_k_result": {
+      "comparison": "fixed_live_norm_k_result_vs_authoritative_replay_norm_k_result",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      },
+      "first_differing_token_head_lane": null,
+      "worst_differing_token_head_lane": null
+    },
+    "authoritative_replay_norm_k_result_vs_official_norm_k_result": {
+      "comparison": "authoritative_replay_norm_k_result_vs_official_norm_k_result",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      },
+      "first_differing_token_head_lane": null,
+      "worst_differing_token_head_lane": null
+    }
+  },
+  "overlap_analysis": {
+    "rmsnorm_residual_tokens": [
+      57,
+      58,
+      64
+    ],
+    "grouped_pre_rope_k_mismatch_tokens": [
+      5,
+      39,
+      44,
+      55,
+      56,
+      65
+    ],
+    "overlap_tokens": [],
+    "grouped_pre_rope_k_first_mismatch_token": 5,
+    "grouped_pre_rope_k_worst_mismatch_token": 65,
+    "first_mismatch_overlaps_rmsnorm_residual_tokens": false,
+    "worst_mismatch_overlaps_rmsnorm_residual_tokens": false,
+    "replacing_fixed_live_norm_with_authoritative_replay_norm_collapses_k_mismatch": false,
+    "replacing_fixed_live_norm_with_authoritative_replay_norm_materially_improves_k_mismatch": false
+  },
+  "classification": "grouped_k_mismatch_not_explained_by_remaining_rmsnorm_residual",
+  "runtime_forward_layer0_attn_rmsnorm_residual_lanes_k_causality_status_now": "runtime-forward RMSNorm residual lanes -> K causality status now: rmsnorm residual lanes=4 bf16_bit_different=4 max_abs=0.00000011920929 mean_abs=0.000000000001258544; fixed-live K max_abs=0.0078125 mean_abs=0.00000020872638 matched=false; authoritative-norm K max_abs=0.0078125 mean_abs=0.00000020872638 matched=false; classification=grouped_k_mismatch_not_explained_by_remaining_rmsnorm_residual; next bounded step: return to grouped_pre_rope_k source breakdown using authoritative RMSNorm provenance.",
+  "next_bounded_step": "return to grouped_pre_rope_k source breakdown using authoritative RMSNorm provenance"
+}

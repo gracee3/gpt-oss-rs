@@ -1,0 +1,93 @@
+{
+  "schema_version": "pinned-prompt-runner-vs-official-layer0-k-post-rope-grouped-compare/v1",
+  "case_id": "developer-message-user-smoke",
+  "boundary": "layer0_k_post_rope_grouped",
+  "runtime_artifact": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-pre-cache.json",
+  "official_artifact": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json",
+  "case_id_match": true,
+  "boundary_match": true,
+  "runtime_boundary": "layer0_k_post_rope_pre_cache",
+  "official_boundary": "layer0_k_post_rope_grouped",
+  "shape_match": true,
+  "official_shape": [
+    74,
+    8,
+    64
+  ],
+  "runtime_projected_shape": [
+    74,
+    8,
+    64
+  ],
+  "comparison": {
+    "length_match": true,
+    "runtime_len": 37888,
+    "official_len": 37888,
+    "max_abs_diff": 1.0,
+    "mean_abs_diff": 0.009839175061724766,
+    "matched_within_1e_2": false,
+    "first_mismatch": {
+      "flat_index": 0,
+      "runtime": -2.3984375,
+      "official": -2.390625,
+      "abs_diff": 0.0078125
+    },
+    "first_over_1e_2": {
+      "flat_index": 1,
+      "runtime": -5.5546875,
+      "official": -5.53125,
+      "abs_diff": 0.0234375
+    }
+  },
+  "targeted_dim_pair_summary": [
+    {
+      "dim_range": "0..15",
+      "length_match": true,
+      "runtime_len": 9472,
+      "official_len": 9472,
+      "max_abs_diff": 1.0,
+      "mean_abs_diff": 0.014059527363868708,
+      "matched_within_1e_2": false,
+      "first_mismatch": {
+        "flat_index": 0,
+        "runtime": -2.3984375,
+        "official": -2.390625,
+        "abs_diff": 0.0078125
+      },
+      "first_over_1e_2": {
+        "flat_index": 1,
+        "runtime": -5.5546875,
+        "official": -5.53125,
+        "abs_diff": 0.0234375
+      }
+    },
+    {
+      "dim_range": "32..47",
+      "length_match": true,
+      "runtime_len": 9472,
+      "official_len": 9472,
+      "max_abs_diff": 0.6875,
+      "mean_abs_diff": 0.014513771664088897,
+      "matched_within_1e_2": false,
+      "first_mismatch": {
+        "flat_index": 0,
+        "runtime": -2.9667969,
+        "official": -2.953125,
+        "abs_diff": 0.013671899999999848
+      },
+      "first_over_1e_2": {
+        "flat_index": 0,
+        "runtime": -2.9667969,
+        "official": -2.953125,
+        "abs_diff": 0.013671899999999848
+      }
+    }
+  ],
+  "prior_flat_post_rope_compare": {
+    "path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.runner-vs-official-layer0-k-post-rope-pre-cache.cpu.compare.json",
+    "max_abs_diff": 1.0,
+    "mean_abs_diff": 0.00983917503686867,
+    "matched_within_1e_2": false
+  },
+  "classification": "official_nearer_post_rope_seam_still_diverges"
+}

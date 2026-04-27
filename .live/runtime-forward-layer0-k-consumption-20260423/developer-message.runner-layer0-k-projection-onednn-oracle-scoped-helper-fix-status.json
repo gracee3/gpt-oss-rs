@@ -1,0 +1,296 @@
+{
+  "schema_version": "runtime_forward_layer0_k_projection_onednn_oracle_scoped_helper_fix_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "kv_dim": 512
+  },
+  "mode": "k-projection-onednn-oracle-scoped-helper-fix-status",
+  "source_artifact_paths": {
+    "onednn_oracle_helper_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json",
+    "onednn_primitive_reproduction": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-primitive-reproduction-status.json",
+    "authoritative_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "official_weight_arithmetic": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json",
+    "grouped_source_breakdown": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-authoritative-norm-source-breakdown-status.json"
+  },
+  "files_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs",
+    "crates/gpt-oss-bench/tools/layer0_k_projection_onednn_oracle_scoped_helper_fix.py"
+  ],
+  "change_scope": "bench/proof-only",
+  "runtime_affecting": false,
+  "candidate_helper_projection_strategy": "bench-only full-shape oneDNN/MKLDNN BF16 torch.nn.functional.linear oracle output, reshaped to grouped [token, kv_head, lane] only for immediate pre-RoPE confirmation",
+  "scope_statement": {
+    "affected_paths": [
+      "this diagnostic mode",
+      "bench-only oneDNN K projection candidate for layer0 exact case"
+    ],
+    "not_affected_paths": [
+      "default runtime helper",
+      "Q projection",
+      "V projection",
+      "MLP/MoE",
+      "logits",
+      "final RMSNorm",
+      "general GEMM behavior",
+      "RoPE",
+      "attention scores",
+      "cache"
+    ]
+  },
+  "onednn_oracle_construction_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "thread_count": 8,
+    "mkldnn_enabled_for_oracle": true,
+    "input_shape_stride_dtype": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16"
+    },
+    "weight_shape_stride_dtype": {
+      "shape": [
+        512,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16"
+    },
+    "output_shape_stride_dtype": {
+      "shape": [
+        74,
+        512
+      ],
+      "stride": [
+        512,
+        1
+      ],
+      "dtype": "bfloat16"
+    }
+  },
+  "oracle_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_token_feature_or_head_lane": null,
+    "worst_differing_token_feature_or_head_lane": null
+  },
+  "legacy_helper_replay_metrics": {
+    "legacy_pedantic_helper_vs_onednn_oracle": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.087263766270553e-07,
+      "matched": false,
+      "differing_tokens": 6,
+      "differing_lanes": 6,
+      "first_differing_token_lane": {
+        "token_index": 5,
+        "hidden_lane_index": 287,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-06
+      },
+      "worst_differing_token_lane": {
+        "token_index": 65,
+        "hidden_lane_index": 293,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      },
+      "mismatching_token_count": 6,
+      "mismatching_lane_count": 6
+    },
+    "legacy_rust_cpu_replay_vs_onednn_oracle": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.087263766270553e-07,
+      "matched": false,
+      "differing_tokens": 6,
+      "differing_lanes": 6,
+      "first_differing_token_lane": {
+        "token_index": 5,
+        "hidden_lane_index": 287,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-06
+      },
+      "worst_differing_token_lane": {
+        "token_index": 65,
+        "hidden_lane_index": 293,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      },
+      "mismatching_token_count": 6,
+      "mismatching_lane_count": 6
+    }
+  },
+  "candidate_helper_projection_metrics": {
+    "scoped_candidate_vs_onednn_oracle": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_token_feature_or_head_lane": null,
+      "worst_differing_token_feature_or_head_lane": null
+    },
+    "scoped_candidate_vs_official_captured_or_module_k": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_token_feature_or_head_lane": null,
+      "worst_differing_token_feature_or_head_lane": null
+    }
+  },
+  "grouped_pre_rope_k_before_after_metrics": {
+    "legacy_grouped_pre_rope_k_vs_official": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.087263766270553e-07,
+      "matched": false,
+      "mismatching_token_count": 6,
+      "mismatching_lane_count": 6,
+      "first_differing_token_feature_or_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-06
+      },
+      "worst_differing_token_feature_or_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "scoped_candidate_grouped_pre_rope_k_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_token_feature_or_head_lane": null,
+      "worst_differing_token_feature_or_head_lane": null
+    }
+  },
+  "known_six_lane_table": [
+    {
+      "token_index": 5,
+      "k_feature_index": 287,
+      "kv_head_index": 4,
+      "head_dim_lane": 31,
+      "onednn_oracle_value": -0.000545501708984375,
+      "official_value": -0.000545501708984375,
+      "legacy_helper_value": -0.00054931640625,
+      "legacy_rust_replay_value": -0.00054931640625,
+      "scoped_candidate_value": -0.000545501708984375,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": -3.814697265625e-06,
+      "candidate_matches_oracle": true
+    },
+    {
+      "token_index": 39,
+      "k_feature_index": 460,
+      "kv_head_index": 7,
+      "head_dim_lane": 12,
+      "onednn_oracle_value": 1.9788742065429688e-05,
+      "official_value": 1.9788742065429688e-05,
+      "legacy_helper_value": 1.990795135498047e-05,
+      "legacy_rust_replay_value": 1.990795135498047e-05,
+      "scoped_candidate_value": 1.9788742065429688e-05,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": 1.1920928955078125e-07,
+      "candidate_matches_oracle": true
+    },
+    {
+      "token_index": 44,
+      "k_feature_index": 303,
+      "kv_head_index": 4,
+      "head_dim_lane": 47,
+      "onednn_oracle_value": 0.01068115234375,
+      "official_value": 0.01068115234375,
+      "legacy_helper_value": 0.0106201171875,
+      "legacy_rust_replay_value": 0.0106201171875,
+      "scoped_candidate_value": 0.01068115234375,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": -6.103515625e-05,
+      "candidate_matches_oracle": true
+    },
+    {
+      "token_index": 55,
+      "k_feature_index": 310,
+      "kv_head_index": 4,
+      "head_dim_lane": 54,
+      "onednn_oracle_value": 0.00439453125,
+      "official_value": 0.00439453125,
+      "legacy_helper_value": 0.004425048828125,
+      "legacy_rust_replay_value": 0.004425048828125,
+      "scoped_candidate_value": 0.00439453125,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": 3.0517578125e-05,
+      "candidate_matches_oracle": true
+    },
+    {
+      "token_index": 56,
+      "k_feature_index": 13,
+      "kv_head_index": 0,
+      "head_dim_lane": 13,
+      "onednn_oracle_value": 6.377696990966797e-06,
+      "official_value": 6.377696990966797e-06,
+      "legacy_helper_value": 6.616115570068359e-06,
+      "legacy_rust_replay_value": 6.616115570068359e-06,
+      "scoped_candidate_value": 6.377696990966797e-06,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": 2.384185791015625e-07,
+      "candidate_matches_oracle": true
+    },
+    {
+      "token_index": 65,
+      "k_feature_index": 293,
+      "kv_head_index": 4,
+      "head_dim_lane": 37,
+      "onednn_oracle_value": 1.9140625,
+      "official_value": 1.9140625,
+      "legacy_helper_value": 1.921875,
+      "legacy_rust_replay_value": 1.921875,
+      "scoped_candidate_value": 1.9140625,
+      "candidate_minus_oracle": 0.0,
+      "legacy_helper_minus_oracle": 0.0078125,
+      "candidate_matches_oracle": true
+    }
+  ],
+  "classification": "scoped_onednn_oracle_k_projection_helper_fix_proven",
+  "next_bounded_step": "rerun grouped post-RoPE K and first attention-score consumer seams",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,12.312"
+  ]
+}

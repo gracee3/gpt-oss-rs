@@ -1,0 +1,274 @@
+{
+  "schema_version": "runtime_forward_layer0_k_post_rope_and_score_after_onednn_k_candidate_status/v1",
+  "mode": "k-post-rope-and-score-after-onednn-k-candidate-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "kv_dim": 512
+  },
+  "source_artifact_paths": {
+    "onednn_oracle_scoped_helper_fix": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "onednn_oracle_helper_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json",
+    "authoritative_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "official_grouped_post_rope_k": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json",
+    "official_q_post_rope_before_attention": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+    "official_final_token_raw_scaled_qk_logits_pre_mask": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json",
+    "q_provenance_artifact": ".live/runtime-forward-layer0-qkv-bf16-candidate-20260423/developer-message.runner-layer0-attention-score-input-bundle-attribution-status.json"
+  },
+  "candidate_is_bench_proof_only": true,
+  "active_k_candidate_strategy": "bench-only full-shape oneDNN/MKLDNN BF16 torch.nn.functional.linear oracle output, reshaped to grouped [token, kv_head, lane] only for immediate pre-RoPE confirmation",
+  "onednn_candidate_construction_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "thread_count": 8,
+    "mkldnn_enabled_for_candidate": true,
+    "input": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "layout": "[token, hidden]"
+    },
+    "weight": {
+      "shape": [
+        512,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "layout": "[k_feature, hidden]; torch F.linear uses weight.T"
+    },
+    "output": {
+      "shape": [
+        74,
+        512
+      ],
+      "stride": [
+        512,
+        1
+      ],
+      "dtype": "bfloat16",
+      "layout": "[token, k_feature]"
+    }
+  },
+  "pre_rope_k_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null,
+    "local_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "official_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    }
+  },
+  "grouped_post_rope_k_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null,
+    "candidate_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "official_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "application_path": "model.attn.rope applied to scoped oneDNN candidate K heads in this bench/proof diagnostic"
+  },
+  "first_raw_scaled_qk_score_metrics": {
+    "max_abs_diff": 0.5,
+    "mean_abs_diff": 0.04103735834360123,
+    "matched": false,
+    "mismatching_element_count": 2328,
+    "first_differing_location": {
+      "location_kind": "score_head_key",
+      "indices": [
+        0,
+        0
+      ],
+      "lhs_value": -3.578125,
+      "rhs_value": -3.5625,
+      "abs_diff": 0.015625,
+      "score_head_index": 0,
+      "key_position": 0
+    },
+    "worst_differing_location": {
+      "location_kind": "score_head_key",
+      "indices": [
+        16,
+        4
+      ],
+      "lhs_value": -68.0,
+      "rhs_value": -67.5,
+      "abs_diff": 0.5,
+      "score_head_index": 16,
+      "key_position": 4
+    },
+    "score_source": "existing local final-token Q score-input bundle with scoped oneDNN K candidate",
+    "official_tensor": {
+      "shape": [
+        64,
+        74
+      ],
+      "stride": [
+        74,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[score_head, key_position]"
+    },
+    "candidate_tensor": {
+      "shape": [
+        64,
+        74
+      ],
+      "stride": [
+        74,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[score_head, key_position]"
+    }
+  },
+  "k_isolated_score_with_official_q_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null,
+    "score_source": "official final-token Q post-RoPE with scoped oneDNN K candidate"
+  },
+  "q_provenance_guard_status": {
+    "q_provenance_guard_available": true,
+    "source_artifact_path": ".live/runtime-forward-layer0-qkv-bf16-candidate-20260423/developer-message.runner-layer0-attention-score-input-bundle-attribution-status.json",
+    "source_classification": "k_input_bundle_dominant",
+    "local_bundle_q_vs_official_bundle_q": {
+      "max_abs_diff": 0.05078125,
+      "mean_abs_diff": 0.003539103,
+      "matched": false
+    },
+    "closest_q_upstream_seam": "layer0_q_post_rope_before_attention_final_token_grouped",
+    "earliest_q_upstream_seam_already_mismatched": "layer0_q_post_rope_before_attention_final_token_grouped",
+    "q_provenance_stale_or_mismatched": true,
+    "local_q_input_for_main_score": {
+      "available": true,
+      "source_artifact_path": ".live/runtime-forward-layer0-qkv-bf16-candidate-20260423/developer-message.runner-layer0-attention-score-input-bundle.json",
+      "shape": [
+        8,
+        8,
+        64
+      ],
+      "layout": "kv_head, heads_per_kv, head_dim",
+      "value_dtype": "f32_debug_readout"
+    }
+  },
+  "first_worst_mismatch_locations": {
+    "pre_rope_k_guard": {
+      "first": null,
+      "worst": null
+    },
+    "grouped_post_rope_k": {
+      "first": null,
+      "worst": null
+    },
+    "layer0_final_token_raw_scaled_qk_logits_pre_mask": {
+      "first": {
+        "location_kind": "score_head_key",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": -3.578125,
+        "rhs_value": -3.5625,
+        "abs_diff": 0.015625,
+        "score_head_index": 0,
+        "key_position": 0
+      },
+      "worst": {
+        "location_kind": "score_head_key",
+        "indices": [
+          16,
+          4
+        ],
+        "lhs_value": -68.0,
+        "rhs_value": -67.5,
+        "abs_diff": 0.5,
+        "score_head_index": 16,
+        "key_position": 4
+      }
+    }
+  },
+  "earliest_remaining_mismatching_seam": "q_provenance_guard",
+  "classification": "score_consumer_blocked_by_q_provenance_gap",
+  "next_bounded_step": "inspect Q provenance or QK score arithmetic, whichever is earliest from available metrics",
+  "runtime_forward_k_post_rope_and_score_after_onednn_k_candidate_status_now": "runtime-forward K post-RoPE and score after scoped oneDNN K candidate status now: pre_rope matched=True max_abs=0.0 mean_abs=0.0; post_rope matched=True max_abs=0.0 mean_abs=0.0; score matched=False max_abs=0.5 mean_abs=0.04103735834360123; q_guard_available=True q_gap=True; classification=score_consumer_blocked_by_q_provenance_gap; next bounded step: inspect Q provenance or QK score arithmetic, whichever is earliest from available metrics.",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,11.8289"
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "schema_version": "pinned-prompt-runner-vs-official-layer0-attention-score-input-bundle-compare/v1",
+  "case_id": "developer-message-user-smoke",
+  "boundary": "layer0_attention_score_input_bundle",
+  "runtime_artifact": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-qkv-bf16-candidate-20260423/developer-message.runner-layer0-attention-score-input-bundle.json",
+  "official_artifact": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-attention-score-input-bundle.cpu.json",
+  "case_id_match": true,
+  "boundary_match": true,
+  "token_count_match": true,
+  "final_token_index_match": true,
+  "scale_match": true,
+  "q_shape_match": true,
+  "k_shape_match": true,
+  "q_tensor": {
+    "shape": [
+      8,
+      8,
+      64
+    ],
+    "length_match": true,
+    "runtime_len": 4096,
+    "official_len": 4096,
+    "max_abs_diff": 0.050781200000000304,
+    "mean_abs_diff": 0.003539102847621327,
+    "matched_within_1e_2": false,
+    "first_mismatch": {
+      "flat_index": 0,
+      "runtime": -0.18273926,
+      "official": -0.181640625,
+      "abs_diff": 0.0010986349999999867
+    },
+    "first_over_1e_2": {
+      "flat_index": 46,
+      "runtime": 2.0683594,
+      "official": 2.046875,
+      "abs_diff": 0.021484399999999848
+    }
+  },
+  "k_tensor": {
+    "shape": [
+      74,
+      8,
+      8,
+      64
+    ],
+    "length_match": true,
+    "runtime_len": 303104,
+    "official_len": 303104,
+    "max_abs_diff": 1.0,
+    "mean_abs_diff": 0.009839175061724766,
+    "matched_within_1e_2": false,
+    "first_mismatch": {
+      "flat_index": 0,
+      "runtime": -2.3984375,
+      "official": -2.390625,
+      "abs_diff": 0.0078125
+    },
+    "first_over_1e_2": {
+      "flat_index": 1,
+      "runtime": -5.5546875,
+      "official": -5.53125,
+      "abs_diff": 0.0234375
+    }
+  },
+  "q_per_kv_head_group_summary": [
+    {
+      "kv_head_index": 0,
+      "max_abs_diff": 0.02734380000000014,
+      "mean_abs_diff": 0.0031351813083496066,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 1,
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.003982708604370117,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 2,
+      "max_abs_diff": 0.029296899999999848,
+      "mean_abs_diff": 0.0038195806424560523,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 3,
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.003754369368103031,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 4,
+      "max_abs_diff": 0.042968799999999696,
+      "mean_abs_diff": 0.003359618393903505,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 5,
+      "max_abs_diff": 0.03515619999999986,
+      "mean_abs_diff": 0.0034534781829833974,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 6,
+      "max_abs_diff": 0.035156200000000304,
+      "mean_abs_diff": 0.002912908342955781,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 7,
+      "max_abs_diff": 0.050781200000000304,
+      "mean_abs_diff": 0.0038949779378491247,
+      "matched_within_1e_2": false
+    }
+  ],
+  "k_per_kv_head_group_summary": [
+    {
+      "kv_head_index": 0,
+      "max_abs_diff": 0.53125,
+      "mean_abs_diff": 0.008470645322777333,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 1,
+      "max_abs_diff": 0.59375,
+      "mean_abs_diff": 0.009991262179095396,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 2,
+      "max_abs_diff": 0.5625,
+      "mean_abs_diff": 0.013633469957636275,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 3,
+      "max_abs_diff": 0.21875,
+      "mean_abs_diff": 0.006718939013092868,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 4,
+      "max_abs_diff": 0.6875,
+      "mean_abs_diff": 0.011343491641271602,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 5,
+      "max_abs_diff": 1.0,
+      "mean_abs_diff": 0.013440336422854143,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 6,
+      "max_abs_diff": 0.140625,
+      "mean_abs_diff": 0.0074933127919661275,
+      "matched_within_1e_2": false
+    },
+    {
+      "kv_head_index": 7,
+      "max_abs_diff": 0.15625,
+      "mean_abs_diff": 0.007621943165104396,
+      "matched_within_1e_2": false
+    }
+  ],
+  "classification": "q_and_k_bundle_mismatch"
+}

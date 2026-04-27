@@ -1,0 +1,653 @@
+{
+  "schema_version": "runtime_forward_layer0_q_projection_weight_bias_arithmetic_policy_status/v1",
+  "mode": "q-projection-weight-bias-arithmetic-policy-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "q_dim": 4096
+  },
+  "source_artifact_paths": {
+    "q_pre_post_rope_runtime_localization": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization-status.json",
+    "k_post_rope_and_score_after_onednn_k_candidate": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate-status.json",
+    "authoritative_rmsnorm_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "scoped_onednn_k_candidate": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "local_q_runtime_capture": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization.local-q-capture.json",
+    "official_score": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json"
+  },
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_q_projection_weight_bias_arithmetic_policy.py",
+  "q_weight_metadata": {
+    "official_qkv_weight_tensor_name": "model.layers.0.attn.qkv.weight",
+    "official_qkv_weight_shape": [
+      5120,
+      2880
+    ],
+    "official_qkv_weight_dtype": "bfloat16",
+    "official_qkv_weight_device": "cpu",
+    "official_q_slice_range": [
+      0,
+      4096
+    ],
+    "official_q_slice_shape": [
+      4096,
+      2880
+    ],
+    "official_q_slice_dtype": "float32",
+    "official_q_slice_stride": [
+      2880,
+      1
+    ],
+    "official_q_slice_layout": "row-major [q_output_feature, hidden]",
+    "runtime_q_slice_range": [
+      0,
+      4096
+    ],
+    "runtime_q_slice_shape": [
+      4096,
+      2880
+    ],
+    "runtime_q_slice_orientation": "row-major [q_output_feature, hidden]",
+    "comparison_finding": "runtime and official Q slices use the same loaded checkpoint tensor and canonical [0, 4096] range"
+  },
+  "q_weight_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "q_bias_metadata": {
+    "official_q_bias_present": true,
+    "official_q_bias_shape": [
+      4096
+    ],
+    "official_q_bias_dtype": "float32",
+    "official_q_bias_max_abs": 3.875,
+    "official_q_bias_mean_abs": 0.31508734822273254,
+    "official_q_bias_checksum": "sha256-prefix4096:b1bf12395ad2a577065bf20aa24b2392a38030513e947dbedcf8a320f73a1de9",
+    "official_q_bias_first_values": [
+      -0.03125,
+      -0.017578125,
+      -0.248046875,
+      0.470703125,
+      0.1318359375,
+      -0.65625,
+      0.041259765625,
+      -0.5859375
+    ],
+    "official_q_bias_last_values": [
+      -0.010986328125,
+      -0.177734375,
+      0.17578125,
+      0.1806640625,
+      -0.07470703125,
+      0.265625,
+      -0.10986328125,
+      0.0184326171875
+    ],
+    "official_q_bias_all_zero": false,
+    "runtime_q_bias_path": "not separately surfaced; live capture is closest to official bias-added projection and far from no-bias projection"
+  },
+  "q_bias_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "q_bias_comparison_application_findings": {
+    "local_minus_official_no_bias_projection_vs_official_q_bias": {
+      "max_token_variation_after_feature_mean": 0.059966206550598145,
+      "mean_token_variation_after_feature_mean": 0.0013512573204934597,
+      "feature_mean_vs_expected_bias_max_abs_diff": 0.006545662879943848,
+      "feature_mean_vs_expected_bias_mean_abs_diff": 0.0003163152723573148,
+      "looks_feature_constant": false,
+      "matches_expected_bias": false
+    },
+    "local_minus_official_bias_added_projection": {
+      "max_abs_residual": 0.0625,
+      "mean_abs_residual": 0.0010602121474221349,
+      "matched": false
+    },
+    "bias_policy_interpretation": "local does not match no-bias, wrong-slice, or double-bias signatures; residual is small relative to the nonzero Q bias and is consistent with projection arithmetic policy"
+  },
+  "bias_application_discriminator_table": {
+    "official_module_q_projection": {
+      "comparison_target": "self",
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_token_count": 0,
+        "mismatching_lane_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      }
+    },
+    "official_f_linear_with_q_bias": {
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_token_count": 0,
+        "mismatching_lane_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      }
+    },
+    "official_f_linear_without_bias": {
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 3.890625,
+        "mean_abs_diff": 0.31508946418762207,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 301801,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            0
+          ],
+          "lhs_value": 0.279296875,
+          "rhs_value": 0.248046875,
+          "abs_diff": 0.03125,
+          "token_index": 0,
+          "q_feature_index": 0,
+          "q_head_index": 0,
+          "head_dim_lane": 0
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            2,
+            3304
+          ],
+          "lhs_value": 1.078125,
+          "rhs_value": 4.96875,
+          "abs_diff": 3.890625,
+          "token_index": 2,
+          "q_feature_index": 3304,
+          "q_head_index": 51,
+          "head_dim_lane": 40
+        }
+      }
+    },
+    "rust_bench_cpu_replay_no_bias": {
+      "available": false,
+      "reason": "full Rust CPU Q replay is not available as an artifact; worst-lane Rust-like left-to-right scalar is included in focused trace"
+    },
+    "rust_bench_cpu_replay_with_official_q_bias": {
+      "available": false,
+      "reason": "full Rust CPU Q replay with bias is not available as an artifact; worst-lane Rust-like left-to-right scalar is included in focused trace"
+    },
+    "local_runtime_helper_q_pre_rope_capture": {
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 0.0625,
+        "mean_abs_diff": 0.0010602121474221349,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 107138,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            1
+          ],
+          "lhs_value": 0.05517578125,
+          "rhs_value": 0.054931640625,
+          "abs_diff": 0.000244140625,
+          "token_index": 0,
+          "q_feature_index": 1,
+          "q_head_index": 0,
+          "head_dim_lane": 1
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            6,
+            3755
+          ],
+          "lhs_value": 9.875,
+          "rhs_value": 9.8125,
+          "abs_diff": 0.0625,
+          "token_index": 6,
+          "q_feature_index": 3755,
+          "q_head_index": 58,
+          "head_dim_lane": 43
+        }
+      }
+    },
+    "local_helper_replay_bias_before_bf16_output_cast": {
+      "strategy": "oneDNN no-bias output plus BF16 Q bias, then BF16 output round-trip",
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 0.0625,
+        "mean_abs_diff": 0.000886682712007314,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 88221,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            1
+          ],
+          "lhs_value": 0.05517578125,
+          "rhs_value": 0.054931640625,
+          "abs_diff": 0.000244140625,
+          "token_index": 0,
+          "q_feature_index": 1,
+          "q_head_index": 0,
+          "head_dim_lane": 1
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            4,
+            3755
+          ],
+          "lhs_value": 8.625,
+          "rhs_value": 8.6875,
+          "abs_diff": 0.0625,
+          "token_index": 4,
+          "q_feature_index": 3755,
+          "q_head_index": 58,
+          "head_dim_lane": 43
+        }
+      },
+      "metrics_vs_local_runtime_capture": {
+        "max_abs_diff": 0.0625,
+        "mean_abs_diff": 0.0005269155954010785,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 47538,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            6
+          ],
+          "lhs_value": -0.1669921875,
+          "rhs_value": -0.16796875,
+          "abs_diff": 0.0009765625,
+          "token_index": 0,
+          "q_feature_index": 6,
+          "q_head_index": 0,
+          "head_dim_lane": 6
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            4,
+            3755
+          ],
+          "lhs_value": 8.6875,
+          "rhs_value": 8.625,
+          "abs_diff": 0.0625,
+          "token_index": 4,
+          "q_feature_index": 3755,
+          "q_head_index": 58,
+          "head_dim_lane": 43
+        }
+      }
+    },
+    "local_helper_replay_bias_after_bf16_output_cast": {
+      "strategy": "oneDNN no-bias BF16 output expanded to f32, then BF16 Q bias in f32",
+      "metrics_vs_official_module_q_projection": {
+        "max_abs_diff": 0.046875,
+        "mean_abs_diff": 0.0011854307958856225,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 218969,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            1
+          ],
+          "lhs_value": 0.05517578125,
+          "rhs_value": 0.054931640625,
+          "abs_diff": 0.000244140625,
+          "token_index": 0,
+          "q_feature_index": 1,
+          "q_head_index": 0,
+          "head_dim_lane": 1
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            58,
+            3947
+          ],
+          "lhs_value": 9.421875,
+          "rhs_value": 9.375,
+          "abs_diff": 0.046875,
+          "token_index": 58,
+          "q_feature_index": 3947,
+          "q_head_index": 61,
+          "head_dim_lane": 43
+        }
+      },
+      "metrics_vs_local_runtime_capture": {
+        "max_abs_diff": 0.0625,
+        "mean_abs_diff": 0.001305447076447308,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 203206,
+        "first_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            0,
+            2
+          ],
+          "lhs_value": -0.5703125,
+          "rhs_value": -0.572265625,
+          "abs_diff": 0.001953125,
+          "token_index": 0,
+          "q_feature_index": 2,
+          "q_head_index": 0,
+          "head_dim_lane": 2
+        },
+        "worst_differing_location": {
+          "location_kind": "token_feature",
+          "indices": [
+            6,
+            3755
+          ],
+          "lhs_value": 9.875,
+          "rhs_value": 9.8125,
+          "abs_diff": 0.0625,
+          "token_index": 6,
+          "q_feature_index": 3755,
+          "q_head_index": 58,
+          "head_dim_lane": 43
+        }
+      }
+    },
+    "bias_residual_checks": {
+      "local_minus_official_no_bias_projection_vs_official_q_bias": {
+        "max_token_variation_after_feature_mean": 0.059966206550598145,
+        "mean_token_variation_after_feature_mean": 0.0013512573204934597,
+        "feature_mean_vs_expected_bias_max_abs_diff": 0.006545662879943848,
+        "feature_mean_vs_expected_bias_mean_abs_diff": 0.0003163152723573148,
+        "looks_feature_constant": false,
+        "matches_expected_bias": false
+      },
+      "local_minus_official_bias_added_projection": {
+        "max_abs_residual": 0.0625,
+        "mean_abs_residual": 0.0010602121474221349,
+        "matched": false
+      },
+      "bias_policy_interpretation": "local does not match no-bias, wrong-slice, or double-bias signatures; residual is small relative to the nonzero Q bias and is consistent with projection arithmetic policy"
+    }
+  },
+  "onednn_q_oracle_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "torch_num_threads": 8,
+    "mkldnn_enabled_for_oracle": true,
+    "input": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, hidden]",
+      "device": "cpu"
+    },
+    "weight": {
+      "shape": [
+        4096,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[q_output_feature, hidden]",
+      "device": "cpu"
+    },
+    "bias": {
+      "shape": [
+        4096
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[q_output_feature]",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        74,
+        4096
+      ],
+      "stride": [
+        4096,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, q_feature]",
+      "device": "cpu"
+    },
+    "output_digest": "sha256-prefix4096:abd3c308318b43d389148d5b401d283cdc7c9ec1ab6cf7cf8392ed9ce76ab1e0"
+  },
+  "onednn_q_oracle_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "local_rust_helper_projection_comparison_metrics": {
+    "local_runtime_helper_q_pre_rope_capture_vs_onednn_q_oracle": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    },
+    "rust_bench_cpu_replay_no_bias_vs_onednn_q_oracle": {
+      "available": false,
+      "reason": "full Rust CPU Q replay is not available as an artifact; worst-lane Rust-like left-to-right scalar is included in focused trace"
+    },
+    "rust_bench_cpu_replay_with_official_q_bias_vs_onednn_q_oracle": {
+      "available": false,
+      "reason": "full Rust CPU Q replay with bias is not available as an artifact; worst-lane Rust-like left-to-right scalar is included in focused trace"
+    },
+    "bias_before_output_cast_variant_vs_onednn_q_oracle": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.000886682712007314,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 88221,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          4,
+          3755
+        ],
+        "lhs_value": 8.625,
+        "rhs_value": 8.6875,
+        "abs_diff": 0.0625,
+        "token_index": 4,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    },
+    "bias_after_output_cast_variant_vs_onednn_q_oracle": {
+      "max_abs_diff": 0.046875,
+      "mean_abs_diff": 0.0011854307958856225,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 218969,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          58,
+          3947
+        ],
+        "lhs_value": 9.421875,
+        "rhs_value": 9.375,
+        "abs_diff": 0.046875,
+        "token_index": 58,
+        "q_feature_index": 3947,
+        "q_head_index": 61,
+        "head_dim_lane": 43
+      }
+    }
+  },
+  "focused_mismatch_trace": {
+    "token_index": 6,
+    "q_feature_index": 3755,
+    "q_head_index": 58,
+    "head_dim_lane": 43,
+    "authoritative_rmsnorm_input_token_digest": "sha256-prefix4096:8098c258013e09d9490847a6d5933211519c39d83f56dc9d03be444e6048d315",
+    "q_weight_row_digest": "sha256-prefix4096:d74325543bfa13017121ed2d0dd332ce32d6cb8e8ae8580f5bb38e5b05c4f4fa",
+    "q_bias_value_bf16": 1.875,
+    "official_module_q_value": 9.8125,
+    "onednn_q_oracle_value": 9.8125,
+    "official_no_bias_q_value": 7.9375,
+    "rust_no_bias_replay_value": 7.9375,
+    "rust_bias_added_replay_value": 9.8125,
+    "local_runtime_helper_q_value": 9.875,
+    "local_minus_official": 0.0625,
+    "local_minus_no_bias": 1.9375,
+    "official_bf16_bits": "0x411d",
+    "local_bf16_bits": "0x411e",
+    "onednn_bf16_bits": "0x411d",
+    "mismatch_one_bf16_ulp_or_larger": true,
+    "residual_matches_omitted_wrong_or_double_bias": false,
+    "residual_interpretation": "residual is much smaller than the nonzero bias scale and tracks BF16 projection arithmetic/blocking, not bias omission"
+  },
+  "downstream_score_confirmation_metrics": {
+    "local_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask": {
+      "max_abs_diff": 0.5,
+      "mean_abs_diff": 0.04155292361974716,
+      "matched": false,
+      "mismatching_token_count": 64,
+      "mismatching_lane_count": 2320,
+      "first_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": -3.578125,
+        "rhs_value": -3.5625,
+        "abs_diff": 0.015625,
+        "score_head_index": 0,
+        "key_position": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          16,
+          4
+        ],
+        "lhs_value": -68.0,
+        "rhs_value": -67.5,
+        "abs_diff": 0.5,
+        "score_head_index": 16,
+        "key_position": 4
+      }
+    },
+    "official_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "earliest_divergent_source": "layer0_q_projection_bf16_linear_arithmetic_policy",
+  "classification": "q_projection_arithmetic_policy_mismatch_after_weight_bias_clear",
+  "next_bounded_step": "build/prove a scoped oneDNN Q projection oracle/candidate, analogous to K, before Q RoPE",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-weight-bias-arithmetic-policy.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x5120,41.8081",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x4096,28.3601",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x4096,28.175",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,3.87305"
+  ]
+}

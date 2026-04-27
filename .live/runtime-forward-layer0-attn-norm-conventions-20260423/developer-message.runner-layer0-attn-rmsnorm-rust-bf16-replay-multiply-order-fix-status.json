@@ -1,0 +1,331 @@
+{
+  "schema_version": "runtime_forward_layer0_attn_rmsnorm_rust_bf16_replay_multiply_order_fix_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "input_token_ids": [
+      200006,
+      17360,
+      200008,
+      3575,
+      553,
+      17554,
+      162016,
+      11,
+      261,
+      4410,
+      6439,
+      2359,
+      22203,
+      656,
+      7788,
+      17527,
+      558,
+      87447,
+      100594,
+      25,
+      220,
+      1323,
+      19,
+      12,
+      3218,
+      279,
+      30377,
+      289,
+      25,
+      14093,
+      279,
+      2,
+      13888,
+      18403,
+      25,
+      8450,
+      11,
+      49159,
+      11,
+      1721,
+      13,
+      21030,
+      2804,
+      413,
+      7360,
+      395,
+      1753,
+      3176,
+      13,
+      200007,
+      200006,
+      77944,
+      200008,
+      2,
+      68406,
+      279,
+      17045,
+      59453,
+      1151,
+      13,
+      200007,
+      200006,
+      1428,
+      200008,
+      25968,
+      483,
+      9707,
+      1001,
+      2195,
+      25,
+      40617,
+      200007,
+      200006,
+      173781
+    ],
+    "hidden_size": 2880,
+    "num_tokens": 74,
+    "q_dim": 4096,
+    "kv_dim": 512,
+    "qkv_dim": 5120
+  },
+  "mode": "layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status",
+  "source_artifact_path": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-single-lane-status.json",
+  "files_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs",
+    "crates/gpt-oss-bench/tools/layer0_attn_rmsnorm_all_token_bf16_replay.py"
+  ],
+  "replay_implementation_file_function_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs::replay_rmsnorm_bf16_policy_output_pairwise_reduction"
+  ],
+  "old_multiply_order": "x * weight * inverse_rms",
+  "fixed_multiply_order": "x * inverse_rms then multiply by weight",
+  "bench_replay_only_change": true,
+  "all_token_comparison_metrics": {
+    "previous_corrected_rust_replay_vs_official": {
+      "max_abs_diff": 0.001953125,
+      "mean_abs_diff": 9.16443809728662e-9,
+      "matched": false,
+      "differing_tokens": 1,
+      "differing_lanes": 1,
+      "first_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 977,
+        "flat_index": 52817,
+        "runtime_value": 0.359375,
+        "official_value": 0.361328125,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 977,
+        "flat_index": 52817,
+        "runtime_value": 0.359375,
+        "official_value": 0.361328125,
+        "abs_diff": 0.001953125
+      }
+    },
+    "fixed_rust_replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "differing_tokens": 0,
+      "differing_lanes": 0,
+      "first_differing_token_lane": null,
+      "worst_differing_token_lane": null
+    },
+    "fixed_rust_replay_vs_official_side_pytorch_manual_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "differing_tokens": 0,
+      "differing_lanes": 0,
+      "first_differing_token_lane": null,
+      "worst_differing_token_lane": null
+    },
+    "previous_corrected_rust_replay_vs_fixed_rust_replay": {
+      "max_abs_diff": 0.001953125,
+      "mean_abs_diff": 9.16443809728662e-9,
+      "matched": false,
+      "differing_tokens": 1,
+      "differing_lanes": 1,
+      "first_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 977,
+        "flat_index": 52817,
+        "runtime_value": 0.359375,
+        "official_value": 0.361328125,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 977,
+        "flat_index": 52817,
+        "runtime_value": 0.359375,
+        "official_value": 0.361328125,
+        "abs_diff": 0.001953125
+      }
+    },
+    "fixed_live_cuda_captured_output_vs_official_informational_only": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 4.1241229098432086e-8,
+      "matched": false,
+      "differing_tokens": 4,
+      "differing_lanes": 6,
+      "first_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 92,
+        "flat_index": 51932,
+        "runtime_value": -1.4453125,
+        "official_value": -1.4375,
+        "abs_diff": 0.0078125
+      },
+      "worst_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 92,
+        "flat_index": 51932,
+        "runtime_value": -1.4453125,
+        "official_value": -1.4375,
+        "abs_diff": 0.0078125
+      }
+    },
+    "fixed_live_cuda_captured_output_vs_fixed_rust_replay_informational_only": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 4.1241229098432086e-8,
+      "matched": false,
+      "differing_tokens": 4,
+      "differing_lanes": 6,
+      "first_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 92,
+        "flat_index": 51932,
+        "runtime_value": -1.4453125,
+        "official_value": -1.4375,
+        "abs_diff": 0.0078125
+      },
+      "worst_differing_token_lane": {
+        "token_index": 18,
+        "hidden_lane_index": 92,
+        "flat_index": 51932,
+        "runtime_value": -1.4453125,
+        "official_value": -1.4375,
+        "abs_diff": 0.0078125
+      }
+    }
+  },
+  "mismatch_count_before_fix": {
+    "differing_tokens": 1,
+    "differing_lanes": 1
+  },
+  "mismatch_count_after_fix": {
+    "differing_tokens": 0,
+    "differing_lanes": 0
+  },
+  "prior_mismatch_lane_trace": {
+    "token_index": 18,
+    "lane_index": 977,
+    "previous_trace": {
+      "variant_name": "previous_pairwise_tree_reduction_x_weight_then_inverse_rms",
+      "token_index": 18,
+      "lane_index": 977,
+      "input_f32_value": 0.421875,
+      "input_bf16_bits_after_roundtrip": "0x3ed8",
+      "input_bf16_decoded_value": 0.421875,
+      "weight_f32_value": 2.265625,
+      "weight_bf16_bits_after_roundtrip": "0x4011",
+      "weight_bf16_decoded_value": 2.265625,
+      "sum_of_squares": 20262.013671875,
+      "mean_square": 7.035421371459961,
+      "mean_square_plus_epsilon": 7.035431385040283,
+      "inverse_rms_scalar": 0.3770115077495575,
+      "normalized_value_before_weight_multiply": 0.15905173122882843,
+      "weighted_f32_value_before_output_bf16_cast": 0.3603515625,
+      "output_bf16_bits": "0x3eb8",
+      "output_bf16_decoded_value": 0.359375,
+      "official_module_output_value": 0.361328125,
+      "variant_minus_official": -0.001953125
+    },
+    "fixed_trace": {
+      "variant_name": "fixed_pairwise_tree_reduction_x_inverse_rms_then_weight",
+      "token_index": 18,
+      "lane_index": 977,
+      "input_f32_value": 0.421875,
+      "input_bf16_bits_after_roundtrip": "0x3ed8",
+      "input_bf16_decoded_value": 0.421875,
+      "weight_f32_value": 2.265625,
+      "weight_bf16_bits_after_roundtrip": "0x4011",
+      "weight_bf16_decoded_value": 2.265625,
+      "sum_of_squares": 20262.013671875,
+      "mean_square": 7.035421371459961,
+      "mean_square_plus_epsilon": 7.035431385040283,
+      "inverse_rms_scalar": 0.3770115077495575,
+      "normalized_value_before_weight_multiply": 0.15905173122882843,
+      "weighted_f32_value_before_output_bf16_cast": 0.3603515923023224,
+      "output_bf16_bits": "0x3eb9",
+      "output_bf16_decoded_value": 0.361328125,
+      "official_module_output_value": 0.361328125,
+      "variant_minus_official": 0.0
+    },
+    "official_side_pytorch_manual_trace": {
+      "token_index": 18,
+      "lane_index": 977,
+      "input_f32_value": 0.421875,
+      "input_bf16_bits_after_roundtrip": "0x3ed8",
+      "input_bf16_decoded_value": 0.421875,
+      "weight_f32_value": 2.265625,
+      "weight_bf16_bits_after_roundtrip": "0x4011",
+      "weight_bf16_decoded_value": 2.265625,
+      "sum_of_squares": 20262.013671875,
+      "mean_square": 7.035421371459961,
+      "mean_square_plus_epsilon": 7.035431385040283,
+      "inverse_rms_scalar": 0.3770115077495575,
+      "normalized_value_before_weight_multiply": 0.15905173122882843,
+      "weighted_f32_value_before_output_bf16_cast": 0.3603515923023224,
+      "output_bf16_bits": "0x3eb9",
+      "output_bf16_decoded_value": 0.361328125,
+      "official_manual_pytorch_bf16_bits": "0x3eb9",
+      "official_manual_pytorch_bf16_value": 0.361328125
+    },
+    "previous_minus_official": -0.001953125,
+    "fixed_minus_official": 0.0
+  },
+  "final_token_confirmation": {
+    "final_token_index": 73,
+    "previous_corrected_rust_replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    "fixed_rust_replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    "live_cuda_captured_vs_fixed_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    }
+  },
+  "live_cuda_captured_vs_fixed_replay_metric_informational_only": {
+    "max_abs_diff": 0.0078125,
+    "mean_abs_diff": 4.1241229098432086e-8,
+    "matched": false,
+    "differing_tokens": 4,
+    "differing_lanes": 6,
+    "first_differing_token_lane": {
+      "token_index": 18,
+      "hidden_lane_index": 92,
+      "flat_index": 51932,
+      "runtime_value": -1.4453125,
+      "official_value": -1.4375,
+      "abs_diff": 0.0078125
+    },
+    "worst_differing_token_lane": {
+      "token_index": 18,
+      "hidden_lane_index": 92,
+      "flat_index": 51932,
+      "runtime_value": -1.4453125,
+      "official_value": -1.4375,
+      "abs_diff": 0.0078125
+    }
+  },
+  "classification": "rust_bf16_replay_multiply_order_fix_proven",
+  "runtime_forward_layer0_attn_rmsnorm_rust_bf16_replay_multiply_order_fix_status_now": "runtime-forward Rust BF16 RMSNorm replay multiply-order fix status now: previous_vs_official max_abs=0.001953125 mean_abs=0.000000009164438 matched=false differing_lanes=1; fixed_vs_official max_abs=0 mean_abs=0 matched=true differing_lanes=0; live_cuda_vs_fixed max_abs=0.0078125 mean_abs=0.00000004124123 matched=false; classification=rust_bf16_replay_multiply_order_fix_proven; next bounded step: inspect live CUDA RMSNorm all-token residual against now-authoritative replay.",
+  "next_bounded_step": "inspect live CUDA RMSNorm all-token residual against now-authoritative replay"
+}

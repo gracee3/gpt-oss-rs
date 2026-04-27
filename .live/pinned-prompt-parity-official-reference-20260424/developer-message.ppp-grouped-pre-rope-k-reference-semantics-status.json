@@ -1,0 +1,104 @@
+{
+  "schema_version": "ppp-grouped-pre-rope-k-reference-semantics-status/v1",
+  "case_id": "developer-message-user-smoke",
+  "source_runtime_artifact_path": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-bias-reference-semantics-status.json",
+  "source_runtime_breakdown_artifact_path": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-source-breakdown-status.json",
+  "official_tensor": {
+    "name": "official_k_rope_bundle.layer0_k_pre_rope_f32",
+    "path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.cpu.json",
+    "source_helper_function": "capture_layer0_k_rope_bundle",
+    "source_expression": "qkv = attn.qkv(normed); k = qkv[:, q_dim:q_dim + kv_dim].contiguous(); layer0_k_pre_rope_f32 = k.reshape(-1).float().cpu().tolist()",
+    "shape": [
+      74,
+      8,
+      64
+    ],
+    "flat_length": 37888,
+    "serialized_dtype": "f32 JSON values converted from torch.bfloat16 tensor values",
+    "source_tensor_dtype": "torch.bfloat16",
+    "layout_interpretation": "[token, kv_head, lane] contiguous; flat stride [512, 64, 1]"
+  },
+  "official_k_bias": {
+    "qkv_bias_parameter_exists": true,
+    "checkpoint_tensor_name": "block.0.attn.qkv.bias",
+    "k_bias_slice_offsets": [
+      4096,
+      4608
+    ],
+    "k_bias_shape": [
+      512
+    ],
+    "k_bias_dtype": "torch.bfloat16",
+    "k_bias_nonzero_count": 0,
+    "max_abs_k_bias": 0.0,
+    "mean_abs_k_bias": 0.0,
+    "effective_for_this_layer_path": false
+  },
+  "official_boundary_definition": {
+    "in_words": "Layer-0 K projection output for all prompt tokens after official attn.norm and official attn.qkv Linear, sliced to the K portion, before RoPE/cache write/attention. It is captured before the explicit grouped view call but is contiguous in token-major [token, kv_head, lane] order when reshaped as [74, 8, 64]. The official K-bias slice exists in qkv.bias but is all zeros, so pre-bias and post-bias values are effectively identical for K.",
+    "pre_or_post_bias": "post-qkv-linear-bias semantically; K bias slice is all zeros so numerically identical to pre-bias",
+    "before_or_after_grouped_head_reshape": "serialized before the helper view operation; layout is directly reshape-compatible with [token, kv_head, lane]",
+    "before_or_after_rope": "before RoPE",
+    "token_kv_lane_order_matches_runtime_grouped_path": true,
+    "same_semantic_boundary_as_runtime_helper_reference_k_path": true,
+    "caveat": "The runtime artifact did not expose the full helper-reference vector, so PPP records the runtime-provided comparison metrics rather than recomputing vector diffs locally."
+  },
+  "runtime_interpretation": {
+    "helper_reference_tensor_name": "live_trace.standalone_k_post_bias_bf16_bits",
+    "runtime_reference_tensor_name": "official_k_rope_bundle.layer0_k_pre_rope_f32",
+    "shape": [
+      74,
+      8,
+      64
+    ],
+    "layout": "[token, kv_head, lane] contiguous; equivalent flat [token, kv_dim]",
+    "physical_stride": [
+      512,
+      64,
+      1
+    ],
+    "k_helper_pedantic_path_active": true,
+    "runtime_bias_metadata": {
+      "present": false,
+      "shape": [
+        0
+      ],
+      "dtype": "bf16",
+      "source": "no captured K bias tensor/slice for this exact grouped K path",
+      "bias_slice_offsets_used": null,
+      "bias_already_included_in_helper_output": false
+    }
+  },
+  "comparison_against_runtime_helper_reference_k_path": {
+    "full_runtime_vector_accessible_in_artifacts": false,
+    "metrics_source": "/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-bias-reference-semantics-status.json",
+    "metrics": {
+      "max_abs_diff": 0.25,
+      "mean_abs_diff": 0.0014555609,
+      "matched": false
+    },
+    "first_differing_token_head_lane": {
+      "token_index": 0,
+      "kv_head_index": 0,
+      "lane_index": 5,
+      "flat_index": 5,
+      "lhs_value": -0.21484375,
+      "rhs_value": -0.21679688,
+      "abs_diff": 0.001953125
+    }
+  },
+  "supporting_runtime_proofs": {
+    "helper_output_vs_cpu_reference": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    "local_pre_bias_vs_local_post_bias": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    }
+  },
+  "classification": "runtime_k_reference_path_not_authoritative_enough",
+  "next_bounded_step": "Do not treat official_grouped_pre_rope_k as a different layout or RoPE/bias boundary. Runtime-forward should compare its helper-reference CPU implementation against the official PyTorch attn.qkv K slice semantics/arithmetic for this exact case, or expose the full runtime helper-reference vector so PPP can recompute direct transforms; no attention/logit work yet."
+}

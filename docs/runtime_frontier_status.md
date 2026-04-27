@@ -216,3 +216,48 @@ Current last-position-only narrowing note:
 Guardrail:
 
 - none of the safe extraction commits or current proof seams should be treated as proof of full GPT-OSS runtime correctness
+
+## Layer-0 Q/K Score Proof Checkpoint
+
+Checkpoint context:
+
+- exact case: `developer-message-user-smoke`
+- branch: `feature/runtime-forward`
+- worktree: `/home/emmy/openai/worktrees/runtime-forward`
+
+Milestone summary:
+
+- candidate Q pre-RoPE: exact
+- candidate Q post-RoPE: exact
+- candidate K pre-RoPE: exact
+- candidate K post-RoPE: exact
+- candidate Q + candidate K raw QK score: exact at `layer0_final_token_raw_scaled_qk_logits_pre_mask`
+
+Important caveat:
+
+- the oneDNN Q/K projection candidates are bench/proof-only diagnostic candidates
+- they are not promoted serving/runtime fixes and should not be described as such
+
+Cleared bug classes:
+
+- RMSNorm residuals are not causal for K
+- K weights, slice, orientation, bias, and grouping are cleared
+- K projection mismatch is identified as official PyTorch CPU oneDNN BF16 GEMM policy
+- K through RoPE is cleared under the scoped oneDNN candidate
+- Q projection-policy candidate clears Q through RoPE
+- raw QK score clears with candidate Q and candidate K
+
+Current frontier:
+
+- downstream from `layer0_final_token_raw_scaled_qk_logits_pre_mask`
+
+Next future bounded step:
+
+- check final-token post-mask / pre-softmax attention scores if an official reference already exists
+- if that reference is missing, stop and request exactly one PPP boundary for `layer0_final_token_masked_scaled_qk_logits_pre_softmax` on `developer-message-user-smoke`
+
+Preservation note:
+
+- PPP artifacts from `/tmp/pinned-prompt-parity-official-reference-20260424` were copied into `.live/pinned-prompt-parity-official-reference-20260424`
+- `.live/pinned-prompt-parity-official-reference-20260424/SHA256SUMS` records checksums for the copied PPP files
+- large raw tensor/vector JSON artifacts and verbose logs are preserved locally and recorded in `.live/pinned-prompt-parity-official-reference-20260424/LARGE_ARTIFACTS_MANIFEST.json`; only small status, compare, input, manifest, and checksum artifacts are intended for git

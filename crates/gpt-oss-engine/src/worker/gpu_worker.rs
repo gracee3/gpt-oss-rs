@@ -910,6 +910,12 @@ impl GpuWorker {
     #[cfg(feature = "cuda")]
     fn find_ptx_dir() -> Option<std::path::PathBuf> {
         let mut bases = Vec::new();
+        if let Ok(dir) = std::env::var("GPT_OSS_RS_PTX_DIR") {
+            let p = std::path::PathBuf::from(dir);
+            if p.exists() {
+                return Some(p);
+            }
+        }
         if let Ok(exe) = std::env::current_exe() {
             if let Some(profile_dir) = exe.parent() {
                 if let Some(target_dir) = profile_dir.parent() {
@@ -927,18 +933,27 @@ impl GpuWorker {
         for base in &bases {
             let build_dir = base.join("build");
             if let Ok(entries) = std::fs::read_dir(&build_dir) {
-                for entry in entries.flatten() {
+                let mut entries = entries.flatten().collect::<Vec<_>>();
+                entries.sort_by_key(|entry| {
+                    entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                });
+                entries.reverse();
+                for entry in entries {
                     let ptx_path = entry.path().join("out/ptx");
-                    if ptx_path.join("rotary_embedding.ptx").exists() {
-                        return Some(ptx_path);
+                    let rms_norm_f16_ptx = ptx_path.join("rms_norm_f16.ptx");
+                    if ptx_path.join("rotary_embedding.ptx").exists() && rms_norm_f16_ptx.exists()
+                    {
+                        let has_layer0_bf16_kernel = std::fs::read_to_string(&rms_norm_f16_ptx)
+                            .map(|ptx| ptx.contains("rms_norm_f16_bf16_policy_kernel"))
+                            .unwrap_or(false);
+                        if has_layer0_bf16_kernel {
+                            return Some(ptx_path);
+                        }
                     }
                 }
-            }
-        }
-        if let Ok(dir) = std::env::var("GPT_OSS_RS_PTX_DIR") {
-            let p = std::path::PathBuf::from(dir);
-            if p.exists() {
-                return Some(p);
             }
         }
         None
@@ -1365,6 +1380,11 @@ impl GpuWorker {
                 q_dim: 0,
                 kv_dim: 0,
                 qkv_dim: 0,
+                attn_norm_input_full_f16_bits: Vec::new(),
+                input_layernorm_weight_f16_bits: Vec::new(),
+                input_layernorm_weight_f32: Vec::new(),
+                standalone_activation_full_raw_f16_bits: Vec::new(),
+                rmsnorm_scalar_debug_f32: Vec::new(),
                 standalone_activation_full_bf16_bits: Vec::new(),
                 standalone_k_weight_bf16_bits: Vec::new(),
                 fused_k_pre_bias_bf16_bits: Vec::new(),
@@ -1375,8 +1395,13 @@ impl GpuWorker {
                 expected_standalone_qkv_post_bias_combined_bf16_bits: Vec::new(),
                 fused_k_slice_bf16_bits: Vec::new(),
                 standalone_k_gemm_output_full_bf16_bits: Vec::new(),
+                canonical_k_bias_bf16_bits: Vec::new(),
                 k_post_rope_pre_cache_f16_bits: Vec::new(),
                 k_post_rope_pre_cache_f32: Vec::new(),
+                q_post_rope_before_attention_f16_bits: Vec::new(),
+                q_post_rope_before_attention_f32: Vec::new(),
+                cache_visible_k_after_write_before_attention_f16_bits: Vec::new(),
+                cache_visible_k_after_write_before_attention_f32: Vec::new(),
                 k_rope_debug: None,
                 qkv_projection_output: Vec::new(),
             });

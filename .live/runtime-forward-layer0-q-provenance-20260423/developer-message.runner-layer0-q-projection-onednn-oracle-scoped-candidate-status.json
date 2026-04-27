@@ -1,0 +1,365 @@
+{
+  "schema_version": "runtime_forward_layer0_q_projection_onednn_oracle_scoped_candidate_status/v1",
+  "mode": "q-projection-onednn-oracle-scoped-candidate-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "q_dim": 4096
+  },
+  "source_artifact_paths": {
+    "q_weight_bias_arithmetic_policy": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-weight-bias-arithmetic-policy-status.json",
+    "q_pre_post_rope_runtime_localization": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization-status.json",
+    "scoped_k_onednn_candidate_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "k_post_rope_and_score_status": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate-status.json",
+    "authoritative_rmsnorm_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "local_q_runtime_capture": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization.local-q-capture.json",
+    "official_q_post_rope": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+    "official_score": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json"
+  },
+  "files_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs",
+    "crates/gpt-oss-bench/tools/layer0_q_projection_onednn_oracle_scoped_candidate.py"
+  ],
+  "change_scope": "bench/proof-only",
+  "runtime_affecting": false,
+  "candidate_q_projection_strategy": "bench-only full-shape oneDNN/MKLDNN BF16 torch.nn.functional.linear(authoritative_norm_bf16, Q_weight_bf16, Q_bias_bf16)",
+  "scope_statement": {
+    "affected_paths": [
+      "this diagnostic/proof mode",
+      "bench-only oneDNN Q projection candidate for the exact layer0 smoke case"
+    ],
+    "not_affected_paths": [
+      "default runtime Q helper",
+      "default runtime K helper",
+      "QKV projection runtime behavior",
+      "masked attention",
+      "softmax",
+      "V path",
+      "logits",
+      "MoE",
+      "Harmony",
+      "cache",
+      "later layers"
+    ]
+  },
+  "onednn_q_candidate_construction_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "thread_count": 8,
+    "mkldnn_enabled_for_candidate": true,
+    "input": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, hidden]",
+      "device": "cpu"
+    },
+    "weight": {
+      "shape": [
+        4096,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[q_output_feature, hidden]",
+      "device": "cpu"
+    },
+    "bias": {
+      "shape": [
+        4096
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[q_output_feature]",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        74,
+        4096
+      ],
+      "stride": [
+        4096,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, q_feature]",
+      "device": "cpu"
+    },
+    "output_digest": "sha256-prefix4096:abd3c308318b43d389148d5b401d283cdc7c9ec1ab6cf7cf8392ed9ce76ab1e0",
+    "bench_proof_only": true
+  },
+  "q_candidate_vs_official_metrics": {
+    "candidate_q_pre_rope_vs_official_module_q_projection": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "candidate_grouped_pre_rope_q_vs_official_grouped_q_projection": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "legacy_local_rust_q_metrics": {
+    "local_runtime_helper_q_pre_rope_capture_vs_candidate": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    },
+    "local_runtime_helper_q_pre_rope_capture_vs_official": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    },
+    "rust_bench_cpu_replay_with_q_weight_and_q_bias": {
+      "available": false,
+      "reason": "no exact all-token Rust CPU Q replay with bias is available; prior focused scalar trace is carried in known_mismatch_trace"
+    },
+    "rust_bench_cpu_replay_with_q_weight_no_bias": {
+      "available": false,
+      "reason": "bias guard is represented by official oneDNN no-bias comparison in the source Q policy artifact"
+    }
+  },
+  "grouped_q_pre_rope_metrics": {
+    "candidate_grouped_pre_rope_q_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "official_grouped_pre_rope_available": true,
+    "layout": "[token, kv_head, heads_per_kv, lane] equivalent to [token, q_head, lane]"
+  },
+  "q_post_rope_metrics": {
+    "candidate_q_post_rope_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "local_runtime_q_post_rope_vs_official": {
+      "max_abs_diff": 0.1171875,
+      "mean_abs_diff": 0.003159710206091404,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 282165,
+      "first_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "lhs_value": 0.07427978515625,
+        "rhs_value": 0.07373046875,
+        "abs_diff": 0.00054931640625,
+        "token_index": 0,
+        "kv_head_index": 0,
+        "heads_per_kv_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 1,
+        "q_feature_index": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          46,
+          7,
+          2,
+          43
+        ],
+        "lhs_value": 8.8046875,
+        "rhs_value": 8.6875,
+        "abs_diff": 0.1171875,
+        "token_index": 46,
+        "kv_head_index": 7,
+        "heads_per_kv_index": 2,
+        "q_head_index": 58,
+        "head_dim_lane": 43,
+        "q_feature_index": 3755
+      }
+    }
+  },
+  "score_confirmation_metrics": {
+    "candidate_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "local_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask": {
+      "max_abs_diff": 0.5,
+      "mean_abs_diff": 0.04155292361974716,
+      "matched": false,
+      "mismatching_token_count": 64,
+      "mismatching_lane_count": 2320,
+      "first_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": -3.578125,
+        "rhs_value": -3.5625,
+        "abs_diff": 0.015625,
+        "score_head_index": 0,
+        "key_position": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          16,
+          4
+        ],
+        "lhs_value": -68.0,
+        "rhs_value": -67.5,
+        "abs_diff": 0.5,
+        "score_head_index": 16,
+        "key_position": 4
+      }
+    },
+    "official_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "known_mismatch_trace": {
+    "token_index": 6,
+    "q_feature_index": 3755,
+    "q_head_index": 58,
+    "kv_head_index": 7,
+    "heads_per_kv_index": 2,
+    "head_dim_lane": 43,
+    "official_module_q_pre_rope_value": 9.8125,
+    "onednn_candidate_q_pre_rope_value": 9.8125,
+    "local_runtime_helper_q_pre_rope_value": 9.875,
+    "rust_cpu_replay_q_pre_rope_value": 9.8125,
+    "q_bias_value": 1.875,
+    "candidate_q_post_rope_value": 13.0625,
+    "official_q_post_rope_value": 13.0625,
+    "local_q_post_rope_value": 13.15625,
+    "candidate_minus_official_pre_rope": 0.0,
+    "local_minus_official_pre_rope": 0.0625,
+    "candidate_minus_official_post_rope": 0.0,
+    "local_minus_official_post_rope": 0.09375,
+    "candidate_clears_the_mismatch": true,
+    "official_bf16_bits": "0x411d",
+    "candidate_bf16_bits": "0x411d",
+    "local_bf16_bits": "0x411e"
+  },
+  "earliest_remaining_mismatching_seam": null,
+  "classification": "onednn_q_candidate_confirms_runtime_q_projection_policy_delta",
+  "next_bounded_step": "decide whether to promote scoped Q/K projection-policy runtime candidates or continue one seam downstream",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-onednn-oracle-scoped-candidate.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x5120,42.7778",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x4096,31.605",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,3.6189"
+  ]
+}

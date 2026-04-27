@@ -1,0 +1,462 @@
+{
+  "schema_version": "runtime_forward_layer0_grouped_pre_rope_k_authoritative_norm_source_breakdown_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "input_token_ids": [
+      200006,
+      17360,
+      200008,
+      3575,
+      553,
+      17554,
+      162016,
+      11,
+      261,
+      4410,
+      6439,
+      2359,
+      22203,
+      656,
+      7788,
+      17527,
+      558,
+      87447,
+      100594,
+      25,
+      220,
+      1323,
+      19,
+      12,
+      3218,
+      279,
+      30377,
+      289,
+      25,
+      14093,
+      279,
+      2,
+      13888,
+      18403,
+      25,
+      8450,
+      11,
+      49159,
+      11,
+      1721,
+      13,
+      21030,
+      2804,
+      413,
+      7360,
+      395,
+      1753,
+      3176,
+      13,
+      200007,
+      200006,
+      77944,
+      200008,
+      2,
+      68406,
+      279,
+      17045,
+      59453,
+      1151,
+      13,
+      200007,
+      200006,
+      1428,
+      200008,
+      25968,
+      483,
+      9707,
+      1001,
+      2195,
+      25,
+      40617,
+      200007,
+      200006,
+      173781
+    ],
+    "hidden_size": 2880,
+    "num_tokens": 74,
+    "q_dim": 4096,
+    "kv_dim": 512,
+    "qkv_dim": 5120
+  },
+  "mode": "grouped-pre-rope-k-authoritative-norm-source-breakdown-status",
+  "source_artifact_paths": {
+    "rmsnorm_residual_causality": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-residual-lanes-k-causality-status.json",
+    "authoritative_rmsnorm_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "k_pedantic_helper_fix": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-pedantic-runtime-fix-status.json",
+    "ppp_grouped_pre_rope_k_reference_semantics": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-grouped-pre-rope-k-reference-semantics-status.json",
+    "official_side_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "official_k_rope_bundle": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.cpu.json"
+  },
+  "active_rmsnorm_provenance": {
+    "primary_input": "authoritative Rust/PyTorch BF16 RMSNorm replay output",
+    "policy": "bf16 input, bf16 weight, f32 pairwise/tree reduction, x * inverse_rms then weight, bf16 output round-trip",
+    "authoritative_rmsnorm_replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "differing_tokens": 0,
+      "differing_lanes": 0,
+      "first_differing_token_lane": null,
+      "worst_differing_token_lane": null
+    },
+    "fixed_live_rmsnorm_vs_authoritative_informational": {
+      "max_abs_diff": 1.1920928955078125e-7,
+      "mean_abs_diff": 1.2585440502255185e-12,
+      "matched": false,
+      "differing_tokens": 3,
+      "differing_lanes": 4,
+      "first_differing_token_lane": {
+        "token_index": 57,
+        "hidden_lane_index": 544,
+        "flat_index": 164704,
+        "runtime_value": 2.384185791015625e-6,
+        "official_value": 2.4437904357910156e-6,
+        "abs_diff": 5.960464477539063e-8
+      },
+      "worst_differing_token_lane": {
+        "token_index": 57,
+        "hidden_lane_index": 1914,
+        "flat_index": 166074,
+        "runtime_value": 0.000017404556274414062,
+        "official_value": 0.000017523765563964844,
+        "abs_diff": 1.1920928955078125e-7
+      }
+    }
+  },
+  "active_k_helper_gemm_policy": {
+    "policy": "pedantic all-token K helper path",
+    "helper_vs_explicit_cpu_replay_matched": true,
+    "source_fix_classification": "all_token_k_pedantic_runtime_fix_proven"
+  },
+  "k_weight_slice_metadata": {
+    "runtime": {
+      "source_tensor_name": "layer0 fused attn.qkv weight cast to BF16; extracted K slice",
+      "fused_attn_qkv_weight_logical_shape": [
+        5120,
+        2880
+      ],
+      "k_slice_shape": [
+        512,
+        2880
+      ],
+      "dtype": "bf16",
+      "row_column_orientation": "row-major [k_output_feature, hidden]; helper computes activation[token, hidden] x K_weight^T",
+      "k_slice_offsets_elements": [
+        11796480,
+        13271040
+      ],
+      "logical_layout": "[kv_dim, hidden_size]",
+      "physical_stride": [
+        2880,
+        1
+      ],
+      "stable_digest": "fnv1a64:6d466a6339cfd9f3",
+      "metadata_consistent_with_runtime_shapes": true
+    },
+    "official": {
+      "available": false,
+      "reason": "no separate official K weight-slice metadata artifact is available in this bounded mode; official PyTorch K arithmetic is represented by official layer0_k_pre_rope_f32"
+    }
+  },
+  "per_stage_source_breakdown_metrics": {
+    "authoritative_norm_current_pedantic_helper_vs_explicit_cpu_replay": {
+      "stage_name": "authoritative_norm_current_pedantic_helper_vs_explicit_cpu_replay",
+      "operation": "isolated pedantic all-token K helper using authoritative RMSNorm input compared to explicit Rust CPU replay",
+      "local_tensor_name": "isolated hgemm_bf16(authoritative_norm, runtime_k_weight)",
+      "reference_tensor_name": "cpu_bf16_row_major_gemm(authoritative_norm, runtime_k_weight)",
+      "local_shape": [
+        74,
+        8,
+        64
+      ],
+      "reference_shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "serialization_dtype": "bf16",
+      "layout_interpretation": "[token, kv_head, lane] contiguous; flat [token, kv_dim]",
+      "physical_stride": [
+        512,
+        64,
+        1
+      ],
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      },
+      "first_differing_token_head_lane": null,
+      "worst_differing_token_head_lane": null
+    },
+    "k_projection_output_before_grouped_view": {
+      "stage_name": "k_projection_output_before_grouped_view",
+      "operation": "authoritative RMSNorm input x runtime K weight before any grouped view",
+      "local_tensor_name": "isolated hgemm_bf16(authoritative_norm, runtime_k_weight)",
+      "reference_tensor_name": "official_k_rope_bundle.layer0_k_pre_rope_f32",
+      "local_shape": [
+        74,
+        8,
+        64
+      ],
+      "reference_shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "serialization_dtype": "bf16",
+      "layout_interpretation": "[token, kv_head, lane] contiguous; flat [token, kv_dim]",
+      "physical_stride": [
+        512,
+        64,
+        1
+      ],
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "explicit_cpu_rust_replay_before_grouped_view": {
+      "stage_name": "explicit_cpu_rust_replay_before_grouped_view",
+      "operation": "explicit Rust CPU BF16 replay using authoritative RMSNorm input and runtime K weight",
+      "local_tensor_name": "cpu_bf16_row_major_gemm(authoritative_norm, runtime_k_weight)",
+      "reference_tensor_name": "official_k_rope_bundle.layer0_k_pre_rope_f32",
+      "local_shape": [
+        74,
+        8,
+        64
+      ],
+      "reference_shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "serialization_dtype": "bf16",
+      "layout_interpretation": "[token, kv_head, lane] contiguous; flat [token, kv_dim]",
+      "physical_stride": [
+        512,
+        64,
+        1
+      ],
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "k_slice_extraction": {
+      "stage_name": "k_slice_extraction",
+      "operation": "direct K-only helper output compared to the extracted K slice readout for the same authoritative input path",
+      "local_tensor_name": "isolated hgemm_bf16(authoritative_norm, runtime_k_weight)",
+      "reference_tensor_name": "explicit Rust CPU K-only replay",
+      "local_shape": [
+        74,
+        8,
+        64
+      ],
+      "reference_shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "serialization_dtype": "bf16",
+      "layout_interpretation": "[token, kv_head, lane] contiguous; flat [token, kv_dim]",
+      "physical_stride": [
+        512,
+        64,
+        1
+      ],
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true
+      },
+      "first_differing_token_head_lane": null,
+      "worst_differing_token_head_lane": null
+    },
+    "grouped_pre_rope_k_layout_view": {
+      "stage_name": "grouped_pre_rope_k_layout_view",
+      "operation": "flat K projection interpreted as grouped [token, kv_head, lane]",
+      "local_tensor_name": "isolated helper output as grouped [token, kv_head, lane]",
+      "reference_tensor_name": "official grouped/pre-RoPE [token, kv_head, lane]",
+      "local_shape": [
+        74,
+        8,
+        64
+      ],
+      "reference_shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "serialization_dtype": "bf16",
+      "layout_interpretation": "[token, kv_head, lane] contiguous; flat [token, kv_dim]",
+      "physical_stride": [
+        512,
+        64,
+        1
+      ],
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false
+      },
+      "first_differing_token_head_lane": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-6
+      },
+      "worst_differing_token_head_lane": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    }
+  },
+  "known_mismatch_token_trace": [
+    {
+      "token_index": 5,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 31,
+      "flat_k_index": 2847,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:c54679e58179d550",
+      "runtime_k_projection_value_before_grouped_view": -0.00054931640625,
+      "cpu_rust_replay_k_value": -0.00054931640625,
+      "official_pytorch_k_value": -0.000545501708984375,
+      "grouped_local_value": -0.00054931640625,
+      "grouped_official_value": -0.000545501708984375,
+      "local_minus_official": -3.814697265625e-6,
+      "abs_diff": 3.814697265625e-6
+    },
+    {
+      "token_index": 39,
+      "worst_kv_head_index": 7,
+      "worst_head_dim_lane": 12,
+      "flat_k_index": 20428,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:da488390866ce69d",
+      "runtime_k_projection_value_before_grouped_view": 0.00001990795135498047,
+      "cpu_rust_replay_k_value": 0.00001990795135498047,
+      "official_pytorch_k_value": 0.000019788742065429688,
+      "grouped_local_value": 0.00001990795135498047,
+      "grouped_official_value": 0.000019788742065429688,
+      "local_minus_official": 1.1920928955078125e-7,
+      "abs_diff": 1.1920928955078125e-7
+    },
+    {
+      "token_index": 44,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 47,
+      "flat_k_index": 22831,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:024a41562f3a1201",
+      "runtime_k_projection_value_before_grouped_view": 0.0106201171875,
+      "cpu_rust_replay_k_value": 0.0106201171875,
+      "official_pytorch_k_value": 0.01068115234375,
+      "grouped_local_value": 0.0106201171875,
+      "grouped_official_value": 0.01068115234375,
+      "local_minus_official": -0.00006103515625,
+      "abs_diff": 0.00006103515625
+    },
+    {
+      "token_index": 55,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 54,
+      "flat_k_index": 28470,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:aefeb405bb9568c7",
+      "runtime_k_projection_value_before_grouped_view": 0.004425048828125,
+      "cpu_rust_replay_k_value": 0.004425048828125,
+      "official_pytorch_k_value": 0.00439453125,
+      "grouped_local_value": 0.004425048828125,
+      "grouped_official_value": 0.00439453125,
+      "local_minus_official": 0.000030517578125,
+      "abs_diff": 0.000030517578125
+    },
+    {
+      "token_index": 56,
+      "worst_kv_head_index": 0,
+      "worst_head_dim_lane": 13,
+      "flat_k_index": 28685,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:3cd16a699e84dbd0",
+      "runtime_k_projection_value_before_grouped_view": 6.616115570068359e-6,
+      "cpu_rust_replay_k_value": 6.616115570068359e-6,
+      "official_pytorch_k_value": 6.377696990966797e-6,
+      "grouped_local_value": 6.616115570068359e-6,
+      "grouped_official_value": 6.377696990966797e-6,
+      "local_minus_official": 2.384185791015625e-7,
+      "abs_diff": 2.384185791015625e-7
+    },
+    {
+      "token_index": 65,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 37,
+      "flat_k_index": 33573,
+      "authoritative_norm_input_checksum_for_token": "fnv1a64:2694c85e6acc3d2b",
+      "runtime_k_projection_value_before_grouped_view": 1.921875,
+      "cpu_rust_replay_k_value": 1.921875,
+      "official_pytorch_k_value": 1.9140625,
+      "grouped_local_value": 1.921875,
+      "grouped_official_value": 1.9140625,
+      "local_minus_official": 0.0078125,
+      "abs_diff": 0.0078125
+    }
+  ],
+  "earliest_operation_where_mismatch_appears": "k_projection_output_before_grouped_view",
+  "classification": "k_projection_arithmetic_or_weight_policy_mismatch_after_norm_clear",
+  "runtime_forward_grouped_pre_rope_k_authoritative_norm_source_breakdown_status_now": "runtime-forward grouped pre-RoPE K authoritative-norm source breakdown status now: authoritative RMSNorm guard matched=true; helper_vs_cpu matched=true max_abs=0 mean_abs=0; projection_before_grouped_vs_official max_abs=0.0078125 mean_abs=0.00000020872638 matched=false; grouped_view_vs_official max_abs=0.0078125 mean_abs=0.00000020872638 matched=false; earliest_operation=k_projection_output_before_grouped_view; classification=k_projection_arithmetic_or_weight_policy_mismatch_after_norm_clear; next bounded step: compare runtime K weight/projection arithmetic policy against official PyTorch attn.qkv K-slice arithmetic under authoritative RMSNorm input.",
+  "next_bounded_step": "compare runtime K weight/projection arithmetic policy against official PyTorch attn.qkv K-slice arithmetic under authoritative RMSNorm input"
+}

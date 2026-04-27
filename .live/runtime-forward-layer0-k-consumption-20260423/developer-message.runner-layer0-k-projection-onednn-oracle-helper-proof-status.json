@@ -1,0 +1,414 @@
+{
+  "schema_version": "runtime_forward_layer0_k_projection_onednn_oracle_helper_proof_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "kv_dim": 512
+  },
+  "mode": "k-projection-onednn-oracle-helper-proof-status",
+  "source_artifact_paths": {
+    "onednn_primitive_reproduction": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-primitive-reproduction-status.json",
+    "official_weight_arithmetic_status": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-official-weight-arithmetic-status.json",
+    "official_weight_arithmetic_capture": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json",
+    "authoritative_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "grouped_source_breakdown": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-authoritative-norm-source-breakdown-status.json"
+  },
+  "python_script_path_used_for_onednn_oracle_construction": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_k_projection_onednn_oracle_helper_proof.py",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof.onednn.log",
+  "oracle_construction_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "thread_count": 8,
+    "mkldnn_enabled_for_oracle": true,
+    "input": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "device": "cpu"
+    },
+    "weight": {
+      "shape": [
+        512,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        74,
+        512
+      ],
+      "stride": [
+        512,
+        1
+      ],
+      "dtype": "bfloat16",
+      "device": "cpu"
+    },
+    "output_digest": "sha256-prefix4096:df067f525a495b2aa87bfed2f3ef4c42b69ee2283e50f77062638413c4ea0698"
+  },
+  "oracle_vs_official_metrics": {
+    "onednn_oracle_vs_official_module_or_captured_k": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_token_feature": null,
+      "worst_differing_token_feature": null
+    },
+    "onednn_oracle_vs_official_module_recomputed_k": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_token_feature": null,
+      "worst_differing_token_feature": null
+    },
+    "known_six_lane_match_count": 6,
+    "value_token65_feature293": 1.9140625
+  },
+  "helper_replay_vs_oracle_metrics": {
+    "rust_cpu_replay_vs_onednn_oracle": {
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-07,
+        "matched": false,
+        "differing_tokens": 6,
+        "differing_lanes": 6,
+        "first_differing_token_lane": {
+          "token_index": 5,
+          "hidden_lane_index": 287,
+          "flat_index": 2847,
+          "runtime_value": -0.00054931640625,
+          "official_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-06
+        },
+        "worst_differing_token_lane": {
+          "token_index": 65,
+          "hidden_lane_index": 293,
+          "flat_index": 33573,
+          "runtime_value": 1.921875,
+          "official_value": 1.9140625,
+          "abs_diff": 0.0078125
+        },
+        "mismatching_token_count": 6,
+        "mismatching_lane_count": 6
+      },
+      "known_six_lane_values": [
+        {
+          "token_index": 5,
+          "k_feature_index": 287,
+          "value": -0.00054931640625,
+          "oracle_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-06
+        },
+        {
+          "token_index": 39,
+          "k_feature_index": 460,
+          "value": 1.990795135498047e-05,
+          "oracle_value": 1.9788742065429688e-05,
+          "abs_diff": 1.1920928955078125e-07
+        },
+        {
+          "token_index": 44,
+          "k_feature_index": 303,
+          "value": 0.0106201171875,
+          "oracle_value": 0.01068115234375,
+          "abs_diff": 6.103515625e-05
+        },
+        {
+          "token_index": 55,
+          "k_feature_index": 310,
+          "value": 0.004425048828125,
+          "oracle_value": 0.00439453125,
+          "abs_diff": 3.0517578125e-05
+        },
+        {
+          "token_index": 56,
+          "k_feature_index": 13,
+          "value": 6.616115570068359e-06,
+          "oracle_value": 6.377696990966797e-06,
+          "abs_diff": 2.384185791015625e-07
+        },
+        {
+          "token_index": 65,
+          "k_feature_index": 293,
+          "value": 1.921875,
+          "oracle_value": 1.9140625,
+          "abs_diff": 0.0078125
+        }
+      ]
+    },
+    "pedantic_cuda_helper_vs_onednn_oracle": {
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-07,
+        "matched": false,
+        "differing_tokens": 6,
+        "differing_lanes": 6,
+        "first_differing_token_lane": {
+          "token_index": 5,
+          "hidden_lane_index": 287,
+          "flat_index": 2847,
+          "runtime_value": -0.00054931640625,
+          "official_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-06
+        },
+        "worst_differing_token_lane": {
+          "token_index": 65,
+          "hidden_lane_index": 293,
+          "flat_index": 33573,
+          "runtime_value": 1.921875,
+          "official_value": 1.9140625,
+          "abs_diff": 0.0078125
+        },
+        "mismatching_token_count": 6,
+        "mismatching_lane_count": 6
+      },
+      "known_six_lane_values": [
+        {
+          "token_index": 5,
+          "k_feature_index": 287,
+          "value": -0.00054931640625,
+          "oracle_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-06
+        },
+        {
+          "token_index": 39,
+          "k_feature_index": 460,
+          "value": 1.990795135498047e-05,
+          "oracle_value": 1.9788742065429688e-05,
+          "abs_diff": 1.1920928955078125e-07
+        },
+        {
+          "token_index": 44,
+          "k_feature_index": 303,
+          "value": 0.0106201171875,
+          "oracle_value": 0.01068115234375,
+          "abs_diff": 6.103515625e-05
+        },
+        {
+          "token_index": 55,
+          "k_feature_index": 310,
+          "value": 0.004425048828125,
+          "oracle_value": 0.00439453125,
+          "abs_diff": 3.0517578125e-05
+        },
+        {
+          "token_index": 56,
+          "k_feature_index": 13,
+          "value": 6.616115570068359e-06,
+          "oracle_value": 6.377696990966797e-06,
+          "abs_diff": 2.384185791015625e-07
+        },
+        {
+          "token_index": 65,
+          "k_feature_index": 293,
+          "value": 1.921875,
+          "oracle_value": 1.9140625,
+          "abs_diff": 0.0078125
+        }
+      ]
+    },
+    "grouped_pre_rope_local_flattened_vs_onednn_oracle": {
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-07,
+        "matched": false,
+        "mismatching_token_count": 6,
+        "mismatching_lane_count": 6
+      },
+      "first_differing_token_feature": {
+        "token_index": 5,
+        "kv_head_index": 4,
+        "head_dim_lane": 31,
+        "flat_index": 2847,
+        "runtime_value": -0.00054931640625,
+        "official_value": -0.000545501708984375,
+        "abs_diff": 3.814697265625e-06
+      },
+      "worst_differing_token_feature": {
+        "token_index": 65,
+        "kv_head_index": 4,
+        "head_dim_lane": 37,
+        "flat_index": 33573,
+        "runtime_value": 1.921875,
+        "official_value": 1.9140625,
+        "abs_diff": 0.0078125
+      }
+    },
+    "official_grouped_pre_rope_reference_vs_onednn_oracle_sanity": {
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_token_count": 0,
+        "mismatching_lane_count": 0,
+        "first_differing_token_feature": null,
+        "worst_differing_token_feature": null
+      },
+      "interpretation": "official grouped/pre-RoPE K shares the same [token, k_feature] values as the official module K slice"
+    }
+  },
+  "known_six_lane_table": [
+    {
+      "token_index": 5,
+      "k_feature_index": 287,
+      "kv_head_index": 4,
+      "head_dim_lane": 31,
+      "onednn_oracle_value": -0.000545501708984375,
+      "onednn_oracle_bf16_bits": "0xba0f",
+      "official_module_value": -0.000545501708984375,
+      "official_module_bf16_bits": "0xba0f",
+      "rust_cpu_replay_value": -0.00054931640625,
+      "rust_cpu_replay_bf16_bits": "0xba10",
+      "pedantic_helper_value": -0.00054931640625,
+      "pedantic_helper_bf16_bits": "0xba10",
+      "local_grouped_value": -0.00054931640625,
+      "local_grouped_bf16_bits": "0xba10",
+      "oracle_minus_rust_helper": 3.814697265625e-06,
+      "abs_oracle_minus_rust_helper": 3.814697265625e-06,
+      "one_bf16_ulp_or_less": true,
+      "bf16_midpoint_between_oracle_and_helper_bins": -0.0005474090576171875,
+      "helper_is_near_rounding_midpoint": true
+    },
+    {
+      "token_index": 39,
+      "k_feature_index": 460,
+      "kv_head_index": 7,
+      "head_dim_lane": 12,
+      "onednn_oracle_value": 1.9788742065429688e-05,
+      "onednn_oracle_bf16_bits": "0x37a6",
+      "official_module_value": 1.9788742065429688e-05,
+      "official_module_bf16_bits": "0x37a6",
+      "rust_cpu_replay_value": 1.990795135498047e-05,
+      "rust_cpu_replay_bf16_bits": "0x37a7",
+      "pedantic_helper_value": 1.990795135498047e-05,
+      "pedantic_helper_bf16_bits": "0x37a7",
+      "local_grouped_value": 1.990795135498047e-05,
+      "local_grouped_bf16_bits": "0x37a7",
+      "oracle_minus_rust_helper": -1.1920928955078125e-07,
+      "abs_oracle_minus_rust_helper": 1.1920928955078125e-07,
+      "one_bf16_ulp_or_less": true,
+      "bf16_midpoint_between_oracle_and_helper_bins": 1.9848346710205078e-05,
+      "helper_is_near_rounding_midpoint": true
+    },
+    {
+      "token_index": 44,
+      "k_feature_index": 303,
+      "kv_head_index": 4,
+      "head_dim_lane": 47,
+      "onednn_oracle_value": 0.01068115234375,
+      "onednn_oracle_bf16_bits": "0x3c2f",
+      "official_module_value": 0.01068115234375,
+      "official_module_bf16_bits": "0x3c2f",
+      "rust_cpu_replay_value": 0.0106201171875,
+      "rust_cpu_replay_bf16_bits": "0x3c2e",
+      "pedantic_helper_value": 0.0106201171875,
+      "pedantic_helper_bf16_bits": "0x3c2e",
+      "local_grouped_value": 0.0106201171875,
+      "local_grouped_bf16_bits": "0x3c2e",
+      "oracle_minus_rust_helper": 6.103515625e-05,
+      "abs_oracle_minus_rust_helper": 6.103515625e-05,
+      "one_bf16_ulp_or_less": true,
+      "bf16_midpoint_between_oracle_and_helper_bins": 0.010650634765625,
+      "helper_is_near_rounding_midpoint": true
+    },
+    {
+      "token_index": 55,
+      "k_feature_index": 310,
+      "kv_head_index": 4,
+      "head_dim_lane": 54,
+      "onednn_oracle_value": 0.00439453125,
+      "onednn_oracle_bf16_bits": "0x3b90",
+      "official_module_value": 0.00439453125,
+      "official_module_bf16_bits": "0x3b90",
+      "rust_cpu_replay_value": 0.004425048828125,
+      "rust_cpu_replay_bf16_bits": "0x3b91",
+      "pedantic_helper_value": 0.004425048828125,
+      "pedantic_helper_bf16_bits": "0x3b91",
+      "local_grouped_value": 0.004425048828125,
+      "local_grouped_bf16_bits": "0x3b91",
+      "oracle_minus_rust_helper": -3.0517578125e-05,
+      "abs_oracle_minus_rust_helper": 3.0517578125e-05,
+      "one_bf16_ulp_or_less": true,
+      "bf16_midpoint_between_oracle_and_helper_bins": 0.0044097900390625,
+      "helper_is_near_rounding_midpoint": true
+    },
+    {
+      "token_index": 56,
+      "k_feature_index": 13,
+      "kv_head_index": 0,
+      "head_dim_lane": 13,
+      "onednn_oracle_value": 6.377696990966797e-06,
+      "onednn_oracle_bf16_bits": "0x36d6",
+      "official_module_value": 6.377696990966797e-06,
+      "official_module_bf16_bits": "0x36d6",
+      "rust_cpu_replay_value": 6.616115570068359e-06,
+      "rust_cpu_replay_bf16_bits": "0x36de",
+      "pedantic_helper_value": 6.616115570068359e-06,
+      "pedantic_helper_bf16_bits": "0x36de",
+      "local_grouped_value": 6.616115570068359e-06,
+      "local_grouped_bf16_bits": "0x36de",
+      "oracle_minus_rust_helper": -2.384185791015625e-07,
+      "abs_oracle_minus_rust_helper": 2.384185791015625e-07,
+      "one_bf16_ulp_or_less": false,
+      "bf16_midpoint_between_oracle_and_helper_bins": 6.496906280517578e-06,
+      "helper_is_near_rounding_midpoint": false
+    },
+    {
+      "token_index": 65,
+      "k_feature_index": 293,
+      "kv_head_index": 4,
+      "head_dim_lane": 37,
+      "onednn_oracle_value": 1.9140625,
+      "onednn_oracle_bf16_bits": "0x3ff5",
+      "official_module_value": 1.9140625,
+      "official_module_bf16_bits": "0x3ff5",
+      "rust_cpu_replay_value": 1.921875,
+      "rust_cpu_replay_bf16_bits": "0x3ff6",
+      "pedantic_helper_value": 1.921875,
+      "pedantic_helper_bf16_bits": "0x3ff6",
+      "local_grouped_value": 1.921875,
+      "local_grouped_bf16_bits": "0x3ff6",
+      "oracle_minus_rust_helper": -0.0078125,
+      "abs_oracle_minus_rust_helper": 0.0078125,
+      "one_bf16_ulp_or_less": true,
+      "bf16_midpoint_between_oracle_and_helper_bins": 1.91796875,
+      "helper_is_near_rounding_midpoint": true
+    }
+  ],
+  "earliest_divergent_source": "BF16 projection accumulation/blocking policy in Rust/CUDA helper",
+  "decision_framing": {
+    "cuda_helper_projection_arithmetic_policy_mismatch_against_onednn_oracle": true,
+    "cpu_replay_only_issue": false,
+    "grouped_readout_issue": false,
+    "oracle_construction_issue": false
+  },
+  "classification": "onednn_projection_oracle_confirms_helper_arithmetic_delta",
+  "next_bounded_step": "keep runtime unchanged; select one deliberately scoped helper proof/fix against the full-shape oneDNN oracle",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,8.63306",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x5120,22.656"
+  ]
+}

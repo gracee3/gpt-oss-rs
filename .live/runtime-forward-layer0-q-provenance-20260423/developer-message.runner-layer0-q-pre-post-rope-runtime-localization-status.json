@@ -1,0 +1,597 @@
+{
+  "schema_version": "runtime_forward_layer0_q_pre_post_rope_runtime_localization_status/v1",
+  "mode": "q-pre-post-rope-runtime-localization-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_count": 74,
+    "hidden_size": 2880,
+    "q_dim": 4096
+  },
+  "source_artifact_paths": {
+    "q_provenance_status": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-provenance-after-k-candidate-source-breakdown-status.json",
+    "k_post_rope_and_score_status": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate-status.json",
+    "scoped_onednn_k_candidate": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "authoritative_rmsnorm_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "local_q_runtime_capture": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization.local-q-capture.json",
+    "official_q_post_rope": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+    "official_score": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json"
+  },
+  "rmsnorm_guard_metrics": {
+    "authoritative_rmsnorm_replay_vs_official_layer0_attn_norm_output": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "fixed_live_rmsnorm_vs_authoritative_replay": {
+      "available": false,
+      "reason": "not captured by this mode; prior RMSNorm causality artifacts remain informational"
+    }
+  },
+  "k_guard_metrics": {
+    "candidate_pre_rope_k_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "candidate_post_rope_k_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null,
+      "candidate_tensor": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "stride": [
+          512,
+          64,
+          1
+        ],
+        "dtype": "float32",
+        "layout": "[token, kv_head, lane]"
+      },
+      "official_tensor": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "stride": [
+          512,
+          64,
+          1
+        ],
+        "dtype": "float32",
+        "layout": "[token, kv_head, lane]"
+      },
+      "application_path": "model.attn.rope applied to scoped oneDNN candidate K heads in this bench/proof diagnostic"
+    }
+  },
+  "official_q_guard_metrics": {
+    "official_module_q_projection_vs_manual_f_linear": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "official_manual_q_rope_vs_official_post_rope_q": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "q_weight_slice_metadata": {
+    "runtime_q_slice_range": [
+      0,
+      4096
+    ],
+    "official_q_slice_range": [
+      0,
+      4096
+    ],
+    "q_slice_shape": [
+      4096,
+      2880
+    ],
+    "q_slice_orientation": "row-major [q_output_feature, hidden]",
+    "q_slice_digest": "sha256-prefix4096:8f33b9e98781e6e07627fb67a04c6bd1428739f596714786c59f5d1fe4884707",
+    "slice_finding": "runtime and official Q slice ranges are the canonical [0, 4096]; direct runtime weight digest comparison is not separately available in this mode"
+  },
+  "q_bias_metadata_and_application_finding": {
+    "runtime_q_bias_presence": "not directly surfaced by runtime trace",
+    "official_q_bias_present": true,
+    "shape": [
+      4096
+    ],
+    "dtype": "float32",
+    "max_abs": 3.875,
+    "mean_abs": 0.31508734822273254,
+    "checksum": "sha256-prefix4096:b1bf12395ad2a577065bf20aa24b2392a38030513e947dbedcf8a320f73a1de9",
+    "official_bias_all_zero": false,
+    "application_finding": "local pre-RoPE Q does not match the no-bias official projection"
+  },
+  "local_q_pre_rope_capture_metrics": {
+    "local_runtime_q_pre_rope_vs_official_q_projection": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      },
+      "local_tensor": {
+        "shape": [
+          74,
+          4096
+        ],
+        "stride": [
+          4096,
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "runtime f32 debug readout",
+        "layout": "[token, q_feature]"
+      },
+      "official_tensor": {
+        "shape": [
+          74,
+          4096
+        ],
+        "stride": [
+          4096,
+          1
+        ],
+        "dtype": "bfloat16",
+        "serialization_dtype": "oneDNN/module BF16 output expanded to f32",
+        "layout": "[token, q_feature]"
+      }
+    },
+    "explicit_rust_cpu_q_replay_vs_official_q_projection": {
+      "available": false,
+      "reason": "no exact all-token Rust CPU Q replay with bias exists as an artifact; this mode captures live runtime pre-RoPE Q directly"
+    },
+    "local_runtime_q_pre_rope_vs_explicit_rust_cpu_replay": {
+      "available": false,
+      "reason": "explicit all-token Rust CPU Q replay with bias unavailable"
+    },
+    "official_onednn_manual_q_projection_vs_official_module_q_projection": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "explicit_rust_cpu_q_replay_metrics": {
+    "available": false,
+    "reason": "no exact all-token Rust CPU Q replay with bias exists; live runtime pre-RoPE Q capture is used as the local source"
+  },
+  "official_onednn_manual_q_oracle_metrics": {
+    "manual_with_bias_vs_module": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "manual_without_bias_vs_module": {
+      "max_abs_diff": 3.890625,
+      "mean_abs_diff": 0.31508946418762207,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 301801,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": 0.279296875,
+        "rhs_value": 0.248046875,
+        "abs_diff": 0.03125,
+        "token_index": 0,
+        "q_feature_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          2,
+          3304
+        ],
+        "lhs_value": 1.078125,
+        "rhs_value": 4.96875,
+        "abs_diff": 3.890625,
+        "token_index": 2,
+        "q_feature_index": 3304,
+        "q_head_index": 51,
+        "head_dim_lane": 40
+      }
+    }
+  },
+  "q_bias_application_comparisons": {
+    "local_q_pre_rope_vs_official_projection_without_bias": {
+      "max_abs_diff": 3.890625,
+      "mean_abs_diff": 0.3150763511657715,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 301828,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": 0.248046875,
+        "rhs_value": 0.279296875,
+        "abs_diff": 0.03125,
+        "token_index": 0,
+        "q_feature_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          14,
+          3304
+        ],
+        "lhs_value": 5.0625,
+        "rhs_value": 1.171875,
+        "abs_diff": 3.890625,
+        "token_index": 14,
+        "q_feature_index": 3304,
+        "q_head_index": 51,
+        "head_dim_lane": 40
+      }
+    },
+    "local_q_pre_rope_vs_official_projection_with_bias": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    }
+  },
+  "q_layout_metrics": {
+    "local_flattened_pre_rope_q_vs_official_flattened_q_projection": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "q_feature_index": 1,
+        "q_head_index": 0,
+        "head_dim_lane": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_feature",
+        "indices": [
+          6,
+          3755
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "q_feature_index": 3755,
+        "q_head_index": 58,
+        "head_dim_lane": 43
+      }
+    },
+    "local_grouped_pre_rope_q_vs_official_grouped_q_projection": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.0010602121474221349,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 107138,
+      "first_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "lhs_value": 0.05517578125,
+        "rhs_value": 0.054931640625,
+        "abs_diff": 0.000244140625,
+        "token_index": 0,
+        "kv_head_index": 0,
+        "heads_per_kv_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 1,
+        "q_feature_index": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          6,
+          7,
+          2,
+          43
+        ],
+        "lhs_value": 9.875,
+        "rhs_value": 9.8125,
+        "abs_diff": 0.0625,
+        "token_index": 6,
+        "kv_head_index": 7,
+        "heads_per_kv_index": 2,
+        "q_head_index": 58,
+        "head_dim_lane": 43,
+        "q_feature_index": 3755
+      }
+    }
+  },
+  "q_rope_metrics": {
+    "local_q_post_rope_vs_official_q_post_rope_all_tokens": {
+      "max_abs_diff": 0.1171875,
+      "mean_abs_diff": 0.003159710206091404,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 282165,
+      "first_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "lhs_value": 0.07427978515625,
+        "rhs_value": 0.07373046875,
+        "abs_diff": 0.00054931640625,
+        "token_index": 0,
+        "kv_head_index": 0,
+        "heads_per_kv_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 1,
+        "q_feature_index": 1
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          46,
+          7,
+          2,
+          43
+        ],
+        "lhs_value": 8.8046875,
+        "rhs_value": 8.6875,
+        "abs_diff": 0.1171875,
+        "token_index": 46,
+        "kv_head_index": 7,
+        "heads_per_kv_index": 2,
+        "q_head_index": 58,
+        "head_dim_lane": 43,
+        "q_feature_index": 3755
+      }
+    },
+    "local_final_token_q_post_rope_vs_official": {
+      "max_abs_diff": 0.0625,
+      "mean_abs_diff": 0.003317337017506361,
+      "matched": false,
+      "mismatching_token_count": 1,
+      "mismatching_lane_count": 3791,
+      "first_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "lhs_value": -0.1827392578125,
+        "rhs_value": -0.181640625,
+        "abs_diff": 0.0010986328125,
+        "token_index": 0,
+        "kv_head_index": 0,
+        "heads_per_kv_index": 0,
+        "q_head_index": 0,
+        "head_dim_lane": 0,
+        "q_feature_index": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_hpk_lane",
+        "indices": [
+          0,
+          7,
+          5,
+          11
+        ],
+        "lhs_value": -8.3125,
+        "rhs_value": -8.375,
+        "abs_diff": 0.0625,
+        "token_index": 0,
+        "kv_head_index": 7,
+        "heads_per_kv_index": 5,
+        "q_head_index": 61,
+        "head_dim_lane": 11,
+        "q_feature_index": 3915
+      }
+    },
+    "official_q_pre_rope_local_runtime_rope_vs_official_q_post_rope": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "score_confirmation_metrics": {
+    "local_q_post_rope_plus_candidate_k_vs_official": {
+      "max_abs_diff": 0.5,
+      "mean_abs_diff": 0.04155292361974716,
+      "matched": false,
+      "mismatching_token_count": 64,
+      "mismatching_lane_count": 2320,
+      "first_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          0,
+          0
+        ],
+        "lhs_value": -3.578125,
+        "rhs_value": -3.5625,
+        "abs_diff": 0.015625,
+        "score_head_index": 0,
+        "key_position": 0
+      },
+      "worst_differing_location": {
+        "location_kind": "score_head_key",
+        "indices": [
+          16,
+          4
+        ],
+        "lhs_value": -68.0,
+        "rhs_value": -67.5,
+        "abs_diff": 0.5,
+        "score_head_index": 16,
+        "key_position": 4
+      }
+    },
+    "official_q_post_rope_plus_candidate_k_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "official_q_pre_rope_local_rope_plus_candidate_k_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "focused_mismatch_trace": {
+    "token_index": 73,
+    "q_head_index": 61,
+    "kv_head_index": 7,
+    "heads_per_kv_index": 5,
+    "head_dim_lane": 11,
+    "flattened_q_feature": 3915,
+    "local_pre_rope_q_value": -1.0546875,
+    "official_pre_rope_q_value": -1.0546875,
+    "local_post_rope_q_value": -8.3125,
+    "official_post_rope_q_value": -8.375,
+    "local_minus_official_pre_rope": 0.0,
+    "local_minus_official_post_rope": 0.0625,
+    "pre_rope_abs_diff": 0.0,
+    "post_rope_abs_diff": 0.0625,
+    "mismatch_already_exists_pre_rope": false,
+    "rope_effect": "amplifies"
+  },
+  "earliest_remaining_mismatching_q_operation": "layer0_q_projection_before_rope",
+  "classification": "q_projection_arithmetic_policy_mismatch_before_rope",
+  "next_bounded_step": "inspect Q projection arithmetic policy with bias/weights held fixed",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-pre-post-rope-runtime-localization.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x5120,29.6418",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x4096,18.095",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x4096,18.0549",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user,,74x2880:2880x512,3.71484"
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "schema_version": "runtime_forward_large_artifact_manifest/v1",
+  "source_dir": "/tmp/pinned-prompt-parity-official-reference-20260424",
+  "local_dir": ".live/pinned-prompt-parity-official-reference-20260424",
+  "threshold_bytes": 524288,
+  "entries": [
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-attention-score-input-bundle.cpu.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-attention-score-input-bundle.cpu.json",
+      "filename": "developer-message.official-layer0-attention-score-input-bundle.cpu.json",
+      "size_bytes": 5058314,
+      "sha256": "b428560b5d8880b00db4e0afd91cedd94910c542b330c0397970cc16c53b5bef",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-attention-score-input-bundle.run.log",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-attention-score-input-bundle.run.log",
+      "filename": "developer-message.official-layer0-attention-score-input-bundle.run.log",
+      "size_bytes": 5058314,
+      "sha256": "b428560b5d8880b00db4e0afd91cedd94910c542b330c0397970cc16c53b5bef",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json",
+      "filename": "developer-message.official-layer0-k-post-rope-grouped.cpu.json",
+      "size_bytes": 548599,
+      "sha256": "34305c56391d958ad972320cce61aa48b715c73f7dc3ba46cd4e14d4de4b23ce",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.run.log",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.run.log",
+      "filename": "developer-message.official-layer0-k-post-rope-grouped.run.log",
+      "size_bytes": 548599,
+      "sha256": "34305c56391d958ad972320cce61aa48b715c73f7dc3ba46cd4e14d4de4b23ce",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-pre-cache.cpu.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-pre-cache.cpu.json",
+      "filename": "developer-message.official-layer0-k-post-rope-pre-cache.cpu.json",
+      "size_bytes": 694397,
+      "sha256": "0b21fd88b32065b15932540d282a307eb7493d86451701d69e639f5e4d8f4d68",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.cpu.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.cpu.json",
+      "filename": "developer-message.official-layer0-k-rope-bundle.cpu.json",
+      "size_bytes": 1267108,
+      "sha256": "e6a69ebce28b69c4e16f1554991e4d865b39cd30507f46877c6a02bd53441653",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.run.log",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-rope-bundle.run.log",
+      "filename": "developer-message.official-layer0-k-rope-bundle.run.log",
+      "size_bytes": 1267108,
+      "sha256": "e6a69ebce28b69c4e16f1554991e4d865b39cd30507f46877c6a02bd53441653",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+      "filename": "developer-message.official-layer0-q-post-rope-before-attention.cpu.json",
+      "size_bytes": 4756764,
+      "sha256": "e03b2ad1d3788cac1ad56fc8d17c44ae3cc31fe1987e469d2d4b6357ba9ac4aa",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.run.log",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.run.log",
+      "filename": "developer-message.official-layer0-q-post-rope-before-attention.run.log",
+      "size_bytes": 4756764,
+      "sha256": "e03b2ad1d3788cac1ad56fc8d17c44ae3cc31fe1987e469d2d4b6357ba9ac4aa",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    }
+  ]
+}

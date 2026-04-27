@@ -1,0 +1,445 @@
+{
+  "schema_version": "runtime_forward_layer0_k_projection_official_weight_arithmetic_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "input_token_ids": [
+      200006,
+      17360,
+      200008,
+      3575,
+      553,
+      17554,
+      162016,
+      11,
+      261,
+      4410,
+      6439,
+      2359,
+      22203,
+      656,
+      7788,
+      17527,
+      558,
+      87447,
+      100594,
+      25,
+      220,
+      1323,
+      19,
+      12,
+      3218,
+      279,
+      30377,
+      289,
+      25,
+      14093,
+      279,
+      2,
+      13888,
+      18403,
+      25,
+      8450,
+      11,
+      49159,
+      11,
+      1721,
+      13,
+      21030,
+      2804,
+      413,
+      7360,
+      395,
+      1753,
+      3176,
+      13,
+      200007,
+      200006,
+      77944,
+      200008,
+      2,
+      68406,
+      279,
+      17045,
+      59453,
+      1151,
+      13,
+      200007,
+      200006,
+      1428,
+      200008,
+      25968,
+      483,
+      9707,
+      1001,
+      2195,
+      25,
+      40617,
+      200007,
+      200006,
+      173781
+    ],
+    "hidden_size": 2880,
+    "num_tokens": 74,
+    "q_dim": 4096,
+    "kv_dim": 512,
+    "qkv_dim": 5120
+  },
+  "mode": "k-projection-official-weight-arithmetic-status",
+  "source_artifact_paths": {
+    "grouped_pre_rope_k_authoritative_norm_source_breakdown": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-grouped-pre-rope-k-authoritative-norm-source-breakdown-status.json",
+    "authoritative_rmsnorm_replay_proof": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-rust-bf16-replay-multiply-order-fix-status.json",
+    "k_pedantic_helper_fix": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-pedantic-runtime-fix-status.json",
+    "official_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json"
+  },
+  "python_script_path_used_for_official_extraction": "crates/gpt-oss-bench/tools/layer0_k_projection_official_weight_arithmetic.py",
+  "official_extraction_artifact_path": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json",
+  "authoritative_rmsnorm_guard_metric": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "differing_tokens": 0,
+    "differing_lanes": 0,
+    "first_differing_token_lane": null,
+    "worst_differing_token_lane": null
+  },
+  "official_k_weight_metadata": {
+    "tensor_name": "block.0.attn.qkv.weight[K slice]",
+    "qkv_weight_tensor_name": "block.0.attn.qkv.weight",
+    "k_slice_row_range": [
+      4096,
+      4608
+    ],
+    "shape": [
+      512,
+      2880
+    ],
+    "dtype": "bfloat16",
+    "device": "cpu",
+    "layout_orientation": "row-major [k_output_feature, hidden]",
+    "stride": [
+      2880,
+      1
+    ],
+    "stable_digest": "fnv1a64:6d466a6339cfd9f3"
+  },
+  "runtime_k_weight_metadata": {
+    "source_tensor_name": "layer0 fused attn.qkv weight cast to BF16; extracted K slice",
+    "fused_attn_qkv_weight_logical_shape": [
+      5120,
+      2880
+    ],
+    "k_slice_offsets_elements": [
+      11796480,
+      13271040
+    ],
+    "k_slice_shape": [
+      512,
+      2880
+    ],
+    "dtype": "bf16",
+    "orientation": "row-major [k_output_feature, hidden]",
+    "helper_contract": "activation[token, hidden] x K_weight^T",
+    "stride": [
+      2880,
+      1
+    ],
+    "stable_digest": "fnv1a64:6d466a6339cfd9f3"
+  },
+  "k_weight_comparison_metrics": {
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true
+    },
+    "shape": [
+      512,
+      2880
+    ],
+    "runtime_dtype": "bf16",
+    "official_dtype": "bfloat16",
+    "runtime_orientation": "row-major [k_output_feature, hidden]",
+    "official_orientation": "row-major [k_output_feature, hidden]",
+    "runtime_digest": "fnv1a64:6d466a6339cfd9f3",
+    "official_digest": "fnv1a64:6d466a6339cfd9f3",
+    "first_differing_row_hidden_lane": null,
+    "worst_differing_row_hidden_lane": null
+  },
+  "k_bias_metadata": {
+    "official": {
+      "exists": true,
+      "shape": [
+        512
+      ],
+      "dtype": "bfloat16",
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "stable_digest": "fnv1a64:28c31cf8df2ec325",
+      "all_zero": true
+    },
+    "runtime": {
+      "exists": false,
+      "shape": [],
+      "dtype": "none",
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "stable_digest": "fnv1a64:cbf29ce484222325",
+      "all_zero": true
+    },
+    "runtime_vs_official_metrics": null,
+    "bias_policy_consistent": true
+  },
+  "projection_arithmetic_comparison_table": {
+    "official_module_k_output_vs_itself": {
+      "name": "official_module_k_output_vs_itself",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "differing_tokens": 0,
+        "differing_lanes": 0,
+        "first_differing_token_lane": null,
+        "worst_differing_token_lane": null
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    },
+    "official_manual_pytorch_k_projection_vs_official_module": {
+      "name": "official_manual_pytorch_k_projection_vs_official_module",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "differing_tokens": 0,
+        "differing_lanes": 0,
+        "first_differing_token_lane": null,
+        "worst_differing_token_lane": null
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    },
+    "rust_cpu_replay_authoritative_input_runtime_k_weight_vs_official_module": {
+      "name": "rust_cpu_replay_authoritative_input_runtime_k_weight_vs_official_module",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false,
+        "differing_tokens": 6,
+        "differing_lanes": 6,
+        "first_differing_token_lane": {
+          "token_index": 5,
+          "hidden_lane_index": 287,
+          "flat_index": 2847,
+          "runtime_value": -0.00054931640625,
+          "official_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-6
+        },
+        "worst_differing_token_lane": {
+          "token_index": 65,
+          "hidden_lane_index": 293,
+          "flat_index": 33573,
+          "runtime_value": 1.921875,
+          "official_value": 1.9140625,
+          "abs_diff": 0.0078125
+        }
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    },
+    "rust_pedantic_helper_authoritative_input_runtime_k_weight_vs_official_module": {
+      "name": "rust_pedantic_helper_authoritative_input_runtime_k_weight_vs_official_module",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false,
+        "differing_tokens": 6,
+        "differing_lanes": 6,
+        "first_differing_token_lane": {
+          "token_index": 5,
+          "hidden_lane_index": 287,
+          "flat_index": 2847,
+          "runtime_value": -0.00054931640625,
+          "official_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-6
+        },
+        "worst_differing_token_lane": {
+          "token_index": 65,
+          "hidden_lane_index": 293,
+          "flat_index": 33573,
+          "runtime_value": 1.921875,
+          "official_value": 1.9140625,
+          "abs_diff": 0.0078125
+        }
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    },
+    "rust_cpu_replay_authoritative_input_official_k_weight_vs_official_module": {
+      "name": "rust_cpu_replay_authoritative_input_official_k_weight_vs_official_module",
+      "metrics": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.087263766270553e-7,
+        "matched": false,
+        "differing_tokens": 6,
+        "differing_lanes": 6,
+        "first_differing_token_lane": {
+          "token_index": 5,
+          "hidden_lane_index": 287,
+          "flat_index": 2847,
+          "runtime_value": -0.00054931640625,
+          "official_value": -0.000545501708984375,
+          "abs_diff": 3.814697265625e-6
+        },
+        "worst_differing_token_lane": {
+          "token_index": 65,
+          "hidden_lane_index": 293,
+          "flat_index": 33573,
+          "runtime_value": 1.921875,
+          "official_value": 1.9140625,
+          "abs_diff": 0.0078125
+        }
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    },
+    "rust_pedantic_helper_vs_rust_cpu_replay_runtime_k_weight": {
+      "name": "rust_pedantic_helper_vs_rust_cpu_replay_runtime_k_weight",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "differing_tokens": 0,
+        "differing_lanes": 0,
+        "first_differing_token_lane": null,
+        "worst_differing_token_lane": null
+      },
+      "shape": [
+        74,
+        512
+      ],
+      "dtype": "f32-expanded BF16 values",
+      "layout": "[token, k_feature]"
+    }
+  },
+  "known_mismatch_token_trace": [
+    {
+      "token_index": 5,
+      "worst_k_feature_index": 287,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 31,
+      "flat_k_index": 2847,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:c54679e58179d550",
+      "official_manual_pytorch_k_value": -0.000545501708984375,
+      "official_module_k_value": -0.000545501708984375,
+      "rust_cpu_replay_k_value": -0.00054931640625,
+      "pedantic_helper_k_value": -0.00054931640625,
+      "local_grouped_k_value": -0.00054931640625,
+      "official_grouped_pre_rope_k_value": -0.000545501708984375,
+      "local_minus_official": -3.814697265625e-6,
+      "abs_diff": 3.814697265625e-6
+    },
+    {
+      "token_index": 39,
+      "worst_k_feature_index": 460,
+      "worst_kv_head_index": 7,
+      "worst_head_dim_lane": 12,
+      "flat_k_index": 20428,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:da488390866ce69d",
+      "official_manual_pytorch_k_value": 0.000019788742065429688,
+      "official_module_k_value": 0.000019788742065429688,
+      "rust_cpu_replay_k_value": 0.00001990795135498047,
+      "pedantic_helper_k_value": 0.00001990795135498047,
+      "local_grouped_k_value": 0.00001990795135498047,
+      "official_grouped_pre_rope_k_value": 0.000019788742065429688,
+      "local_minus_official": 1.1920928955078125e-7,
+      "abs_diff": 1.1920928955078125e-7
+    },
+    {
+      "token_index": 44,
+      "worst_k_feature_index": 303,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 47,
+      "flat_k_index": 22831,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:024a41562f3a1201",
+      "official_manual_pytorch_k_value": 0.01068115234375,
+      "official_module_k_value": 0.01068115234375,
+      "rust_cpu_replay_k_value": 0.0106201171875,
+      "pedantic_helper_k_value": 0.0106201171875,
+      "local_grouped_k_value": 0.0106201171875,
+      "official_grouped_pre_rope_k_value": 0.01068115234375,
+      "local_minus_official": -0.00006103515625,
+      "abs_diff": 0.00006103515625
+    },
+    {
+      "token_index": 55,
+      "worst_k_feature_index": 310,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 54,
+      "flat_k_index": 28470,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:aefeb405bb9568c7",
+      "official_manual_pytorch_k_value": 0.00439453125,
+      "official_module_k_value": 0.00439453125,
+      "rust_cpu_replay_k_value": 0.004425048828125,
+      "pedantic_helper_k_value": 0.004425048828125,
+      "local_grouped_k_value": 0.004425048828125,
+      "official_grouped_pre_rope_k_value": 0.00439453125,
+      "local_minus_official": 0.000030517578125,
+      "abs_diff": 0.000030517578125
+    },
+    {
+      "token_index": 56,
+      "worst_k_feature_index": 13,
+      "worst_kv_head_index": 0,
+      "worst_head_dim_lane": 13,
+      "flat_k_index": 28685,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:3cd16a699e84dbd0",
+      "official_manual_pytorch_k_value": 6.377696990966797e-6,
+      "official_module_k_value": 6.377696990966797e-6,
+      "rust_cpu_replay_k_value": 6.616115570068359e-6,
+      "pedantic_helper_k_value": 6.616115570068359e-6,
+      "local_grouped_k_value": 6.616115570068359e-6,
+      "official_grouped_pre_rope_k_value": 6.377696990966797e-6,
+      "local_minus_official": 2.384185791015625e-7,
+      "abs_diff": 2.384185791015625e-7
+    },
+    {
+      "token_index": 65,
+      "worst_k_feature_index": 293,
+      "worst_kv_head_index": 4,
+      "worst_head_dim_lane": 37,
+      "flat_k_index": 33573,
+      "authoritative_rmsnorm_input_checksum_for_token": "fnv1a64:2694c85e6acc3d2b",
+      "official_manual_pytorch_k_value": 1.9140625,
+      "official_module_k_value": 1.9140625,
+      "rust_cpu_replay_k_value": 1.921875,
+      "pedantic_helper_k_value": 1.921875,
+      "local_grouped_k_value": 1.921875,
+      "official_grouped_pre_rope_k_value": 1.9140625,
+      "local_minus_official": 0.0078125,
+      "abs_diff": 0.0078125
+    }
+  ],
+  "earliest_divergent_source": "arithmetic/dtype policy",
+  "classification": "k_projection_arithmetic_dtype_policy_mismatch_after_weight_clear",
+  "runtime_forward_k_projection_official_weight_arithmetic_status_now": "runtime-forward K projection official weight/arithmetic status now: weight matched=true max_abs=0 mean_abs=0; official_manual_vs_module matched=true max_abs=0 mean_abs=0; rust_runtime_vs_official matched=false max_abs=0.0078125 mean_abs=0.00000020872638; rust_official_weight_vs_official matched=false max_abs=0.0078125 mean_abs=0.00000020872638; helper_vs_cpu matched=true; earliest_divergent_source=arithmetic/dtype policy; classification=k_projection_arithmetic_dtype_policy_mismatch_after_weight_clear; next bounded step: inspect BF16 linear arithmetic policy differences between Rust replay/helper and official PyTorch under matched weights.",
+  "next_bounded_step": "inspect BF16 linear arithmetic policy differences between Rust replay/helper and official PyTorch under matched weights"
+}

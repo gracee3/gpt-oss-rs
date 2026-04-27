@@ -29,6 +29,7 @@ mod inner {
 
     use crate::gpu_runner::{
         build_bf16_gemm_invocation_record, Bf16GemmInvocationRecord, Layer0KRopeDebugCapture,
+        Layer0KRopeLaneMappingEntry,
     };
     use gpt_oss_core::error::{LLMError, Result};
     use gpt_oss_gpu::cublas::CublasHandle;
@@ -109,6 +110,36 @@ mod inner {
             .unwrap_or(false)
     }
 
+    fn layer0_bf16_dense_qkv_standalone_k_proof_enabled() -> bool {
+        std::env::var_os("GPT_OSS_LAYER0_BF16_DENSE_QKV_STANDALONE_K_PROOF")
+            .map(|value| value != "0")
+            .unwrap_or(false)
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Layer0Bf16DenseQkvInteractionMask {
+        Full,
+        Qk,
+        Kv,
+    }
+
+    fn layer0_bf16_dense_qkv_interaction_mask() -> Result<Option<Layer0Bf16DenseQkvInteractionMask>>
+    {
+        let Some(value) = std::env::var_os("GPT_OSS_LAYER0_BF16_DENSE_QKV_INTERACTION_MASK") else {
+            return Ok(None);
+        };
+        let value = value.to_string_lossy();
+        match value.as_ref() {
+            "" | "0" => Ok(None),
+            "full" => Ok(Some(Layer0Bf16DenseQkvInteractionMask::Full)),
+            "qk" => Ok(Some(Layer0Bf16DenseQkvInteractionMask::Qk)),
+            "kv" => Ok(Some(Layer0Bf16DenseQkvInteractionMask::Kv)),
+            other => Err(LLMError::GpuError(format!(
+                "unsupported GPT_OSS_LAYER0_BF16_DENSE_QKV_INTERACTION_MASK value `{other}`; expected unset, full, qk, or kv"
+            ))),
+        }
+    }
+
     fn cast_f16_slice_to_bf16(
         stream: &Arc<CudaStream>,
         input: &CudaSlice<f16>,
@@ -174,6 +205,75 @@ mod inner {
             .collect()
     }
 
+    fn overwrite_contiguous_k_slice(
+        qkv: &mut [bf16],
+        k_values: &[bf16],
+        num_tokens: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) -> Result<()> {
+        let q_end = num_tokens
+            .checked_mul(q_dim)
+            .ok_or_else(|| LLMError::GpuError("proof K q_end overflow".into()))?;
+        let k_len = num_tokens
+            .checked_mul(kv_dim)
+            .ok_or_else(|| LLMError::GpuError("proof K length overflow".into()))?;
+        let k_end = q_end
+            .checked_add(k_len)
+            .ok_or_else(|| LLMError::GpuError("proof K k_end overflow".into()))?;
+        if k_values.len() != k_len {
+            return Err(LLMError::GpuError(format!(
+                "proof K candidate length mismatch: expected {k_len}, found {}",
+                k_values.len()
+            )));
+        }
+        if qkv.len() < k_end {
+            return Err(LLMError::GpuError(format!(
+                "proof QKV buffer too short for K replacement: need {k_end}, found {}",
+                qkv.len()
+            )));
+        }
+        qkv[q_end..k_end].copy_from_slice(k_values);
+        Ok(())
+    }
+
+    fn cpu_bf16_row_major_gemm_host(
+        activations: &[bf16],
+        weight: &[bf16],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<Vec<bf16>> {
+        if activations.len() != m * k {
+            return Err(LLMError::GpuError(format!(
+                "proof activation length mismatch: expected {}, found {}",
+                m * k,
+                activations.len()
+            )));
+        }
+        if weight.len() != n * k {
+            return Err(LLMError::GpuError(format!(
+                "proof K weight length mismatch: expected {}, found {}",
+                n * k,
+                weight.len()
+            )));
+        }
+
+        let mut output = Vec::with_capacity(m * n);
+        for row_idx in 0..m {
+            let activation_row = &activations[row_idx * k..(row_idx + 1) * k];
+            for col_idx in 0..n {
+                let weight_row = &weight[col_idx * k..(col_idx + 1) * k];
+                let mut sum = 0.0f32;
+                for (activation, weight_value) in activation_row.iter().zip(weight_row.iter()) {
+                    sum += activation.to_f32() * weight_value.to_f32();
+                }
+                output.push(bf16::from_f32(sum));
+            }
+        }
+        Ok(output)
+    }
+
     fn add_bf16_bias_host(output: &mut [bf16], bias: &[bf16], num_tokens: usize, dim: usize) {
         for token_idx in 0..num_tokens {
             let row = token_idx * dim;
@@ -182,6 +282,52 @@ mod inner {
                 output[row + i] = bf16::from_f32(sum);
             }
         }
+    }
+
+    fn apply_contiguous_k_bias_from_pre_bias(
+        output: &mut [bf16],
+        pre_bias: &[bf16],
+        k_bias: &[bf16],
+        num_tokens: usize,
+        qkv_dim: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) -> Result<()> {
+        let q_end = num_tokens
+            .checked_mul(q_dim)
+            .ok_or_else(|| LLMError::GpuError("contiguous K q_end overflow".into()))?;
+        let k_len = num_tokens
+            .checked_mul(kv_dim)
+            .ok_or_else(|| LLMError::GpuError("contiguous K length overflow".into()))?;
+        let k_end = q_end
+            .checked_add(k_len)
+            .ok_or_else(|| LLMError::GpuError("contiguous K k_end overflow".into()))?;
+        let src_end = num_tokens
+            .checked_mul(qkv_dim)
+            .ok_or_else(|| LLMError::GpuError("contiguous K source end overflow".into()))?;
+        if output.len() < k_end || pre_bias.len() < src_end {
+            return Err(LLMError::GpuError(format!(
+                "QKV buffer too short for contiguous K bias: need output {k_end} pre_bias {src_end}, found output {} pre_bias {}",
+                output.len(),
+                pre_bias.len()
+            )));
+        }
+        if k_bias.len() != kv_dim {
+            return Err(LLMError::GpuError(format!(
+                "K bias length mismatch: expected {kv_dim}, found {}",
+                k_bias.len()
+            )));
+        }
+
+        for token_idx in 0..num_tokens {
+            let dst_row = q_end + token_idx * kv_dim;
+            let src_row = token_idx * qkv_dim + q_dim;
+            for i in 0..kv_dim {
+                let sum = pre_bias[src_row + i].to_f32() + k_bias[i].to_f32();
+                output[dst_row + i] = bf16::from_f32(sum);
+            }
+        }
+        Ok(())
     }
 
     fn add_bf16_bias_host_from_f32(
@@ -204,6 +350,7 @@ mod inner {
         pub fused_qkv_pre_bias: Vec<f32>,
         pub fused_qkv_post_bias: Vec<f32>,
         pub packed_qkv_output: Vec<f32>,
+        pub standalone_activation_full_raw_f16_bits: Vec<u16>,
         pub standalone_activation_full_bf16_bits: Vec<u16>,
         pub standalone_k_weight_bf16_bits: Vec<u16>,
         pub fused_k_pre_bias_bf16_bits: Vec<u16>,
@@ -214,6 +361,7 @@ mod inner {
         pub expected_standalone_qkv_post_bias_combined_bf16_bits: Vec<u16>,
         pub fused_k_slice_bf16_bits: Vec<u16>,
         pub standalone_k_gemm_output_full_bf16_bits: Vec<u16>,
+        pub canonical_k_bias_bf16_bits: Vec<u16>,
     }
 
     #[derive(Debug, Clone)]
@@ -275,12 +423,27 @@ mod inner {
             };
             let use_layer0_bf16_dense_qkv =
                 layer0_bf16_dense_qkv_enabled() && self.config.layer_idx == 0 && is_prefill;
+            let interaction_mask = if use_layer0_bf16_dense_qkv {
+                layer0_bf16_dense_qkv_interaction_mask()?
+            } else {
+                None
+            };
             let mut internal_stages = None;
 
             let mut qkv = if use_layer0_bf16_dense_qkv {
                 let normed_bf16 =
                     cast_f16_slice_to_bf16(&self.stream, normed, "layer0 bf16 qkv input")?;
+                let use_standalone_k_proof = layer0_bf16_dense_qkv_standalone_k_proof_enabled();
+                let needs_standalone_k = use_standalone_k_proof
+                    || matches!(
+                        interaction_mask,
+                        Some(
+                            Layer0Bf16DenseQkvInteractionMask::Qk
+                                | Layer0Bf16DenseQkvInteractionMask::Kv
+                        )
+                    );
                 let mut standalone_activation_full_bf16_bits = Vec::new();
+                let mut standalone_activation_full_raw_f16_bits = Vec::new();
                 let mut standalone_k_weight_bf16_bits = Vec::new();
                 let mut fused_k_pre_bias_bf16_bits = Vec::new();
                 let mut fused_k_post_bias_bf16_bits = Vec::new();
@@ -290,9 +453,24 @@ mod inner {
                 let mut expected_standalone_qkv_post_bias_combined_bf16_bits = Vec::new();
                 let mut fused_k_slice_bf16_bits = Vec::new();
                 let mut standalone_k_gemm_output_full_bf16_bits = Vec::new();
-                if capture_internal_stages {
-                    let activation_host = self.stream.clone_dtoh(&normed_bf16).map_err(|e| {
+                let mut canonical_k_bias_bf16_bits = Vec::new();
+                let activation_host = if capture_internal_stages || needs_standalone_k {
+                    Some(self.stream.clone_dtoh(&normed_bf16).map_err(|e| {
                         LLMError::GpuError(format!("layer0 bf16 qkv input dtoh: {e}"))
+                    })?)
+                } else {
+                    None
+                };
+                if capture_internal_stages {
+                    let raw_activation_host = self.stream.clone_dtoh(normed).map_err(|e| {
+                        LLMError::GpuError(format!("layer0 raw f16 qkv input dtoh: {e}"))
+                    })?;
+                    standalone_activation_full_raw_f16_bits = raw_activation_host
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect();
+                    let activation_host = activation_host.as_ref().ok_or_else(|| {
+                        LLMError::GpuError("layer0 bf16 qkv activation capture missing".into())
                     })?;
                     standalone_activation_full_bf16_bits = bf16_slice_to_bits(&activation_host);
                 }
@@ -330,17 +508,152 @@ mod inner {
                             .stream
                             .clone_dtoh(&bias_bf16)
                             .map_err(|e| LLMError::GpuError(format!("qkv bias bf16 dtoh: {e}")))?;
+                        let qkv_pre_bias_host = qkv_host.clone();
                         add_bf16_bias_host(&mut qkv_host, &bias_host, num_tokens, qkv_dim);
-                        let qkv_f16_host: Vec<f16> = qkv_host
-                            .iter()
-                            .map(|value| f16::from_f32(value.to_f32()))
-                            .collect();
+                        apply_contiguous_k_bias_from_pre_bias(
+                            &mut qkv_host,
+                            &qkv_pre_bias_host,
+                            &bias_host[q_dim..q_dim + kv_dim],
+                            num_tokens,
+                            qkv_dim,
+                            q_dim,
+                            kv_dim,
+                        )?;
+                        let fused_qkv_weight_host = if capture_internal_stages || needs_standalone_k
+                        {
+                            Some(self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
+                                LLMError::GpuError(format!(
+                                    "layer0 bf16 qkv fused weight dtoh: {e}"
+                                ))
+                            })?)
+                        } else {
+                            None
+                        };
+                        let standalone_k_candidate = if needs_standalone_k {
+                            let activation_host = activation_host.as_ref().ok_or_else(|| {
+                                LLMError::GpuError(
+                                    "layer0 bf16 qkv proof activation capture missing".into(),
+                                )
+                            })?;
+                            let fused_qkv_weight_host =
+                                fused_qkv_weight_host.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv proof fused weight capture missing".into(),
+                                    )
+                                })?;
+                            let k_weight_host =
+                                &fused_qkv_weight_host[q_dim * hidden..(q_dim + kv_dim) * hidden];
+                            let standalone_k_candidate = cpu_bf16_row_major_gemm_host(
+                                activation_host,
+                                k_weight_host,
+                                num_tokens,
+                                kv_dim,
+                                hidden,
+                            )?;
+                            Some(standalone_k_candidate)
+                        } else {
+                            None
+                        };
+                        if use_standalone_k_proof {
+                            let standalone_k_candidate =
+                                standalone_k_candidate.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv proof candidate missing".into(),
+                                    )
+                                })?;
+                            overwrite_contiguous_k_slice(
+                                &mut qkv_host,
+                                standalone_k_candidate,
+                                num_tokens,
+                                q_dim,
+                                kv_dim,
+                            )?;
+                        }
+                        let qkv_f16_host: Vec<f16> = match interaction_mask {
+                            Some(Layer0Bf16DenseQkvInteractionMask::Qk)
+                            | Some(Layer0Bf16DenseQkvInteractionMask::Kv) => {
+                                let baseline_qkv =
+                                    hgemm(normed, fused_qkv, num_tokens, qkv_dim, hidden)?;
+                                let mut baseline_qkv_host =
+                                    self.stream.clone_dtoh(&baseline_qkv).map_err(|e| {
+                                        LLMError::GpuError(format!(
+                                            "layer0 interaction baseline qkv dtoh: {e}"
+                                        ))
+                                    })?;
+                                let bias_host_f16 = self.stream.clone_dtoh(bias).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 interaction baseline qkv bias dtoh: {e}"
+                                    ))
+                                })?;
+                                for token_idx in 0..num_tokens {
+                                    let row = token_idx * qkv_dim;
+                                    for i in 0..qkv_dim {
+                                        baseline_qkv_host[row + i] = f16::from_f32(
+                                            baseline_qkv_host[row + i].to_f32()
+                                                + bias_host_f16[i].to_f32(),
+                                        );
+                                    }
+                                }
+                                let standalone_k_candidate =
+                                    standalone_k_candidate.as_ref().ok_or_else(|| {
+                                        LLMError::GpuError(
+                                            "layer0 interaction K candidate missing".into(),
+                                        )
+                                    })?;
+                                let mut mixed_qkv_host = baseline_qkv_host;
+                                for token_idx in 0..num_tokens {
+                                    let row = token_idx * qkv_dim;
+                                    let q_start = row;
+                                    let q_end = q_start + q_dim;
+                                    let k_start = q_end;
+                                    let k_end = k_start + kv_dim;
+                                    let v_start = k_end;
+                                    let v_end = v_start + kv_dim;
+                                    match interaction_mask {
+                                        Some(Layer0Bf16DenseQkvInteractionMask::Qk) => {
+                                            for i in q_start..q_end {
+                                                mixed_qkv_host[i] =
+                                                    f16::from_f32(qkv_host[i].to_f32());
+                                            }
+                                        }
+                                        Some(Layer0Bf16DenseQkvInteractionMask::Kv) => {
+                                            for i in v_start..v_end {
+                                                mixed_qkv_host[i] =
+                                                    f16::from_f32(qkv_host[i].to_f32());
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    let standalone_k_row = &standalone_k_candidate
+                                        [token_idx * kv_dim..(token_idx + 1) * kv_dim];
+                                    for (dst, src) in mixed_qkv_host[k_start..k_end]
+                                        .iter_mut()
+                                        .zip(standalone_k_row.iter())
+                                    {
+                                        *dst = f16::from_f32(src.to_f32());
+                                    }
+                                }
+                                let contiguous_q_end = num_tokens * q_dim;
+                                let contiguous_k_end = contiguous_q_end + num_tokens * kv_dim;
+                                for (dst, src) in mixed_qkv_host[contiguous_q_end..contiguous_k_end]
+                                    .iter_mut()
+                                    .zip(standalone_k_candidate.iter())
+                                {
+                                    *dst = f16::from_f32(src.to_f32());
+                                }
+                                mixed_qkv_host
+                            }
+                            _ => qkv_host
+                                .iter()
+                                .map(|value| f16::from_f32(value.to_f32()))
+                                .collect(),
+                        };
                         if capture_internal_stages {
                             let fused_qkv_weight_host =
-                                self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
-                                    LLMError::GpuError(format!(
-                                        "layer0 bf16 qkv fused weight dtoh: {e}"
-                                    ))
+                                fused_qkv_weight_host.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv fused weight capture missing".into(),
+                                    )
                                 })?;
                             let k_weight_host =
                                 &fused_qkv_weight_host[q_dim * hidden..(q_dim + kv_dim) * hidden];
@@ -399,7 +712,7 @@ mod inner {
                                 bf16::ZERO,
                                 &mut standalone_q_bf16,
                             )?;
-                            blas.hgemm_bf16(
+                            blas.hgemm_bf16_pedantic_no_tensor_op(
                                 num_tokens,
                                 kv_dim,
                                 hidden,
@@ -441,6 +754,7 @@ mod inner {
                             let q_bias_host = &bias_host[..q_dim];
                             let k_bias_host = &bias_host[q_dim..q_dim + kv_dim];
                             let v_bias_host = &bias_host[q_dim + kv_dim..qkv_dim];
+                            canonical_k_bias_bf16_bits = bf16_slice_to_bits(k_bias_host);
                             add_bf16_bias_host(
                                 &mut standalone_q_post_host,
                                 q_bias_host,
@@ -498,6 +812,7 @@ mod inner {
                                     .iter()
                                     .map(|value| value.to_f32())
                                     .collect(),
+                                standalone_activation_full_raw_f16_bits,
                                 standalone_activation_full_bf16_bits,
                                 standalone_k_weight_bf16_bits,
                                 fused_k_pre_bias_bf16_bits,
@@ -508,24 +823,167 @@ mod inner {
                                 expected_standalone_qkv_post_bias_combined_bf16_bits,
                                 fused_k_slice_bf16_bits,
                                 standalone_k_gemm_output_full_bf16_bits,
+                                canonical_k_bias_bf16_bits,
                             });
                         }
                         self.stream
                             .clone_htod(&qkv_f16_host)
                             .map_err(|e| LLMError::GpuError(format!("qkv bf16 htod f16: {e}")))?
                     } else {
-                        let qkv_f16 = cast_bf16_slice_to_f16(
-                            &self.stream,
-                            &qkv_bf16,
-                            "layer0 bf16 qkv output",
-                        )?;
+                        let mut proof_qkv_host = if capture_internal_stages || needs_standalone_k {
+                            Some(self.stream.clone_dtoh(&qkv_bf16).map_err(|e| {
+                                LLMError::GpuError(format!(
+                                    "layer0 bf16 qkv fused output dtoh: {e}"
+                                ))
+                            })?)
+                        } else {
+                            None
+                        };
+                        let fused_qkv_weight_host = if capture_internal_stages || needs_standalone_k
+                        {
+                            Some(self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
+                                LLMError::GpuError(format!(
+                                    "layer0 bf16 qkv fused weight dtoh: {e}"
+                                ))
+                            })?)
+                        } else {
+                            None
+                        };
+                        let standalone_k_candidate = if needs_standalone_k {
+                            let activation_host = activation_host.as_ref().ok_or_else(|| {
+                                LLMError::GpuError(
+                                    "layer0 bf16 qkv proof activation capture missing".into(),
+                                )
+                            })?;
+                            let fused_qkv_weight_host =
+                                fused_qkv_weight_host.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv proof fused weight capture missing".into(),
+                                    )
+                                })?;
+                            let k_weight_host =
+                                &fused_qkv_weight_host[q_dim * hidden..(q_dim + kv_dim) * hidden];
+                            Some(cpu_bf16_row_major_gemm_host(
+                                activation_host,
+                                k_weight_host,
+                                num_tokens,
+                                kv_dim,
+                                hidden,
+                            )?)
+                        } else {
+                            None
+                        };
+                        if use_standalone_k_proof {
+                            let qkv_host = proof_qkv_host.as_mut().ok_or_else(|| {
+                                LLMError::GpuError(
+                                    "layer0 bf16 qkv proof output capture missing".into(),
+                                )
+                            })?;
+                            let standalone_k_candidate =
+                                standalone_k_candidate.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv proof candidate missing".into(),
+                                    )
+                                })?;
+                            overwrite_contiguous_k_slice(
+                                qkv_host,
+                                standalone_k_candidate,
+                                num_tokens,
+                                q_dim,
+                                kv_dim,
+                            )?;
+                        }
+                        let qkv_f16 = if matches!(
+                            interaction_mask,
+                            Some(
+                                Layer0Bf16DenseQkvInteractionMask::Qk
+                                    | Layer0Bf16DenseQkvInteractionMask::Kv
+                            )
+                        ) {
+                            let baseline_qkv =
+                                hgemm(normed, fused_qkv, num_tokens, qkv_dim, hidden)?;
+                            let mut baseline_qkv_host =
+                                self.stream.clone_dtoh(&baseline_qkv).map_err(|e| {
+                                    LLMError::GpuError(format!(
+                                        "layer0 interaction baseline qkv dtoh: {e}"
+                                    ))
+                                })?;
+                            let qkv_host = proof_qkv_host.as_ref().ok_or_else(|| {
+                                LLMError::GpuError(
+                                    "layer0 interaction fused qkv capture missing".into(),
+                                )
+                            })?;
+                            let standalone_k_candidate =
+                                standalone_k_candidate.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 interaction K candidate missing".into(),
+                                    )
+                                })?;
+                            for token_idx in 0..num_tokens {
+                                let row = token_idx * qkv_dim;
+                                let q_start = row;
+                                let q_end = q_start + q_dim;
+                                let k_start = q_end;
+                                let k_end = k_start + kv_dim;
+                                let v_start = k_end;
+                                let v_end = v_start + kv_dim;
+                                match interaction_mask {
+                                    Some(Layer0Bf16DenseQkvInteractionMask::Qk) => {
+                                        for i in q_start..q_end {
+                                            baseline_qkv_host[i] =
+                                                f16::from_f32(qkv_host[i].to_f32());
+                                        }
+                                    }
+                                    Some(Layer0Bf16DenseQkvInteractionMask::Kv) => {
+                                        for i in v_start..v_end {
+                                            baseline_qkv_host[i] =
+                                                f16::from_f32(qkv_host[i].to_f32());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                let standalone_k_row = &standalone_k_candidate
+                                    [token_idx * kv_dim..(token_idx + 1) * kv_dim];
+                                for (dst, src) in baseline_qkv_host[k_start..k_end]
+                                    .iter_mut()
+                                    .zip(standalone_k_row.iter())
+                                {
+                                    *dst = f16::from_f32(src.to_f32());
+                                }
+                            }
+                            let contiguous_q_end = num_tokens * q_dim;
+                            let contiguous_k_end = contiguous_q_end + num_tokens * kv_dim;
+                            for (dst, src) in baseline_qkv_host[contiguous_q_end..contiguous_k_end]
+                                .iter_mut()
+                                .zip(standalone_k_candidate.iter())
+                            {
+                                *dst = f16::from_f32(src.to_f32());
+                            }
+                            self.stream.clone_htod(&baseline_qkv_host).map_err(|e| {
+                                LLMError::GpuError(format!("qkv bf16 interaction htod f16: {e}"))
+                            })?
+                        } else if let Some(qkv_host) = &proof_qkv_host {
+                            let qkv_f16_host: Vec<f16> = qkv_host
+                                .iter()
+                                .map(|value| f16::from_f32(value.to_f32()))
+                                .collect();
+                            self.stream.clone_htod(&qkv_f16_host).map_err(|e| {
+                                LLMError::GpuError(format!("qkv bf16 proof htod f16: {e}"))
+                            })?
+                        } else {
+                            cast_bf16_slice_to_f16(
+                                &self.stream,
+                                &qkv_bf16,
+                                "layer0 bf16 qkv output",
+                            )?
+                        };
                         if let Some(pre_bias_host) = pre_bias_host {
                             if capture_internal_stages {
                                 let fused_qkv_weight_host =
-                                    self.stream.clone_dtoh(&fused_qkv_bf16).map_err(|e| {
-                                        LLMError::GpuError(format!(
-                                            "layer0 bf16 qkv fused weight dtoh: {e}"
-                                        ))
+                                    fused_qkv_weight_host.as_ref().ok_or_else(|| {
+                                        LLMError::GpuError(
+                                            "layer0 bf16 qkv fused weight capture missing".into(),
+                                        )
                                     })?;
                                 let k_weight_host = &fused_qkv_weight_host
                                     [q_dim * hidden..(q_dim + kv_dim) * hidden];
@@ -543,7 +1001,7 @@ mod inner {
                                                 "layer0 bf16 qkv standalone k alloc: {e}"
                                             ))
                                         })?;
-                                blas.hgemm_bf16(
+                                blas.hgemm_bf16_pedantic_no_tensor_op(
                                     num_tokens,
                                     kv_dim,
                                     hidden,
@@ -559,20 +1017,38 @@ mod inner {
                                             "layer0 bf16 qkv standalone k dtoh: {e}"
                                         ))
                                     })?;
+                                let mut standalone_k_post_host = standalone_k_host.clone();
+                                if let Some(k_bias) = weights.k_proj_bias {
+                                    let k_bias_host =
+                                        self.stream.clone_dtoh(k_bias).map_err(|e| {
+                                            LLMError::GpuError(format!(
+                                                "layer0 bf16 qkv standalone k bias dtoh: {e}"
+                                            ))
+                                        })?;
+                                    canonical_k_bias_bf16_bits = k_bias_host
+                                        .iter()
+                                        .map(|value| bf16::from_f32(*value).to_bits())
+                                        .collect();
+                                    add_bf16_bias_host_from_f32(
+                                        &mut standalone_k_post_host,
+                                        &k_bias_host,
+                                        num_tokens,
+                                        kv_dim,
+                                    );
+                                }
                                 standalone_k_pre_bias_bf16_bits =
                                     bf16_slice_to_bits(&standalone_k_host);
                                 standalone_k_post_bias_bf16_bits =
-                                    standalone_k_pre_bias_bf16_bits.clone();
+                                    bf16_slice_to_bits(&standalone_k_post_host);
                                 standalone_k_gemm_output_full_bf16_bits =
                                     bf16_slice_to_bits(&standalone_k_host);
-                                let qkv_bf16_host =
-                                    self.stream.clone_dtoh(&qkv_bf16).map_err(|e| {
-                                        LLMError::GpuError(format!(
-                                            "layer0 bf16 qkv fused output dtoh: {e}"
-                                        ))
-                                    })?;
+                                let qkv_bf16_host = proof_qkv_host.as_ref().ok_or_else(|| {
+                                    LLMError::GpuError(
+                                        "layer0 bf16 qkv fused output capture missing".into(),
+                                    )
+                                })?;
                                 fused_k_slice_bf16_bits = bf16_row_major_slice_to_bits(
-                                    &qkv_bf16_host,
+                                    qkv_bf16_host,
                                     qkv_dim,
                                     q_dim,
                                     kv_dim,
@@ -580,7 +1056,7 @@ mod inner {
                                 fused_k_pre_bias_bf16_bits = fused_k_slice_bf16_bits.clone();
                                 fused_k_post_bias_bf16_bits = fused_k_slice_bf16_bits.clone();
                                 fused_qkv_post_bias_combined_bf16_bits =
-                                    bf16_slice_to_bits(&qkv_bf16_host);
+                                    bf16_slice_to_bits(qkv_bf16_host);
                                 expected_standalone_qkv_post_bias_combined_bf16_bits =
                                     fused_qkv_post_bias_combined_bf16_bits.clone();
                             }
@@ -601,6 +1077,7 @@ mod inner {
                                     .iter()
                                     .map(|value| value.to_f32())
                                     .collect(),
+                                standalone_activation_full_raw_f16_bits,
                                 standalone_activation_full_bf16_bits,
                                 standalone_k_weight_bf16_bits,
                                 fused_k_pre_bias_bf16_bits,
@@ -611,6 +1088,7 @@ mod inner {
                                 expected_standalone_qkv_post_bias_combined_bf16_bits,
                                 fused_k_slice_bf16_bits,
                                 standalone_k_gemm_output_full_bf16_bits,
+                                canonical_k_bias_bf16_bits,
                             });
                         }
                         qkv_f16
@@ -649,7 +1127,7 @@ mod inner {
                         bf16::ZERO,
                         &mut q_bf16,
                     )?;
-                    blas.hgemm_bf16(
+                    blas.hgemm_bf16_pedantic_no_tensor_op(
                         num_tokens,
                         kv_dim,
                         hidden,
@@ -766,6 +1244,32 @@ mod inner {
                     qkv_host.extend(self.stream.clone_dtoh(&v_bf16).map_err(|e| {
                         LLMError::GpuError(format!("layer0 bf16 v final dtoh: {e}"))
                     })?);
+                    if use_standalone_k_proof {
+                        let activation_host = activation_host.as_ref().ok_or_else(|| {
+                            LLMError::GpuError(
+                                "layer0 bf16 split-qkv proof activation capture missing".into(),
+                            )
+                        })?;
+                        let k_weight_host = self.stream.clone_dtoh(&k_proj_bf16).map_err(|e| {
+                            LLMError::GpuError(format!(
+                                "layer0 bf16 split-qkv proof k weight dtoh: {e}"
+                            ))
+                        })?;
+                        let standalone_k_candidate = cpu_bf16_row_major_gemm_host(
+                            activation_host,
+                            &k_weight_host,
+                            num_tokens,
+                            kv_dim,
+                            hidden,
+                        )?;
+                        overwrite_contiguous_k_slice(
+                            &mut qkv_host,
+                            &standalone_k_candidate,
+                            num_tokens,
+                            q_dim,
+                            kv_dim,
+                        )?;
+                    }
                     let qkv_f16_host: Vec<f16> = qkv_host
                         .iter()
                         .map(|value| f16::from_f32(value.to_f32()))
@@ -825,6 +1329,7 @@ mod inner {
                                 .iter()
                                 .map(|value| value.to_f32())
                                 .collect(),
+                            standalone_activation_full_raw_f16_bits,
                             standalone_activation_full_bf16_bits,
                             standalone_k_weight_bf16_bits,
                             fused_k_pre_bias_bf16_bits,
@@ -835,6 +1340,7 @@ mod inner {
                             expected_standalone_qkv_post_bias_combined_bf16_bits,
                             fused_k_slice_bf16_bits,
                             standalone_k_gemm_output_full_bf16_bits,
+                            canonical_k_bias_bf16_bits,
                         });
                     }
                     self.stream
@@ -1052,12 +1558,68 @@ mod inner {
             }
             let cos_half = &rope_cos_host[factor_row_start..factor_row_end];
             let sin_half = &rope_sin_host[factor_row_start..factor_row_end];
+            let mut live_runtime_compact_cos_rows_f32 = Vec::with_capacity(num_tokens);
+            let mut live_runtime_compact_sin_rows_f32 = Vec::with_capacity(num_tokens);
+            for position_id in &runtime_position_ids {
+                let position_modulo = if max_rope_pos == 0 {
+                    0
+                } else {
+                    ((*position_id).max(0) as usize) % max_rope_pos
+                };
+                let row_start = position_modulo * half_dim;
+                let row_end = row_start + half_dim;
+                if row_end > rope_cos_host.len() || row_end > rope_sin_host.len() {
+                    return Err(LLMError::GpuError(format!(
+                        "layer0 k rope compact factor row out of bounds: pos={} half_dim={} cos_len={} sin_len={}",
+                        position_modulo,
+                        half_dim,
+                        rope_cos_host.len(),
+                        rope_sin_host.len()
+                    )));
+                }
+                live_runtime_compact_cos_rows_f32.push(rope_cos_host[row_start..row_end].to_vec());
+                live_runtime_compact_sin_rows_f32.push(rope_sin_host[row_start..row_end].to_vec());
+            }
             let mut live_runtime_cos_row_f32 = Vec::with_capacity(head_dim);
             live_runtime_cos_row_f32.extend_from_slice(cos_half);
             live_runtime_cos_row_f32.extend_from_slice(cos_half);
             let mut live_runtime_sin_row_f32 = Vec::with_capacity(head_dim);
             live_runtime_sin_row_f32.extend_from_slice(sin_half);
             live_runtime_sin_row_f32.extend_from_slice(sin_half);
+            let mut final_token_k_lane_mapping = Vec::with_capacity(kv_dim);
+            let final_token_k_base = final_token_index * kv_dim;
+            for head_idx in 0..num_kv_heads {
+                let head_base = final_token_k_base + head_idx * head_dim;
+                for pair_idx in 0..half_dim {
+                    let lower = head_base + pair_idx;
+                    let upper = head_base + half_dim + pair_idx;
+                    final_token_k_lane_mapping.push(Layer0KRopeLaneMappingEntry {
+                        flat_output_index: lower,
+                        final_token_flat_output_index: lower - final_token_k_base,
+                        token_index: final_token_index,
+                        kv_head_index: head_idx,
+                        intra_head_dim_index: pair_idx,
+                        pair_index: pair_idx,
+                        source_flat_index: lower,
+                        paired_partner_flat_index: upper,
+                        output_role: "lower".into(),
+                        factor_index: pair_idx,
+                    });
+                    final_token_k_lane_mapping.push(Layer0KRopeLaneMappingEntry {
+                        flat_output_index: upper,
+                        final_token_flat_output_index: upper - final_token_k_base,
+                        token_index: final_token_index,
+                        kv_head_index: head_idx,
+                        intra_head_dim_index: half_dim + pair_idx,
+                        pair_index: pair_idx,
+                        source_flat_index: upper,
+                        paired_partner_flat_index: lower,
+                        output_role: "upper".into(),
+                        factor_index: pair_idx,
+                    });
+                }
+            }
+            final_token_k_lane_mapping.sort_by_key(|entry| entry.final_token_flat_output_index);
 
             {
                 let (mut q_part, mut kv_part) = qkv.split_at_mut(q_end);
@@ -1076,12 +1638,21 @@ mod inner {
                     head_dim,
                 )?;
             }
+            let k_view_reread_before_cache = {
+                let k_view_after_rope = qkv.slice(q_end..k_end);
+                self.stream.clone_dtoh(&k_view_after_rope).map_err(|e| {
+                    LLMError::GpuError(format!(
+                        "layer0 k post-rope view reread before cache dtoh f16: {e}"
+                    ))
+                })?
+            };
             let post_rope_qkv = self.stream.clone_dtoh(qkv).map_err(|e| {
                 LLMError::GpuError(format!("layer0 k post-rope pre-cache dtoh f16: {e}"))
             })?;
             let k_post_rope = &post_rope_qkv[q_end..k_end];
             let k_post_rope_f16_bits = k_post_rope.iter().map(|value| value.to_bits()).collect();
             let k_post_rope_f32 = k_post_rope.iter().map(|value| value.to_f32()).collect();
+            let k_pre_rope = &pre_rope_qkv[q_end..k_end];
             let final_k_start = q_end + final_token_index * kv_dim;
             let final_k_end = final_k_start + kv_dim;
             let final_token_k_pre_rope = &pre_rope_qkv[final_k_start..final_k_end];
@@ -1094,6 +1665,8 @@ mod inner {
                 head_dim,
                 half_dim,
                 num_kv_heads,
+                k_pre_rope_f16_bits: k_pre_rope.iter().map(|value| value.to_bits()).collect(),
+                k_pre_rope_f32: k_pre_rope.iter().map(|value| value.to_f32()).collect(),
                 final_token_k_pre_rope_f16_bits: final_token_k_pre_rope
                     .iter()
                     .map(|value| value.to_bits())
@@ -1110,10 +1683,106 @@ mod inner {
                     .iter()
                     .map(|value| value.to_f32())
                     .collect(),
+                k_view_reread_before_cache_f16_bits: k_view_reread_before_cache
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect(),
+                k_view_reread_before_cache_f32: k_view_reread_before_cache
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect(),
+                live_runtime_compact_cos_rows_f32,
+                live_runtime_compact_sin_rows_f32,
                 live_runtime_cos_row_f32,
                 live_runtime_sin_row_f32,
+                final_token_k_lane_mapping,
             };
             Ok((k_post_rope_f16_bits, k_post_rope_f32, k_rope_debug))
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub(crate) fn debug_cache_write_f16_capture_cache_visible_k(
+            &self,
+            qkv: &CudaSlice<f16>,
+            key_cache: &CudaSlice<f16>,
+            value_cache: &CudaSlice<f16>,
+            slot_mapping: CudaView<'_, i32>,
+            num_tokens: usize,
+            q_dim: usize,
+            kv_dim: usize,
+            num_kv_heads: usize,
+            head_dim: usize,
+        ) -> Result<(Vec<u16>, Vec<f32>)> {
+            let q_end = num_tokens * q_dim;
+            let k_end = q_end + num_tokens * kv_dim;
+            let k_view = qkv.slice(q_end..k_end);
+            let v_view = qkv.slice(k_end..);
+            Self::cache_write_f16_views(
+                &self.stream,
+                &self.loader,
+                &k_view,
+                &v_view,
+                key_cache,
+                value_cache,
+                &slot_mapping,
+                num_tokens,
+                num_kv_heads,
+                head_dim,
+            )?;
+
+            let slot_mapping_host = self.stream.clone_dtoh(&slot_mapping).map_err(|e| {
+                LLMError::GpuError(format!(
+                    "layer0 cache-visible K slot_mapping dtoh failed: {e}"
+                ))
+            })?;
+            if slot_mapping_host.len() < num_tokens {
+                return Err(LLMError::GpuError(format!(
+                    "layer0 cache-visible K slot_mapping too short: expected at least {}, found {}",
+                    num_tokens,
+                    slot_mapping_host.len()
+                )));
+            }
+            let key_cache_host = self.stream.clone_dtoh(key_cache).map_err(|e| {
+                LLMError::GpuError(format!("layer0 cache-visible K key_cache dtoh failed: {e}"))
+            })?;
+            let mut cache_visible_k = Vec::with_capacity(num_tokens * kv_dim);
+            for (token_idx, slot) in slot_mapping_host.iter().take(num_tokens).enumerate() {
+                if *slot < 0 {
+                    return Err(LLMError::GpuError(format!(
+                        "layer0 cache-visible K negative slot for token {}: {}",
+                        token_idx, slot
+                    )));
+                }
+                let start = (*slot as usize).checked_mul(kv_dim).ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "layer0 cache-visible K slot offset overflow for token {} slot {}",
+                        token_idx, slot
+                    ))
+                })?;
+                let end = start.checked_add(kv_dim).ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "layer0 cache-visible K slot end overflow for token {} slot {}",
+                        token_idx, slot
+                    ))
+                })?;
+                let slice = key_cache_host.get(start..end).ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "layer0 cache-visible K slot {} for token {} out of bounds: range {}..{} cache_len={}",
+                        slot,
+                        token_idx,
+                        start,
+                        end,
+                        key_cache_host.len()
+                    ))
+                })?;
+                cache_visible_k.extend_from_slice(slice);
+            }
+            let bits = cache_visible_k
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let f32_values = cache_visible_k.iter().map(|value| value.to_f32()).collect();
+            Ok((bits, f32_values))
         }
 
         pub(crate) fn debug_q_gemm_f16_trace(
@@ -2264,6 +2933,8 @@ mod inner {
             })?;
 
             // 1. Pre-attention RMSNorm f16 (fused with previous layer's residual add if available).
+            // Layer 0 uses a narrowly-scoped BF16 policy to match the official
+            // attention-consumer boundary while leaving later RMSNorms untouched.
             let (normed, fused_residual) = if let Some(prev_mlp) = prev_mlp_out {
                 let (n, r) = Self::fused_residual_rmsnorm_f16(
                     &self.stream,
@@ -2276,6 +2947,17 @@ mod inner {
                     hidden,
                 )?;
                 (n, Some(r))
+            } else if cfg.layer_idx == 0 {
+                let n = Self::rms_norm_f16_bf16_policy(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    weights.input_layernorm,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, None)
             } else {
                 let n = Self::rms_norm_f16(
                     &self.stream,
@@ -3822,6 +4504,40 @@ mod inner {
                     .arg(&(hidden_size as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// RMSNorm with BF16 input/weight/output semantics, stored in f16.
+        fn rms_norm_f16_bf16_policy(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f32>,
+            eps: f32,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let n = num_tokens * hidden_size;
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_bf16 alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: block_threads * std::mem::size_of::<f32>() as u32,
+            };
+            let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_bf16_policy_kernel")?;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(weight)
+                    .arg(&eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_bf16 launch: {e}")))?;
             }
             Ok(output)
         }

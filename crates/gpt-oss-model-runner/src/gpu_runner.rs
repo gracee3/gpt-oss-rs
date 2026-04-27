@@ -39,6 +39,20 @@ pub struct PrefillLayerTrace {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer0KRopeLaneMappingEntry {
+    pub flat_output_index: usize,
+    pub final_token_flat_output_index: usize,
+    pub token_index: usize,
+    pub kv_head_index: usize,
+    pub intra_head_dim_index: usize,
+    pub pair_index: usize,
+    pub source_flat_index: usize,
+    pub paired_partner_flat_index: usize,
+    pub output_role: String,
+    pub factor_index: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Layer0KRopeDebugCapture {
     pub final_token_index: usize,
     pub effective_position_id: i32,
@@ -47,12 +61,19 @@ pub struct Layer0KRopeDebugCapture {
     pub head_dim: usize,
     pub half_dim: usize,
     pub num_kv_heads: usize,
+    pub k_pre_rope_f16_bits: Vec<u16>,
+    pub k_pre_rope_f32: Vec<f32>,
     pub final_token_k_pre_rope_f16_bits: Vec<u16>,
     pub final_token_k_pre_rope_f32: Vec<f32>,
     pub final_token_k_post_rope_f16_bits: Vec<u16>,
     pub final_token_k_post_rope_f32: Vec<f32>,
+    pub k_view_reread_before_cache_f16_bits: Vec<u16>,
+    pub k_view_reread_before_cache_f32: Vec<f32>,
+    pub live_runtime_compact_cos_rows_f32: Vec<Vec<f32>>,
+    pub live_runtime_compact_sin_rows_f32: Vec<Vec<f32>>,
     pub live_runtime_cos_row_f32: Vec<f32>,
     pub live_runtime_sin_row_f32: Vec<f32>,
+    pub final_token_k_lane_mapping: Vec<Layer0KRopeLaneMappingEntry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -63,6 +84,16 @@ pub struct Layer0QkvTrace {
     pub q_dim: usize,
     pub kv_dim: usize,
     pub qkv_dim: usize,
+    #[serde(default)]
+    pub attn_norm_input_full_f16_bits: Vec<u16>,
+    #[serde(default)]
+    pub input_layernorm_weight_f16_bits: Vec<u16>,
+    #[serde(default)]
+    pub input_layernorm_weight_f32: Vec<f32>,
+    #[serde(default)]
+    pub standalone_activation_full_raw_f16_bits: Vec<u16>,
+    #[serde(default)]
+    pub rmsnorm_scalar_debug_f32: Vec<f32>,
     pub standalone_activation_full_bf16_bits: Vec<u16>,
     pub standalone_k_weight_bf16_bits: Vec<u16>,
     pub fused_k_pre_bias_bf16_bits: Vec<u16>,
@@ -73,8 +104,15 @@ pub struct Layer0QkvTrace {
     pub expected_standalone_qkv_post_bias_combined_bf16_bits: Vec<u16>,
     pub fused_k_slice_bf16_bits: Vec<u16>,
     pub standalone_k_gemm_output_full_bf16_bits: Vec<u16>,
+    pub canonical_k_bias_bf16_bits: Vec<u16>,
     pub k_post_rope_pre_cache_f16_bits: Vec<u16>,
     pub k_post_rope_pre_cache_f32: Vec<f32>,
+    #[serde(default)]
+    pub q_post_rope_before_attention_f16_bits: Vec<u16>,
+    #[serde(default)]
+    pub q_post_rope_before_attention_f32: Vec<f32>,
+    pub cache_visible_k_after_write_before_attention_f16_bits: Vec<u16>,
+    pub cache_visible_k_after_write_before_attention_f32: Vec<f32>,
     pub k_rope_debug: Option<Layer0KRopeDebugCapture>,
     pub qkv_projection_output: Vec<f32>,
 }
@@ -189,6 +227,7 @@ pub struct FinalTokenPreUnembeddingCapture {
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::cell::RefCell;
+    use std::env;
     use std::f32::consts::PI;
     use std::sync::Arc;
     use std::time::Instant;
@@ -206,7 +245,7 @@ mod cuda_impl {
 
     use crate::gpu_layer::{
         GptOssMoeLayerWeights, GpuLayerConfig, GpuLayerInput, GpuLayerWeights, GpuLayerWeightsF16,
-        GpuTransformerLayer,
+        GpuTransformerLayer, Layer0QkvProjectionInternalStages,
     };
     use crate::layers::linear_cuda::CudaLinearLayer;
     use crate::layers::norm_cuda::CudaRMSNorm;
@@ -1246,10 +1285,35 @@ mod cuda_impl {
             let qkv_dim = q_dim + kv_dim + kv_dim;
             let layer = &self.layers[0];
             let weights = self.layer_weights_f16(0)?;
-            let norm_w = weights.input_layernorm_f16.ok_or_else(|| {
+            let norm_w_f16 = weights.input_layernorm_f16.ok_or_else(|| {
                 LLMError::GpuError("f16 input_layernorm required for layer0 qkv trace".into())
             })?;
-            let normed = self.rms_norm_f16_runner(&hidden_f16, norm_w, hidden_size)?;
+            let attn_norm_input_host = self
+                .stream
+                .clone_dtoh(&hidden_f16)
+                .map_err(|e| LLMError::GpuError(format!("layer0 attn norm input dtoh f16: {e}")))?;
+            let attn_norm_input_full_f16_bits = attn_norm_input_host
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let input_layernorm_weight_host = self.stream.clone_dtoh(norm_w_f16).map_err(|e| {
+                LLMError::GpuError(format!("layer0 input layernorm weight dtoh f16: {e}"))
+            })?;
+            let input_layernorm_weight_f16_bits = input_layernorm_weight_host
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let input_layernorm_weight_f32 = self
+                .stream
+                .clone_dtoh(weights.input_layernorm)
+                .map_err(|e| {
+                    LLMError::GpuError(format!("layer0 input layernorm weight dtoh f32: {e}"))
+                })?;
+            let (normed, rmsnorm_scalar_debug_f32) = self.rms_norm_f16_bf16_policy_runner(
+                &hidden_f16,
+                weights.input_layernorm,
+                hidden_size,
+            )?;
             let (mut qkv, branch_taken, internal_stages) = layer
                 .debug_qkv_projection_f16_internal_stages(
                     &normed,
@@ -1270,6 +1334,8 @@ mod cuda_impl {
             let meta_packed = self.meta_packed.borrow();
             let packed_buf = meta_packed.slice();
             let offsets = self.meta_packed_offsets.get();
+            let gpu_cache = self.cache.gpu_cache();
+            let (key_cache, value_cache) = &gpu_cache[0];
             let (k_post_rope_pre_cache_f16_bits, k_post_rope_pre_cache_f32, k_rope_debug) = layer
                 .debug_apply_rope_f16_capture_k_post_rope_pre_cache(
                 &mut qkv,
@@ -1283,9 +1349,53 @@ mod cuda_impl {
                 self.config.num_kv_heads,
                 self.config.head_dim,
             )?;
-            let internal_stages = internal_stages.ok_or_else(|| {
-                LLMError::GpuError("layer0 qkv trace missing internal stages".into())
-            })?;
+            let q_post_rope_before_attention = self
+                .stream
+                .clone_dtoh(&qkv.slice(..num_tokens * q_dim))
+                .map_err(|e| {
+                    LLMError::GpuError(format!("layer0 q post-rope before attention dtoh: {e}"))
+                })?;
+            let q_post_rope_before_attention_f16_bits = q_post_rope_before_attention
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let q_post_rope_before_attention_f32 = q_post_rope_before_attention
+                .iter()
+                .map(|value| value.to_f32())
+                .collect();
+            let (
+                cache_visible_k_after_write_before_attention_f16_bits,
+                cache_visible_k_after_write_before_attention_f32,
+            ) = layer.debug_cache_write_f16_capture_cache_visible_k(
+                &qkv,
+                key_cache,
+                value_cache,
+                packed_buf
+                    .slice(offsets.slot_mapping..offsets.slot_mapping + offsets.num_slot_mapping),
+                num_tokens,
+                q_dim,
+                kv_dim,
+                self.config.num_kv_heads,
+                self.config.head_dim,
+            )?;
+            let internal_stages =
+                internal_stages.unwrap_or_else(|| Layer0QkvProjectionInternalStages {
+                    fused_qkv_pre_bias: Vec::new(),
+                    fused_qkv_post_bias: Vec::new(),
+                    packed_qkv_output: Vec::new(),
+                    standalone_activation_full_raw_f16_bits: Vec::new(),
+                    standalone_activation_full_bf16_bits: Vec::new(),
+                    standalone_k_weight_bf16_bits: Vec::new(),
+                    fused_k_pre_bias_bf16_bits: Vec::new(),
+                    fused_k_post_bias_bf16_bits: Vec::new(),
+                    standalone_k_pre_bias_bf16_bits: Vec::new(),
+                    standalone_k_post_bias_bf16_bits: Vec::new(),
+                    fused_qkv_post_bias_combined_bf16_bits: Vec::new(),
+                    expected_standalone_qkv_post_bias_combined_bf16_bits: Vec::new(),
+                    fused_k_slice_bf16_bits: Vec::new(),
+                    standalone_k_gemm_output_full_bf16_bits: Vec::new(),
+                    canonical_k_bias_bf16_bits: Vec::new(),
+                });
             Ok(Layer0QkvTrace {
                 layer_idx: 0,
                 branch_taken,
@@ -1293,6 +1403,12 @@ mod cuda_impl {
                 q_dim,
                 kv_dim,
                 qkv_dim,
+                attn_norm_input_full_f16_bits,
+                input_layernorm_weight_f16_bits,
+                input_layernorm_weight_f32,
+                standalone_activation_full_raw_f16_bits: internal_stages
+                    .standalone_activation_full_raw_f16_bits,
+                rmsnorm_scalar_debug_f32,
                 standalone_activation_full_bf16_bits: internal_stages
                     .standalone_activation_full_bf16_bits,
                 standalone_k_weight_bf16_bits: internal_stages.standalone_k_weight_bf16_bits,
@@ -1307,8 +1423,13 @@ mod cuda_impl {
                 fused_k_slice_bf16_bits: internal_stages.fused_k_slice_bf16_bits,
                 standalone_k_gemm_output_full_bf16_bits: internal_stages
                     .standalone_k_gemm_output_full_bf16_bits,
+                canonical_k_bias_bf16_bits: internal_stages.canonical_k_bias_bf16_bits,
                 k_post_rope_pre_cache_f16_bits,
                 k_post_rope_pre_cache_f32,
+                q_post_rope_before_attention_f16_bits,
+                q_post_rope_before_attention_f32,
+                cache_visible_k_after_write_before_attention_f16_bits,
+                cache_visible_k_after_write_before_attention_f32,
                 k_rope_debug: Some(k_rope_debug),
                 qkv_projection_output,
             })
@@ -3267,6 +3388,78 @@ mod cuda_impl {
                     .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 launch: {e}")))?;
             }
             Ok(output)
+        }
+
+        fn rms_norm_f16_bf16_policy_runner(
+            &self,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f32>,
+            hidden_size: usize,
+        ) -> Result<(CudaSlice<f16>, Vec<f32>)> {
+            let num_tokens = input.len() / hidden_size;
+            let mut output = unsafe { self.stream.alloc::<f16>(input.len()) }
+                .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_bf16 alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: (hidden_size * 2 * std::mem::size_of::<f32>()) as u32,
+            };
+            let debug_enabled = env::var("GPT_OSS_LAYER0_RMSNORM_SCALAR_DEBUG")
+                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let target_token = env::var("GPT_OSS_LAYER0_RMSNORM_SCALAR_DEBUG_TOKEN")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(-1);
+            let target_lane = env::var("GPT_OSS_LAYER0_RMSNORM_SCALAR_DEBUG_LANE")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(-1);
+            let mut debug_values = Vec::new();
+            let kernel_name = if debug_enabled {
+                "rms_norm_f16_bf16_policy_debug_kernel"
+            } else {
+                "rms_norm_f16_bf16_policy_kernel"
+            };
+            let kernel = self.loader.get_func("rms_norm_f16", kernel_name)?;
+            unsafe {
+                if debug_enabled {
+                    let mut debug = self.stream.alloc_zeros::<f32>(16).map_err(|e| {
+                        LLMError::GpuError(format!("rms_norm_f16_bf16 debug alloc: {e}"))
+                    })?;
+                    self.stream
+                        .launch_builder(&kernel)
+                        .arg(&mut output)
+                        .arg(input)
+                        .arg(weight)
+                        .arg(&mut debug)
+                        .arg(&target_token)
+                        .arg(&target_lane)
+                        .arg(&self.rms_norm_eps)
+                        .arg(&(hidden_size as i32))
+                        .launch(cfg)
+                        .map_err(|e| {
+                            LLMError::GpuError(format!("rms_norm_f16_bf16 debug launch: {e}"))
+                        })?;
+                    debug_values = self.stream.clone_dtoh(&debug).map_err(|e| {
+                        LLMError::GpuError(format!("rms_norm_f16_bf16 debug dtoh: {e}"))
+                    })?;
+                } else {
+                    self.stream
+                        .launch_builder(&kernel)
+                        .arg(&mut output)
+                        .arg(input)
+                        .arg(weight)
+                        .arg(&self.rms_norm_eps)
+                        .arg(&(hidden_size as i32))
+                        .launch(cfg)
+                        .map_err(|e| {
+                            LLMError::GpuError(format!("rms_norm_f16_bf16 launch: {e}"))
+                        })?;
+                }
+            }
+            Ok((output, debug_values))
         }
 
         /// In-place RMSNorm f16: normalizes `input` directly, no output allocation.
