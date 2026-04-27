@@ -261,3 +261,27 @@ Preservation note:
 - PPP artifacts from `/tmp/pinned-prompt-parity-official-reference-20260424` were copied into `.live/pinned-prompt-parity-official-reference-20260424`
 - `.live/pinned-prompt-parity-official-reference-20260424/SHA256SUMS` records checksums for the copied PPP files
 - large raw tensor/vector JSON artifacts and verbose logs are preserved locally and recorded in `.live/pinned-prompt-parity-official-reference-20260424/LARGE_ARTIFACTS_MANIFEST.json`; only small status, compare, input, manifest, and checksum artifacts are intended for git
+
+## Layer-0 Final-Token Residual Checkpoint
+
+Checkpoint context:
+
+- exact case: `developer-message-user-smoke`
+- artifact: `.live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-residual-add-after-weighted-sum-status.json`
+- classification: `layer0_hidden_after_mlp_residual_add_cleared`
+
+Milestone summary:
+
+- post-attention residual guard: max `0.0`, mean `0.0`, matched `true`
+- MLP weighted expert sum guard: max `0.0`, mean `0.0`, matched `true`
+- after-MLP residual output: max `0.0`, mean `0.0`, matched `true`
+- BF16 residual add/output matches official; no dtype discriminator was needed
+- earliest remaining mismatching seam: `none`
+
+Caveat:
+
+- the Q/K/V oneDNN projection candidates and selected expert readout correction remain bench/proof-only unless separately promoted
+
+Next bounded step:
+
+- ask PPP for exactly `layer1_final_token_attention_norm_output_before_qkv`

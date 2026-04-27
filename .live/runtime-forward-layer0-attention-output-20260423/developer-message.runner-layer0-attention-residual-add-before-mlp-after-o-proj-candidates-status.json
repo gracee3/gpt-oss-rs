@@ -1,0 +1,87 @@
+{
+  "schema_version": "runtime_forward_layer0_attention_residual_add_before_mlp_after_o_proj_candidates_status/v1",
+  "mode": "attention-residual-add-before-mlp-after-o-proj-candidates-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "final_token_index": 73,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "attention_o_proj_cleared": ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-o-proj-before-residual-status.json",
+    "official_residual_add_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json",
+    "official_equivalent_residual_input_from_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json",
+    "official_attention_o_proj_output": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json"
+  },
+  "q_k_v_candidates_are_bench_proof_only": true,
+  "attention_o_proj_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "residual_input_guard": {
+    "availability_status": "official-equivalent residual input available from layer0 attention RMSNorm replay official_input_f32",
+    "equivalence_statement": "layer0 attention RMSNorm input is the layer0 attention block residual input x used by AttentionBlock.forward before attn.norm",
+    "source_boundary_used": "layer0_attn_norm_input / layer0_residual_input",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "official_residual_add_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json",
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "flat hidden dimension vector [hidden_size] for final token",
+    "residual_add_semantics": {
+      "addend_order": "residual_input + attention_o_proj_output",
+      "official_source_expression": "AttentionBlock.forward: t = self.out(sdpa(...)); t = x + t",
+      "computation_dtype": "torch.bfloat16",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_add": true,
+      "mlp_norm_included": false,
+      "mlp_included": false
+    }
+  },
+  "local_reconstructed_residual_add_metadata": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "[hidden_size]",
+    "device": "cpu",
+    "construction": "BF16 residual input + BF16 attention o_proj output, BF16 output round-trip",
+    "mlp_norm_included": false,
+    "mlp_included": false
+  },
+  "residual_add_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "dtype_add_policy_finding": "not needed; BF16 residual add output matched official",
+  "dtype_add_policy_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "attention_residual_add_before_mlp_cleared_after_o_proj_candidates",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_mlp_norm_output_before_mlp_projections",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_attention_residual_add_before_mlp_after_o_proj_candidates.py"
+}

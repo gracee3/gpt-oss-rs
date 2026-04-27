@@ -1,0 +1,165 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_topk_routing_after_router_logits_status/v1",
+  "mode": "mlp-topk-routing-after-router-logits-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "num_experts": 32,
+    "top_k": 4
+  },
+  "source_artifact_paths": {
+    "router_logits_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-router-logits-before-routing-after-norm-status.json",
+    "official_router_logits": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json",
+    "official_topk_routing_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-topk-expert-indices-and-routing-weights-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-topk-expert-indices-and-routing-weights-status.json",
+  "router_logit_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_mlp_router_logits_before_routing",
+    "source_artifact_metric": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "recomputed_local_metric": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    }
+  },
+  "local_routing_metadata": {
+    "number_of_experts": 32,
+    "top_k": 4,
+    "selected_expert_indices": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "selected_expert_logits": [
+      1.8203125,
+      1.1484375,
+      0.96484375,
+      0.640625
+    ],
+    "routing_weights": [
+      0.4453125,
+      0.2275390625,
+      0.189453125,
+      0.13671875
+    ],
+    "routing_weight_sum": 0.9990234375,
+    "index_order_convention": "torch.topk(..., sorted=True), descending selected logit",
+    "routing_normalization_function": "softmax over selected logits only",
+    "softmax_axis": 0,
+    "weight_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "routing_weights_bf16_rounded_before_comparison": true
+  },
+  "official_routing_metadata": {
+    "selected_expert_indices": {
+      "shape": [
+        4
+      ],
+      "dtype": "torch.int64",
+      "serialization_dtype": "json_int_values",
+      "order_convention": "torch.topk(..., sorted=True) order; descending selected logit and therefore descending routing weight for softmax over the selected logits",
+      "values": [
+        3,
+        30,
+        11,
+        27
+      ]
+    },
+    "selected_expert_logits": {
+      "shape": [
+        4
+      ],
+      "dtype": "torch.bfloat16",
+      "serialization_dtype": "json_f32_values",
+      "values": [
+        1.8203125,
+        1.1484375,
+        0.96484375,
+        0.640625
+      ],
+      "sha256_f32_le": "51498c6d04d638e03db2d4c5d75be122158be99b2053a9b5e1d59ef350be2063"
+    },
+    "routing_weights": {
+      "shape": [
+        4
+      ],
+      "dtype": "torch.bfloat16",
+      "serialization_dtype": "json_f32_values",
+      "values": [
+        0.4453125,
+        0.2275390625,
+        0.189453125,
+        0.13671875
+      ],
+      "sum": 0.9990234375,
+      "min": 0.13671875,
+      "max": 0.4453125,
+      "sha256_f32_le": "b3ad108aa465a40eac7c70c0cd24126f64f4b265b9d1e2958646f42d2a071674"
+    },
+    "routing_weight_semantics": {
+      "normalization_function": "softmax over selected logits",
+      "softmax_axis": 0,
+      "computation_dtype": "torch.bfloat16",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_softmax": true,
+      "official_source_expression": "experts = torch.topk(g, k=self.experts_per_token, dim=-1, sorted=True); expert_weights = torch.nn.functional.softmax(experts.values, dim=1)"
+    },
+    "tie_breaking_behavior": "not separately defined by the official model; follows torch.topk tie behavior"
+  },
+  "selected_expert_index_comparison": {
+    "local_indices": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "official_indices": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "ordered_match": true,
+    "set_match_ignoring_order": true,
+    "first_differing_rank": null
+  },
+  "selected_expert_logit_comparison": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_count": 0,
+    "first_differing_rank": null,
+    "worst_differing_rank": null
+  },
+  "routing_weight_comparison": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_count": 0,
+    "first_differing_rank": null,
+    "worst_differing_rank": null,
+    "local_weight_sum": 0.9990234375,
+    "official_weight_sum": 0.9990234375,
+    "weight_sum_abs_diff": 0.0
+  },
+  "policy_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "topk_routing_weights_cleared_after_router_logits",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_selected_expert_outputs_before_routing_weighted_sum",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_topk_routing_after_router_logits.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

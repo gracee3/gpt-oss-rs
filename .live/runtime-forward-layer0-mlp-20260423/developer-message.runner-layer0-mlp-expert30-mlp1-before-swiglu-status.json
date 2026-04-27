@@ -1,0 +1,377 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_expert30_mlp1_before_swiglu_status/v1",
+  "mode": "mlp-expert30-mlp1-before-swiglu-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "selected_expert_rank": 1,
+    "selected_expert_index": 30,
+    "hidden_size": 2880,
+    "fused_mlp1_size": 5760
+  },
+  "source_artifact_paths": {
+    "selected_expert_outputs_diagnostic": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "topk_routing_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-topk-routing-after-router-logits-status.json",
+    "mlp_norm_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-norm-before-projections-after-attn-residual-status.json",
+    "official_mlp_norm_input": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+    "official_expert30_mlp1_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json",
+  "mlp_norm_input_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_mlp_norm_output_before_mlp_projections",
+    "source_artifact_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_official_expert30_mlp1_input": true,
+    "mlp_norm_digest": "18e2b6485bb7b3b56376c478fe3add5f5b80f7248e78d64c095822f8f8b2f046",
+    "official_expert30_mlp1_input_digest": "18e2b6485bb7b3b56376c478fe3add5f5b80f7248e78d64c095822f8f8b2f046"
+  },
+  "routing_guard_metrics": {
+    "router_logits": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "selected_expert_indices": {
+      "local_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "official_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "ordered_match": true,
+      "set_match_ignoring_order": true,
+      "first_differing_rank": null
+    },
+    "routing_weights": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_rank": null,
+      "worst_differing_rank": null,
+      "local_weight_sum": 0.9990234375,
+      "official_weight_sum": 0.9990234375,
+      "weight_sum_abs_diff": 0.0
+    },
+    "expert30_selected_rank_1": true
+  },
+  "expert30_mlp1_weight_metadata": {
+    "expert_module_path": "model.block[0].mlp expert index 30",
+    "mlp1_module_path": "model.block[0].mlp.mlp1_weight[30]",
+    "shape": [
+      5760,
+      2880
+    ],
+    "dtype": "bfloat16",
+    "layout_orientation": "[fused_gate_up_lane, hidden_size]; torch.einsum('ch,h->c', weight, input)",
+    "sha256_f32_le": "790b7bb657a9a90d13d9c1904dfbeff5c2c23a9e9a81f824019409eddefaf13e",
+    "official_metadata": {
+      "shape": [
+        5760,
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "layout_orientation": "[intermediate_size * 2 / world_size, hidden_size]; official replay computes torch.einsum('ch,h->c', weight, input)",
+      "sha256_f32_le": null,
+      "sha256_omitted_reason": "selected expert 30 mlp1 weight is not compact for this status artifact; shape is recorded and the boundary tensor is checksummed"
+    },
+    "shape_matches_official": true,
+    "official_digest_available": false
+  },
+  "expert30_mlp1_bias_metadata": {
+    "present": true,
+    "shape": [
+      5760
+    ],
+    "dtype": "bfloat16",
+    "nonzero_count": 5760,
+    "sha256_f32_le": "33846b8e5fde7dd96c1b179d497326c1ff885d1852511bfb6784bf3f2fe90f8c",
+    "official_metadata": {
+      "present": true,
+      "shape": [
+        5760
+      ],
+      "dtype": "torch.bfloat16",
+      "all_zero": false,
+      "nonzero_count": 5760,
+      "sha256_f32_le": "33846b8e5fde7dd96c1b179d497326c1ff885d1852511bfb6784bf3f2fe90f8c"
+    },
+    "shape_matches_official": true,
+    "digest_matches_official": true,
+    "local_runtime_applies_bias": true
+  },
+  "weight_bias_comparison_metrics": {
+    "weight": {
+      "availability_status": "official PPP records shape/dtype/orientation but omits full weight digest; local checkpoint tensor metadata recorded",
+      "shape_matches_official": true,
+      "dtype_matches_official": true
+    },
+    "bias": {
+      "availability_status": "official PPP records BF16 bias digest",
+      "digest_matches_official": true,
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_fused_lane": null,
+        "worst_differing_fused_lane": null
+      }
+    }
+  },
+  "local_mlp1_output_metadata": {
+    "shape": [
+      5760
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "fused interleaved gate/up lanes, values[0::2]=gate and values[1::2]=up, before SwiGLU",
+    "device": "cpu",
+    "before_swiglu": true,
+    "unactivated_raw_mlp1": true,
+    "gate_up_split_convention": "interleaved even/odd lanes",
+    "capture_point_confirmation": "after expert30 mlp1 projection plus mlp1_bias; before SwiGLU"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      5760
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "fused mlp1 vector [intermediate_size * 2 / world_size] with interleaved gate/up lanes",
+    "fused_gate_up_split_metadata": {
+      "is_fused_gate_up": true,
+      "split_convention": "interleaved even/odd lanes",
+      "gate_slice": "values[0::2]",
+      "up_value_slice": "values[1::2]",
+      "gate_shape": [
+        2880
+      ],
+      "up_value_shape": [
+        2880
+      ],
+      "swiglu_expression": "x_glu = clamp(values[0::2], max=swiglu_limit); x_linear = clamp(values[1::2], min=-swiglu_limit, max=swiglu_limit); swiglu = x_glu * sigmoid(1.702 * x_glu) * (x_linear + 1)",
+      "swiglu_limit": 7.0
+    },
+    "computation_semantics": {
+      "input_dtype": "torch.bfloat16",
+      "weight_dtype": "torch.bfloat16",
+      "bias_dtype": "torch.bfloat16",
+      "accumulation_dtype": "unknown",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_mlp1": true,
+      "official_source_expression": "mlp1_weight = self.mlp1_weight[expert_indices, ...]; mlp1_bias = self.mlp1_bias[expert_indices, ...]; t = torch.einsum('beck,bk->bec', mlp1_weight, t) + mlp1_bias; captured expert 30/rank 1 slice before swiglu(t, limit=self.swiglu_limit)"
+    }
+  },
+  "local_mlp1_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_fused_lane": null,
+    "worst_differing_fused_lane": null
+  },
+  "gate_slice_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_gate_lane": null,
+    "worst_differing_gate_lane": null
+  },
+  "up_slice_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_up_lane": null,
+    "worst_differing_up_lane": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "torch.einsum('ch,h->c', BF16 weight, BF16 input) + BF16 bias, BF16 output",
+    "replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_fused_lane": null,
+      "worst_differing_fused_lane": null
+    },
+    "local_runtime_vs_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_fused_lane": null,
+      "worst_differing_fused_lane": null
+    },
+    "no_bias_replay_vs_official": {
+      "max_abs_diff": 2.6953125,
+      "mean_abs_diff": 0.7030129432678223,
+      "matched": false,
+      "mismatching_lane_count": 5759,
+      "first_differing_fused_lane": {
+        "fused_lane": 0,
+        "local_value": 0.578125,
+        "official_value": -1.203125,
+        "abs_diff": 1.78125
+      },
+      "worst_differing_fused_lane": {
+        "fused_lane": 3870,
+        "local_value": -1.6484375,
+        "official_value": -4.34375,
+        "abs_diff": 2.6953125
+      }
+    },
+    "no_bias_replay_vs_local_runtime": {
+      "max_abs_diff": 2.6953125,
+      "mean_abs_diff": 0.7030129432678223,
+      "matched": false,
+      "mismatching_lane_count": 5759,
+      "first_differing_fused_lane": {
+        "fused_lane": 0,
+        "abs_diff": 1.78125,
+        "no_bias_value": 0.578125,
+        "local_runtime_value": -1.203125
+      },
+      "worst_differing_fused_lane": {
+        "fused_lane": 3870,
+        "abs_diff": 2.6953125,
+        "no_bias_value": -1.6484375,
+        "local_runtime_value": -4.34375
+      }
+    }
+  },
+  "discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "expert30_mlp1_before_swiglu_cleared",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_expert30_swiglu_output_before_mlp2",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_expert30_mlp1_before_swiglu.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration",
+  "source_selected_expert_output_worst_mismatch": {
+    "rank": 1,
+    "expert_index": 30,
+    "hidden_lane": 1156,
+    "expert_input_metadata": {
+      "shape": [
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "digest": "18e2b6485bb7b3b56376c478fe3add5f5b80f7248e78d64c095822f8f8b2f046"
+    },
+    "mlp1_pre_activation_metadata": {
+      "shape": [
+        5760
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout": "[intermediate_size * 2] before SwiGLU",
+      "device": "cpu"
+    },
+    "swiglu_output_metadata": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout": "[intermediate_size] after SwiGLU",
+      "device": "cpu"
+    },
+    "mlp2_pre_bias_metadata": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout": "[hidden_size] before mlp2_bias",
+      "device": "cpu"
+    },
+    "mlp2_bias_value": -0.1748046875,
+    "local_final_unweighted_value": 2.296875,
+    "official_final_unweighted_value": 2.28125,
+    "local_minus_official": 0.015625,
+    "mlp1_weight_shape": [
+      5760,
+      2880
+    ],
+    "mlp1_bias_shape": [
+      5760
+    ],
+    "mlp2_weight_shape": [
+      2880,
+      2880
+    ],
+    "mlp2_bias_shape": [
+      2880
+    ],
+    "mlp1_weight_digest": "790b7bb657a9a90d13d9c1904dfbeff5c2c23a9e9a81f824019409eddefaf13e",
+    "mlp2_weight_digest": "0326850b8cb4d7420df094cc04aa35d9c37dc10107039a9681ca454deb3b5601",
+    "earliest_available_local_stage": "final selected expert output; no official internal selected-expert substage provided in this mode"
+  },
+  "local_stage_summary": {
+    "count": 5760,
+    "min": -8.625,
+    "max": 5.1875,
+    "mean": -0.7632452249526978,
+    "sha256_f32_le": "3eb3419656474ba162f0f3e7da08a6f0be1b46069a8124f41e7cd97575a5e2ed"
+  },
+  "official_summary": {
+    "count": 5760,
+    "min": -8.625,
+    "max": 5.1875,
+    "mean": -0.7632452117072211,
+    "sha256_f32_le": "3eb3419656474ba162f0f3e7da08a6f0be1b46069a8124f41e7cd97575a5e2ed"
+  },
+  "selected_expert_context": {
+    "selected_expert_indices_local": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "selected_expert_indices_official": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "selected_routing_weights_local": [
+      0.4453125,
+      0.2275390625,
+      0.189453125,
+      0.13671875
+    ],
+    "selected_routing_weights_official": []
+  }
+}

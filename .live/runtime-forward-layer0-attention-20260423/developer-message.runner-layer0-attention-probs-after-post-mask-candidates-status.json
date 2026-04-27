@@ -1,0 +1,188 @@
+{
+  "schema_version": "runtime_forward_layer0_attention_probs_after_post_mask_candidates_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "query_position": "final_token",
+    "query_token_index": 73
+  },
+  "mode": "attention-probs-after-post-mask-candidates-status",
+  "source_artifact_paths": {
+    "q_candidate_proof": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-onednn-oracle-scoped-candidate-status.json",
+    "k_candidate_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "post_mask_logits_proof": ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-post-mask-after-qk-candidates-status.json",
+    "official_post_softmax_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json",
+    "raw_pre_mask_reference": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json"
+  },
+  "qk_candidates_are_bench_proof_only": true,
+  "candidate_scope_confirmation": {
+    "q_candidate_change_scope": "bench/proof-only",
+    "q_candidate_runtime_affecting": false,
+    "k_candidate_change_scope": "bench/proof-only",
+    "k_candidate_runtime_affecting": false,
+    "not_promoted_to_runtime": true
+  },
+  "q_post_rope_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "k_post_rope_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null,
+    "candidate_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "official_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "application_path": "model.attn.rope applied to scoped oneDNN candidate K heads in this bench/proof diagnostic"
+  },
+  "raw_qk_pre_mask_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "post_mask_pre_softmax_guard_metrics": {
+    "real_key_columns": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "sink_column": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "all_positions": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    }
+  },
+  "official_post_softmax_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json",
+  "official_tensor_metadata": {
+    "shape": [
+      64,
+      75
+    ],
+    "dtype": "torch.bfloat16",
+    "dtype_before_serialization": "torch.bfloat16",
+    "serialization": "json_f32_values",
+    "layout": "head-major [query_head, key_position_or_sink], flattened with real key positions 0..token_count-1 followed by sink at position token_count for each head",
+    "softmax_axis": -1,
+    "query_token_index": 73,
+    "real_key_positions": [
+      0,
+      73
+    ],
+    "sink_position": 74
+  },
+  "local_tensor_metadata": {
+    "shape": [
+      64,
+      75
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "json_f32_values",
+    "layout": "head-major [query_head, key_position_or_sink]",
+    "softmax_axis": -1,
+    "input_logits_dtype": "json_f32_values_from_BF16_exact_post_mask_logits",
+    "softmax_compute_dtype": "f32",
+    "output_dtype_before_serialization": "BF16 round-trip",
+    "bf16_rounded_before_comparison": true,
+    "row_sums_computed": "after BF16 output serialization"
+  },
+  "real_key_probability_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "mismatching_head_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "sink_probability_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "mismatching_head_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "all_position_probability_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "mismatching_head_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "local_row_sum_summary": {
+    "min_row_sum": 0.9977478750066447,
+    "max_row_sum": 1.0023016868403762,
+    "mean_row_sum": 0.9998909660106475,
+    "max_abs_row_sum_minus_1": 0.002301686840376238,
+    "computed_after_bf16_output_serialization": true
+  },
+  "official_row_sum_summary": {
+    "min_row_sum": 0.997747838497162,
+    "max_row_sum": 1.0023016929626465,
+    "mean_row_sum": 0.9998909663408996,
+    "max_abs_row_sum_minus_1": 0.0023016929626464844
+  },
+  "softmax_policy_discriminator_table": [],
+  "first_worst_mismatch_trace": {
+    "first": null,
+    "worst": null
+  },
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "attention_probs_cleared_after_post_mask_candidates",
+  "runtime_forward_attention_probs_after_post_mask_candidates_status_now": "runtime-forward layer0 attention probabilities after post-mask candidates status now: Q/K/raw/post-mask guards matched=true; probabilities all-position matched=true; classification=attention_probs_cleared_after_post_mask_candidates; next bounded step: ask PPP for exactly layer0_final_token_attention_weighted_value_sum_before_output_projection.",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_attention_weighted_value_sum_before_output_projection"
+}

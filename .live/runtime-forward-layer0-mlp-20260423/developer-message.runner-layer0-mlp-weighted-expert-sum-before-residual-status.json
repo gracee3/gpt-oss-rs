@@ -1,0 +1,178 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_weighted_expert_sum_before_residual_status/v1",
+  "mode": "mlp-weighted-expert-sum-before-residual-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73
+  },
+  "source_artifact_paths": {
+    "selected_expert_output_fix": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-output-capture-readout-fix-status.json",
+    "topk_routing": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-topk-routing-after-router-logits-status.json",
+    "official_weighted_sum_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json",
+  "selected_expert_routing_guard_metrics": {
+    "selected_expert_indices": {
+      "ordered_match": true,
+      "local_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "official_indices": [
+        3,
+        30,
+        11,
+        27
+      ]
+    },
+    "routing_weights": {
+      "topk_artifact_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_count": 0,
+        "first_differing_rank": null,
+        "worst_differing_rank": null,
+        "local_weight_sum": 0.9990234375,
+        "official_weight_sum": 0.9990234375,
+        "weight_sum_abs_diff": 0.0
+      },
+      "local_vs_official_weight_values": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "local_weight_sum": 0.9990234375,
+      "official_weight_sum": 0.9990234375
+    }
+  },
+  "selected_expert_output_guard_metrics": {
+    "all_rank_all_lane": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_rank_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_rank_lane": null,
+      "worst_differing_rank_lane": null
+    },
+    "per_rank": [
+      {
+        "rank": 0,
+        "expert_index": 3,
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      {
+        "rank": 1,
+        "expert_index": 30,
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      {
+        "rank": 2,
+        "expert_index": 11,
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      {
+        "rank": 3,
+        "expert_index": 27,
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      }
+    ],
+    "corrected_selected_output_shape": [
+      4,
+      2880
+    ]
+  },
+  "local_weighted_sum_metadata": {
+    "input_selected_output": {
+      "shape": [
+        4,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[top_k_rank, hidden_size]",
+      "device": "cpu"
+    },
+    "routing_weights": {
+      "shape": [
+        4
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[top_k_rank]",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[hidden_size] before second residual add",
+      "device": "cpu"
+    },
+    "multiplication_dtype": "torch.bfloat16 via torch.einsum replay",
+    "accumulation_dtype": "torch.einsum implementation-defined",
+    "rank_accumulation_order": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "output_cast_rounding_point": "BF16 before JSON f32 serialization",
+    "before_second_residual_add": true
+  },
+  "weighted_sum_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "weighted_expert_sum_before_residual_cleared",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_hidden_state_after_mlp_residual_add",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_weighted_expert_sum_before_residual.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

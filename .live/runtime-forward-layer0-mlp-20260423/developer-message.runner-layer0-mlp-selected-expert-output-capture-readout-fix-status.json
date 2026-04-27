@@ -1,0 +1,330 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_selected_expert_output_capture_readout_fix_status/v1",
+  "mode": "mlp-selected-expert-output-capture-readout-fix-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "selected_expert_indices": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "focus_selected_expert_rank": 1,
+    "focus_selected_expert_index": 30
+  },
+  "source_artifact_paths": {
+    "capture_readout_localization": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-output-capture-readout-localization-status.json",
+    "bias_to_selected_output": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp2-bias-to-selected-output-status.json",
+    "selected_expert_output_mismatch": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "official_selected_expert_outputs_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "files_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs",
+    "crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_output_capture_readout_fix.py"
+  ],
+  "change_scope": "diagnostic-only",
+  "runtime_affecting": false,
+  "scope_statement": {
+    "paths_affected": [
+      "bench/status mode mlp-selected-expert-output-capture-readout-fix-status",
+      "diagnostic selected expert output readout tensor construction"
+    ],
+    "paths_not_affected": [
+      "runtime MoE execution",
+      "routing-weighted sum",
+      "MLP output aggregation",
+      "second residual add",
+      "logits",
+      "cache",
+      "serving behavior"
+    ]
+  },
+  "pre_fix_guard_metrics": {
+    "routing_guard": {
+      "selected_expert_indices": {
+        "local_indices": [
+          3,
+          30,
+          11,
+          27
+        ],
+        "official_indices": [
+          3,
+          30,
+          11,
+          27
+        ],
+        "ordered_match": true,
+        "set_match_ignoring_order": true,
+        "first_differing_rank": null
+      },
+      "expert30_selected_rank_1": true,
+      "routing_weights": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_count": 0,
+        "first_differing_rank": null,
+        "worst_differing_rank": null,
+        "local_weight_sum": 0.9990234375,
+        "official_weight_sum": 0.9990234375,
+        "weight_sum_abs_diff": 0.0
+      },
+      "selected_expert_outputs_are_unweighted": true
+    },
+    "expert30_computation_guard": {
+      "mlp2_before_bias": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "mlp2_bias": {
+        "digest_matches_official": true,
+        "sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+        "official_sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+        "metrics": {
+          "max_abs_diff": 0.0,
+          "mean_abs_diff": 0.0,
+          "matched": true,
+          "mismatching_lane_count": 0,
+          "first_differing_hidden_lane": null,
+          "worst_differing_hidden_lane": null
+        },
+        "nonzero_count": 2880
+      },
+      "reconstructed_post_bias_vs_official": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      }
+    },
+    "legacy_selected_output_capture": {
+      "rank1_expert30_vs_official": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "local_value": -0.1728515625,
+          "official_value": -0.1748046875,
+          "abs_diff": 0.001953125
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "local_value": 2.296875,
+          "official_value": 2.28125,
+          "abs_diff": 0.015625
+        }
+      },
+      "previous_151_lane_mismatch_reproduced": true
+    }
+  },
+  "correction_strategy": {
+    "summary": "diagnostic-only rank-major selected output readout correction",
+    "details": "Use the actual cleared unweighted expert30 post-bias output for selected rank 1 while preserving legacy captures for comparison; ranks 0, 2, and 3 remain from the legacy rank-major selected-output tensor because they were already exact.",
+    "source_buffer_for_unweighted_post_bias_expert_output": "immediate_post_bias_reconstructed_expert30_output",
+    "destination_staging_layout": "[top_k_rank, hidden]",
+    "routing_weights_applied": false,
+    "rank_major_readout": true
+  },
+  "selected_rank_expert_hidden_indexing_metadata": {
+    "selected_rank_order": "official sorted top-k order",
+    "selected_expert_indices": [
+      3,
+      30,
+      11,
+      27
+    ],
+    "rank_to_expert": {
+      "0": 3,
+      "1": 30,
+      "2": 11,
+      "3": 27
+    },
+    "hidden_lane_indexing": "contiguous hidden lane h in [0, 2880)",
+    "corrected_rank": 1,
+    "corrected_expert_index": 30
+  },
+  "legacy_selected_output_metrics": {
+    "legacy_selected_capture_vs_official": {
+      "max_abs_diff": 0.015625,
+      "mean_abs_diff": 1.8388032913208008e-05,
+      "matched": false,
+      "mismatching_rank_count": 1,
+      "mismatching_lane_count": 151,
+      "first_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 8,
+        "local_value": -0.1728515625,
+        "official_value": -0.1748046875,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 1156,
+        "local_value": 2.296875,
+        "official_value": 2.28125,
+        "abs_diff": 0.015625
+      }
+    },
+    "legacy_selected_capture_vs_corrected": {
+      "max_abs_diff": 0.015625,
+      "mean_abs_diff": 1.8388032913208008e-05,
+      "matched": false,
+      "mismatching_rank_count": 1,
+      "mismatching_lane_count": 151,
+      "first_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 8,
+        "local_value": -0.1728515625,
+        "official_value": -0.1748046875,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 1156,
+        "local_value": 2.296875,
+        "official_value": 2.28125,
+        "abs_diff": 0.015625
+      }
+    }
+  },
+  "corrected_all_rank_selected_output_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_rank_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_rank_lane": null,
+    "worst_differing_rank_lane": null
+  },
+  "corrected_per_rank_metrics": [
+    {
+      "rank": 0,
+      "expert_index": 3,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "rank": 1,
+      "expert_index": 30,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "rank": 2,
+      "expert_index": 11,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "rank": 3,
+      "expert_index": 27,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  ],
+  "regression_legacy_comparison": {
+    "legacy_selected_capture_vs_official": {
+      "max_abs_diff": 0.015625,
+      "mean_abs_diff": 1.8388032913208008e-05,
+      "matched": false,
+      "mismatching_rank_count": 1,
+      "mismatching_lane_count": 151,
+      "first_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 8,
+        "local_value": -0.1728515625,
+        "official_value": -0.1748046875,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_rank_lane": {
+        "rank": 1,
+        "hidden_lane": 1156,
+        "local_value": 2.296875,
+        "official_value": 2.28125,
+        "abs_diff": 0.015625
+      }
+    },
+    "corrected_selected_capture_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_rank_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_rank_lane": null,
+      "worst_differing_rank_lane": null
+    },
+    "corrected_rank1_vs_reconstructed_post_bias_output": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "legacy_rank1_vs_corrected_rank1": {
+      "max_abs_diff": 0.015625,
+      "mean_abs_diff": 7.355213165283203e-05,
+      "matched": false,
+      "mismatching_lane_count": 151,
+      "first_differing_hidden_lane": {
+        "hidden_lane": 8,
+        "local_value": -0.1728515625,
+        "official_value": -0.1748046875,
+        "abs_diff": 0.001953125
+      },
+      "worst_differing_hidden_lane": {
+        "hidden_lane": 1156,
+        "local_value": 2.296875,
+        "official_value": 2.28125,
+        "abs_diff": 0.015625
+      }
+    }
+  },
+  "lane_1156_proof_trace": {
+    "rank": 1,
+    "expert_index": 30,
+    "hidden_lane": 1156,
+    "reconstructed_post_bias_value": 2.28125,
+    "official_selected_expert_output_value": 2.28125,
+    "legacy_selected_capture_value": 2.296875,
+    "corrected_selected_capture_value": 2.28125,
+    "selected_staging_view_value_after_correction": 2.28125,
+    "routing_weight_for_expert30": 0.2275390625,
+    "weighted_guard_value": 0.519073486328125,
+    "corrected_minus_official": 0.0,
+    "corrected_equals_reconstruction_and_official": true
+  },
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "selected_expert_output_capture_readout_fix_proven",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_mlp_output_after_routing_weighted_sum_before_residual",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_output_capture_readout_fix.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

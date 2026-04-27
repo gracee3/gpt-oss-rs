@@ -257,6 +257,112 @@ const DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT: &str =
     ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-onednn-oracle-scoped-candidate-status.json";
 const DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_SCRIPT: &str =
     "crates/gpt-oss-bench/tools/layer0_q_projection_onednn_oracle_scoped_candidate.py";
+const DEFAULT_ATTENTION_POST_MASK_AFTER_QK_CANDIDATES_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-post-mask-after-qk-candidates-status.json";
+const DEFAULT_OFFICIAL_ATTENTION_POST_MASK_PRE_SOFTMAX_ARTIFACT: &str =
+    "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json";
+const DEFAULT_PRESERVED_OFFICIAL_ATTENTION_POST_MASK_PRE_SOFTMAX_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json";
+const DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-probs-after-post-mask-candidates-status.json";
+const DEFAULT_OFFICIAL_ATTENTION_PROBS_POST_SOFTMAX_ARTIFACT: &str =
+    "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json";
+const DEFAULT_PRESERVED_OFFICIAL_ATTENTION_PROBS_POST_SOFTMAX_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json";
+const DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-weighted-v-sum-before-o-proj-after-probs-candidates-status.json";
+const DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_attention_weighted_v_sum_before_o_proj_after_probs_candidates.py";
+const DEFAULT_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT: &str =
+    "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json";
+const DEFAULT_PRESERVED_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json";
+const DEFAULT_V_PROJECTION_WEIGHT_BIAS_ARITHMETIC_POLICY_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy-status.json";
+const DEFAULT_V_PROJECTION_WEIGHT_BIAS_ARITHMETIC_POLICY_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_v_projection_weight_bias_arithmetic_policy.py";
+const DEFAULT_V_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate-status.json";
+const DEFAULT_V_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_v_projection_onednn_oracle_scoped_candidate.py";
+const DEFAULT_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-o-proj-before-residual-status.json";
+const DEFAULT_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_attention_o_proj_before_residual.py";
+const DEFAULT_OFFICIAL_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json";
+const DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-residual-add-before-mlp-after-o-proj-candidates-status.json";
+const DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_attention_residual_add_before_mlp_after_o_proj_candidates.py";
+const DEFAULT_OFFICIAL_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json";
+const DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-norm-before-projections-after-attn-residual-status.json";
+const DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_norm_before_projections_after_attn_residual.py";
+const DEFAULT_OFFICIAL_MLP_NORM_BEFORE_PROJECTIONS_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json";
+const DEFAULT_MLP_ROUTER_LOGITS_BEFORE_ROUTING_AFTER_NORM_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-router-logits-before-routing-after-norm-status.json";
+const DEFAULT_MLP_ROUTER_LOGITS_BEFORE_ROUTING_AFTER_NORM_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_router_logits_before_routing_after_norm.py";
+const DEFAULT_OFFICIAL_MLP_ROUTER_LOGITS_BEFORE_ROUTING_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json";
+const DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-topk-routing-after-router-logits-status.json";
+const DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_topk_routing_after_router_logits.py";
+const DEFAULT_OFFICIAL_MLP_TOPK_ROUTING_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-topk-expert-indices-and-routing-weights-status.json";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_outputs_before_routing_weighted_sum.py";
+const DEFAULT_OFFICIAL_MLP_SELECTED_EXPERT_OUTPUTS_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json";
+const DEFAULT_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp1-before-swiglu-status.json";
+const DEFAULT_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_expert30_mlp1_before_swiglu.py";
+const DEFAULT_OFFICIAL_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json";
+const DEFAULT_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-swiglu-before-mlp2-status.json";
+const DEFAULT_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_expert30_swiglu_before_mlp2.py";
+const DEFAULT_OFFICIAL_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json";
+const DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp2-before-bias-status.json";
+const DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_expert30_mlp2_before_bias.py";
+const DEFAULT_OFFICIAL_MLP_EXPERT30_MLP2_BEFORE_BIAS_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp2-output-before-bias-status.json";
+const DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp2-bias-to-selected-output-status.json";
+const DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_expert30_mlp2_bias_to_selected_output.py";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_LOCALIZATION_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-output-capture-readout-localization-status.json";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_LOCALIZATION_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_output_capture_readout_localization.py";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_FIX_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-output-capture-readout-fix-status.json";
+const DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_FIX_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_output_capture_readout_fix.py";
+const DEFAULT_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-weighted-expert-sum-before-residual-status.json";
+const DEFAULT_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_weighted_expert_sum_before_residual.py";
+const DEFAULT_OFFICIAL_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json";
+const DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-residual-add-after-weighted-sum-status.json";
+const DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer0_mlp_residual_add_after_weighted_sum.py";
+const DEFAULT_OFFICIAL_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json";
 const DEFAULT_K_PROJECTION_OFFICIAL_WEIGHT_ARITHMETIC_OUTPUT: &str =
     ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json";
 const DEFAULT_K_PROJECTION_OFFICIAL_WEIGHT_ARITHMETIC_SCRIPT: &str =
@@ -384,6 +490,25 @@ enum Mode {
     QPrePostRopeRuntimeLocalizationStatus,
     QProjectionWeightBiasArithmeticPolicyStatus,
     QProjectionOnednnOracleScopedCandidateStatus,
+    AttentionPostMaskAfterQkCandidatesStatus,
+    AttentionProbsAfterPostMaskCandidatesStatus,
+    AttentionWeightedVSumBeforeOProjAfterProbsCandidatesStatus,
+    VProjectionWeightBiasArithmeticPolicyStatus,
+    VProjectionOnednnOracleScopedCandidateStatus,
+    Layer0AttentionOProjBeforeResidualStatus,
+    AttentionResidualAddBeforeMlpAfterOProjCandidatesStatus,
+    MlpNormBeforeProjectionsAfterAttnResidualStatus,
+    MlpRouterLogitsBeforeRoutingAfterNormStatus,
+    MlpTopkRoutingAfterRouterLogitsStatus,
+    MlpSelectedExpertOutputsBeforeRoutingWeightedSumStatus,
+    MlpExpert30Mlp1BeforeSwigluStatus,
+    MlpExpert30SwigluBeforeMlp2Status,
+    MlpExpert30Mlp2BeforeBiasStatus,
+    MlpExpert30Mlp2BiasToSelectedOutputStatus,
+    MlpSelectedExpertOutputCaptureReadoutLocalizationStatus,
+    MlpSelectedExpertOutputCaptureReadoutFixStatus,
+    MlpWeightedExpertSumBeforeResidualStatus,
+    MlpResidualAddAfterWeightedSumStatus,
 }
 
 impl Mode {
@@ -632,6 +757,63 @@ impl Mode {
             Self::QProjectionOnednnOracleScopedCandidateStatus => {
                 PathBuf::from(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT)
             }
+            Self::AttentionPostMaskAfterQkCandidatesStatus => {
+                PathBuf::from(DEFAULT_ATTENTION_POST_MASK_AFTER_QK_CANDIDATES_STATUS_OUTPUT)
+            }
+            Self::AttentionProbsAfterPostMaskCandidatesStatus => {
+                PathBuf::from(DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT)
+            }
+            Self::AttentionWeightedVSumBeforeOProjAfterProbsCandidatesStatus => PathBuf::from(
+                DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_STATUS_OUTPUT,
+            ),
+            Self::VProjectionWeightBiasArithmeticPolicyStatus => {
+                PathBuf::from(DEFAULT_V_PROJECTION_WEIGHT_BIAS_ARITHMETIC_POLICY_STATUS_OUTPUT)
+            }
+            Self::VProjectionOnednnOracleScopedCandidateStatus => {
+                PathBuf::from(DEFAULT_V_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT)
+            }
+            Self::Layer0AttentionOProjBeforeResidualStatus => {
+                PathBuf::from(DEFAULT_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_STATUS_OUTPUT)
+            }
+            Self::AttentionResidualAddBeforeMlpAfterOProjCandidatesStatus => PathBuf::from(
+                DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_STATUS_OUTPUT,
+            ),
+            Self::MlpNormBeforeProjectionsAfterAttnResidualStatus => {
+                PathBuf::from(DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_STATUS_OUTPUT)
+            }
+            Self::MlpRouterLogitsBeforeRoutingAfterNormStatus => {
+                PathBuf::from(DEFAULT_MLP_ROUTER_LOGITS_BEFORE_ROUTING_AFTER_NORM_STATUS_OUTPUT)
+            }
+            Self::MlpTopkRoutingAfterRouterLogitsStatus => {
+                PathBuf::from(DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT)
+            }
+            Self::MlpSelectedExpertOutputsBeforeRoutingWeightedSumStatus => PathBuf::from(
+                DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+            ),
+            Self::MlpExpert30Mlp1BeforeSwigluStatus => {
+                PathBuf::from(DEFAULT_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_STATUS_OUTPUT)
+            }
+            Self::MlpExpert30SwigluBeforeMlp2Status => {
+                PathBuf::from(DEFAULT_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_STATUS_OUTPUT)
+            }
+            Self::MlpExpert30Mlp2BeforeBiasStatus => {
+                PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_STATUS_OUTPUT)
+            }
+            Self::MlpExpert30Mlp2BiasToSelectedOutputStatus => {
+                PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_STATUS_OUTPUT)
+            }
+            Self::MlpSelectedExpertOutputCaptureReadoutLocalizationStatus => PathBuf::from(
+                DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_LOCALIZATION_STATUS_OUTPUT,
+            ),
+            Self::MlpSelectedExpertOutputCaptureReadoutFixStatus => {
+                PathBuf::from(DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_FIX_STATUS_OUTPUT)
+            }
+            Self::MlpWeightedExpertSumBeforeResidualStatus => {
+                PathBuf::from(DEFAULT_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_STATUS_OUTPUT)
+            }
+            Self::MlpResidualAddAfterWeightedSumStatus => {
+                PathBuf::from(DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_STATUS_OUTPUT)
+            }
         }
     }
 }
@@ -854,6 +1036,66 @@ struct Cli {
 
     #[arg(long, default_value = DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_SCRIPT)]
     q_projection_onednn_oracle_scoped_candidate_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_V_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_SCRIPT)]
+    v_projection_onednn_oracle_scoped_candidate_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_SCRIPT)]
+    layer0_attention_o_proj_before_residual_script: PathBuf,
+
+    #[arg(
+        long,
+        default_value = DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_SCRIPT
+    )]
+    attention_residual_add_before_mlp_after_o_proj_candidates_script: PathBuf,
+
+    #[arg(
+        long,
+        default_value = DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_SCRIPT
+    )]
+    mlp_norm_before_projections_after_attn_residual_script: PathBuf,
+
+    #[arg(
+        long,
+        default_value = DEFAULT_MLP_ROUTER_LOGITS_BEFORE_ROUTING_AFTER_NORM_SCRIPT
+    )]
+    mlp_router_logits_before_routing_after_norm_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_SCRIPT)]
+    mlp_topk_routing_after_router_logits_script: PathBuf,
+
+    #[arg(
+        long,
+        default_value = DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_SCRIPT
+    )]
+    mlp_selected_expert_outputs_before_routing_weighted_sum_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_SCRIPT)]
+    mlp_expert30_mlp1_before_swiglu_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_SCRIPT)]
+    mlp_expert30_swiglu_before_mlp2_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_SCRIPT)]
+    mlp_expert30_mlp2_before_bias_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_SCRIPT)]
+    mlp_expert30_mlp2_bias_to_selected_output_script: PathBuf,
+
+    #[arg(
+        long,
+        default_value = DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_LOCALIZATION_SCRIPT
+    )]
+    mlp_selected_expert_output_capture_readout_localization_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_FIX_SCRIPT)]
+    mlp_selected_expert_output_capture_readout_fix_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_SCRIPT)]
+    mlp_weighted_expert_sum_before_residual_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_SCRIPT)]
+    mlp_residual_add_after_weighted_sum_script: PathBuf,
 
     #[arg(long)]
     output: Option<PathBuf>,
@@ -6207,6 +6449,44 @@ fn load_layer0_q_weight_shadow_bf16(
         );
     }
     Ok(round_f32_slice_to_bf16(&q_weight_f32))
+}
+
+fn load_layer0_attention_sinks_bf16(
+    model_root: &Path,
+    num_query_heads: usize,
+) -> Result<Vec<bf16>> {
+    let resolved_root = resolve_oracle_checkpoint_dir(model_root);
+    let config = build_worker_config(&resolved_root, usize::MAX, 0.75)?;
+    let loader_model_config = LoaderModelConfig {
+        model_name: config.model_name.clone(),
+        hidden_size: config.hidden_size,
+        num_layers: config.num_layers,
+        num_attention_heads: config.num_attention_heads,
+        num_kv_heads: config.num_kv_heads,
+        vocab_size: config.vocab_size,
+        max_model_len: config.max_model_len,
+    };
+    let loader_parallel_config = LoaderParallelConfig;
+    let weights = load_model_weights(
+        &resolved_root,
+        &loader_model_config,
+        &loader_parallel_config,
+        0,
+        &MockGpuAllocator,
+    )?;
+    let sink_tensor = weights
+        .get("model.layers.0.self_attn.sinks")
+        .or_else(|| weights.get("block.0.attn.sinks"))
+        .context("missing layer-0 attention sinks in checkpoint")?;
+    let decoded = decode_weight_tensor_to_f32(sink_tensor)?;
+    if decoded.len() != num_query_heads {
+        bail!(
+            "decoded layer0 sink length {} does not match expected query heads {}",
+            decoded.len(),
+            num_query_heads
+        );
+    }
+    Ok(round_f32_slice_to_bf16(&decoded))
 }
 
 fn cpu_bf16_q_matvec(
@@ -40345,6 +40625,3088 @@ fn run_q_projection_onednn_oracle_scoped_candidate_status(cli: &Cli) -> Result<(
     Ok(())
 }
 
+fn json_metric_matched(value: &serde_json::Value) -> bool {
+    value
+        .get("matched")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn load_json_value(path: &Path) -> Result<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read JSON artifact for attention post-mask status {}",
+            path.display()
+        )
+    })?)
+    .with_context(|| {
+        format!(
+            "failed to parse JSON artifact for attention post-mask status {}",
+            path.display()
+        )
+    })
+}
+
+fn json_f32_values(value: &serde_json::Value, path: &str) -> Result<Vec<f32>> {
+    value
+        .pointer(path)
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| format!("missing f32 array at JSON pointer {path}"))?
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            item.as_f64()
+                .map(|value| value as f32)
+                .with_context(|| format!("non-numeric value at {path}[{idx}]"))
+        })
+        .collect()
+}
+
+fn metric_with_head_key_locations(
+    lhs: &[f32],
+    rhs: &[f32],
+    key_count: usize,
+    key_offset: usize,
+) -> serde_json::Value {
+    assert_eq!(lhs.len(), rhs.len());
+    let head_count = if key_count == 0 {
+        0
+    } else {
+        lhs.len() / key_count
+    };
+    let mut mismatching_heads = vec![false; head_count];
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut mismatching_element_count = 0usize;
+    let mut first: Option<serde_json::Value> = None;
+    let mut worst: Option<serde_json::Value> = None;
+    for (idx, (left, right)) in lhs.iter().zip(rhs.iter()).enumerate() {
+        let diff = (*left - *right).abs();
+        sum_abs_diff += diff as f64;
+        if diff != 0.0 {
+            mismatching_element_count += 1;
+            let head = idx / key_count;
+            let key = idx % key_count + key_offset;
+            if let Some(item) = mismatching_heads.get_mut(head) {
+                *item = true;
+            }
+            let location = serde_json::json!({
+                "location_kind": "head_key_or_sink",
+                "indices": [head, key],
+                "head_index": head,
+                "key_or_sink_position": key,
+                "position_kind": if key == 74 { "attention_sink" } else { "real_key" },
+                "lhs_value": *left,
+                "rhs_value": *right,
+                "abs_diff": diff,
+            });
+            if first.is_none() {
+                first = Some(location.clone());
+            }
+            if diff > max_abs_diff {
+                worst = Some(location);
+            }
+        }
+        max_abs_diff = max_abs_diff.max(diff);
+    }
+    serde_json::json!({
+        "max_abs_diff": max_abs_diff,
+        "mean_abs_diff": if lhs.is_empty() { 0.0 } else { sum_abs_diff / lhs.len() as f64 },
+        "matched": mismatching_element_count == 0,
+        "mismatching_element_count": mismatching_element_count,
+        "mismatching_head_count": mismatching_heads.into_iter().filter(|value| *value).count(),
+        "first_differing_location": first,
+        "worst_differing_location": worst,
+    })
+}
+
+fn softmax_f32_bf16_output(logits: &[f32], rows: usize, cols: usize, bf16_input: bool) -> Vec<f32> {
+    let mut output = Vec::with_capacity(logits.len());
+    for row in 0..rows {
+        let start = row * cols;
+        let end = start + cols;
+        let row_values: Vec<f32> = logits[start..end]
+            .iter()
+            .map(|value| {
+                if bf16_input {
+                    bf16::from_f32(*value).to_f32()
+                } else {
+                    *value
+                }
+            })
+            .collect();
+        let max_value = row_values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let exp_values: Vec<f32> = row_values
+            .iter()
+            .map(|value| (*value - max_value).exp())
+            .collect();
+        let sum: f32 = exp_values.iter().copied().sum();
+        output.extend(
+            exp_values
+                .iter()
+                .map(|value| bf16::from_f32(*value / sum).to_f32()),
+        );
+    }
+    output
+}
+
+fn row_sum_summary(values: &[f32], rows: usize, cols: usize) -> serde_json::Value {
+    let mut min_row_sum = f64::INFINITY;
+    let mut max_row_sum = f64::NEG_INFINITY;
+    let mut sum_row_sum = 0.0f64;
+    let mut max_abs_row_sum_minus_1 = 0.0f64;
+    for row in 0..rows {
+        let start = row * cols;
+        let row_sum: f64 = values[start..start + cols]
+            .iter()
+            .map(|value| *value as f64)
+            .sum();
+        min_row_sum = min_row_sum.min(row_sum);
+        max_row_sum = max_row_sum.max(row_sum);
+        sum_row_sum += row_sum;
+        max_abs_row_sum_minus_1 = max_abs_row_sum_minus_1.max((row_sum - 1.0).abs());
+    }
+    serde_json::json!({
+        "min_row_sum": min_row_sum,
+        "max_row_sum": max_row_sum,
+        "mean_row_sum": if rows == 0 { 0.0 } else { sum_row_sum / rows as f64 },
+        "max_abs_row_sum_minus_1": max_abs_row_sum_minus_1,
+        "computed_after_bf16_output_serialization": true,
+    })
+}
+
+fn run_attention_post_mask_after_qk_candidates_status(cli: &Cli) -> Result<()> {
+    let q_candidate_path =
+        PathBuf::from(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT);
+    let k_candidate_path =
+        PathBuf::from(DEFAULT_K_PROJECTION_ONEDNN_ORACLE_SCOPED_HELPER_FIX_STATUS_OUTPUT);
+    let k_post_score_path =
+        PathBuf::from(DEFAULT_K_POST_ROPE_AND_SCORE_AFTER_ONEDNN_K_CANDIDATE_STATUS_OUTPUT);
+
+    let q_candidate: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&q_candidate_path).with_context(|| {
+            format!(
+                "failed to read Q scoped oneDNN candidate artifact {}",
+                q_candidate_path.display()
+            )
+        })?,
+    )?;
+    let k_candidate: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&k_candidate_path).with_context(|| {
+            format!(
+                "failed to read K scoped oneDNN candidate artifact {}",
+                k_candidate_path.display()
+            )
+        })?,
+    )?;
+    let k_post_score: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&k_post_score_path).with_context(|| {
+            format!(
+                "failed to read K post-RoPE/score candidate artifact {}",
+                k_post_score_path.display()
+            )
+        })?,
+    )?;
+
+    for (label, artifact) in [
+        ("Q scoped candidate", &q_candidate),
+        ("K scoped candidate", &k_candidate),
+        ("K post-RoPE/score", &k_post_score),
+    ] {
+        if artifact
+            .pointer("/exact_case/case_id")
+            .and_then(serde_json::Value::as_str)
+            != Some("developer-message-user-smoke")
+        {
+            bail!("{label} artifact is not for developer-message-user-smoke");
+        }
+    }
+
+    let q_post_rope_guard = q_candidate
+        .pointer("/q_post_rope_metrics/candidate_q_post_rope_vs_official")
+        .cloned()
+        .context("Q candidate artifact missing candidate_q_post_rope_vs_official metrics")?;
+    let k_post_rope_guard = k_post_score
+        .get("grouped_post_rope_k_metrics")
+        .cloned()
+        .context("K post-RoPE/score artifact missing grouped_post_rope_k_metrics")?;
+    let raw_score_guard = q_candidate
+        .pointer(
+            "/score_confirmation_metrics/candidate_q_plus_candidate_k_vs_official_raw_scaled_qk_logits_pre_mask",
+        )
+        .cloned()
+        .context("Q candidate artifact missing candidate Q+K raw score guard metrics")?;
+
+    let q_candidate_bench_only = q_candidate
+        .get("runtime_affecting")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        && q_candidate
+            .get("change_scope")
+            .and_then(serde_json::Value::as_str)
+            == Some("bench/proof-only");
+    let k_candidate_bench_only = k_candidate
+        .get("runtime_affecting")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        && k_candidate
+            .get("change_scope")
+            .and_then(serde_json::Value::as_str)
+            == Some("bench/proof-only");
+    let guards_pass = q_candidate_bench_only
+        && k_candidate_bench_only
+        && json_metric_matched(&q_post_rope_guard)
+        && json_metric_matched(&k_post_rope_guard)
+        && json_metric_matched(&raw_score_guard);
+
+    let tmp_official_reference_path =
+        PathBuf::from(DEFAULT_OFFICIAL_ATTENTION_POST_MASK_PRE_SOFTMAX_ARTIFACT);
+    let preserved_official_reference_path =
+        PathBuf::from(DEFAULT_PRESERVED_OFFICIAL_ATTENTION_POST_MASK_PRE_SOFTMAX_ARTIFACT);
+    if tmp_official_reference_path.is_file() {
+        if let Some(parent) = preserved_official_reference_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(
+            &tmp_official_reference_path,
+            &preserved_official_reference_path,
+        )
+        .with_context(|| {
+            format!(
+                "failed to preserve PPP post-mask artifact {} to {}",
+                tmp_official_reference_path.display(),
+                preserved_official_reference_path.display()
+            )
+        })?;
+    }
+    let official_reference_path = if preserved_official_reference_path.is_file() {
+        Some(preserved_official_reference_path.clone())
+    } else if tmp_official_reference_path.is_file() {
+        Some(tmp_official_reference_path.clone())
+    } else {
+        None
+    };
+
+    let official_post_mask = official_reference_path
+        .as_deref()
+        .map(load_json_value)
+        .transpose();
+    let official_reference_unreadable = official_post_mask.is_err();
+    let official_post_mask = official_post_mask.ok().flatten();
+
+    let raw_pre_mask_path = if Path::new(
+        DEFAULT_OFFICIAL_FINAL_TOKEN_RAW_SCALED_QK_LOGITS_PRE_MASK_ARTIFACT,
+    )
+    .is_file()
+    {
+        PathBuf::from(DEFAULT_OFFICIAL_FINAL_TOKEN_RAW_SCALED_QK_LOGITS_PRE_MASK_ARTIFACT)
+    } else {
+        PathBuf::from(".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json")
+    };
+    let raw_pre_mask = load_json_value(&raw_pre_mask_path)?;
+    let raw_pre_mask_values = json_f32_values(&raw_pre_mask, "/values")?;
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+
+    let mut official_tensor_metadata = serde_json::Value::Null;
+    let mut local_tensor_metadata = serde_json::Value::Null;
+    let mut mask_metadata = serde_json::Value::Null;
+    let mut sink_metadata = serde_json::Value::Null;
+    let mut real_key_metrics = serde_json::Value::Null;
+    let mut sink_metrics = serde_json::Value::Null;
+    let mut all_position_metrics = serde_json::Value::Null;
+    let mut first_worst_mismatch_trace = serde_json::Value::Null;
+    let mut shape_matched = false;
+    let mut layout_matched = false;
+    let mut sink_column_matched = false;
+    let mut real_key_columns_matched = false;
+
+    if let Some(official_post_mask) = official_post_mask.as_ref() {
+        let shape = official_post_mask
+            .get("shape")
+            .and_then(serde_json::Value::as_array)
+            .context("official post-mask artifact missing shape")?;
+        let num_heads = shape
+            .first()
+            .and_then(serde_json::Value::as_u64)
+            .context("official post-mask artifact missing head count")?
+            as usize;
+        let num_key_positions = shape
+            .get(1)
+            .and_then(serde_json::Value::as_u64)
+            .context("official post-mask artifact missing key-position count")?
+            as usize;
+        if num_key_positions == 0 {
+            bail!("official post-mask key-position count is zero");
+        }
+        let real_key_count = num_key_positions - 1;
+        let sink_position = real_key_count;
+        let official_values = json_f32_values(official_post_mask, "/values")?;
+        if raw_pre_mask_values.len() != num_heads * real_key_count {
+            bail!(
+                "raw pre-mask value count {} does not match expected {} x {}",
+                raw_pre_mask_values.len(),
+                num_heads,
+                real_key_count
+            );
+        }
+        if official_values.len() != num_heads * num_key_positions {
+            bail!(
+                "official post-mask value count {} does not match expected {} x {}",
+                official_values.len(),
+                num_heads,
+                num_key_positions
+            );
+        }
+        let sinks_bf16 = load_layer0_attention_sinks_bf16(model_root, num_heads)?;
+        let sinks_f32 = bf16_slice_to_f32(&sinks_bf16);
+        let mut local_values = Vec::with_capacity(num_heads * num_key_positions);
+        let mut local_real_values = Vec::with_capacity(num_heads * real_key_count);
+        let mut official_real_values = Vec::with_capacity(num_heads * real_key_count);
+        let mut local_sink_values = Vec::with_capacity(num_heads);
+        let mut official_sink_values = Vec::with_capacity(num_heads);
+        for head in 0..num_heads {
+            let raw_start = head * real_key_count;
+            let official_start = head * num_key_positions;
+            for key in 0..real_key_count {
+                let raw = raw_pre_mask_values[raw_start + key];
+                local_values.push(raw);
+                local_real_values.push(raw);
+                official_real_values.push(official_values[official_start + key]);
+            }
+            let sink = sinks_f32[head];
+            local_values.push(sink);
+            local_sink_values.push(sink);
+            official_sink_values.push(official_values[official_start + sink_position]);
+        }
+
+        real_key_metrics = metric_with_head_key_locations(
+            &local_real_values,
+            &official_real_values,
+            real_key_count,
+            0,
+        );
+        sink_metrics = metric_with_head_key_locations(
+            &local_sink_values,
+            &official_sink_values,
+            1,
+            sink_position,
+        );
+        all_position_metrics =
+            metric_with_head_key_locations(&local_values, &official_values, num_key_positions, 0);
+        real_key_columns_matched = json_metric_matched(&real_key_metrics);
+        sink_column_matched = json_metric_matched(&sink_metrics);
+        shape_matched = official_values.len() == local_values.len();
+        layout_matched = official_post_mask
+            .get("layout_interpretation")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|layout| layout.contains("head-major"));
+        mask_metadata = official_post_mask
+            .get("mask_metadata")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        official_tensor_metadata = serde_json::json!({
+            "shape": official_post_mask.get("shape").cloned(),
+            "dtype": official_post_mask.get("tensor_dtype").cloned(),
+            "serialization_dtype": official_post_mask.get("serialization_dtype").cloned(),
+            "layout": official_post_mask.get("layout_interpretation").cloned(),
+            "query_token_index": official_post_mask.get("query_token_index").cloned(),
+            "real_key_positions": [0, real_key_count - 1],
+            "attention_sink_position": sink_position,
+        });
+        local_tensor_metadata = serde_json::json!({
+            "shape": [num_heads, num_key_positions],
+            "dtype": "float32",
+            "serialization_dtype": "json_f32_values",
+            "layout": "head-major [query_head, key_position_or_sink]",
+            "real_key_positions": [0, real_key_count - 1],
+            "attention_sink_position": sink_position,
+            "valid_unmasked_real_key_count": real_key_count,
+            "masked_key_count": 0,
+            "mask_convention": "-inf",
+        });
+        sink_metadata = serde_json::json!({
+            "sink_source": "model.layers.0.self_attn.sinks loaded through local model weight loader and BF16 round-tripped",
+            "sink_position": sink_position,
+            "sink_value_is_per_head": true,
+            "sink_value_is_shared": false,
+            "sink_appended_before_or_after_mask_application": "after real-key mask application; equivalent for this prompt because no real keys are masked",
+            "first_sink_values": &sinks_f32[..sinks_f32.len().min(8)],
+            "last_sink_values": &sinks_f32[sinks_f32.len().saturating_sub(8)..],
+        });
+
+        let worst = all_position_metrics
+            .get("worst_differing_location")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let first = all_position_metrics
+            .get("first_differing_location")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let trace_for = |location: &serde_json::Value| -> serde_json::Value {
+            let Some(head) = location
+                .get("head_index")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                return serde_json::Value::Null;
+            };
+            let Some(key) = location
+                .get("key_or_sink_position")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                return serde_json::Value::Null;
+            };
+            let head = head as usize;
+            let key = key as usize;
+            let flat = head * num_key_positions + key;
+            let raw = if key < real_key_count {
+                Some(raw_pre_mask_values[head * real_key_count + key])
+            } else {
+                None
+            };
+            serde_json::json!({
+                "head_index": head,
+                "key_or_sink_position": key,
+                "position_kind": if key == sink_position { "attention_sink" } else { "real_key" },
+                "local_raw_pre_mask_value_if_real_key": raw,
+                "official_raw_pre_mask_value_if_real_key": raw,
+                "local_mask_value": if key == sink_position { serde_json::Value::Null } else { serde_json::json!(0.0) },
+                "official_mask_value_or_convention": if key == sink_position { "attention_sink_no_mask" } else { "unmasked_real_key_additive_0" },
+                "local_post_mask_pre_softmax_value": local_values[flat],
+                "official_post_mask_pre_softmax_value": official_values[flat],
+                "local_minus_official": local_values[flat] - official_values[flat],
+            })
+        };
+        first_worst_mismatch_trace = serde_json::json!({
+            "first": trace_for(&first),
+            "worst": trace_for(&worst),
+        });
+    }
+
+    let official_reference_available =
+        official_reference_path.is_some() && !official_reference_unreadable;
+    let (classification, earliest_remaining_mismatching_seam, next_bounded_step) = if !guards_pass {
+        (
+            "qk_candidate_provenance_guard_regressed",
+            "qk_candidate_provenance_guard",
+            "restore exact Q/K candidate post-RoPE and raw-score guards before checking post-mask attention",
+        )
+    } else if official_reference_unreadable || official_reference_path.is_none() {
+        (
+            "attention_post_mask_official_reference_unreadable",
+            "layer0_final_token_masked_scaled_qk_logits_pre_softmax",
+            "regenerate or preserve the PPP post-mask/pre-softmax reference artifact before comparing",
+        )
+    } else if !shape_matched || !layout_matched {
+        (
+            "attention_post_mask_shape_or_layout_mismatch_after_qk_clear",
+            "layer0_final_token_masked_scaled_qk_logits_pre_softmax",
+            "align post-mask tensor layout/order to official [head, key_or_sink]",
+        )
+    } else if !real_key_columns_matched {
+        (
+            "attention_real_key_mask_application_mismatch_after_qk_clear",
+            "layer0_final_token_masked_scaled_qk_logits_pre_softmax_real_keys",
+            "inspect final-token causal/sliding mask construction only",
+        )
+    } else if !sink_column_matched {
+        (
+            "attention_sink_column_mismatch_after_qk_clear",
+            "layer0_final_token_attention_sink_pre_softmax_column",
+            "inspect layer0 attention sink construction only",
+        )
+    } else {
+        (
+            "attention_post_mask_logits_cleared_after_qk_candidates",
+            "none",
+            "ask PPP for or compare existing final-token attention probabilities / softmax output only",
+        )
+    };
+
+    let summary = serde_json::json!({
+        "schema_version": "runtime_forward_layer0_attention_post_mask_after_qk_candidates_status/v1",
+        "exact_case": {
+            "case_id": "developer-message-user-smoke",
+            "layer_index": 0,
+            "query_position": "final_token",
+        },
+        "mode": "attention-post-mask-after-qk-candidates-status",
+        "source_artifact_paths": {
+            "q_candidate_proof": q_candidate_path,
+            "k_candidate_proof": k_candidate_path,
+            "k_post_rope_and_raw_score_proof": k_post_score_path,
+            "official_post_mask_pre_softmax": official_reference_path,
+            "raw_pre_mask_reference": raw_pre_mask_path,
+        },
+        "qk_candidates_are_bench_proof_only": q_candidate_bench_only && k_candidate_bench_only,
+        "candidate_scope_confirmation": {
+            "q_candidate_change_scope": q_candidate.get("change_scope").cloned(),
+            "q_candidate_runtime_affecting": q_candidate.get("runtime_affecting").cloned(),
+            "k_candidate_change_scope": k_candidate.get("change_scope").cloned(),
+            "k_candidate_runtime_affecting": k_candidate.get("runtime_affecting").cloned(),
+            "not_promoted_to_runtime": true,
+        },
+        "q_post_rope_guard_metrics": q_post_rope_guard,
+        "k_post_rope_guard_metrics": k_post_rope_guard,
+        "raw_scaled_qk_pre_mask_guard_metrics": raw_score_guard,
+        "official_masked_logits_reference_availability": {
+            "available": official_reference_available,
+            "reference_path": official_reference_path,
+            "required_boundary": "layer0_final_token_masked_scaled_qk_logits_pre_softmax",
+            "required_boundary_description": "final-token raw scaled QK logits after causal/sliding/sink mask application and before softmax",
+        },
+        "official_reference_path_or_name": official_reference_path,
+        "official_tensor_metadata": official_tensor_metadata,
+        "local_tensor_metadata": local_tensor_metadata,
+        "mask_metadata": mask_metadata,
+        "sink_metadata": sink_metadata,
+        "shape_matched": shape_matched,
+        "layout_matched": layout_matched,
+        "real_key_columns_matched": real_key_columns_matched,
+        "sink_column_matched": sink_column_matched,
+        "real_key_only_comparison_metrics": real_key_metrics,
+        "sink_only_comparison_metrics": sink_metrics,
+        "all_position_comparison_metrics": all_position_metrics,
+        "masked_logits_comparison_metrics": all_position_metrics,
+        "first_worst_mismatch_trace": first_worst_mismatch_trace,
+        "earliest_remaining_mismatching_seam": earliest_remaining_mismatching_seam,
+        "classification": classification,
+        "runtime_forward_attention_post_mask_after_qk_candidates_status_now": format!(
+            "runtime-forward layer0 attention post-mask after Q/K candidates status now: Q post-RoPE guard matched={}; K post-RoPE guard matched={}; raw pre-mask score guard matched={}; official masked-logits reference available={}; classification={}; next bounded step: {}.",
+            json_metric_matched(&q_post_rope_guard),
+            json_metric_matched(&k_post_rope_guard),
+            json_metric_matched(&raw_score_guard),
+            official_reference_available,
+            classification,
+            next_bounded_step,
+        ),
+        "next_bounded_step": next_bounded_step,
+    });
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::AttentionPostMaskAfterQkCandidatesStatus.default_output());
+    write_pretty_json(&output, &summary)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_attention_probs_after_post_mask_candidates_status(cli: &Cli) -> Result<()> {
+    let post_mask_path =
+        PathBuf::from(DEFAULT_ATTENTION_POST_MASK_AFTER_QK_CANDIDATES_STATUS_OUTPUT);
+    let post_mask: serde_json::Value = load_json_value(&post_mask_path)?;
+    if post_mask
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || post_mask
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("attention_post_mask_logits_cleared_after_qk_candidates")
+    {
+        bail!("source post-mask candidate artifact is not the expected cleared state");
+    }
+
+    let q_candidate_path =
+        PathBuf::from(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT);
+    let k_candidate_path =
+        PathBuf::from(DEFAULT_K_PROJECTION_ONEDNN_ORACLE_SCOPED_HELPER_FIX_STATUS_OUTPUT);
+    let q_candidate: serde_json::Value = load_json_value(&q_candidate_path)?;
+    let k_candidate: serde_json::Value = load_json_value(&k_candidate_path)?;
+
+    let q_post_rope_guard = post_mask
+        .get("q_post_rope_guard_metrics")
+        .cloned()
+        .context("post-mask artifact missing Q post-RoPE guard metrics")?;
+    let k_post_rope_guard = post_mask
+        .get("k_post_rope_guard_metrics")
+        .cloned()
+        .context("post-mask artifact missing K post-RoPE guard metrics")?;
+    let raw_score_guard = post_mask
+        .get("raw_scaled_qk_pre_mask_guard_metrics")
+        .cloned()
+        .context("post-mask artifact missing raw QK pre-mask guard metrics")?;
+    let real_key_logit_guard = post_mask
+        .get("real_key_only_comparison_metrics")
+        .cloned()
+        .context("post-mask artifact missing real-key logit guard metrics")?;
+    let sink_logit_guard = post_mask
+        .get("sink_only_comparison_metrics")
+        .cloned()
+        .context("post-mask artifact missing sink logit guard metrics")?;
+    let all_logit_guard = post_mask
+        .get("all_position_comparison_metrics")
+        .cloned()
+        .context("post-mask artifact missing all-position logit guard metrics")?;
+
+    let guards_pass = json_metric_matched(&q_post_rope_guard)
+        && json_metric_matched(&k_post_rope_guard)
+        && json_metric_matched(&raw_score_guard)
+        && json_metric_matched(&real_key_logit_guard)
+        && json_metric_matched(&sink_logit_guard)
+        && json_metric_matched(&all_logit_guard);
+    let q_candidate_bench_only = q_candidate
+        .get("runtime_affecting")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        && q_candidate
+            .get("change_scope")
+            .and_then(serde_json::Value::as_str)
+            == Some("bench/proof-only");
+    let k_candidate_bench_only = k_candidate
+        .get("runtime_affecting")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        && k_candidate
+            .get("change_scope")
+            .and_then(serde_json::Value::as_str)
+            == Some("bench/proof-only");
+
+    let tmp_official_probs_path =
+        PathBuf::from(DEFAULT_OFFICIAL_ATTENTION_PROBS_POST_SOFTMAX_ARTIFACT);
+    let preserved_official_probs_path =
+        PathBuf::from(DEFAULT_PRESERVED_OFFICIAL_ATTENTION_PROBS_POST_SOFTMAX_ARTIFACT);
+    if tmp_official_probs_path.is_file() {
+        if let Some(parent) = preserved_official_probs_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&tmp_official_probs_path, &preserved_official_probs_path).with_context(
+            || {
+                format!(
+                    "failed to preserve PPP post-softmax artifact {} to {}",
+                    tmp_official_probs_path.display(),
+                    preserved_official_probs_path.display()
+                )
+            },
+        )?;
+    }
+    let official_probs_path = if preserved_official_probs_path.is_file() {
+        preserved_official_probs_path
+    } else {
+        tmp_official_probs_path
+    };
+    let official_probs = load_json_value(&official_probs_path)?;
+    if official_probs
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_attention_probs_post_softmax_captured")
+    {
+        bail!("official post-softmax probability artifact is not the expected PPP capture");
+    }
+    let shape = official_probs
+        .get("shape")
+        .and_then(serde_json::Value::as_array)
+        .context("official probability artifact missing shape")?;
+    let num_heads = shape
+        .first()
+        .and_then(serde_json::Value::as_u64)
+        .context("official probability artifact missing head count")? as usize;
+    let num_key_positions = shape
+        .get(1)
+        .and_then(serde_json::Value::as_u64)
+        .context("official probability artifact missing key-position count")?
+        as usize;
+    if num_key_positions == 0 {
+        bail!("official probability key-position count is zero");
+    }
+    let real_key_count = num_key_positions - 1;
+    let sink_position = real_key_count;
+    let official_values = json_f32_values(&official_probs, "/values")?;
+    if official_values.len() != num_heads * num_key_positions {
+        bail!(
+            "official probability value count {} does not match shape [{}, {}]",
+            official_values.len(),
+            num_heads,
+            num_key_positions
+        );
+    }
+
+    let raw_pre_mask_path = if Path::new(
+        DEFAULT_OFFICIAL_FINAL_TOKEN_RAW_SCALED_QK_LOGITS_PRE_MASK_ARTIFACT,
+    )
+    .is_file()
+    {
+        PathBuf::from(DEFAULT_OFFICIAL_FINAL_TOKEN_RAW_SCALED_QK_LOGITS_PRE_MASK_ARTIFACT)
+    } else {
+        PathBuf::from(".live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json")
+    };
+    let raw_pre_mask = load_json_value(&raw_pre_mask_path)?;
+    let raw_pre_mask_values = json_f32_values(&raw_pre_mask, "/values")?;
+    if raw_pre_mask_values.len() != num_heads * real_key_count {
+        bail!(
+            "raw pre-mask value count {} does not match expected {} x {}",
+            raw_pre_mask_values.len(),
+            num_heads,
+            real_key_count
+        );
+    }
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+    let sinks_f32 = bf16_slice_to_f32(&load_layer0_attention_sinks_bf16(model_root, num_heads)?);
+    let mut local_logits = Vec::with_capacity(num_heads * num_key_positions);
+    for head in 0..num_heads {
+        let raw_start = head * real_key_count;
+        for key in 0..real_key_count {
+            local_logits.push(raw_pre_mask_values[raw_start + key]);
+        }
+        local_logits.push(sinks_f32[head]);
+    }
+    let local_probs = softmax_f32_bf16_output(&local_logits, num_heads, num_key_positions, false);
+
+    let mut local_real = Vec::with_capacity(num_heads * real_key_count);
+    let mut official_real = Vec::with_capacity(num_heads * real_key_count);
+    let mut local_sink = Vec::with_capacity(num_heads);
+    let mut official_sink = Vec::with_capacity(num_heads);
+    for head in 0..num_heads {
+        let full_start = head * num_key_positions;
+        for key in 0..real_key_count {
+            local_real.push(local_probs[full_start + key]);
+            official_real.push(official_values[full_start + key]);
+        }
+        local_sink.push(local_probs[full_start + sink_position]);
+        official_sink.push(official_values[full_start + sink_position]);
+    }
+    let real_key_metrics =
+        metric_with_head_key_locations(&local_real, &official_real, real_key_count, 0);
+    let sink_metrics =
+        metric_with_head_key_locations(&local_sink, &official_sink, 1, sink_position);
+    let all_position_metrics =
+        metric_with_head_key_locations(&local_probs, &official_values, num_key_positions, 0);
+    let local_row_sum_summary = row_sum_summary(&local_probs, num_heads, num_key_positions);
+    let official_row_sum_summary = official_probs
+        .get("probability_row_sum_summary_per_head")
+        .cloned()
+        .unwrap_or_else(|| row_sum_summary(&official_values, num_heads, num_key_positions));
+
+    let shape_matched = official_values.len() == local_probs.len();
+    let layout_matched = official_probs
+        .get("layout_interpretation")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|layout| layout.contains("head-major"));
+    let probabilities_match = json_metric_matched(&real_key_metrics)
+        && json_metric_matched(&sink_metrics)
+        && json_metric_matched(&all_position_metrics);
+
+    let mut softmax_policy_discriminator_table = Vec::new();
+    if !probabilities_match {
+        for (name, bf16_input) in [
+            ("local_runtime_softmax_path", false),
+            ("f32_softmax_bf16_output", false),
+            ("bf16_input_logits_f32_softmax_bf16_output", true),
+        ] {
+            let values =
+                softmax_f32_bf16_output(&local_logits, num_heads, num_key_positions, bf16_input);
+            let mut variant_real = Vec::with_capacity(num_heads * real_key_count);
+            let mut variant_sink = Vec::with_capacity(num_heads);
+            for head in 0..num_heads {
+                let full_start = head * num_key_positions;
+                for key in 0..real_key_count {
+                    variant_real.push(values[full_start + key]);
+                }
+                variant_sink.push(values[full_start + sink_position]);
+            }
+            softmax_policy_discriminator_table.push(serde_json::json!({
+                "name": name,
+                "policy": if bf16_input { "BF16-rounded logits expanded to f32 softmax over axis -1, BF16 output round-trip" } else { "f32 softmax over axis -1, BF16 output round-trip" },
+                "real_key_metric": metric_with_head_key_locations(&variant_real, &official_real, real_key_count, 0),
+                "sink_metric": metric_with_head_key_locations(&variant_sink, &official_sink, 1, sink_position),
+                "all_position_metric": metric_with_head_key_locations(&values, &official_values, num_key_positions, 0),
+                "row_sum_summary": row_sum_summary(&values, num_heads, num_key_positions),
+            }));
+        }
+    }
+    let policy_variant_matches = softmax_policy_discriminator_table.iter().any(|item| {
+        item.pointer("/all_position_metric/matched")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    });
+
+    let first = all_position_metrics
+        .get("first_differing_location")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let worst = all_position_metrics
+        .get("worst_differing_location")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let trace_for = |location: &serde_json::Value| -> serde_json::Value {
+        let Some(head) = location
+            .get("head_index")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            return serde_json::Value::Null;
+        };
+        let Some(key) = location
+            .get("key_or_sink_position")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            return serde_json::Value::Null;
+        };
+        let head = head as usize;
+        let key = key as usize;
+        let flat = head * num_key_positions + key;
+        serde_json::json!({
+            "head_index": head,
+            "key_or_sink_position": key,
+            "position_kind": if key == sink_position { "attention_sink" } else { "real_key" },
+            "local_post_mask_pre_softmax_logit": local_logits[flat],
+            "official_post_mask_pre_softmax_logit_if_available": local_logits[flat],
+            "local_probability": local_probs[flat],
+            "official_probability": official_values[flat],
+            "local_minus_official": local_probs[flat] - official_values[flat],
+            "mismatch_consistency": {
+                "softmax_compute_dtype": "unknown_unless_policy_variant_matches",
+                "bf16_output_cast": true,
+                "sink_handling": key == sink_position,
+                "layout_order": "head-major [head, key_or_sink]",
+                "row_renormalization": false,
+            }
+        })
+    };
+    let first_worst_mismatch_trace = serde_json::json!({
+        "first": trace_for(&first),
+        "worst": trace_for(&worst),
+    });
+
+    let (classification, earliest_remaining_mismatching_seam, next_bounded_step) = if !guards_pass {
+        (
+            "attention_probability_input_guard_regressed",
+            "attention_probability_input_guard",
+            "restore Q/K/raw/post-mask exact guards before checking attention probabilities",
+        )
+    } else if !shape_matched || !layout_matched {
+        (
+            "attention_probability_shape_or_layout_mismatch",
+            "layer0_final_token_attention_probs_post_softmax",
+            "align probability tensor layout/order to official [head, key_or_sink]",
+        )
+    } else if probabilities_match {
+        (
+            "attention_probs_cleared_after_post_mask_candidates",
+            "none",
+            "ask PPP for exactly layer0_final_token_attention_weighted_value_sum_before_output_projection",
+        )
+    } else if json_metric_matched(&real_key_metrics) && !json_metric_matched(&sink_metrics) {
+        (
+            "attention_probability_sink_column_mismatch",
+            "layer0_final_token_attention_probs_post_softmax_sink_column",
+            "inspect attention sink participation in softmax only",
+        )
+    } else if policy_variant_matches {
+        (
+            "attention_softmax_dtype_policy_identified",
+            "layer0_final_token_attention_probs_post_softmax",
+            "prove scoped softmax dtype/output policy before V consumption",
+        )
+    } else {
+        (
+            "attention_softmax_policy_still_unmodeled",
+            "layer0_final_token_attention_probs_post_softmax",
+            "bound one additional softmax policy discriminator before V consumption",
+        )
+    };
+
+    let summary = serde_json::json!({
+        "schema_version": "runtime_forward_layer0_attention_probs_after_post_mask_candidates_status/v1",
+        "exact_case": {
+            "case_id": "developer-message-user-smoke",
+            "layer_index": 0,
+            "query_position": "final_token",
+            "query_token_index": 73,
+        },
+        "mode": "attention-probs-after-post-mask-candidates-status",
+        "source_artifact_paths": {
+            "q_candidate_proof": q_candidate_path,
+            "k_candidate_proof": k_candidate_path,
+            "post_mask_logits_proof": post_mask_path,
+            "official_post_softmax_reference": official_probs_path,
+            "raw_pre_mask_reference": raw_pre_mask_path,
+        },
+        "qk_candidates_are_bench_proof_only": q_candidate_bench_only && k_candidate_bench_only,
+        "candidate_scope_confirmation": {
+            "q_candidate_change_scope": q_candidate.get("change_scope").cloned(),
+            "q_candidate_runtime_affecting": q_candidate.get("runtime_affecting").cloned(),
+            "k_candidate_change_scope": k_candidate.get("change_scope").cloned(),
+            "k_candidate_runtime_affecting": k_candidate.get("runtime_affecting").cloned(),
+            "not_promoted_to_runtime": true,
+        },
+        "q_post_rope_guard_metrics": q_post_rope_guard,
+        "k_post_rope_guard_metrics": k_post_rope_guard,
+        "raw_qk_pre_mask_guard_metrics": raw_score_guard,
+        "post_mask_pre_softmax_guard_metrics": {
+            "real_key_columns": real_key_logit_guard,
+            "sink_column": sink_logit_guard,
+            "all_positions": all_logit_guard,
+        },
+        "official_post_softmax_reference_path": official_probs_path,
+        "official_tensor_metadata": {
+            "shape": official_probs.get("shape").cloned(),
+            "dtype": official_probs.get("tensor_dtype").cloned(),
+            "dtype_before_serialization": official_probs.get("output_dtype_before_serialization").cloned(),
+            "serialization": official_probs.get("serialization_dtype").cloned(),
+            "layout": official_probs.get("layout_interpretation").cloned(),
+            "softmax_axis": official_probs.get("softmax_axis").cloned(),
+            "query_token_index": official_probs.get("query_token_index").cloned(),
+            "real_key_positions": [0, real_key_count - 1],
+            "sink_position": sink_position,
+        },
+        "local_tensor_metadata": {
+            "shape": [num_heads, num_key_positions],
+            "dtype": "float32",
+            "serialization_dtype": "json_f32_values",
+            "layout": "head-major [query_head, key_position_or_sink]",
+            "softmax_axis": -1,
+            "input_logits_dtype": "json_f32_values_from_BF16_exact_post_mask_logits",
+            "softmax_compute_dtype": "f32",
+            "output_dtype_before_serialization": "BF16 round-trip",
+            "bf16_rounded_before_comparison": true,
+            "row_sums_computed": "after BF16 output serialization",
+        },
+        "real_key_probability_metrics": real_key_metrics,
+        "sink_probability_metrics": sink_metrics,
+        "all_position_probability_metrics": all_position_metrics,
+        "local_row_sum_summary": local_row_sum_summary,
+        "official_row_sum_summary": official_row_sum_summary,
+        "softmax_policy_discriminator_table": softmax_policy_discriminator_table,
+        "first_worst_mismatch_trace": first_worst_mismatch_trace,
+        "earliest_remaining_mismatching_seam": earliest_remaining_mismatching_seam,
+        "classification": classification,
+        "runtime_forward_attention_probs_after_post_mask_candidates_status_now": format!(
+            "runtime-forward layer0 attention probabilities after post-mask candidates status now: Q/K/raw/post-mask guards matched={}; probabilities all-position matched={}; classification={}; next bounded step: {}.",
+            guards_pass,
+            json_metric_matched(&all_position_metrics),
+            classification,
+            next_bounded_step,
+        ),
+        "next_bounded_step": next_bounded_step,
+    });
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::AttentionProbsAfterPostMaskCandidatesStatus.default_output());
+    write_pretty_json(&output, &summary)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_attention_weighted_v_sum_before_o_proj_after_probs_candidates_status(
+    cli: &Cli,
+) -> Result<()> {
+    let probs_path =
+        PathBuf::from(DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT);
+    let probs_artifact = load_json_value(&probs_path)?;
+    if probs_artifact
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || probs_artifact
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("attention_probs_cleared_after_post_mask_candidates")
+    {
+        bail!("source attention probabilities artifact is not the expected cleared state");
+    }
+
+    let tmp_official_weighted_v_path =
+        PathBuf::from(DEFAULT_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT);
+    let preserved_official_weighted_v_path =
+        PathBuf::from(DEFAULT_PRESERVED_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT);
+    if tmp_official_weighted_v_path.is_file() {
+        if let Some(parent) = preserved_official_weighted_v_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(
+            &tmp_official_weighted_v_path,
+            &preserved_official_weighted_v_path,
+        )
+        .with_context(|| {
+            format!(
+                "failed to preserve PPP weighted V sum artifact {} to {}",
+                tmp_official_weighted_v_path.display(),
+                preserved_official_weighted_v_path.display()
+            )
+        })?;
+    }
+    let official_weighted_v_path = if preserved_official_weighted_v_path.is_file() {
+        preserved_official_weighted_v_path
+    } else {
+        tmp_official_weighted_v_path
+    };
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+    let max_model_len = input_artifact.provenance.max_model_len.unwrap_or(128);
+    let gpu_memory_utilization = input_artifact
+        .provenance
+        .gpu_memory_utilization
+        .unwrap_or(0.75);
+
+    let output = cli.output.clone().unwrap_or_else(|| {
+        Mode::AttentionWeightedVSumBeforeOProjAfterProbsCandidatesStatus.default_output()
+    });
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let _dense_guard = EnvFlagGuard::set(BF16_DENSE_QKV_ENV, true);
+    let worker = build_worker(model_root, max_model_len, gpu_memory_utilization)?;
+    let trace = capture_layer0_qkv_trace(&worker, &input_case.input_token_ids)?;
+    if !trace.branch_taken {
+        bail!("local weighted-V diagnostic capture did not take the BF16 dense-QKV branch");
+    }
+    let expected_qkv_len = trace
+        .num_tokens
+        .checked_mul(trace.qkv_dim)
+        .context("QKV trace length overflow")?;
+    if trace.qkv_projection_output.len() != expected_qkv_len {
+        bail!(
+            "unexpected qkv projection output length: expected {}, found {}",
+            expected_qkv_len,
+            trace.qkv_projection_output.len()
+        );
+    }
+    let v_start = trace.q_dim + trace.kv_dim;
+    let v_end = v_start + trace.kv_dim;
+    if v_end > trace.qkv_dim {
+        bail!(
+            "canonical V slice range [{}, {}) exceeds qkv dim {}",
+            v_start,
+            v_end,
+            trace.qkv_dim
+        );
+    }
+    let mut local_v = Vec::with_capacity(trace.num_tokens * trace.kv_dim);
+    for token in 0..trace.num_tokens {
+        let row_start = token * trace.qkv_dim;
+        local_v.extend_from_slice(
+            &trace.qkv_projection_output[row_start + v_start..row_start + v_end],
+        );
+    }
+    let local_v_capture_path = output.with_file_name(
+        "developer-message.runner-layer0-attention-weighted-v-sum-before-o-proj.local-v-capture.json",
+    );
+    write_pretty_json(
+        &local_v_capture_path,
+        &serde_json::json!({
+            "schema_version": "runtime_forward_layer0_local_v_projection_capture/v1",
+            "case_id": "developer-message-user-smoke",
+            "boundary": "layer0_v_projection_before_attention_weighted_sum_runtime_debug_capture",
+            "num_tokens": trace.num_tokens,
+            "hidden_size": input_case.hidden_size,
+            "q_dim": trace.q_dim,
+            "kv_dim": trace.kv_dim,
+            "qkv_dim": trace.qkv_dim,
+            "v_slice_range": [v_start, v_end],
+            "local_v_shape": [trace.num_tokens, trace.kv_dim / 64, 64],
+            "local_v_layout": "[token, kv_head, head_dim]",
+            "local_v_source": "runtime debug capture qkv_projection_output canonical V slice before attention weighted sum",
+            "local_v_f32": local_v,
+        }),
+    )?;
+
+    let verbose_log = output.with_file_name(
+        "developer-message.runner-layer0-attention-weighted-v-sum-before-o-proj-after-probs-candidates.onednn.log",
+    );
+    let script_path =
+        PathBuf::from(DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_SCRIPT);
+    let status = Command::new(&cli.torch_python)
+        .arg(&script_path)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--attention-probs-proof")
+        .arg(&probs_path)
+        .arg("--q-candidate")
+        .arg(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT)
+        .arg("--k-candidate")
+        .arg(DEFAULT_K_PROJECTION_ONEDNN_ORACLE_SCOPED_HELPER_FIX_STATUS_OUTPUT)
+        .arg("--rmsnorm-replay")
+        .arg(DEFAULT_LAYER0_ATTN_RMSNORM_ALL_TOKEN_BF16_REPLAY_OFFICIAL_SIDE_OUTPUT)
+        .arg("--local-v-capture")
+        .arg(&local_v_capture_path)
+        .arg("--official-weighted-v")
+        .arg(&official_weighted_v_path)
+        .arg("--output")
+        .arg(&output)
+        .arg("--verbose-log")
+        .arg(&verbose_log)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run weighted V sum diagnostic script {} with {}",
+                script_path.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "weighted V sum diagnostic script failed with status {:?}; see {}",
+            status.code(),
+            verbose_log.display()
+        );
+    }
+
+    let summary = load_json_value(&output)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_v_projection_weight_bias_arithmetic_policy_status(cli: &Cli) -> Result<()> {
+    let weighted_v_status_path = PathBuf::from(
+        DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_STATUS_OUTPUT,
+    );
+    let weighted_v_status = load_json_value(&weighted_v_status_path)?;
+    if weighted_v_status
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || weighted_v_status
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("attention_weighted_v_sum_blocked_by_v_provenance_mismatch")
+    {
+        bail!("source weighted-V status artifact is not the expected V provenance mismatch state");
+    }
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+    let max_model_len = input_artifact.provenance.max_model_len.unwrap_or(128);
+    let gpu_memory_utilization = input_artifact
+        .provenance
+        .gpu_memory_utilization
+        .unwrap_or(0.75);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::VProjectionWeightBiasArithmeticPolicyStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let _dense_guard = EnvFlagGuard::set(BF16_DENSE_QKV_ENV, true);
+    let worker = build_worker(model_root, max_model_len, gpu_memory_utilization)?;
+    let trace = capture_layer0_qkv_trace(&worker, &input_case.input_token_ids)?;
+    if !trace.branch_taken {
+        bail!("local V projection diagnostic capture did not take the BF16 dense-QKV branch");
+    }
+    let token_count = trace.num_tokens;
+    let expected_qkv_len = token_count
+        .checked_mul(trace.qkv_dim)
+        .context("QKV trace length overflow")?;
+    if trace.qkv_projection_output.len() != expected_qkv_len {
+        bail!(
+            "unexpected qkv projection output length: expected {}, found {}",
+            expected_qkv_len,
+            trace.qkv_projection_output.len()
+        );
+    }
+
+    let v_feature_start = trace.q_dim + trace.kv_dim;
+    let v_feature_end = v_feature_start + trace.kv_dim;
+    if v_feature_end > trace.qkv_dim {
+        bail!(
+            "canonical V feature range [{}, {}) exceeds qkv dim {}",
+            v_feature_start,
+            v_feature_end,
+            trace.qkv_dim
+        );
+    }
+    let mut row_major_v = Vec::with_capacity(token_count * trace.kv_dim);
+    for token in 0..token_count {
+        let row_start = token * trace.qkv_dim;
+        row_major_v.extend_from_slice(
+            &trace.qkv_projection_output[row_start + v_feature_start..row_start + v_feature_end],
+        );
+    }
+    let slice_major_start = token_count
+        .checked_mul(trace.q_dim + trace.kv_dim)
+        .context("slice-major V start overflow")?;
+    let slice_major_end = slice_major_start
+        .checked_add(token_count * trace.kv_dim)
+        .context("slice-major V end overflow")?;
+    if slice_major_end > trace.qkv_projection_output.len() {
+        bail!(
+            "slice-major V range [{}, {}) exceeds qkv output length {}",
+            slice_major_start,
+            slice_major_end,
+            trace.qkv_projection_output.len()
+        );
+    }
+    let slice_major_v = trace.qkv_projection_output[slice_major_start..slice_major_end].to_vec();
+
+    let local_v_capture_path = output.with_file_name(
+        "developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy.local-v-capture.json",
+    );
+    write_pretty_json(
+        &local_v_capture_path,
+        &serde_json::json!({
+            "schema_version": "runtime_forward_layer0_v_projection_local_capture/v1",
+            "case_id": "developer-message-user-smoke",
+            "boundary": "layer0_v_projection_before_attention_weighted_sum_runtime_debug_capture",
+            "num_tokens": token_count,
+            "hidden_size": input_case.hidden_size,
+            "q_dim": trace.q_dim,
+            "kv_dim": trace.kv_dim,
+            "qkv_dim": trace.qkv_dim,
+            "v_feature_range_in_token_major_hypothesis": [v_feature_start, v_feature_end],
+            "v_slice_range_in_slice_major_hypothesis": [slice_major_start, slice_major_end],
+            "local_v_shape": [token_count, trace.kv_dim / 64, 64],
+            "local_v_layout": "[token, kv_head, head_dim]",
+            "source": "runtime debug capture qkv_projection_output with both row-major and slice-major V readout hypotheses",
+            "row_major_hypothesis_v_f32": row_major_v,
+            "slice_major_hypothesis_v_f32": slice_major_v,
+        }),
+    )?;
+
+    let verbose_log = output.with_file_name(
+        "developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy.onednn.log",
+    );
+    let script_path = PathBuf::from(DEFAULT_V_PROJECTION_WEIGHT_BIAS_ARITHMETIC_POLICY_SCRIPT);
+    let status = Command::new(&cli.torch_python)
+        .arg(&script_path)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--weighted-v-status")
+        .arg(&weighted_v_status_path)
+        .arg("--attention-probs-proof")
+        .arg(DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT)
+        .arg("--q-candidate")
+        .arg(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT)
+        .arg("--k-candidate")
+        .arg(DEFAULT_K_PROJECTION_ONEDNN_ORACLE_SCOPED_HELPER_FIX_STATUS_OUTPUT)
+        .arg("--rmsnorm-replay")
+        .arg(DEFAULT_LAYER0_ATTN_RMSNORM_ALL_TOKEN_BF16_REPLAY_OFFICIAL_SIDE_OUTPUT)
+        .arg("--local-v-capture")
+        .arg(&local_v_capture_path)
+        .arg("--official-weighted-v")
+        .arg(DEFAULT_PRESERVED_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT)
+        .arg("--output")
+        .arg(&output)
+        .arg("--verbose-log")
+        .arg(&verbose_log)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run V projection policy diagnostic script {} with {}",
+                script_path.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "V projection policy diagnostic script failed with status {:?}; see {}",
+            status.code(),
+            verbose_log.display()
+        );
+    }
+
+    let summary = load_json_value(&output)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_v_projection_onednn_oracle_scoped_candidate_status(cli: &Cli) -> Result<()> {
+    let source_v_policy_path =
+        PathBuf::from(DEFAULT_V_PROJECTION_WEIGHT_BIAS_ARITHMETIC_POLICY_STATUS_OUTPUT);
+    let source_v_policy = load_json_value(&source_v_policy_path)?;
+    if source_v_policy
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_v_policy
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("v_projection_arithmetic_policy_mismatch_after_weight_bias_clear")
+    {
+        bail!("source V weight/bias/arithmetic artifact is not the expected exact policy mismatch state");
+    }
+
+    let local_v_capture = source_v_policy
+        .pointer("/source_artifact_paths/local_v_capture")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            source_v_policy_path.with_file_name(
+                "developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy.local-v-capture.json",
+            )
+        });
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::VProjectionOnednnOracleScopedCandidateStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let verbose_log = output.with_file_name(
+        "developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate.onednn.log",
+    );
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.v_projection_onednn_oracle_scoped_candidate_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-v-policy")
+        .arg(&source_v_policy_path)
+        .arg("--weighted-v-status")
+        .arg(DEFAULT_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_AFTER_PROBS_CANDIDATES_STATUS_OUTPUT)
+        .arg("--attention-probs-proof")
+        .arg(DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT)
+        .arg("--q-candidate")
+        .arg(DEFAULT_Q_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT)
+        .arg("--k-candidate")
+        .arg(DEFAULT_K_PROJECTION_ONEDNN_ORACLE_SCOPED_HELPER_FIX_STATUS_OUTPUT)
+        .arg("--rmsnorm-replay")
+        .arg(DEFAULT_LAYER0_ATTN_RMSNORM_ALL_TOKEN_BF16_REPLAY_OFFICIAL_SIDE_OUTPUT)
+        .arg("--local-v-capture")
+        .arg(&local_v_capture)
+        .arg("--official-weighted-v")
+        .arg(DEFAULT_PRESERVED_OFFICIAL_ATTENTION_WEIGHTED_V_SUM_BEFORE_O_PROJ_ARTIFACT)
+        .arg("--output")
+        .arg(&output)
+        .arg("--verbose-log")
+        .arg(&verbose_log)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run V oneDNN scoped candidate script {} with {}",
+                cli.v_projection_onednn_oracle_scoped_candidate_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "V oneDNN scoped candidate script failed with status {:?}; see {}",
+            status.code(),
+            verbose_log.display()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read V oneDNN scoped candidate artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("v-projection-onednn-oracle-scoped-candidate-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("V oneDNN scoped candidate artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_layer0_attention_o_proj_before_residual_status(cli: &Cli) -> Result<()> {
+    let source_v_candidate_path =
+        PathBuf::from(DEFAULT_V_PROJECTION_ONEDNN_ORACLE_SCOPED_CANDIDATE_STATUS_OUTPUT);
+    let source_v_candidate = load_json_value(&source_v_candidate_path)?;
+    if source_v_candidate
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || !json_metric_matched(
+            source_v_candidate
+                .pointer(
+                    "/weighted_v_sum_before_o_proj_metrics/candidate_v_weighted_sum_vs_official",
+                )
+                .unwrap_or(&serde_json::Value::Null),
+        )
+    {
+        bail!("source V candidate artifact does not have a clean weighted-V guard");
+    }
+
+    let ppp_path = PathBuf::from(DEFAULT_OFFICIAL_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_ARTIFACT);
+    let ppp = load_json_value(&ppp_path)?;
+    if ppp
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_attention_o_proj_before_residual_boundary_available")
+        || ppp.get("boundary").and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_attention_output_after_o_proj_before_residual")
+    {
+        bail!(
+            "official attention o_proj before residual PPP artifact is not the expected boundary"
+        );
+    }
+
+    let (input_artifact, input_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &input_artifact,
+        &input_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &input_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&input_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::Layer0AttentionOProjBeforeResidualStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let verbose_log = output.with_file_name(
+        "developer-message.runner-layer0-attention-o-proj-before-residual.onednn.log",
+    );
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.layer0_attention_o_proj_before_residual_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-v-candidate")
+        .arg(&source_v_candidate_path)
+        .arg("--attention-probs-proof")
+        .arg(DEFAULT_ATTENTION_PROBS_AFTER_POST_MASK_CANDIDATES_STATUS_OUTPUT)
+        .arg("--rmsnorm-replay")
+        .arg(DEFAULT_LAYER0_ATTN_RMSNORM_ALL_TOKEN_BF16_REPLAY_OFFICIAL_SIDE_OUTPUT)
+        .arg("--official-o-proj")
+        .arg(&ppp_path)
+        .arg("--output")
+        .arg(&output)
+        .arg("--verbose-log")
+        .arg(&verbose_log)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run layer0 attention o_proj before residual script {} with {}",
+                cli.layer0_attention_o_proj_before_residual_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "layer0 attention o_proj before residual script failed with status {:?}; see {}",
+            status.code(),
+            verbose_log.display()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read layer0 attention o_proj before residual artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("layer0-attention-o-proj-before-residual-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("layer0 attention o_proj before residual artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_attention_residual_add_before_mlp_after_o_proj_candidates_status(cli: &Cli) -> Result<()> {
+    let source_o_proj_path =
+        PathBuf::from(DEFAULT_LAYER0_ATTENTION_O_PROJ_BEFORE_RESIDUAL_STATUS_OUTPUT);
+    let source_o_proj = load_json_value(&source_o_proj_path)?;
+    if source_o_proj
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_o_proj
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_attention_o_proj_before_residual_cleared")
+    {
+        bail!("source attention o_proj artifact is not the expected cleared state");
+    }
+
+    let official_residual_add_path =
+        PathBuf::from(DEFAULT_OFFICIAL_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_ARTIFACT);
+    let official_residual_add = load_json_value(&official_residual_add_path)?;
+    if official_residual_add
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_attention_residual_add_before_mlp_captured")
+        || official_residual_add
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_hidden_state_after_attention_residual_add_before_mlp")
+    {
+        bail!(
+            "official attention residual-add before MLP PPP artifact is not the expected boundary"
+        );
+    }
+
+    let output = cli.output.clone().unwrap_or_else(|| {
+        Mode::AttentionResidualAddBeforeMlpAfterOProjCandidatesStatus.default_output()
+    });
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.attention_residual_add_before_mlp_after_o_proj_candidates_script)
+        .arg("--source-o-proj")
+        .arg(&source_o_proj_path)
+        .arg("--official-residual-add")
+        .arg(&official_residual_add_path)
+        .arg("--rmsnorm-replay")
+        .arg(DEFAULT_LAYER0_ATTN_RMSNORM_ALL_TOKEN_BF16_REPLAY_OFFICIAL_SIDE_OUTPUT)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run attention residual-add before MLP script {} with {}",
+                cli.attention_residual_add_before_mlp_after_o_proj_candidates_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "attention residual-add before MLP script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read attention residual-add before MLP artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("attention-residual-add-before-mlp-after-o-proj-candidates-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("attention residual-add before MLP artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_norm_before_projections_after_attn_residual_status(cli: &Cli) -> Result<()> {
+    let source_residual_add_path = PathBuf::from(
+        DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_STATUS_OUTPUT,
+    );
+    let source_residual_add = load_json_value(&source_residual_add_path)?;
+    if source_residual_add
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_residual_add
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("attention_residual_add_before_mlp_cleared_after_o_proj_candidates")
+    {
+        bail!("source attention residual-add artifact is not the expected cleared state");
+    }
+
+    let official_mlp_norm_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_NORM_BEFORE_PROJECTIONS_ARTIFACT);
+    let official_mlp_norm = load_json_value(&official_mlp_norm_path)?;
+    if official_mlp_norm
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_mlp_norm_output_before_mlp_projections_captured")
+        || official_mlp_norm
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_mlp_norm_output_before_mlp_projections")
+    {
+        bail!("official MLP norm PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpNormBeforeProjectionsAfterAttnResidualStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_norm_before_projections_after_attn_residual_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-residual-add")
+        .arg(&source_residual_add_path)
+        .arg("--official-mlp-norm")
+        .arg(&official_mlp_norm_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP norm before projections script {} with {}",
+                cli.mlp_norm_before_projections_after_attn_residual_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP norm before projections script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP norm before projections artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-norm-before-projections-after-attn-residual-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP norm before projections artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_router_logits_before_routing_after_norm_status(cli: &Cli) -> Result<()> {
+    let source_mlp_norm_path =
+        PathBuf::from(DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_STATUS_OUTPUT);
+    let source_mlp_norm = load_json_value(&source_mlp_norm_path)?;
+    if source_mlp_norm
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_mlp_norm
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("mlp_norm_before_projections_cleared_after_attention_residual")
+    {
+        bail!("source MLP norm artifact is not the expected cleared state");
+    }
+
+    let official_router_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_ROUTER_LOGITS_BEFORE_ROUTING_ARTIFACT);
+    let official_router = load_json_value(&official_router_path)?;
+    if official_router
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_mlp_router_logits_before_routing_captured")
+        || official_router
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_mlp_router_logits_before_routing")
+    {
+        bail!("official MLP router logits PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpRouterLogitsBeforeRoutingAfterNormStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_router_logits_before_routing_after_norm_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-mlp-norm")
+        .arg(&source_mlp_norm_path)
+        .arg("--official-router-logits")
+        .arg(&official_router_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP router logits script {} with {}",
+                cli.mlp_router_logits_before_routing_after_norm_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP router logits script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP router logits artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-router-logits-before-routing-after-norm-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP router logits artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_topk_routing_after_router_logits_status(cli: &Cli) -> Result<()> {
+    let source_router_path =
+        PathBuf::from(DEFAULT_MLP_ROUTER_LOGITS_BEFORE_ROUTING_AFTER_NORM_STATUS_OUTPUT);
+    let source_router = load_json_value(&source_router_path)?;
+    if source_router
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_router
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("router_logits_before_routing_cleared_after_mlp_norm")
+    {
+        bail!("source MLP router logits artifact is not the expected cleared state");
+    }
+
+    let official_topk_path = PathBuf::from(DEFAULT_OFFICIAL_MLP_TOPK_ROUTING_ARTIFACT);
+    let official_topk = load_json_value(&official_topk_path)?;
+    if official_topk
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_mlp_topk_indices_and_routing_weights_captured")
+        || official_topk
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_mlp_topk_expert_indices_and_routing_weights")
+    {
+        bail!("official MLP top-k/routing PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpTopkRoutingAfterRouterLogitsStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_topk_routing_after_router_logits_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-router-logits")
+        .arg(&source_router_path)
+        .arg("--official-topk-routing")
+        .arg(&official_topk_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP top-k routing script {} with {}",
+                cli.mlp_topk_routing_after_router_logits_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP top-k routing script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP top-k routing artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-topk-routing-after-router-logits-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP top-k routing artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_selected_expert_outputs_before_routing_weighted_sum_status(cli: &Cli) -> Result<()> {
+    let source_topk_path =
+        PathBuf::from(DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT);
+    let source_topk = load_json_value(&source_topk_path)?;
+    if source_topk
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_topk
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("topk_routing_weights_cleared_after_router_logits")
+    {
+        bail!("source MLP top-k/routing artifact is not the expected cleared state");
+    }
+
+    let official_selected_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_SELECTED_EXPERT_OUTPUTS_ARTIFACT);
+    let official_selected = load_json_value(&official_selected_path)?;
+    if official_selected
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some(
+            "official_layer0_final_token_selected_expert_outputs_before_routing_weighted_sum_captured",
+        )
+        || official_selected
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_selected_expert_outputs_before_routing_weighted_sum")
+    {
+        bail!("official selected expert outputs PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli.output.clone().unwrap_or_else(|| {
+        Mode::MlpSelectedExpertOutputsBeforeRoutingWeightedSumStatus.default_output()
+    });
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_selected_expert_outputs_before_routing_weighted_sum_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-topk-routing")
+        .arg(&source_topk_path)
+        .arg("--official-selected-expert-outputs")
+        .arg(&official_selected_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP selected expert outputs script {} with {}",
+                cli.mlp_selected_expert_outputs_before_routing_weighted_sum_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP selected expert outputs script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP selected expert outputs artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-selected-expert-outputs-before-routing-weighted-sum-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP selected expert outputs artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_expert30_mlp1_before_swiglu_status(cli: &Cli) -> Result<()> {
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let source_topk_path =
+        PathBuf::from(DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT);
+    let source_topk = load_json_value(&source_topk_path)?;
+    if source_topk
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_topk
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("topk_routing_weights_cleared_after_router_logits")
+    {
+        bail!("source MLP top-k/routing artifact is not the expected cleared state");
+    }
+
+    let source_mlp_norm_path =
+        PathBuf::from(DEFAULT_MLP_NORM_BEFORE_PROJECTIONS_AFTER_ATTN_RESIDUAL_STATUS_OUTPUT);
+    let source_mlp_norm = load_json_value(&source_mlp_norm_path)?;
+    if source_mlp_norm
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_mlp_norm
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("mlp_norm_before_projections_cleared_after_attention_residual")
+    {
+        bail!("source MLP norm artifact is not the expected cleared state");
+    }
+
+    let official_mlp1_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_ARTIFACT);
+    let official_mlp1 = load_json_value(&official_mlp1_path)?;
+    if official_mlp1
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_expert30_mlp1_output_before_swiglu_captured")
+        || official_mlp1
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_expert30_mlp1_output_before_swiglu")
+    {
+        bail!("official expert30 mlp1 PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpExpert30Mlp1BeforeSwigluStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_expert30_mlp1_before_swiglu_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--source-topk-routing")
+        .arg(&source_topk_path)
+        .arg("--source-mlp-norm")
+        .arg(&source_mlp_norm_path)
+        .arg("--official-expert30-mlp1")
+        .arg(&official_mlp1_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run expert30 mlp1 script {} with {}",
+                cli.mlp_expert30_mlp1_before_swiglu_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "expert30 mlp1 script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!("failed to read expert30 mlp1 artifact {}", output.display())
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-expert30-mlp1-before-swiglu-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("expert30 mlp1 artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_expert30_swiglu_before_mlp2_status(cli: &Cli) -> Result<()> {
+    let source_mlp1_path = PathBuf::from(DEFAULT_MLP_EXPERT30_MLP1_BEFORE_SWIGLU_STATUS_OUTPUT);
+    let source_mlp1 = load_json_value(&source_mlp1_path)?;
+    if source_mlp1
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_mlp1
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_mlp1_before_swiglu_cleared")
+    {
+        bail!("source expert30 mlp1 artifact is not the expected cleared state");
+    }
+
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let source_topk_path =
+        PathBuf::from(DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT);
+    let source_topk = load_json_value(&source_topk_path)?;
+    if source_topk
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_topk
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("topk_routing_weights_cleared_after_router_logits")
+    {
+        bail!("source MLP top-k/routing artifact is not the expected cleared state");
+    }
+
+    let official_swiglu_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_ARTIFACT);
+    let official_swiglu = load_json_value(&official_swiglu_path)?;
+    if official_swiglu
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_expert30_swiglu_output_before_mlp2_captured")
+        || official_swiglu
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_expert30_swiglu_output_before_mlp2")
+    {
+        bail!("official expert30 SwiGLU PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpExpert30SwigluBeforeMlp2Status.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_expert30_swiglu_before_mlp2_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-expert30-mlp1")
+        .arg(&source_mlp1_path)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--source-topk-routing")
+        .arg(&source_topk_path)
+        .arg("--official-expert30-swiglu")
+        .arg(&official_swiglu_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run expert30 SwiGLU script {} with {}",
+                cli.mlp_expert30_swiglu_before_mlp2_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "expert30 SwiGLU script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read expert30 SwiGLU artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-expert30-swiglu-before-mlp2-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("expert30 SwiGLU artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_expert30_mlp2_before_bias_status(cli: &Cli) -> Result<()> {
+    let source_swiglu_path = PathBuf::from(DEFAULT_MLP_EXPERT30_SWIGLU_BEFORE_MLP2_STATUS_OUTPUT);
+    let source_swiglu = load_json_value(&source_swiglu_path)?;
+    if source_swiglu
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_swiglu
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_swiglu_before_mlp2_cleared")
+    {
+        bail!("source expert30 SwiGLU artifact is not the expected cleared state");
+    }
+
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let official_mlp2_path = PathBuf::from(DEFAULT_OFFICIAL_MLP_EXPERT30_MLP2_BEFORE_BIAS_ARTIFACT);
+    let official_mlp2 = load_json_value(&official_mlp2_path)?;
+    if official_mlp2
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_expert30_mlp2_output_before_bias_captured")
+        || official_mlp2
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_expert30_mlp2_output_before_bias")
+    {
+        bail!("official expert30 mlp2-before-bias PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpExpert30Mlp2BeforeBiasStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_expert30_mlp2_before_bias_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-expert30-swiglu")
+        .arg(&source_swiglu_path)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--official-expert30-mlp2")
+        .arg(&official_mlp2_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run expert30 mlp2-before-bias script {} with {}",
+                cli.mlp_expert30_mlp2_before_bias_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "expert30 mlp2-before-bias script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read expert30 mlp2-before-bias artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-expert30-mlp2-before-bias-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("expert30 mlp2-before-bias artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_expert30_mlp2_bias_to_selected_output_status(cli: &Cli) -> Result<()> {
+    let source_mlp2_path = PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_STATUS_OUTPUT);
+    let source_mlp2 = load_json_value(&source_mlp2_path)?;
+    if source_mlp2
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_mlp2
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_mlp2_before_bias_cleared")
+    {
+        bail!("source expert30 mlp2-before-bias artifact is not the expected cleared state");
+    }
+
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let official_selected_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_SELECTED_EXPERT_OUTPUTS_ARTIFACT);
+    let official_selected = load_json_value(&official_selected_path)?;
+    if official_selected
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some(
+            "official_layer0_final_token_selected_expert_outputs_before_routing_weighted_sum_captured",
+        )
+        || official_selected
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_selected_expert_outputs_before_routing_weighted_sum")
+    {
+        bail!("official selected expert outputs PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpExpert30Mlp2BiasToSelectedOutputStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_expert30_mlp2_bias_to_selected_output_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-expert30-mlp2")
+        .arg(&source_mlp2_path)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--official-selected-expert-outputs")
+        .arg(&official_selected_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run expert30 mlp2 bias-to-selected-output script {} with {}",
+                cli.mlp_expert30_mlp2_bias_to_selected_output_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "expert30 mlp2 bias-to-selected-output script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read expert30 mlp2 bias-to-selected-output artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-expert30-mlp2-bias-to-selected-output-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("expert30 mlp2 bias-to-selected-output artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_selected_expert_output_capture_readout_localization_status(cli: &Cli) -> Result<()> {
+    let source_bias_path =
+        PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_STATUS_OUTPUT);
+    let source_bias = load_json_value(&source_bias_path)?;
+    if source_bias
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_bias
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_selected_output_capture_or_readout_mismatch_after_bias_clear")
+    {
+        bail!("source expert30 bias-to-selected-output artifact is not the expected capture/readout mismatch state");
+    }
+
+    let source_mlp2_path = PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BEFORE_BIAS_STATUS_OUTPUT);
+    let source_mlp2 = load_json_value(&source_mlp2_path)?;
+    if source_mlp2
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_mlp2
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_mlp2_before_bias_cleared")
+    {
+        bail!("source expert30 mlp2-before-bias artifact is not cleared");
+    }
+
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let official_selected_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_SELECTED_EXPERT_OUTPUTS_ARTIFACT);
+    let official_selected = load_json_value(&official_selected_path)?;
+    if official_selected
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some(
+            "official_layer0_final_token_selected_expert_outputs_before_routing_weighted_sum_captured",
+        )
+        || official_selected
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_selected_expert_outputs_before_routing_weighted_sum")
+    {
+        bail!("official selected expert outputs PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli.output.clone().unwrap_or_else(|| {
+        Mode::MlpSelectedExpertOutputCaptureReadoutLocalizationStatus.default_output()
+    });
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_selected_expert_output_capture_readout_localization_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-bias-to-selected-output")
+        .arg(&source_bias_path)
+        .arg("--source-expert30-mlp2")
+        .arg(&source_mlp2_path)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--official-selected-expert-outputs")
+        .arg(&official_selected_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run selected expert output capture/readout localization script {} with {}",
+                cli.mlp_selected_expert_output_capture_readout_localization_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "selected expert output capture/readout localization script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read selected expert output capture/readout localization artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-selected-expert-output-capture-readout-localization-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("selected expert output capture/readout localization artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_selected_expert_output_capture_readout_fix_status(cli: &Cli) -> Result<()> {
+    let source_localization_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_LOCALIZATION_STATUS_OUTPUT,
+    );
+    let source_localization = load_json_value(&source_localization_path)?;
+    if source_localization
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_localization
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_output_staging_or_copy_readout_mismatch")
+    {
+        bail!("source selected expert output localization artifact is not the expected staging/readout mismatch");
+    }
+
+    let source_bias_path =
+        PathBuf::from(DEFAULT_MLP_EXPERT30_MLP2_BIAS_TO_SELECTED_OUTPUT_STATUS_OUTPUT);
+    let source_bias = load_json_value(&source_bias_path)?;
+    if source_bias
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_bias
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("expert30_selected_output_capture_or_readout_mismatch_after_bias_clear")
+    {
+        bail!("source expert30 bias-to-selected-output artifact is not the expected mismatch");
+    }
+
+    let source_selected_path = PathBuf::from(
+        DEFAULT_MLP_SELECTED_EXPERT_OUTPUTS_BEFORE_ROUTING_WEIGHTED_SUM_STATUS_OUTPUT,
+    );
+    let source_selected = load_json_value(&source_selected_path)?;
+    if source_selected
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_selected
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_outputs_mismatch_before_routing_weighted_sum")
+    {
+        bail!("source selected expert outputs artifact is not the expected mismatch state");
+    }
+
+    let official_selected_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_SELECTED_EXPERT_OUTPUTS_ARTIFACT);
+    let official_selected = load_json_value(&official_selected_path)?;
+    if official_selected
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some(
+            "official_layer0_final_token_selected_expert_outputs_before_routing_weighted_sum_captured",
+        )
+        || official_selected
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_selected_expert_outputs_before_routing_weighted_sum")
+    {
+        bail!("official selected expert outputs PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpSelectedExpertOutputCaptureReadoutFixStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_selected_expert_output_capture_readout_fix_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-localization")
+        .arg(&source_localization_path)
+        .arg("--source-bias-to-selected-output")
+        .arg(&source_bias_path)
+        .arg("--source-selected-expert-outputs")
+        .arg(&source_selected_path)
+        .arg("--official-selected-expert-outputs")
+        .arg(&official_selected_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run selected expert output capture/readout fix script {} with {}",
+                cli.mlp_selected_expert_output_capture_readout_fix_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "selected expert output capture/readout fix script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read selected expert output capture/readout fix artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-selected-expert-output-capture-readout-fix-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("selected expert output capture/readout fix artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_weighted_expert_sum_before_residual_status(cli: &Cli) -> Result<()> {
+    let source_fix_path =
+        PathBuf::from(DEFAULT_MLP_SELECTED_EXPERT_OUTPUT_CAPTURE_READOUT_FIX_STATUS_OUTPUT);
+    let source_fix = load_json_value(&source_fix_path)?;
+    if source_fix
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_fix
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("selected_expert_output_capture_readout_fix_proven")
+    {
+        bail!("source selected expert output fix artifact is not proven");
+    }
+
+    let source_topk_path =
+        PathBuf::from(DEFAULT_MLP_TOPK_ROUTING_AFTER_ROUTER_LOGITS_STATUS_OUTPUT);
+    let source_topk = load_json_value(&source_topk_path)?;
+    if source_topk
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_topk
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("topk_routing_weights_cleared_after_router_logits")
+    {
+        bail!("source top-k/routing artifact is not cleared");
+    }
+
+    let official_weighted_sum_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_ARTIFACT);
+    let official_weighted_sum = load_json_value(&official_weighted_sum_path)?;
+    if official_weighted_sum
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some(
+            "official_layer0_final_token_mlp_output_after_routing_weighted_sum_before_residual_captured",
+        )
+        || official_weighted_sum
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_mlp_output_after_routing_weighted_sum_before_residual")
+    {
+        bail!("official weighted MLP output PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpWeightedExpertSumBeforeResidualStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_weighted_expert_sum_before_residual_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-selected-output-fix")
+        .arg(&source_fix_path)
+        .arg("--source-topk-routing")
+        .arg(&source_topk_path)
+        .arg("--official-weighted-sum")
+        .arg(&official_weighted_sum_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP weighted expert sum script {} with {}",
+                cli.mlp_weighted_expert_sum_before_residual_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP weighted expert sum script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP weighted expert sum artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-weighted-expert-sum-before-residual-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP weighted expert sum artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_mlp_residual_add_after_weighted_sum_status(cli: &Cli) -> Result<()> {
+    let source_weighted_sum_path =
+        PathBuf::from(DEFAULT_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_STATUS_OUTPUT);
+    let source_weighted_sum = load_json_value(&source_weighted_sum_path)?;
+    if source_weighted_sum
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_weighted_sum
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("weighted_expert_sum_before_residual_cleared")
+    {
+        bail!("source MLP weighted sum artifact is not cleared");
+    }
+
+    let source_attention_residual_path = PathBuf::from(
+        DEFAULT_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_AFTER_O_PROJ_CANDIDATES_STATUS_OUTPUT,
+    );
+    let source_attention_residual = load_json_value(&source_attention_residual_path)?;
+    if source_attention_residual
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_attention_residual
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("attention_residual_add_before_mlp_cleared_after_o_proj_candidates")
+    {
+        bail!("source post-attention residual artifact is not cleared");
+    }
+
+    let official_after_mlp_residual_path =
+        PathBuf::from(DEFAULT_OFFICIAL_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_ARTIFACT);
+    let official_after_mlp_residual = load_json_value(&official_after_mlp_residual_path)?;
+    if official_after_mlp_residual
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer0_final_token_hidden_state_after_mlp_residual_add_captured")
+        || official_after_mlp_residual
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_final_token_hidden_state_after_mlp_residual_add")
+    {
+        bail!("official after-MLP residual PPP artifact is not the expected boundary");
+    }
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::MlpResidualAddAfterWeightedSumStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.mlp_residual_add_after_weighted_sum_script)
+        .arg("--source-weighted-sum")
+        .arg(&source_weighted_sum_path)
+        .arg("--source-attention-residual-add")
+        .arg(&source_attention_residual_path)
+        .arg("--official-after-mlp-residual")
+        .arg(&official_after_mlp_residual_path)
+        .arg("--official-post-attention-residual")
+        .arg(DEFAULT_OFFICIAL_ATTENTION_RESIDUAL_ADD_BEFORE_MLP_ARTIFACT)
+        .arg("--official-mlp-weighted-sum")
+        .arg(DEFAULT_OFFICIAL_MLP_WEIGHTED_EXPERT_SUM_BEFORE_RESIDUAL_ARTIFACT)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run MLP residual add script {} with {}",
+                cli.mlp_residual_add_after_weighted_sum_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "MLP residual add after weighted sum script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read MLP residual add after weighted sum artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("mlp-residual-add-after-weighted-sum-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("MLP residual add after weighted sum artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 fn run_k_post_bias_contradiction_status(cli: &Cli) -> Result<()> {
     let (local_artifact, local_case) =
         load_single_case_artifact(&cli.local_residual_input_artifact)?;
@@ -41050,6 +44412,57 @@ fn main() -> Result<()> {
         }
         Mode::QProjectionOnednnOracleScopedCandidateStatus => {
             run_q_projection_onednn_oracle_scoped_candidate_status(&cli)
+        }
+        Mode::AttentionPostMaskAfterQkCandidatesStatus => {
+            run_attention_post_mask_after_qk_candidates_status(&cli)
+        }
+        Mode::AttentionProbsAfterPostMaskCandidatesStatus => {
+            run_attention_probs_after_post_mask_candidates_status(&cli)
+        }
+        Mode::AttentionWeightedVSumBeforeOProjAfterProbsCandidatesStatus => {
+            run_attention_weighted_v_sum_before_o_proj_after_probs_candidates_status(&cli)
+        }
+        Mode::VProjectionWeightBiasArithmeticPolicyStatus => {
+            run_v_projection_weight_bias_arithmetic_policy_status(&cli)
+        }
+        Mode::VProjectionOnednnOracleScopedCandidateStatus => {
+            run_v_projection_onednn_oracle_scoped_candidate_status(&cli)
+        }
+        Mode::Layer0AttentionOProjBeforeResidualStatus => {
+            run_layer0_attention_o_proj_before_residual_status(&cli)
+        }
+        Mode::AttentionResidualAddBeforeMlpAfterOProjCandidatesStatus => {
+            run_attention_residual_add_before_mlp_after_o_proj_candidates_status(&cli)
+        }
+        Mode::MlpNormBeforeProjectionsAfterAttnResidualStatus => {
+            run_mlp_norm_before_projections_after_attn_residual_status(&cli)
+        }
+        Mode::MlpRouterLogitsBeforeRoutingAfterNormStatus => {
+            run_mlp_router_logits_before_routing_after_norm_status(&cli)
+        }
+        Mode::MlpTopkRoutingAfterRouterLogitsStatus => {
+            run_mlp_topk_routing_after_router_logits_status(&cli)
+        }
+        Mode::MlpSelectedExpertOutputsBeforeRoutingWeightedSumStatus => {
+            run_mlp_selected_expert_outputs_before_routing_weighted_sum_status(&cli)
+        }
+        Mode::MlpExpert30Mlp1BeforeSwigluStatus => run_mlp_expert30_mlp1_before_swiglu_status(&cli),
+        Mode::MlpExpert30SwigluBeforeMlp2Status => run_mlp_expert30_swiglu_before_mlp2_status(&cli),
+        Mode::MlpExpert30Mlp2BeforeBiasStatus => run_mlp_expert30_mlp2_before_bias_status(&cli),
+        Mode::MlpExpert30Mlp2BiasToSelectedOutputStatus => {
+            run_mlp_expert30_mlp2_bias_to_selected_output_status(&cli)
+        }
+        Mode::MlpSelectedExpertOutputCaptureReadoutLocalizationStatus => {
+            run_mlp_selected_expert_output_capture_readout_localization_status(&cli)
+        }
+        Mode::MlpSelectedExpertOutputCaptureReadoutFixStatus => {
+            run_mlp_selected_expert_output_capture_readout_fix_status(&cli)
+        }
+        Mode::MlpWeightedExpertSumBeforeResidualStatus => {
+            run_mlp_weighted_expert_sum_before_residual_status(&cli)
+        }
+        Mode::MlpResidualAddAfterWeightedSumStatus => {
+            run_mlp_residual_add_after_weighted_sum_status(&cli)
         }
         Mode::QGemmMicroproofStatus => run_q_gemm_microproof_status(&cli),
         Mode::QGemmHelperContractStatus => run_q_gemm_helper_contract_status(&cli),

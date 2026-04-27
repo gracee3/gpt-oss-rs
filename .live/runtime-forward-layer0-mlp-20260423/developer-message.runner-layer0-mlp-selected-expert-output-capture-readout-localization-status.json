@@ -1,0 +1,803 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_selected_expert_output_capture_readout_localization_status/v1",
+  "mode": "mlp-selected-expert-output-capture-readout-localization-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "selected_expert_rank": 1,
+    "selected_expert_index": 30
+  },
+  "source_artifact_paths": {
+    "expert30_mlp2_bias_to_selected_output": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp2-bias-to-selected-output-status.json",
+    "expert30_mlp2_before_bias": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp2-before-bias-status.json",
+    "selected_expert_outputs_mismatch": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "official_selected_expert_outputs_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "guard_metrics": {
+    "expert30_mlp2_before_bias": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "expert30_mlp2_bias": {
+      "digest_matches_official": true,
+      "sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+      "official_sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "nonzero_count": 2880
+    },
+    "reconstructed_expert30_post_bias_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "routing_context": {
+      "selected_expert_indices": {
+        "local_indices": [
+          3,
+          30,
+          11,
+          27
+        ],
+        "official_indices": [
+          3,
+          30,
+          11,
+          27
+        ],
+        "ordered_match": true,
+        "set_match_ignoring_order": true,
+        "first_differing_rank": null
+      },
+      "expert30_selected_rank_1": true,
+      "routing_weights": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_count": 0,
+        "first_differing_rank": null,
+        "worst_differing_rank": null,
+        "local_weight_sum": 0.9990234375,
+        "official_weight_sum": 0.9990234375,
+        "weight_sum_abs_diff": 0.0
+      },
+      "selected_expert_outputs_are_unweighted": true
+    },
+    "guards_pass": true
+  },
+  "capture_readout_path_inventory": [
+    {
+      "buffer_view_name": "immediate_post_bias_reconstructed_expert30_output",
+      "capture_point_description": "single-expert cleared mlp2-before-bias plus matched mlp2_bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[hidden_size] expert30 post-bias vector",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "expert index 30 direct reconstruction",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "sha256_f32_le": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd"
+    },
+    {
+      "buffer_view_name": "selected_expert_output_staging_current_rank_major_rank1",
+      "capture_point_description": "current batched selected expert output diagnostic path after mlp2_bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[top_k_rank, hidden], selecting rank 1",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "top_k rank 1 -> expert 30",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "reconstructed_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "reconstructed_value": 2.28125
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "buffer_view_name": "current_batched_mlp2_pre_bias_plus_bias_rank1",
+      "capture_point_description": "current batched selected path pre-bias tensor plus expert30 bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[top_k_rank, hidden], selecting rank 1",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "top_k rank 1 -> expert 30",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "reconstructed_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "reconstructed_value": 2.28125
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "buffer_view_name": "weighted_capture_guard_reconstructed_times_rank1_weight",
+      "capture_point_description": "guard only: reconstructed post-bias multiplied by routing weight",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[hidden_size] weighted guard vector",
+        "device": "cpu"
+      },
+      "routing_weight_applied": true,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "expert30 rank 1 routing weight",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 29.932861328125,
+        "mean_abs_diff": 0.35841628909111023,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.2293243408203125,
+          "candidate_value": 0.0675506591796875,
+          "reconstructed_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 29.932861328125,
+          "candidate_value": -8.817138671875,
+          "reconstructed_value": -38.75
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 29.932861328125,
+        "mean_abs_diff": 0.35841628909111023,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.2293243408203125,
+          "candidate_value": 0.0675506591796875,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 29.932861328125,
+          "candidate_value": -8.817138671875,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "3dfa2f864decf564b56de7fae723c84645d74919f6f5896e1baff6deec3b7a9b"
+    },
+    {
+      "buffer_view_name": "expert_index_major_view_expert30",
+      "available": false,
+      "reason": "no local 32-expert selected-output staging tensor is available in this bounded mode"
+    },
+    {
+      "buffer_view_name": "packed_dispatch_or_token_major_view",
+      "available": false,
+      "reason": "no packed dispatch/gather buffer is exposed by the current bench diagnostic path"
+    },
+    {
+      "buffer_view_name": "post_routing_weight_runtime_buffer",
+      "available": false,
+      "reason": "intentionally not captured because routing-weighted sum is out of scope"
+    }
+  ],
+  "candidate_buffer_view_comparison_table": [
+    {
+      "buffer_view_name": "immediate_post_bias_reconstructed_expert30_output",
+      "capture_point_description": "single-expert cleared mlp2-before-bias plus matched mlp2_bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[hidden_size] expert30 post-bias vector",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "expert index 30 direct reconstruction",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      },
+      "sha256_f32_le": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd"
+    },
+    {
+      "buffer_view_name": "selected_expert_output_staging_current_rank_major_rank1",
+      "capture_point_description": "current batched selected expert output diagnostic path after mlp2_bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[top_k_rank, hidden], selecting rank 1",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "top_k rank 1 -> expert 30",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "reconstructed_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "reconstructed_value": 2.28125
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "buffer_view_name": "current_batched_mlp2_pre_bias_plus_bias_rank1",
+      "capture_point_description": "current batched selected path pre-bias tensor plus expert30 bias",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[top_k_rank, hidden], selecting rank 1",
+        "device": "cpu"
+      },
+      "routing_weight_applied": false,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "top_k rank 1 -> expert 30",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "reconstructed_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "reconstructed_value": 2.28125
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "candidate_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "candidate_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "buffer_view_name": "weighted_capture_guard_reconstructed_times_rank1_weight",
+      "capture_point_description": "guard only: reconstructed post-bias multiplied by routing weight",
+      "metadata": {
+        "shape": [
+          2880
+        ],
+        "stride": [
+          1
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout": "[hidden_size] weighted guard vector",
+        "device": "cpu"
+      },
+      "routing_weight_applied": true,
+      "bias_applied": true,
+      "rank_expert_indexing_used": "expert30 rank 1 routing weight",
+      "hidden_lane_indexing_used": "contiguous hidden lane h",
+      "comparison_to_reconstructed_expert30_post_bias_output": {
+        "max_abs_diff": 29.932861328125,
+        "mean_abs_diff": 0.35841628909111023,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.2293243408203125,
+          "candidate_value": 0.0675506591796875,
+          "reconstructed_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 29.932861328125,
+          "candidate_value": -8.817138671875,
+          "reconstructed_value": -38.75
+        }
+      },
+      "comparison_to_official_expert30_selected_output": {
+        "max_abs_diff": 29.932861328125,
+        "mean_abs_diff": 0.35841628909111023,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.2293243408203125,
+          "candidate_value": 0.0675506591796875,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 29.932861328125,
+          "candidate_value": -8.817138671875,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "3dfa2f864decf564b56de7fae723c84645d74919f6f5896e1baff6deec3b7a9b"
+    },
+    {
+      "buffer_view_name": "expert_index_major_view_expert30",
+      "available": false,
+      "reason": "no local 32-expert selected-output staging tensor is available in this bounded mode"
+    },
+    {
+      "buffer_view_name": "packed_dispatch_or_token_major_view",
+      "available": false,
+      "reason": "no packed dispatch/gather buffer is exposed by the current bench diagnostic path"
+    },
+    {
+      "buffer_view_name": "post_routing_weight_runtime_buffer",
+      "available": false,
+      "reason": "intentionally not captured because routing-weighted sum is out of scope"
+    }
+  ],
+  "rank_layout_addressing_discriminator_table": [
+    {
+      "hypothesis": "rank_major_rank1_expert30",
+      "description": "[top_k_rank, hidden] with rank 1 selected as expert30",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "hypothesis_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "hypothesis_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "hypothesis": "wrong_rank0_compared_to_official_rank1",
+      "description": "guard only: local rank 0 compared against official rank 1",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 45.625,
+        "mean_abs_diff": 0.7078033685684204,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.3515625,
+          "hypothesis_value": 0.6484375,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 45.625,
+          "hypothesis_value": 6.875,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "50895d016c63cc99ed3420d4b47371c6032beebb98a282c2b0bbdbb63629c936"
+    },
+    {
+      "hypothesis": "wrong_rank2_compared_to_official_rank1",
+      "description": "guard only: local rank 2 compared against official rank 1",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 21.75,
+        "mean_abs_diff": 0.6319134831428528,
+        "matched": false,
+        "mismatching_lane_count": 2876,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.257080078125,
+          "hypothesis_value": 0.039794921875,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 21.75,
+          "hypothesis_value": -17.0,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "6e5b0e75e3fa8228a0a2c8bbd32ab63bf08fe7d297701fbdab383e233ea8d15a"
+    },
+    {
+      "hypothesis": "wrong_rank3_compared_to_official_rank1",
+      "description": "guard only: local rank 3 compared against official rank 1",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 23.375,
+        "mean_abs_diff": 0.6880918145179749,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.249755859375,
+          "hypothesis_value": 0.047119140625,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 23.375,
+          "hypothesis_value": -15.375,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "e3a6a450dfafcc5fecabe3a61b79376e4388658d905aeae1c6ea96151d7f3450"
+    },
+    {
+      "hypothesis": "contiguous_hidden_layout_lane_h",
+      "description": "hidden lane h read contiguously from rank-major selected output",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 0.015625,
+        "mean_abs_diff": 7.355213165283203e-05,
+        "matched": false,
+        "mismatching_lane_count": 151,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 8,
+          "abs_diff": 0.001953125,
+          "hypothesis_value": -0.1728515625,
+          "official_value": -0.1748046875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 1156,
+          "abs_diff": 0.015625,
+          "hypothesis_value": 2.296875,
+          "official_value": 2.28125
+        }
+      },
+      "sha256_f32_le": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb"
+    },
+    {
+      "hypothesis": "weighted_capture_guard_rank1",
+      "description": "guard only: compare reconstructed post-bias after routing weight",
+      "metrics_vs_official_rank1_expert30": {
+        "max_abs_diff": 29.932861328125,
+        "mean_abs_diff": 0.35841628909111023,
+        "matched": false,
+        "mismatching_lane_count": 2879,
+        "first_differing_hidden_lane": {
+          "hidden_lane": 0,
+          "abs_diff": 0.2293243408203125,
+          "hypothesis_value": 0.0675506591796875,
+          "official_value": 0.296875
+        },
+        "worst_differing_hidden_lane": {
+          "hidden_lane": 773,
+          "abs_diff": 29.932861328125,
+          "hypothesis_value": -8.817138671875,
+          "official_value": -38.75
+        }
+      },
+      "sha256_f32_le": "3dfa2f864decf564b56de7fae723c84645d74919f6f5896e1baff6deec3b7a9b"
+    }
+  ],
+  "best_matching_buffer_view": {
+    "name": "immediate_post_bias_reconstructed_expert30_output",
+    "metrics_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "digest": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd"
+  },
+  "current_selected_expert_output_vs_official_metric": {
+    "max_abs_diff": 0.015625,
+    "mean_abs_diff": 7.355213165283203e-05,
+    "matched": false,
+    "mismatching_lane_count": 151,
+    "first_differing_hidden_lane": {
+      "hidden_lane": 8,
+      "abs_diff": 0.001953125,
+      "current_capture_value": -0.1728515625,
+      "official_value": -0.1748046875
+    },
+    "worst_differing_hidden_lane": {
+      "hidden_lane": 1156,
+      "abs_diff": 0.015625,
+      "current_capture_value": 2.296875,
+      "official_value": 2.28125
+    }
+  },
+  "current_selected_expert_output_vs_reconstruction_metric": {
+    "max_abs_diff": 0.015625,
+    "mean_abs_diff": 7.355213165283203e-05,
+    "matched": false,
+    "mismatching_lane_count": 151,
+    "first_differing_hidden_lane": {
+      "hidden_lane": 8,
+      "abs_diff": 0.001953125,
+      "current_capture_value": -0.1728515625,
+      "reconstructed_value": -0.1748046875
+    },
+    "worst_differing_hidden_lane": {
+      "hidden_lane": 1156,
+      "abs_diff": 0.015625,
+      "current_capture_value": 2.296875,
+      "reconstructed_value": 2.28125
+    }
+  },
+  "lane_1156_trace": {
+    "hidden_lane": 1156,
+    "reconstructed_post_bias_value": 2.28125,
+    "official_selected_expert_output_value": 2.28125,
+    "local_prior_selected_capture_value": 2.296875,
+    "fresh_current_selected_capture_value": 2.296875,
+    "immediate_post_bias_buffer_value": 2.28125,
+    "selected_output_staging_buffer_value": 2.296875,
+    "sorted_rank_view_value": 2.296875,
+    "expert_major_view_value": null,
+    "weighted_output_guard_value": 0.519073486328125,
+    "routing_weight_for_expert30": 0.2275390625,
+    "current_capture_minus_official": 0.015625,
+    "reconstructed_minus_official": 0.0,
+    "weighted_guard_minus_official": -1.762176513671875,
+    "first_point_where_reconstructed_becomes_mismatching_capture": "current batched selected expert output staging/readout path"
+  },
+  "all_mismatch_lane_summary": {
+    "previous_mismatch_lane_count": 151,
+    "current_mismatch_lane_count_by_view": {
+      "immediate_post_bias_reconstructed_expert30_output": 0,
+      "selected_expert_output_staging_current_rank_major_rank1": 151,
+      "current_batched_mlp2_pre_bias_plus_bias_rank1": 151,
+      "weighted_capture_guard_reconstructed_times_rank1_weight": 2879
+    },
+    "previous_151_lane_mismatch_reproduces_exactly": true,
+    "fresh_current_capture_matches_reconstruction": false,
+    "fresh_current_capture_matches_official": false,
+    "first_differing_lane_by_view": {
+      "immediate_post_bias_reconstructed_expert30_output": null,
+      "selected_expert_output_staging_current_rank_major_rank1": {
+        "hidden_lane": 8,
+        "abs_diff": 0.001953125,
+        "candidate_value": -0.1728515625,
+        "official_value": -0.1748046875
+      },
+      "current_batched_mlp2_pre_bias_plus_bias_rank1": {
+        "hidden_lane": 8,
+        "abs_diff": 0.001953125,
+        "candidate_value": -0.1728515625,
+        "official_value": -0.1748046875
+      },
+      "weighted_capture_guard_reconstructed_times_rank1_weight": {
+        "hidden_lane": 0,
+        "abs_diff": 0.2293243408203125,
+        "candidate_value": 0.0675506591796875,
+        "official_value": 0.296875
+      }
+    },
+    "worst_differing_lane_by_view": {
+      "immediate_post_bias_reconstructed_expert30_output": null,
+      "selected_expert_output_staging_current_rank_major_rank1": {
+        "hidden_lane": 1156,
+        "abs_diff": 0.015625,
+        "candidate_value": 2.296875,
+        "official_value": 2.28125
+      },
+      "current_batched_mlp2_pre_bias_plus_bias_rank1": {
+        "hidden_lane": 1156,
+        "abs_diff": 0.015625,
+        "candidate_value": 2.296875,
+        "official_value": 2.28125
+      },
+      "weighted_capture_guard_reconstructed_times_rank1_weight": {
+        "hidden_lane": 773,
+        "abs_diff": 29.932861328125,
+        "candidate_value": -8.817138671875,
+        "official_value": -38.75
+      }
+    },
+    "digests": {
+      "reconstructed_post_bias_output": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd",
+      "official_selected_output": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd",
+      "local_selected_capture": "fe1554aed3bcff6c5217688de88257207e7f59a146a74e072dcd2989785d8ccb",
+      "best_matching_candidate_view": "df94b5ebe2429d7b04e1a45ad2021e89d525bb4b2bb532244b4bac18df5efecd"
+    }
+  },
+  "earliest_remaining_mismatching_seam": "expert30 selected expert output staging/readout",
+  "classification": "selected_expert_output_staging_or_copy_readout_mismatch",
+  "next_bounded_step": "implement/prove a scoped selected expert output capture/readout correction, then rerun selected expert outputs for all ranks",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_selected_expert_output_capture_readout_localization.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

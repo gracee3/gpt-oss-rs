@@ -1,0 +1,123 @@
+{
+  "schema_version": "ppp-artifact-preservation-manifest/v1",
+  "timestamp": "2026-04-27T12:26:45.496277+00:00",
+  "exact_case": "developer-message-user-smoke",
+  "source_pattern": "/tmp/pinned-prompt-parity-*",
+  "source_directory_used": "/tmp/pinned-prompt-parity-official-reference-20260424",
+  "durable_destination_directory": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424",
+  "copied_files": [
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-input.cpu.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-input.cpu.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-probs-post-softmax-input.cpu.json",
+      "size": 1111,
+      "sha256": "ae6035234261c45257f9c2b39144b5e3890ce7b7d5e2c1bf75b9f3cf1a9549c6",
+      "status": "copied_or_updated"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-input.cpu.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-input.cpu.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-input.cpu.json",
+      "size": 1136,
+      "sha256": "eb7e0a26d1b4c8975441d8c08411252e61db907e04b267d755ab6bc6efee9aaf",
+      "status": "copied_or_updated"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-input.cpu.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-input.cpu.json",
+      "filename": "developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-input.cpu.json",
+      "size": 1118,
+      "sha256": "41650625384656b4ed88cc671fc5d6abac76d84b935f872d210ba365d077c33d",
+      "status": "copied_or_updated"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-input.cpu.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-input.cpu.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-input.cpu.json",
+      "size": 1128,
+      "sha256": "91a13b8d4b203d5c15509b91729436d065ac9d31826d9da047ff3637b564e21c",
+      "status": "copied_or_updated"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+      "size": 55969,
+      "sha256": "a455480aafba803871ac36f0af8775e9bec206a1994c59c3a493f388920e96a3",
+      "status": "copied_or_updated"
+    }
+  ],
+  "already_present_files": [
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-grouped-pre-rope-k-reference-semantics-status.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-grouped-pre-rope-k-reference-semantics-status.json",
+      "filename": "developer-message.ppp-grouped-pre-rope-k-reference-semantics-status.json",
+      "size": 5002,
+      "sha256": "2b4e82fc2086c5c4f64b8bab9b62d81fd6ffa628c32535370559377e620614e1",
+      "status": "already_present_same_sha256"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json",
+      "size": 130270,
+      "sha256": "11bbde90202dbff9ce0db9d732fc08e4515cf43b3ee8d85330033b5b0f775e31",
+      "status": "already_present_same_sha256"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json",
+      "filename": "developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json",
+      "size": 91762,
+      "sha256": "576f81f6beccb880ebe26e170827bfe78efd2d957890906acced0db728cea44d",
+      "status": "already_present_same_sha256"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+      "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+      "filename": "developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+      "size": 66667,
+      "sha256": "325aaa7b3a871b51a85074aedccd6571532196ca90c67fcf9dbab08f8621f08b",
+      "status": "already_present_same_sha256"
+    }
+  ],
+  "skipped_large_raw_files": [],
+  "skipped_non_artifact_files": [
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax.run.log",
+      "filename": "developer-message.ppp-layer0-final-token-attention-probs-post-softmax.run.log",
+      "size": 130270,
+      "sha256": "11bbde90202dbff9ce0db9d732fc08e4515cf43b3ee8d85330033b5b0f775e31",
+      "reason_not_copied": "run log, not a durable JSON/status artifact; corresponding status JSON is preserved when present"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection.run.log",
+      "filename": "developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection.run.log",
+      "size": 91762,
+      "sha256": "576f81f6beccb880ebe26e170827bfe78efd2d957890906acced0db728cea44d",
+      "reason_not_copied": "run log, not a durable JSON/status artifact; corresponding status JSON is preserved when present"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax.run.log",
+      "filename": "developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax.run.log",
+      "size": 66667,
+      "sha256": "325aaa7b3a871b51a85074aedccd6571532196ca90c67fcf9dbab08f8621f08b",
+      "reason_not_copied": "run log, not a durable JSON/status artifact; corresponding status JSON is preserved when present"
+    },
+    {
+      "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual.run.log",
+      "filename": "developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual.run.log",
+      "size": 55562,
+      "sha256": "01bf4839909ecb58358a57c29a417b6664354c503c5c6ed1b89149abfc283d86",
+      "reason_not_copied": "run log, not a durable JSON/status artifact; corresponding status JSON is preserved"
+    }
+  ],
+  "missing_expected_temp_directories": [],
+  "checksum_manifest_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/SHA256SUMS",
+  "new_boundary_artifact": {
+    "source_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+    "durable_destination_path": "/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+    "classification": "official_attention_o_proj_before_residual_boundary_available",
+    "boundary": "layer0_final_token_attention_output_after_o_proj_before_residual"
+  }
+}

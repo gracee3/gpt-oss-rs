@@ -1,0 +1,700 @@
+{
+  "schema_version": "runtime_forward_layer0_v_projection_onednn_oracle_scoped_candidate_status/v1",
+  "mode": "v-projection-onednn-oracle-scoped-candidate-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_count": 74,
+    "hidden_size": 2880,
+    "q_dim": 4096,
+    "kv_dim": 512,
+    "qkv_dim": 5120
+  },
+  "source_artifact_paths": {
+    "v_weight_bias_arithmetic_policy": ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy-status.json",
+    "weighted_v_sum_status": ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-weighted-v-sum-before-o-proj-after-probs-candidates-status.json",
+    "attention_probabilities_proof": ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-probs-after-post-mask-candidates-status.json",
+    "q_candidate_proof": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-onednn-oracle-scoped-candidate-status.json",
+    "k_candidate_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "authoritative_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "local_v_capture": ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy.local-v-capture.json",
+    "official_weighted_v_sum": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json"
+  },
+  "files_changed": [
+    "crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs",
+    "crates/gpt-oss-bench/tools/layer0_v_projection_onednn_oracle_scoped_candidate.py"
+  ],
+  "change_scope": "bench/proof-only",
+  "runtime_affecting": false,
+  "candidate_v_projection_strategy": "bench-only full-shape oneDNN/MKLDNN BF16 torch.nn.functional.linear(authoritative_norm_bf16, V_weight_bf16, V_bias_bf16)",
+  "scope_statement": {
+    "affected_paths": [
+      "this diagnostic/proof mode",
+      "bench-only oneDNN V projection candidate for the exact layer0 smoke case",
+      "weighted V sum confirmation using already-cleared attention probabilities"
+    ],
+    "not_affected_paths": [
+      "default runtime V helper",
+      "default runtime Q/K helpers",
+      "QKV projection runtime behavior",
+      "weighted-sum runtime behavior",
+      "o_proj",
+      "residual",
+      "MLP",
+      "logits",
+      "MoE",
+      "Harmony",
+      "cache",
+      "later layers"
+    ]
+  },
+  "oneDNN_v_candidate_construction_metadata": {
+    "torch_version": "2.10.0+cu128",
+    "thread_count": 8,
+    "mkldnn_enabled_for_candidate": true,
+    "input": {
+      "shape": [
+        74,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, hidden]",
+      "device": "cpu"
+    },
+    "weight": {
+      "shape": [
+        512,
+        2880
+      ],
+      "stride": [
+        2880,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[v_output_feature, hidden]",
+      "device": "cpu"
+    },
+    "bias": {
+      "shape": [
+        512
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[v_output_feature]",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        74,
+        512
+      ],
+      "stride": [
+        512,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[token, v_output_feature]",
+      "device": "cpu"
+    },
+    "output_digest": "sha256-prefix4096:922af61cc1b38dcd76b80cf510ba6cdcee17f683903f8da248c4e65cbe6eaa20",
+    "candidate_is_bench_proof_only": true,
+    "cloned_contiguous_tensors_used": true,
+    "v_slice_row_range": [
+      4608,
+      5120
+    ]
+  },
+  "v_candidate_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "legacy_local_rust_v_metrics": {
+    "local_row_major_v_vs_candidate": {
+      "max_abs_diff": 64.5859375,
+      "mean_abs_diff": 1.3026224374771118,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 37547,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          0,
+          0,
+          0
+        ],
+        "lhs_value": 1.03125,
+        "rhs_value": 0.0198974609375,
+        "abs_diff": 1.0113525390625
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          59,
+          5,
+          11
+        ],
+        "lhs_value": 65.0,
+        "rhs_value": 0.4140625,
+        "abs_diff": 64.5859375
+      }
+    },
+    "local_slice_major_v_vs_candidate": {
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.0018099251901730895,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 17446,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          0,
+          0,
+          0
+        ],
+        "lhs_value": 0.0185546875,
+        "rhs_value": 0.0198974609375,
+        "abs_diff": 0.0013427734375
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          1,
+          2,
+          27
+        ],
+        "lhs_value": -4.78125,
+        "rhs_value": -4.75,
+        "abs_diff": 0.03125
+      }
+    },
+    "explicit_rust_cpu_v_replay_with_bias_vs_candidate": {
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.263664526935827e-07,
+      "matched": false,
+      "mismatching_token_count": 10,
+      "mismatching_lane_count": 11,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          22,
+          2,
+          15
+        ],
+        "lhs_value": 0.00299072265625,
+        "rhs_value": 0.0030059814453125,
+        "abs_diff": 1.52587890625e-05
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          43,
+          5,
+          45
+        ],
+        "lhs_value": 1.2421875,
+        "rhs_value": 1.234375,
+        "abs_diff": 0.0078125
+      }
+    },
+    "explicit_rust_cpu_v_replay_without_bias_vs_candidate": {
+      "max_abs_diff": 2.765625,
+      "mean_abs_diff": 0.25652876496315,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 37460,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          0,
+          0,
+          0
+        ],
+        "lhs_value": 0.1875,
+        "rhs_value": 0.0198974609375,
+        "abs_diff": 0.1676025390625
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          9,
+          6,
+          41
+        ],
+        "lhs_value": -1.265625,
+        "rhs_value": -4.03125,
+        "abs_diff": 2.765625
+      }
+    }
+  },
+  "v_projection_variant_table": [
+    {
+      "name": "official_module_v_projection",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane]",
+      "metrics_vs_candidate_v": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_token_count": 0,
+        "mismatching_lane_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      }
+    },
+    {
+      "name": "onednn_v_projection_candidate",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane]",
+      "metrics_vs_official_module_v": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_token_count": 0,
+        "mismatching_lane_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      }
+    },
+    {
+      "name": "local_runtime_v_slice_major_hypothesis",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane] from contiguous V block after all-token Q and K blocks",
+      "metrics_vs_candidate_v": {
+        "max_abs_diff": 0.03125,
+        "mean_abs_diff": 0.0018099251901730895,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 17446,
+        "first_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            0,
+            0,
+            0
+          ],
+          "lhs_value": 0.0185546875,
+          "rhs_value": 0.0198974609375,
+          "abs_diff": 0.0013427734375
+        },
+        "worst_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            1,
+            2,
+            27
+          ],
+          "lhs_value": -4.78125,
+          "rhs_value": -4.75,
+          "abs_diff": 0.03125
+        }
+      }
+    },
+    {
+      "name": "local_runtime_v_row_major_hypothesis",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane] from per-token fused-QKV row slices",
+      "metrics_vs_candidate_v": {
+        "max_abs_diff": 64.5859375,
+        "mean_abs_diff": 1.3026224374771118,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 37547,
+        "first_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            0,
+            0,
+            0
+          ],
+          "lhs_value": 1.03125,
+          "rhs_value": 0.0198974609375,
+          "abs_diff": 1.0113525390625
+        },
+        "worst_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            59,
+            5,
+            11
+          ],
+          "lhs_value": 65.0,
+          "rhs_value": 0.4140625,
+          "abs_diff": 64.5859375
+        }
+      }
+    },
+    {
+      "name": "explicit_rust_cpu_v_replay_runtime_weight_official_bias",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane]",
+      "metrics_vs_candidate_v": {
+        "max_abs_diff": 0.0078125,
+        "mean_abs_diff": 2.263664526935827e-07,
+        "matched": false,
+        "mismatching_token_count": 10,
+        "mismatching_lane_count": 11,
+        "first_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            22,
+            2,
+            15
+          ],
+          "lhs_value": 0.00299072265625,
+          "rhs_value": 0.0030059814453125,
+          "abs_diff": 1.52587890625e-05
+        },
+        "worst_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            43,
+            5,
+            45
+          ],
+          "lhs_value": 1.2421875,
+          "rhs_value": 1.234375,
+          "abs_diff": 0.0078125
+        }
+      }
+    },
+    {
+      "name": "explicit_rust_cpu_v_replay_runtime_weight_no_bias",
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "f32-expanded BF16 values",
+      "layout_interpretation": "[token, kv_head, lane]",
+      "metrics_vs_candidate_v": {
+        "max_abs_diff": 2.765625,
+        "mean_abs_diff": 0.25652876496315,
+        "matched": false,
+        "mismatching_token_count": 74,
+        "mismatching_lane_count": 37460,
+        "first_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            0,
+            0,
+            0
+          ],
+          "lhs_value": 0.1875,
+          "rhs_value": 0.0198974609375,
+          "abs_diff": 0.1676025390625
+        },
+        "worst_differing_location": {
+          "location_kind": "token_kv_head_lane",
+          "indices": [
+            9,
+            6,
+            41
+          ],
+          "lhs_value": -1.265625,
+          "rhs_value": -4.03125,
+          "abs_diff": 2.765625
+        }
+      }
+    }
+  ],
+  "grouped_v_metrics": {
+    "candidate_grouped_v_vs_official_grouped_v": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "local_slice_major_grouped_v_vs_candidate_grouped_v": {
+      "max_abs_diff": 0.03125,
+      "mean_abs_diff": 0.0018099251901730895,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 17446,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          0,
+          0,
+          0
+        ],
+        "lhs_value": 0.0185546875,
+        "rhs_value": 0.0198974609375,
+        "abs_diff": 0.0013427734375
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          1,
+          2,
+          27
+        ],
+        "lhs_value": -4.78125,
+        "rhs_value": -4.75,
+        "abs_diff": 0.03125
+      }
+    },
+    "local_row_major_grouped_v_vs_candidate_grouped_v": {
+      "max_abs_diff": 64.5859375,
+      "mean_abs_diff": 1.3026224374771118,
+      "matched": false,
+      "mismatching_token_count": 74,
+      "mismatching_lane_count": 37547,
+      "first_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          0,
+          0,
+          0
+        ],
+        "lhs_value": 1.03125,
+        "rhs_value": 0.0198974609375,
+        "abs_diff": 1.0113525390625
+      },
+      "worst_differing_location": {
+        "location_kind": "token_kv_head_lane",
+        "indices": [
+          59,
+          5,
+          11
+        ],
+        "lhs_value": 65.0,
+        "rhs_value": 0.4140625,
+        "abs_diff": 64.5859375
+      }
+    }
+  },
+  "weighted_v_sum_before_o_proj_metrics": {
+    "candidate_v_weighted_sum_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_head_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_flattened_feature_q_head_lane": null,
+      "worst_differing_flattened_feature_q_head_lane": null
+    },
+    "official_onednn_v_weighted_sum_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_head_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_flattened_feature_q_head_lane": null,
+      "worst_differing_flattened_feature_q_head_lane": null
+    },
+    "local_slice_major_v_weighted_sum_vs_official": {
+      "max_abs_diff": 0.015625,
+      "mean_abs_diff": 0.0008763287332840264,
+      "matched": false,
+      "mismatching_head_count": 64,
+      "mismatching_lane_count": 1782,
+      "first_differing_flattened_feature_q_head_lane": {
+        "flattened_feature": 4,
+        "q_head": 0,
+        "lane": 4,
+        "lhs_value": -0.0003147125244140625,
+        "rhs_value": -0.00098419189453125,
+        "abs_diff": 0.0006694793701171875
+      },
+      "worst_differing_flattened_feature_q_head_lane": {
+        "flattened_feature": 387,
+        "q_head": 6,
+        "lane": 3,
+        "lhs_value": -2.25,
+        "rhs_value": -2.265625,
+        "abs_diff": 0.015625
+      }
+    },
+    "local_row_major_v_weighted_sum_vs_official": {
+      "max_abs_diff": 12.671875,
+      "mean_abs_diff": 0.5380657315254211,
+      "matched": false,
+      "mismatching_head_count": 64,
+      "mismatching_lane_count": 4080,
+      "first_differing_flattened_feature_q_head_lane": {
+        "flattened_feature": 0,
+        "q_head": 0,
+        "lane": 0,
+        "lhs_value": 0.0966796875,
+        "rhs_value": -0.65234375,
+        "abs_diff": 0.7490234375
+      },
+      "worst_differing_flattened_feature_q_head_lane": {
+        "flattened_feature": 11,
+        "q_head": 0,
+        "lane": 11,
+        "lhs_value": -13.0,
+        "rhs_value": -0.328125,
+        "abs_diff": 12.671875
+      }
+    }
+  },
+  "focused_traces": {
+    "prior_worst_row_major_provenance_lane": {
+      "token_index": 59,
+      "kv_head": 5,
+      "lane": 11,
+      "official_onednn_v_value": 0.4140625,
+      "candidate_v_value": 0.4140625,
+      "local_row_major_readout_value": 65.0,
+      "local_slice_major_readout_value": 0.4140625,
+      "candidate_minus_official": 0.0,
+      "slice_major_minus_official": 0.0,
+      "row_major_minus_official": 64.5859375,
+      "official_bf16_bits": "0x3ed4",
+      "candidate_bf16_bits": "0x3ed4",
+      "row_major_bf16_bits": "0x4282",
+      "slice_major_bf16_bits": "0x3ed4"
+    },
+    "prior_worst_weighted_sum_lane": {
+      "flattened_feature": 11,
+      "q_head": 0,
+      "lane": 11,
+      "mapped_kv_head": 0,
+      "official_weighted_v_value": -0.328125,
+      "candidate_v_weighted_sum_value": -0.328125,
+      "local_slice_major_v_weighted_sum_value": -0.328125,
+      "local_row_major_v_weighted_sum_value": -13.0,
+      "candidate_minus_official": 0.0,
+      "slice_major_minus_official": 0.0,
+      "row_major_minus_official": -12.671875,
+      "candidate_clears_the_weighted_sum_mismatch": true
+    }
+  },
+  "earliest_remaining_mismatching_seam": "layer0_v_projection_bf16_linear_arithmetic_policy",
+  "classification": "onednn_v_candidate_confirms_runtime_v_projection_policy_delta",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_attention_output_after_o_proj_before_residual",
+  "python_script_path_used_for_onednn_v_candidate": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_v_projection_onednn_oracle_scoped_candidate.py",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x5120,40.678",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x512,3.35498",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0200195",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0219727",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0151367",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00708008",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0270996",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0168457",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00708008",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00708008",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0168457",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0151367",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0178223",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00708008",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0187988",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0161133",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0161133",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00878906",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0148926",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0151367",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0112305",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00878906",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.012207",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0180664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0148926"
+  ]
+}

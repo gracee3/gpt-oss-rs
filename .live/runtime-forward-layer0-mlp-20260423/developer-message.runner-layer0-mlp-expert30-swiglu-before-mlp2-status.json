@@ -1,0 +1,208 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_expert30_swiglu_before_mlp2_status/v1",
+  "mode": "mlp-expert30-swiglu-before-mlp2-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "selected_expert_rank": 1,
+    "selected_expert_index": 30,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "expert30_mlp1_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-mlp1-before-swiglu-status.json",
+    "selected_expert_outputs_diagnostic": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "topk_routing_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-topk-routing-after-router-logits-status.json",
+    "official_expert30_mlp1_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json",
+    "official_expert30_swiglu_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json",
+  "mlp_norm_input_guard_metrics": {
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_expert30_mlp1": true
+  },
+  "routing_guard_metrics": {
+    "router_logits": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "selected_expert_indices": {
+      "local_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "official_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "ordered_match": true,
+      "set_match_ignoring_order": true,
+      "first_differing_rank": null
+    },
+    "routing_weights": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_rank": null,
+      "worst_differing_rank": null,
+      "local_weight_sum": 0.9990234375,
+      "official_weight_sum": 0.9990234375,
+      "weight_sum_abs_diff": 0.0
+    },
+    "expert30_selected_rank_1": true
+  },
+  "expert30_mlp1_guard_metrics": {
+    "fused": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_fused_lane": null,
+      "worst_differing_fused_lane": null
+    },
+    "gate_slice": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_gate_lane": null,
+      "worst_differing_gate_lane": null
+    },
+    "up_slice": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_up_lane": null,
+      "worst_differing_up_lane": null
+    }
+  },
+  "local_swiglu_metadata": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "expert 30 SwiGLU output vector [intermediate_size / world_size], before mlp2",
+    "device": "cpu",
+    "before_mlp2": true,
+    "routing_weights_applied": false,
+    "gate_clamp_min": null,
+    "gate_clamp_max": 7.0,
+    "up_clamp_min": -7.0,
+    "up_clamp_max": 7.0,
+    "sigmoid_scale": 1.702,
+    "formula": "gate * sigmoid(1.702 * gate) * (up + 1)",
+    "output_cast_rounding_point": "BF16 output after SwiGLU"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "expert 30 SwiGLU output vector [intermediate_size / world_size]",
+    "source_input_boundary": {
+      "boundary": "layer0_final_token_expert30_mlp1_output_before_swiglu",
+      "path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json",
+      "shape": [
+        5760
+      ],
+      "dtype": "torch.bfloat16",
+      "layout": "fused mlp1 vector [intermediate_size * 2 / world_size] with interleaved gate/up lanes",
+      "sha256_f32_le": "3eb3419656474ba162f0f3e7da08a6f0be1b46069a8124f41e7cd97575a5e2ed"
+    },
+    "fused_gate_up_split_metadata": {
+      "gate_slice": "source_input.values[0::2]",
+      "up_value_slice": "source_input.values[1::2]",
+      "gate_shape": [
+        2880
+      ],
+      "up_value_shape": [
+        2880
+      ],
+      "split_convention": "interleaved even/odd lanes"
+    },
+    "swiglu_formula": {
+      "clamp_applied": true,
+      "gate_clamp_min": null,
+      "gate_clamp_max": 7.0,
+      "up_value_clamp_min": -7.0,
+      "up_value_clamp_max": 7.0,
+      "sigmoid_scale": 1.702,
+      "formula": "gate * sigmoid(1.702 * gate) * (up + 1)",
+      "official_source_expression": "x_glu, x_linear = x[..., ::2], x[..., 1::2]; x_glu = x_glu.clamp(min=None, max=limit); x_linear = x_linear.clamp(min=-limit, max=limit); return x_glu * sigmoid(alpha * x_glu) * (x_linear + 1)"
+    },
+    "computation_dtype": "torch.bfloat16",
+    "output_dtype_before_serialization": "torch.bfloat16",
+    "rounded_or_cast_to_bf16_after_swiglu": true
+  },
+  "local_swiglu_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "interleaved gate/up, gate clamp max 7, up clamp [-7, 7], sigmoid scale 1.702, BF16 output",
+    "replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "local_runtime_vs_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "expert30_swiglu_before_mlp2_cleared",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_expert30_mlp2_output_before_bias",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_expert30_swiglu_before_mlp2.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration",
+  "local_stage_summary": {
+    "count": 2880,
+    "min": -4.9375,
+    "max": 5.1875,
+    "mean": 0.022905131801962852,
+    "sha256_f32_le": "ee519c87d8d9dc73d7523dd7082e698a144644cd98f0747fa2e048cbe99a2b4f"
+  },
+  "official_summary": {
+    "count": 2880,
+    "min": -4.9375,
+    "max": 5.1875,
+    "mean": 0.02290513113451501,
+    "sha256_f32_le": "ee519c87d8d9dc73d7523dd7082e698a144644cd98f0747fa2e048cbe99a2b4f"
+  }
+}

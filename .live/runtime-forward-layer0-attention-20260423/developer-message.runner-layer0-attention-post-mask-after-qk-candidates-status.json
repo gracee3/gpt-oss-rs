@@ -1,0 +1,277 @@
+{
+  "schema_version": "runtime_forward_layer0_attention_post_mask_after_qk_candidates_status/v1",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "query_position": "final_token"
+  },
+  "mode": "attention-post-mask-after-qk-candidates-status",
+  "source_artifact_paths": {
+    "q_candidate_proof": ".live/runtime-forward-layer0-q-provenance-20260423/developer-message.runner-layer0-q-projection-onednn-oracle-scoped-candidate-status.json",
+    "k_candidate_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json",
+    "k_post_rope_and_raw_score_proof": ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate-status.json",
+    "official_post_mask_pre_softmax": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+    "raw_pre_mask_reference": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json"
+  },
+  "qk_candidates_are_bench_proof_only": true,
+  "candidate_scope_confirmation": {
+    "q_candidate_change_scope": "bench/proof-only",
+    "q_candidate_runtime_affecting": false,
+    "k_candidate_change_scope": "bench/proof-only",
+    "k_candidate_runtime_affecting": false,
+    "not_promoted_to_runtime": true
+  },
+  "q_post_rope_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "k_post_rope_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null,
+    "candidate_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "official_tensor": {
+      "shape": [
+        74,
+        8,
+        64
+      ],
+      "stride": [
+        512,
+        64,
+        1
+      ],
+      "dtype": "float32",
+      "layout": "[token, kv_head, lane]"
+    },
+    "application_path": "model.attn.rope applied to scoped oneDNN candidate K heads in this bench/proof diagnostic"
+  },
+  "raw_scaled_qk_pre_mask_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_token_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "official_masked_logits_reference_availability": {
+    "available": true,
+    "reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+    "required_boundary": "layer0_final_token_masked_scaled_qk_logits_pre_softmax",
+    "required_boundary_description": "final-token raw scaled QK logits after causal/sliding/sink mask application and before softmax"
+  },
+  "official_reference_path_or_name": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json",
+  "official_tensor_metadata": {
+    "shape": [
+      64,
+      75
+    ],
+    "dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout": "head-major [query_head, key_position_or_sink], flattened with all real key positions 0..token_count-1 followed by sink at position token_count for each head",
+    "query_token_index": 73,
+    "real_key_positions": [
+      0,
+      73
+    ],
+    "attention_sink_position": 74
+  },
+  "local_tensor_metadata": {
+    "shape": [
+      64,
+      75
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "json_f32_values",
+    "layout": "head-major [query_head, key_position_or_sink]",
+    "real_key_positions": [
+      0,
+      73
+    ],
+    "attention_sink_position": 74,
+    "valid_unmasked_real_key_count": 74,
+    "masked_key_count": 0,
+    "mask_convention": "-inf"
+  },
+  "mask_metadata": {
+    "causal_mask_behavior": "torch.triu(-inf, diagonal=1); for final query token no future real key positions exist",
+    "sliding_window_behavior": {
+      "enabled": true,
+      "sliding_window": 128,
+      "masked_when_key_position_less_than": -55
+    },
+    "attention_sink_behavior": "official attn.sinks reshaped as [num_kv_heads, heads_per_kv], flattened in query-head order, and concatenated as the final pre-softmax column",
+    "valid_unmasked_key_positions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73
+    ],
+    "masked_key_positions": [],
+    "attention_sink_position": 74,
+    "mask_value_convention": "-inf"
+  },
+  "sink_metadata": {
+    "sink_source": "model.layers.0.self_attn.sinks loaded through local model weight loader and BF16 round-tripped",
+    "sink_position": 74,
+    "sink_value_is_per_head": true,
+    "sink_value_is_shared": false,
+    "sink_appended_before_or_after_mask_application": "after real-key mask application; equivalent for this prompt because no real keys are masked",
+    "first_sink_values": [
+      2.515625,
+      0.55859375,
+      1.71875,
+      0.91015625,
+      0.96875,
+      0.6953125,
+      -0.98828125,
+      1.421875
+    ],
+    "last_sink_values": [
+      3.515625,
+      1.21875,
+      0.9375,
+      1.578125,
+      1.7265625,
+      1.1953125,
+      2.359375,
+      0.71484375
+    ]
+  },
+  "shape_matched": true,
+  "layout_matched": true,
+  "real_key_columns_matched": true,
+  "sink_column_matched": true,
+  "real_key_only_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "sink_only_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "all_position_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "masked_logits_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_element_count": 0,
+    "first_differing_location": null,
+    "worst_differing_location": null
+  },
+  "first_worst_mismatch_trace": {
+    "first": null,
+    "worst": null
+  },
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "attention_post_mask_logits_cleared_after_qk_candidates",
+  "runtime_forward_attention_post_mask_after_qk_candidates_status_now": "runtime-forward layer0 attention post-mask after Q/K candidates status now: Q post-RoPE guard matched=true; K post-RoPE guard matched=true; raw pre-mask score guard matched=true; official masked-logits reference available=true; classification=attention_post_mask_logits_cleared_after_qk_candidates; next bounded step: ask PPP for or compare existing final-token attention probabilities / softmax output only.",
+  "next_bounded_step": "ask PPP for or compare existing final-token attention probabilities / softmax output only"
+}

@@ -1,0 +1,144 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_norm_before_projections_after_attn_residual_status/v1",
+  "mode": "mlp-norm-before-projections-after-attn-residual-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "attention_residual_add_cleared": ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-residual-add-before-mlp-after-o-proj-candidates-status.json",
+    "official_residual_add_source_input": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json",
+    "official_mlp_norm_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+  "input_provenance_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_hidden_state_after_attention_residual_add_before_mlp",
+    "source_artifact_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_official_mlp_norm_source": true,
+    "residual_add_digest": "971d6b6991cb973e690d00b9927a46779550c657c687227e40b255e9ab11f0a0",
+    "official_mlp_norm_source_digest": "971d6b6991cb973e690d00b9927a46779550c657c687227e40b255e9ab11f0a0"
+  },
+  "mlp_norm_parameter_metadata": {
+    "module_path": "model.block[0].mlp.norm",
+    "local_module_type": "RMSNorm",
+    "official_module_type": "RMSNorm",
+    "weight_shape": [
+      2880
+    ],
+    "weight_dtype": "float32",
+    "storage_source": "Checkpoint block.0.mlp.norm.scale copied into RMSNorm FP32 scale parameter",
+    "epsilon": 1e-05,
+    "bias_exists": false,
+    "mean_subtraction": false,
+    "variance_rule": "mean(x^2) over hidden dimension",
+    "parameter_mismatch": false,
+    "official_norm_parameters": {
+      "weight_name": "model.block[0].mlp.norm.scale",
+      "weight_shape": [
+        2880
+      ],
+      "weight_dtype": "torch.float32",
+      "epsilon": 1e-05,
+      "bias_exists": false,
+      "centering_mean_subtraction_used": false,
+      "variance_definition": "mean(x^2) over hidden dimension"
+    },
+    "weight_summary": {
+      "count": 2880,
+      "min": 0.051025390625,
+      "max": 9.625,
+      "mean": 3.1076979637145996,
+      "sha256_f32_le": "fdcc44b12f7195f143d4876ef25bccf7f2027ffa66d595961492e412585dbfcb"
+    }
+  },
+  "mlp_norm_weight_comparison_metrics": {
+    "availability_status": "official weight is accessible through the same checkpoint tensor block.0.mlp.norm.scale used for the local module",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "local_runtime_mlp_norm_output_metadata": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "flat hidden dimension vector [hidden_size] for final token before MLP projections",
+    "device": "cpu"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "flat hidden dimension vector [hidden_size] for final token",
+    "norm_computation_semantics": {
+      "input_dtype": "torch.bfloat16",
+      "accumulation_dtype": "torch.float32",
+      "scale_parameter_dtype": "torch.float32",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_norm": true,
+      "official_source_expression": "RMSNorm.forward: t = x.float(); t = t * rsqrt(mean(t**2) + eps); return (t * scale).to(input_dtype)"
+    }
+  },
+  "local_runtime_mlp_norm_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "BF16 input, FP32 weight, FP32 RMS reduction, x * inverse_rms * weight, BF16 output round-trip",
+    "scalar_trace": {
+      "sum_of_squares": 19513.26953125,
+      "mean_square": 6.775440692901611,
+      "epsilon": 1e-05,
+      "inverse_rms": 0.3841765820980072
+    },
+    "replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "local_runtime_vs_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "dtype_policy_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "mlp_norm_before_projections_cleared_after_attention_residual",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_mlp_router_logits_before_routing",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_norm_before_projections_after_attn_residual.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

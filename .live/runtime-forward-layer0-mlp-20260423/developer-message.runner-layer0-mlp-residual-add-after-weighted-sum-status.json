@@ -1,0 +1,115 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_residual_add_after_weighted_sum_status/v1",
+  "mode": "mlp-residual-add-after-weighted-sum-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73
+  },
+  "source_artifact_paths": {
+    "mlp_weighted_expert_sum_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-weighted-expert-sum-before-residual-status.json",
+    "attention_residual_add_cleared": ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-residual-add-before-mlp-after-o-proj-candidates-status.json",
+    "official_after_mlp_residual_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json",
+    "official_post_attention_residual_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json",
+    "official_mlp_weighted_sum_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json",
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "layout": "flat hidden dimension vector [hidden_size]",
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "boundary": "layer0_final_token_hidden_state_after_mlp_residual_add",
+    "residual_add_semantics": {
+      "addend_order": "post_attention_residual + mlp_weighted_expert_sum",
+      "computation_dtype": "torch.bfloat16",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_add": true,
+      "official_source_expression": "MLPBlock.forward returns x + t"
+    }
+  },
+  "post_attention_residual_guard_metrics": {
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_artifact": ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-residual-add-before-mlp-after-o-proj-candidates-status.json",
+    "source_boundary_used": "layer0_final_token_hidden_state_after_attention_residual_add_before_mlp"
+  },
+  "mlp_weighted_sum_guard_metrics": {
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_artifact": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-weighted-expert-sum-before-residual-status.json",
+    "source_boundary_used": "layer0_final_token_mlp_output_after_routing_weighted_sum_before_residual"
+  },
+  "local_reconstructed_after_mlp_residual_metadata": {
+    "post_attention_residual_input": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[hidden_size]",
+      "device": "cpu"
+    },
+    "mlp_weighted_expert_sum_input": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[hidden_size]",
+      "device": "cpu"
+    },
+    "output": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "float32",
+      "serialization_dtype": "json_f32_values",
+      "layout": "[hidden_size] after MLP residual add before layer1",
+      "device": "cpu"
+    },
+    "addend_order": "post_attention_residual + mlp_weighted_expert_sum",
+    "computation_dtype": "torch.bfloat16",
+    "output_dtype_before_serialization": "torch.bfloat16",
+    "rounded_to_bf16_after_add": true,
+    "before_layer1": true
+  },
+  "after_mlp_residual_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "dtype_add_policy_finding": "not needed; BF16 residual add/output matches official",
+  "dtype_add_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "layer0_hidden_after_mlp_residual_add_cleared",
+  "next_bounded_step": "ask PPP for exactly layer1_final_token_attention_norm_output_before_qkv",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_residual_add_after_weighted_sum.py"
+}

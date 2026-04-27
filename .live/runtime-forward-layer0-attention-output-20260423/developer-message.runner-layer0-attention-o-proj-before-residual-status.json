@@ -1,0 +1,295 @@
+{
+  "schema_version": "runtime_forward_layer0_attention_o_proj_before_residual_status/v1",
+  "mode": "layer0-attention-o-proj-before-residual-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "final_token_index": 73,
+    "hidden_size": 2880
+  },
+  "source_ppp_boundary_artifact_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json",
+  "ppp_boundary_digest": "a8f49257350a9b04d06fd531655dbf3a7e2b5e79972bac3fa9a0ac03d5835c0c",
+  "before_residual_add_confirmed": true,
+  "residual_add_included": false,
+  "source_artifact_paths": {
+    "v_candidate_proof": ".live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate-status.json",
+    "attention_probabilities_proof": ".live/runtime-forward-layer0-attention-20260423/developer-message.runner-layer0-attention-probs-after-post-mask-candidates-status.json",
+    "authoritative_rmsnorm_replay": ".live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.official-layer0-attn-rmsnorm-all-token-bf16-replay.cpu.json",
+    "official_weighted_v_sum": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json",
+    "official_o_proj_before_residual": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json"
+  },
+  "q_k_v_candidate_provenance_guard_summary": {
+    "q_post_rope": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "k_post_rope": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null,
+      "candidate_tensor": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "stride": [
+          512,
+          64,
+          1
+        ],
+        "dtype": "float32",
+        "layout": "[token, kv_head, lane]"
+      },
+      "official_tensor": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "stride": [
+          512,
+          64,
+          1
+        ],
+        "dtype": "float32",
+        "layout": "[token, kv_head, lane]"
+      },
+      "application_path": "model.attn.rope applied to scoped oneDNN candidate K heads in this bench/proof diagnostic"
+    },
+    "post_softmax_probabilities": {
+      "real_key_probabilities": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_element_count": 0,
+        "mismatching_head_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      },
+      "sink_probabilities": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_element_count": 0,
+        "mismatching_head_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      },
+      "all_positions": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_element_count": 0,
+        "mismatching_head_count": 0,
+        "first_differing_location": null,
+        "worst_differing_location": null
+      }
+    },
+    "v_candidate_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_token_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_location": null,
+      "worst_differing_location": null
+    },
+    "v_candidate_weighted_sum_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_head_count": 0,
+      "mismatching_lane_count": 0,
+      "first_differing_flattened_feature_q_head_lane": null,
+      "worst_differing_flattened_feature_q_head_lane": null
+    },
+    "q_k_v_candidates_are_bench_proof_only": true
+  },
+  "weighted_v_sum_guard_metric": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_head_count": 0,
+    "mismatching_lane_count": 0,
+    "first_differing_flattened_feature_q_head_lane": null,
+    "worst_differing_flattened_feature_q_head_lane": null
+  },
+  "o_proj_input": {
+    "shape": [
+      1,
+      4096
+    ],
+    "stride": [
+      4096,
+      1
+    ],
+    "dtype": "bfloat16",
+    "serialization_dtype": "bf16",
+    "layout": "[1, q_dim] final-token weighted V sum before o_proj",
+    "device": "cpu",
+    "source": "candidate weighted V sum reconstructed from oneDNN V candidate and cleared probabilities"
+  },
+  "o_proj_weight_bias_metadata": {
+    "weight": {
+      "shape": [
+        2880,
+        4096
+      ],
+      "stride": [
+        4096,
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[hidden_size, q_dim]",
+      "device": "cpu"
+    },
+    "weight_digest": "sha256-prefix4096:46174b578669e5e67de8ec190faf4afb9e63d70dcf0ebb4211bd561b897a602c",
+    "orientation": "activation[1, q_dim] x o_proj_weight^T",
+    "bias_present": true,
+    "bias": {
+      "shape": [
+        2880
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "bfloat16",
+      "serialization_dtype": "bf16",
+      "layout": "[hidden_size]",
+      "device": "cpu"
+    },
+    "bias_summary": {
+      "count": 2880,
+      "min": -0.5390625,
+      "max": 1.0234375,
+      "mean": 0.0014882013201713562,
+      "digest": "sha256-prefix4096:6b61a071cfb68b0cd3c2fae1020e3d16390948027f97db9c7cb2b60026bdae9a"
+    },
+    "bias_all_zero": false,
+    "metadata_matches_expected": true,
+    "finding": "o_proj weight/bias metadata matches expected [2880,4096] weight and [2880] bias"
+  },
+  "final_token_o_proj_output": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "bfloat16",
+    "serialization_dtype": "bf16",
+    "layout": "[hidden_size]",
+    "device": "cpu",
+    "boundary": "layer0_final_token_attention_output_after_o_proj_before_residual",
+    "before_residual_add": true
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "flat hidden dimension vector [hidden_size] for the final token",
+    "confirmed_after_o_proj": true,
+    "confirmed_before_residual": true
+  },
+  "o_proj_output_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "optional_onednn_o_proj_candidate_metrics": null,
+  "first_differing_hidden_lane": null,
+  "worst_differing_hidden_lane": null,
+  "classification": "layer0_attention_o_proj_before_residual_cleared",
+  "next_bounded_step": "continue to residual add only after a bounded PPP/reference boundary exists",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_attention_o_proj_before_residual.py",
+  "onednn_verbose_log_path": ".live/runtime-forward-layer0-attention-output-20260423/developer-message.runner-layer0-attention-o-proj-before-residual.onednn.log",
+  "onednn_verbose_primitive_lines_sample": [
+    "onednn_verbose,v1,info,oneDNN v3.7.1 (commit 8d263e693366ef8db40acc569cc7d8edf644556d)",
+    "onednn_verbose,v1,info,cpu,runtime:OpenMP,nthr:8",
+    "onednn_verbose,v1,info,cpu,isa:Intel AVX-512 with Intel DL Boost",
+    "onednn_verbose,v1,info,gpu,runtime:none",
+    "onednn_verbose,v1,info,graph,backend,0:dnnl_backend",
+    "onednn_verbose,v1,primitive,info,template:operation,engine,primitive,implementation,prop_kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_time",
+    "onednn_verbose,v1,graph,info,template:operation,engine,partition_id,partition_kind,op_names,data_formats,logical_tensors,fpmath_mode,implementation,backend,exec_time",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ba::f0 dst:bf16::blocked:ab::f0,attr-scratchpad:user attr-post-ops:sum,,74x2880:2880x512,9.93994",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0180664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0170898",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0229492",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0158691",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0148926",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0212402",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0268555",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0161133",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00878906",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0158691",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0170898",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.012207",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0078125",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0131836",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0161133",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0109863",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.019043",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0180664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0129395",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0209961",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.00805664",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0119629",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0090332",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0168457",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.013916",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0148926",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0141602",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0161133",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098",
+    "onednn_verbose,v1,primitive,exec,cpu,matmul,gemm:jit:bf16,undef,src:bf16::blocked:abc::f0 wei:bf16::blocked:abc::f0 dst:bf16::blocked:abc::f0,attr-scratchpad:user,,1x1x74:1x74x64,0.0100098"
+  ]
+}

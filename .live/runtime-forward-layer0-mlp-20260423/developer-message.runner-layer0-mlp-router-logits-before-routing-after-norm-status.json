@@ -1,0 +1,202 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_router_logits_before_routing_after_norm_status/v1",
+  "mode": "mlp-router-logits-before-routing-after-norm-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "num_experts": 32,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "mlp_norm_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-norm-before-projections-after-attn-residual-status.json",
+    "official_mlp_norm_input": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+    "official_router_logits_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json",
+  "mlp_norm_input_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_mlp_norm_output_before_mlp_projections",
+    "source_artifact_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_official_router_input": true,
+    "mlp_norm_digest": "18e2b6485bb7b3b56376c478fe3add5f5b80f7248e78d64c095822f8f8b2f046",
+    "official_router_input_digest": "18e2b6485bb7b3b56376c478fe3add5f5b80f7248e78d64c095822f8f8b2f046"
+  },
+  "router_weight_metadata": {
+    "module_path": "model.block[0].mlp.gate",
+    "shape": [
+      32,
+      2880
+    ],
+    "dtype": "bfloat16",
+    "layout_orientation": "[num_experts, hidden_size]; Linear computes input @ weight.T + bias",
+    "sha256_f32_le": "c292ce7d21b8a1df05e12d3b62bb44d4b321556b171802961b307b3eff125dc2",
+    "official_metadata": {
+      "shape": [
+        32,
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "layout_orientation": "[num_experts, hidden_size]; Linear computes input @ weight.T + bias",
+      "sha256_f32_le": "c292ce7d21b8a1df05e12d3b62bb44d4b321556b171802961b307b3eff125dc2"
+    },
+    "metadata_digest_matches_official": true
+  },
+  "router_bias_metadata": {
+    "present": true,
+    "shape": [
+      32
+    ],
+    "dtype": "bfloat16",
+    "all_zero": false,
+    "nonzero_count": 32,
+    "sha256_f32_le": "91dce25e98984b82e7559cc860f44b833d6258acd3731629a934baae32ef32bb",
+    "official_metadata": {
+      "present": true,
+      "shape": [
+        32
+      ],
+      "dtype": "torch.bfloat16",
+      "all_zero": false,
+      "nonzero_count": 32,
+      "sha256_f32_le": "91dce25e98984b82e7559cc860f44b833d6258acd3731629a934baae32ef32bb"
+    },
+    "metadata_digest_matches_official": true,
+    "local_runtime_applies_bias": true
+  },
+  "router_weight_comparison_metrics": {
+    "availability_status": "official weight is accessible through the same checkpoint tensor block.0.mlp.gate.weight used for the local module",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_element_count": 0,
+      "first_differing_row_lane": null,
+      "worst_differing_row_lane": null
+    }
+  },
+  "router_bias_comparison_metrics": {
+    "availability_status": "official bias is accessible through the same checkpoint tensor block.0.mlp.gate.bias used for the local module",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    }
+  },
+  "local_runtime_router_logits_metadata": {
+    "shape": [
+      32
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "flat expert-logit vector [num_experts] before top-k/routing",
+    "device": "cpu"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      32
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "flat expert-logit vector [num_experts]",
+    "router_computation_semantics": {
+      "input_dtype": "torch.bfloat16",
+      "weight_dtype": "torch.bfloat16",
+      "accumulation_dtype": "unknown",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_linear": true,
+      "official_source_expression": "MLPBlock.forward: t = self.norm(x); g = self.gate(t)"
+    },
+    "router_routing_metadata": {
+      "num_experts": 32,
+      "top_k": 4,
+      "later_selection": "torch.topk(g, k=experts_per_token, dim=-1, sorted=True)",
+      "later_weight_normalization": "torch.nn.functional.softmax(experts.values, dim=1)",
+      "captured_routed_outputs": false
+    }
+  },
+  "local_runtime_router_logits_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_count": 0,
+    "first_differing_expert_index": null,
+    "worst_differing_expert_index": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "torch.nn.functional.linear with BF16 input, BF16 weight, BF16 bias, BF16 output",
+    "f_linear_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "local_runtime_vs_f_linear": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "no_bias_replay_vs_official": {
+      "max_abs_diff": 0.37890625,
+      "mean_abs_diff": 0.12147903442382812,
+      "matched": false,
+      "mismatching_count": 32,
+      "first_differing_expert_index": {
+        "expert_index": 0,
+        "lhs_value": 0.05810546875,
+        "rhs_value": 0.1923828125,
+        "abs_diff": 0.13427734375
+      },
+      "worst_differing_expert_index": {
+        "expert_index": 9,
+        "lhs_value": 0.98828125,
+        "rhs_value": 0.609375,
+        "abs_diff": 0.37890625
+      }
+    },
+    "no_bias_replay_vs_local_runtime": {
+      "max_abs_diff": 0.37890625,
+      "mean_abs_diff": 0.12147903442382812,
+      "matched": false,
+      "mismatching_count": 32,
+      "first_differing_expert_index": {
+        "expert_index": 0,
+        "lhs_value": 0.05810546875,
+        "rhs_value": 0.1923828125,
+        "abs_diff": 0.13427734375
+      },
+      "worst_differing_expert_index": {
+        "expert_index": 9,
+        "lhs_value": 0.98828125,
+        "rhs_value": 0.609375,
+        "abs_diff": 0.37890625
+      }
+    }
+  },
+  "policy_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "router_logits_before_routing_cleared_after_mlp_norm",
+  "next_bounded_step": "ask PPP for exactly layer0_final_token_mlp_topk_expert_indices_and_routing_weights",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_router_logits_before_routing_after_norm.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

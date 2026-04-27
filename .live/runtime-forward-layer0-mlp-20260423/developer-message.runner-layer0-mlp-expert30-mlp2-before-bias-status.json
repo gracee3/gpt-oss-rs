@@ -1,0 +1,297 @@
+{
+  "schema_version": "runtime_forward_layer0_mlp_expert30_mlp2_before_bias_status/v1",
+  "mode": "mlp-expert30-mlp2-before-bias-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 0,
+    "token_index": 73,
+    "selected_expert_rank": 1,
+    "selected_expert_index": 30,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "expert30_swiglu_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-expert30-swiglu-before-mlp2-status.json",
+    "selected_expert_outputs_diagnostic": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-selected-expert-outputs-before-routing-weighted-sum-status.json",
+    "official_expert30_swiglu_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json",
+    "official_expert30_mlp2_before_bias_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp2-output-before-bias-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp2-output-before-bias-status.json",
+  "mlp_norm_input_guard_metrics": {
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_expert30_mlp1": true
+  },
+  "routing_guard_metrics": {
+    "router_logits": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_expert_index": null,
+      "worst_differing_expert_index": null
+    },
+    "selected_expert_indices": {
+      "local_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "official_indices": [
+        3,
+        30,
+        11,
+        27
+      ],
+      "ordered_match": true,
+      "set_match_ignoring_order": true,
+      "first_differing_rank": null
+    },
+    "routing_weights": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_count": 0,
+      "first_differing_rank": null,
+      "worst_differing_rank": null,
+      "local_weight_sum": 0.9990234375,
+      "official_weight_sum": 0.9990234375,
+      "weight_sum_abs_diff": 0.0
+    },
+    "expert30_selected_rank_1": true
+  },
+  "expert30_mlp1_guard_metrics": {
+    "fused": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_fused_lane": null,
+      "worst_differing_fused_lane": null
+    },
+    "gate_slice": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_gate_lane": null,
+      "worst_differing_gate_lane": null
+    },
+    "up_slice": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_up_lane": null,
+      "worst_differing_up_lane": null
+    }
+  },
+  "expert30_swiglu_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "expert30_mlp2_weight_metadata": {
+    "expert_module_path": "model.block[0].mlp expert index 30",
+    "mlp2_module_path": "model.block[0].mlp.mlp2_weight[30]",
+    "shape": [
+      2880,
+      2880
+    ],
+    "dtype": "bfloat16",
+    "layout_orientation": "[hidden_size, intermediate_size / world_size]; torch.einsum('hk,k->h', weight, swiglu_output)",
+    "sha256_f32_le": "0326850b8cb4d7420df094cc04aa35d9c37dc10107039a9681ca454deb3b5601",
+    "official_metadata": {
+      "shape": [
+        2880,
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "layout_orientation": "[hidden_size, intermediate_size / world_size]; official replay computes torch.einsum('hk,k->h', weight, swiglu_output)",
+      "sha256_f32_le": null,
+      "sha256_omitted_reason": "selected expert 30 mlp2 weight is not compact for this status artifact; shape is recorded and the boundary tensor is checksummed"
+    },
+    "shape_matches_official": true,
+    "official_digest_available": false
+  },
+  "expert30_mlp2_bias_metadata": {
+    "present": true,
+    "shape": [
+      2880
+    ],
+    "dtype": "bfloat16",
+    "nonzero_count": 2880,
+    "sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+    "official_metadata": {
+      "present": true,
+      "shape": [
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "all_zero": false,
+      "nonzero_count": 2880,
+      "sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+      "applied_to_this_boundary": false
+    },
+    "shape_matches_official": true,
+    "digest_matches_official": true,
+    "bias_included_in_pre_bias_boundary": false
+  },
+  "weight_bias_comparison_metrics": {
+    "weight": {
+      "availability_status": "official PPP records shape/dtype/orientation but omits full weight digest; local checkpoint tensor metadata recorded",
+      "shape_matches_official": true,
+      "dtype_matches_official": true
+    },
+    "bias": {
+      "availability_status": "official PPP records BF16 bias digest",
+      "digest_matches_official": true,
+      "metrics": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_lane_count": 0,
+        "first_differing_hidden_lane": null,
+        "worst_differing_hidden_lane": null
+      }
+    }
+  },
+  "local_mlp2_before_bias_output_metadata": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "expert 30 raw mlp2 projection output vector [hidden_size], before mlp2_bias",
+    "device": "cpu",
+    "before_mlp2_bias": true,
+    "before_routing_weight": true,
+    "capture_point_confirmation": "after expert30 mlp2 matrix multiplication/projection; before mlp2_bias",
+    "local_all_reduce_or_partitioning": "none; world_size=1"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "expert 30 raw mlp2 projection output vector [hidden_size]",
+    "source_input_boundary": {
+      "boundary": "layer0_final_token_expert30_swiglu_output_before_mlp2",
+      "path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json",
+      "shape": [
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "layout": "expert 30 SwiGLU output vector [intermediate_size / world_size]",
+      "sha256_f32_le": "ee519c87d8d9dc73d7523dd7082e698a144644cd98f0747fa2e048cbe99a2b4f"
+    },
+    "mlp2_weight_metadata": {
+      "shape": [
+        2880,
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "layout_orientation": "[hidden_size, intermediate_size / world_size]; official replay computes torch.einsum('hk,k->h', weight, swiglu_output)",
+      "sha256_f32_le": null,
+      "sha256_omitted_reason": "selected expert 30 mlp2 weight is not compact for this status artifact; shape is recorded and the boundary tensor is checksummed"
+    },
+    "mlp2_bias_metadata": {
+      "present": true,
+      "shape": [
+        2880
+      ],
+      "dtype": "torch.bfloat16",
+      "all_zero": false,
+      "nonzero_count": 2880,
+      "sha256_f32_le": "ca5d3921c163aa5becf5bb4819c2eab61126f7a5d001a2317a88ba90f4403879",
+      "applied_to_this_boundary": false
+    },
+    "computation_semantics": {
+      "input_dtype": "torch.bfloat16",
+      "weight_dtype": "torch.bfloat16",
+      "accumulation_dtype": "unknown",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_mlp2_projection": true,
+      "world_size": 1,
+      "all_reduce_applied_before_bias": false,
+      "bias_applied": false,
+      "official_source_expression": "mlp2_weight = self.mlp2_weight[expert_indices, ...]; mlp2_bias = self.mlp2_bias[expert_indices, ...]; t = torch.einsum('beck,bek->bec', mlp2_weight, t); captured expert 30/rank 1 slice before t += mlp2_bias"
+    }
+  },
+  "local_mlp2_before_bias_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "torch.einsum('hk,k->h', BF16 weight, BF16 SwiGLU input), no bias, BF16 output",
+    "replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "local_runtime_vs_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "bias_added_replay_context": {
+      "scope": "next-step context only; not compared as this pre-bias boundary",
+      "lane_1156_value": 2.28125
+    }
+  },
+  "discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "known_downstream_lane_1156_context": {
+    "hidden_lane": 1156,
+    "local_mlp2_before_bias": 2.453125,
+    "official_mlp2_before_bias": 2.453125,
+    "local_selected_expert_output": null,
+    "official_selected_expert_output": 2.28125,
+    "mismatch_already_exists_before_bias": false,
+    "bias_added_context_value": 2.28125,
+    "mlp2_bias_value": -0.1748046875
+  },
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "expert30_mlp2_before_bias_cleared",
+  "next_bounded_step": "compare expert30 mlp2 bias application against existing selected expert output boundary",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_mlp_expert30_mlp2_before_bias.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration",
+  "local_stage_summary": {
+    "count": 2880,
+    "min": -43.0,
+    "max": 21.375,
+    "mean": -0.006056804209947586,
+    "sha256_f32_le": "63581a2a8580be1ad401c0739ee31927abba3fd68bb24279cb93646603382b0d"
+  },
+  "official_summary": {
+    "count": 2880,
+    "min": -43.0,
+    "max": 21.375,
+    "mean": -0.006056803796026442,
+    "sha256_f32_le": "63581a2a8580be1ad401c0739ee31927abba3fd68bb24279cb93646603382b0d"
+  }
+}
