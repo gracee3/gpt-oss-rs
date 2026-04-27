@@ -106,3 +106,23 @@ Add a stdlib-only final-readout status validator and optionally a
 manifest/checksum reference validator. Do not import the monolithic Rust bench
 binary or Torch replay tools until a separate extraction can isolate them from
 runtime-forward-only APIs and large local artifacts.
+
+## First Proof-Tooling Extraction
+
+The first proof-tooling extraction adds:
+
+- `scripts/validate_runtime_forward_final_readout_status.py`
+
+Example usage:
+
+```bash
+python scripts/validate_runtime_forward_final_readout_status.py \
+  --artifact .live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json
+```
+
+The validator is Python-stdlib-only. It checks the
+`final_readout_direct_module_logits_cleared` classification, final block/final
+norm/LM-head zero-diff guard metrics, expected digests, vocab size, optional
+top-20 comparison, stale PPP reconciliation note, and remaining mismatch seam.
+It can also sanity-check a manifest reference with `--check-manifest PATH`
+without requiring `.live` to be tracked in the repository.
