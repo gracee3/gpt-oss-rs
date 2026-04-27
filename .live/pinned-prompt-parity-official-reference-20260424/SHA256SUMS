@@ -35,3 +35,9 @@ eb7e0a26d1b4c8975441d8c08411252e61db907e04b267d755ab6bc6efee9aaf  developer-mess
 506d9fc0cc429a272b95aa80c093ca3000671cb6212d2df3d1cb3d70353bd188  developer-message.runner-vs-official-layer0-k-post-rope-pre-cache.cpu.compare.json
 307489dc437637c548adbd1dc61b9d69ec8395fd55e679dccee81a1ffef11dc2  developer-message.runner-vs-official-layer0-k-rope-state.cpu.compare.json
 bd433340318c3e7745b27adcc04643ea8bddd5fb70f87334202fd875f580bfbd  developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json
+6a97ca9a91091b5762b425b297f509c53d98360d31ef8c7a6e988835569d37d3  developer-message.ppp-layer1-final-token-attention-norm-output-before-qkv-status.json
+bece70d4c94fee08165adf7492632d4b2ccafb338552161b6239b90f140583dd  developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json
+59af07bfc6ee41228ff4eb5152aac194418abaddc9df6c89e0227c51e76c7516  .live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json
+6e852ab6a38fd60a6c5f529c93fe76aa968cb04f432679902707e9be3e593adc  .live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+3e1bc74bb63a090c542e190731ebeba7ddbe0b41bba7713c0daa7f83ecf7740e  .live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json
+f385663dfb3335400274afe5b9cebbdad2c40c1a888ca08706215b1650677a93  .live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-direct-module-bundle-status.json

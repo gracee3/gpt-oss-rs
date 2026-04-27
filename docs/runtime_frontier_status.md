@@ -285,3 +285,47 @@ Caveat:
 Next bounded step:
 
 - ask PPP for exactly `layer1_final_token_attention_norm_output_before_qkv`
+
+## Full Final-Token Oracle Parity Checkpoint
+
+Checkpoint context:
+
+- exact case: `developer-message-user-smoke`
+- artifact: `.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+- classification: `final_readout_direct_module_logits_cleared`
+
+Milestone summary:
+
+- final-token transformer stack is cleared through layer 23 for the proof path
+- final block output guard: max `0.0`, mean `0.0`, matched `true`
+- final block output digest matched `3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257`
+- final norm output guard: max `0.0`, mean `0.0`, matched `true`
+- final norm digest matched `e57a8796fd3d4d36d09713ad9780a8e0c077824458568157976b8e71b17a2139`
+- direct-module LM-head logits: max `0.0`, mean `0.0`, matched `true`
+- regenerated direct-module logits digest matched `67f31845dd24db26cc91954607cfae8ae7ff7b9c8954cb9d3b1610ca9c635209`
+- top-20 logits matched exactly, including ordered token IDs and values
+- earliest remaining mismatching seam: `none`
+
+Stale PPP reconciliation:
+
+- prior PPP logits digest: `5a7d47edfab63d59c17825b8d7b7668cc7a15ad2d107f902ca2caa05488ecd44`
+- regenerated direct-module logits digest: `67f31845dd24db26cc91954607cfae8ae7ff7b9c8954cb9d3b1610ca9c635209`
+- the previous 37-logit mismatch was a stale PPP capture issue, not a runtime-forward logits issue
+
+Validation:
+
+- `cargo fmt --package gpt-oss-model-runner --package gpt-oss-bench`
+- `cargo check -p gpt-oss-bench --bin runtime_forward_layer0_qkv_bf16_candidate_status --features cuda`
+- `cargo run -p gpt-oss-bench --bin runtime_forward_layer0_qkv_bf16_candidate_status --features cuda -- --mode final-readout-direct-module-rerun-status`
+- jq validation of the final readout artifact
+- `git diff --check`
+
+Caveat:
+
+- this is full final-token oracle parity for the exact `developer-message-user-smoke` proof path
+- do not overclaim default runtime parity from this checkpoint
+- supporting oneDNN Q/K/V projection candidates, selected expert output readout correction, and proof-only artifact/candidate plumbing remain bench/proof-only unless separately promoted
+
+Next decision point:
+
+- choose between a scoped runtime promotion plan and 4097-boundary work

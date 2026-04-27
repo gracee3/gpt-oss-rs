@@ -1,0 +1,142 @@
+{
+  "schema_version": "runtime_forward_layer1_attn_norm_before_qkv_after_layer0_status/v1",
+  "mode": "layer1-attn-norm-before-qkv-after-layer0-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 1,
+    "token_index": 73,
+    "hidden_size": 2880
+  },
+  "source_artifact_paths": {
+    "layer0_after_mlp_residual_cleared": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-residual-add-after-weighted-sum-status.json",
+    "official_layer0_after_mlp_residual_source_input": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json",
+    "official_layer1_attn_norm_reference": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-norm-output-before-qkv-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_reference_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-norm-output-before-qkv-status.json",
+  "layer0_output_input_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_hidden_state_after_mlp_residual_add",
+    "source_artifact_path": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-residual-add-after-weighted-sum-status.json",
+    "official_source_boundary_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_official_layer1_source": true,
+    "layer0_after_mlp_residual_digest": "67e8795a79a8f43e93ae3e4926b27c52f76da8db0ede7c6b184af353d6af0e6d",
+    "official_layer1_source_digest": "67e8795a79a8f43e93ae3e4926b27c52f76da8db0ede7c6b184af353d6af0e6d"
+  },
+  "layer1_attention_norm_parameter_metadata": {
+    "module_path": "model.block[1].attn.norm",
+    "local_module_type": "RMSNorm",
+    "official_module_type": "RMSNorm",
+    "weight_shape": [
+      2880
+    ],
+    "weight_dtype": "float32",
+    "storage_source": "Checkpoint block.1.attn.norm.scale copied into RMSNorm FP32 scale parameter",
+    "epsilon": 1e-05,
+    "bias_exists": false,
+    "mean_subtraction": false,
+    "variance_rule": "mean(x^2) over hidden dimension",
+    "parameter_mismatch": false,
+    "official_norm_parameters": {
+      "weight_shape": [
+        2880
+      ],
+      "weight_dtype": "torch.float32",
+      "weight_sha256_f32_le": "a89a3b124399cadc637432b4e951f16dc9fbffb05df39b840d75ab9da29bc291",
+      "epsilon": 1e-05,
+      "bias_exists": false,
+      "centering_or_mean_subtraction_used": false,
+      "variance_is_mean_x_squared_over_hidden_dimension": true
+    },
+    "weight_summary": {
+      "count": 2880,
+      "min": 0.5078125,
+      "max": 4.21875,
+      "mean": 1.9569810628890991,
+      "sha256_f32_le": "a89a3b124399cadc637432b4e951f16dc9fbffb05df39b840d75ab9da29bc291"
+    }
+  },
+  "layer1_attention_norm_weight_comparison_metrics": {
+    "availability_status": "official weight digest available from PPP; local weight loaded from checkpoint block.1.attn.norm.scale",
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "local_sha256_f32_le": "a89a3b124399cadc637432b4e951f16dc9fbffb05df39b840d75ab9da29bc291",
+    "official_sha256_f32_le": "a89a3b124399cadc637432b4e951f16dc9fbffb05df39b840d75ab9da29bc291"
+  },
+  "local_runtime_layer1_norm_output_metadata": {
+    "shape": [
+      2880
+    ],
+    "stride": [
+      1
+    ],
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "layout": "flat hidden dimension vector [hidden_size] for final token before layer1 QKV",
+    "device": "cpu"
+  },
+  "official_tensor_metadata": {
+    "shape": [
+      2880
+    ],
+    "tensor_dtype": "torch.bfloat16",
+    "serialization_dtype": "json_f32_values",
+    "layout_interpretation": "flat hidden dimension vector [hidden_size]",
+    "norm_computation_semantics": {
+      "input_dtype": "torch.bfloat16",
+      "accumulation_dtype": "torch.float32",
+      "weight_dtype": "torch.float32",
+      "output_dtype_before_serialization": "torch.bfloat16",
+      "rounded_or_cast_to_bf16_after_norm": true,
+      "official_source_expression": "RMSNorm.forward: t, dtype = x.float(), x.dtype; t = t * rsqrt(mean(t**2) + eps); return (t * scale).to(dtype)"
+    }
+  },
+  "local_runtime_layer1_norm_vs_official_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "official_semantics_replay_metrics": {
+    "policy": "BF16 input, FP32 weight, FP32 RMS reduction, x * inverse_rms * weight, BF16 output round-trip",
+    "scalar_trace": {
+      "sum_of_squares": 29044.130859375,
+      "mean_square": 10.08476734161377,
+      "epsilon": 1e-05,
+      "inverse_rms": 0.3148958086967468
+    },
+    "replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "local_runtime_vs_replay": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "dtype_policy_discriminator_table": [],
+  "focused_mismatch_trace": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "classification": "layer1_attn_norm_before_qkv_cleared_after_layer0",
+  "next_bounded_step": "ask PPP for exactly layer1_final_token_q_projection_output_before_rope",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer1_attn_norm_before_qkv_after_layer0.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

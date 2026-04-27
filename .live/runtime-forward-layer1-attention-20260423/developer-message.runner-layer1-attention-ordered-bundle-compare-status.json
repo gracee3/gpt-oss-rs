@@ -1,0 +1,451 @@
+{
+  "schema_version": "runtime_forward_layer1_attention_ordered_bundle_compare_status/v1",
+  "mode": "layer1-attention-ordered-bundle-compare-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "layer_index": 1,
+    "token_index": 73
+  },
+  "source_artifact_paths": {
+    "layer1_attention_norm_cleared": ".live/runtime-forward-layer1-attention-20260423/developer-message.runner-layer1-attn-norm-before-qkv-after-layer0-status.json",
+    "official_layer1_attention_ordered_bundle": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_bundle_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json",
+  "layer1_input_guard_metrics": {
+    "source_boundary_used": "layer0_final_token_hidden_state_after_mlp_residual_add",
+    "source_artifact_path": ".live/runtime-forward-layer0-mlp-20260423/developer-message.runner-layer0-mlp-residual-add-after-weighted-sum-status.json",
+    "official_source_boundary_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json",
+    "metrics": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_lane_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    "source_input_digest_matches_official_layer1_source": true,
+    "layer0_after_mlp_residual_digest": "67e8795a79a8f43e93ae3e4926b27c52f76da8db0ede7c6b184af353d6af0e6d",
+    "official_layer1_source_digest": "67e8795a79a8f43e93ae3e4926b27c52f76da8db0ede7c6b184af353d6af0e6d"
+  },
+  "layer1_attention_norm_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_lane_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null
+  },
+  "local_attention_metadata": {
+    "token_count": 74,
+    "query_heads": 64,
+    "kv_heads": 8,
+    "heads_per_kv": 8,
+    "head_dim": 64,
+    "scale": 0.125,
+    "sliding_window": 0,
+    "sink_position": 74,
+    "sink_probability_dropped_before_v_sum": true,
+    "gqa_mapping": "kv_head = q_head // heads_per_kv"
+  },
+  "official_bundle_metadata": {
+    "num_query_heads": 64,
+    "num_kv_heads": 8,
+    "heads_per_kv": 8,
+    "head_dim": 64,
+    "token_count": 74,
+    "scale": 0.125,
+    "sliding_window": 0,
+    "sink_position": 74
+  },
+  "per_boundary_comparison_table": [
+    {
+      "boundary": "layer1_final_token_q_projection_output_before_rope",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat final-token Q projection vector [num_query_heads * head_dim]; logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat final-token Q projection vector [num_query_heads * head_dim]; logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_k_projection_output_before_rope",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          512
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat final-token K projection vector; logical view [num_kv_heads, head_dim]"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          512
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat final-token K projection vector; logical view [num_kv_heads, head_dim]"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_v_projection_output_before_attention",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          512
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat final-token V projection vector; logical view [num_kv_heads, head_dim]"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          512
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat final-token V projection vector; logical view [num_kv_heads, head_dim]"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_q_post_rope_before_attention",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat final-token post-RoPE Q vector [num_query_heads * head_dim]; logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat final-token post-RoPE Q vector [num_query_heads * head_dim]; logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_grouped_k_post_rope_before_attention",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "grouped all-real-token K after RoPE [token, kv_head, head_dim]"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          74,
+          8,
+          64
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "grouped all-real-token K after RoPE [token, kv_head, head_dim]"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_raw_scaled_qk_logits_pre_mask",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          64,
+          74
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "head-major [query_head, real_key_position] before mask/sink"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          64,
+          74
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "head-major [query_head, real_key_position] before mask/sink"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_masked_scaled_qk_logits_pre_softmax",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          64,
+          75
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "head-major [query_head, key_position_or_sink], real keys 0..token_count-1 followed by sink position token_count"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          64,
+          75
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "head-major [query_head, key_position_or_sink], real keys 0..token_count-1 followed by sink position token_count"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null,
+      "real_key_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      },
+      "sink_column_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      },
+      "all_position_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      }
+    },
+    {
+      "boundary": "layer1_final_token_attention_probs_post_softmax",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          64,
+          75
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "head-major [query_head, key_position_or_sink], real keys 0..token_count-1 followed by sink position token_count"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          64,
+          75
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "head-major [query_head, key_position_or_sink], real keys 0..token_count-1 followed by sink position token_count"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null,
+      "real_key_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      },
+      "sink_column_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      },
+      "all_position_metric": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0,
+        "matched": true,
+        "mismatching_value_count": 0,
+        "first_differing_flat_index": null,
+        "worst_differing_flat_index": null
+      },
+      "row_sum_summary_after_bf16_serialization": {
+        "local": {
+          "min": 0.9980854988098145,
+          "max": 1.002338171005249,
+          "mean": 0.9999382495880127,
+          "max_abs_row_sum_minus_1": 0.0023381710052490234
+        },
+        "official": {
+          "min_row_sum": 0.9980854988098145,
+          "max_row_sum": 1.002338171005249,
+          "mean_row_sum": 0.9999382486566901,
+          "max_abs_row_sum_minus_1": 0.0023381710052490234
+        }
+      }
+    },
+    {
+      "boundary": "layer1_final_token_attention_weighted_value_sum_before_output_projection",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flattened post-head-concatenation vector before attn.out/o_proj; equivalent to [query_head, head_dim] head-major flattened"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          4096
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flattened post-head-concatenation vector before attn.out/o_proj; equivalent to [query_head, head_dim] head-major flattened"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null,
+      "sink_probability_dropped_before_v_sum": true,
+      "gqa_mapping_summary": "kv_head = q_head // heads_per_kv; heads_per_kv = 8"
+    },
+    {
+      "boundary": "layer1_final_token_attention_output_after_o_proj_before_residual",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat hidden dimension vector [hidden_size] after attn.out/o_proj before residual add"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat hidden dimension vector [hidden_size] after attn.out/o_proj before residual add"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    },
+    {
+      "boundary": "layer1_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values",
+        "layout_interpretation": "flat hidden dimension vector [hidden_size] after attention residual add before layer1 MLP"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values",
+        "layout_interpretation": "flat hidden dimension vector [hidden_size] after attention residual add before layer1 MLP"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_index": null,
+      "worst_differing_index": null
+    }
+  ],
+  "earliest_remaining_mismatching_seam": "none",
+  "focused_earliest_mismatch_trace": null,
+  "classification": "layer1_attention_ordered_bundle_cleared",
+  "next_bounded_step": "ask PPP for a bounded layer1 MLP ordered boundary bundle",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer1_attention_ordered_bundle_compare.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

@@ -93,6 +93,46 @@
       "copied_locally": true,
       "committed": false,
       "why_not_committed": "large raw tensor/vector artifact or verbose run log; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json",
+      "filename": "developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json",
+      "size_bytes": 1426359,
+      "sha256": "bece70d4c94fee08165adf7492632d4b2ccafb338552161b6239b90f140583dd",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large full-value PPP bundle; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json",
+      "filename": "developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json",
+      "size_bytes": 7139551,
+      "sha256": "6e852ab6a38fd60a6c5f529c93fe76aa968cb04f432679902707e9be3e593adc",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large full-value PPP bundle; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json",
+      "filename": "developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json",
+      "size_bytes": 3710129,
+      "sha256": "3e1bc74bb63a090c542e190731ebeba7ddbe0b41bba7713c0daa7f83ecf7740e",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large superseded full-logits PPP bundle; preserved locally and covered by SHA256SUMS"
+    },
+    {
+      "original_path": "/tmp/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-direct-module-bundle-status.json",
+      "local_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-direct-module-bundle-status.json",
+      "filename": "developer-message.ppp-final-token-readout-norm-and-lm-head-direct-module-bundle-status.json",
+      "size_bytes": 6951355,
+      "sha256": "f385663dfb3335400274afe5b9cebbdad2c40c1a888ca08706215b1650677a93",
+      "copied_locally": true,
+      "committed": false,
+      "why_not_committed": "large regenerated full-logits PPP bundle; preserved locally and covered by SHA256SUMS"
     }
   ]
 }

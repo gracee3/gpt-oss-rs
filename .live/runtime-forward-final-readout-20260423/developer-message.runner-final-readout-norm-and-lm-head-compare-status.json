@@ -1,0 +1,215 @@
+{
+  "schema_version": "runtime_forward_final_readout_norm_and_lm_head_compare_status/v1",
+  "mode": "final-readout-norm-and-lm-head-compare-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_index": 73
+  },
+  "source_artifact_paths": {
+    "coarse_layer_ladder": ".live/runtime-forward-layer2-to-final-ladder-20260423/developer-message.runner-layer2-to-final-coarse-layer-ladder-compare-status.json",
+    "official_final_readout_bundle": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_bundle_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json",
+  "final_block_output_guard_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_value_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null,
+    "local_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+    "official_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+    "digest_matched": true
+  },
+  "final_norm_metadata": {
+    "module_path": "model.norm",
+    "norm_type": "RMSNorm",
+    "weight_shape": [
+      2880
+    ],
+    "weight_dtype": "float32",
+    "epsilon": 1e-05,
+    "bias_presence": false,
+    "input_dtype": "torch.bfloat16",
+    "accumulation_dtype": "torch.float32",
+    "output_dtype_before_serialization": "torch.bfloat16",
+    "bf16_output_cast_rounding_point": "after RMSNorm scale multiply"
+  },
+  "final_norm_comparison_metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_value_count": 0,
+    "first_differing_hidden_lane": null,
+    "worst_differing_hidden_lane": null,
+    "local_sha256_f32_le": "e57a8796fd3d4d36d09713ad9780a8e0c077824458568157976b8e71b17a2139",
+    "official_sha256_f32_le": "e57a8796fd3d4d36d09713ad9780a8e0c077824458568157976b8e71b17a2139",
+    "digest_matched": true,
+    "official_semantics_replay_vs_official": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "lm_head_metadata": {
+    "module_path": "model.unembedding",
+    "weight_shape": [
+      201088,
+      2880
+    ],
+    "weight_dtype": "bfloat16",
+    "orientation_layout": "[vocab_size, hidden_size]; Linear computes input @ weight.T",
+    "weights_tied_with_embedding": false,
+    "bias_presence": false,
+    "input_dtype": "torch.bfloat16",
+    "weight_dtype_for_compute": "torch.bfloat16",
+    "accumulation_dtype": "unknown",
+    "output_dtype_before_serialization": "torch.bfloat16",
+    "vocab_size": 201088
+  },
+  "logits_comparison_metrics": {
+    "max_abs_diff": 0.03125,
+    "mean_abs_diff": 4.383150269404723e-07,
+    "matched": false,
+    "mismatching_value_count": 37,
+    "first_differing_hidden_lane": {
+      "hidden_lane": 5257,
+      "local_value": -8.678436279296875e-05,
+      "official_value": -8.630752563476562e-05,
+      "abs_diff": 4.76837158203125e-07
+    },
+    "worst_differing_hidden_lane": {
+      "hidden_lane": 43016,
+      "local_value": 5.03125,
+      "official_value": 5.0,
+      "abs_diff": 0.03125
+    },
+    "shape": [
+      201088
+    ],
+    "vocab_size": 201088,
+    "dtype": "float32",
+    "serialization_dtype": "f32-expanded BF16 values",
+    "local_sha256_f32_le": "67f31845dd24db26cc91954607cfae8ae7ff7b9c8954cb9d3b1610ca9c635209",
+    "official_sha256_f32_le": "5a7d47edfab63d59c17825b8d7b7668cc7a15ad2d107f902ca2caa05488ecd44",
+    "digest_matched": false
+  },
+  "top20_logits_comparison": {
+    "official_top_token_ids": [
+      200005,
+      200003,
+      220,
+      200008,
+      353,
+      12606,
+      350,
+      272,
+      2322,
+      3947,
+      1516,
+      49159,
+      67971,
+      15406,
+      52850,
+      646,
+      35644,
+      2733,
+      1127,
+      334
+    ],
+    "official_top_values": [
+      42.5,
+      17.0,
+      16.875,
+      16.125,
+      16.0,
+      13.6875,
+      13.6875,
+      13.0625,
+      12.9375,
+      12.75,
+      12.1875,
+      12.125,
+      12.125,
+      11.9375,
+      11.75,
+      11.625,
+      11.625,
+      11.5,
+      11.5,
+      11.4375
+    ],
+    "local_top_token_ids": [
+      200005,
+      200003,
+      220,
+      200008,
+      353,
+      12606,
+      350,
+      272,
+      2322,
+      3947,
+      1516,
+      49159,
+      67971,
+      15406,
+      52850,
+      646,
+      35644,
+      2733,
+      1127,
+      334
+    ],
+    "local_top_values": [
+      42.5,
+      17.0,
+      16.875,
+      16.125,
+      16.0,
+      13.6875,
+      13.6875,
+      13.0625,
+      12.9375,
+      12.75,
+      12.1875,
+      12.125,
+      12.125,
+      11.9375,
+      11.75,
+      11.625,
+      11.625,
+      11.5,
+      11.5,
+      11.4375
+    ],
+    "ordered_top20_token_ids_match": true,
+    "top20_set_match": true,
+    "official_top20_token_value_metric": {
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  },
+  "earliest_remaining_mismatching_seam": "final_token_lm_head_logits",
+  "focused_mismatch_trace": {
+    "token_id": 43016,
+    "local_logit": 5.03125,
+    "official_logit": 5.0,
+    "abs_diff": 0.03125,
+    "token_is_in_official_top20": false,
+    "one_bf16_ulp_or_larger": true,
+    "likely_issue_class": "LM head weight/layout or arithmetic/accumulation"
+  },
+  "classification": "lm_head_logits_mismatch_after_final_norm_clear",
+  "next_bounded_step": "inspect LM head weight/layout/arithmetic only",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/final_readout_norm_and_lm_head_compare.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

@@ -1,0 +1,3569 @@
+{
+  "schema_version": "runtime_forward_layer2_to_final_coarse_layer_ladder_compare_status/v1",
+  "mode": "layer2-to-final-coarse-layer-ladder-compare-status",
+  "exact_case": {
+    "case_id": "developer-message-user-smoke",
+    "token_index": 73
+  },
+  "source_artifact_paths": {
+    "layer1_mlp_bundle_compare": ".live/runtime-forward-layer1-mlp-20260423/developer-message.runner-layer1-mlp-ordered-bundle-compare-status.json",
+    "official_layer2_to_final_coarse_ladder": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json",
+    "local_residual_input": ".live/runtime-forward-first-block-20260423/developer-message.runner-layer0-residual-input.json"
+  },
+  "official_ppp_ladder_path": ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json",
+  "layer_count": 24,
+  "compared_layer_range": [
+    2,
+    23
+  ],
+  "preflight_layer1_output_layer2_input_guard_metrics": {
+    "source_boundary_used": "layer1_final_token_hidden_state_after_mlp_residual_add -> layer2_final_token_layer_input_before_attention_norm",
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "mismatching_value_count": 0,
+    "local_sha256_f32_le": "c3faa6aac9e869901d99f177ca3fbd3bea109aa588f374db46ab95861abba730",
+    "official_sha256_f32_le": "c3faa6aac9e869901d99f177ca3fbd3bea109aa588f374db46ab95861abba730",
+    "digest_matched": true
+  },
+  "per_boundary_comparison_table": [
+    {
+      "layer_index": 2,
+      "boundary": "layer2_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c3faa6aac9e869901d99f177ca3fbd3bea109aa588f374db46ab95861abba730",
+      "official_sha256_f32_le": "c3faa6aac9e869901d99f177ca3fbd3bea109aa588f374db46ab95861abba730",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 2,
+      "boundary": "layer2_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "3eae196da6387b7303c4ac119a16eef83a4683c3ce577bf174827517eb816f74",
+      "official_sha256_f32_le": "3eae196da6387b7303c4ac119a16eef83a4683c3ce577bf174827517eb816f74",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 2,
+      "boundary": "layer2_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "875991b1beece4a201fb347ff2568cb144999daa346438867b56c5a9d192adf3",
+      "official_sha256_f32_le": "875991b1beece4a201fb347ff2568cb144999daa346438867b56c5a9d192adf3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 2,
+      "boundary": "layer2_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f723193a9aa1c8b3b9545529e120b81906b82863b3dbf3abda31e7e625fc247a",
+      "official_sha256_f32_le": "f723193a9aa1c8b3b9545529e120b81906b82863b3dbf3abda31e7e625fc247a",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 2,
+      "boundary": "layer2_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "693bfe505acd08200c23a5f8f05c0867f4c05df977db058a3a302493beb09175",
+      "official_sha256_f32_le": "693bfe505acd08200c23a5f8f05c0867f4c05df977db058a3a302493beb09175",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 3,
+      "boundary": "layer3_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "693bfe505acd08200c23a5f8f05c0867f4c05df977db058a3a302493beb09175",
+      "official_sha256_f32_le": "693bfe505acd08200c23a5f8f05c0867f4c05df977db058a3a302493beb09175",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 3,
+      "boundary": "layer3_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "8ed8e15b7fe9a8e4193e532cd2a10c5aa120a7dab5aaa5138324105d94473a52",
+      "official_sha256_f32_le": "8ed8e15b7fe9a8e4193e532cd2a10c5aa120a7dab5aaa5138324105d94473a52",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 3,
+      "boundary": "layer3_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "0d38de1cd1d6ca00ebe3a9297b3f270e96ea31a6aefc8caa1fbd6b61199bddcd",
+      "official_sha256_f32_le": "0d38de1cd1d6ca00ebe3a9297b3f270e96ea31a6aefc8caa1fbd6b61199bddcd",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 3,
+      "boundary": "layer3_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "dd96271118d3c3ee16bb97d01ab6cfdfa177f708d3a429ca09e215dd8d14e388",
+      "official_sha256_f32_le": "dd96271118d3c3ee16bb97d01ab6cfdfa177f708d3a429ca09e215dd8d14e388",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 3,
+      "boundary": "layer3_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c162e3b900cbd5abf946c24d717702563c4305466c96f314980e386ab7de59f1",
+      "official_sha256_f32_le": "c162e3b900cbd5abf946c24d717702563c4305466c96f314980e386ab7de59f1",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 4,
+      "boundary": "layer4_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c162e3b900cbd5abf946c24d717702563c4305466c96f314980e386ab7de59f1",
+      "official_sha256_f32_le": "c162e3b900cbd5abf946c24d717702563c4305466c96f314980e386ab7de59f1",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 4,
+      "boundary": "layer4_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "cd1bbb987cb3b0ba00aa2a32dc841553293b6ca3526cc7052799e41479218f10",
+      "official_sha256_f32_le": "cd1bbb987cb3b0ba00aa2a32dc841553293b6ca3526cc7052799e41479218f10",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 4,
+      "boundary": "layer4_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "77b16fb23052f441a9493933e75b70746cb5ad5d988e43a509b6fa66177653a6",
+      "official_sha256_f32_le": "77b16fb23052f441a9493933e75b70746cb5ad5d988e43a509b6fa66177653a6",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 4,
+      "boundary": "layer4_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a47114fd892fe951cb6a4db0434bb33643c85cd33ff5b1540378033431babfd0",
+      "official_sha256_f32_le": "a47114fd892fe951cb6a4db0434bb33643c85cd33ff5b1540378033431babfd0",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 4,
+      "boundary": "layer4_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "773fa514d3a58ede9f897a27c54437637e06d4223cbf5d30a45f14c7c70256a8",
+      "official_sha256_f32_le": "773fa514d3a58ede9f897a27c54437637e06d4223cbf5d30a45f14c7c70256a8",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 5,
+      "boundary": "layer5_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "773fa514d3a58ede9f897a27c54437637e06d4223cbf5d30a45f14c7c70256a8",
+      "official_sha256_f32_le": "773fa514d3a58ede9f897a27c54437637e06d4223cbf5d30a45f14c7c70256a8",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 5,
+      "boundary": "layer5_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "55996e9d294e191054d46c12a69dd12b7a108de51d1d9859e5f400fdb144fbf8",
+      "official_sha256_f32_le": "55996e9d294e191054d46c12a69dd12b7a108de51d1d9859e5f400fdb144fbf8",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 5,
+      "boundary": "layer5_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9f8649403383e66e35403bc92b8bc12fab973bbc7abcbcedd5ba34bcbe24fa73",
+      "official_sha256_f32_le": "9f8649403383e66e35403bc92b8bc12fab973bbc7abcbcedd5ba34bcbe24fa73",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 5,
+      "boundary": "layer5_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "17039ebd65df3dc2bceb3df7ca215c5406362f4b0933f1e4b88d43e62c8dbb34",
+      "official_sha256_f32_le": "17039ebd65df3dc2bceb3df7ca215c5406362f4b0933f1e4b88d43e62c8dbb34",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 5,
+      "boundary": "layer5_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "759d092d3eed5f4e2333caa4d6586f4a18eeed871a01d915a66a900b0c7f8b64",
+      "official_sha256_f32_le": "759d092d3eed5f4e2333caa4d6586f4a18eeed871a01d915a66a900b0c7f8b64",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 6,
+      "boundary": "layer6_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "759d092d3eed5f4e2333caa4d6586f4a18eeed871a01d915a66a900b0c7f8b64",
+      "official_sha256_f32_le": "759d092d3eed5f4e2333caa4d6586f4a18eeed871a01d915a66a900b0c7f8b64",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 6,
+      "boundary": "layer6_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "fe2412a9469c61f44147453fd78776c99e4683a300398b606da57505e382700e",
+      "official_sha256_f32_le": "fe2412a9469c61f44147453fd78776c99e4683a300398b606da57505e382700e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 6,
+      "boundary": "layer6_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2780c7930111a2779cfddb27319859131a33c25a102f6bb1549dfd64677e17a3",
+      "official_sha256_f32_le": "2780c7930111a2779cfddb27319859131a33c25a102f6bb1549dfd64677e17a3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 6,
+      "boundary": "layer6_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "4b90c7d72e67a29b3e6f5525f20e3511c1e3506cb295e3274d9e2486b45072b1",
+      "official_sha256_f32_le": "4b90c7d72e67a29b3e6f5525f20e3511c1e3506cb295e3274d9e2486b45072b1",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 6,
+      "boundary": "layer6_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "cee07808648f4b07579fcd5db876711922d96dfac079c8ae6e2970c44b9c325c",
+      "official_sha256_f32_le": "cee07808648f4b07579fcd5db876711922d96dfac079c8ae6e2970c44b9c325c",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 7,
+      "boundary": "layer7_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "cee07808648f4b07579fcd5db876711922d96dfac079c8ae6e2970c44b9c325c",
+      "official_sha256_f32_le": "cee07808648f4b07579fcd5db876711922d96dfac079c8ae6e2970c44b9c325c",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 7,
+      "boundary": "layer7_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "fff35e3d096a3868828a55b1b2debcf417f9f4c900ad49ac9f8698fb52619738",
+      "official_sha256_f32_le": "fff35e3d096a3868828a55b1b2debcf417f9f4c900ad49ac9f8698fb52619738",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 7,
+      "boundary": "layer7_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "4ad34c6211a2bb6044ced67419083c4cc8d98e35b83ed2cb0776c2f6d0dd1da4",
+      "official_sha256_f32_le": "4ad34c6211a2bb6044ced67419083c4cc8d98e35b83ed2cb0776c2f6d0dd1da4",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 7,
+      "boundary": "layer7_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2af280df0227c61a750330bbeaa001b77457659343812eff42ea85572ea034f8",
+      "official_sha256_f32_le": "2af280df0227c61a750330bbeaa001b77457659343812eff42ea85572ea034f8",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 7,
+      "boundary": "layer7_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f232066c8d0c13e0afc6fac732c5d16b1e2c638b9ccf0b59dc41656be512f3ac",
+      "official_sha256_f32_le": "f232066c8d0c13e0afc6fac732c5d16b1e2c638b9ccf0b59dc41656be512f3ac",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 8,
+      "boundary": "layer8_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f232066c8d0c13e0afc6fac732c5d16b1e2c638b9ccf0b59dc41656be512f3ac",
+      "official_sha256_f32_le": "f232066c8d0c13e0afc6fac732c5d16b1e2c638b9ccf0b59dc41656be512f3ac",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 8,
+      "boundary": "layer8_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "90cde146b50461de78b1e664d21e6127d5c5affbab4b25da49c2def83e3794f7",
+      "official_sha256_f32_le": "90cde146b50461de78b1e664d21e6127d5c5affbab4b25da49c2def83e3794f7",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 8,
+      "boundary": "layer8_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2d5c493fd86cc4a6df9fa484ebbc38f644316060c1820e1dde7aa92fe268941d",
+      "official_sha256_f32_le": "2d5c493fd86cc4a6df9fa484ebbc38f644316060c1820e1dde7aa92fe268941d",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 8,
+      "boundary": "layer8_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "b004861e338aa9a4b3a8cb488d39a4eecec9cb978f898b0e46c359cf7522b7d2",
+      "official_sha256_f32_le": "b004861e338aa9a4b3a8cb488d39a4eecec9cb978f898b0e46c359cf7522b7d2",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 8,
+      "boundary": "layer8_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1496e646995e857bf0f4ee5659dc27f292fb68bdfbbe178091e2db9826bd13b7",
+      "official_sha256_f32_le": "1496e646995e857bf0f4ee5659dc27f292fb68bdfbbe178091e2db9826bd13b7",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 9,
+      "boundary": "layer9_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1496e646995e857bf0f4ee5659dc27f292fb68bdfbbe178091e2db9826bd13b7",
+      "official_sha256_f32_le": "1496e646995e857bf0f4ee5659dc27f292fb68bdfbbe178091e2db9826bd13b7",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 9,
+      "boundary": "layer9_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c5254c9ec314b6516d2cf33689fb197e19d8e316bb6c864eac4626dfdfd1a652",
+      "official_sha256_f32_le": "c5254c9ec314b6516d2cf33689fb197e19d8e316bb6c864eac4626dfdfd1a652",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 9,
+      "boundary": "layer9_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c6732e49517cfffe47bdd69b1cd60d6d3d9dd3dcb867b8240aa501f038fe0f72",
+      "official_sha256_f32_le": "c6732e49517cfffe47bdd69b1cd60d6d3d9dd3dcb867b8240aa501f038fe0f72",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 9,
+      "boundary": "layer9_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9d1c4f7f7c03432fe8b68c1735d568a4be71be57f0fc062da299f36216ae2a78",
+      "official_sha256_f32_le": "9d1c4f7f7c03432fe8b68c1735d568a4be71be57f0fc062da299f36216ae2a78",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 9,
+      "boundary": "layer9_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2ca68dc5a31fa9d77c08bb8b058886102f89499111f7ce643d1278fbdab07bda",
+      "official_sha256_f32_le": "2ca68dc5a31fa9d77c08bb8b058886102f89499111f7ce643d1278fbdab07bda",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 10,
+      "boundary": "layer10_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2ca68dc5a31fa9d77c08bb8b058886102f89499111f7ce643d1278fbdab07bda",
+      "official_sha256_f32_le": "2ca68dc5a31fa9d77c08bb8b058886102f89499111f7ce643d1278fbdab07bda",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 10,
+      "boundary": "layer10_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "406de6fe6e13c8de992783e532ada8f961548a6416ae0fe98b5df575fef6fde5",
+      "official_sha256_f32_le": "406de6fe6e13c8de992783e532ada8f961548a6416ae0fe98b5df575fef6fde5",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 10,
+      "boundary": "layer10_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "859f7250e6907f28a2674114ca20680f906f8712f357d0ebb53f5dcf60f89ab8",
+      "official_sha256_f32_le": "859f7250e6907f28a2674114ca20680f906f8712f357d0ebb53f5dcf60f89ab8",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 10,
+      "boundary": "layer10_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "7fdc7df0c6f289ae5baa1c547f9c757befe5ed75f39d97e9aab97ce42cdbd7a3",
+      "official_sha256_f32_le": "7fdc7df0c6f289ae5baa1c547f9c757befe5ed75f39d97e9aab97ce42cdbd7a3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 10,
+      "boundary": "layer10_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "3df214b4008c96a8b27dc4abe1ee08dbe787813fc23124bf4840cf15751f86bb",
+      "official_sha256_f32_le": "3df214b4008c96a8b27dc4abe1ee08dbe787813fc23124bf4840cf15751f86bb",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 11,
+      "boundary": "layer11_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "3df214b4008c96a8b27dc4abe1ee08dbe787813fc23124bf4840cf15751f86bb",
+      "official_sha256_f32_le": "3df214b4008c96a8b27dc4abe1ee08dbe787813fc23124bf4840cf15751f86bb",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 11,
+      "boundary": "layer11_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1fcf3565b3930744520466d791a9454b81b6f9588d79ca25dc3dd6d895c96757",
+      "official_sha256_f32_le": "1fcf3565b3930744520466d791a9454b81b6f9588d79ca25dc3dd6d895c96757",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 11,
+      "boundary": "layer11_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a6bd8dbffd108ca18ac4318b205e11489a2ca0de6605a96576f4f362fda9d932",
+      "official_sha256_f32_le": "a6bd8dbffd108ca18ac4318b205e11489a2ca0de6605a96576f4f362fda9d932",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 11,
+      "boundary": "layer11_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "ff758bab897e599f202769058ca76ac97c040db7fdedc2eb9575c06170e8471d",
+      "official_sha256_f32_le": "ff758bab897e599f202769058ca76ac97c040db7fdedc2eb9575c06170e8471d",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 11,
+      "boundary": "layer11_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "63a30e6280a482f7857f30af5e059480fa9395bc61535cfe3796ab4a51c0020a",
+      "official_sha256_f32_le": "63a30e6280a482f7857f30af5e059480fa9395bc61535cfe3796ab4a51c0020a",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 12,
+      "boundary": "layer12_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "63a30e6280a482f7857f30af5e059480fa9395bc61535cfe3796ab4a51c0020a",
+      "official_sha256_f32_le": "63a30e6280a482f7857f30af5e059480fa9395bc61535cfe3796ab4a51c0020a",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 12,
+      "boundary": "layer12_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "ac0687608de5d1aaed5587837fb54c2410415dd31d9659c8ed5ce8f9fcc2c08e",
+      "official_sha256_f32_le": "ac0687608de5d1aaed5587837fb54c2410415dd31d9659c8ed5ce8f9fcc2c08e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 12,
+      "boundary": "layer12_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "0071b1c775ab6ffff30634f5a6bb3e86a2fd42934388a8bbe3d5d7b6e6e57e8b",
+      "official_sha256_f32_le": "0071b1c775ab6ffff30634f5a6bb3e86a2fd42934388a8bbe3d5d7b6e6e57e8b",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 12,
+      "boundary": "layer12_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "bc9742e638cd6430e3a51f35be6fa3e43412f7611136e037ffba7bf8930bd1d0",
+      "official_sha256_f32_le": "bc9742e638cd6430e3a51f35be6fa3e43412f7611136e037ffba7bf8930bd1d0",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 12,
+      "boundary": "layer12_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "56cacd036c9e82c0304efc916536cf7c3de8ca93de3917b6864dd41420029c45",
+      "official_sha256_f32_le": "56cacd036c9e82c0304efc916536cf7c3de8ca93de3917b6864dd41420029c45",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 13,
+      "boundary": "layer13_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "56cacd036c9e82c0304efc916536cf7c3de8ca93de3917b6864dd41420029c45",
+      "official_sha256_f32_le": "56cacd036c9e82c0304efc916536cf7c3de8ca93de3917b6864dd41420029c45",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 13,
+      "boundary": "layer13_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9544073683c9e6affd25e693b2a2338131513c7e7f39a3bd8ae494126708d08d",
+      "official_sha256_f32_le": "9544073683c9e6affd25e693b2a2338131513c7e7f39a3bd8ae494126708d08d",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 13,
+      "boundary": "layer13_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "41ec71c9877145667716da0124a1bd5d2fc0a597c90c25e4b9d66038a27771a4",
+      "official_sha256_f32_le": "41ec71c9877145667716da0124a1bd5d2fc0a597c90c25e4b9d66038a27771a4",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 13,
+      "boundary": "layer13_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "e233191fc5c0327a4b874a95956654e4741518706e371af03d03d2c39ae5e844",
+      "official_sha256_f32_le": "e233191fc5c0327a4b874a95956654e4741518706e371af03d03d2c39ae5e844",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 13,
+      "boundary": "layer13_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a45f70939c87588eed7d2a3c4a6af9f0bf5efa5d6e48b57aa1415c59ed066efd",
+      "official_sha256_f32_le": "a45f70939c87588eed7d2a3c4a6af9f0bf5efa5d6e48b57aa1415c59ed066efd",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 14,
+      "boundary": "layer14_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a45f70939c87588eed7d2a3c4a6af9f0bf5efa5d6e48b57aa1415c59ed066efd",
+      "official_sha256_f32_le": "a45f70939c87588eed7d2a3c4a6af9f0bf5efa5d6e48b57aa1415c59ed066efd",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 14,
+      "boundary": "layer14_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "4edb7387c7b9416d4717771670a75ed84c8fc9c6459e010875f9dec05013e8dc",
+      "official_sha256_f32_le": "4edb7387c7b9416d4717771670a75ed84c8fc9c6459e010875f9dec05013e8dc",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 14,
+      "boundary": "layer14_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "00e04b24a31a4dd9be2a86e0259d952628768ec3f5c2344a9c0b3204930ec45e",
+      "official_sha256_f32_le": "00e04b24a31a4dd9be2a86e0259d952628768ec3f5c2344a9c0b3204930ec45e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 14,
+      "boundary": "layer14_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "04248df104280487e59eb4b6fb5d53560475b8a1bfa1d2def3b36a5ad359889c",
+      "official_sha256_f32_le": "04248df104280487e59eb4b6fb5d53560475b8a1bfa1d2def3b36a5ad359889c",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 14,
+      "boundary": "layer14_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1de4b7aa9f4721ae230625bff28796a28ee5cc89571071a392eb2525ba4282e3",
+      "official_sha256_f32_le": "1de4b7aa9f4721ae230625bff28796a28ee5cc89571071a392eb2525ba4282e3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 15,
+      "boundary": "layer15_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1de4b7aa9f4721ae230625bff28796a28ee5cc89571071a392eb2525ba4282e3",
+      "official_sha256_f32_le": "1de4b7aa9f4721ae230625bff28796a28ee5cc89571071a392eb2525ba4282e3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 15,
+      "boundary": "layer15_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "ed1883c60466dd015edfe9af9b21f6475d3d253e4c04da5e875b1977ef8e6a07",
+      "official_sha256_f32_le": "ed1883c60466dd015edfe9af9b21f6475d3d253e4c04da5e875b1977ef8e6a07",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 15,
+      "boundary": "layer15_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f6ab618008847c96b82e93852a0ac3d379ed827dc96dd251c053beec3f58525a",
+      "official_sha256_f32_le": "f6ab618008847c96b82e93852a0ac3d379ed827dc96dd251c053beec3f58525a",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 15,
+      "boundary": "layer15_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1ded4e7285cfee48f5173fa694c7f46a88b9f0ffc81cfc57aa9a6a02e85a984b",
+      "official_sha256_f32_le": "1ded4e7285cfee48f5173fa694c7f46a88b9f0ffc81cfc57aa9a6a02e85a984b",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 15,
+      "boundary": "layer15_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9cf17a7cda784ec5b89b16f539d634ff625704d0726df3bcb5013dd8373154e7",
+      "official_sha256_f32_le": "9cf17a7cda784ec5b89b16f539d634ff625704d0726df3bcb5013dd8373154e7",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 16,
+      "boundary": "layer16_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9cf17a7cda784ec5b89b16f539d634ff625704d0726df3bcb5013dd8373154e7",
+      "official_sha256_f32_le": "9cf17a7cda784ec5b89b16f539d634ff625704d0726df3bcb5013dd8373154e7",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 16,
+      "boundary": "layer16_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "372d9c5ad47211ca075a90f0545abf324aeda2a6326b5a766c79431ef22b3176",
+      "official_sha256_f32_le": "372d9c5ad47211ca075a90f0545abf324aeda2a6326b5a766c79431ef22b3176",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 16,
+      "boundary": "layer16_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a85761389b9af8d3ed036e7ffe98b962302566c145171c0583986d3287523da4",
+      "official_sha256_f32_le": "a85761389b9af8d3ed036e7ffe98b962302566c145171c0583986d3287523da4",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 16,
+      "boundary": "layer16_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "3077f729c081e8fe7b7ca69ba783a9bfb0969adaa08997680def7e08fad57230",
+      "official_sha256_f32_le": "3077f729c081e8fe7b7ca69ba783a9bfb0969adaa08997680def7e08fad57230",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 16,
+      "boundary": "layer16_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a3061be8baf92395b6b654f0255a2c2e8949b2448c7a655e24cd8958cec1a52b",
+      "official_sha256_f32_le": "a3061be8baf92395b6b654f0255a2c2e8949b2448c7a655e24cd8958cec1a52b",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 17,
+      "boundary": "layer17_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a3061be8baf92395b6b654f0255a2c2e8949b2448c7a655e24cd8958cec1a52b",
+      "official_sha256_f32_le": "a3061be8baf92395b6b654f0255a2c2e8949b2448c7a655e24cd8958cec1a52b",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 17,
+      "boundary": "layer17_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "b727d4fe8ab0e4620b2f5aff7e78d24992089effa5180adee6f78bbb2c049bc4",
+      "official_sha256_f32_le": "b727d4fe8ab0e4620b2f5aff7e78d24992089effa5180adee6f78bbb2c049bc4",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 17,
+      "boundary": "layer17_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "d5f9f51c76be48d24525836c8492659f1bbc5a53fe18c262f867484e2a3fa0e4",
+      "official_sha256_f32_le": "d5f9f51c76be48d24525836c8492659f1bbc5a53fe18c262f867484e2a3fa0e4",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 17,
+      "boundary": "layer17_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "eb77eb8f0545e6367611d8a303b40fecdb11e752a74deb7c7b78ff635b1d62fc",
+      "official_sha256_f32_le": "eb77eb8f0545e6367611d8a303b40fecdb11e752a74deb7c7b78ff635b1d62fc",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 17,
+      "boundary": "layer17_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a4d6842819046c61cedbc5f3ba15bfea87149250150497741a4acf3c6999e324",
+      "official_sha256_f32_le": "a4d6842819046c61cedbc5f3ba15bfea87149250150497741a4acf3c6999e324",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 18,
+      "boundary": "layer18_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a4d6842819046c61cedbc5f3ba15bfea87149250150497741a4acf3c6999e324",
+      "official_sha256_f32_le": "a4d6842819046c61cedbc5f3ba15bfea87149250150497741a4acf3c6999e324",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 18,
+      "boundary": "layer18_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "871e0c7bd61d0c2afa0962360114577b54229a5360b0146cd469de9c4d2892ea",
+      "official_sha256_f32_le": "871e0c7bd61d0c2afa0962360114577b54229a5360b0146cd469de9c4d2892ea",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 18,
+      "boundary": "layer18_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "4b7164c2bb44fd6a19fb2bc76b28ecb7e381d410bac4c68a6938ddc41d43cd68",
+      "official_sha256_f32_le": "4b7164c2bb44fd6a19fb2bc76b28ecb7e381d410bac4c68a6938ddc41d43cd68",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 18,
+      "boundary": "layer18_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "af18c5243c52c4acf1fa5a446cb85d2ae446915c71cda968aa6ff4d6bd6664c5",
+      "official_sha256_f32_le": "af18c5243c52c4acf1fa5a446cb85d2ae446915c71cda968aa6ff4d6bd6664c5",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 18,
+      "boundary": "layer18_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f6887c594071d0585fd540d650c1afabf442bf57bc936b55b897642ffbee3f77",
+      "official_sha256_f32_le": "f6887c594071d0585fd540d650c1afabf442bf57bc936b55b897642ffbee3f77",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 19,
+      "boundary": "layer19_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f6887c594071d0585fd540d650c1afabf442bf57bc936b55b897642ffbee3f77",
+      "official_sha256_f32_le": "f6887c594071d0585fd540d650c1afabf442bf57bc936b55b897642ffbee3f77",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 19,
+      "boundary": "layer19_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "b25e56a870e6c69a339d0f61e1adba7257a2e073cca3dc69743ea8a1c75d6d44",
+      "official_sha256_f32_le": "b25e56a870e6c69a339d0f61e1adba7257a2e073cca3dc69743ea8a1c75d6d44",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 19,
+      "boundary": "layer19_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "9d613a9d8f1c4e8ccc2ca8ebf96f5c4f6e9a30376ffdd8c0987d50bb26499a8e",
+      "official_sha256_f32_le": "9d613a9d8f1c4e8ccc2ca8ebf96f5c4f6e9a30376ffdd8c0987d50bb26499a8e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 19,
+      "boundary": "layer19_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "305ce89d6e7ab281ca97066001ba33c03ba94d1d1cb6c3f346161671d0f8a86a",
+      "official_sha256_f32_le": "305ce89d6e7ab281ca97066001ba33c03ba94d1d1cb6c3f346161671d0f8a86a",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 19,
+      "boundary": "layer19_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "cabf02870bec7385aa4a140e5fe820bef6e0c3092f4d136e1e40e8b82d1d4454",
+      "official_sha256_f32_le": "cabf02870bec7385aa4a140e5fe820bef6e0c3092f4d136e1e40e8b82d1d4454",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 20,
+      "boundary": "layer20_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "cabf02870bec7385aa4a140e5fe820bef6e0c3092f4d136e1e40e8b82d1d4454",
+      "official_sha256_f32_le": "cabf02870bec7385aa4a140e5fe820bef6e0c3092f4d136e1e40e8b82d1d4454",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 20,
+      "boundary": "layer20_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "ddcf00b5232d24e6529b8a24c91cdca7178c4a8c9278db8a8de36bceece2de4e",
+      "official_sha256_f32_le": "ddcf00b5232d24e6529b8a24c91cdca7178c4a8c9278db8a8de36bceece2de4e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 20,
+      "boundary": "layer20_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "30e63d9b5bd9e5c38201a7a3f1a5e4d0b9a3fc8ca673eb5489f29dc84484a48e",
+      "official_sha256_f32_le": "30e63d9b5bd9e5c38201a7a3f1a5e4d0b9a3fc8ca673eb5489f29dc84484a48e",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 20,
+      "boundary": "layer20_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "816d52b1736a2b2915c226f9d7d4c7d1e357d47b6ce5f91699117f80af4bd5fd",
+      "official_sha256_f32_le": "816d52b1736a2b2915c226f9d7d4c7d1e357d47b6ce5f91699117f80af4bd5fd",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 20,
+      "boundary": "layer20_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "7fc669582da96fb8a9772521f0f997f5fb142cfb094029ea8c6eccfbfc8969a1",
+      "official_sha256_f32_le": "7fc669582da96fb8a9772521f0f997f5fb142cfb094029ea8c6eccfbfc8969a1",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 21,
+      "boundary": "layer21_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "7fc669582da96fb8a9772521f0f997f5fb142cfb094029ea8c6eccfbfc8969a1",
+      "official_sha256_f32_le": "7fc669582da96fb8a9772521f0f997f5fb142cfb094029ea8c6eccfbfc8969a1",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 21,
+      "boundary": "layer21_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "43ab048e721936b3c1428258956429858361ff7882c8d26ecad09a5b5c3591f3",
+      "official_sha256_f32_le": "43ab048e721936b3c1428258956429858361ff7882c8d26ecad09a5b5c3591f3",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 21,
+      "boundary": "layer21_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "5cf3e0e7a41fdecab9af9ff8fb940d800d5539b2c64a3533262e4bd8b0f535ee",
+      "official_sha256_f32_le": "5cf3e0e7a41fdecab9af9ff8fb940d800d5539b2c64a3533262e4bd8b0f535ee",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 21,
+      "boundary": "layer21_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "2905c42a34c21eb8bd3a577747c5a4299da1b747e32ca45b2f83b970726a3161",
+      "official_sha256_f32_le": "2905c42a34c21eb8bd3a577747c5a4299da1b747e32ca45b2f83b970726a3161",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 21,
+      "boundary": "layer21_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f18ab75a0ca260bf1112e2cbee2ed4873882114d264f94ee6b7e2878e769dc73",
+      "official_sha256_f32_le": "f18ab75a0ca260bf1112e2cbee2ed4873882114d264f94ee6b7e2878e769dc73",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 22,
+      "boundary": "layer22_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "f18ab75a0ca260bf1112e2cbee2ed4873882114d264f94ee6b7e2878e769dc73",
+      "official_sha256_f32_le": "f18ab75a0ca260bf1112e2cbee2ed4873882114d264f94ee6b7e2878e769dc73",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 22,
+      "boundary": "layer22_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "fb9bdfa4b7923cc86b84ce0bee404dea8969f485e6a2a818f1044ebdaef1f3db",
+      "official_sha256_f32_le": "fb9bdfa4b7923cc86b84ce0bee404dea8969f485e6a2a818f1044ebdaef1f3db",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 22,
+      "boundary": "layer22_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "b05bedf9713278797b042beb87b55bf6227d365fa5d9f019d4b4beadfa828319",
+      "official_sha256_f32_le": "b05bedf9713278797b042beb87b55bf6227d365fa5d9f019d4b4beadfa828319",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 22,
+      "boundary": "layer22_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "5069f31832f5cbb59f8a8f5ec8d1bb023f07f858e766a4bfbca02526eb88ffcf",
+      "official_sha256_f32_le": "5069f31832f5cbb59f8a8f5ec8d1bb023f07f858e766a4bfbca02526eb88ffcf",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 22,
+      "boundary": "layer22_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1f3c6c6713ad135d35796973a83eeffbb55e3c1704640842739d8e2c5f5f7130",
+      "official_sha256_f32_le": "1f3c6c6713ad135d35796973a83eeffbb55e3c1704640842739d8e2c5f5f7130",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 23,
+      "boundary": "layer23_final_token_layer_input_before_attention_norm",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "1f3c6c6713ad135d35796973a83eeffbb55e3c1704640842739d8e2c5f5f7130",
+      "official_sha256_f32_le": "1f3c6c6713ad135d35796973a83eeffbb55e3c1704640842739d8e2c5f5f7130",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 23,
+      "boundary": "layer23_final_token_attention_norm_output_before_qkv",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "c83e84f18ffa0d8ba117866195acdb2a4f9b61c96f6796e381ce3229afdeb278",
+      "official_sha256_f32_le": "c83e84f18ffa0d8ba117866195acdb2a4f9b61c96f6796e381ce3229afdeb278",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 23,
+      "boundary": "layer23_final_token_hidden_state_after_attention_residual_add_before_mlp",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "55479ad49719daffd383db351feca4787b5fef5e0f286440f329bf82a0dc2116",
+      "official_sha256_f32_le": "55479ad49719daffd383db351feca4787b5fef5e0f286440f329bf82a0dc2116",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 23,
+      "boundary": "layer23_final_token_mlp_norm_output_before_mlp_projections",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "a5e4f26a907822563f161ab846b5895da09636b3ba7229b668378e41d8a0900d",
+      "official_sha256_f32_le": "a5e4f26a907822563f161ab846b5895da09636b3ba7229b668378e41d8a0900d",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    },
+    {
+      "layer_index": 23,
+      "boundary": "layer23_final_token_hidden_state_after_mlp_residual_add",
+      "local_tensor_available": true,
+      "official_tensor_available": true,
+      "shape_match": true,
+      "local_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "dtype": "float32",
+        "serialization_dtype": "f32-expanded BF16 values"
+      },
+      "official_tensor_metadata": {
+        "shape": [
+          2880
+        ],
+        "tensor_dtype": "torch.bfloat16",
+        "serialization_dtype": "json_f32_values"
+      },
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "matched": true,
+      "mismatching_value_count": 0,
+      "local_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+      "official_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+      "digest_matched": true,
+      "first_differing_hidden_lane": null,
+      "worst_differing_hidden_lane": null
+    }
+  ],
+  "per_layer_summary_table": [
+    {
+      "layer_index": 2,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 3,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 4,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 5,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 6,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 7,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 8,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 9,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 10,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 11,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 12,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 13,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 14,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 15,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 16,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 17,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 18,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 19,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 20,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 21,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 22,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    },
+    {
+      "layer_index": 23,
+      "input_matched": true,
+      "attention_norm_matched": true,
+      "after_attention_residual_matched": true,
+      "mlp_norm_matched": true,
+      "after_mlp_residual_matched": true,
+      "worst_max_abs_diff_in_layer": 0.0,
+      "first_mismatching_boundary": null
+    }
+  ],
+  "terminal_layer23_final_output_summary": {
+    "boundary": "layer23_final_token_hidden_state_after_mlp_residual_add",
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "matched": true,
+    "local_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+    "official_sha256_f32_le": "3a61719e695d130f95acf108428e6307142acf66425755f54c8c1bc95f2fb257",
+    "digest_matched": true
+  },
+  "earliest_mismatching_layer": null,
+  "earliest_remaining_mismatching_seam": "none",
+  "focused_earliest_mismatch_trace": null,
+  "classification": "layer2_to_final_coarse_layer_ladder_cleared",
+  "next_bounded_step": "ask PPP for final norm / logits / LM head boundary bundle",
+  "python_script_path": "/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer2_to_final_coarse_layer_ladder_compare.py",
+  "local_residual_input_artifact_model": "/data/models/openai/gpt-oss-20b-full-attn-restricted-integration"
+}

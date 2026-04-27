@@ -363,6 +363,46 @@ const DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_SCRIPT: &str =
     "crates/gpt-oss-bench/tools/layer0_mlp_residual_add_after_weighted_sum.py";
 const DEFAULT_OFFICIAL_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_ARTIFACT: &str =
     ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json";
+const DEFAULT_LAYER1_ATTN_NORM_BEFORE_QKV_AFTER_LAYER0_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer1-attention-20260423/developer-message.runner-layer1-attn-norm-before-qkv-after-layer0-status.json";
+const DEFAULT_LAYER1_ATTN_NORM_BEFORE_QKV_AFTER_LAYER0_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer1_attn_norm_before_qkv_after_layer0.py";
+const DEFAULT_OFFICIAL_LAYER1_ATTN_NORM_BEFORE_QKV_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-norm-output-before-qkv-status.json";
+const DEFAULT_LAYER1_ATTENTION_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer1-attention-20260423/developer-message.runner-layer1-attention-ordered-bundle-compare-status.json";
+const DEFAULT_LAYER1_ATTENTION_ORDERED_BUNDLE_COMPARE_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer1_attention_ordered_bundle_compare.py";
+const DEFAULT_OFFICIAL_LAYER1_ATTENTION_ORDERED_BUNDLE_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json";
+const DEFAULT_LAYER1_MLP_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer1-mlp-20260423/developer-message.runner-layer1-mlp-ordered-bundle-compare-status.json";
+const DEFAULT_LAYER1_MLP_ORDERED_BUNDLE_COMPARE_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer1_mlp_ordered_bundle_compare.py";
+const DEFAULT_OFFICIAL_LAYER1_MLP_ORDERED_BUNDLE_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json";
+const DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-layer2-to-final-ladder-20260423/developer-message.runner-layer2-to-final-coarse-layer-ladder-compare-status.json";
+const DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/layer2_to_final_coarse_layer_ladder_compare.py";
+const DEFAULT_OFFICIAL_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json";
+const DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-norm-and-lm-head-compare-status.json";
+const DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/final_readout_norm_and_lm_head_compare.py";
+const DEFAULT_OFFICIAL_FINAL_READOUT_NORM_AND_LM_HEAD_BUNDLE_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-bundle-status.json";
+const DEFAULT_LM_HEAD_WEIGHT_LAYOUT_ARITHMETIC_POLICY_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-final-readout-20260423/developer-message.runner-lm-head-weight-layout-arithmetic-policy-status.json";
+const DEFAULT_LM_HEAD_WEIGHT_LAYOUT_ARITHMETIC_POLICY_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/lm_head_weight_layout_arithmetic_policy.py";
+const DEFAULT_FINAL_READOUT_DIRECT_MODULE_RERUN_STATUS_OUTPUT: &str =
+    ".live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json";
+const DEFAULT_FINAL_READOUT_DIRECT_MODULE_RERUN_SCRIPT: &str =
+    "crates/gpt-oss-bench/tools/final_readout_direct_module_rerun.py";
+const DEFAULT_OFFICIAL_FINAL_READOUT_DIRECT_MODULE_BUNDLE_ARTIFACT: &str =
+    ".live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-final-token-readout-norm-and-lm-head-direct-module-bundle-status.json";
 const DEFAULT_K_PROJECTION_OFFICIAL_WEIGHT_ARITHMETIC_OUTPUT: &str =
     ".live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json";
 const DEFAULT_K_PROJECTION_OFFICIAL_WEIGHT_ARITHMETIC_SCRIPT: &str =
@@ -509,6 +549,13 @@ enum Mode {
     MlpSelectedExpertOutputCaptureReadoutFixStatus,
     MlpWeightedExpertSumBeforeResidualStatus,
     MlpResidualAddAfterWeightedSumStatus,
+    Layer1AttnNormBeforeQkvAfterLayer0Status,
+    Layer1AttentionOrderedBundleCompareStatus,
+    Layer1MlpOrderedBundleCompareStatus,
+    Layer2ToFinalCoarseLayerLadderCompareStatus,
+    FinalReadoutNormAndLmHeadCompareStatus,
+    LmHeadWeightLayoutArithmeticPolicyStatus,
+    FinalReadoutDirectModuleRerunStatus,
 }
 
 impl Mode {
@@ -814,6 +861,27 @@ impl Mode {
             Self::MlpResidualAddAfterWeightedSumStatus => {
                 PathBuf::from(DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_STATUS_OUTPUT)
             }
+            Self::Layer1AttnNormBeforeQkvAfterLayer0Status => {
+                PathBuf::from(DEFAULT_LAYER1_ATTN_NORM_BEFORE_QKV_AFTER_LAYER0_STATUS_OUTPUT)
+            }
+            Self::Layer1AttentionOrderedBundleCompareStatus => {
+                PathBuf::from(DEFAULT_LAYER1_ATTENTION_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT)
+            }
+            Self::Layer1MlpOrderedBundleCompareStatus => {
+                PathBuf::from(DEFAULT_LAYER1_MLP_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT)
+            }
+            Self::Layer2ToFinalCoarseLayerLadderCompareStatus => {
+                PathBuf::from(DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_STATUS_OUTPUT)
+            }
+            Self::FinalReadoutNormAndLmHeadCompareStatus => {
+                PathBuf::from(DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_STATUS_OUTPUT)
+            }
+            Self::LmHeadWeightLayoutArithmeticPolicyStatus => {
+                PathBuf::from(DEFAULT_LM_HEAD_WEIGHT_LAYOUT_ARITHMETIC_POLICY_STATUS_OUTPUT)
+            }
+            Self::FinalReadoutDirectModuleRerunStatus => {
+                PathBuf::from(DEFAULT_FINAL_READOUT_DIRECT_MODULE_RERUN_STATUS_OUTPUT)
+            }
         }
     }
 }
@@ -1096,6 +1164,27 @@ struct Cli {
 
     #[arg(long, default_value = DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_SCRIPT)]
     mlp_residual_add_after_weighted_sum_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LAYER1_ATTN_NORM_BEFORE_QKV_AFTER_LAYER0_SCRIPT)]
+    layer1_attn_norm_before_qkv_after_layer0_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LAYER1_ATTENTION_ORDERED_BUNDLE_COMPARE_SCRIPT)]
+    layer1_attention_ordered_bundle_compare_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LAYER1_MLP_ORDERED_BUNDLE_COMPARE_SCRIPT)]
+    layer1_mlp_ordered_bundle_compare_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_SCRIPT)]
+    layer2_to_final_coarse_layer_ladder_compare_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_SCRIPT)]
+    final_readout_norm_and_lm_head_compare_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_LM_HEAD_WEIGHT_LAYOUT_ARITHMETIC_POLICY_SCRIPT)]
+    lm_head_weight_layout_arithmetic_policy_script: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_FINAL_READOUT_DIRECT_MODULE_RERUN_SCRIPT)]
+    final_readout_direct_module_rerun_script: PathBuf,
 
     #[arg(long)]
     output: Option<PathBuf>,
@@ -43707,6 +43796,738 @@ fn run_mlp_residual_add_after_weighted_sum_status(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn run_layer1_attn_norm_before_qkv_after_layer0_status(cli: &Cli) -> Result<()> {
+    let source_layer0_path =
+        PathBuf::from(DEFAULT_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_STATUS_OUTPUT);
+    let source_layer0 = load_json_value(&source_layer0_path)?;
+    if source_layer0
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_layer0
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer0_hidden_after_mlp_residual_add_cleared")
+    {
+        bail!("source layer0 after-MLP residual artifact is not cleared");
+    }
+
+    let official_layer1_norm_path =
+        PathBuf::from(DEFAULT_OFFICIAL_LAYER1_ATTN_NORM_BEFORE_QKV_ARTIFACT);
+    let official_layer1_norm = load_json_value(&official_layer1_norm_path)?;
+    if official_layer1_norm
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer1_final_token_attention_norm_output_before_qkv_captured")
+        || official_layer1_norm
+            .get("boundary")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer1_final_token_attention_norm_output_before_qkv")
+    {
+        bail!("official layer1 attention norm PPP artifact is not the expected boundary");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::Layer1AttnNormBeforeQkvAfterLayer0Status.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.layer1_attn_norm_before_qkv_after_layer0_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-layer0-residual")
+        .arg(&source_layer0_path)
+        .arg("--official-layer1-attn-norm")
+        .arg(&official_layer1_norm_path)
+        .arg("--official-layer0-after-mlp-residual")
+        .arg(DEFAULT_OFFICIAL_MLP_RESIDUAL_ADD_AFTER_WEIGHTED_SUM_ARTIFACT)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run layer1 attention norm script {} with {}",
+                cli.layer1_attn_norm_before_qkv_after_layer0_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "layer1 attention norm before QKV script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read layer1 attention norm before QKV artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("layer1-attn-norm-before-qkv-after-layer0-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("layer1 attention norm before QKV artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_layer1_attention_ordered_bundle_compare_status(cli: &Cli) -> Result<()> {
+    let source_norm_path =
+        PathBuf::from(DEFAULT_LAYER1_ATTN_NORM_BEFORE_QKV_AFTER_LAYER0_STATUS_OUTPUT);
+    let source_norm = load_json_value(&source_norm_path)?;
+    if source_norm
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_norm
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer1_attn_norm_before_qkv_cleared_after_layer0")
+    {
+        bail!("source layer1 attention norm artifact is not cleared");
+    }
+
+    let official_bundle_path =
+        PathBuf::from(DEFAULT_OFFICIAL_LAYER1_ATTENTION_ORDERED_BUNDLE_ARTIFACT);
+    let official_bundle = load_json_value(&official_bundle_path)?;
+    if official_bundle
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer1_attention_ordered_boundary_bundle_captured")
+        || official_bundle
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official layer1 attention ordered bundle artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::Layer1AttentionOrderedBundleCompareStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.layer1_attention_ordered_bundle_compare_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-layer1-norm")
+        .arg(&source_norm_path)
+        .arg("--official-bundle")
+        .arg(&official_bundle_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run layer1 attention ordered bundle script {} with {}",
+                cli.layer1_attention_ordered_bundle_compare_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "layer1 attention ordered bundle script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read layer1 attention ordered bundle artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("layer1-attention-ordered-bundle-compare-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("layer1 attention ordered bundle artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_layer1_mlp_ordered_bundle_compare_status(cli: &Cli) -> Result<()> {
+    let source_attention_path =
+        PathBuf::from(DEFAULT_LAYER1_ATTENTION_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT);
+    let source_attention = load_json_value(&source_attention_path)?;
+    if source_attention
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_attention
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer1_attention_ordered_bundle_cleared")
+    {
+        bail!("source layer1 attention ordered bundle artifact is not cleared");
+    }
+
+    let official_bundle_path = PathBuf::from(DEFAULT_OFFICIAL_LAYER1_MLP_ORDERED_BUNDLE_ARTIFACT);
+    let official_bundle = load_json_value(&official_bundle_path)?;
+    if official_bundle
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer1_mlp_ordered_boundary_bundle_captured")
+        || official_bundle
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official layer1 MLP ordered bundle artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::Layer1MlpOrderedBundleCompareStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.layer1_mlp_ordered_bundle_compare_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-layer1-attention-bundle")
+        .arg(&source_attention_path)
+        .arg("--official-bundle")
+        .arg(&official_bundle_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run layer1 MLP ordered bundle script {} with {}",
+                cli.layer1_mlp_ordered_bundle_compare_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "layer1 MLP ordered bundle script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read layer1 MLP ordered bundle artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("layer1-mlp-ordered-bundle-compare-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("layer1 MLP ordered bundle artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_layer2_to_final_coarse_layer_ladder_compare_status(cli: &Cli) -> Result<()> {
+    let source_layer1_path = PathBuf::from(DEFAULT_LAYER1_MLP_ORDERED_BUNDLE_COMPARE_STATUS_OUTPUT);
+    let source_layer1 = load_json_value(&source_layer1_path)?;
+    if source_layer1
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_layer1
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer1_mlp_ordered_bundle_cleared")
+    {
+        bail!("source layer1 MLP ordered bundle artifact is not cleared");
+    }
+
+    let official_ladder_path =
+        PathBuf::from(DEFAULT_OFFICIAL_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_ARTIFACT);
+    let official_ladder = load_json_value(&official_ladder_path)?;
+    if official_ladder
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_layer2_to_final_coarse_layer_ladder_bundle_captured")
+        || official_ladder
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official layer2-to-final coarse ladder artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::Layer2ToFinalCoarseLayerLadderCompareStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.layer2_to_final_coarse_layer_ladder_compare_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-layer1-mlp-bundle")
+        .arg(&source_layer1_path)
+        .arg("--official-ladder")
+        .arg(&official_ladder_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run layer2-to-final coarse ladder script {} with {}",
+                cli.layer2_to_final_coarse_layer_ladder_compare_script
+                    .display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "layer2-to-final coarse ladder script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read layer2-to-final coarse ladder artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("layer2-to-final-coarse-layer-ladder-compare-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("layer2-to-final coarse ladder artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_final_readout_norm_and_lm_head_compare_status(cli: &Cli) -> Result<()> {
+    let source_ladder_path =
+        PathBuf::from(DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_STATUS_OUTPUT);
+    let source_ladder = load_json_value(&source_ladder_path)?;
+    if source_ladder
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || source_ladder
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("layer2_to_final_coarse_layer_ladder_cleared")
+    {
+        bail!("source layer2-to-final coarse ladder artifact is not cleared");
+    }
+
+    let official_readout_path =
+        PathBuf::from(DEFAULT_OFFICIAL_FINAL_READOUT_NORM_AND_LM_HEAD_BUNDLE_ARTIFACT);
+    let official_readout = load_json_value(&official_readout_path)?;
+    if official_readout
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_final_token_readout_norm_and_lm_head_bundle_captured")
+        || official_readout
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official final readout artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::FinalReadoutNormAndLmHeadCompareStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.final_readout_norm_and_lm_head_compare_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-ladder")
+        .arg(&source_ladder_path)
+        .arg("--official-readout")
+        .arg(&official_readout_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run final readout compare script {} with {}",
+                cli.final_readout_norm_and_lm_head_compare_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "final readout compare script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read final readout compare artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("final-readout-norm-and-lm-head-compare-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("final readout compare artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_lm_head_weight_layout_arithmetic_policy_status(cli: &Cli) -> Result<()> {
+    let source_final_readout_path =
+        PathBuf::from(DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_STATUS_OUTPUT);
+    let source_final_readout = load_json_value(&source_final_readout_path)?;
+    if source_final_readout
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("lm_head_logits_mismatch_after_final_norm_clear")
+        && source_final_readout
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            != Some("final_readout_norm_and_lm_head_logits_cleared")
+    {
+        bail!("source final readout artifact does not have a usable final norm guard");
+    }
+
+    let official_readout_path =
+        PathBuf::from(DEFAULT_OFFICIAL_FINAL_READOUT_NORM_AND_LM_HEAD_BUNDLE_ARTIFACT);
+    let official_readout = load_json_value(&official_readout_path)?;
+    if official_readout
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_final_token_readout_norm_and_lm_head_bundle_captured")
+        || official_readout
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official final readout artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::LmHeadWeightLayoutArithmeticPolicyStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.lm_head_weight_layout_arithmetic_policy_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--source-final-readout")
+        .arg(&source_final_readout_path)
+        .arg("--official-readout")
+        .arg(&official_readout_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run LM head policy script {} with {}",
+                cli.lm_head_weight_layout_arithmetic_policy_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "LM head policy script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read LM head policy artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("lm-head-weight-layout-arithmetic-policy-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("LM head policy artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_final_readout_direct_module_rerun_status(cli: &Cli) -> Result<()> {
+    let prior_final_readout_path =
+        PathBuf::from(DEFAULT_FINAL_READOUT_NORM_AND_LM_HEAD_COMPARE_STATUS_OUTPUT);
+    let prior_final_readout = load_json_value(&prior_final_readout_path)?;
+    if prior_final_readout
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        != Some("final-readout-norm-and-lm-head-compare-status")
+    {
+        bail!("prior runtime final readout artifact is not the expected diagnostic");
+    }
+
+    let source_ladder_path =
+        PathBuf::from(DEFAULT_LAYER2_TO_FINAL_COARSE_LAYER_LADDER_COMPARE_STATUS_OUTPUT);
+    let source_ladder = load_json_value(&source_ladder_path)?;
+    if source_ladder
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("layer2_to_final_coarse_layer_ladder_cleared")
+    {
+        bail!("source layer2-to-final coarse ladder artifact is not cleared");
+    }
+
+    let official_direct_readout_path =
+        PathBuf::from(DEFAULT_OFFICIAL_FINAL_READOUT_DIRECT_MODULE_BUNDLE_ARTIFACT);
+    let official_direct_readout = load_json_value(&official_direct_readout_path)?;
+    if official_direct_readout
+        .get("classification")
+        .and_then(serde_json::Value::as_str)
+        != Some("official_final_readout_direct_module_logits_regenerated")
+        || official_direct_readout
+            .get("missing_boundaries")
+            .and_then(serde_json::Value::as_array)
+            .map_or(true, |missing| !missing.is_empty())
+    {
+        bail!("official direct-module final readout artifact is not complete");
+    }
+
+    let (local_artifact, local_case) =
+        load_single_case_artifact(&cli.local_residual_input_artifact)?;
+    validate_exact_case_artifact(
+        &local_artifact,
+        &local_case,
+        "layer0_residual_input",
+        "developer-message-user-smoke",
+        &local_case.input_token_ids,
+    )?;
+    let model_root = Path::new(&local_artifact.provenance.model);
+
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| Mode::FinalReadoutDirectModuleRerunStatus.default_output());
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = Command::new(&cli.torch_python)
+        .arg(&cli.final_readout_direct_module_rerun_script)
+        .arg("--model-root")
+        .arg(model_root)
+        .arg("--prior-final-readout")
+        .arg(&prior_final_readout_path)
+        .arg("--source-ladder")
+        .arg(&source_ladder_path)
+        .arg("--official-direct-readout")
+        .arg(&official_direct_readout_path)
+        .arg("--local-residual-input")
+        .arg(&cli.local_residual_input_artifact)
+        .arg("--output")
+        .arg(&output)
+        .arg("--device")
+        .arg("cpu")
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run final readout direct-module rerun script {} with {}",
+                cli.final_readout_direct_module_rerun_script.display(),
+                cli.torch_python.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "final readout direct-module rerun script failed with status {:?}",
+            status.code()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).with_context(|| {
+            format!(
+                "failed to read final readout direct-module rerun artifact {}",
+                output.display()
+            )
+        })?)?;
+    if summary
+        .pointer("/exact_case/case_id")
+        .and_then(serde_json::Value::as_str)
+        != Some("developer-message-user-smoke")
+        || summary.get("mode").and_then(serde_json::Value::as_str)
+            != Some("final-readout-direct-module-rerun-status")
+        || summary
+            .get("classification")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!("final readout direct-module rerun artifact failed exact-case validation");
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 fn run_k_post_bias_contradiction_status(cli: &Cli) -> Result<()> {
     let (local_artifact, local_case) =
         load_single_case_artifact(&cli.local_residual_input_artifact)?;
@@ -44463,6 +45284,27 @@ fn main() -> Result<()> {
         }
         Mode::MlpResidualAddAfterWeightedSumStatus => {
             run_mlp_residual_add_after_weighted_sum_status(&cli)
+        }
+        Mode::Layer1AttnNormBeforeQkvAfterLayer0Status => {
+            run_layer1_attn_norm_before_qkv_after_layer0_status(&cli)
+        }
+        Mode::Layer1AttentionOrderedBundleCompareStatus => {
+            run_layer1_attention_ordered_bundle_compare_status(&cli)
+        }
+        Mode::Layer1MlpOrderedBundleCompareStatus => {
+            run_layer1_mlp_ordered_bundle_compare_status(&cli)
+        }
+        Mode::Layer2ToFinalCoarseLayerLadderCompareStatus => {
+            run_layer2_to_final_coarse_layer_ladder_compare_status(&cli)
+        }
+        Mode::FinalReadoutNormAndLmHeadCompareStatus => {
+            run_final_readout_norm_and_lm_head_compare_status(&cli)
+        }
+        Mode::LmHeadWeightLayoutArithmeticPolicyStatus => {
+            run_lm_head_weight_layout_arithmetic_policy_status(&cli)
+        }
+        Mode::FinalReadoutDirectModuleRerunStatus => {
+            run_final_readout_direct_module_rerun_status(&cli)
         }
         Mode::QGemmMicroproofStatus => run_q_gemm_microproof_status(&cli),
         Mode::QGemmHelperContractStatus => run_q_gemm_helper_contract_status(&cli),
