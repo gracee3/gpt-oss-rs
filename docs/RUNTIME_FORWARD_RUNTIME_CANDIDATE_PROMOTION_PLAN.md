@@ -284,3 +284,14 @@ plumbing remain excluded.
 The next commit, if approved, should route only the GPT-OSS layer-0 attention
 RMSNorm call site to this BF16 policy variant. Performance guardrails remain
 required before broader promotion.
+
+### Commit 2 Status
+
+Commit 2 routes only the GPT-OSS layer-0 pre-attention RMSNorm call site to
+`rms_norm_f16_bf16_policy_kernel`. MLP RMSNorm, final RMSNorm, fused residual
+RMSNorm, and all other layer RMSNorm paths remain on the existing kernels.
+
+The performance risk is therefore limited to this one layer-0 attention-norm
+call site for now. The next validation step should include compile checks and a
+targeted layer-0 attention-norm proof or smoke if available. Broader RMSNorm
+routing remains explicitly deferred.
