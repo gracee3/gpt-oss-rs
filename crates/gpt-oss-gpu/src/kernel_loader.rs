@@ -98,7 +98,10 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
     ("reshape_and_cache_f16", &["reshape_and_cache_f16io_kernel"]),
     ("gemv_f16", &["gemv_f16_kernel", "gemv_batched_f16_kernel"]),
     ("rms_norm", &["rms_norm_kernel"]),
-    ("rms_norm_f16", &["rms_norm_f16_kernel"]),
+    (
+        "rms_norm_f16",
+        &["rms_norm_f16_kernel", "rms_norm_f16_bf16_policy_kernel"],
+    ),
     ("rotary_embedding", &["rotary_embedding_kernel"]),
     ("rotary_embedding_f16", &["rotary_embedding_f16_kernel"]),
     ("softmax", &["softmax_kernel"]),

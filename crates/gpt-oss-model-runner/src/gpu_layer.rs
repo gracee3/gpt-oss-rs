@@ -807,6 +807,19 @@ mod inner {
                     hidden,
                 )?;
                 (n, Some(r))
+            } else if cfg.layer_idx == 0 {
+                // Scoped GPT-OSS BF16 layer-0 attention-norm candidate, backed
+                // by runtime-forward final-token oracle parity artifacts.
+                let n = Self::rms_norm_f16_bf16_policy(
+                    &self.stream,
+                    &self.loader,
+                    hidden_f16,
+                    weights.input_layernorm,
+                    cfg.rms_norm_eps,
+                    num_tokens,
+                    hidden,
+                )?;
+                (n, None)
             } else {
                 let n = Self::rms_norm_f16(
                     &self.stream,
@@ -2726,6 +2739,40 @@ mod inner {
                     .arg(&(hidden_size as i32))
                     .launch(cfg)
                     .map_err(|e| LLMError::GpuError(format!("rms_norm_f16 launch: {e}")))?;
+            }
+            Ok(output)
+        }
+
+        /// RMSNorm with BF16 input/weight/output policy, stored in f16.
+        fn rms_norm_f16_bf16_policy(
+            stream: &Arc<CudaStream>,
+            loader: &KernelLoader,
+            input: &CudaSlice<f16>,
+            weight: &CudaSlice<f32>,
+            eps: f32,
+            num_tokens: usize,
+            hidden_size: usize,
+        ) -> Result<CudaSlice<f16>> {
+            let n = num_tokens * hidden_size;
+            let mut output = unsafe { stream.alloc::<f16>(n) }
+                .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_bf16 alloc: {e}")))?;
+            let block_threads = hidden_size.min(1024) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (num_tokens as u32, 1, 1),
+                block_dim: (block_threads, 1, 1),
+                shared_mem_bytes: (2 * hidden_size * std::mem::size_of::<f32>()) as u32,
+            };
+            let kernel = loader.get_func("rms_norm_f16", "rms_norm_f16_bf16_policy_kernel")?;
+            unsafe {
+                stream
+                    .launch_builder(&kernel)
+                    .arg(&mut output)
+                    .arg(input)
+                    .arg(weight)
+                    .arg(&eps)
+                    .arg(&(hidden_size as i32))
+                    .launch(cfg)
+                    .map_err(|e| LLMError::GpuError(format!("rms_norm_f16_bf16 launch: {e}")))?;
             }
             Ok(output)
         }

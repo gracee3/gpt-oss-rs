@@ -1,0 +1,7 @@
+# Local Python tooling for runtime-forward oracle/proof validation.
+# Note: install torch with the wheel/index appropriate for your CUDA/Python platform if needed.
+# This file is not required for the Rust runtime build.
+# scripts/validate_runtime_forward_final_readout_status.py remains stdlib-only.
+numpy
+torch
+debugpy

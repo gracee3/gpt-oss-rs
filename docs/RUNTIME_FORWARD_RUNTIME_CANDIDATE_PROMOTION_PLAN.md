@@ -1,0 +1,466 @@
+# Runtime-Forward Runtime Candidate Promotion Plan
+
+Classification: `runtime_candidate_rope_fix_extracted`
+
+This plan starts the runtime/CUDA promotion track for the
+`feature/runtime-forward` final-token oracle parity milestone without merging
+the feature branch wholesale.
+
+## Source
+
+- Source branch: `feature/runtime-forward`
+- Source worktree: `/home/emmy/openai/worktrees/runtime-forward`
+- Source milestone commit: `5bcba1d2edcb9c15b1ed567700976dad03e12300`
+- Current promotion branch: `promotion/runtime-forward-runtime-candidates`
+- Proof artifact:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+- Proof classification: `final_readout_direct_module_logits_cleared`
+
+The final-token proof path matched official through the transformer stack,
+final norm, and LM-head logits for `developer-message-user-smoke`. That proof
+used bench/proof-only mechanisms that must not be promoted blindly.
+
+## Runtime Diff Inventory
+
+Runtime-affecting paths changed on `feature/runtime-forward` include:
+
+- `kernels/rotary_embedding.cu`
+- `kernels/rotary_embedding_f16.cu`
+- `kernels/rms_norm_f16.cu`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-model-runner/src/runner.rs`
+- `crates/gpt-oss-model-runner/src/architectures/*.rs`
+- `crates/gpt-oss-gpu/src/cublas.rs`
+- `crates/gpt-oss-gpu/src/kernel_loader.rs`
+- `crates/gpt-oss-gpu/src/lib.rs`
+- `crates/gpt-oss-engine/src/gpu_engine.rs`
+- `crates/gpt-oss-engine/src/worker/*.rs`
+- `crates/gpt-oss-server/src/*`
+- `crates/gpt-oss-tokenizer/src/protocol.rs`
+- `crates/gpt-oss-bench/**`
+
+Only the RoPE kernel pair is extracted in this slice. All broader runtime,
+server/protocol, and bench/proof changes remain deferred.
+
+## Candidate Matrix
+
+| Candidate | Changed files | Runtime-affecting | Performance-sensitive | Default path affected | Proof artifacts | Validation available | Dependencies | Recommendation | Risk | Next action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RoPE half-split pairing fix | `kernels/rotary_embedding.cu`, `kernels/rotary_embedding_f16.cu` | Yes | Low | Yes, CUDA RoPE Q/K path | K RoPE/grouped compare statuses and final readout direct-module artifact | `git diff --check`, cargo checks, future CUDA smoke | None beyond existing kernels | Extract first | Medium semantic risk because default RoPE behavior changes, but patch is isolated and matches GPT-OSS half-split convention | Extracted in this slice |
+| BF16 RMSNorm policy/scalar fix | `kernels/rms_norm_f16.cu`, `crates/gpt-oss-gpu/src/kernel_loader.rs`, `crates/gpt-oss-model-runner/src/gpu_layer.rs`, related runner/debug paths | Yes | Yes | Yes, layer0 f16 RMSNorm path in source branch | Layer0 attention RMSNorm scalar/runtime-fix statuses and final readout artifact | Needs focused CUDA validation and perf guardrails | Entangled with debug/proof QKV helpers in source diff | Defer | Higher, due to new kernel, loader symbols, shared memory policy, and default-path numeric change | Prepare separate scoped extraction with perf notes |
+| cuBLAS BF16/pedantic helpers | `crates/gpt-oss-gpu/src/cublas.rs`, `crates/gpt-oss-gpu/src/lib.rs`, `crates/gpt-oss-gpu/Cargo.toml`, model-runner callers | Partly | Yes | Not as normal default GEMM in source proof path; used by K helper/proof paths | All-token K pedantic/runtime-fix status | Needs isolated helper tests and performance guardrails | `cudarc`, BF16 types, proof-only callers | Defer | High if pedantic mode leaks into default GEMM | Review after RMSNorm/RoPE |
+| Q/K/V projection oneDNN candidates | `crates/gpt-oss-model-runner/src/gpu_layer.rs`, bench tools | No for default runtime, proof-only candidate path | Yes | No, env/proof-gated | Q/K/V oneDNN scoped candidate statuses | Proof-only Python/Torch checks | Torch/MKLDNN policy, large artifacts, debug traces | Do not promote | High and not CUDA runtime implementation | Keep in feature/proof lane |
+| Selected expert output readout correction | bench tools and diagnostic readout paths | No unless a real runtime staging bug is separately proven | No for default runtime | No | Selected expert output readout fix/localization statuses | Proof-only | Torch artifacts, selected-output readout assumptions | Do not promote | Medium diagnostic risk; likely status readout correction, not runtime fix | Keep proof-only |
+| Debug capture plumbing | `gpu_runner.rs`, `gpu_worker.rs`, bench bins | Partly | Medium | Should remain off default paths | Ordered bundle/final readout statuses | Needs API design review | Broad runtime API surface | Do not promote broadly | High surface-area risk | Keep gated or redesign narrowly |
+| Server/Harmony/protocol changes | `crates/gpt-oss-server/**`, `crates/gpt-oss-tokenizer/src/protocol.rs` | Yes | No | Yes | Not part of final-token CUDA proof | Separate route/protocol validation | Server/Harmony lanes | Do not include | Unrelated behavior risk | Leave to owning lane |
+
+## Candidate Extracted
+
+Extracted candidate: RoPE half-split pairing fix.
+
+Files changed:
+
+- `kernels/rotary_embedding.cu`
+- `kernels/rotary_embedding_f16.cu`
+
+The extraction changes RoPE pair indexing from adjacent `(2i, 2i + 1)` lanes
+to GPT-OSS half-split `(i, half_dim + i)` lanes for both query and key paths.
+No debug capture plumbing, oneDNN candidate code, BF16 RMSNorm policy, cuBLAS
+helper change, server/protocol change, `.live` artifact, or Rust harness import
+is included.
+
+## Performance Guardrails
+
+- Treat RoPE as a semantic fix, not a performance refactor.
+- Keep launch shape and memory access count unchanged.
+- Run the smallest available cargo checks on CPU branches now.
+- Before broader promotion, run a CUDA smoke that exercises both f32 and f16
+  RoPE kernels and checks a known GPT-OSS final-token boundary artifact.
+- Do not combine future BF16 RMSNorm or cuBLAS helper changes with this RoPE
+  commit.
+
+## Do Not Promote Yet
+
+- BF16 RMSNorm policy/scalar-reduction fix.
+- cuBLAS BF16/pedantic helpers.
+- oneDNN Q/K/V projection-policy candidates.
+- selected expert output readout correction.
+- broad debug capture plumbing.
+- server/Harmony/protocol behavior.
+- raw `.live` PPP/full-value artifacts.
+- the full `runtime_forward_layer0_qkv_bf16_candidate_status.rs` bench file.
+
+## Next Bounded Step
+
+Review this RoPE-only runtime candidate. If accepted, prepare a separate BF16
+RMSNorm extraction plan that isolates the kernel and loader changes from debug
+capture and Q/K/V proof-only plumbing, with explicit performance guardrails.
+
+## BF16 RMSNorm Candidate Extraction Plan
+
+Classification: `rmsnorm_candidate_plan_ready_for_scoped_extraction`
+
+This is a plan only. No BF16 RMSNorm kernel, loader, model-runner, engine,
+debug, or proof-bench code is extracted in this commit.
+
+### Source Files Inspected
+
+Compared from current `promotion/runtime-forward-runtime-candidates` to
+`feature/runtime-forward` milestone
+`5bcba1d2edcb9c15b1ed567700976dad03e12300`:
+
+- `kernels/rms_norm_f16.cu`
+- `crates/gpt-oss-gpu/src/kernel_loader.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+
+The source diff across those paths is broad: six files, roughly 49k insertions,
+and large debug/proof additions. It must not be copied wholesale.
+
+### Runtime, Debug, and Proof Split
+
+Required runtime behavior:
+
+- Add BF16 input, BF16 weight, f32 reduction, BF16 output-rounding semantics
+  for the scoped GPT-OSS layer-0 pre-attention RMSNorm path.
+- Use lane-order pairwise/tree f32 sum over BF16-expanded `x * x`.
+- Compute inverse RMS as `1.0f / sqrtf(mean_square + eps)`.
+- Multiply as `(x_bf16 * inverse_rms) * weight_bf16`.
+- Round the output through BF16 before storing into the existing half buffer.
+
+Required kernel-loader/plumbing:
+
+- Register only the production BF16 policy kernel symbol.
+- Route only the intended layer-0 attention RMSNorm call to the BF16 policy
+  path.
+- Keep later attention RMSNorms, MLP RMSNorms, final RMSNorm, fused residual
+  RMSNorm, and non-BF16/non-GPT-OSS paths on the existing kernels.
+
+Debug/capture-only plumbing to exclude:
+
+- `rms_norm_f16_bf16_policy_debug_kernel`.
+- Scalar capture buffers and `GPT_OSS_LAYER0_RMSNORM_SCALAR_DEBUG` env handling.
+- `GpuModelRunner` debug trace structs and debug prefill APIs.
+- `GpuWorker` debug logits, direct-runner, and trace APIs.
+- Progress/timing debug plumbing unrelated to the production RMSNorm call.
+
+Bench/proof-only code to exclude:
+
+- `runtime_forward_layer0_qkv_bf16_candidate_status.rs`.
+- Replay sweep modes and `.live` status writers.
+- Python/Torch helper scripts and large PPP/full-value artifacts.
+- Q/K/V oneDNN candidate paths and selected expert readout correction modes.
+
+### Proposed Extraction Scope
+
+Recommended strategy: split into two small commits.
+
+1. Add a production-only BF16 RMSNorm kernel variant and loader registration.
+   Proposed files:
+   - `kernels/rms_norm_f16.cu`
+   - `crates/gpt-oss-gpu/src/kernel_loader.rs`
+
+2. Add the scoped model-runner call-site selection.
+   Proposed file:
+   - `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+
+Do not modify:
+
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+- server, Harmony, protocol, tokenizer, or runtime API surfaces
+
+The intended promotion is a new scoped BF16-policy RMSNorm kernel variant, not
+a direct modification of the existing `rms_norm_f16_kernel`. The existing
+kernel remains the default for ordinary f16 RMSNorm calls. The scoped variant
+should be selected only for GPT-OSS BF16 layer-0 pre-attention RMSNorm.
+
+The source branch routes `cfg.layer_idx == 0` pre-attention RMSNorm through the
+BF16 policy path. The scoped extraction should preserve that narrow behavior
+and avoid touching MLP RMSNorm, final RMSNorm, fused residual RMSNorm, and
+non-layer-0 attention RMSNorm. If a config/dtype gate is available at the call
+site, use it so non-GPT-OSS or non-BF16 paths remain unchanged.
+
+Implementation caution: the production kernel uses two shared-memory buffers
+over `hidden_size`. The extracted launcher must allocate
+`2 * hidden_size * sizeof(float)` shared memory, not only
+`block_threads * sizeof(float)`, before any promotion review.
+
+### Proof Artifacts
+
+The supporting source artifacts are local `.live` proof artifacts and should
+not be committed:
+
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-bf16-runtime-fix-status.json`
+  records the policy change from `f16_input_f16_weight_f32_reduction_f16_output`
+  to `bf16_input_bf16_weight_f32_reduction_bf16_output`, scoped to layer-0
+  attention RMSNorm. It is partial: live-vs-official max diff improved but did
+  not fully clear at that stage.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-live-cuda-vs-authoritative-replay-status.json`
+  shows final-token layer-0 attention RMSNorm matched, while earlier-token
+  residual differences remained before the scalar fix.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-cuda-single-lane-scalar-capture-status.json`
+  is diagnostic-only evidence identifying the scalar delta at token 18, lane
+  92. It justifies the scalar/reduction change but depends on debug capture
+  plumbing that must not be promoted.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-scalar-runtime-fix-status.json`
+  supports the production candidate: the scoped scalar/reduction behavior
+  reduced live-vs-official RMSNorm differences to tiny residuals with max
+  `1.1920928955078125e-7`; token 18 lane 92 matched authoritative replay and
+  official after the fix.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-residual-lanes-k-causality-status.json`
+  is diagnostic. It shows remaining grouped-K mismatch was not explained by
+  the tiny RMSNorm residual lanes and involves separate K-helper policy work,
+  which remains deferred.
+- `.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+  is the milestone-level proof that the final-token proof path ultimately
+  cleared through final norm and LM-head logits, but it does not by itself
+  justify promoting every proof-only mechanism.
+
+### Performance Risks
+
+This candidate is performance-sensitive:
+
+- It changes a default runtime CUDA path if routed into layer-0 attention
+  RMSNorm.
+- It replaces the existing block-strided local-sum plus halving reduction with
+  a lane-order two-buffer pairwise/tree reduction over `hidden_size`.
+- It uses `sqrtf` plus reciprocal instead of `rsqrtf`.
+- It increases shared memory from `block_threads * sizeof(float)` to
+  `2 * hidden_size * sizeof(float)` for the scoped variant.
+- It adds BF16 round-trip conversion for inputs, weights, and output values.
+- It touches every token for the scoped layer-0 attention RMSNorm call.
+
+The scope is narrow enough to review, but promotion should require performance
+guardrails before push or PR expansion.
+
+### Required Validation Before Runtime Promotion
+
+Minimum validation for the kernel/loader commit:
+
+- `git diff --check`
+- `cargo check -p gpt-oss-gpu --features cuda`
+- PTX symbol confirmation for `rms_norm_f16_bf16_policy_kernel`
+- A small deterministic CPU/GPU comparison for the new BF16 policy kernel, if a
+  suitable harness exists or can be added without debug capture plumbing
+
+Minimum validation after call-site selection:
+
+- `git diff --check`
+- `cargo check -p gpt-oss-bench --lib`
+- `cargo check -p gpt-oss-gpu --features cuda`
+- A targeted runtime smoke for `developer-message-user-smoke` if available
+- A microbenchmark or before/after timing for the scoped layer-0 attention
+  RMSNorm path; if no benchmark exists, add or run one before pushing this
+  candidate for review
+
+Do not use the 45k-line runtime-forward proof bench as the promotion harness.
+Do not require long GPU proof modes unless explicitly approved.
+
+### Go/No-Go Recommendation
+
+Go for scoped extraction only if the next slice keeps the change to the
+production kernel symbol, loader registration, and layer-0 model-runner call
+site. Stop if extraction pulls in debug runner APIs, engine worker debug APIs,
+the full proof bench, Q/K/V projection candidates, selected expert readout
+corrections, or cuBLAS/pedantic helper changes.
+
+The next bounded prompt should extract only commit 1: production BF16 RMSNorm
+kernel variant plus loader registration, then run CUDA compile validation and
+inspect symbols. The model-runner call-site selection should remain a separate
+follow-up commit.
+
+### Commit 1 Status
+
+Commit 1 extracts only the production `rms_norm_f16_bf16_policy_kernel` symbol
+and registers it with the kernel loader. No model-runner call site routes to the
+new kernel yet. The debug scalar-capture kernel and all debug runner/worker
+plumbing remain excluded.
+
+The next commit, if approved, should route only the GPT-OSS layer-0 attention
+RMSNorm call site to this BF16 policy variant. Performance guardrails remain
+required before broader promotion.
+
+### Commit 2 Status
+
+Commit 2 routes only the GPT-OSS layer-0 pre-attention RMSNorm call site to
+`rms_norm_f16_bf16_policy_kernel`. MLP RMSNorm, final RMSNorm, fused residual
+RMSNorm, and all other layer RMSNorm paths remain on the existing kernels.
+
+The performance risk is therefore limited to this one layer-0 attention-norm
+call site for now. The next validation step should include compile checks and a
+targeted layer-0 attention-norm proof or smoke if available. Broader RMSNorm
+routing remains explicitly deferred.
+
+### RMSNorm Guardrails Before Broader Routing
+
+The current branch routes only layer-0 pre-attention RMSNorm to the BF16 policy
+kernel. Any broader RMSNorm routing requires dedicated correctness and
+performance validation first.
+
+Required future guardrails:
+
+- `cargo check -p gpt-oss-gpu --features cuda`
+- PTX symbol check for `rms_norm_f16_bf16_policy_kernel`
+- CPU/reference BF16 RMSNorm policy coverage
+- source/loader registration grep coverage
+- small GPU output comparison for the BF16 policy kernel, if a lightweight
+  harness is available
+- microbenchmark or timing guard before broad routing
+- restricted final-token smoke if the proof harness is available without
+  importing runtime-forward debug plumbing
+
+This branch does not broaden RMSNorm routing beyond the current layer-0
+pre-attention call site.
+
+## cuBLAS / Pedantic BF16 Helper Promotion Plan
+
+Classification: `cublas_promotion_plan_defer_until_projection_policy_design`
+
+This is a plan only. No cuBLAS, GEMM, model-runner, kernel, proof harness, or
+debug code is extracted in this commit.
+
+### Source Files Inspected
+
+Compared from current `promotion/runtime-forward-runtime-candidates` to
+`feature/runtime-forward` milestone
+`5bcba1d2edcb9c15b1ed567700976dad03e12300`:
+
+- `crates/gpt-oss-gpu/src/cublas.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+
+The source diff is broad and proof-heavy: `cublas.rs` adds BF16 GEMM helpers,
+state snapshots, pedantic math/atomics mode handling, and CUDA tests; the
+model-runner diff routes those helpers through layer-0 BF16 QKV proof paths;
+the bench diff is the 45k-line runtime-forward proof binary. These files must
+not be copied wholesale.
+
+### Source Changes Found
+
+Actual runtime/helper changes:
+
+- Adds `hgemm_bf16` using `cublasGemmEx` with BF16 inputs/outputs, FP32
+  alpha/beta host scalars, `CUBLAS_COMPUTE_32F`, and
+  `CUBLAS_GEMM_DEFAULT_TENSOR_OP`.
+- Adds `hgemm_bf16_pedantic_no_tensor_op` using `CUBLAS_PEDANTIC_MATH`,
+  `CUBLAS_ATOMICS_NOT_ALLOWED`, `CUBLAS_COMPUTE_32F_PEDANTIC`, and
+  `CUBLAS_GEMM_DFALT`, with restoration of the previous handle math and atomics
+  modes after the call.
+- Adds `CublasHandleState` and `snapshot_state`, useful for diagnostics but not
+  required by default runtime GEMM.
+
+Proof/diagnostic path changes:
+
+- Layer-0 BF16 QKV candidate paths are env/proof-gated and include standalone K
+  proof logic, BF16 host readbacks, interaction masks, and oneDNN/PyTorch
+  projection-policy probes.
+- `gpu_runner.rs` and the bench binary add debug/proof plumbing around those
+  projection paths.
+- The source uses the pedantic helper as one K-projection proof variant, not as
+  a normal default GEMM policy.
+
+Performance-sensitive settings:
+
+- `CUBLAS_PEDANTIC_MATH`
+- `CUBLAS_COMPUTE_32F_PEDANTIC`
+- `CUBLAS_GEMM_DFALT`
+- `CUBLAS_ATOMICS_NOT_ALLOWED`
+- non-tensor-op algorithm selection
+
+These settings are likely slower than tensor-op BF16 GEMM and must not affect
+Q/K/V, O projection, MLP, LM head, or generic GEMM paths by default without
+dedicated benchmarks.
+
+### Proof Artifacts Considered
+
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-gemm-math-mode-status.json`
+  classified the issue as `multi_row_gemm_math_mode_identified`. The default
+  full m=74 BF16 tensor-op helper differed from CPU reference with max diff
+  `0.5`; a raw full m=74 pedantic/no-tensor-op replay matched CPU exactly.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-all-token-k-pedantic-runtime-fix-status.json`
+  classified `all_token_k_pedantic_runtime_fix_proven`; the fixed full m=74 K
+  helper matched CPU reference exactly, while the older tensor-op replay did
+  not.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-downstream-after-pedantic-fix-status.json`
+  classified `grouped_pre_rope_k_still_mismatches_after_helper_fix`, so the
+  pedantic helper did not clear the downstream K seam.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json`
+  classified `onednn_projection_oracle_confirms_helper_arithmetic_delta`.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json`
+  classified `scoped_onednn_oracle_k_projection_helper_fix_proven`.
+- `.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-pytorch-bf16-linear-backend-policy-status.json`
+  classified `pytorch_bf16_linear_backend_or_threading_sensitive`.
+- `.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+  classified `final_readout_direct_module_logits_cleared`, but that full proof
+  also used proof-only mechanisms and does not by itself justify promoting
+  pedantic cuBLAS into default runtime.
+
+### Promotion Recommendation
+
+Recommendation D: keep cuBLAS/pedantic code proof-only until a dedicated CUDA
+projection-policy design exists.
+
+The pedantic helper proved that one full-shape K helper variant can reproduce a
+CPU BF16 reference, but it did not clear the downstream grouped K seam. The
+later oneDNN oracle artifacts became the stronger projection-policy evidence,
+and those oneDNN Q/K/V candidates remain proof-only rather than CUDA runtime
+fixes. Promoting pedantic cuBLAS now would risk encoding an intermediate helper
+proof as default runtime policy before the projection policy is resolved.
+
+Do not promote now:
+
+- broad `hgemm_bf16` default routing
+- `hgemm_bf16_pedantic_no_tensor_op` as a default GEMM path
+- layer-0 BF16 QKV env/proof paths
+- oneDNN Q/K/V projection candidates
+- selected expert readout corrections
+- debug capture/status plumbing
+- the runtime-forward proof bench
+
+### Required Guardrails Before Any cuBLAS Promotion
+
+Correctness:
+
+- deterministic BF16 GEMM comparison on small shapes
+- all-token K helper shape `[74 x 2880] x [512 x 2880]`
+- Q and V projection shapes if the future policy is not K-only
+- explicit comparison of tensor-op, pedantic/no-tensor-op, stitched m=1, and
+  CPU BF16 references
+- proof that the chosen policy improves downstream K/RoPE/score seams, not just
+  the isolated helper output
+
+Performance:
+
+- old vs pedantic latency for the relevant Q/K/V shapes
+- separate prefill and decode measurements if the path can affect both
+- confirmation that non-target GEMMs keep tensor-op throughput
+- no broad `CUBLAS_PEDANTIC_MATH` or atomics-mode leakage across the shared
+  handle
+
+Scope:
+
+- a guarded helper or policy-specific path only; no generic GEMM behavior change
+- explicit restoration of cuBLAS math and atomics modes after any scoped call
+- no server/protocol/Harmony behavior changes
+- no runtime-forward debug capture or proof harness imports
+
+Validation:
+
+- `cargo check -p gpt-oss-gpu --features cuda`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- focused unit or integration tests for alpha/beta scalar type and math-mode
+  restoration if a helper is extracted
+- optional GPU microbenchmark before review expansion
+
+### Next Bounded Step
+
+Do not extract cuBLAS/pedantic code on this runtime-candidate branch now. After
+the current RoPE/RMSNorm candidate has review visibility, prepare a standalone
+CUDA projection-policy design that decides whether a narrow K-only pedantic
+helper, an FP32 alpha/beta BF16 helper, or no cuBLAS promotion is appropriate.
