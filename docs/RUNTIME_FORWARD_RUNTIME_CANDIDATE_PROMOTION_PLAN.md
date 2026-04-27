@@ -96,3 +96,180 @@ is included.
 Review this RoPE-only runtime candidate. If accepted, prepare a separate BF16
 RMSNorm extraction plan that isolates the kernel and loader changes from debug
 capture and Q/K/V proof-only plumbing, with explicit performance guardrails.
+
+## BF16 RMSNorm Candidate Extraction Plan
+
+Classification: `rmsnorm_candidate_plan_ready_for_scoped_extraction`
+
+This is a plan only. No BF16 RMSNorm kernel, loader, model-runner, engine,
+debug, or proof-bench code is extracted in this commit.
+
+### Source Files Inspected
+
+Compared from current `promotion/runtime-forward-runtime-candidates` to
+`feature/runtime-forward` milestone
+`5bcba1d2edcb9c15b1ed567700976dad03e12300`:
+
+- `kernels/rms_norm_f16.cu`
+- `crates/gpt-oss-gpu/src/kernel_loader.rs`
+- `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+
+The source diff across those paths is broad: six files, roughly 49k insertions,
+and large debug/proof additions. It must not be copied wholesale.
+
+### Runtime, Debug, and Proof Split
+
+Required runtime behavior:
+
+- Add BF16 input, BF16 weight, f32 reduction, BF16 output-rounding semantics
+  for the scoped GPT-OSS layer-0 pre-attention RMSNorm path.
+- Use lane-order pairwise/tree f32 sum over BF16-expanded `x * x`.
+- Compute inverse RMS as `1.0f / sqrtf(mean_square + eps)`.
+- Multiply as `(x_bf16 * inverse_rms) * weight_bf16`.
+- Round the output through BF16 before storing into the existing half buffer.
+
+Required kernel-loader/plumbing:
+
+- Register only the production BF16 policy kernel symbol.
+- Route only the intended layer-0 attention RMSNorm call to the BF16 policy
+  path.
+- Keep later attention RMSNorms, MLP RMSNorms, final RMSNorm, fused residual
+  RMSNorm, and non-BF16/non-GPT-OSS paths on the existing kernels.
+
+Debug/capture-only plumbing to exclude:
+
+- `rms_norm_f16_bf16_policy_debug_kernel`.
+- Scalar capture buffers and `GPT_OSS_LAYER0_RMSNORM_SCALAR_DEBUG` env handling.
+- `GpuModelRunner` debug trace structs and debug prefill APIs.
+- `GpuWorker` debug logits, direct-runner, and trace APIs.
+- Progress/timing debug plumbing unrelated to the production RMSNorm call.
+
+Bench/proof-only code to exclude:
+
+- `runtime_forward_layer0_qkv_bf16_candidate_status.rs`.
+- Replay sweep modes and `.live` status writers.
+- Python/Torch helper scripts and large PPP/full-value artifacts.
+- Q/K/V oneDNN candidate paths and selected expert readout correction modes.
+
+### Proposed Extraction Scope
+
+Recommended strategy: split into two small commits.
+
+1. Add a production-only BF16 RMSNorm kernel variant and loader registration.
+   Proposed files:
+   - `kernels/rms_norm_f16.cu`
+   - `crates/gpt-oss-gpu/src/kernel_loader.rs`
+
+2. Add the scoped model-runner call-site selection.
+   Proposed file:
+   - `crates/gpt-oss-model-runner/src/gpu_layer.rs`
+
+Do not modify:
+
+- `crates/gpt-oss-model-runner/src/gpu_runner.rs`
+- `crates/gpt-oss-engine/src/worker/gpu_worker.rs`
+- `crates/gpt-oss-bench/src/bin/runtime_forward_layer0_qkv_bf16_candidate_status.rs`
+- server, Harmony, protocol, tokenizer, or runtime API surfaces
+
+The intended promotion is a new scoped BF16-policy RMSNorm kernel variant, not
+a direct modification of the existing `rms_norm_f16_kernel`. The existing
+kernel remains the default for ordinary f16 RMSNorm calls. The scoped variant
+should be selected only for GPT-OSS BF16 layer-0 pre-attention RMSNorm.
+
+The source branch routes `cfg.layer_idx == 0` pre-attention RMSNorm through the
+BF16 policy path. The scoped extraction should preserve that narrow behavior
+and avoid touching MLP RMSNorm, final RMSNorm, fused residual RMSNorm, and
+non-layer-0 attention RMSNorm. If a config/dtype gate is available at the call
+site, use it so non-GPT-OSS or non-BF16 paths remain unchanged.
+
+Implementation caution: the production kernel uses two shared-memory buffers
+over `hidden_size`. The extracted launcher must allocate
+`2 * hidden_size * sizeof(float)` shared memory, not only
+`block_threads * sizeof(float)`, before any promotion review.
+
+### Proof Artifacts
+
+The supporting source artifacts are local `.live` proof artifacts and should
+not be committed:
+
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-bf16-runtime-fix-status.json`
+  records the policy change from `f16_input_f16_weight_f32_reduction_f16_output`
+  to `bf16_input_bf16_weight_f32_reduction_bf16_output`, scoped to layer-0
+  attention RMSNorm. It is partial: live-vs-official max diff improved but did
+  not fully clear at that stage.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-live-cuda-vs-authoritative-replay-status.json`
+  shows final-token layer-0 attention RMSNorm matched, while earlier-token
+  residual differences remained before the scalar fix.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-cuda-single-lane-scalar-capture-status.json`
+  is diagnostic-only evidence identifying the scalar delta at token 18, lane
+  92. It justifies the scalar/reduction change but depends on debug capture
+  plumbing that must not be promoted.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-scalar-runtime-fix-status.json`
+  supports the production candidate: the scoped scalar/reduction behavior
+  reduced live-vs-official RMSNorm differences to tiny residuals with max
+  `1.1920928955078125e-7`; token 18 lane 92 matched authoritative replay and
+  official after the fix.
+- `.live/runtime-forward-layer0-attn-norm-conventions-20260423/developer-message.runner-layer0-attn-rmsnorm-residual-lanes-k-causality-status.json`
+  is diagnostic. It shows remaining grouped-K mismatch was not explained by
+  the tiny RMSNorm residual lanes and involves separate K-helper policy work,
+  which remains deferred.
+- `.live/runtime-forward-final-readout-20260423/developer-message.runner-final-readout-direct-module-rerun-status.json`
+  is the milestone-level proof that the final-token proof path ultimately
+  cleared through final norm and LM-head logits, but it does not by itself
+  justify promoting every proof-only mechanism.
+
+### Performance Risks
+
+This candidate is performance-sensitive:
+
+- It changes a default runtime CUDA path if routed into layer-0 attention
+  RMSNorm.
+- It replaces the existing block-strided local-sum plus halving reduction with
+  a lane-order two-buffer pairwise/tree reduction over `hidden_size`.
+- It uses `sqrtf` plus reciprocal instead of `rsqrtf`.
+- It increases shared memory from `block_threads * sizeof(float)` to
+  `2 * hidden_size * sizeof(float)` for the scoped variant.
+- It adds BF16 round-trip conversion for inputs, weights, and output values.
+- It touches every token for the scoped layer-0 attention RMSNorm call.
+
+The scope is narrow enough to review, but promotion should require performance
+guardrails before push or PR expansion.
+
+### Required Validation Before Runtime Promotion
+
+Minimum validation for the kernel/loader commit:
+
+- `git diff --check`
+- `cargo check -p gpt-oss-gpu --features cuda`
+- PTX symbol confirmation for `rms_norm_f16_bf16_policy_kernel`
+- A small deterministic CPU/GPU comparison for the new BF16 policy kernel, if a
+  suitable harness exists or can be added without debug capture plumbing
+
+Minimum validation after call-site selection:
+
+- `git diff --check`
+- `cargo check -p gpt-oss-bench --lib`
+- `cargo check -p gpt-oss-gpu --features cuda`
+- A targeted runtime smoke for `developer-message-user-smoke` if available
+- A microbenchmark or before/after timing for the scoped layer-0 attention
+  RMSNorm path; if no benchmark exists, add or run one before pushing this
+  candidate for review
+
+Do not use the 45k-line runtime-forward proof bench as the promotion harness.
+Do not require long GPU proof modes unless explicitly approved.
+
+### Go/No-Go Recommendation
+
+Go for scoped extraction only if the next slice keeps the change to the
+production kernel symbol, loader registration, and layer-0 model-runner call
+site. Stop if extraction pulls in debug runner APIs, engine worker debug APIs,
+the full proof bench, Q/K/V projection candidates, selected expert readout
+corrections, or cuBLAS/pedantic helper changes.
+
+The next bounded prompt should extract only commit 1: production BF16 RMSNorm
+kernel variant plus loader registration, then run CUDA compile validation and
+inspect symbols. The model-runner call-site selection should remain a separate
+follow-up commit.
