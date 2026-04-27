@@ -184,12 +184,47 @@ impl LayerNorm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use half::bf16;
 
     fn make_buf(vals: &[f32]) -> GpuBuffer<f16> {
         GpuBuffer::from_vec(
             vals.iter().map(|&v| f16::from_f32(v)).collect(),
             vec![vals.len()],
         )
+    }
+
+    fn bf16_policy_rms_norm_reference(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
+        let hidden = weight.len();
+        let input_bf16: Vec<f32> = input
+            .iter()
+            .map(|&value| bf16::from_f32(value).to_f32())
+            .collect();
+        let weight_bf16: Vec<f32> = weight
+            .iter()
+            .map(|&value| bf16::from_f32(value).to_f32())
+            .collect();
+
+        input_bf16
+            .chunks(hidden)
+            .flat_map(|row| {
+                let mut values: Vec<f32> = row.iter().map(|value| value * value).collect();
+                while values.len() > 1 {
+                    let mut next = Vec::with_capacity(values.len().div_ceil(2));
+                    for pair in values.chunks(2) {
+                        next.push(if pair.len() == 2 {
+                            pair[0] + pair[1]
+                        } else {
+                            pair[0]
+                        });
+                    }
+                    values = next;
+                }
+                let inv_rms = (values[0] / hidden as f32 + eps).sqrt().recip();
+                row.iter()
+                    .zip(weight_bf16.iter())
+                    .map(move |(&x, &w)| bf16::from_f32((x * inv_rms) * w).to_f32())
+            })
+            .collect()
     }
 
     #[test]
@@ -222,6 +257,30 @@ mod tests {
         let got: Vec<f32> = out.data.iter().map(|v| v.to_f32()).collect();
         assert!((got[0] - 0.5).abs() < 0.01);
         assert!((got[1] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bf16_policy_rms_norm_reference_rounds_input_weight_and_output() {
+        let out = bf16_policy_rms_norm_reference(
+            &[-4.53125, 0.125, 2.75, -1.5],
+            &[0.84375, 1.125, -0.5, 0.25],
+            1e-5,
+        );
+
+        assert_eq!(out.len(), 4);
+        assert!(out
+            .iter()
+            .all(|&value| bf16::from_f32(value).to_f32() == value));
+
+        let standard = RMSNorm::forward(
+            &make_buf(&[-4.53125, 0.125, 2.75, -1.5]),
+            &make_buf(&[0.84375, 1.125, -0.5, 0.25]),
+            1e-5,
+        )
+        .unwrap();
+        let standard: Vec<f32> = standard.data.iter().map(|value| value.to_f32()).collect();
+
+        assert_ne!(out, standard);
     }
 
     #[test]

@@ -295,3 +295,24 @@ The performance risk is therefore limited to this one layer-0 attention-norm
 call site for now. The next validation step should include compile checks and a
 targeted layer-0 attention-norm proof or smoke if available. Broader RMSNorm
 routing remains explicitly deferred.
+
+### RMSNorm Guardrails Before Broader Routing
+
+The current branch routes only layer-0 pre-attention RMSNorm to the BF16 policy
+kernel. Any broader RMSNorm routing requires dedicated correctness and
+performance validation first.
+
+Required future guardrails:
+
+- `cargo check -p gpt-oss-gpu --features cuda`
+- PTX symbol check for `rms_norm_f16_bf16_policy_kernel`
+- CPU/reference BF16 RMSNorm policy coverage
+- source/loader registration grep coverage
+- small GPU output comparison for the BF16 policy kernel, if a lightweight
+  harness is available
+- microbenchmark or timing guard before broad routing
+- restricted final-token smoke if the proof harness is available without
+  importing runtime-forward debug plumbing
+
+This branch does not broaden RMSNorm routing beyond the current layer-0
+pre-attention call site.
