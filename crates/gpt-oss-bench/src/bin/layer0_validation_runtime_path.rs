@@ -313,9 +313,11 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
         "layer0_validation_k_rope_matches_oracle" => {
             "implement layer0 attention-only validation through raw QK guard using the same runtime RoPE helper"
         }
-        "layer0_validation_k_rope_bf16_boundary_matches_oracle"
-        | "layer0_validation_k_rope_dtype_policy_identified" => {
-            "replace the k-rope validation guard with the identified BF16-boundary RoPE application policy"
+        "layer0_validation_k_rope_bf16_boundary_matches_oracle" => {
+            "use the BF16-boundary RoPE helper in the layer0 attention-only validation path through raw QK"
+        }
+        "layer0_validation_k_rope_bf16_boundary_mismatch" => {
+            "reconcile the BF16-boundary RoPE helper against the official/model application path"
         }
         "layer0_validation_k_rope_dtype_policy_unresolved"
         | "layer0_validation_k_rope_mismatch" => {
@@ -337,7 +339,7 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             .is_none()
             .then_some("rotary_embedding_f16_kernel"),
         api_used: if execution.blocker.is_none() {
-            "gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config"
+            "gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation"
         } else {
             "blocked before launch"
         },
@@ -362,7 +364,7 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             table_source: execution.table_source,
             lane_pairing: "half_split",
             dtype: cli.dtype.clone(),
-            output_boundary: "bf16_rounded_after_f16_kernel",
+            output_boundary: "bf16_input_bf16_factors_bf16_rounded_math_bf16_output",
         },
         f16_kernel_metrics: execution.f16_kernel_metrics,
         f16_kernel_first_mismatch: execution.f16_kernel_first_mismatch,
@@ -417,72 +419,68 @@ fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
             })
     });
 
-    let result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config(
+    let f16_result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config(
+        k_pre,
+        cli.token_count,
+        cli.kv_heads,
+        &config,
+    );
+    let (f16_kernel_metrics, f16_kernel_first_mismatch, f16_kernel_worst_mismatch) =
+        match f16_result {
+            Ok((actual, _)) => {
+                let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
+                (
+                    Some(comparison.metrics),
+                    comparison.first_mismatch,
+                    comparison.worst_mismatch,
+                )
+            }
+            Err(_) => (None, None, None),
+        };
+
+    let result = gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
         k_pre,
         cli.token_count,
         cli.kv_heads,
         &config,
     );
     match result {
-        Ok((actual, kernel_table_source)) => {
-            let f16_comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
-            let f16_matched = f16_comparison.metrics.mismatches == 0;
-            let exact_cpu = cpu_discriminator.iter().find(|result| result.matched);
-            let final_comparison = exact_cpu.map(discriminator_to_comparison).or_else(|| {
-                best_cpu.map(discriminator_to_comparison)
-            });
-            let classification = if f16_matched {
-                "layer0_validation_k_rope_matches_oracle"
-            } else if let Some(result) = exact_cpu {
-                if result.variant.contains("bf16") {
-                    "layer0_validation_k_rope_bf16_boundary_matches_oracle"
-                } else {
-                    "layer0_validation_k_rope_dtype_policy_identified"
-                }
+        Ok((actual, boundary_table_source)) => {
+            let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
+            let matched = comparison.metrics.mismatches == 0;
+            let classification = if matched {
+                "layer0_validation_k_rope_bf16_boundary_matches_oracle"
             } else {
-                "layer0_validation_k_rope_dtype_policy_unresolved"
-            };
-            let rope_application_policy = if f16_matched {
-                "rotary_embedding_f16_kernel_then_bf16_output"
-            } else if let Some(result) = exact_cpu.or(best_cpu) {
-                result.variant
-            } else {
-                "unresolved"
+                "layer0_validation_k_rope_bf16_boundary_mismatch"
             };
             KRopeExecution {
                 classification,
-                metrics: final_comparison
-                    .as_ref()
-                    .map(|comparison| comparison.metrics.clone()),
-                first_mismatch: final_comparison
-                    .as_ref()
-                    .and_then(|comparison| comparison.first_mismatch.clone()),
-                worst_mismatch: final_comparison
-                    .as_ref()
-                    .and_then(|comparison| comparison.worst_mismatch.clone()),
+                metrics: Some(comparison.metrics),
+                first_mismatch: comparison.first_mismatch,
+                worst_mismatch: comparison.worst_mismatch,
                 blocker: None,
-                table_source: kernel_table_source,
-                rope_application_policy,
-                f16_kernel_metrics: Some(f16_comparison.metrics),
-                f16_kernel_first_mismatch: f16_comparison.first_mismatch,
-                f16_kernel_worst_mismatch: f16_comparison.worst_mismatch,
+                table_source: boundary_table_source,
+                rope_application_policy: "bf16_input_bf16_factors_bf16_rounded_math_bf16_output",
+                f16_kernel_metrics,
+                f16_kernel_first_mismatch,
+                f16_kernel_worst_mismatch,
                 cpu_discriminator,
             }
         }
         Err(_) => KRopeExecution {
-            classification: "layer0_validation_k_rope_cuda_execution_failed",
-            metrics: None,
-            first_mismatch: None,
-            worst_mismatch: None,
+            classification: "layer0_validation_k_rope_bf16_boundary_blocked",
+            metrics: best_cpu.map(|result| result.metrics.clone()),
+            first_mismatch: best_cpu.and_then(|result| result.first_mismatch.clone()),
+            worst_mismatch: best_cpu.and_then(|result| result.worst_mismatch.clone()),
             blocker: Some(Blocker {
-                kind: "cuda_execution_failed",
-                detail: "runtime RoPE validation helper failed; rerun with stderr for detailed CUDA error",
+                kind: "bf16_boundary_validation_failed",
+                detail: "BF16-boundary RoPE validation helper failed; rerun with stderr for detailed error",
             }),
             table_source,
-            rope_application_policy: "cuda_execution_failed",
-            f16_kernel_metrics: None,
-            f16_kernel_first_mismatch: None,
-            f16_kernel_worst_mismatch: None,
+            rope_application_policy: "bf16_boundary_validation_failed",
+            f16_kernel_metrics,
+            f16_kernel_first_mismatch,
+            f16_kernel_worst_mismatch,
             cpu_discriminator,
         },
     }
@@ -505,14 +503,6 @@ fn execute_k_rope(_k_pre: &[f32], _oracle: &[f32], _cli: &Cli) -> KRopeExecution
         f16_kernel_first_mismatch: None,
         f16_kernel_worst_mismatch: None,
         cpu_discriminator: Vec::new(),
-    }
-}
-
-fn discriminator_to_comparison(result: &RopeDiscriminatorResult) -> KRopeComparison {
-    KRopeComparison {
-        metrics: result.metrics.clone(),
-        first_mismatch: result.first_mismatch.clone(),
-        worst_mismatch: result.worst_mismatch.clone(),
     }
 }
 

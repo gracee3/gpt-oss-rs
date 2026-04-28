@@ -149,6 +149,72 @@ pub fn apply_k_rope_f16_validation_with_config(
     Ok((output, table_source))
 }
 
+/// Apply the official/model BF16 RoPE boundary for K validation.
+///
+/// This is a CPU validation helper, not a production runtime route. It uses the
+/// same validation RoPE tables as the CUDA guard, casts inputs and RoPE factors
+/// to BF16, applies the half-split formula with BF16-rounded multiply/add
+/// boundaries, and returns BF16 values widened to f32 for artifact comparison.
+pub fn apply_k_rope_bf16_boundary_validation(
+    k_pre_rope: &[f32],
+    token_count: usize,
+    kv_heads: usize,
+    config: &ModelRunnerConfig,
+) -> Result<(Vec<f32>, &'static str)> {
+    let (cos_table, sin_table, table_source) =
+        build_validation_rope_tables_from_config(config, token_count);
+    let output = apply_k_rope_bf16_boundary_validation_with_tables(
+        k_pre_rope,
+        token_count,
+        kv_heads,
+        config.head_dim,
+        &cos_table,
+        &sin_table,
+    )?;
+    Ok((output, table_source))
+}
+
+fn apply_k_rope_bf16_boundary_validation_with_tables(
+    k_pre_rope: &[f32],
+    token_count: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    cos_table: &[f32],
+    sin_table: &[f32],
+) -> Result<Vec<f32>> {
+    let expected = token_count * kv_heads * head_dim;
+    if k_pre_rope.len() != expected {
+        return Err(LLMError::GpuError(format!(
+            "K pre-RoPE value count mismatch: {} != {}",
+            k_pre_rope.len(),
+            expected
+        )));
+    }
+    let half_dim = head_dim / 2;
+    let mut output = vec![0.0f32; expected];
+    for token in 0..token_count {
+        for kv_head in 0..kv_heads {
+            let head_base = (token * kv_heads + kv_head) * head_dim;
+            let table_base = token * half_dim;
+            for lane in 0..half_dim {
+                let x1 = round_bf16(k_pre_rope[head_base + lane]);
+                let x2 = round_bf16(k_pre_rope[head_base + half_dim + lane]);
+                let cos = round_bf16(cos_table[table_base + lane]);
+                let sin = round_bf16(sin_table[table_base + lane]);
+                let out1 = round_bf16(round_bf16(x1 * cos) - round_bf16(x2 * sin));
+                let out2 = round_bf16(round_bf16(x2 * cos) + round_bf16(x1 * sin));
+                output[head_base + lane] = out1;
+                output[head_base + half_dim + lane] = out2;
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn round_bf16(value: f32) -> f32 {
+    bf16::from_f32(value).to_f32()
+}
+
 fn apply_k_rope_f16_validation_with_tables(
     k_pre_rope: &[f32],
     token_count: usize,

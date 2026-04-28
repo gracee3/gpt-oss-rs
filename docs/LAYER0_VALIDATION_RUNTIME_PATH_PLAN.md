@@ -458,6 +458,52 @@ Recommended next bounded step:
 Add a narrow validation-only RoPE application helper for the identified BF16
 boundary, then use it in the attention-only validation path through raw QK.
 
+## BF16-Boundary RoPE Validation Helper Status
+
+Helper added:
+
+- `gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation`
+
+Scope:
+
+- validation-only CPU/Rust helper
+- uses `build_validation_rope_tables_from_config`
+- consumes the pinned YaRN table source
+- does not route production runtime paths
+- does not replace or modify the production f16 RoPE CUDA kernel
+
+Policy:
+
+- K pre-RoPE input rounded to BF16
+- YaRN `cos`/`sin` factors rounded to BF16, matching the official/model
+  `cos.to(x.dtype)` / `sin.to(x.dtype)` boundary
+- half-split formula:
+  `x1*cos - x2*sin`, `x2*cos + x1*sin`
+- BF16-rounded multiply/add boundaries
+- BF16 output returned as f32 values for artifact comparison
+
+Result:
+
+`layer0_validation_k_rope_bf16_boundary_matches_oracle`
+
+| comparison | table source | application policy | max abs diff | mean abs diff | mismatches |
+| --- | --- | --- | ---: | ---: | ---: |
+| BF16-boundary helper vs official K post-RoPE | `yarn_scaled` | BF16 input/factors/math/output | `0` | `0` | `0` |
+| existing f16 kernel diagnostic vs official K post-RoPE | `yarn_scaled` | f16 input/output kernel then BF16 output | `0.5` | `0.006694896` | `15473` |
+
+Conclusion:
+
+- The official K pre/post RoPE artifact pair is now reproduced exactly by the
+  validation helper.
+- The remaining f16 kernel mismatch is retained as a diagnostic contrast; it
+  is not used as the official/model BF16 validation boundary.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Use the BF16-boundary helper in the layer0 attention-only validation path
+through raw QK, then compare against the official raw-QK oracle.
+
 ## Validation Commands
 
 For the skeleton slice:
