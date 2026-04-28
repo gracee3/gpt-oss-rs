@@ -1595,6 +1595,77 @@ Conclusion:
 - This is still validation-only. No runtime behavior changed, no MLP/projection routing was added,
   and no raw `/tmp` or `.live` artifacts are committed.
 
+## Layer0 Final-Token Downstream Equivalence Summary
+
+### Scope
+
+- Exact case:
+  `developer-message-user-smoke`.
+- Source proof branch/commit:
+  `feature/runtime-forward` at `5bcba1d2edcb9c15b1ed567700976dad03e12300`.
+- Validation branch:
+  `projection/cuda-bf16-biased-linear-kernel`.
+- Validation mode:
+  scratch/harness artifact generation and comparison only.
+- Runtime status:
+  no production runtime routing, no production CUDA kernel replacement, and no raw scratch artifacts
+  committed.
+
+### Policy Validated
+
+- Custom/decomposed BF16 projection policy.
+- BF16 inputs, weights, and biases.
+- FP32 accumulation where relevant.
+- BF16 output boundaries at the validated seams.
+- Official/model RoPE call used to pin Q/K RoPE.
+- Torch/model calls were used only for oracle/scratch artifact generation; no Torch/oneDNN runtime
+  dependency is proposed or added.
+
+### Seam Results
+
+| Seam | Result | max abs diff | mismatches | Notes |
+| --- | --- | ---: | ---: | --- |
+| Q/K raw QK | exact | `0.0` | `0` | Custom/decomposed Q/K with official/model RoPE. |
+| V weighted sum | exact | `0.0` | `0` | Projection-boundary V mismatch disappeared at BF16 weighted-V boundary. |
+| Attention o-proj before residual | exact | `0.0` | `0` | BF16 output projection over downstream-equivalent weighted-V. |
+| Attention residual before MLP | exact | `0.0` | `0` | BF16 residual add/output. |
+| MLP norm | exact | `0.0` | `0` | BF16 input, FP32 RMS reduction, BF16 output. |
+| Router logits | exact | `0.0` | `0` | BF16 router linear output. |
+| Top-k/routing | exact | `0.0` | `0` | Experts `[3, 30, 11, 27]`; weights `[0.4453125, 0.2275390625, 0.189453125, 0.13671875]`. |
+| Selected expert outputs | exact after fresh expert30 reconstruction | `0.0` | `0` | Prior expert30 mismatch was a stale/generated scratch artifact issue. |
+| Weighted expert sum | exact | `0.0` | `0` | Fresh reconstructed expert30 selected output. |
+| MLP residual / layer0 final-token output | exact | `0.0` | `0` | Full layer0 final-token output boundary clears. |
+
+### Key Corrections Learned
+
+- The earlier large Q/K raw-QK mismatch was caused by the scratch RoPE generator, not by the
+  decomposed/custom projection policy.
+- The official/model RoPE call pinned official K pre/post RoPE exactly.
+- V projection-boundary mismatch disappeared at the weighted-V BF16 boundary.
+- The expert30 selected-output mismatch was caused by a stale/generated selected-output scratch
+  artifact; a fresh local full replay clears it.
+- The decomposed BF16 chain reaches exact layer0 final-token output in scratch validation.
+
+### What This Does Not Prove
+
+- It is not production runtime routing.
+- It is not performance-optimized.
+- It does not cover all layers.
+- It does not cover all prompts.
+- It does not cover the 4097 boundary.
+- It does not prove final logits/default server parity.
+- It is not a reason to merge raw scratch artifacts.
+- It is not permission to import the runtime-forward proof harness wholesale.
+
+### Recommended Next Steps
+
+1. Decide whether to build a validation-only runtime path that reproduces this chain inside
+   Rust/CUDA without scratch Python artifact generation.
+2. Add performance measurements for any custom kernel path.
+3. Extend to another layer or another exact case before production routing.
+4. Add a final-token/logit smoke once an integration-safe path exists.
+5. Keep 4097 boundary work deferred until a shorter exact-case path is stable.
+
 Current decision:
 
 - Do not route production Q/K/V projections yet.
