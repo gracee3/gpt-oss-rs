@@ -861,6 +861,79 @@ Planned comparison once the pack exists:
 
 Current classification: `qk_downstream_blocked_by_missing_artifacts`.
 
+## Q/K Downstream Raw QK Artifact-Pack Status
+
+A local scratch artifact pack was generated for the custom/decomposed Q/K downstream check:
+
+- Scratch directory:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/`.
+- Norm input source:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-attn-norm-full-input.cpu.json`.
+- Q tensor source:
+  `model.layers.0.self_attn.q_proj.weight` and `model.layers.0.self_attn.q_proj.bias`
+  from `/data/models/openai/gpt-oss-20b`.
+- K tensor source:
+  `model.layers.0.self_attn.k_proj.weight` from `/data/models/openai/gpt-oss-20b`.
+- K bias policy:
+  absent/not applied for the decomposed policy.
+- Projection policy:
+  BF16 input, BF16 weight, BF16 Q bias, FP32 accumulation, BF16 projection output.
+- RoPE policy:
+  local Python half-split RoPE implementation matching the promoted runtime convention, with BF16
+  post-RoPE output.
+- Raw-QK policy:
+  final query token index `73`, scale `0.125`, output compared after BF16 rounding.
+
+Generated scratch artifacts:
+
+- `q_pre_rope_custom.json`: `[74,4096]`.
+- `k_pre_rope_custom.json`: `[74,512]`.
+- `q_post_rope_custom_final_token.json`: `[4096]`.
+- `k_post_rope_custom_all_tokens.json`: `[74,8,64]`.
+- `raw_qk_custom_bf16.json`: `[64,74]`.
+- `raw_qk_oracle.json`: `[64,74]`.
+- `provenance.json` and `comparison_summary.json` with comparable `sha256_f32_le_full` and
+  `sha256_prefix4096_f32_le` digests.
+
+Official sanity check:
+
+- Recomputed raw QK from official Q post-RoPE `[74,4096]` and official K post-RoPE `[74,8,64]`
+  matches the official raw scaled QK oracle exactly after BF16 rounding:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+- This validates the raw-QK dot-product formula and BF16 output comparison boundary used by this
+  scratch check.
+
+Custom/decomposed Q/K downstream result:
+
+- Classification: `qk_downstream_custom_decomposed_raw_qk_mismatch_large`.
+- Custom BF16-rounded raw QK vs official oracle:
+  `max_abs_diff=1.0`, `mean_abs_diff=0.06418905407190323`, `mismatches=2847`.
+- Custom f32 exploratory raw QK vs official BF16 oracle:
+  `max_abs_diff=0.76666259765625`, `mean_abs_diff=0.06887843459844589`,
+  `mismatches=4736`.
+- First BF16-rounded mismatch:
+  `q_head=0`, `token=0`, custom `-3.578125`, oracle `-3.5625`, abs diff `0.015625`.
+- Worst BF16-rounded mismatch:
+  `q_head=22`, `token=1`, custom `-72.5`, oracle `-71.5`, abs diff `1.0`.
+
+Projection/RoPE boundary comparison:
+
+- Custom Q post-RoPE final token vs official Q final token:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0021520100999623537`, `mismatches=1707`.
+- Custom K post-RoPE all tokens vs official K post-RoPE:
+  `max_abs_diff=0.5`, `mean_abs_diff=0.0066139730624854565`, `mismatches=15417`.
+- A bounded variant check found that applying the model K bias did not change the raw-QK metric,
+  and using FP16 RoPE output reduced the mean error slightly but still left a large mismatch.
+
+Conclusion:
+
+- Unlike the V weighted-sum seam, the custom/decomposed Q/K projection differences do matter at the
+  exact layer0 final-token raw-QK BF16 boundary.
+- Strict module/F.linear projection-boundary parity may be stronger than needed for V, but Q/K
+  require either a closer projection/RoPE policy or an additional downstream-correctness candidate.
+- No production Q/K/V projection routing should be added from the current custom/decomposed policy.
+- The scratch artifacts are local-only and are not committed.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
