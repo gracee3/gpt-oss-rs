@@ -1279,6 +1279,87 @@ semantics, or temporarily use the official SwiGLU boundary as the MLP2 seam inpu
 to localize down-projection independently. Do not change MXFP4 dequant/layout
 semantics until this SwiGLU policy is resolved.
 
+## Expert30 MLP2 From Official SwiGLU Status
+
+Focused mode added:
+
+```text
+--mode expert30-mlp2-debug
+```
+
+Why official SwiGLU was used as seam input:
+
+- `swiglu-debug` showed the official PyTorch BF16 tensor expression matches the
+  official expert30 SwiGLU oracle exactly, while bounded Rust variants do not.
+- Using the official SwiGLU boundary isolates the downstream expert30 MLP2/down
+  projection and bias path from the unresolved SwiGLU elementwise policy.
+
+Artifacts:
+
+| boundary | artifact |
+| --- | --- |
+| expert30 SwiGLU input | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-swiglu-output-before-mlp2-status.json` |
+| expert30 MLP2 pre-bias oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp2-output-before-bias-status.json` |
+| selected expert outputs oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json` |
+
+Down-projection source:
+
+- Loader: `gpt_oss_model_runner::mxfp4_validation::load_selected_experts_mxfp4_validation`
+- Decode source: `gpt_oss_dequant_expert_f16_kernel`
+- Expert: `30`
+- Down weight layout: `[out_hidden=2880, in_intermediate=2880]`, row-major
+- Down bias: BF16 `[2880]`
+
+Classification:
+
+```text
+expert30_mlp2_from_official_swiglu_matches_oracle
+```
+
+Best variant:
+
+| variant | MLP2 pre-bias max | MLP2 pre-bias mismatches | selected-output max | selected-output mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| `A_current` | `0` | `0` | `0` | `0` |
+
+Other exact variants:
+
+- `B_weight_bf16_round`
+- `C_weight_f16`
+- `D_f32_accum_bf16_output`
+- `E_chunked_pairwise`
+- `F1_bf16_prebias_bf16_bias`
+
+Non-matching guard:
+
+| variant | MLP2 pre-bias max | MLP2 pre-bias mismatches | selected-output max | selected-output mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| `F2_f32_prebias_f32_bias` | `0.10264969` | `2880` | `0.03125` | `899` |
+
+Weighted-sum replacement:
+
+- Not run in this slice. Expert30 selected output now clears when fed the
+  official SwiGLU seam, so weighted-sum replacement is a safe next validation
+  step after deciding whether to use official SwiGLU as a temporary seam input.
+
+Conclusion:
+
+- Expert30 MLP2/down projection and bias replay are pinned when the input SwiGLU
+  boundary is exact.
+- The selected-expert replay blocker is upstream of MLP2: the official PyTorch
+  BF16 SwiGLU elementwise policy still needs a validation-safe Rust/CUDA
+  equivalent, or the validation path should temporarily use official SwiGLU as a
+  seam input to continue weighted-sum localization.
+- Production runtime behavior remains unchanged, and no raw artifacts are
+  committed.
+
+Recommended next bounded step:
+
+Run weighted expert sum with official selected outputs for ranks `0,2,3` and
+expert30 selected output produced from official SwiGLU through the validation
+MLP2 path, or add a validation-only SwiGLU helper that reproduces PyTorch BF16
+elementwise semantics exactly.
+
 ## Validation Commands
 
 For the skeleton slice:

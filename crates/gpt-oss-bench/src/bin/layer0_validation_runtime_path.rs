@@ -131,6 +131,10 @@ struct Cli {
     #[arg(long)]
     expert30_selected_output_oracle: Option<PathBuf>,
 
+    /// Optional official weighted expert sum oracle artifact.
+    #[arg(long)]
+    weighted_expert_sum_oracle: Option<PathBuf>,
+
     /// Selected expert ids in rank order.
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
@@ -227,6 +231,7 @@ enum Mode {
     SelectedExperts,
     SelectedExpertsDebug,
     SwigluDebug,
+    Expert30Mlp2Debug,
 }
 
 #[derive(Debug, Serialize)]
@@ -627,6 +632,48 @@ struct SwigluVariantStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct Expert30Mlp2DebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    official_swiglu_input_path: String,
+    swiglu_oracle: TensorArtifactStatus,
+    mlp2_pre_bias_oracle: TensorArtifactStatus,
+    selected_experts_oracle: TensorArtifactStatus,
+    down_projection_tensor_metadata: Option<Expert30DownProjectionMetadata>,
+    variant_table: Vec<Expert30Mlp2VariantStatus>,
+    best_variant: Expert30Mlp2VariantStatus,
+    best_mlp2_pre_bias_metric: HiddenComparisonStatus,
+    best_selected_output_metric: HiddenComparisonStatus,
+    weighted_sum_replacement: Option<Value>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert30DownProjectionMetadata {
+    helper_name: &'static str,
+    decode_source: &'static str,
+    expert: usize,
+    down_weight_shape: [usize; 2],
+    down_weight_dtype: &'static str,
+    down_bias_shape: [usize; 1],
+    down_bias_dtype: &'static str,
+    layout_convention: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert30Mlp2VariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    mlp2_pre_bias_metric: HiddenComparisonStatus,
+    selected_output_metric: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Serialize)]
 struct Mxfp4LoaderStatus {
     helper_name: &'static str,
     decode_source: &'static str,
@@ -904,6 +951,7 @@ fn main() -> Result<()> {
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
+        Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
     }
 }
 
@@ -2330,6 +2378,123 @@ fn run_swiglu_debug(cli: &Cli) -> Result<()> {
         best_variant,
         selected_experts_rerun: None,
         weighted_sum_rerun: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_expert30_mlp2_debug(cli: &Cli) -> Result<()> {
+    let swiglu_oracle = required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    let mlp2_oracle = required_path(
+        &cli.expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(swiglu_oracle, "expert30 SwiGLU oracle")?;
+    validate_path(mlp2_oracle, "expert30 MLP2 pre-bias oracle")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let (swiglu_status, swiglu_values) = load_tensor_artifact(swiglu_oracle, &[2880], &["values"])?;
+    let (mlp2_status, mlp2_values) = load_tensor_artifact(mlp2_oracle, &[2880], &["values"])?;
+    let (selected_status, selected_values) =
+        load_tensor_artifact(selected_experts_oracle, &[4 * 2880, 2880], &["values"])?;
+    let artifact_blocked = !swiglu_status.shape_or_count_matched
+        || !mlp2_status.shape_or_count_matched
+        || !selected_status.shape_or_count_matched;
+
+    let selected_expert30 = if selected_values.len() == 4 * 2880 {
+        selected_values[2880..(2 * 2880)].to_vec()
+    } else {
+        selected_values.clone()
+    };
+
+    let (
+        classification,
+        metadata,
+        variant_table,
+        best_variant,
+        best_mlp2_pre_bias_metric,
+        best_selected_output_metric,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked {
+        let empty_variant = Expert30Mlp2VariantStatus {
+            name: "not_run",
+            policy: "artifact blocker",
+            mlp2_pre_bias_metric: empty_hidden_comparison(),
+            selected_output_metric: empty_hidden_comparison(),
+        };
+        (
+            "expert30_mlp2_blocked_by_artifacts",
+            None,
+            Vec::new(),
+            empty_variant,
+            empty_hidden_comparison(),
+            empty_hidden_comparison(),
+            Some(Blocker {
+                kind: "expert30_mlp2_artifacts",
+                detail: "expert30 SwiGLU, MLP2 pre-bias, or selected-output oracle did not expose supported values",
+            }),
+            "resolve the reported expert30 MLP2 artifact blocker",
+        )
+    } else {
+        match execute_expert30_mlp2_debug_mxfp4(
+            model,
+            &swiglu_values,
+            &mlp2_values,
+            &selected_expert30,
+        ) {
+            Ok(result) => result,
+            Err(_) => {
+                let empty_variant = Expert30Mlp2VariantStatus {
+                    name: "not_run",
+                    policy: "MXFP4 decode blocker",
+                    mlp2_pre_bias_metric: empty_hidden_comparison(),
+                    selected_output_metric: empty_hidden_comparison(),
+                };
+                (
+                    "expert30_mlp2_blocked_by_mxfp4_decode",
+                    None,
+                    Vec::new(),
+                    empty_variant,
+                    empty_hidden_comparison(),
+                    empty_hidden_comparison(),
+                    Some(Blocker {
+                        kind: "expert30_mlp2_mxfp4_decode",
+                        detail: "validation MXFP4 helper failed while loading expert30 down-projection weights",
+                    }),
+                    "fix the narrow validation MXFP4 down-projection loading path",
+                )
+            }
+        }
+    };
+
+    let status = Expert30Mlp2DebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "expert30-mlp2-debug",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        official_swiglu_input_path: swiglu_oracle.display().to_string(),
+        swiglu_oracle: swiglu_status,
+        mlp2_pre_bias_oracle: mlp2_status,
+        selected_experts_oracle: selected_status,
+        down_projection_tensor_metadata: metadata,
+        variant_table,
+        best_variant,
+        best_mlp2_pre_bias_metric,
+        best_selected_output_metric,
+        weighted_sum_replacement: None,
         blocker,
         next_bounded_step,
     };
@@ -4013,6 +4178,17 @@ type SelectedExpertsDebugResult = (
     &'static str,
 );
 
+type Expert30Mlp2DebugResult = (
+    &'static str,
+    Option<Expert30DownProjectionMetadata>,
+    Vec<Expert30Mlp2VariantStatus>,
+    Expert30Mlp2VariantStatus,
+    HiddenComparisonStatus,
+    HiddenComparisonStatus,
+    Option<Blocker>,
+    &'static str,
+);
+
 #[cfg(feature = "cuda")]
 fn execute_selected_experts_debug_mxfp4(
     model: &Path,
@@ -4219,6 +4395,135 @@ fn execute_selected_experts_debug_mxfp4(
     ))
 }
 
+#[cfg(feature = "cuda")]
+fn execute_expert30_mlp2_debug_mxfp4(
+    model: &Path,
+    swiglu: &[f32],
+    mlp2_oracle: &[f32],
+    selected_oracle: &[f32],
+) -> Result<Expert30Mlp2DebugResult> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, &[30])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == 30)
+        .context("MXFP4 validation loader did not return expert30")?;
+    let metadata = Expert30DownProjectionMetadata {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        expert: 30,
+        down_weight_shape: [2880, 2880],
+        down_weight_dtype: "dequantized_f16_widened_to_f32",
+        down_bias_shape: [2880],
+        down_bias_dtype: "BF16_widened_to_f32",
+        layout_convention: "down_weight is [out_hidden, in_intermediate] row-major",
+    };
+    let specs = [
+        (
+            "A_current",
+            "current decoded down weight, BF16 input, f32 accumulation, BF16 pre-bias/output, BF16 bias add",
+            Expert30Mlp2Policy::Current,
+        ),
+        (
+            "B_weight_bf16_round",
+            "decoded down weight BF16-rounded before matmul, BF16 input, f32 accumulation, BF16 output",
+            Expert30Mlp2Policy::WeightBf16Round,
+        ),
+        (
+            "C_weight_f16",
+            "decoded down weight treated as f16 before matmul, BF16 input, f32 accumulation, BF16 output",
+            Expert30Mlp2Policy::WeightF16,
+        ),
+        (
+            "D_f32_accum_bf16_output",
+            "BF16 input, decoded f16 weight widened to f32, f32 accumulation, BF16 pre-bias/output",
+            Expert30Mlp2Policy::F32AccumBf16Output,
+        ),
+        (
+            "E_chunked_pairwise",
+            "BF16 input, BF16 weight, chunked pairwise f32 accumulation, f32 bias add, BF16 output",
+            Expert30Mlp2Policy::ChunkedPairwise,
+        ),
+        (
+            "F1_bf16_prebias_bf16_bias",
+            "BF16 pre-bias plus BF16 bias to BF16 selected output",
+            Expert30Mlp2Policy::Bf16PreBiasBf16Bias,
+        ),
+        (
+            "F2_f32_prebias_f32_bias",
+            "f32 pre-bias plus f32 bias to BF16 selected output",
+            Expert30Mlp2Policy::F32PreBiasF32Bias,
+        ),
+    ];
+    let mut variants = Vec::with_capacity(specs.len());
+    for (name, policy, kind) in specs {
+        let pre_bias = compute_expert30_mlp2_prebias_variant(swiglu, &expert.down_weight, kind);
+        let selected = compute_expert30_selected_output_variant(&pre_bias, &expert.down_bias, kind);
+        variants.push(Expert30Mlp2VariantStatus {
+            name,
+            policy,
+            mlp2_pre_bias_metric: compare_hidden(&pre_bias, mlp2_oracle),
+            selected_output_metric: compare_hidden(&selected, selected_oracle),
+        });
+    }
+    let best = variants
+        .iter()
+        .min_by(|left, right| {
+            left.selected_output_metric
+                .metrics
+                .mismatches
+                .cmp(&right.selected_output_metric.metrics.mismatches)
+                .then_with(|| {
+                    left.selected_output_metric
+                        .metrics
+                        .max_abs_diff
+                        .partial_cmp(&right.selected_output_metric.metrics.max_abs_diff)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .cloned()
+        .expect("expert30 MLP2 debug must include variants");
+    let classification = if best.mlp2_pre_bias_metric.metrics.mismatches == 0
+        && best.selected_output_metric.metrics.mismatches == 0
+    {
+        "expert30_mlp2_from_official_swiglu_matches_oracle"
+    } else if best.mlp2_pre_bias_metric.metrics.max_abs_diff <= 0.00390625 {
+        "expert30_mlp2_from_official_swiglu_mismatch_small"
+    } else {
+        "expert30_mlp2_from_official_swiglu_mismatch_large"
+    };
+    let next_bounded_step = match classification {
+        "expert30_mlp2_from_official_swiglu_matches_oracle" => {
+            "use official SwiGLU as a temporary seam input to validate selected-output and weighted-sum replacement"
+        }
+        "expert30_mlp2_from_official_swiglu_mismatch_small" => {
+            "pin the remaining down-projection accumulation/bias boundary policy"
+        }
+        _ => "inspect expert30 down-projection MXFP4 layout/decode or replay policy",
+    };
+    Ok((
+        classification,
+        Some(metadata),
+        variants,
+        best.clone(),
+        best.mlp2_pre_bias_metric.clone(),
+        best.selected_output_metric.clone(),
+        None,
+        next_bounded_step,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert30_mlp2_debug_mxfp4(
+    _model: &Path,
+    _swiglu: &[f32],
+    _mlp2_oracle: &[f32],
+    _selected_oracle: &[f32],
+) -> Result<Expert30Mlp2DebugResult> {
+    anyhow::bail!("expert30 MLP2 debug validation requires the cuda feature")
+}
+
 #[cfg(not(feature = "cuda"))]
 fn execute_selected_experts_debug_mxfp4(
     _model: &Path,
@@ -4248,6 +4553,17 @@ enum MlpReplayPolicy {
     WeightBf16,
     F32Input,
     OutputF16,
+}
+
+#[derive(Clone, Copy)]
+enum Expert30Mlp2Policy {
+    Current,
+    WeightBf16Round,
+    WeightF16,
+    F32AccumBf16Output,
+    ChunkedPairwise,
+    Bf16PreBiasBf16Bias,
+    F32PreBiasF32Bias,
 }
 
 #[derive(Clone, Copy)]
@@ -4359,6 +4675,78 @@ fn add_bias_with_output_round(pre_bias: &[f32], bias: &[f32], policy: MlpReplayP
                 MlpReplayPolicy::OutputF16 => round_f16(output),
                 _ => round_bf16(output),
             }
+        })
+        .collect()
+}
+
+fn compute_expert30_mlp2_prebias_variant(
+    swiglu: &[f32],
+    down_weight: &[f32],
+    policy: Expert30Mlp2Policy,
+) -> Vec<f32> {
+    let hidden = 2880usize;
+    let mut out = vec![0.0f32; hidden];
+    for out_idx in 0..hidden {
+        let weight_base = out_idx * hidden;
+        let sum = match policy {
+            Expert30Mlp2Policy::ChunkedPairwise => {
+                let mut partials = Vec::new();
+                for chunk in (0..hidden).step_by(64) {
+                    let mut partial = 0.0f32;
+                    for in_idx in chunk..(chunk + 64).min(hidden) {
+                        partial += round_bf16(swiglu[in_idx])
+                            * round_bf16(down_weight[weight_base + in_idx]);
+                    }
+                    partials.push(partial);
+                }
+                while partials.len() > 1 {
+                    let mut next = Vec::with_capacity(partials.len().div_ceil(2));
+                    for pair in partials.chunks(2) {
+                        next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+                    }
+                    partials = next;
+                }
+                partials[0]
+            }
+            _ => {
+                let mut sum = 0.0f32;
+                for in_idx in 0..hidden {
+                    let weight = match policy {
+                        Expert30Mlp2Policy::WeightBf16Round
+                        | Expert30Mlp2Policy::ChunkedPairwise => {
+                            round_bf16(down_weight[weight_base + in_idx])
+                        }
+                        Expert30Mlp2Policy::WeightF16 => {
+                            round_f16(down_weight[weight_base + in_idx])
+                        }
+                        _ => down_weight[weight_base + in_idx],
+                    };
+                    sum += round_bf16(swiglu[in_idx]) * weight;
+                }
+                sum
+            }
+        };
+        out[out_idx] = match policy {
+            Expert30Mlp2Policy::F32PreBiasF32Bias => sum,
+            _ => round_bf16(sum),
+        };
+    }
+    out
+}
+
+fn compute_expert30_selected_output_variant(
+    pre_bias: &[f32],
+    down_bias: &[f32],
+    policy: Expert30Mlp2Policy,
+) -> Vec<f32> {
+    pre_bias
+        .iter()
+        .zip(down_bias.iter())
+        .map(|(&value, &bias)| match policy {
+            Expert30Mlp2Policy::F32PreBiasF32Bias | Expert30Mlp2Policy::ChunkedPairwise => {
+                round_bf16(value + bias)
+            }
+            _ => round_bf16(round_bf16(value) + round_bf16(bias)),
         })
         .collect()
 }
