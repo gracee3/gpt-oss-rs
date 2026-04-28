@@ -1163,6 +1163,9 @@ module/F.linear comparisons alone:
   official o-proj-before-residual boundary exactly.
 - Attention residual:
   BF16 residual input plus BF16 o-proj output matched the official hidden state before MLP exactly.
+- MLP norm:
+  RMSNorm over the exact hidden state before MLP matched the official MLP norm output before
+  projections exactly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1243,6 +1246,48 @@ Conclusion:
 - This extends the validation chain from Q/K raw-QK, V weighted-sum, and attention o-proj through
   the hidden state before MLP.
 - This is still validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
+  are committed.
+
+### Layer0 MLP Norm Downstream Check
+
+A bounded scratch check was run for the next seam after the attention residual add:
+
+- Summary JSON:
+  `/tmp/qkv_projection_mlp_norm_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch output:
+  `/tmp/qkv_projection_mlp_norm_artifacts-20260428-validated/custom_mlp_norm_output.json`.
+- Boundary:
+  `layer0_final_token_mlp_norm_output_before_mlp_projections`.
+- Input:
+  `/tmp/qkv_projection_attention_residual_artifacts-20260428-validated/custom_attention_residual_add.json`.
+- Oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json`.
+
+Norm policy:
+
+- BF16 hidden state after the attention residual add.
+- MLP RMSNorm scale from the local model checkpoint.
+- Epsilon: `1e-5`.
+- FP32 reduction over the hidden dimension.
+- Multiply order matching the official module expression:
+  `t = x.float(); t = t * rsqrt(mean(t**2) + eps); return (t * scale).to(input_dtype)`.
+- BF16 output.
+
+Classification: `mlp_norm_after_custom_attention_residual_matches_oracle`.
+
+Metrics:
+
+- `max_abs_diff=0.0`.
+- `mean_abs_diff=0.0`.
+- `mismatches=0`.
+
+Conclusion:
+
+- The exact custom/decomposed attention chain reaches the layer0 MLP norm input and output boundary
+  exactly for the final token.
+- The downstream validation chain now covers Q/K raw-QK, V weighted-sum, attention o-proj,
+  attention residual add, and MLP norm before MLP projections.
+- This remains validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
   are committed.
 
 Current decision:
