@@ -8,6 +8,11 @@ use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(feature = "cuda")]
+use gpt_oss_model_runner::mxfp4_validation::{
+    load_selected_experts_mxfp4_validation, Mxfp4SelectedExpertWeights,
+};
+
 #[derive(Debug, Parser)]
 #[command(
     name = "layer0_validation_runtime_path",
@@ -498,12 +503,21 @@ struct SelectedExpertsStatus {
     mlp_norm: TensorArtifactStatus,
     selected_experts_oracle: TensorArtifactStatus,
     tensor_sources: SelectedExpertTensorSources,
+    mxfp4_loader: Option<Mxfp4LoaderStatus>,
     expert_formula: ExpertFormulaStatus,
     overall_metric: Option<SelectedExpertsComparisonStatus>,
     per_rank_metrics: Vec<SelectedExpertRankMetric>,
     expert30_internal_guard: Option<Value>,
     blocker: Option<Blocker>,
     next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct Mxfp4LoaderStatus {
+    helper_name: &'static str,
+    decode_source: &'static str,
+    selected_experts: Vec<usize>,
+    dtype_outputs: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -537,14 +551,14 @@ struct SelectedExpertsComparisonStatus {
     worst_mismatch: Option<SelectedExpertsDiff>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SelectedExpertsMetrics {
     max_abs_diff: f32,
     mean_abs_diff: f32,
     mismatches: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SelectedExpertsDiff {
     rank: usize,
     expert: usize,
@@ -1815,9 +1829,9 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
     let selected_experts = parse_selected_experts(&cli.selected_experts)?;
     let hidden = 2880usize;
     let selected_count = selected_experts.len();
-    let (mlp_norm_status, _mlp_norm_values) =
+    let (mlp_norm_status, mlp_norm_values) =
         load_tensor_artifact(mlp_norm, &[hidden], &["values"])?;
-    let (oracle_status, _oracle_values) = load_tensor_artifact(
+    let (oracle_status, oracle_values) = load_tensor_artifact(
         selected_experts_oracle,
         &[selected_count * hidden],
         &["values"],
@@ -1855,44 +1869,99 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
     let artifact_blocked =
         !mlp_norm_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
 
-    let (classification, blocker, loader_status, next_bounded_step) = if artifact_blocked {
+    let (
+        classification,
+        overall_metric,
+        per_rank_metrics,
+        blocker,
+        loader_status,
+        mxfp4_loader,
+        next_bounded_step,
+    ) = if artifact_blocked {
         (
             "layer0_validation_selected_experts_blocked_by_artifacts",
+            None,
+            Vec::new(),
             Some(Blocker {
                 kind: "selected_expert_artifacts",
                 detail: "MLP norm input or selected expert oracle did not expose supported values or expected counts",
             }),
             "not_reached",
+            None,
             "resolve the reported selected expert artifact blocker",
         )
     } else if missing_required_sources {
         (
             "layer0_validation_selected_experts_blocked_by_artifacts",
+            None,
+            Vec::new(),
             Some(Blocker {
                 kind: "selected_expert_tensors",
                 detail: "could not find the complete layer0 expert tensor set in --model",
             }),
             "missing_required_tensors",
+            None,
             "resolve the reported selected expert tensor source blocker",
         )
     } else if mx_fp4_sources {
-        (
-            "layer0_validation_selected_experts_blocked_by_mxfp4_loader_api",
-            Some(Blocker {
-                kind: "mxfp4_loader_api",
-                detail: "layer0 expert weights are MXFP4 U8 blocks/scales, and this validation binary does not yet expose a narrow dequantized selected-expert replay helper",
-            }),
-            "mxfp4_blocks_scales_detected_no_clean_validation_dequant_api",
-            "extract a narrow validation MXFP4 selected-expert loader/replay helper without importing proof/debug plumbing",
-        )
+        match execute_selected_experts_mxfp4(model, &selected_experts, &mlp_norm_values, &oracle_values) {
+            Ok((overall_metric, per_rank_metrics, mxfp4_loader)) => {
+                let classification = if overall_metric.metrics.mismatches == 0 {
+                    "layer0_validation_selected_experts_match_oracle"
+                } else if per_rank_metrics
+                    .iter()
+                    .filter_map(|metric| metric.metrics.as_ref())
+                    .filter(|metric| metric.mismatches != 0)
+                    .count()
+                    == 1
+                {
+                    "layer0_validation_selected_experts_mismatch_isolated"
+                } else {
+                    "layer0_validation_selected_experts_mismatch_large"
+                };
+                let next_bounded_step = match classification {
+                    "layer0_validation_selected_experts_match_oracle" => {
+                        "extend validation-runtime path to weighted expert sum"
+                    }
+                    "layer0_validation_selected_experts_mismatch_isolated" => {
+                        "localize the isolated selected expert replay mismatch"
+                    }
+                    _ => "localize selected expert MXFP4 replay or BF16 boundary policy",
+                };
+                (
+                    classification,
+                    Some(overall_metric),
+                    per_rank_metrics,
+                    None,
+                    "mxfp4_validation_loader_used",
+                    Some(mxfp4_loader),
+                    next_bounded_step,
+                )
+            }
+            Err(_) => (
+                "layer0_validation_selected_experts_blocked_by_mxfp4_loader_api",
+                None,
+                Vec::new(),
+                Some(Blocker {
+                    kind: "mxfp4_loader_api",
+                    detail: "validation MXFP4 selected-expert loader/replay helper failed before comparison",
+                }),
+                "mxfp4_validation_loader_failed",
+                None,
+                "fix the narrow validation MXFP4 selected-expert loader/replay helper",
+            ),
+        }
     } else {
         (
             "layer0_validation_selected_experts_blocked_by_artifacts",
+            None,
+            Vec::new(),
             Some(Blocker {
                 kind: "unsupported_dense_expert_replay",
                 detail: "expert tensor metadata did not match the current MXFP4 blocker path, but dense selected-expert replay is not implemented in this slice",
             }),
             "unsupported_dense_replay",
+            None,
             "add a bounded selected-expert replay implementation for the detected expert tensor layout",
         )
     };
@@ -1901,7 +1970,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
         mode: "layer0_validation_runtime_path",
         submode: "selected-experts",
         classification,
-        implemented: false,
+        implemented: blocker.is_none(),
         runtime_behavior_changed: false,
         validation_only: true,
         selected_experts,
@@ -1917,6 +1986,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             down_proj_bias,
             loader_status,
         },
+        mxfp4_loader,
         expert_formula: ExpertFormulaStatus {
             mlp1_fused_output_shape: [5760],
             gate_slice: "values[0::2]",
@@ -1928,8 +1998,8 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             swiglu: "gate * sigmoid(1.702 * gate) * (up + 1)",
             output_dtype: "BF16",
         },
-        overall_metric: None,
-        per_rank_metrics: Vec::new(),
+        overall_metric,
+        per_rank_metrics,
         expert30_internal_guard: None,
         blocker,
         next_bounded_step,
@@ -3545,6 +3615,156 @@ fn parse_selected_experts(value: &str) -> Result<Vec<usize>> {
         .collect::<Result<Vec<_>>>()?;
     anyhow::ensure!(!experts.is_empty(), "--selected-experts cannot be empty");
     Ok(experts)
+}
+
+#[cfg(feature = "cuda")]
+fn execute_selected_experts_mxfp4(
+    model: &Path,
+    selected_experts: &[usize],
+    mlp_norm: &[f32],
+    oracle: &[f32],
+) -> Result<(
+    SelectedExpertsComparisonStatus,
+    Vec<SelectedExpertRankMetric>,
+    Mxfp4LoaderStatus,
+)> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut output = Vec::with_capacity(selected_experts.len() * 2880);
+    for expert in &loaded.experts {
+        output.extend(compute_selected_expert_output(mlp_norm, expert));
+    }
+    let overall = compare_selected_experts(&output, oracle, selected_experts);
+    let per_rank_metrics = selected_experts
+        .iter()
+        .enumerate()
+        .map(|(rank, &expert)| {
+            let start = rank * 2880;
+            let end = start + 2880;
+            let comparison =
+                compare_selected_experts(&output[start..end], &oracle[start..end], &[expert]);
+            SelectedExpertRankMetric {
+                rank,
+                expert,
+                metrics: Some(comparison.metrics),
+            }
+        })
+        .collect::<Vec<_>>();
+    let loader = Mxfp4LoaderStatus {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        selected_experts: loaded.selected_experts,
+        dtype_outputs: loaded.dtype_outputs,
+    };
+    Ok((overall, per_rank_metrics, loader))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_selected_experts_mxfp4(
+    _model: &Path,
+    _selected_experts: &[usize],
+    _mlp_norm: &[f32],
+    _oracle: &[f32],
+) -> Result<(
+    SelectedExpertsComparisonStatus,
+    Vec<SelectedExpertRankMetric>,
+    Mxfp4LoaderStatus,
+)> {
+    anyhow::bail!("MXFP4 selected expert validation requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn compute_selected_expert_output(
+    mlp_norm: &[f32],
+    expert: &Mxfp4SelectedExpertWeights,
+) -> Vec<f32> {
+    let gate_up = linear_out_in_bf16_output(
+        mlp_norm,
+        &expert.gate_up_weight,
+        &expert.gate_up_bias,
+        2880,
+        5760,
+    );
+    let swiglu = compute_swiglu_bf16(&gate_up);
+    linear_out_in_bf16_output(&swiglu, &expert.down_weight, &expert.down_bias, 2880, 2880)
+}
+
+fn linear_out_in_bf16_output(
+    input: &[f32],
+    weight_out_in: &[f32],
+    bias: &[f32],
+    in_features: usize,
+    out_features: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; out_features];
+    for out_idx in 0..out_features {
+        let mut acc = 0.0f32;
+        let weight_offset = out_idx * in_features;
+        for in_idx in 0..in_features {
+            acc += round_bf16(input[in_idx]) * weight_out_in[weight_offset + in_idx];
+        }
+        out[out_idx] = round_bf16(acc + round_bf16(bias[out_idx]));
+    }
+    out
+}
+
+fn compute_swiglu_bf16(gate_up: &[f32]) -> Vec<f32> {
+    let intermediate = gate_up.len() / 2;
+    let mut out = vec![0.0f32; intermediate];
+    for idx in 0..intermediate {
+        let gate = round_bf16(gate_up[2 * idx]).min(7.0);
+        let up = round_bf16(gate_up[2 * idx + 1]).clamp(-7.0, 7.0);
+        let glu = gate * (1.0 / (1.0 + (-(1.702 * gate)).exp()));
+        out[idx] = round_bf16(glu * (up + 1.0));
+    }
+    out
+}
+
+fn compare_selected_experts(
+    actual: &[f32],
+    expected: &[f32],
+    selected_experts: &[usize],
+) -> SelectedExpertsComparisonStatus {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut mismatches = 0usize;
+    let mut first_mismatch = None;
+    let mut worst_mismatch = None;
+
+    for (idx, (&actual_value, &expected_value)) in actual.iter().zip(expected.iter()).enumerate() {
+        let abs_diff = (actual_value - expected_value).abs();
+        sum_abs_diff += abs_diff as f64;
+        if abs_diff != 0.0 {
+            mismatches += 1;
+            let rank = idx / 2880;
+            let diff = SelectedExpertsDiff {
+                rank,
+                expert: selected_experts[rank],
+                hidden_lane: idx % 2880,
+                actual: actual_value,
+                expected: expected_value,
+                abs_diff,
+            };
+            if first_mismatch.is_none() {
+                first_mismatch = Some(diff.clone());
+            }
+            if abs_diff > max_abs_diff {
+                max_abs_diff = abs_diff;
+                worst_mismatch = Some(diff);
+            }
+        }
+    }
+
+    let len = actual.len().min(expected.len()).max(1);
+    SelectedExpertsComparisonStatus {
+        metrics: SelectedExpertsMetrics {
+            max_abs_diff,
+            mean_abs_diff: (sum_abs_diff / len as f64) as f32,
+            mismatches,
+        },
+        first_mismatch,
+        worst_mismatch,
+    }
 }
 
 fn lane_trace(

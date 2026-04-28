@@ -1064,6 +1064,67 @@ Extract a narrow validation-only MXFP4 selected-expert loader/replay helper that
 uses existing model-runner semantics, then rerun `--mode selected-experts` for
 fresh experts `[3, 30, 11, 27]`.
 
+## MXFP4 Selected Expert Validation Loader Status
+
+Helper added:
+
+- `gpt_oss_model_runner::mxfp4_validation::load_selected_experts_mxfp4_validation`
+
+Scope:
+
+- Validation-only model-runner helper.
+- Loads only the requested layer0 expert tensors from the checkpoint.
+- Uses the existing runtime `gpt_oss_dequant_expert_f16_kernel` to decode
+  MXFP4 blocks/scales for selected experts.
+- Returns dequantized f16 weights and BF16 biases widened to f32 for the bench
+  replay.
+- Does not modify production routing, default model-runner behavior, or CUDA
+  kernel math.
+
+Decode source:
+
+| item | source |
+| --- | --- |
+| MXFP4 value/dequant semantics | `gpt_oss_dequant_expert_f16_kernel` |
+| selected experts | `[3, 30, 11, 27]` |
+| gate/up blocks/scales | `model.layers.0.mlp.experts.gate_up_proj_blocks/scales` |
+| down blocks/scales | `model.layers.0.mlp.experts.down_proj_blocks/scales` |
+| biases | `model.layers.0.mlp.experts.gate_up_proj_bias`, `model.layers.0.mlp.experts.down_proj_bias` |
+
+Current classification:
+
+```text
+layer0_validation_selected_experts_mismatch_large
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| selected expert outputs overall | `0.25` | `0.0030456155` | `8462` |
+| rank 0 / expert 3 | `0.25` | `0.0034140944` | `2083` |
+| rank 1 / expert 30 | `0.125` | `0.0027241078` | `2170` |
+| rank 2 / expert 11 | `0.125` | `0.0029283462` | `2107` |
+| rank 3 / expert 27 | `0.25` | `0.0031159138` | `2102` |
+
+Conclusion:
+
+- The previous MXFP4 loader/API blocker is resolved: the validation path now
+  uses existing model-runner GPU dequant semantics and reaches selected expert
+  arithmetic.
+- The selected expert outputs do not yet match the official oracle. The broad
+  mismatch across all four selected experts suggests the remaining issue is a
+  replay boundary/policy difference after MXFP4 dequantization, not the stale
+  expert30 selected-output artifact seen in the earlier scratch path.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Localize the selected-expert replay policy after MXFP4 dequantization: compare
+MLP1 boundary, SwiGLU boundary, and down-projection/bias boundary against any
+available official internal artifacts, and test bounded BF16/F16 accumulation
+and boundary variants without changing production routing.
+
 ## Validation Commands
 
 For the skeleton slice:

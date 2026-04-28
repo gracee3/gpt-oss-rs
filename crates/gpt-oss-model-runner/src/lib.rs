@@ -26,6 +26,8 @@ pub mod gpu_layer;
 #[cfg(feature = "cuda")]
 pub mod gpu_runner;
 #[cfg(feature = "cuda")]
+pub mod mxfp4_validation;
+#[cfg(feature = "cuda")]
 pub mod rope_validation;
 
 /// Type alias for cublasLt handle. Compiles to a usable type with the
