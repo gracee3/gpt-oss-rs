@@ -349,6 +349,38 @@ The CPU BF16 replay remains the calibrated local contract check for now: it repr
 runtime-forward six-lane K legacy/helper-vs-oneDNN oracle pattern. Candidate policies should wait
 until the BF16 CUDA baseline API exists and is measured against that CPU BF16 replay.
 
+## BF16 GEMM Public API Status
+
+Prior blocker classification:
+`qkv_projection_policy_compare_k_bf16_cuda_blocked_by_public_api_gap`.
+
+API status: `CublasHandle::bf16_gemm_into` has been added as a narrow public BF16 GEMM surface
+for validation and projection-policy experiments.
+
+Policy:
+
+- Input storage: `CUDA_R_16BF`.
+- Output storage: `CUDA_R_16BF`.
+- Compute type: `CUBLAS_COMPUTE_32F`.
+- Algorithm: `CUBLAS_GEMM_DEFAULT_TENSOR_OP`, matching the baseline tensor-op family rather than a
+  pedantic/no-tensor-op candidate.
+- Layout: same row-major projection convention as `hgemm_into`, computing
+  `C[m,n] = A[m,k] @ B[n,k]^T`.
+
+Boundaries:
+
+- No default runtime routing changed.
+- No CUDA kernels changed.
+- No cuBLAS math-mode or atomics-mode changes were added.
+- No pedantic/no-tensor-op behavior was introduced.
+- `qkv_projection_policy_compare` has not yet been wired to execute the BF16 baseline.
+
+Next bounded step:
+
+- Wire `qkv_projection_policy_compare --execute --projection k --policy current --storage-dtype
+  bf16` to `CublasHandle::bf16_gemm_into` for a K-only BF16 CUDA baseline comparison against the
+  CPU BF16 replay and oneDNN oracle.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.

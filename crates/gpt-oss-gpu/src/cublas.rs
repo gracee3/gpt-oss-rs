@@ -419,6 +419,81 @@ impl CublasHandle {
         Ok(())
     }
 
+    /// BF16 GEMM into a device buffer/view: C[m,n] = A[m,k] @ B[n,k]^T.
+    ///
+    /// This uses the same row-major projection layout convention as
+    /// [`hgemm_into`](Self::hgemm_into), but with BF16 input/output storage and
+    /// FP32 accumulation. It is intended as a narrow public API for validation
+    /// and projection-policy experiments; it does not change default runtime
+    /// routing or cuBLAS math/atomics modes.
+    #[cfg(feature = "cuda")]
+    pub fn bf16_gemm_into(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: f32,
+        a: &impl DevicePtr<half::bf16>,
+        b: &impl DevicePtr<half::bf16>,
+        beta: f32,
+        c: &mut impl DevicePtrMut<half::bf16>,
+    ) -> Result<()> {
+        use cudarc::cublas::sys::{
+            cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            cublasOperation_t::{CUBLAS_OP_N, CUBLAS_OP_T},
+            cublasStatus_t::CUBLAS_STATUS_SUCCESS,
+            cudaDataType_t::CUDA_R_16BF,
+        };
+        let (b_ptr, _bg) = DevicePtr::device_ptr(b, &self.stream);
+        let (a_ptr, _ag) = DevicePtr::device_ptr(a, &self.stream);
+        let (c_ptr, _cg) = DevicePtrMut::device_ptr_mut(c, &self.stream);
+        unsafe {
+            let status = cudarc::cublas::sys::cublasGemmEx(
+                *self.blas.handle(),
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                b_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                a_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                &beta as *const f32 as *const std::ffi::c_void,
+                c_ptr as *mut std::ffi::c_void,
+                CUDA_R_16BF,
+                n as i32,
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            );
+            if status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "bf16_gemm_into failed: {status:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn bf16_gemm_into(
+        &self,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _alpha: f32,
+        _a: &impl DevicePtr<half::bf16>,
+        _b: &impl DevicePtr<half::bf16>,
+        _beta: f32,
+        _c: &mut impl DevicePtrMut<half::bf16>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Strided batched HGEMM: multiple independent f16 GEMMs in one cuBLAS call.
     /// C[i] = alpha * A[i] @ B[i]^T + beta * C[i] for i in 0..batch_count
     /// All matrices share the same m,n,k but sit at strided offsets from the
