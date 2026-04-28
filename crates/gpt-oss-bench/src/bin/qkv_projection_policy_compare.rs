@@ -82,6 +82,7 @@ struct Status {
     expected_shapes: ExpectedShapes,
     k_contract: Value,
     projection_contract: Value,
+    v_reconciliation: Value,
     comparisons: Vec<serde_json::Value>,
     latency: BTreeMap<String, serde_json::Value>,
     runtime_forward_reference: Value,
@@ -156,6 +157,7 @@ fn main() -> Result<()> {
     let mut comparisons = Vec::new();
     let mut latency = BTreeMap::new();
     let mut k_contract = Value::Null;
+    let mut v_reconciliation = Value::Null;
     let mut runtime_forward_reference = Value::Null;
     let mut next_bounded_step =
         "implement baseline current CUDA helper comparison against loaded artifacts";
@@ -167,6 +169,7 @@ fn main() -> Result<()> {
         comparisons = execution.comparisons;
         latency = execution.latency;
         k_contract = execution.k_contract;
+        v_reconciliation = execution.v_reconciliation;
         runtime_forward_reference = execution.runtime_forward_reference;
         next_bounded_step = execution.next_bounded_step;
     }
@@ -215,6 +218,7 @@ fn main() -> Result<()> {
         },
         k_contract: k_contract.clone(),
         projection_contract: k_contract,
+        v_reconciliation,
         comparisons,
         latency,
         runtime_forward_reference,
@@ -400,6 +404,7 @@ struct ExecutionResult {
     comparisons: Vec<Value>,
     latency: BTreeMap<String, Value>,
     k_contract: Value,
+    v_reconciliation: Value,
     runtime_forward_reference: Value,
     next_bounded_step: &'static str,
 }
@@ -417,6 +422,7 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
             k_contract: Value::Null,
+            v_reconciliation: Value::Null,
             runtime_forward_reference: Value::Null,
             next_bounded_step: "fix artifact/API issue before CUDA policy work",
         });
@@ -439,6 +445,7 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
                 comparisons: Vec::new(),
                 latency: BTreeMap::new(),
                 k_contract: Value::Null,
+                v_reconciliation: Value::Null,
                 runtime_forward_reference: Value::Null,
                 next_bounded_step: "fix artifact/API issue before CUDA policy work",
             });
@@ -457,6 +464,7 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
             k_contract: Value::Null,
+            v_reconciliation: Value::Null,
             runtime_forward_reference: Value::Null,
             next_bounded_step: "fix artifact/API issue before CUDA policy work",
         });
@@ -469,6 +477,7 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
             k_contract: Value::Null,
+            v_reconciliation: Value::Null,
             runtime_forward_reference: Value::Null,
             next_bounded_step: "fix artifact/API issue before CUDA policy work",
         });
@@ -718,6 +727,7 @@ fn run_current_k_f16(cli: &Cli) -> Result<ExecutionResult> {
         ],
         latency,
         k_contract,
+        v_reconciliation: Value::Null,
         runtime_forward_reference,
         next_bounded_step,
     })
@@ -1001,6 +1011,7 @@ fn run_current_k_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         comparisons,
         latency,
         k_contract,
+        v_reconciliation: Value::Null,
         runtime_forward_reference: load_runtime_forward_reference(),
         next_bounded_step,
     })
@@ -1056,6 +1067,27 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         .clone_htod(&v_weight_bf16)
         .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; V weight upload failed: {err}"))?;
 
+    let cpu_f32_pre_bias = cpu_projection(
+        &norm,
+        &v_weight,
+        None,
+        RoundingPolicy::F32,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f16_pre_bias = cpu_projection(
+        &norm,
+        &v_weight,
+        None,
+        RoundingPolicy::F16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_bf16_pre_bias = cpu_projection(
+        &norm,
+        &v_weight,
+        None,
+        RoundingPolicy::BFloat16,
+        WeightLayout::RowMajor,
+    );
     let cpu_f32 = cpu_projection(
         &norm,
         &v_weight,
@@ -1080,8 +1112,15 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     let cpu_f32_vs_oracle = compare_outputs(&cpu_f32, &v_oracle);
     let cpu_f16_vs_oracle = compare_outputs(&cpu_f16, &v_oracle);
     let cpu_bf16_vs_oracle = compare_outputs(&cpu_bf16, &v_oracle);
+    let no_bias_vs_oracle = compare_outputs(&cpu_bf16_pre_bias, &v_oracle);
 
     let mut comparisons = Vec::new();
+    comparisons.push(replay_json_for_projection(
+        "v",
+        "cpu_bf16_pre_bias_replay",
+        &cpu_bf16_pre_bias,
+        &no_bias_vs_oracle,
+    ));
     comparisons.push(replay_json_for_projection(
         "v",
         "cpu_f32_accum_f32_bias_f32_output",
@@ -1103,10 +1142,13 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
 
     let mut latency = BTreeMap::new();
     let mut current_output = None;
+    let mut current_pre_bias_output = None;
     let mut current_vs_oracle = None;
     let mut pedantic_output = None;
+    let mut pedantic_pre_bias_output = None;
     let mut pedantic_vs_oracle = None;
     let mut pedantic_vs_cpu_bf16 = None;
+    let mut pedantic_pre_bias_vs_cpu_bf16 = None;
     let mut pedantic_restore_status = Value::Null;
 
     for policy in policies {
@@ -1188,16 +1230,11 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         let pre_bias_bf16 = stream
             .clone_dtoh(&output_gpu)
             .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; output download failed: {err}"))?;
-        let output = add_bias_with_rounding(
-            &pre_bias_bf16
-                .iter()
-                .map(|value| value.to_f32())
-                .collect::<Vec<_>>(),
-            &v_bias,
-            RoundingPolicy::BFloat16,
-        );
+        let pre_bias: Vec<f32> = pre_bias_bf16.iter().map(|value| value.to_f32()).collect();
+        let output = add_bias_with_rounding(&pre_bias, &v_bias, RoundingPolicy::BFloat16);
         let vs_oracle = compare_outputs(&output, &v_oracle);
         let vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
+        let pre_bias_vs_cpu_bf16 = compare_outputs(&pre_bias, &cpu_bf16_pre_bias);
         let latency_key = if policy == "cublas-pedantic" {
             "cublas_pedantic_v_bf16"
         } else {
@@ -1230,6 +1267,15 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         comparisons.push(comparison_json_for_projection(
             "v",
             if policy == "cublas-pedantic" {
+                "cublas_pedantic_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+            } else {
+                "cuda_current_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+            },
+            &pre_bias_vs_cpu_bf16,
+        ));
+        comparisons.push(comparison_json_for_projection(
+            "v",
+            if policy == "cublas-pedantic" {
                 "cublas_pedantic_bf16_vs_cpu_bf16"
             } else {
                 "cuda_bf16_current_vs_cpu_bf16"
@@ -1241,9 +1287,12 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             pedantic_restore_status = restore_status;
             pedantic_vs_oracle = Some(vs_oracle);
             pedantic_vs_cpu_bf16 = Some(vs_cpu_bf16);
+            pedantic_pre_bias_vs_cpu_bf16 = Some(pre_bias_vs_cpu_bf16);
+            pedantic_pre_bias_output = Some(pre_bias);
             pedantic_output = Some(output);
         } else {
             current_vs_oracle = Some(vs_oracle);
+            current_pre_bias_output = Some(pre_bias);
             current_output = Some(output);
         }
     }
@@ -1255,15 +1304,50 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             &compare_outputs(current, pedantic),
         ));
     }
+    if let (Some(current), Some(pedantic)) = (
+        current_pre_bias_output.as_ref(),
+        pedantic_pre_bias_output.as_ref(),
+    ) {
+        comparisons.push(comparison_json_for_projection(
+            "v",
+            "cuda_bf16_current_pre_bias_vs_cublas_pedantic_pre_bias",
+            &compare_outputs(current, pedantic),
+        ));
+    }
+
+    let bias_variants = build_v_bias_variants(
+        pedantic_pre_bias_output
+            .as_deref()
+            .or(current_pre_bias_output.as_deref()),
+        &cpu_f32_pre_bias,
+        &cpu_f16_pre_bias,
+        &cpu_bf16_pre_bias,
+        &v_bias,
+        &v_oracle,
+    );
+    let best_bias_variant = bias_variants
+        .iter()
+        .min_by_key(|(_, metrics)| metrics.mismatching_element_count)
+        .map(|(name, metrics)| (*name, metrics.clone()));
+    for (name, metrics) in &bias_variants {
+        comparisons.push(json!({
+            "projection": "v",
+            "bias_variant": name,
+            "shape": [M, KV_OUT],
+            "vs_oracle": metrics,
+        }));
+    }
 
     let classification = if let (Some(pedantic_vs_oracle), Some(pedantic_vs_cpu_bf16)) =
         (pedantic_vs_oracle.as_ref(), pedantic_vs_cpu_bf16.as_ref())
     {
-        classify_v_pedantic_bf16(
+        classify_v_reconciliation(
             current_vs_oracle.as_ref(),
             pedantic_vs_oracle,
             pedantic_vs_cpu_bf16,
+            pedantic_pre_bias_vs_cpu_bf16.as_ref(),
             &cpu_bf16_vs_oracle,
+            best_bias_variant.as_ref().map(|(_, metrics)| metrics),
         )
     } else if current_vs_oracle
         .as_ref()
@@ -1277,8 +1361,13 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     let next_bounded_step = if classification
         == "qkv_projection_policy_compare_v_pedantic_bf16_matches_oracle"
         || classification == "qkv_projection_policy_compare_v_current_bf16_matches_oracle"
+        || classification == "qkv_projection_policy_compare_v_bias_policy_identified"
     {
         "implement Q BF16 projection policy comparison"
+    } else if classification
+        == "qkv_projection_policy_compare_v_oracle_differs_from_cpu_bf16_replay"
+    {
+        "reconcile generated V oracle and CPU BF16 replay contract before Q projection comparison"
     } else if classification
         == "qkv_projection_policy_compare_v_pedantic_bf16_matches_legacy_bf16_contract"
     {
@@ -1286,6 +1375,42 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     } else {
         "reconcile V bias/layout/dtype contract before Q projection comparison"
     };
+    let artifact_identity =
+        load_v_artifact_identity(&cli.norm_input, &cli.v_weight, v_bias_path, &cli.v_oracle);
+    let focused_mismatch_trace = focused_v_mismatch_trace(
+        pedantic_vs_oracle.as_ref(),
+        pedantic_pre_bias_output.as_deref(),
+        current_output.as_deref(),
+        pedantic_output.as_deref(),
+        &cpu_bf16_pre_bias,
+        &cpu_bf16,
+        &v_bias,
+        &v_oracle,
+        best_bias_variant.as_ref(),
+    );
+    let v_reconciliation = json!({
+        "artifact_identity": artifact_identity,
+        "pre_bias": {
+            "current_vs_cpu_bf16": current_pre_bias_output
+                .as_ref()
+                .map(|output| compare_outputs(output, &cpu_bf16_pre_bias)),
+            "pedantic_vs_cpu_bf16": pedantic_pre_bias_vs_cpu_bf16,
+        },
+        "post_bias": {
+            "current_vs_oracle": current_vs_oracle,
+            "pedantic_vs_oracle": pedantic_vs_oracle,
+            "pedantic_vs_cpu_bf16": pedantic_vs_cpu_bf16,
+            "cpu_bf16_vs_oracle": cpu_bf16_vs_oracle,
+        },
+        "bias_variants": bias_variants
+            .iter()
+            .map(|(name, metrics)| json!({"name": name, "vs_oracle": metrics}))
+            .collect::<Vec<_>>(),
+        "best_bias_variant": best_bias_variant
+            .as_ref()
+            .map(|(name, metrics)| json!({"name": name, "vs_oracle": metrics})),
+        "focused_mismatch_trace": focused_mismatch_trace,
+    });
 
     let k_contract = json!({
         "storage_dtype": "bf16",
@@ -1330,6 +1455,7 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         comparisons,
         latency,
         k_contract,
+        v_reconciliation,
         runtime_forward_reference: Value::Null,
         next_bounded_step,
     })
@@ -1343,6 +1469,7 @@ fn run_current_k_f16(_cli: &Cli) -> Result<ExecutionResult> {
         comparisons: Vec::new(),
         latency: BTreeMap::new(),
         k_contract: Value::Null,
+        v_reconciliation: Value::Null,
         runtime_forward_reference: Value::Null,
         next_bounded_step: "fix artifact/API issue before CUDA policy work",
     })
@@ -1356,6 +1483,7 @@ fn run_current_k_bf16(_cli: &Cli, _policies: &[String]) -> Result<ExecutionResul
         comparisons: Vec::new(),
         latency: BTreeMap::new(),
         k_contract: Value::Null,
+        v_reconciliation: Value::Null,
         runtime_forward_reference: Value::Null,
         next_bounded_step: "fix artifact/API issue before CUDA policy work",
     })
@@ -1369,6 +1497,7 @@ fn run_current_v_bf16(_cli: &Cli, _policies: &[String]) -> Result<ExecutionResul
         comparisons: Vec::new(),
         latency: BTreeMap::new(),
         k_contract: Value::Null,
+        v_reconciliation: Value::Null,
         runtime_forward_reference: Value::Null,
         next_bounded_step: "fix artifact/API issue before CUDA policy work",
     })
@@ -1617,16 +1746,24 @@ fn classify_k_pedantic_bf16(
     }
 }
 
-fn classify_v_pedantic_bf16(
+fn classify_v_reconciliation(
     current_vs_oracle: Option<&ComparisonMetrics>,
     pedantic_vs_oracle: &ComparisonMetrics,
     pedantic_vs_cpu_bf16: &ComparisonMetrics,
+    pedantic_pre_bias_vs_cpu_bf16: Option<&ComparisonMetrics>,
     cpu_bf16_vs_oracle: &ComparisonMetrics,
+    best_bias_variant: Option<&ComparisonMetrics>,
 ) -> &'static str {
     if pedantic_vs_oracle.matched {
         "qkv_projection_policy_compare_v_pedantic_bf16_matches_oracle"
-    } else if pedantic_vs_cpu_bf16.matched && !cpu_bf16_vs_oracle.matched {
-        "qkv_projection_policy_compare_v_pedantic_bf16_matches_legacy_bf16_contract"
+    } else if best_bias_variant.is_some_and(|metrics| metrics.matched) {
+        "qkv_projection_policy_compare_v_bias_policy_identified"
+    } else if !cpu_bf16_vs_oracle.matched {
+        "qkv_projection_policy_compare_v_oracle_differs_from_cpu_bf16_replay"
+    } else if pedantic_pre_bias_vs_cpu_bf16.is_some_and(|metrics| !metrics.matched) {
+        "qkv_projection_policy_compare_v_pedantic_pre_bias_gemm_unmodeled"
+    } else if !pedantic_vs_cpu_bf16.matched {
+        "qkv_projection_policy_compare_v_bias_policy_mismatch"
     } else if current_vs_oracle.is_some_and(|current| {
         pedantic_vs_oracle.mismatching_element_count < current.mismatching_element_count
             || pedantic_vs_oracle.max_abs_diff < current.max_abs_diff
@@ -1635,6 +1772,164 @@ fn classify_v_pedantic_bf16(
     } else {
         "qkv_projection_policy_compare_v_current_bf16_mismatches_oracle"
     }
+}
+
+fn build_v_bias_variants(
+    cuda_pre_bias: Option<&[f32]>,
+    cpu_f32_pre_bias: &[f32],
+    cpu_f16_pre_bias: &[f32],
+    cpu_bf16_pre_bias: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+) -> Vec<(&'static str, ComparisonMetrics)> {
+    let mut variants = Vec::new();
+    if let Some(pre_bias) = cuda_pre_bias {
+        variants.push((
+            "cuda_bf16_pre_bias_plus_bf16_bias_bf16_output",
+            compare_outputs(
+                &add_bias_with_rounding(pre_bias, bias, RoundingPolicy::BFloat16),
+                oracle,
+            ),
+        ));
+        variants.push((
+            "cuda_bf16_pre_bias_no_bias_guard",
+            compare_outputs(pre_bias, oracle),
+        ));
+    }
+    variants.push((
+        "cpu_bf16_pre_bias_plus_bf16_bias_bf16_output",
+        compare_outputs(
+            &add_bias_with_rounding(cpu_bf16_pre_bias, bias, RoundingPolicy::BFloat16),
+            oracle,
+        ),
+    ));
+    variants.push((
+        "cpu_f16_pre_bias_plus_f16_bias_f16_output",
+        compare_outputs(
+            &add_bias_with_rounding(cpu_f16_pre_bias, bias, RoundingPolicy::F16),
+            oracle,
+        ),
+    ));
+    variants.push((
+        "cpu_f32_pre_bias_plus_f32_bias_bf16_output",
+        compare_outputs(
+            &add_bias_with_rounding(cpu_f32_pre_bias, bias, RoundingPolicy::BFloat16),
+            oracle,
+        ),
+    ));
+    variants.push((
+        "cpu_bf16_pre_bias_no_bias_guard",
+        compare_outputs(cpu_bf16_pre_bias, oracle),
+    ));
+    variants
+}
+
+fn focused_v_mismatch_trace(
+    pedantic_vs_oracle: Option<&ComparisonMetrics>,
+    pedantic_pre_bias: Option<&[f32]>,
+    current_post_bias: Option<&[f32]>,
+    pedantic_post_bias: Option<&[f32]>,
+    cpu_bf16_pre_bias: &[f32],
+    cpu_bf16_post_bias: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+    best_bias_variant: Option<&(&'static str, ComparisonMetrics)>,
+) -> Value {
+    let Some(worst) = pedantic_vs_oracle.and_then(|metrics| metrics.worst_mismatch.as_ref()) else {
+        return Value::Null;
+    };
+    let index = worst.token * KV_OUT + worst.feature;
+    let bias_value = bias[worst.feature];
+    let pedantic_pre = pedantic_pre_bias
+        .and_then(|values| values.get(index))
+        .copied();
+    let pedantic_post = pedantic_post_bias
+        .and_then(|values| values.get(index))
+        .copied();
+    let current_post = current_post_bias
+        .and_then(|values| values.get(index))
+        .copied();
+    let cpu_pre = cpu_bf16_pre_bias[index];
+    let cpu_post = cpu_bf16_post_bias[index];
+    let oracle_value = oracle[index];
+    json!({
+        "token": worst.token,
+        "feature": worst.feature,
+        "kv_head": worst.kv_head,
+        "lane": worst.lane,
+        "pedantic_pre_bias": pedantic_pre,
+        "cpu_bf16_pre_bias": cpu_pre,
+        "bias": bias_value,
+        "pedantic_post_bias": pedantic_post,
+        "cpu_bf16_post_bias": cpu_post,
+        "oracle": oracle_value,
+        "current_post_bias": current_post,
+        "pedantic_abs_diff_vs_oracle": pedantic_post.map(|value| (value - oracle_value).abs()),
+        "pedantic_pre_bias_abs_diff_vs_cpu_bf16": pedantic_pre.map(|value| (value - cpu_pre).abs()),
+        "cpu_bf16_post_bias_abs_diff_vs_oracle": (cpu_post - oracle_value).abs(),
+        "mismatch_already_exists_pre_bias": pedantic_pre.is_some_and(|value| value.to_bits() != cpu_pre.to_bits()),
+        "best_bias_variant": best_bias_variant.map(|(name, metrics)| json!({
+            "name": name,
+            "matched": metrics.matched,
+            "max_abs_diff": metrics.max_abs_diff,
+            "mismatching_element_count": metrics.mismatching_element_count,
+        })),
+    })
+}
+
+fn load_v_artifact_identity(
+    norm_input: &Path,
+    v_weight: &Path,
+    v_bias: &Path,
+    v_oracle: &Path,
+) -> Value {
+    let weight_status_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-weight-bias-arithmetic-policy-status.json");
+    let candidate_status_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate-status.json");
+    let weight_status = read_json_file(weight_status_path);
+    let candidate_status = read_json_file(candidate_status_path);
+
+    json!({
+        "scratch_artifacts": {
+            "norm_input": artifact_digest_from_file(norm_input),
+            "v_weight": artifact_digest_from_file(v_weight),
+            "v_bias": artifact_digest_from_file(v_bias),
+            "v_oracle": artifact_digest_from_file(v_oracle),
+        },
+        "runtime_forward_status": {
+            "v_weight_digest": weight_status
+                .as_ref()
+                .and_then(|value| value.pointer("/v_weight_metadata/v_weight_comparison_metrics/official_digest"))
+                .cloned(),
+            "v_bias_digest": weight_status
+                .as_ref()
+                .and_then(|value| value.pointer("/v_bias_metadata/official_v_bias_summary/digest"))
+                .cloned(),
+            "onednn_v_oracle_digest": candidate_status
+                .as_ref()
+                .and_then(|value| value.pointer("/oneDNN_v_candidate_construction_metadata/output_digest"))
+                .cloned(),
+            "candidate_vs_official_metrics": candidate_status
+                .as_ref()
+                .and_then(|value| value.pointer("/v_candidate_vs_official_metrics"))
+                .cloned(),
+            "legacy_local_rust_v_metrics": candidate_status
+                .as_ref()
+                .and_then(|value| value.pointer("/legacy_local_rust_v_metrics"))
+                .cloned(),
+        },
+        "comparison_status": "unavailable_digest_scheme_differs",
+        "notes": [
+            "Scratch artifacts use sha256-float-hex over full JSON f32 values.",
+            "Runtime-forward status artifacts record sha256-prefix4096 digests.",
+            "Digest equality is therefore not asserted by this harness."
+        ],
+    })
+}
+
+fn artifact_digest_from_file(path: &Path) -> Value {
+    read_json_file(path)
+        .and_then(|value| value.get("digest").cloned())
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(feature = "cuda")]

@@ -525,6 +525,54 @@ Interpretation:
 - The next projection-policy step should reconcile V bias/reduction details or move to Q only as
   another validation-only comparison, not as runtime extraction.
 
+## V Contract Reconciliation Status
+
+`qkv_projection_policy_compare` now emits V-specific contract reconciliation diagnostics for the
+real local scratch artifacts above.
+
+Additional diagnostics:
+
+- Separates `V_pre_bias = norm_input @ v_weight.T` from the post-bias output.
+- Compares current and pedantic BF16 CUDA pre-bias outputs against the CPU BF16 pre-bias replay.
+- Evaluates bounded bias-add variants:
+  - CUDA BF16 pre-bias plus BF16 bias, BF16 output.
+  - CUDA BF16 pre-bias without bias as a guard.
+  - CPU BF16 pre-bias plus BF16 bias, BF16 output.
+  - CPU f16 pre-bias plus f16 bias, f16 output.
+  - CPU f32 pre-bias plus f32 bias, BF16 output.
+  - CPU BF16 pre-bias without bias as a guard.
+- Emits a focused worst-mismatch trace with pre-bias value, bias value, post-bias value, oracle
+  value, current value, and whether the mismatch exists before bias.
+- Reports source runtime-forward status digests when available.
+
+Real V reconciliation result:
+
+- Classification: `qkv_projection_policy_compare_v_oracle_differs_from_cpu_bf16_replay`.
+- Artifact identity finding: scratch artifacts use `sha256-float-hex` digests while the available
+  runtime-forward status evidence records `sha256-prefix4096` digests, so direct digest equality is
+  unavailable rather than proven mismatched.
+- Pedantic BF16 pre-bias vs CPU BF16 pre-bias replay:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+- Pedantic BF16 post-bias vs generated oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012496220879256725`, `mismatches=11366`.
+- CPU BF16 post-bias replay vs generated oracle:
+  `max_abs_diff=0.015625`, `mean_abs_diff=7.029975108707731e-7`, `mismatches=15`.
+- Best bounded bias-add variant: `cpu_f32_pre_bias_plus_f32_bias_bf16_output`, still with
+  `max_abs_diff=0.015625` and `mismatches=15`.
+- Focused worst pedantic mismatch: token `1`, feature `155`, kv head `2`, lane `27`; pedantic
+  pre-bias and CPU BF16 pre-bias both equal `-4.3125`, so the mismatch is not a pre-bias GEMM
+  issue. The pedantic BF16 post-bias output is `-4.78125`, while CPU BF16 post-bias replay and the
+  generated oracle are both `-4.75` at that coordinate.
+
+Interpretation:
+
+- V pedantic pre-bias GEMM is calibrated to the CPU BF16 replay, matching the K pedantic
+  pre-bias behavior.
+- The remaining real-V discrepancy is a post-bias/oracle contract issue for the generated scratch
+  artifact path, not evidence for production routing.
+- Candidate policy work should remain validation-only until V oracle generation and bias-add
+  semantics are pinned against runtime-forward source evidence with comparable digests.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.
