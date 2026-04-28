@@ -806,6 +806,61 @@ Conclusion:
 - Equivalent downstream-impact checks are still needed for Q/K raw QK and final logits before any
   production projection routing decision.
 
+## Q/K Downstream Raw QK Impact Check
+
+The next downstream seam for the decomposed/custom projection policy is
+`layer0_final_token_raw_scaled_qk_logits_pre_mask`, shaped `[64,74]` with scale `0.125`.
+
+Artifact availability inspection found the official pinned full-value artifacts:
+
+- Official Q post-RoPE before attention:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-q-post-rope-before-attention.cpu.json`
+  with shape `[74,4096]`.
+- Official grouped K post-RoPE:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json`
+  with shape `[74,8,64]`.
+- Official final-token raw scaled QK logits before mask:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json`
+  with shape `[64,74]`.
+
+Additional runtime-forward status evidence exists, but it is not a pinned
+custom/decomposed Q/K policy artifact:
+
+- `developer-message.runner-layer0-q-pre-post-rope-runtime-localization.local-q-capture.json`
+  contains local runtime Q pre/post-RoPE captures shaped `[74,4096]`. Its metrics line up with the
+  current/runtime Q projection delta, not with a validated custom/decomposed Q policy.
+- `developer-message.runner-layer0-k-post-rope-and-score-after-onednn-k-candidate-status.json`
+  records that scoped oneDNN/candidate K post-RoPE can match official K and that official Q plus
+  candidate K clears raw QK, but local runtime Q plus candidate K still mismatches raw QK.
+
+Route chosen: Option C, blocked pending a compact custom/decomposed Q/K post-RoPE artifact pack.
+
+Why this slice did not add a raw-QK harness run:
+
+- Running official Q post-RoPE plus official K post-RoPE would validate the dot-product formula,
+  but it would not answer whether custom/decomposed Q/K projection differences matter downstream.
+- Running the available local runtime Q capture would answer the current-runtime Q path, not the
+  validation-only custom/decomposed projection policy.
+- Generating custom/decomposed Q/K post-RoPE inside this slice would require adding Q custom biased
+  projection support and a RoPE transform path, which is larger than a downstream-impact probe.
+
+Required artifact pack for the next Q/K downstream check:
+
+- Custom/decomposed Q post-RoPE final token `[4096]` or all tokens `[74,4096]`.
+- Custom/decomposed K post-RoPE all tokens `[74,8,64]`.
+- Official raw scaled QK oracle `[64,74]`.
+- Provenance recording projection policy, RoPE implementation, source commit, exact case,
+  final-token index `73`, scale `0.125`, and comparable digests.
+
+Planned comparison once the pack exists:
+
+- For each `q_head in 0..64`, use `kv_head = q_head / 8`.
+- For each key token in `0..74`, compute
+  `dot(Q_final[q_head,:], K[token,kv_head,:]) * 0.125`.
+- Compare both f32 exploratory scores and BF16-rounded scores against the official raw-QK oracle.
+
+Current classification: `qk_downstream_blocked_by_missing_artifacts`.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
