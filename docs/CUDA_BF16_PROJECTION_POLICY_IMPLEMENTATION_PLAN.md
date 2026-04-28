@@ -976,6 +976,62 @@ Conclusion:
 - The V weighted-sum result should remain scoped to V; it does not generalize to Q/K raw-QK.
 - No runtime behavior changed and no raw artifacts are committed.
 
+## Q/K Projection vs RoPE Localization
+
+A follow-up localization check was run against the same scratch pack:
+
+- Summary JSON:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/qk_projection_rope_localization_summary.json`.
+- Classification: `qk_projection_mismatch_rope_transform_dominant`.
+
+Official pre-RoPE artifact availability:
+
+- Q full-value official pre-RoPE artifact:
+  not available as a standalone value tensor in the inspected `.live` artifacts.
+- Q official/candidate status metrics:
+  available. Runtime-forward status records candidate Q pre-RoPE vs official as exact, candidate Q
+  post-RoPE vs official as exact, and local/runtime Q post-RoPE as broad mismatch.
+- K full-value official pre-RoPE artifact:
+  available in
+  `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json`.
+
+Metrics from the local scratch pack and available official artifacts:
+
+- Custom Q final-token post-RoPE vs official final-token Q post-RoPE:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0021520100999623537`, `mismatches=1707`.
+- Custom K pre-RoPE vs official module K pre-RoPE:
+  `max_abs_diff=0.001953125`, `mean_abs_diff=5.2416783802300415e-08`, `mismatches=5`.
+- Custom K post-RoPE vs official K post-RoPE:
+  `max_abs_diff=0.5`, `mean_abs_diff=0.0066139730624854565`, `mismatches=15417`.
+
+Concentration findings:
+
+- Q final-token post-RoPE mismatch is spread across many heads; top mean-diff heads include
+  `q_head=27`, `51`, `14`, `22`, and `62`, all with `max_abs_diff=0.03125`.
+- K post-RoPE mismatch is broad across all KV heads. Top mean-diff KV heads are `2`, `5`, `4`,
+  `1`, and `0`; KV heads `2` and `5` reach `max_abs_diff=0.5`.
+
+Critical guard:
+
+- Feeding official module K pre-RoPE through the local Python half-split RoPE generator did not
+  reproduce official K post-RoPE.
+- Best tested local variant was BF16 output with the promoted sign convention, but it still had
+  `max_abs_diff=0.5`, `mean_abs_diff=0.006613972131162882`, `mismatches=15416`.
+- This means the generated scratch custom Q/K post-RoPE pack is not suitable to attribute the
+  raw-QK mismatch to projection alone until RoPE generation is pinned against the official/model
+  RoPE path.
+
+Conclusion:
+
+- The raw-QK formula and BF16 comparison boundary are still guarded by official Q + official K
+  recomputing the official raw-QK oracle exactly.
+- The current scratch custom/decomposed Q/K post-RoPE artifacts include a local RoPE generation
+  mismatch, so the previous mixed attribution is qualified: both custom scratch Q and K damage
+  raw-QK, but the immediate root to fix is RoPE transform/table parity in the artifact generator.
+- Next focus should be local RoPE generation parity against official/model RoPE using official K
+  pre/post artifacts, then regenerate custom/decomposed Q/K post-RoPE and rerun raw-QK attribution.
+- No runtime behavior changed and no raw artifacts are committed.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
