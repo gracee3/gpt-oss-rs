@@ -1094,6 +1094,59 @@ Next bounded step:
 - Only after that, regenerate custom/decomposed Q/K post-RoPE and rerun raw-QK attribution.
 - Keep this validation-only; do not route production Q/K/V projections.
 
+## Official/Model RoPE Pinning Status
+
+The official/model RoPE path was pinned directly after the bounded local table sweep failed:
+
+- Summary JSON:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/qk_official_rope_attribution_summary.json`.
+- Approach:
+  use the GPT-OSS torch model `AttentionBlock.rope` / `RotaryEmbedding.forward` call directly.
+- Official capture paths inspected:
+  `/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/restricted_oracle_prefill_trace.py`,
+  `/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_k_post_rope_and_score_after_onednn_k_candidate.py`,
+  and
+  `/home/emmy/openai/worktrees/runtime-forward/crates/gpt-oss-bench/tools/layer0_q_projection_onednn_oracle_scoped_candidate.py`.
+- Official model implementation:
+  `/home/emmy/openai/gpt-oss/gpt_oss/torch/model.py`.
+- Classification:
+  `rope_pinning_official_model_call_guard_passed_qk_rerun_complete`.
+
+Guard result:
+
+- Official module K pre-RoPE passed through `AttentionBlock.rope` reproduced official K post-RoPE
+  exactly:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+
+Pinned raw-QK rerun:
+
+- Custom/decomposed Q and K pre-RoPE artifacts were passed through the official/model RoPE call.
+- The regenerated custom final-token Q post-RoPE matched official final-token Q exactly:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+- The regenerated custom K post-RoPE differed from official K in only two very small lanes:
+  `max_abs_diff=0.000030517578125`, `mean_abs_diff=9.061517092234794e-10`,
+  `mismatches=2`.
+- BF16-rounded custom Q + custom K raw-QK matched the official raw-QK oracle exactly:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+
+Mixed attribution rerun with official/model RoPE:
+
+| Q source | K source | max abs diff | mean abs diff | mismatches |
+| --- | --- | ---: | ---: | ---: |
+| official | official | `0.0` | `0.0` | `0` |
+| custom/decomposed | official | `0.0` | `0.0` | `0` |
+| official | custom/decomposed | `0.0` | `0.0` | `0` |
+| custom/decomposed | custom/decomposed | `0.0` | `0.0` | `0` |
+
+Conclusion:
+
+- The earlier large Q/K raw-QK drift was caused by the scratch RoPE generator, not by the
+  custom/decomposed Q/K projection policy.
+- With official/model RoPE pinned, the exact layer0 final-token raw-QK BF16 boundary matches the
+  official oracle.
+- This remains a validation-only finding. No runtime behavior changed, no runtime Q/K/V routing was
+  added, and no raw `/tmp` or `.live` artifacts are committed.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
