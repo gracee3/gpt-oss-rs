@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig};
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+};
 use cudarc::nvrtc::Ptx;
 use tracing::{debug, info, trace};
 
@@ -124,6 +126,10 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
             "gpt_oss_dequant_expert_f16_kernel",
             "gpt_oss_weighted_add_kernel",
         ],
+    ),
+    (
+        "bf16_linear_bias_validation",
+        &["bf16_linear_bias_validation_kernel"],
     ),
 ];
 
@@ -341,6 +347,55 @@ impl KernelLoader {
         &self.stream
     }
 
+    /// Launch the validation-only BF16 biased linear kernel.
+    ///
+    /// Computes `output[m,n] = BF16_round(sum_k(input[m,k] * weight[n,k]) + bias[n])`.
+    /// This is deliberately a narrow harness API for projection-policy experiments;
+    /// it does not alter runtime projection routing.
+    pub fn launch_bf16_linear_bias_validation(
+        &self,
+        input: &CudaSlice<half::bf16>,
+        weight: &CudaSlice<half::bf16>,
+        bias: &CudaSlice<half::bf16>,
+        output: &mut CudaSlice<half::bf16>,
+        m: usize,
+        n: usize,
+        k: usize,
+        mode: i32,
+    ) -> Result<()> {
+        let func = self.get_func(
+            "bf16_linear_bias_validation",
+            "bf16_linear_bias_validation_kernel",
+        )?;
+        let threads = 256u32;
+        let total = (m * n) as u32;
+        let blocks = total.div_ceil(threads);
+        let cfg = launch_config((blocks, 1, 1), (threads, 1, 1), 0);
+        let m_arg = m as i32;
+        let n_arg = n as i32;
+        let k_arg = k as i32;
+        let mode_arg = mode;
+        let mut builder = self.stream.launch_builder(&func);
+        unsafe {
+            builder
+                .arg(input)
+                .arg(weight)
+                .arg(bias)
+                .arg(output)
+                .arg(&m_arg)
+                .arg(&n_arg)
+                .arg(&k_arg)
+                .arg(&mode_arg)
+                .launch(cfg)
+                .map_err(|e| {
+                    crate::LLMError::GpuError(format!(
+                        "bf16_linear_bias_validation_kernel launch failed: {e}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     /// Returns a reference to the underlying CUDA device (context alias).
     /// Kept for backward compatibility during migration.
     pub fn device(&self) -> &Arc<CudaContext> {
@@ -410,6 +465,14 @@ pub fn launch_config(
         block_dim: block,
         shared_mem_bytes: shared_mem,
     }
+}
+
+/// PTX output directory compiled into the gpt-oss-gpu crate by build.rs.
+///
+/// This lets validation harnesses load kernels without depending on build-script
+/// environment variables from another crate.
+pub fn default_ptx_dir() -> &'static Path {
+    Path::new(option_env!("GPT_OSS_RS_PTX_DIR").unwrap_or(""))
 }
 
 #[cfg(test)]

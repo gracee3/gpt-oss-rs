@@ -431,7 +431,11 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
     if cli.storage_dtype == "bf16" {
         let unsupported: Vec<_> = policies
             .iter()
-            .filter(|policy| policy.as_str() != "current" && policy.as_str() != "cublas-pedantic")
+            .filter(|policy| {
+                policy.as_str() != "current"
+                    && policy.as_str() != "cublas-pedantic"
+                    && !(cli.projection == "v" && policy.as_str() == "custom-bf16-linear")
+            })
             .cloned()
             .collect();
         if !unsupported.is_empty() {
@@ -1051,6 +1055,7 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
 
     let norm_bf16 = to_bf16_values(&norm);
     let v_weight_bf16 = to_bf16_values(&v_weight);
+    let v_bias_bf16 = to_bf16_values(&v_bias);
 
     let context = gpt_oss_gpu::CudaContext::new(0)
         .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; CUDA context init failed: {err}"))?;
@@ -1066,6 +1071,29 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     let v_weight_gpu = stream
         .clone_htod(&v_weight_bf16)
         .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; V weight upload failed: {err}"))?;
+    let v_bias_gpu = stream
+        .clone_htod(&v_bias_bf16)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; V bias upload failed: {err}"))?;
+
+    let custom_kernel_loader = if policies.iter().any(|policy| policy == "custom-bf16-linear") {
+        let loader = gpt_oss_gpu::kernel_loader::KernelLoader::new(
+            context.clone(),
+            stream.clone(),
+            gpt_oss_gpu::kernel_loader::default_ptx_dir(),
+        )
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; validation kernel loader init failed: {err}"))?;
+        if !loader.has_func(
+            "bf16_linear_bias_validation",
+            "bf16_linear_bias_validation_kernel",
+        ) {
+            return Err(anyhow::anyhow!(
+                "classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; bf16_linear_bias_validation_kernel is not available in loaded PTX"
+            ));
+        }
+        Some(loader)
+    } else {
+        None
+    };
 
     let cpu_f32_pre_bias = cpu_projection(
         &norm,
@@ -1150,6 +1178,9 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     let mut pedantic_vs_cpu_bf16 = None;
     let mut pedantic_pre_bias_vs_cpu_bf16 = None;
     let mut pedantic_restore_status = Value::Null;
+    let mut custom_output = None;
+    let mut custom_vs_oracle = None;
+    let mut custom_vs_cpu_bf16 = None;
 
     for policy in policies {
         let mut output_gpu = stream
@@ -1174,6 +1205,21 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
                     )
                     .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_pedantic_bf16_blocked_by_cublas_bindings; pedantic V BF16 GEMM warmup failed: {err}"))?,
                 );
+            } else if policy == "custom-bf16-linear" {
+                custom_kernel_loader
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; validation kernel loader was not initialized"))?
+                    .launch_bf16_linear_bias_validation(
+                        &norm_gpu,
+                        &v_weight_gpu,
+                        &v_bias_gpu,
+                        &mut output_gpu,
+                        M,
+                        KV_OUT,
+                        HIDDEN,
+                        0,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; custom V BF16 linear warmup failed: {err}"))?;
             } else {
                 blas.bf16_gemm_into(
                     M,
@@ -1208,6 +1254,21 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
                     )
                     .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_pedantic_bf16_blocked_by_cublas_bindings; pedantic V BF16 GEMM timed run failed: {err}"))?,
                 );
+            } else if policy == "custom-bf16-linear" {
+                custom_kernel_loader
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; validation kernel loader was not initialized"))?
+                    .launch_bf16_linear_bias_validation(
+                        &norm_gpu,
+                        &v_weight_gpu,
+                        &v_bias_gpu,
+                        &mut output_gpu,
+                        M,
+                        KV_OUT,
+                        HIDDEN,
+                        0,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_custom_bf16_linear_launch_failed; custom V BF16 linear timed run failed: {err}"))?;
             } else {
                 blas.bf16_gemm_into(
                     M,
@@ -1227,16 +1288,26 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; timed synchronize failed: {err}"))?;
         let mean_ms = start.elapsed().as_secs_f64() * 1000.0 / timed_iters as f64;
 
-        let pre_bias_bf16 = stream
+        let output_bf16 = stream
             .clone_dtoh(&output_gpu)
             .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_v_bf16_cuda_execution_failed; output download failed: {err}"))?;
-        let pre_bias: Vec<f32> = pre_bias_bf16.iter().map(|value| value.to_f32()).collect();
-        let output = add_bias_with_rounding(&pre_bias, &v_bias, RoundingPolicy::BFloat16);
+        let downloaded: Vec<f32> = output_bf16.iter().map(|value| value.to_f32()).collect();
+        let (pre_bias, output) = if policy == "custom-bf16-linear" {
+            (None, downloaded)
+        } else {
+            let pre_bias = downloaded;
+            let output = add_bias_with_rounding(&pre_bias, &v_bias, RoundingPolicy::BFloat16);
+            (Some(pre_bias), output)
+        };
         let vs_oracle = compare_outputs(&output, &v_oracle);
         let vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
-        let pre_bias_vs_cpu_bf16 = compare_outputs(&pre_bias, &cpu_bf16_pre_bias);
+        let pre_bias_vs_cpu_bf16 = pre_bias
+            .as_ref()
+            .map(|pre_bias| compare_outputs(pre_bias, &cpu_bf16_pre_bias));
         let latency_key = if policy == "cublas-pedantic" {
             "cublas_pedantic_v_bf16"
+        } else if policy == "custom-bf16-linear" {
+            "custom_bf16_linear_v"
         } else {
             "current_v_bf16"
         };
@@ -1252,31 +1323,49 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         comparisons.push(json!({
             "projection": "v",
             "policy": policy,
+            "kernel": if policy == "custom-bf16-linear" {
+                Value::String("bf16_linear_bias_validation_kernel".to_string())
+            } else {
+                Value::Null
+            },
+            "validation_only": policy == "custom-bf16-linear",
             "storage_dtype": "bf16",
             "shape": [M, KV_OUT],
             "output_checksum": digest_f32_le(&output),
-            "gemm": bf16_gemm_policy_json_for_projection("v", policy, &restore_status),
+            "gemm": if policy == "custom-bf16-linear" {
+                custom_bf16_linear_policy_json("v", 0)
+            } else {
+                bf16_gemm_policy_json_for_projection("v", policy, &restore_status)
+            },
             "bias": {
                 "bias_path": path_string(v_bias_path),
                 "bias_shape": [KV_OUT],
                 "bias_applied": true,
-                "bias_policy": "BF16 GEMM output plus BF16-rounded bias, rounded to BF16 output",
+                "bias_policy": if policy == "custom-bf16-linear" {
+                    "Kernel f32 accumulation plus BF16-rounded bias, rounded to BF16 output"
+                } else {
+                    "BF16 GEMM output plus BF16-rounded bias, rounded to BF16 output"
+                },
             },
             "vs_oracle": vs_oracle,
         }));
-        comparisons.push(comparison_json_for_projection(
-            "v",
-            if policy == "cublas-pedantic" {
-                "cublas_pedantic_pre_bias_bf16_vs_cpu_bf16_pre_bias"
-            } else {
-                "cuda_current_pre_bias_bf16_vs_cpu_bf16_pre_bias"
-            },
-            &pre_bias_vs_cpu_bf16,
-        ));
+        if let Some(pre_bias_vs_cpu_bf16) = &pre_bias_vs_cpu_bf16 {
+            comparisons.push(comparison_json_for_projection(
+                "v",
+                if policy == "cublas-pedantic" {
+                    "cublas_pedantic_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+                } else {
+                    "cuda_current_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+                },
+                pre_bias_vs_cpu_bf16,
+            ));
+        }
         comparisons.push(comparison_json_for_projection(
             "v",
             if policy == "cublas-pedantic" {
                 "cublas_pedantic_bf16_vs_cpu_bf16"
+            } else if policy == "custom-bf16-linear" {
+                "custom_bf16_linear_vs_cpu_bf16"
             } else {
                 "cuda_bf16_current_vs_cpu_bf16"
             },
@@ -1287,12 +1376,16 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             pedantic_restore_status = restore_status;
             pedantic_vs_oracle = Some(vs_oracle);
             pedantic_vs_cpu_bf16 = Some(vs_cpu_bf16);
-            pedantic_pre_bias_vs_cpu_bf16 = Some(pre_bias_vs_cpu_bf16);
-            pedantic_pre_bias_output = Some(pre_bias);
+            pedantic_pre_bias_vs_cpu_bf16 = pre_bias_vs_cpu_bf16;
+            pedantic_pre_bias_output = pre_bias;
             pedantic_output = Some(output);
+        } else if policy == "custom-bf16-linear" {
+            custom_vs_oracle = Some(vs_oracle);
+            custom_vs_cpu_bf16 = Some(vs_cpu_bf16);
+            custom_output = Some(output);
         } else {
             current_vs_oracle = Some(vs_oracle);
-            current_pre_bias_output = Some(pre_bias);
+            current_pre_bias_output = pre_bias;
             current_output = Some(output);
         }
     }
@@ -1302,6 +1395,20 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             "v",
             "cuda_bf16_current_vs_cublas_pedantic",
             &compare_outputs(current, pedantic),
+        ));
+    }
+    if let (Some(custom), Some(pedantic)) = (custom_output.as_ref(), pedantic_output.as_ref()) {
+        comparisons.push(comparison_json_for_projection(
+            "v",
+            "custom_bf16_linear_vs_cublas_pedantic",
+            &compare_outputs(custom, pedantic),
+        ));
+    }
+    if let (Some(custom), Some(current)) = (custom_output.as_ref(), current_output.as_ref()) {
+        comparisons.push(comparison_json_for_projection(
+            "v",
+            "custom_bf16_linear_vs_cuda_current",
+            &compare_outputs(custom, current),
         ));
     }
     if let (Some(current), Some(pedantic)) = (
@@ -1338,7 +1445,17 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         }));
     }
 
-    let classification = if let (Some(pedantic_vs_oracle), Some(pedantic_vs_cpu_bf16)) =
+    let classification = if let (Some(custom_vs_oracle), Some(custom_vs_cpu_bf16)) =
+        (custom_vs_oracle.as_ref(), custom_vs_cpu_bf16.as_ref())
+    {
+        if custom_vs_oracle.matched {
+            "qkv_projection_policy_compare_v_custom_bf16_linear_matches_oracle"
+        } else if custom_vs_cpu_bf16.matched {
+            "qkv_projection_policy_compare_v_custom_bf16_linear_matches_cpu_bf16_replay"
+        } else {
+            "qkv_projection_policy_compare_v_custom_bf16_linear_unmodeled"
+        }
+    } else if let (Some(pedantic_vs_oracle), Some(pedantic_vs_cpu_bf16)) =
         (pedantic_vs_oracle.as_ref(), pedantic_vs_cpu_bf16.as_ref())
     {
         classify_v_reconciliation(
@@ -1359,7 +1476,16 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     };
 
     let next_bounded_step = if classification
-        == "qkv_projection_policy_compare_v_pedantic_bf16_matches_oracle"
+        == "qkv_projection_policy_compare_v_custom_bf16_linear_matches_oracle"
+    {
+        "extend custom BF16 biased linear validation kernel to Q projection"
+    } else if classification
+        == "qkv_projection_policy_compare_v_custom_bf16_linear_matches_cpu_bf16_replay"
+    {
+        "identify missing module/F.linear epilogue behavior before production policy design"
+    } else if classification == "qkv_projection_policy_compare_v_custom_bf16_linear_unmodeled" {
+        "inspect custom kernel rounding and bias policy before extending to Q"
+    } else if classification == "qkv_projection_policy_compare_v_pedantic_bf16_matches_oracle"
         || classification == "qkv_projection_policy_compare_v_current_bf16_matches_oracle"
         || classification == "qkv_projection_policy_compare_v_bias_policy_identified"
     {
@@ -1400,6 +1526,8 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             "current_vs_oracle": current_vs_oracle,
             "pedantic_vs_oracle": pedantic_vs_oracle,
             "pedantic_vs_cpu_bf16": pedantic_vs_cpu_bf16,
+            "custom_bf16_linear_vs_oracle": custom_vs_oracle,
+            "custom_bf16_linear_vs_cpu_bf16": custom_vs_cpu_bf16,
             "cpu_bf16_vs_oracle": cpu_bf16_vs_oracle,
         },
         "bias_variants": bias_variants
@@ -1435,6 +1563,14 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             "math_mode": "CUBLAS_PEDANTIC_MATH",
             "atomics_mode": "CUBLAS_ATOMICS_NOT_ALLOWED",
             "restore_status": pedantic_restore_status,
+        },
+        "custom_validation_kernel": {
+            "available": policies.iter().any(|policy| policy == "custom-bf16-linear"),
+            "policy": "custom-bf16-linear",
+            "kernel": "bf16_linear_bias_validation_kernel",
+            "mode": 0,
+            "mode_description": "f32 accumulation + f32 bias add + BF16 output",
+            "validation_only": true,
         },
         "gemm_operation": "norm_input @ v_weight.T",
         "bias_applied": true,
@@ -2637,6 +2773,37 @@ fn bf16_gemm_policy_json_for_projection(
             "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
         })
     }
+}
+
+fn custom_bf16_linear_policy_json(projection: &str, mode: i32) -> Value {
+    let operation =
+        format!("BF16_round(sum(norm_input * {projection}_weight) + {projection}_bias)");
+    json!({
+        "m": M,
+        "n": KV_OUT,
+        "k": HIDDEN,
+        "operation": operation,
+        "backend": "bf16_linear_bias_validation_kernel",
+        "kernel": "bf16_linear_bias_validation_kernel",
+        "input_dtype": "BF16",
+        "weight_dtype": "BF16",
+        "bias_dtype": "BF16",
+        "accumulation_dtype": "FP32",
+        "output_dtype": "BF16",
+        "layout": {
+            "input": "row-major [m,k]",
+            "weight": "row-major [n,k]",
+            "output": "row-major [m,n]",
+        },
+        "mode": mode,
+        "mode_description": if mode == 1 {
+            "BF16-round pre-bias, f32 bias add, BF16 output"
+        } else {
+            "f32 accumulation, f32 bias add, BF16 output"
+        },
+        "validation_only": true,
+        "production_routing": false,
+    })
 }
 
 fn load_runtime_forward_reference() -> Value {

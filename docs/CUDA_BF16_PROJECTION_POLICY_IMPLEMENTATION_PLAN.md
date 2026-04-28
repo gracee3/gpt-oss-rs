@@ -710,6 +710,42 @@ Design conclusion:
 - Pedantic BF16 should not be production-routed.
 - No production Q/K/V projection policy should be promoted from the current validation findings.
 
+## Custom BF16 Biased Linear Validation Kernel Status
+
+A correctness-first validation-only CUDA kernel was added for the V projection experiment:
+
+- Kernel file: `kernels/bf16_linear_bias_validation.cu`.
+- Symbol: `bf16_linear_bias_validation_kernel`.
+- Harness policy: `custom-bf16-linear`.
+- Supported invocation:
+  `--execute --projection v --storage-dtype bf16 --policy custom-bf16-linear`.
+- Layout: input row-major `[m,k]`, weight row-major `[n,k]`, output row-major `[m,n]`.
+- Dtypes: BF16 input, BF16 weight, BF16 bias, FP32 accumulation, BF16 output.
+- Mode `0`: f32 accumulation plus f32 bias add, rounded to BF16 output.
+- The kernel is launched only by `qkv_projection_policy_compare` through a narrow
+  `KernelLoader` validation helper. It is not production routing.
+
+Pinned V result using `/tmp/qkv_projection_v_artifacts-pinned-20260428-092126/`:
+
+- Classification:
+  `qkv_projection_policy_compare_v_custom_bf16_linear_matches_cpu_bf16_replay`.
+- Custom BF16 linear vs module/F.linear oracle:
+  `max_abs_diff=0.015625`, `mean_abs_diff=7.029975108707731e-7`, `mismatches=15`.
+- Custom BF16 linear vs CPU BF16 replay:
+  exact match.
+- Custom BF16 linear vs cuBLAS pedantic:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012498591095209122`, `mismatches=11368`.
+- Latency: `~1.021 ms` for the one-output-element-per-thread correctness kernel.
+
+Conclusion:
+
+- The custom kernel confirms the decomposed BF16 replay contract, including bias, but it still does
+  not reproduce the official module/F.linear fused-backend output for V.
+- This narrows the remaining gap to module/F.linear epilogue/output semantics, not basic BF16
+  input, weight, bias, or deterministic FP32 accumulation plumbing.
+- The custom kernel is intentionally slow and validation-only. It should not be routed into
+  production runtime.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
