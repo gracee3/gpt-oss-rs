@@ -25,6 +25,8 @@ pub mod tensor_parallel;
 pub mod gpu_layer;
 #[cfg(feature = "cuda")]
 pub mod gpu_runner;
+#[cfg(feature = "cuda")]
+pub mod rope_validation;
 
 /// Type alias for cublasLt handle. Compiles to a usable type with the
 /// `cublaslt` feature, or a zero-size dummy without it. This lets

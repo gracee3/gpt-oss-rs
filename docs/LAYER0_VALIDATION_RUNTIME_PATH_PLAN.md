@@ -161,6 +161,12 @@ it uses K/Q downstream evidence.
 Status:
 
 - Submode added: `--mode k-rope`.
+- Runtime RoPE table helper added:
+  `gpt_oss_model_runner::rope_validation::build_runtime_rope_tables`.
+- Validation K RoPE helper added:
+  `gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation`.
+- Runtime `GpuModelRunner` table setup now calls the shared table helper, so the
+  validation path does not own independent table math.
 - Required inputs:
   - `--k-pre-rope`
   - `--k-post-rope-oracle`
@@ -171,27 +177,47 @@ Status:
   - the existing runtime-forward K projection status key
     `official_projection_outputs.official_module_k_output_f32`.
 - Runtime behavior changed: no.
-- CUDA execution in this submode: no.
+- CUDA execution in this submode: yes, validation-only.
 
 Current classification:
 
 ```text
-layer0_validation_k_rope_blocked_by_private_table_api
+layer0_validation_k_rope_mismatch
 ```
 
-Reason:
+Metric from `/tmp/layer0_validation_k_rope_status.json`:
 
-- The runtime f16 RoPE kernel launch helper is private inside
-  `crates/gpt-oss-model-runner/src/gpu_layer.rs`.
-- Runtime RoPE table construction is inline inside
-  `crates/gpt-oss-model-runner/src/gpu_runner.rs`, not exposed as a narrow
-  reusable validation API.
-- Reimplementing table math in this bench binary would repeat the failure mode
-  that contaminated the earlier scratch Q/K downstream artifacts.
+| Comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| runtime f16 K RoPE vs official K post-RoPE | `31.828125` | `0.8329416` | `37882` |
 
-Required next bounded step:
+First mismatch:
 
-Extract a small validation-safe runtime RoPE table/kernel API, then rerun:
+- token `0`, kv head `0`, lane `0`
+- runtime output `-1.7734375`
+- official output `-2.390625`
+- abs diff `0.6171875`
+
+Worst mismatch:
+
+- token `69`, kv head `5`, lane `11`
+- runtime output `26.671875`
+- official output `58.5`
+- abs diff `31.828125`
+
+Interpretation:
+
+- The API blocker is cleared: the bench now uses a narrow model-runner helper
+  and the existing `rotary_embedding_f16_kernel`.
+- The parity guard does not clear yet.
+- The mismatch begins at token `0`, where RoPE should be identity, so the next
+  slice should first verify that the supplied K pre-RoPE artifact is the exact
+  tensor that generated the official K post-RoPE artifact before changing RoPE
+  math.
+- If artifact identity is confirmed, the remaining issue is runtime RoPE
+  table/source parity with the official/model RoPE call.
+
+Reproduction command:
 
 ```bash
 cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda -- \
@@ -201,9 +227,11 @@ cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda 
   --output /tmp/layer0_validation_k_rope_status.json
 ```
 
-The rerun should only be considered meaningful once it uses the same runtime
-RoPE table source and kernel path that production code uses, without changing
-default routing.
+Required next bounded step:
+
+Pin the exact K pre-RoPE artifact identity against the official K post-RoPE
+artifact. If token-0 identity still fails with the correct source tensor, expose
+or align the runtime RoPE table source with the official/model RoPE source.
 
 ## Validation Commands
 

@@ -49,8 +49,12 @@ struct Cli {
     positions: String,
 
     /// Storage dtype for K RoPE validation.
-    #[arg(long, default_value = "bf16", value_parser = ["bf16", "f16"])]
+    #[arg(long, default_value = "f16", value_parser = ["f16"])]
     dtype: String,
+
+    /// RoPE theta used by the current runtime table helper.
+    #[arg(long, default_value_t = 150000.0)]
+    rope_theta: f32,
 
     /// JSON status output path.
     #[arg(long)]
@@ -93,6 +97,8 @@ struct KRopeStatus {
     artifacts: KRopeArtifacts,
     rope_config: KRopeConfig,
     metrics: Option<ComparisonMetrics>,
+    first_mismatch: Option<LogicalDiff>,
+    worst_mismatch: Option<LogicalDiff>,
     blocker: Option<Blocker>,
     next_bounded_step: &'static str,
 }
@@ -120,6 +126,7 @@ struct KRopeConfig {
     kv_heads: usize,
     head_dim: usize,
     positions: String,
+    rope_theta: f32,
     table_source: &'static str,
     lane_pairing: &'static str,
     dtype: String,
@@ -130,6 +137,16 @@ struct ComparisonMetrics {
     max_abs_diff: f32,
     mean_abs_diff: f32,
     mismatches: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct LogicalDiff {
+    token: usize,
+    kv_head: usize,
+    lane: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,37 +238,50 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
     validate_path(k_post_rope_oracle, "K post-RoPE oracle")?;
 
     let expected_count = cli.token_count * cli.kv_heads * cli.head_dim;
-    let pre = load_k_artifact(k_pre_rope, expected_count, true)?;
-    let post = load_k_artifact(k_post_rope_oracle, expected_count, false)?;
-    let artifacts_ok = pre.shape_or_count_matched && post.shape_or_count_matched;
-    let (classification, blocker) = if artifacts_ok {
-        (
-            "layer0_validation_k_rope_blocked_by_private_table_api",
-            Some(Blocker {
-                kind: "private_table_api",
-                detail: "runtime RoPE table construction is inline inside gpu_runner and not exposed as a narrow reusable validation API; duplicating table math here would repeat the prior scratch-RoPE failure mode",
-            }),
-        )
+    let (pre, pre_values) = load_k_artifact(k_pre_rope, expected_count, true)?;
+    let (post, oracle_values) = load_k_artifact(k_post_rope_oracle, expected_count, false)?;
+    let execution = if pre.shape_or_count_matched && post.shape_or_count_matched {
+        execute_k_rope(&pre_values, &oracle_values, cli)
     } else {
-        (
-            "layer0_validation_k_rope_blocked_by_artifacts",
-            Some(Blocker {
+        KRopeExecution {
+            classification: "layer0_validation_k_rope_blocked_by_artifacts",
+            metrics: None,
+            first_mismatch: None,
+            worst_mismatch: None,
+            blocker: Some(Blocker {
                 kind: "artifact_shape_or_values",
                 detail: "K pre/post RoPE artifacts did not expose a supported value key or expected value count",
             }),
-        )
+        }
+    };
+
+    let next_bounded_step = match execution.classification {
+        "layer0_validation_k_rope_matches_oracle" => {
+            "implement layer0 attention-only validation through raw QK guard using the same runtime RoPE helper"
+        }
+        "layer0_validation_k_rope_mismatch" => {
+            "pin K pre-RoPE artifact identity; then align runtime RoPE table source if artifact identity holds"
+        }
+        _ => "resolve the reported K RoPE validation blocker",
     };
 
     let status = KRopeStatus {
         mode: "layer0_validation_runtime_path",
         submode: "k-rope",
-        classification,
-        implemented: false,
+        classification: execution.classification,
+        implemented: execution.blocker.is_none(),
         runtime_behavior_changed: false,
         validation_only: true,
-        cuda_execution: false,
-        kernel_used: None,
-        api_used: "blocked before launch: private runtime RoPE table construction/API",
+        cuda_execution: execution.blocker.is_none(),
+        kernel_used: execution
+            .blocker
+            .is_none()
+            .then_some("rotary_embedding_f16_kernel"),
+        api_used: if execution.blocker.is_none() {
+            "gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation"
+        } else {
+            "blocked before launch"
+        },
         artifacts: KRopeArtifacts {
             k_pre_rope: pre,
             k_post_rope_oracle: post,
@@ -261,17 +291,79 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             kv_heads: cli.kv_heads,
             head_dim: cli.head_dim,
             positions: cli.positions.clone(),
-            table_source: "runtime table required, but helper is private/inline",
+            rope_theta: cli.rope_theta,
+            table_source: "gpt_oss_model_runner::rope_validation::build_runtime_rope_tables",
             lane_pairing: "half_split",
             dtype: cli.dtype.clone(),
         },
-        metrics: None,
-        blocker,
-        next_bounded_step:
-            "extract a narrow validation-safe runtime RoPE table/kernel API, then rerun K pre-RoPE to official post-RoPE parity",
+        metrics: execution.metrics,
+        first_mismatch: execution.first_mismatch,
+        worst_mismatch: execution.worst_mismatch,
+        blocker: execution.blocker,
+        next_bounded_step,
     };
 
     write_json(&cli.output, &status)
+}
+
+struct KRopeExecution {
+    classification: &'static str,
+    metrics: Option<ComparisonMetrics>,
+    first_mismatch: Option<LogicalDiff>,
+    worst_mismatch: Option<LogicalDiff>,
+    blocker: Option<Blocker>,
+}
+
+#[cfg(feature = "cuda")]
+fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
+    let result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation(
+        k_pre,
+        cli.token_count,
+        cli.kv_heads,
+        cli.head_dim,
+        cli.rope_theta,
+    );
+    match result {
+        Ok(actual) => {
+            let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
+            let matched = comparison.metrics.mismatches == 0;
+            KRopeExecution {
+                classification: if matched {
+                    "layer0_validation_k_rope_matches_oracle"
+                } else {
+                    "layer0_validation_k_rope_mismatch"
+                },
+                metrics: Some(comparison.metrics),
+                first_mismatch: comparison.first_mismatch,
+                worst_mismatch: comparison.worst_mismatch,
+                blocker: None,
+            }
+        }
+        Err(_) => KRopeExecution {
+            classification: "layer0_validation_k_rope_cuda_execution_failed",
+            metrics: None,
+            first_mismatch: None,
+            worst_mismatch: None,
+            blocker: Some(Blocker {
+                kind: "cuda_execution_failed",
+                detail: "runtime RoPE validation helper failed; rerun with stderr for detailed CUDA error",
+            }),
+        },
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_k_rope(_k_pre: &[f32], _oracle: &[f32], _cli: &Cli) -> KRopeExecution {
+    KRopeExecution {
+        classification: "layer0_validation_k_rope_cuda_execution_failed",
+        metrics: None,
+        first_mismatch: None,
+        worst_mismatch: None,
+        blocker: Some(Blocker {
+            kind: "cuda_feature_disabled",
+            detail: "k-rope execution requires the cuda feature",
+        }),
+    }
 }
 
 fn validate_path(path: &Path, label: &str) -> Result<()> {
@@ -318,24 +410,28 @@ fn load_k_artifact(
     path: &Path,
     expected_count: usize,
     allow_projection_key: bool,
-) -> Result<KArtifactStatus> {
+) -> Result<(KArtifactStatus, Vec<f32>)> {
     let value: Value = serde_json::from_slice(
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
     let shape = extract_shape(&value);
-    let (value_count, value_key) = extract_value_count(&value, allow_projection_key);
+    let (values, value_key) = extract_values(&value, allow_projection_key);
+    let value_count = values.as_ref().map(Vec::len);
     let shape_matches = matches!(shape.as_deref(), Some([74, 512]) | Some([74, 8, 64]));
     let count_matches = value_count == Some(expected_count);
-    Ok(KArtifactStatus {
-        path: path.display().to_string(),
-        json_loaded: true,
-        shape,
-        value_count,
-        expected_value_count: expected_count,
-        shape_or_count_matched: shape_matches || count_matches,
-        value_key,
-    })
+    Ok((
+        KArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape,
+            value_count,
+            expected_value_count: expected_count,
+            shape_or_count_matched: shape_matches || count_matches,
+            value_key,
+        },
+        values.unwrap_or_default(),
+    ))
 }
 
 fn extract_shape(value: &Value) -> Option<Vec<usize>> {
@@ -363,12 +459,9 @@ fn json_array_to_usize_vec(value: &Value) -> Option<Vec<usize>> {
         .collect()
 }
 
-fn extract_value_count(
-    value: &Value,
-    allow_projection_key: bool,
-) -> (Option<usize>, Option<String>) {
+fn extract_values(value: &Value, allow_projection_key: bool) -> (Option<Vec<f32>>, Option<String>) {
     if let Some(values) = value.get("values").and_then(Value::as_array) {
-        return (Some(values.len()), Some("values".to_string()));
+        return (Some(json_values_to_f32(values)), Some("values".to_string()));
     }
     if allow_projection_key {
         let key = "official_projection_outputs.official_module_k_output_f32";
@@ -377,8 +470,89 @@ fn extract_value_count(
             .and_then(|outputs| outputs.get("official_module_k_output_f32"))
             .and_then(Value::as_array)
         {
-            return (Some(values.len()), Some(key.to_string()));
+            return (Some(json_values_to_f32(values)), Some(key.to_string()));
         }
     }
     (None, None)
+}
+
+fn json_values_to_f32(values: &[Value]) -> Vec<f32> {
+    values
+        .iter()
+        .map(|value| value.as_f64().unwrap_or(f64::NAN) as f32)
+        .collect()
+}
+
+struct KRopeComparison {
+    metrics: ComparisonMetrics,
+    first_mismatch: Option<LogicalDiff>,
+    worst_mismatch: Option<LogicalDiff>,
+}
+
+fn compare_k_rope(
+    actual: &[f32],
+    expected: &[f32],
+    kv_heads: usize,
+    head_dim: usize,
+) -> KRopeComparison {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut mismatches = 0usize;
+    let mut first_mismatch = None;
+    let mut worst_mismatch = None;
+
+    for (idx, (&actual_value, &expected_value)) in actual.iter().zip(expected.iter()).enumerate() {
+        let abs_diff = (actual_value - expected_value).abs();
+        sum_abs_diff += abs_diff as f64;
+        if abs_diff != 0.0 {
+            mismatches += 1;
+            let diff = logical_diff(
+                idx,
+                kv_heads,
+                head_dim,
+                actual_value,
+                expected_value,
+                abs_diff,
+            );
+            if first_mismatch.is_none() {
+                first_mismatch = Some(LogicalDiff { ..diff });
+            }
+            if abs_diff > max_abs_diff {
+                max_abs_diff = abs_diff;
+                worst_mismatch = Some(diff);
+            }
+        }
+    }
+
+    let len = actual.len().min(expected.len()).max(1);
+    KRopeComparison {
+        metrics: ComparisonMetrics {
+            max_abs_diff,
+            mean_abs_diff: (sum_abs_diff / len as f64) as f32,
+            mismatches,
+        },
+        first_mismatch,
+        worst_mismatch,
+    }
+}
+
+fn logical_diff(
+    idx: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
+) -> LogicalDiff {
+    let per_token = kv_heads * head_dim;
+    let token = idx / per_token;
+    let feature = idx % per_token;
+    LogicalDiff {
+        token,
+        kv_head: feature / head_dim,
+        lane: feature % head_dim,
+        actual,
+        expected,
+        abs_diff,
+    }
 }

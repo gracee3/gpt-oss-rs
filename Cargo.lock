@@ -1368,6 +1368,7 @@ dependencies = [
  "gpt-oss-core",
  "gpt-oss-engine",
  "gpt-oss-gpu",
+ "gpt-oss-model-runner",
  "gpt-oss-tokenizer",
  "half",
  "rand 0.8.5",

@@ -95,6 +95,7 @@ mod cuda_impl {
     use tracing::{debug, info};
 
     use crate::bridge::{LLMError, Result};
+    use crate::rope_validation::build_runtime_rope_tables;
     use crate::runner::ModelRunnerConfig;
 
     use crate::gpu_layer::{
@@ -338,18 +339,9 @@ mod cuda_impl {
             // Precompute RoPE cos/sin tables
             let head_dim = config.head_dim;
             let max_pos = config.max_position.min(8192);
-            let half_dim = head_dim / 2;
             let rope_theta = config.rope_theta;
-            let mut cos_table = vec![0.0f32; max_pos * half_dim];
-            let mut sin_table = vec![0.0f32; max_pos * half_dim];
-            for pos in 0..max_pos {
-                for i in 0..half_dim {
-                    let freq = 1.0 / rope_theta.powf(2.0 * i as f32 / head_dim as f32);
-                    let theta = pos as f32 * freq;
-                    cos_table[pos * half_dim + i] = theta.cos();
-                    sin_table[pos * half_dim + i] = theta.sin();
-                }
-            }
+            let half_dim = head_dim / 2;
+            let (cos_table, sin_table) = build_runtime_rope_tables(head_dim, max_pos, rope_theta);
             let rope_cos = stream
                 .clone_htod(&cos_table)
                 .map_err(|e| LLMError::GpuError(format!("rope cos HtoD: {e}")))?;
