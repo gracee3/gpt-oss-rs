@@ -471,6 +471,60 @@ The V status artifact reports current/pedantic metrics versus the V oracle, peda
 metrics versus the CPU BF16 replay, current-vs-pedantic delta, latency per policy, bias metadata,
 and cuBLAS math/atomics restore status.
 
+## Real V Full-Value Comparison Status
+
+Standalone full-value V artifacts were not already present as an obvious checked-in or `.live`
+artifact pack. A local scratch pack was generated outside the repository at:
+
+```text
+/tmp/qkv_projection_v_artifacts-20260428-090001/
+```
+
+Scratch provenance:
+
+- Norm input source:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-attn-norm-full-input.cpu.json`
+- Model source:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- Tensor sources:
+  `model.layers.0.self_attn.v_proj.weight` and `model.layers.0.self_attn.v_proj.bias`
+- Oracle generation:
+  CPU BF16 `torch.nn.functional.linear(norm, v_weight, v_bias)` with MKLDNN enabled.
+- Runtime-forward source commit:
+  `5bcba1d2edcb9c15b1ed567700976dad03e12300`
+- Raw scratch artifacts are local-only and not committed.
+
+Generated artifact digests:
+
+- `norm_input`: `sha256-float-hex:c87d0bddb117b34f04bf18e0c94dcc0da8177ec5a99550a6566b807d55406fcc`
+- `v_weight`: `sha256-float-hex:af233ce814d4d9ebdb1c9c31fa52f8a289648969011c8f12ef5b53563e953161`
+- `v_bias`: `sha256-float-hex:57f9ec9658aad995521c27fdd1c50fb8bce562f5e27a5e859008b237a472ac89`
+- `v_oracle`: `sha256-float-hex:3afedc5eb920470d2cd2330761043b05188075b7818e9df8d829c8f32414debc`
+
+Real V result:
+
+- Classification: `qkv_projection_policy_compare_v_pedantic_bf16_improves_but_unmodeled`.
+- Current BF16 tensor-op vs oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0018099253065884113`, `mismatches=17446`.
+- Pedantic BF16 vs oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012496220879256725`, `mismatches=11366`.
+- Pedantic BF16 vs CPU BF16 replay:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012498591095209122`, `mismatches=11368`.
+- CPU BF16 replay vs oracle:
+  `max_abs_diff=0.015625`, `mean_abs_diff=7.029975108707731e-7`, `mismatches=15`.
+- Latency:
+  current BF16 `0.015809 ms`; pedantic BF16 `0.3494485 ms`.
+- cuBLAS math and atomics modes restored after the pedantic scoped call.
+
+Interpretation:
+
+- V does not follow the K pattern exactly.
+- Pedantic improves the real V output but does not match the CPU BF16 replay or the generated
+  oneDNN/PyTorch oracle.
+- Production routing remains inappropriate.
+- The next projection-policy step should reconcile V bias/reduction details or move to Q only as
+  another validation-only comparison, not as runtime extraction.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.
