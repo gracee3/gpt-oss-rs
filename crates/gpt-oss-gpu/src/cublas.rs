@@ -22,6 +22,15 @@ pub struct CublasHandle {
     graph_workspace: Option<CudaSlice<u8>>,
 }
 
+/// cuBLAS mode restore status for scoped validation policies.
+#[derive(Clone, Debug)]
+pub struct CublasModeRestoreStatus {
+    pub math_mode: String,
+    pub atomics_mode: String,
+    pub math_mode_restored: bool,
+    pub atomics_mode_restored: bool,
+}
+
 impl CublasHandle {
     pub fn new(stream: Arc<CudaStream>) -> Result<Self> {
         let blas = CudaBlas::new(stream.clone())
@@ -492,6 +501,151 @@ impl CublasHandle {
         _c: &mut impl DevicePtrMut<half::bf16>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Pedantic BF16 GEMM into a device buffer/view for validation only.
+    ///
+    /// This uses a scoped cuBLAS pedantic/no-tensor-op policy and restores the
+    /// previous math and atomics modes before returning. It is deliberately
+    /// separate from [`bf16_gemm_into`](Self::bf16_gemm_into) so default
+    /// runtime behavior is unaffected unless this method is explicitly called.
+    #[cfg(feature = "cuda")]
+    pub fn bf16_gemm_pedantic_into(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: f32,
+        a: &impl DevicePtr<half::bf16>,
+        b: &impl DevicePtr<half::bf16>,
+        beta: f32,
+        c: &mut impl DevicePtrMut<half::bf16>,
+    ) -> Result<CublasModeRestoreStatus> {
+        use cudarc::cublas::sys::{
+            cublasAtomicsMode_t,
+            cublasAtomicsMode_t::CUBLAS_ATOMICS_NOT_ALLOWED,
+            cublasComputeType_t::CUBLAS_COMPUTE_32F_PEDANTIC,
+            cublasGemmAlgo_t::CUBLAS_GEMM_DFALT,
+            cublasMath_t,
+            cublasMath_t::CUBLAS_PEDANTIC_MATH,
+            cublasOperation_t::{CUBLAS_OP_N, CUBLAS_OP_T},
+            cublasStatus_t::CUBLAS_STATUS_SUCCESS,
+            cudaDataType_t::CUDA_R_16BF,
+        };
+
+        unsafe {
+            let mut previous_math = cublasMath_t::CUBLAS_DEFAULT_MATH;
+            let status =
+                cudarc::cublas::sys::cublasGetMathMode(*self.blas.handle(), &mut previous_math);
+            if status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasGetMathMode failed: {status:?}"
+                )));
+            }
+
+            let mut previous_atomics = cublasAtomicsMode_t::CUBLAS_ATOMICS_ALLOWED;
+            let status = cudarc::cublas::sys::cublasGetAtomicsMode(
+                *self.blas.handle(),
+                &mut previous_atomics,
+            );
+            if status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasGetAtomicsMode failed: {status:?}"
+                )));
+            }
+
+            let status =
+                cudarc::cublas::sys::cublasSetMathMode(*self.blas.handle(), CUBLAS_PEDANTIC_MATH);
+            if status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasSetMathMode(CUBLAS_PEDANTIC_MATH) failed: {status:?}"
+                )));
+            }
+
+            let status = cudarc::cublas::sys::cublasSetAtomicsMode(
+                *self.blas.handle(),
+                CUBLAS_ATOMICS_NOT_ALLOWED,
+            );
+            if status != CUBLAS_STATUS_SUCCESS {
+                let _ = cudarc::cublas::sys::cublasSetMathMode(*self.blas.handle(), previous_math);
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasSetAtomicsMode(CUBLAS_ATOMICS_NOT_ALLOWED) failed: {status:?}"
+                )));
+            }
+
+            let (b_ptr, _bg) = DevicePtr::device_ptr(b, &self.stream);
+            let (a_ptr, _ag) = DevicePtr::device_ptr(a, &self.stream);
+            let (c_ptr, _cg) = DevicePtrMut::device_ptr_mut(c, &self.stream);
+            let gemm_status = cudarc::cublas::sys::cublasGemmEx(
+                *self.blas.handle(),
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                b_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                a_ptr as *const std::ffi::c_void,
+                CUDA_R_16BF,
+                k as i32,
+                &beta as *const f32 as *const std::ffi::c_void,
+                c_ptr as *mut std::ffi::c_void,
+                CUDA_R_16BF,
+                n as i32,
+                CUBLAS_COMPUTE_32F_PEDANTIC,
+                CUBLAS_GEMM_DFALT,
+            );
+
+            let math_restore_status =
+                cudarc::cublas::sys::cublasSetMathMode(*self.blas.handle(), previous_math);
+            let atomics_restore_status =
+                cudarc::cublas::sys::cublasSetAtomicsMode(*self.blas.handle(), previous_atomics);
+
+            if gemm_status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "bf16_gemm_pedantic_into failed: {gemm_status:?}; math restore: {math_restore_status:?}; atomics restore: {atomics_restore_status:?}"
+                )));
+            }
+            if math_restore_status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasSetMathMode restore failed: {math_restore_status:?}"
+                )));
+            }
+            if atomics_restore_status != CUBLAS_STATUS_SUCCESS {
+                return Err(crate::LLMError::GpuError(format!(
+                    "cublasSetAtomicsMode restore failed: {atomics_restore_status:?}"
+                )));
+            }
+
+            Ok(CublasModeRestoreStatus {
+                math_mode: format!("{previous_math:?}"),
+                atomics_mode: format!("{previous_atomics:?}"),
+                math_mode_restored: true,
+                atomics_mode_restored: true,
+            })
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn bf16_gemm_pedantic_into(
+        &self,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _alpha: f32,
+        _a: &impl DevicePtr<half::bf16>,
+        _b: &impl DevicePtr<half::bf16>,
+        _beta: f32,
+        _c: &mut impl DevicePtrMut<half::bf16>,
+    ) -> Result<CublasModeRestoreStatus> {
+        Ok(CublasModeRestoreStatus {
+            math_mode: "unavailable".to_string(),
+            atomics_mode: "unavailable".to_string(),
+            math_mode_restored: false,
+            atomics_mode_restored: false,
+        })
     }
 
     /// Strided batched HGEMM: multiple independent f16 GEMMs in one cuBLAS call.

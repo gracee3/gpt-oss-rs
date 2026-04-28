@@ -408,6 +408,37 @@ Next bounded step:
 - Use the BF16 K baseline result to decide whether to extend current-baseline comparison to Q/V or
   design a K-only candidate policy comparison.
 
+## K cuBLAS Pedantic BF16 Discriminator Status
+
+`qkv_projection_policy_compare` now supports the K-only validation command:
+
+```bash
+--execute --projection k --storage-dtype bf16 --policy current,cublas-pedantic
+```
+
+The `cublas-pedantic` policy is harness-only and uses `CublasHandle::bf16_gemm_pedantic_into`.
+
+Policy:
+
+- Input/output storage: `CUDA_R_16BF`.
+- Compute type: `CUBLAS_COMPUTE_32F_PEDANTIC`.
+- Algorithm: `CUBLAS_GEMM_DFALT`.
+- Scoped math mode: `CUBLAS_PEDANTIC_MATH`.
+- Scoped atomics mode: `CUBLAS_ATOMICS_NOT_ALLOWED`.
+- The previous cuBLAS math and atomics modes are restored after each scoped call.
+
+Boundaries:
+
+- Validation-only; no runtime projection routing changed.
+- Existing `bf16_gemm_into` tensor-op behavior is unchanged.
+- No CUDA kernels changed.
+- No Q/V comparison or production projection policy was added.
+
+The discriminator reports current BF16 tensor-op metrics, cublas-pedantic metrics, CPU BF16 replay
+metrics, current-vs-pedantic delta, latency per policy, and math/atomics restore status. The next
+step depends on whether pedantic matches the oracle, matches the CPU BF16 replay, improves but
+remains unmodeled, or is not sufficient.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.

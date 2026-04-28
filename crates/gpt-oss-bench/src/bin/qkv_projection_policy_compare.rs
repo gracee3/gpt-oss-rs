@@ -390,14 +390,29 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
         });
     }
 
+    if cli.storage_dtype == "bf16" {
+        let unsupported: Vec<_> = policies
+            .iter()
+            .filter(|policy| policy.as_str() != "current" && policy.as_str() != "cublas-pedantic")
+            .cloned()
+            .collect();
+        if !unsupported.is_empty() {
+            return Ok(ExecutionResult {
+                classification: "qkv_projection_policy_compare_k_bf16_cuda_policy_not_implemented",
+                projection_execution: false,
+                comparisons: Vec::new(),
+                latency: BTreeMap::new(),
+                k_contract: Value::Null,
+                runtime_forward_reference: Value::Null,
+                next_bounded_step: "fix artifact/API issue before CUDA policy work",
+            });
+        }
+        return run_current_k_bf16(cli, policies);
+    }
+
     if policies != ["current"] {
-        let classification = if cli.storage_dtype == "bf16" {
-            "qkv_projection_policy_compare_k_bf16_cuda_policy_not_implemented"
-        } else {
-            "qkv_projection_policy_compare_policy_not_implemented"
-        };
         return Ok(ExecutionResult {
-            classification,
+            classification: "qkv_projection_policy_compare_policy_not_implemented",
             projection_execution: false,
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
@@ -407,14 +422,6 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
         });
     }
 
-    run_current_k(cli)
-}
-
-#[cfg(feature = "cuda")]
-fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
-    if cli.storage_dtype == "bf16" {
-        return run_current_k_bf16(cli);
-    }
     run_current_k_f16(cli)
 }
 
@@ -665,7 +672,7 @@ fn run_current_k_f16(cli: &Cli) -> Result<ExecutionResult> {
 }
 
 #[cfg(feature = "cuda")]
-fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
+fn run_current_k_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
     let norm = load_values(
         &cli.norm_input,
         M * HIDDEN,
@@ -702,52 +709,6 @@ fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
     let k_weight_gpu = stream
         .clone_htod(&k_weight_bf16)
         .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; K weight upload failed: {err}"))?;
-    let mut output_gpu = stream
-        .alloc_zeros::<half::bf16>(M * KV_OUT)
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output allocation failed: {err}"))?;
-
-    let warmup_iters = 3usize;
-    let timed_iters = 10usize;
-    for _ in 0..warmup_iters {
-        blas.bf16_gemm_into(
-            M,
-            KV_OUT,
-            HIDDEN,
-            1.0,
-            &norm_gpu,
-            &k_weight_gpu,
-            0.0,
-            &mut output_gpu,
-        )
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM warmup failed: {err}"))?;
-    }
-    stream
-        .synchronize()
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; warmup synchronize failed: {err}"))?;
-
-    let start = Instant::now();
-    for _ in 0..timed_iters {
-        blas.bf16_gemm_into(
-            M,
-            KV_OUT,
-            HIDDEN,
-            1.0,
-            &norm_gpu,
-            &k_weight_gpu,
-            0.0,
-            &mut output_gpu,
-        )
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM timed run failed: {err}"))?;
-    }
-    stream
-        .synchronize()
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; timed synchronize failed: {err}"))?;
-    let mean_ms = start.elapsed().as_secs_f64() * 1000.0 / timed_iters as f64;
-
-    let output_bf16 = stream
-        .clone_dtoh(&output_gpu)
-        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output download failed: {err}"))?;
-    let output: Vec<f32> = output_bf16.iter().map(|value| value.to_f32()).collect();
 
     let cpu_bf16 = cpu_k_projection(
         &norm,
@@ -755,22 +716,189 @@ fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
         RoundingPolicy::BFloat16,
         WeightLayout::RowMajor,
     );
-    let cuda_vs_oracle = compare_outputs(&output, &k_oracle);
-    let cuda_vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
     let cpu_bf16_vs_oracle = compare_outputs(&cpu_bf16, &k_oracle);
 
-    let classification =
-        classify_k_bf16_contract(&cuda_vs_oracle, &cuda_vs_cpu_bf16, &cpu_bf16_vs_oracle);
+    let mut comparisons = Vec::new();
+    let mut latency = BTreeMap::new();
+    let mut current_output = None;
+    let mut current_vs_oracle = None;
+    let mut current_vs_cpu_bf16 = None;
+    let mut pedantic_output = None;
+    let mut pedantic_vs_oracle = None;
+    let mut pedantic_vs_cpu_bf16 = None;
+    let mut pedantic_restore_status = Value::Null;
+
+    for policy in policies {
+        let mut output_gpu = stream
+            .alloc_zeros::<half::bf16>(M * KV_OUT)
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output allocation failed: {err}"))?;
+        let warmup_iters = 3usize;
+        let timed_iters = 10usize;
+        let mut restore_status = Value::Null;
+
+        for _ in 0..warmup_iters {
+            if policy == "cublas-pedantic" {
+                restore_status = cublas_restore_status_json(
+                    blas.bf16_gemm_pedantic_into(
+                        M,
+                        KV_OUT,
+                        HIDDEN,
+                        1.0,
+                        &norm_gpu,
+                        &k_weight_gpu,
+                        0.0,
+                        &mut output_gpu,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_pedantic_bf16_blocked_by_cublas_bindings; pedantic K BF16 GEMM warmup failed: {err}"))?,
+                );
+            } else {
+                blas.bf16_gemm_into(
+                    M,
+                    KV_OUT,
+                    HIDDEN,
+                    1.0,
+                    &norm_gpu,
+                    &k_weight_gpu,
+                    0.0,
+                    &mut output_gpu,
+                )
+                .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM warmup failed: {err}"))?;
+            }
+        }
+        stream
+            .synchronize()
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; warmup synchronize failed: {err}"))?;
+
+        let start = Instant::now();
+        for _ in 0..timed_iters {
+            if policy == "cublas-pedantic" {
+                restore_status = cublas_restore_status_json(
+                    blas.bf16_gemm_pedantic_into(
+                        M,
+                        KV_OUT,
+                        HIDDEN,
+                        1.0,
+                        &norm_gpu,
+                        &k_weight_gpu,
+                        0.0,
+                        &mut output_gpu,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_pedantic_bf16_blocked_by_cublas_bindings; pedantic K BF16 GEMM timed run failed: {err}"))?,
+                );
+            } else {
+                blas.bf16_gemm_into(
+                    M,
+                    KV_OUT,
+                    HIDDEN,
+                    1.0,
+                    &norm_gpu,
+                    &k_weight_gpu,
+                    0.0,
+                    &mut output_gpu,
+                )
+                .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM timed run failed: {err}"))?;
+            }
+        }
+        stream
+            .synchronize()
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; timed synchronize failed: {err}"))?;
+        let mean_ms = start.elapsed().as_secs_f64() * 1000.0 / timed_iters as f64;
+
+        let output_bf16 = stream
+            .clone_dtoh(&output_gpu)
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output download failed: {err}"))?;
+        let output: Vec<f32> = output_bf16.iter().map(|value| value.to_f32()).collect();
+
+        let vs_oracle = compare_outputs(&output, &k_oracle);
+        let vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
+        let latency_key = if policy == "cublas-pedantic" {
+            "cublas_pedantic_k_bf16"
+        } else {
+            "current_k_bf16"
+        };
+        latency.insert(
+            latency_key.to_string(),
+            json!({
+                "available": true,
+                "warmup_iters": warmup_iters,
+                "timed_iters": timed_iters,
+                "mean_ms": mean_ms,
+            }),
+        );
+        comparisons.push(json!({
+            "projection": "k",
+            "policy": policy,
+            "storage_dtype": "bf16",
+            "shape": [M, KV_OUT],
+            "output_checksum": digest_f32_le(&output),
+            "gemm": bf16_gemm_policy_json(policy, &restore_status),
+            "vs_oracle": vs_oracle,
+        }));
+        comparisons.push(comparison_json(
+            if policy == "cublas-pedantic" {
+                "cublas_pedantic_bf16_vs_cpu_bf16"
+            } else {
+                "cuda_bf16_current_vs_cpu_bf16"
+            },
+            &vs_cpu_bf16,
+        ));
+
+        if policy == "cublas-pedantic" {
+            pedantic_restore_status = restore_status;
+            pedantic_vs_oracle = Some(vs_oracle);
+            pedantic_vs_cpu_bf16 = Some(vs_cpu_bf16);
+            pedantic_output = Some(output);
+        } else {
+            current_vs_oracle = Some(vs_oracle);
+            current_vs_cpu_bf16 = Some(vs_cpu_bf16);
+            current_output = Some(output);
+        }
+    }
+
+    if let (Some(current), Some(pedantic)) = (current_output.as_ref(), pedantic_output.as_ref()) {
+        comparisons.push(comparison_json(
+            "cuda_bf16_current_vs_cublas_pedantic",
+            &compare_outputs(current, pedantic),
+        ));
+    }
+
+    comparisons.push(replay_json(
+        "cpu_bf16_rounded_inputs_f32_accum_bf16_output",
+        &cpu_bf16,
+        &cpu_bf16_vs_oracle,
+    ));
+
+    let classification = if let (Some(pedantic_vs_oracle), Some(pedantic_vs_cpu_bf16)) =
+        (pedantic_vs_oracle.as_ref(), pedantic_vs_cpu_bf16.as_ref())
+    {
+        classify_k_pedantic_bf16(
+            current_vs_oracle.as_ref(),
+            pedantic_vs_oracle,
+            pedantic_vs_cpu_bf16,
+            &cpu_bf16_vs_oracle,
+        )
+    } else {
+        classify_k_bf16_contract(
+            current_vs_oracle
+                .as_ref()
+                .expect("current BF16 policy should produce metrics"),
+            current_vs_cpu_bf16
+                .as_ref()
+                .expect("current BF16 vs CPU BF16 metrics should exist"),
+            &cpu_bf16_vs_oracle,
+        )
+    };
     let next_bounded_step = if classification
         == "qkv_projection_policy_compare_k_bf16_cuda_matches_oracle"
+        || classification == "qkv_projection_policy_compare_k_pedantic_bf16_matches_oracle"
     {
         "implement Q/V current CUDA baseline comparisons"
     } else if classification
-        == "qkv_projection_policy_compare_k_bf16_cuda_matches_legacy_bf16_contract"
+        == "qkv_projection_policy_compare_k_pedantic_bf16_matches_legacy_bf16_contract"
     {
-        "implement K-only candidate policy comparison, starting with scoped cuBLAS pedantic/no-tensor-op if approved"
+        "compare downstream K post-RoPE/raw QK effects before considering runtime projection policy"
     } else {
-        "reconcile BF16 CUDA helper contract before candidate policy work"
+        "reconcile cuBLAS BF16 math-mode contract before candidate policy work"
     };
 
     let k_contract = json!({
@@ -785,6 +913,15 @@ fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
         "cublas_output_dtype": "CUDA_R_16BF downloaded and widened to f32 for comparison",
         "compute_dtype": "CUBLAS_COMPUTE_32F",
         "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
+        "candidate_policy": {
+            "available": policies.iter().any(|policy| policy == "cublas-pedantic"),
+            "policy": "cublas-pedantic",
+            "compute_dtype": "CUBLAS_COMPUTE_32F_PEDANTIC",
+            "algorithm": "CUBLAS_GEMM_DFALT",
+            "math_mode": "CUBLAS_PEDANTIC_MATH",
+            "atomics_mode": "CUBLAS_ATOMICS_NOT_ALLOWED",
+            "restore_status": pedantic_restore_status,
+        },
         "gemm_operation": "norm_input @ k_weight.T",
         "transa": "CUBLAS_OP_T on K weight in row-major [512, 2880]",
         "transb": "CUBLAS_OP_N on activation in row-major [74, 2880]",
@@ -802,51 +939,14 @@ fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
         "notes": [
             "This harness uses the public BF16 validation API, not runtime projection routing.",
             "No K bias is applied in this baseline.",
-            "No pedantic/no-tensor-op cuBLAS policy is used."
+            "Pedantic/no-tensor-op cuBLAS behavior is only used when policy cublas-pedantic is explicitly requested."
         ]
     });
-
-    let comparison_value = json!({
-        "projection": "k",
-        "policy": "current",
-        "storage_dtype": "bf16",
-        "shape": [M, KV_OUT],
-        "output_checksum": digest_f32_le(&output),
-        "gemm": {
-            "m": M,
-            "n": KV_OUT,
-            "k": HIDDEN,
-            "operation": "norm_input @ k_weight.T",
-            "backend": "CublasHandle::bf16_gemm_into",
-            "input_dtype": "CUDA_R_16BF",
-            "output_dtype": "CUDA_R_16BF",
-            "compute_dtype": "CUBLAS_COMPUTE_32F",
-            "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
-        },
-        "vs_oracle": cuda_vs_oracle,
-    });
-    let cuda_vs_cpu_bf16_value =
-        comparison_json("cuda_bf16_current_vs_cpu_bf16", &cuda_vs_cpu_bf16);
-    let cpu_bf16_value = replay_json(
-        "cpu_bf16_rounded_inputs_f32_accum_bf16_output",
-        &cpu_bf16,
-        &cpu_bf16_vs_oracle,
-    );
-    let mut latency = BTreeMap::new();
-    latency.insert(
-        "current_k_bf16".to_string(),
-        json!({
-            "available": true,
-            "warmup_iters": warmup_iters,
-            "timed_iters": timed_iters,
-            "mean_ms": mean_ms,
-        }),
-    );
 
     Ok(ExecutionResult {
         classification,
         projection_execution: true,
-        comparisons: vec![comparison_value, cuda_vs_cpu_bf16_value, cpu_bf16_value],
+        comparisons,
         latency,
         k_contract,
         runtime_forward_reference: load_runtime_forward_reference(),
@@ -855,9 +955,22 @@ fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
 }
 
 #[cfg(not(feature = "cuda"))]
-fn run_current_k(_cli: &Cli) -> Result<ExecutionResult> {
+fn run_current_k_f16(_cli: &Cli) -> Result<ExecutionResult> {
     Ok(ExecutionResult {
         classification: "qkv_projection_policy_compare_k_current_cuda_execution_failed",
+        projection_execution: false,
+        comparisons: Vec::new(),
+        latency: BTreeMap::new(),
+        k_contract: Value::Null,
+        runtime_forward_reference: Value::Null,
+        next_bounded_step: "fix artifact/API issue before CUDA policy work",
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_current_k_bf16(_cli: &Cli, _policies: &[String]) -> Result<ExecutionResult> {
+    Ok(ExecutionResult {
+        classification: "qkv_projection_policy_compare_k_bf16_cuda_execution_failed",
         projection_execution: false,
         comparisons: Vec::new(),
         latency: BTreeMap::new(),
@@ -1047,6 +1160,67 @@ fn classify_k_bf16_contract(
         "qkv_projection_policy_compare_k_bf16_cuda_matches_legacy_bf16_contract"
     } else {
         "qkv_projection_policy_compare_k_bf16_cuda_contract_unmodeled"
+    }
+}
+
+fn classify_k_pedantic_bf16(
+    current_vs_oracle: Option<&ComparisonMetrics>,
+    pedantic_vs_oracle: &ComparisonMetrics,
+    pedantic_vs_cpu_bf16: &ComparisonMetrics,
+    cpu_bf16_vs_oracle: &ComparisonMetrics,
+) -> &'static str {
+    if pedantic_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_pedantic_bf16_matches_oracle"
+    } else if pedantic_vs_cpu_bf16.matched && !cpu_bf16_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_pedantic_bf16_matches_legacy_bf16_contract"
+    } else if current_vs_oracle.is_some_and(|current| {
+        pedantic_vs_oracle.mismatching_element_count < current.mismatching_element_count
+            || pedantic_vs_oracle.max_abs_diff < current.max_abs_diff
+    }) {
+        "qkv_projection_policy_compare_k_pedantic_bf16_improves_but_unmodeled"
+    } else {
+        "qkv_projection_policy_compare_k_pedantic_bf16_not_sufficient"
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cublas_restore_status_json(status: gpt_oss_gpu::cublas::CublasModeRestoreStatus) -> Value {
+    json!({
+        "previous_math_mode": status.math_mode,
+        "previous_atomics_mode": status.atomics_mode,
+        "math_mode_restored": status.math_mode_restored,
+        "atomics_mode_restored": status.atomics_mode_restored,
+    })
+}
+
+fn bf16_gemm_policy_json(policy: &str, restore_status: &Value) -> Value {
+    if policy == "cublas-pedantic" {
+        json!({
+            "m": M,
+            "n": KV_OUT,
+            "k": HIDDEN,
+            "operation": "norm_input @ k_weight.T",
+            "backend": "CublasHandle::bf16_gemm_pedantic_into",
+            "input_dtype": "CUDA_R_16BF",
+            "output_dtype": "CUDA_R_16BF",
+            "compute_dtype": "CUBLAS_COMPUTE_32F_PEDANTIC",
+            "algorithm": "CUBLAS_GEMM_DFALT",
+            "math_mode": "CUBLAS_PEDANTIC_MATH",
+            "atomics_mode": "CUBLAS_ATOMICS_NOT_ALLOWED",
+            "restore_status": restore_status,
+        })
+    } else {
+        json!({
+            "m": M,
+            "n": KV_OUT,
+            "k": HIDDEN,
+            "operation": "norm_input @ k_weight.T",
+            "backend": "CublasHandle::bf16_gemm_into",
+            "input_dtype": "CUDA_R_16BF",
+            "output_dtype": "CUDA_R_16BF",
+            "compute_dtype": "CUBLAS_COMPUTE_32F",
+            "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
+        })
     }
 }
 
