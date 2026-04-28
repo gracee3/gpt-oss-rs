@@ -1147,6 +1147,68 @@ Conclusion:
 - This remains a validation-only finding. No runtime behavior changed, no runtime Q/K/V routing was
   added, and no raw `/tmp` or `.live` artifacts are committed.
 
+## Downstream Projection-Policy Decision Summary
+
+The downstream attention seams now give a stronger validation picture than the projection-boundary
+module/F.linear comparisons alone:
+
+- Q/K:
+  custom/decomposed Q and K pre-RoPE passed through the official/model RoPE call produce exact
+  BF16-rounded final-token raw-QK scores against the official oracle.
+- V:
+  custom/decomposed V projection still differs from module/F.linear at 15 projection lanes, but the
+  downstream weighted-V sum matched the official BF16 boundary exactly.
+- RoPE:
+  the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
+  projection-policy verdict.
+
+This supports the decomposed BF16 projection policy as a validation candidate for layer0 attention
+downstream seams, while keeping strict projection-boundary oneDNN/module epilogue parity as a
+separate open question.
+
+### Attention O-Proj Seam Check
+
+A bounded scratch check was also run for the next layer0 attention seam:
+
+- Summary JSON:
+  `/tmp/qkv_projection_attention_oproj_artifacts-20260428-validated/attention_oproj_custom_policy_summary.json`.
+- Boundary:
+  `layer0_final_token_attention_output_after_o_proj_before_residual`.
+- Input:
+  official weighted-V BF16 boundary `[4096]`, which is downstream-equivalent to the custom V path
+  because the custom V weighted-sum check matched exactly.
+- Weights:
+  layer0 attention output projection weight/bias from the local safetensors model.
+- Oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json`.
+
+Classification: `attention_oproj_custom_policy_matches_oracle`.
+
+Best checked policy:
+
+- `torch.nn.functional.linear` with BF16 input, weight, and bias.
+- Metrics vs official o-proj-before-residual oracle:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+
+Context:
+
+- The decomposed CPU matmul variants differed by only three tiny lanes:
+  `max_abs_diff=0.000003814697265625`, `mean_abs_diff=1.6556845894299954e-9`,
+  `mismatches=3`.
+- This confirms that the attention o-proj seam can be reproduced exactly with the official BF16
+  linear backend when fed the downstream-equivalent weighted-V boundary, but it does not yet justify
+  production routing through any custom projection path.
+
+Current decision:
+
+- Do not route production Q/K/V projections yet.
+- Continue treating decomposed BF16 projection as a validation candidate rather than a production
+  policy.
+- Production promotion still requires a guarded runtime validation path, CUDA performance evidence,
+  more layers/cases, a final-token/logit smoke, and later 4097-boundary testing.
+- No runtime behavior changed, no production CUDA kernels changed, and no raw `/tmp` or `.live`
+  artifacts are committed.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
