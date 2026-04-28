@@ -312,6 +312,43 @@ Next step depends on the K result:
 - If the mismatch is isolated to a calibrated dtype policy difference, design a K-only candidate
   comparison path before considering any runtime projection policy.
 
+## K BF16 CUDA Baseline Blocker
+
+Requested BF16 CUDA baseline:
+`--execute --projection k --policy current --storage-dtype bf16`.
+
+Current finding: `qkv_projection_policy_compare_k_bf16_cuda_blocked_by_public_api_gap`.
+
+Public API audit:
+
+- `gpt-oss-gpu::cublas::CublasHandle` currently exposes f32/f16 GEMM helpers such as `sgemm`,
+  `hgemm`, `hgemm_into`, and `hgemm_f32_output`.
+- No public `CublasHandle` method currently accepts `half::bf16` device buffers.
+- No public `gpt-oss-gpu` GEMM wrapper currently uses `CUDA_R_16BF` input/output with
+  `CUBLAS_COMPUTE_32F`.
+- The bench harness should not add raw cuBLAS calls or expose private model-runner projection
+  plumbing to bypass that API boundary.
+
+Decision:
+
+- Do not implement the BF16 CUDA baseline in this slice.
+- Do not add a pedantic/no-tensor-op candidate policy yet.
+- Treat BF16 CUDA execution as a separate, reviewable `gpt-oss-gpu` API decision.
+
+Required next API shape before implementation:
+
+- A narrow public validation-oriented BF16 GEMM helper in `gpt-oss-gpu`, or a clearly production-
+  intended BF16 GEMM API if broader runtime use is approved.
+- Inputs: BF16 activation and BF16 weight buffers in the existing row-major projection contract.
+- Output: BF16 buffer, downloaded as f32 by the harness for comparison.
+- Compute: FP32 accumulation with explicit cuBLAS data types and algorithm policy recorded in the
+  status artifact.
+- No default runtime routing change and no global cuBLAS math/atomics-mode change.
+
+The CPU BF16 replay remains the calibrated local contract check for now: it reproduces the
+runtime-forward six-lane K legacy/helper-vs-oneDNN oracle pattern. Candidate policies should wait
+until the BF16 CUDA baseline API exists and is measured against that CPU BF16 replay.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.
