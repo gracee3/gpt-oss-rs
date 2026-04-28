@@ -1175,6 +1175,9 @@ module/F.linear comparisons alone:
 - Weighted expert sum:
   the isolated expert30 selected-output mismatch causes a small weighted-sum mismatch; replacing
   only expert30 with the official selected output clears the weighted sum exactly.
+- Expert30 reconstruction:
+  a fresh local expert30 reconstruction clears both selected-output and weighted-sum metrics without
+  using the official final selected-output tensor directly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1466,6 +1469,74 @@ Conclusion:
 - The isolated expert30 selected-output mismatch is causal for the small weighted-sum mismatch.
 - This matches the historical runtime-forward finding that expert30 selected-output capture/readout
   needed correction before weighted-sum parity.
+- This slice does not import selected-expert readout plumbing into integration and does not change
+  runtime behavior.
+- The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
+
+### Expert30 Selected-Output Reconstruction
+
+A focused expert30 reconstruction diagnostic was run after the weighted expert sum showed that the
+rank `1` / expert `30` selected-output mismatch was causal:
+
+- Summary JSON:
+  `/tmp/qkv_projection_expert30_reconstruction_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch reconstruction directory:
+  `/tmp/qkv_projection_expert30_reconstruction_artifacts-20260428-validated/`.
+- Input:
+  `/tmp/qkv_projection_mlp_norm_artifacts-20260428-validated/custom_mlp_norm_output.json`.
+- Prior selected-output scratch artifact:
+  `/tmp/qkv_projection_selected_expert_artifacts-20260428-validated/selected_expert_outputs_custom.json`.
+- Official internal expert30 boundaries:
+  MLP1 before SwiGLU, SwiGLU before MLP2, and MLP2 before bias from the PPP reference artifact set.
+
+Variants tested:
+
+- `A_current_local_full_replay`:
+  local MLP1, local SwiGLU, local MLP2, local bias add.
+- `B_official_mlp2_pre_bias_*`:
+  official MLP2-before-bias plus local checkpoint bias, with BF16/f32/no-bias bounded bias-add
+  variants.
+- `C_official_swiglu_local_mlp2_bf16_bias`:
+  official SwiGLU into local MLP2 and bias.
+- `D_official_mlp1_local_swiglu_mlp2_bf16_bias`:
+  official MLP1 into local SwiGLU, MLP2, and bias.
+- `E_official_selected_output_guard`:
+  official selected output as a guard only.
+
+Classification: `expert30_reconstruction_clears_weighted_sum`.
+
+Best selected-output reconstruction:
+
+- Variant:
+  `A_current_local_full_replay`.
+- Metrics vs official expert30 selected output:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+
+Best weighted-sum replacement without using official selected output:
+
+- Variant:
+  `A_current_local_full_replay`.
+- Metrics vs official weighted expert sum:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+
+Other clearing reconstructions:
+
+- Official MLP2-before-bias plus BF16/f32 bias-add variants cleared.
+- Official SwiGLU into local MLP2 plus bias cleared.
+- Official MLP1 into local SwiGLU/MLP2 plus bias cleared.
+
+Additional diagnostic:
+
+- The prior selected-output scratch artifact's rank `1` / expert `30` vector differs from the fresh
+  local replay by the same pattern:
+  `max_abs_diff=0.015625`, `mean_abs_diff=7.355213165283203e-05`, `mismatches=151`.
+
+Conclusion:
+
+- Expert30 can be reconstructed locally and clears the weighted expert sum without direct use of the
+  official final selected-output tensor.
+- The earlier selected-output mismatch is attributable to the prior scratch selected-output
+  reconstruction/capture, not to a required production-runtime policy change.
 - This slice does not import selected-expert readout plumbing into integration and does not change
   runtime behavior.
 - The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
