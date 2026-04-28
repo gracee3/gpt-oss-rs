@@ -67,8 +67,10 @@ struct Status {
     shape_validation: ShapeValidation,
     artifacts: BTreeMap<&'static str, ArtifactStatus>,
     expected_shapes: ExpectedShapes,
+    k_contract: Value,
     comparisons: Vec<serde_json::Value>,
     latency: BTreeMap<String, serde_json::Value>,
+    runtime_forward_reference: Value,
     warnings: Vec<String>,
     next_bounded_step: &'static str,
 }
@@ -136,6 +138,8 @@ fn main() -> Result<()> {
     let mut classification = classify(&artifacts);
     let mut comparisons = Vec::new();
     let mut latency = BTreeMap::new();
+    let mut k_contract = Value::Null;
+    let mut runtime_forward_reference = Value::Null;
     let mut next_bounded_step =
         "implement baseline current CUDA helper comparison against loaded artifacts";
 
@@ -145,6 +149,8 @@ fn main() -> Result<()> {
         classification = execution.classification;
         comparisons = execution.comparisons;
         latency = execution.latency;
+        k_contract = execution.k_contract;
+        runtime_forward_reference = execution.runtime_forward_reference;
         next_bounded_step = execution.next_bounded_step;
     }
 
@@ -186,8 +192,10 @@ fn main() -> Result<()> {
                 output: [M, KV_OUT],
             },
         },
+        k_contract,
         comparisons,
         latency,
+        runtime_forward_reference,
         warnings,
         next_bounded_step,
     };
@@ -354,6 +362,8 @@ struct ExecutionResult {
     projection_execution: bool,
     comparisons: Vec<Value>,
     latency: BTreeMap<String, Value>,
+    k_contract: Value,
+    runtime_forward_reference: Value,
     next_bounded_step: &'static str,
 }
 
@@ -364,6 +374,8 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             projection_execution: false,
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
+            k_contract: Value::Null,
+            runtime_forward_reference: Value::Null,
             next_bounded_step: "fix artifact/API issue before CUDA policy work",
         });
     }
@@ -374,6 +386,8 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             projection_execution: false,
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
+            k_contract: Value::Null,
+            runtime_forward_reference: Value::Null,
             next_bounded_step: "fix artifact/API issue before CUDA policy work",
         });
     }
@@ -451,17 +465,101 @@ fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
         .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_current_cuda_execution_failed; output download failed: {err}"))?;
     let output: Vec<f32> = output_f16.iter().map(|value| value.to_f32()).collect();
 
-    let comparison = compare_outputs(&output, &k_oracle);
-    let matched = comparison.mismatching_element_count == 0;
-    let classification = if matched {
+    let cuda_vs_oracle = compare_outputs(&output, &k_oracle);
+    let cpu_f32 = cpu_k_projection(
+        &norm,
+        &k_weight,
+        RoundingPolicy::F32,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f16 = cpu_k_projection(
+        &norm,
+        &k_weight,
+        RoundingPolicy::F16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_bf16 = cpu_k_projection(
+        &norm,
+        &k_weight,
+        RoundingPolicy::BFloat16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f32_transposed_flat = cpu_k_projection(
+        &norm,
+        &k_weight,
+        RoundingPolicy::F32,
+        WeightLayout::TransposedFlat,
+    );
+
+    let cpu_f32_vs_oracle = compare_outputs(&cpu_f32, &k_oracle);
+    let cpu_f16_vs_oracle = compare_outputs(&cpu_f16, &k_oracle);
+    let cpu_bf16_vs_oracle = compare_outputs(&cpu_bf16, &k_oracle);
+    let cpu_transposed_vs_oracle = compare_outputs(&cpu_f32_transposed_flat, &k_oracle);
+    let cuda_vs_cpu_f32 = compare_outputs(&output, &cpu_f32);
+    let cuda_vs_cpu_f16 = compare_outputs(&output, &cpu_f16);
+    let cuda_vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
+
+    let classification = classify_k_contract(
+        &cuda_vs_oracle,
+        &cpu_f16_vs_oracle,
+        &cpu_bf16_vs_oracle,
+        &cpu_transposed_vs_oracle,
+        &cuda_vs_cpu_f16,
+    );
+    let next_bounded_step = if classification
+        == "qkv_projection_policy_compare_k_current_matches_oracle"
+    {
+        "implement Q/V current CUDA baseline comparisons"
+    } else if classification
+        == "qkv_projection_policy_compare_k_current_layout_or_orientation_mismatch"
+    {
+        "fix harness layout/orientation contract before CUDA policy work"
+    } else if classification == "qkv_projection_policy_compare_k_current_dtype_policy_mismatch" {
+        "design a K-only dtype-policy candidate comparison before runtime projection policy work"
+    } else if classification
+        == "qkv_projection_policy_compare_k_current_f16_contract_vs_bf16_oracle"
+    {
+        "implement K-only candidate policy comparison, starting with scoped BF16-compatible projection policy if approved"
+    } else {
+        "reconcile CUDA helper contract against runtime-forward helper artifacts before candidate policy work"
+    };
+
+    let k_contract = json!({
+        "activation_shape": [M, HIDDEN],
+        "weight_shape": [KV_OUT, HIDDEN],
+        "oracle_shape": [M, KV_OUT],
+        "activation_conversion": "JSON f32 values rounded to IEEE f16 before CUDA upload",
+        "weight_conversion": "JSON f32 values rounded to IEEE f16 before CUDA upload",
+        "cublas_input_dtype": "CUDA_R_16F via CublasHandle::hgemm",
+        "cublas_output_dtype": "CUDA_R_16F downloaded and widened to f32 for comparison",
+        "gemm_operation": "norm_input @ k_weight.T",
+        "transa": "CUBLAS_OP_T on K weight in row-major [512, 2880]",
+        "transb": "CUBLAS_OP_N on activation in row-major [74, 2880]",
+        "m": KV_OUT,
+        "n": M,
+        "k": HIDDEN,
+        "logical_m": M,
+        "logical_n": KV_OUT,
+        "lda": HIDDEN,
+        "ldb": HIDDEN,
+        "ldc": KV_OUT,
+        "bias_applied": false,
+        "output_layout": "[token, feature]",
+        "oracle_layout": "[token, feature] flat row-major values loaded from K oracle artifact",
+        "notes": [
+            "This harness uses current public hgemm, which is f16 input/output, not BF16 storage.",
+            "No K bias is applied in this baseline.",
+            "The runtime-forward proof artifacts identify oneDNN/PyTorch BF16 linear behavior as the oracle target."
+        ]
+    });
+
+    let runtime_forward_reference = load_runtime_forward_reference();
+
+    let matched = cuda_vs_oracle.mismatching_element_count == 0;
+    let legacy_classification = if matched {
         "qkv_projection_policy_compare_k_current_matches_oracle"
     } else {
         "qkv_projection_policy_compare_k_current_mismatches_oracle"
-    };
-    let next_bounded_step = if matched {
-        "implement Q/V current CUDA baseline comparisons"
-    } else {
-        "implement K-only candidate policy comparison, starting with scoped cuBLAS pedantic/no-tensor-op if approved"
     };
 
     let comparison_value = json!({
@@ -469,6 +567,7 @@ fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
         "policy": "current",
         "shape": [M, KV_OUT],
         "output_checksum": digest_f32_le(&output),
+        "legacy_classification": legacy_classification,
         "gemm": {
             "m": M,
             "n": KV_OUT,
@@ -476,8 +575,27 @@ fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
             "operation": "norm_input @ k_weight.T",
             "backend": "current CublasHandle hgemm",
         },
-        "vs_oracle": comparison,
+        "vs_oracle": cuda_vs_oracle,
     });
+    let cpu_f32_value = replay_json("cpu_f32_accum_f32_output", &cpu_f32, &cpu_f32_vs_oracle);
+    let cpu_f16_value = replay_json(
+        "cpu_f16_rounded_inputs_f32_accum_f16_output",
+        &cpu_f16,
+        &cpu_f16_vs_oracle,
+    );
+    let cpu_bf16_value = replay_json(
+        "cpu_bf16_rounded_inputs_f32_accum_bf16_output",
+        &cpu_bf16,
+        &cpu_bf16_vs_oracle,
+    );
+    let cpu_transposed_value = replay_json(
+        "cpu_f32_transposed_flat_weight_interpretation",
+        &cpu_f32_transposed_flat,
+        &cpu_transposed_vs_oracle,
+    );
+    let cuda_vs_cpu_f32_value = comparison_json("cuda_current_vs_cpu_f32", &cuda_vs_cpu_f32);
+    let cuda_vs_cpu_f16_value = comparison_json("cuda_current_vs_cpu_f16", &cuda_vs_cpu_f16);
+    let cuda_vs_cpu_bf16_value = comparison_json("cuda_current_vs_cpu_bf16", &cuda_vs_cpu_bf16);
     let mut latency = BTreeMap::new();
     latency.insert(
         "current_k".to_string(),
@@ -491,8 +609,19 @@ fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
     Ok(ExecutionResult {
         classification,
         projection_execution: true,
-        comparisons: vec![comparison_value],
+        comparisons: vec![
+            comparison_value,
+            cpu_f32_value,
+            cpu_f16_value,
+            cpu_bf16_value,
+            cpu_transposed_value,
+            cuda_vs_cpu_f32_value,
+            cuda_vs_cpu_f16_value,
+            cuda_vs_cpu_bf16_value,
+        ],
         latency,
+        k_contract,
+        runtime_forward_reference,
         next_bounded_step,
     })
 }
@@ -504,11 +633,13 @@ fn run_current_k(_cli: &Cli) -> Result<ExecutionResult> {
         projection_execution: false,
         comparisons: Vec::new(),
         latency: BTreeMap::new(),
+        k_contract: Value::Null,
+        runtime_forward_reference: Value::Null,
         next_bounded_step: "fix artifact/API issue before CUDA policy work",
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ComparisonMetrics {
     max_abs_diff: f32,
     mean_abs_diff: f32,
@@ -578,6 +709,142 @@ fn make_mismatch(index: usize, local: f32, oracle: f32, abs_diff: f32) -> Mismat
         oracle,
         abs_diff,
     }
+}
+
+#[derive(Clone, Copy)]
+enum RoundingPolicy {
+    F32,
+    F16,
+    BFloat16,
+}
+
+#[derive(Clone, Copy)]
+enum WeightLayout {
+    RowMajor,
+    TransposedFlat,
+}
+
+fn cpu_k_projection(
+    input: &[f32],
+    weight: &[f32],
+    policy: RoundingPolicy,
+    layout: WeightLayout,
+) -> Vec<f32> {
+    let input = round_values(input, policy);
+    let weight = round_values(weight, policy);
+    let mut output = vec![0.0f32; M * KV_OUT];
+
+    for token in 0..M {
+        for feature in 0..KV_OUT {
+            let mut sum = 0.0f32;
+            for hidden in 0..HIDDEN {
+                let input_value = input[token * HIDDEN + hidden];
+                let weight_value = match layout {
+                    WeightLayout::RowMajor => weight[feature * HIDDEN + hidden],
+                    WeightLayout::TransposedFlat => weight[hidden * KV_OUT + feature],
+                };
+                sum += input_value * weight_value;
+            }
+            output[token * KV_OUT + feature] = round_output(sum, policy);
+        }
+    }
+
+    output
+}
+
+fn round_values(values: &[f32], policy: RoundingPolicy) -> Vec<f32> {
+    values
+        .iter()
+        .map(|value| round_output(*value, policy))
+        .collect()
+}
+
+fn round_output(value: f32, policy: RoundingPolicy) -> f32 {
+    match policy {
+        RoundingPolicy::F32 => value,
+        RoundingPolicy::F16 => half::f16::from_f32(value).to_f32(),
+        RoundingPolicy::BFloat16 => half::bf16::from_f32(value).to_f32(),
+    }
+}
+
+fn replay_json(name: &'static str, output: &[f32], vs_oracle: &ComparisonMetrics) -> Value {
+    json!({
+        "projection": "k",
+        "replay": name,
+        "shape": [M, KV_OUT],
+        "output_checksum": digest_f32_le(output),
+        "vs_oracle": vs_oracle,
+    })
+}
+
+fn comparison_json(name: &'static str, metrics: &ComparisonMetrics) -> Value {
+    json!({
+        "projection": "k",
+        "comparison": name,
+        "shape": [M, KV_OUT],
+        "metrics": metrics,
+    })
+}
+
+fn classify_k_contract(
+    cuda_vs_oracle: &ComparisonMetrics,
+    cpu_f16_vs_oracle: &ComparisonMetrics,
+    cpu_bf16_vs_oracle: &ComparisonMetrics,
+    cpu_transposed_vs_oracle: &ComparisonMetrics,
+    cuda_vs_cpu_f16: &ComparisonMetrics,
+) -> &'static str {
+    if cuda_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_current_matches_oracle"
+    } else if cpu_bf16_vs_oracle.matched && !cpu_f16_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_current_dtype_policy_mismatch"
+    } else if cpu_transposed_vs_oracle.mismatching_element_count
+        < cuda_vs_oracle.mismatching_element_count / 2
+    {
+        "qkv_projection_policy_compare_k_current_layout_or_orientation_mismatch"
+    } else if cuda_vs_cpu_f16.matched && !cpu_f16_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_current_f16_contract_vs_bf16_oracle"
+    } else {
+        "qkv_projection_policy_compare_k_current_cuda_contract_unmodeled"
+    }
+}
+
+fn load_runtime_forward_reference() -> Value {
+    let helper_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json");
+    let scoped_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json");
+
+    let helper = read_json_file(helper_path);
+    let scoped = read_json_file(scoped_path);
+
+    json!({
+        "available": helper.is_some() || scoped.is_some(),
+        "helper_artifact": helper_path.display().to_string(),
+        "scoped_candidate_artifact": scoped_path.display().to_string(),
+        "known_legacy_vs_oracle_metrics": helper
+            .as_ref()
+            .and_then(|value| value.pointer("/helper_replay_vs_oracle_metrics/rust_cpu_replay_vs_onednn_oracle/metrics"))
+            .cloned()
+            .or_else(|| scoped
+                .as_ref()
+                .and_then(|value| value.pointer("/legacy_helper_replay_metrics/legacy_rust_cpu_replay_vs_onednn_oracle"))
+                .cloned()),
+        "known_candidate_vs_oracle_metrics": scoped
+            .as_ref()
+            .and_then(|value| value.pointer("/candidate_helper_projection_metrics/scoped_candidate_vs_onednn_oracle"))
+            .cloned(),
+        "known_six_lane_table": helper
+            .as_ref()
+            .and_then(|value| value.pointer("/helper_replay_vs_oracle_metrics/rust_cpu_replay_vs_onednn_oracle/known_six_lane_values"))
+            .cloned(),
+        "notes": [
+            "Runtime-forward artifacts report a six-lane legacy/helper-vs-oneDNN K mismatch, not the broad mismatch produced by an uncalibrated f16 hgemm artifact harness.",
+            "The scoped oneDNN candidate path is proof-only and is not imported by this harness."
+        ],
+    })
+}
+
+fn read_json_file(path: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 fn load_values(path: &Path, expected_count: usize, name: &str) -> Result<Vec<f32>> {

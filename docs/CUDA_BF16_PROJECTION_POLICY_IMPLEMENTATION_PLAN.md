@@ -291,11 +291,26 @@ Current behavior:
 - Does not add a candidate policy, pedantic/no-tensor-op path, runtime routing, CUDA kernel change,
   or proof-harness dependency.
 
+The first K current CUDA baseline produced a broad mismatch against the selected K oracle, much
+larger than the six-lane runtime-forward K projection delta. Candidate policies should wait until
+the baseline contract is calibrated.
+
+The harness now emits K contract reconciliation diagnostics:
+
+- Explicit activation/weight/oracle shapes, dtype conversions, hgemm transposition, leading
+  dimensions, bias policy, and output/oracle layout.
+- CPU f32, f16-rounded, BF16-rounded, and transposed-flat sanity replays against the same oracle.
+- CUDA current output comparisons against CPU f32/f16/BF16 replays.
+- Runtime-forward reference metrics showing the known six-lane helper-vs-oneDNN K delta and the
+  scoped proof-only candidate result when local artifacts are available.
+
 Next step depends on the K result:
 
 - If current K matches the oracle, extend the same baseline to Q/V.
-- If current K mismatches the oracle, design a K-only candidate comparison path before considering
-  any runtime projection policy.
+- If current K mismatches broadly, reconcile dtype/layout/artifact identity before considering any
+  candidate policy.
+- If the mismatch is isolated to a calibrated dtype policy difference, design a K-only candidate
+  comparison path before considering any runtime projection policy.
 
 Commit 3:
 
