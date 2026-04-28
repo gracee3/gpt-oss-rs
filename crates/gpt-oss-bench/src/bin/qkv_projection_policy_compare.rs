@@ -410,7 +410,7 @@ struct ExecutionResult {
 }
 
 fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
-    if cli.projection != "k" && cli.projection != "v" {
+    if cli.projection != "k" && cli.projection != "v" && cli.projection != "q" {
         let classification = if cli.storage_dtype == "bf16" {
             "qkv_projection_policy_compare_k_bf16_cuda_projection_not_implemented"
         } else {
@@ -436,10 +436,10 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
             .collect();
         if !unsupported.is_empty() {
             return Ok(ExecutionResult {
-                classification: if cli.projection == "v" {
-                    "qkv_projection_policy_compare_v_bf16_cuda_policy_not_implemented"
-                } else {
-                    "qkv_projection_policy_compare_k_bf16_cuda_policy_not_implemented"
+                classification: match cli.projection.as_str() {
+                    "q" => "qkv_projection_policy_compare_q_bf16_cuda_policy_not_implemented",
+                    "v" => "qkv_projection_policy_compare_v_bf16_cuda_policy_not_implemented",
+                    _ => "qkv_projection_policy_compare_k_bf16_cuda_policy_not_implemented",
                 },
                 projection_execution: false,
                 comparisons: Vec::new(),
@@ -450,14 +450,14 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
                 next_bounded_step: "fix artifact/API issue before CUDA policy work",
             });
         }
-        return if cli.projection == "v" {
-            run_current_v_bf16(cli, policies)
-        } else {
-            run_current_k_bf16(cli, policies)
+        return match cli.projection.as_str() {
+            "q" => run_current_q_bf16(cli, policies),
+            "v" => run_current_v_bf16(cli, policies),
+            _ => run_current_k_bf16(cli, policies),
         };
     }
 
-    if cli.projection == "v" {
+    if cli.projection == "v" || cli.projection == "q" {
         return Ok(ExecutionResult {
             classification: "qkv_projection_policy_compare_projection_not_implemented",
             projection_execution: false,
@@ -1461,6 +1461,445 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     })
 }
 
+#[cfg(feature = "cuda")]
+fn run_current_q_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
+    let q_bias_path = cli.q_bias.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "classification=qkv_projection_policy_compare_q_bf16_blocked_by_artifacts; --q-bias is required for Q projection execution"
+        )
+    })?;
+    let norm = load_values(
+        &cli.norm_input,
+        M * HIDDEN,
+        "norm_input",
+        "qkv_projection_policy_compare_q_bf16_blocked_by_artifacts",
+    )?;
+    let q_weight = load_values(
+        &cli.q_weight,
+        Q_OUT * HIDDEN,
+        "q_weight",
+        "qkv_projection_policy_compare_q_bf16_blocked_by_artifacts",
+    )?;
+    let q_bias = load_values(
+        q_bias_path,
+        Q_OUT,
+        "q_bias",
+        "qkv_projection_policy_compare_q_bf16_blocked_by_artifacts",
+    )?;
+    let q_oracle = load_values(
+        &cli.q_oracle,
+        M * Q_OUT,
+        "q_oracle",
+        "qkv_projection_policy_compare_q_bf16_blocked_by_artifacts",
+    )?;
+
+    let norm_bf16 = to_bf16_values(&norm);
+    let q_weight_bf16 = to_bf16_values(&q_weight);
+
+    let context = gpt_oss_gpu::CudaContext::new(0)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; CUDA context init failed: {err}"))?;
+    let stream = context
+        .new_stream()
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; CUDA stream init failed: {err}"))?;
+    let blas = gpt_oss_gpu::cublas::CublasHandle::new(stream.clone())
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; cuBLAS handle init failed: {err}"))?;
+
+    let norm_gpu = stream
+        .clone_htod(&norm_bf16)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; norm input upload failed: {err}"))?;
+    let q_weight_gpu = stream
+        .clone_htod(&q_weight_bf16)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; Q weight upload failed: {err}"))?;
+
+    let cpu_f32_pre_bias = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        None,
+        Q_OUT,
+        RoundingPolicy::F32,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f16_pre_bias = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        None,
+        Q_OUT,
+        RoundingPolicy::F16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_bf16_pre_bias = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        None,
+        Q_OUT,
+        RoundingPolicy::BFloat16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f32 = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        Some(&q_bias),
+        Q_OUT,
+        RoundingPolicy::F32,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f16 = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        Some(&q_bias),
+        Q_OUT,
+        RoundingPolicy::F16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_bf16 = cpu_projection_out_dim(
+        &norm,
+        &q_weight,
+        Some(&q_bias),
+        Q_OUT,
+        RoundingPolicy::BFloat16,
+        WeightLayout::RowMajor,
+    );
+    let cpu_f32_vs_oracle = compare_outputs_with_width(&cpu_f32, &q_oracle, Q_OUT);
+    let cpu_f16_vs_oracle = compare_outputs_with_width(&cpu_f16, &q_oracle, Q_OUT);
+    let cpu_bf16_vs_oracle = compare_outputs_with_width(&cpu_bf16, &q_oracle, Q_OUT);
+    let no_bias_vs_oracle = compare_outputs_with_width(&cpu_bf16_pre_bias, &q_oracle, Q_OUT);
+
+    let mut comparisons = Vec::new();
+    comparisons.push(replay_json_for_projection_with_width(
+        "q",
+        "cpu_bf16_pre_bias_replay",
+        &cpu_bf16_pre_bias,
+        &no_bias_vs_oracle,
+        Q_OUT,
+    ));
+    comparisons.push(replay_json_for_projection_with_width(
+        "q",
+        "cpu_f32_accum_f32_bias_f32_output",
+        &cpu_f32,
+        &cpu_f32_vs_oracle,
+        Q_OUT,
+    ));
+    comparisons.push(replay_json_for_projection_with_width(
+        "q",
+        "cpu_f16_rounded_inputs_f32_accum_f16_bias_f16_output",
+        &cpu_f16,
+        &cpu_f16_vs_oracle,
+        Q_OUT,
+    ));
+    comparisons.push(replay_json_for_projection_with_width(
+        "q",
+        "cpu_bf16_rounded_inputs_f32_accum_bf16_bias_bf16_output",
+        &cpu_bf16,
+        &cpu_bf16_vs_oracle,
+        Q_OUT,
+    ));
+
+    let mut latency = BTreeMap::new();
+    let mut current_output = None;
+    let mut current_pre_bias_output = None;
+    let mut current_vs_oracle = None;
+    let mut pedantic_output = None;
+    let mut pedantic_pre_bias_output = None;
+    let mut pedantic_vs_oracle = None;
+    let mut pedantic_vs_cpu_bf16 = None;
+    let mut pedantic_pre_bias_vs_cpu_bf16 = None;
+    let mut pedantic_restore_status = Value::Null;
+
+    for policy in policies {
+        let mut output_gpu = stream
+            .alloc_zeros::<half::bf16>(M * Q_OUT)
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; output allocation failed: {err}"))?;
+        let warmup_iters = 3usize;
+        let timed_iters = 10usize;
+        let mut restore_status = Value::Null;
+
+        for _ in 0..warmup_iters {
+            if policy == "cublas-pedantic" {
+                restore_status = cublas_restore_status_json(
+                    blas.bf16_gemm_pedantic_into(
+                        M,
+                        Q_OUT,
+                        HIDDEN,
+                        1.0,
+                        &norm_gpu,
+                        &q_weight_gpu,
+                        0.0,
+                        &mut output_gpu,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_pedantic_bf16_blocked_by_cublas_bindings; pedantic Q BF16 GEMM warmup failed: {err}"))?,
+                );
+            } else {
+                blas.bf16_gemm_into(
+                    M,
+                    Q_OUT,
+                    HIDDEN,
+                    1.0,
+                    &norm_gpu,
+                    &q_weight_gpu,
+                    0.0,
+                    &mut output_gpu,
+                )
+                .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; current Q BF16 GEMM warmup failed: {err}"))?;
+            }
+        }
+        stream
+            .synchronize()
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; warmup synchronize failed: {err}"))?;
+
+        let start = Instant::now();
+        for _ in 0..timed_iters {
+            if policy == "cublas-pedantic" {
+                restore_status = cublas_restore_status_json(
+                    blas.bf16_gemm_pedantic_into(
+                        M,
+                        Q_OUT,
+                        HIDDEN,
+                        1.0,
+                        &norm_gpu,
+                        &q_weight_gpu,
+                        0.0,
+                        &mut output_gpu,
+                    )
+                    .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_pedantic_bf16_blocked_by_cublas_bindings; pedantic Q BF16 GEMM timed run failed: {err}"))?,
+                );
+            } else {
+                blas.bf16_gemm_into(
+                    M,
+                    Q_OUT,
+                    HIDDEN,
+                    1.0,
+                    &norm_gpu,
+                    &q_weight_gpu,
+                    0.0,
+                    &mut output_gpu,
+                )
+                .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; current Q BF16 GEMM timed run failed: {err}"))?;
+            }
+        }
+        stream
+            .synchronize()
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; timed synchronize failed: {err}"))?;
+        let mean_ms = start.elapsed().as_secs_f64() * 1000.0 / timed_iters as f64;
+
+        let pre_bias_bf16 = stream
+            .clone_dtoh(&output_gpu)
+            .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_q_bf16_cuda_execution_failed; output download failed: {err}"))?;
+        let pre_bias: Vec<f32> = pre_bias_bf16.iter().map(|value| value.to_f32()).collect();
+        let output =
+            add_bias_with_rounding_out_dim(&pre_bias, &q_bias, Q_OUT, RoundingPolicy::BFloat16);
+        let vs_oracle = compare_outputs_with_width(&output, &q_oracle, Q_OUT);
+        let vs_cpu_bf16 = compare_outputs_with_width(&output, &cpu_bf16, Q_OUT);
+        let pre_bias_vs_cpu_bf16 = compare_outputs_with_width(&pre_bias, &cpu_bf16_pre_bias, Q_OUT);
+        let latency_key = if policy == "cublas-pedantic" {
+            "cublas_pedantic_q_bf16"
+        } else {
+            "current_q_bf16"
+        };
+        latency.insert(
+            latency_key.to_string(),
+            json!({
+                "available": true,
+                "warmup_iters": warmup_iters,
+                "timed_iters": timed_iters,
+                "mean_ms": mean_ms,
+            }),
+        );
+        comparisons.push(json!({
+            "projection": "q",
+            "policy": policy,
+            "storage_dtype": "bf16",
+            "shape": [M, Q_OUT],
+            "output_checksum": digest_f32_le(&output),
+            "gemm": bf16_gemm_policy_json_for_projection("q", policy, &restore_status),
+            "bias": {
+                "bias_path": path_string(q_bias_path),
+                "bias_shape": [Q_OUT],
+                "bias_applied": true,
+                "bias_policy": "BF16 GEMM output plus BF16-rounded bias, rounded to BF16 output",
+            },
+            "vs_oracle": metrics_with_q_head(&vs_oracle),
+        }));
+        comparisons.push(comparison_json_for_projection_with_width(
+            "q",
+            if policy == "cublas-pedantic" {
+                "cublas_pedantic_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+            } else {
+                "cuda_current_pre_bias_bf16_vs_cpu_bf16_pre_bias"
+            },
+            &pre_bias_vs_cpu_bf16,
+            Q_OUT,
+        ));
+        comparisons.push(comparison_json_for_projection_with_width(
+            "q",
+            if policy == "cublas-pedantic" {
+                "cublas_pedantic_bf16_vs_cpu_bf16"
+            } else {
+                "cuda_bf16_current_vs_cpu_bf16"
+            },
+            &vs_cpu_bf16,
+            Q_OUT,
+        ));
+
+        if policy == "cublas-pedantic" {
+            pedantic_restore_status = restore_status;
+            pedantic_vs_oracle = Some(vs_oracle);
+            pedantic_vs_cpu_bf16 = Some(vs_cpu_bf16);
+            pedantic_pre_bias_vs_cpu_bf16 = Some(pre_bias_vs_cpu_bf16);
+            pedantic_pre_bias_output = Some(pre_bias);
+            pedantic_output = Some(output);
+        } else {
+            current_vs_oracle = Some(vs_oracle);
+            current_pre_bias_output = Some(pre_bias);
+            current_output = Some(output);
+        }
+    }
+
+    if let (Some(current), Some(pedantic)) = (current_output.as_ref(), pedantic_output.as_ref()) {
+        comparisons.push(comparison_json_for_projection_with_width(
+            "q",
+            "cuda_bf16_current_vs_cublas_pedantic",
+            &compare_outputs_with_width(current, pedantic, Q_OUT),
+            Q_OUT,
+        ));
+    }
+    if let (Some(current), Some(pedantic)) = (
+        current_pre_bias_output.as_ref(),
+        pedantic_pre_bias_output.as_ref(),
+    ) {
+        comparisons.push(comparison_json_for_projection_with_width(
+            "q",
+            "cuda_bf16_current_pre_bias_vs_cublas_pedantic_pre_bias",
+            &compare_outputs_with_width(current, pedantic, Q_OUT),
+            Q_OUT,
+        ));
+    }
+
+    let bias_variants = build_bias_variants_with_width(
+        pedantic_pre_bias_output
+            .as_deref()
+            .or(current_pre_bias_output.as_deref()),
+        &cpu_f32_pre_bias,
+        &cpu_f16_pre_bias,
+        &cpu_bf16_pre_bias,
+        &q_bias,
+        &q_oracle,
+        Q_OUT,
+    );
+    let best_bias_variant = bias_variants
+        .iter()
+        .min_by_key(|(_, metrics)| metrics.mismatching_element_count)
+        .map(|(name, metrics)| (*name, metrics.clone()));
+    for (name, metrics) in &bias_variants {
+        comparisons.push(json!({
+            "projection": "q",
+            "bias_variant": name,
+            "shape": [M, Q_OUT],
+            "vs_oracle": metrics_with_q_head(metrics),
+        }));
+    }
+
+    let classification = if let (Some(pedantic_vs_oracle), Some(pedantic_vs_cpu_bf16)) =
+        (pedantic_vs_oracle.as_ref(), pedantic_vs_cpu_bf16.as_ref())
+    {
+        classify_q_reconciliation(
+            current_vs_oracle.as_ref(),
+            pedantic_vs_oracle,
+            pedantic_vs_cpu_bf16,
+            pedantic_pre_bias_vs_cpu_bf16.as_ref(),
+            &cpu_bf16_vs_oracle,
+        )
+    } else if current_vs_oracle
+        .as_ref()
+        .is_some_and(|metrics| metrics.matched)
+    {
+        "qkv_projection_policy_compare_q_current_bf16_matches_oracle"
+    } else {
+        "qkv_projection_policy_compare_q_current_bf16_mismatches_oracle"
+    };
+    let next_bounded_step = if classification
+        == "qkv_projection_policy_compare_q_pedantic_bf16_matches_oracle"
+        || classification == "qkv_projection_policy_compare_q_current_bf16_matches_oracle"
+    {
+        "compare Q post-RoPE and raw QK downstream effects before projection-policy design conclusions"
+    } else if classification
+        == "qkv_projection_policy_compare_q_oracle_differs_from_cpu_bf16_replay"
+    {
+        "summarize Q/K/V projection policy matrix before adding new candidate policies"
+    } else {
+        "summarize Q/K/V projection policy matrix before projection-policy design changes"
+    };
+
+    let q_reconciliation = json!({
+        "pre_bias": {
+            "current_vs_cpu_bf16": current_pre_bias_output
+                .as_ref()
+                .map(|output| metrics_with_q_head(&compare_outputs_with_width(output, &cpu_bf16_pre_bias, Q_OUT))),
+            "pedantic_vs_cpu_bf16": pedantic_pre_bias_vs_cpu_bf16.as_ref().map(metrics_with_q_head),
+        },
+        "post_bias": {
+            "current_vs_oracle": current_vs_oracle.as_ref().map(metrics_with_q_head),
+            "pedantic_vs_oracle": pedantic_vs_oracle.as_ref().map(metrics_with_q_head),
+            "pedantic_vs_cpu_bf16": pedantic_vs_cpu_bf16.as_ref().map(metrics_with_q_head),
+            "cpu_bf16_vs_oracle": metrics_with_q_head(&cpu_bf16_vs_oracle),
+        },
+        "bias_variants": bias_variants
+            .iter()
+            .map(|(name, metrics)| json!({"name": name, "vs_oracle": metrics_with_q_head(metrics)}))
+            .collect::<Vec<_>>(),
+        "best_bias_variant": best_bias_variant
+            .as_ref()
+            .map(|(name, metrics)| json!({"name": name, "vs_oracle": metrics_with_q_head(metrics)})),
+    });
+
+    let k_contract = json!({
+        "storage_dtype": "bf16",
+        "projection": "q",
+        "activation_shape": [M, HIDDEN],
+        "weight_shape": [Q_OUT, HIDDEN],
+        "bias_shape": [Q_OUT],
+        "oracle_shape": [M, Q_OUT],
+        "activation_conversion": "JSON f32 values rounded to BF16 before CUDA upload",
+        "weight_conversion": "JSON f32 values rounded to BF16 before CUDA upload",
+        "bias_conversion": "JSON f32 values rounded to BF16 before add",
+        "bf16_conversion_policy": "half::bf16::from_f32 on JSON f32 values",
+        "cublas_input_dtype": "CUDA_R_16BF",
+        "cublas_output_dtype": "CUDA_R_16BF downloaded and widened to f32 before bias add",
+        "compute_dtype": "CUBLAS_COMPUTE_32F",
+        "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
+        "candidate_policy": {
+            "available": policies.iter().any(|policy| policy == "cublas-pedantic"),
+            "policy": "cublas-pedantic",
+            "compute_dtype": "CUBLAS_COMPUTE_32F_PEDANTIC",
+            "algorithm": "CUBLAS_GEMM_DFALT",
+            "math_mode": "CUBLAS_PEDANTIC_MATH",
+            "atomics_mode": "CUBLAS_ATOMICS_NOT_ALLOWED",
+            "restore_status": pedantic_restore_status,
+        },
+        "gemm_operation": "norm_input @ q_weight.T",
+        "bias_applied": true,
+        "bias_path": path_string(q_bias_path),
+        "bias_policy": "BF16 GEMM output plus BF16-rounded bias, rounded to BF16 output",
+        "output_layout": "[token, feature]",
+        "oracle_layout": "[token, feature] flat row-major values loaded from Q oracle artifact",
+        "notes": [
+            "This harness uses the public BF16 validation API, not runtime projection routing.",
+            "Q bias is required for Q projection execution.",
+            "Pedantic/no-tensor-op cuBLAS behavior is only used when policy cublas-pedantic is explicitly requested."
+        ]
+    });
+
+    Ok(ExecutionResult {
+        classification,
+        projection_execution: true,
+        comparisons,
+        latency,
+        k_contract,
+        v_reconciliation: q_reconciliation,
+        runtime_forward_reference: Value::Null,
+        next_bounded_step,
+    })
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_current_k_f16(_cli: &Cli) -> Result<ExecutionResult> {
     Ok(ExecutionResult {
@@ -1503,6 +1942,20 @@ fn run_current_v_bf16(_cli: &Cli, _policies: &[String]) -> Result<ExecutionResul
     })
 }
 
+#[cfg(not(feature = "cuda"))]
+fn run_current_q_bf16(_cli: &Cli, _policies: &[String]) -> Result<ExecutionResult> {
+    Ok(ExecutionResult {
+        classification: "qkv_projection_policy_compare_q_bf16_cuda_execution_failed",
+        projection_execution: false,
+        comparisons: Vec::new(),
+        latency: BTreeMap::new(),
+        k_contract: Value::Null,
+        v_reconciliation: Value::Null,
+        runtime_forward_reference: Value::Null,
+        next_bounded_step: "fix artifact/API issue before CUDA policy work",
+    })
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ComparisonMetrics {
     max_abs_diff: f32,
@@ -1526,6 +1979,10 @@ struct Mismatch {
 }
 
 fn compare_outputs(local: &[f32], oracle: &[f32]) -> ComparisonMetrics {
+    compare_outputs_with_width(local, oracle, KV_OUT)
+}
+
+fn compare_outputs_with_width(local: &[f32], oracle: &[f32], width: usize) -> ComparisonMetrics {
     let mut max_abs_diff = 0.0f32;
     let mut sum_abs_diff = 0.0f64;
     let mut mismatching_element_count = 0usize;
@@ -1538,11 +1995,18 @@ fn compare_outputs(local: &[f32], oracle: &[f32]) -> ComparisonMetrics {
         sum_abs_diff += f64::from(abs_diff);
         if abs_diff > max_abs_diff {
             max_abs_diff = abs_diff;
-            worst_mismatch = Some(make_mismatch(index, local_value, oracle_value, abs_diff));
+            worst_mismatch = Some(make_mismatch_with_width(
+                index,
+                width,
+                local_value,
+                oracle_value,
+                abs_diff,
+            ));
         }
         if local_value.to_bits() != oracle_value.to_bits() {
             mismatching_element_count += 1;
-            let mismatch = make_mismatch(index, local_value, oracle_value, abs_diff);
+            let mismatch =
+                make_mismatch_with_width(index, width, local_value, oracle_value, abs_diff);
             first_mismatch.get_or_insert_with(|| mismatch.clone());
             if mismatch_table.len() < 20 {
                 mismatch_table.push(mismatch);
@@ -1561,9 +2025,15 @@ fn compare_outputs(local: &[f32], oracle: &[f32]) -> ComparisonMetrics {
     }
 }
 
-fn make_mismatch(index: usize, local: f32, oracle: f32, abs_diff: f32) -> Mismatch {
-    let token = index / KV_OUT;
-    let feature = index % KV_OUT;
+fn make_mismatch_with_width(
+    index: usize,
+    width: usize,
+    local: f32,
+    oracle: f32,
+    abs_diff: f32,
+) -> Mismatch {
+    let token = index / width;
+    let feature = index % width;
     Mismatch {
         token,
         feature,
@@ -1573,6 +2043,30 @@ fn make_mismatch(index: usize, local: f32, oracle: f32, abs_diff: f32) -> Mismat
         oracle,
         abs_diff,
     }
+}
+
+fn metrics_with_q_head(metrics: &ComparisonMetrics) -> Value {
+    fn mismatch_json(mismatch: &Mismatch) -> Value {
+        json!({
+            "token": mismatch.token,
+            "feature": mismatch.feature,
+            "q_head": mismatch.feature / HEAD_DIM,
+            "lane": mismatch.lane,
+            "local": mismatch.local,
+            "oracle": mismatch.oracle,
+            "abs_diff": mismatch.abs_diff,
+        })
+    }
+
+    json!({
+        "max_abs_diff": metrics.max_abs_diff,
+        "mean_abs_diff": metrics.mean_abs_diff,
+        "matched": metrics.matched,
+        "mismatching_element_count": metrics.mismatching_element_count,
+        "first_mismatch": metrics.first_mismatch.as_ref().map(mismatch_json),
+        "worst_mismatch": metrics.worst_mismatch.as_ref().map(mismatch_json),
+        "mismatch_table": metrics.mismatch_table.iter().map(mismatch_json).collect::<Vec<_>>(),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1604,38 +2098,75 @@ fn cpu_projection(
     policy: RoundingPolicy,
     layout: WeightLayout,
 ) -> Vec<f32> {
+    cpu_projection_out_dim(input, weight, bias, KV_OUT, policy, layout)
+}
+
+fn cpu_projection_out_dim(
+    input: &[f32],
+    weight: &[f32],
+    bias: Option<&[f32]>,
+    out_dim: usize,
+    policy: RoundingPolicy,
+    layout: WeightLayout,
+) -> Vec<f32> {
     let input = round_values(input, policy);
     let weight = round_values(weight, policy);
     let bias = bias.map(|values| round_values(values, policy));
-    let mut output = vec![0.0f32; M * KV_OUT];
+    let mut output = vec![0.0f32; M * out_dim];
+    let threads = std::thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(1)
+        .min(M);
+    let chunk_tokens = M.div_ceil(threads);
 
-    for token in 0..M {
-        for feature in 0..KV_OUT {
-            let mut sum = 0.0f32;
-            for hidden in 0..HIDDEN {
-                let input_value = input[token * HIDDEN + hidden];
-                let weight_value = match layout {
-                    WeightLayout::RowMajor => weight[feature * HIDDEN + hidden],
-                    WeightLayout::TransposedFlat => weight[hidden * KV_OUT + feature],
-                };
-                sum += input_value * weight_value;
-            }
-            if let Some(bias) = bias.as_ref() {
-                sum += bias[feature];
-            }
-            output[token * KV_OUT + feature] = round_output(sum, policy);
+    std::thread::scope(|scope| {
+        for (chunk_index, output_chunk) in output.chunks_mut(chunk_tokens * out_dim).enumerate() {
+            let start_token = chunk_index * chunk_tokens;
+            let input = &input;
+            let weight = &weight;
+            let bias = bias.as_deref();
+            scope.spawn(move || {
+                let token_count = output_chunk.len() / out_dim;
+                for local_token in 0..token_count {
+                    let token = start_token + local_token;
+                    for feature in 0..out_dim {
+                        let mut sum = 0.0f32;
+                        for hidden in 0..HIDDEN {
+                            let input_value = input[token * HIDDEN + hidden];
+                            let weight_value = match layout {
+                                WeightLayout::RowMajor => weight[feature * HIDDEN + hidden],
+                                WeightLayout::TransposedFlat => weight[hidden * out_dim + feature],
+                            };
+                            sum += input_value * weight_value;
+                        }
+                        if let Some(bias) = bias {
+                            sum += bias[feature];
+                        }
+                        output_chunk[local_token * out_dim + feature] = round_output(sum, policy);
+                    }
+                }
+            });
         }
-    }
+    });
 
     output
 }
 
 fn add_bias_with_rounding(pre_bias: &[f32], bias: &[f32], policy: RoundingPolicy) -> Vec<f32> {
+    add_bias_with_rounding_out_dim(pre_bias, bias, KV_OUT, policy)
+}
+
+fn add_bias_with_rounding_out_dim(
+    pre_bias: &[f32],
+    bias: &[f32],
+    out_dim: usize,
+    policy: RoundingPolicy,
+) -> Vec<f32> {
     let bias = round_values(bias, policy);
     pre_bias
         .iter()
         .enumerate()
-        .map(|(index, value)| round_output(*value + bias[index % KV_OUT], policy))
+        .map(|(index, value)| round_output(*value + bias[index % out_dim], policy))
         .collect()
 }
 
@@ -1664,12 +2195,26 @@ fn replay_json_for_projection(
     output: &[f32],
     vs_oracle: &ComparisonMetrics,
 ) -> Value {
+    replay_json_for_projection_with_width(projection, name, output, vs_oracle, KV_OUT)
+}
+
+fn replay_json_for_projection_with_width(
+    projection: &'static str,
+    name: &'static str,
+    output: &[f32],
+    vs_oracle: &ComparisonMetrics,
+    width: usize,
+) -> Value {
     json!({
         "projection": projection,
         "replay": name,
-        "shape": [M, KV_OUT],
+        "shape": [M, width],
         "output_checksum": digest_f32_le(output),
-        "vs_oracle": vs_oracle,
+        "vs_oracle": if projection == "q" {
+            metrics_with_q_head(vs_oracle)
+        } else {
+            json!(vs_oracle)
+        },
     })
 }
 
@@ -1682,11 +2227,24 @@ fn comparison_json_for_projection(
     name: &'static str,
     metrics: &ComparisonMetrics,
 ) -> Value {
+    comparison_json_for_projection_with_width(projection, name, metrics, KV_OUT)
+}
+
+fn comparison_json_for_projection_with_width(
+    projection: &'static str,
+    name: &'static str,
+    metrics: &ComparisonMetrics,
+    width: usize,
+) -> Value {
     json!({
         "projection": projection,
         "comparison": name,
-        "shape": [M, KV_OUT],
-        "metrics": metrics,
+        "shape": [M, width],
+        "metrics": if projection == "q" {
+            metrics_with_q_head(metrics)
+        } else {
+            json!(metrics)
+        },
     })
 }
 
@@ -1774,6 +2332,33 @@ fn classify_v_reconciliation(
     }
 }
 
+fn classify_q_reconciliation(
+    current_vs_oracle: Option<&ComparisonMetrics>,
+    pedantic_vs_oracle: &ComparisonMetrics,
+    pedantic_vs_cpu_bf16: &ComparisonMetrics,
+    pedantic_pre_bias_vs_cpu_bf16: Option<&ComparisonMetrics>,
+    cpu_bf16_vs_oracle: &ComparisonMetrics,
+) -> &'static str {
+    if current_vs_oracle.is_some_and(|metrics| metrics.matched) {
+        "qkv_projection_policy_compare_q_current_bf16_matches_oracle"
+    } else if pedantic_vs_oracle.matched {
+        "qkv_projection_policy_compare_q_pedantic_bf16_matches_oracle"
+    } else if pedantic_vs_cpu_bf16.matched && !cpu_bf16_vs_oracle.matched {
+        "qkv_projection_policy_compare_q_pedantic_bf16_matches_legacy_bf16_contract"
+    } else if pedantic_pre_bias_vs_cpu_bf16.is_some_and(|metrics| metrics.matched)
+        && !cpu_bf16_vs_oracle.matched
+    {
+        "qkv_projection_policy_compare_q_oracle_differs_from_cpu_bf16_replay"
+    } else if current_vs_oracle.is_some_and(|current| {
+        pedantic_vs_oracle.mismatching_element_count < current.mismatching_element_count
+            || pedantic_vs_oracle.max_abs_diff < current.max_abs_diff
+    }) {
+        "qkv_projection_policy_compare_q_pedantic_bf16_improves_but_unmodeled"
+    } else {
+        "qkv_projection_policy_compare_q_bf16_blocked_by_artifacts"
+    }
+}
+
 fn build_v_bias_variants(
     cuda_pre_bias: Option<&[f32]>,
     cpu_f32_pre_bias: &[f32],
@@ -1782,44 +2367,78 @@ fn build_v_bias_variants(
     bias: &[f32],
     oracle: &[f32],
 ) -> Vec<(&'static str, ComparisonMetrics)> {
+    build_bias_variants_with_width(
+        cuda_pre_bias,
+        cpu_f32_pre_bias,
+        cpu_f16_pre_bias,
+        cpu_bf16_pre_bias,
+        bias,
+        oracle,
+        KV_OUT,
+    )
+}
+
+fn build_bias_variants_with_width(
+    cuda_pre_bias: Option<&[f32]>,
+    cpu_f32_pre_bias: &[f32],
+    cpu_f16_pre_bias: &[f32],
+    cpu_bf16_pre_bias: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+    width: usize,
+) -> Vec<(&'static str, ComparisonMetrics)> {
     let mut variants = Vec::new();
     if let Some(pre_bias) = cuda_pre_bias {
         variants.push((
             "cuda_bf16_pre_bias_plus_bf16_bias_bf16_output",
-            compare_outputs(
-                &add_bias_with_rounding(pre_bias, bias, RoundingPolicy::BFloat16),
+            compare_outputs_with_width(
+                &add_bias_with_rounding_out_dim(pre_bias, bias, width, RoundingPolicy::BFloat16),
                 oracle,
+                width,
             ),
         ));
         variants.push((
             "cuda_bf16_pre_bias_no_bias_guard",
-            compare_outputs(pre_bias, oracle),
+            compare_outputs_with_width(pre_bias, oracle, width),
         ));
     }
     variants.push((
         "cpu_bf16_pre_bias_plus_bf16_bias_bf16_output",
-        compare_outputs(
-            &add_bias_with_rounding(cpu_bf16_pre_bias, bias, RoundingPolicy::BFloat16),
+        compare_outputs_with_width(
+            &add_bias_with_rounding_out_dim(
+                cpu_bf16_pre_bias,
+                bias,
+                width,
+                RoundingPolicy::BFloat16,
+            ),
             oracle,
+            width,
         ),
     ));
     variants.push((
         "cpu_f16_pre_bias_plus_f16_bias_f16_output",
-        compare_outputs(
-            &add_bias_with_rounding(cpu_f16_pre_bias, bias, RoundingPolicy::F16),
+        compare_outputs_with_width(
+            &add_bias_with_rounding_out_dim(cpu_f16_pre_bias, bias, width, RoundingPolicy::F16),
             oracle,
+            width,
         ),
     ));
     variants.push((
         "cpu_f32_pre_bias_plus_f32_bias_bf16_output",
-        compare_outputs(
-            &add_bias_with_rounding(cpu_f32_pre_bias, bias, RoundingPolicy::BFloat16),
+        compare_outputs_with_width(
+            &add_bias_with_rounding_out_dim(
+                cpu_f32_pre_bias,
+                bias,
+                width,
+                RoundingPolicy::BFloat16,
+            ),
             oracle,
+            width,
         ),
     ));
     variants.push((
         "cpu_bf16_pre_bias_no_bias_guard",
-        compare_outputs(cpu_bf16_pre_bias, oracle),
+        compare_outputs_with_width(cpu_bf16_pre_bias, oracle, width),
     ));
     variants
 }

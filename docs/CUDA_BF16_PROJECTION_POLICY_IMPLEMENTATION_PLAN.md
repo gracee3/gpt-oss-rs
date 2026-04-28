@@ -633,9 +633,76 @@ Conclusion:
   equivalent oracle.
 - The remaining issue is the exact oneDNN/module BF16 bias/reduction contract, not CUDA runtime
   routing.
-- Do not move to Q or production policy extraction until the V oracle/backend ambiguity is
-  accepted as a validation finding or reproduced from runtime-forward with directly comparable
-  digest conventions.
+- Treat the V ambiguity as a pinned validation finding. It should not block Q validation, but it
+  does block production V routing.
+
+## Q Projection Policy Comparison Status
+
+A pinned local Q scratch pack was generated outside the repository:
+
+```text
+/tmp/qkv_projection_q_artifacts-20260428-093932/
+```
+
+Q artifact source:
+
+- Exact case: `developer-message-user-smoke`.
+- Source runtime-forward commit: `5bcba1d2edcb9c15b1ed567700976dad03e12300`.
+- Norm input source: runtime-forward layer0 attention norm artifact.
+- Q weight/bias source: separate safetensors tensors
+  `model.layers.0.self_attn.q_proj.weight` and `model.layers.0.self_attn.q_proj.bias`.
+- Torch version: `2.10.0+cu128`; MKLDNN enabled; thread count `8`.
+- Raw Q artifacts are local-only and are not committed.
+
+Oracle variant comparison:
+
+- `torch.nn.Linear` module call vs `torch.nn.functional.linear`: exact match.
+- Module/F.linear vs explicit f32 matmul plus f32 bias then BF16 output:
+  `max_abs_diff=0.00390625`, `mismatches=53`.
+- CPU BF16 replay post-bias vs module/F.linear oracle:
+  `max_abs_diff=0.0625`, `mean_abs_diff=0.000886685973283248`, `mismatches=88225`.
+
+Harness changes:
+
+- `qkv_projection_policy_compare` now supports
+  `--execute --projection q --storage-dtype bf16 --policy current,cublas-pedantic`.
+- Q execution loads explicit Q weight, Q bias, and Q oracle artifacts.
+- Q output uses Q-specific logical indices: `q_head = feature / 64`, `lane = feature % 64`.
+- CPU replay helper is parallelized across token rows to keep full Q f32/f16/BF16 replay
+  diagnostics bounded.
+- Default runtime behavior remains unchanged.
+
+Pinned Q harness result using the module/F.linear oracle:
+
+- Classification: `qkv_projection_policy_compare_q_oracle_differs_from_cpu_bf16_replay`.
+- Current BF16 tensor-op vs oracle:
+  `max_abs_diff=0.0625`, `mean_abs_diff=0.0010602121474221349`, `mismatches=107138`.
+- Pedantic BF16 vs oracle:
+  `max_abs_diff=0.0625`, `mean_abs_diff=0.0008867621072567999`, `mismatches=88227`.
+- Pedantic BF16 vs CPU BF16 replay:
+  `max_abs_diff=0.0625`, `mean_abs_diff=0.0008866449352353811`, `mismatches=88214`.
+- Pedantic BF16 pre-bias vs CPU BF16 pre-bias replay:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+- CPU BF16 replay vs oracle:
+  `max_abs_diff=0.00390625`, `mean_abs_diff=2.185926462061616e-7`, `mismatches=92`.
+- Latency:
+  current BF16 `0.069368 ms`; pedantic BF16 `0.3861728 ms`.
+
+Q/K/V validation matrix:
+
+| Projection | Bias | Pedantic pre-bias vs CPU BF16 replay | Pedantic post-bias vs oracle | Interpretation |
+| --- | --- | --- | --- | --- |
+| K | No | Exact | Six BF16 replay-vs-oracle lanes remain | Pedantic is calibrated to CPU BF16 replay, not fully to oneDNN oracle. |
+| V | Yes | Exact | `11366` mismatches | V exposes fused-linear/bias-backend contract not reproduced by decomposed bias variants. |
+| Q | Yes | Exact | `88227` mismatches | Q follows the V pattern at larger scale; pre-bias GEMM is calibrated, post-bias/module oracle is not. |
+
+Conclusion:
+
+- Pedantic BF16 is a useful validation discriminator for pre-bias Q/K/V GEMM behavior.
+- Pedantic BF16 is not a production policy candidate as-is: it is slower and does not reproduce
+  the module/F.linear post-bias oracle for bias-bearing Q/V.
+- Do not add new candidate policies or production routing until the Q/K/V matrix is summarized
+  and the next validation question is chosen explicitly.
 
 Commit 3:
 
@@ -668,6 +735,6 @@ Commit 4:
 
 ## Next Bounded Step
 
-Implement baseline current CUDA helper comparison against explicit local oracle artifacts. Keep
-the harness validation-only, with no production routing and no CUDA kernel changes unless a
-candidate policy is explicitly approved later.
+Summarize the Q/K/V projection-policy matrix before adding any new candidate policy. Keep the
+harness validation-only, with no production routing and no CUDA kernel changes unless a candidate
+policy is explicitly approved later.
