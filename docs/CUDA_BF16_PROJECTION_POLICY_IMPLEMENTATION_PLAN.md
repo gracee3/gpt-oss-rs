@@ -439,6 +439,38 @@ metrics, current-vs-pedantic delta, latency per policy, and math/atomics restore
 step depends on whether pedantic matches the oracle, matches the CPU BF16 replay, improves but
 remains unmodeled, or is not sufficient.
 
+## V BF16 Projection Policy Comparison Status
+
+`qkv_projection_policy_compare` now accepts optional projection bias artifacts:
+
+```text
+--q-bias <PATH>
+--k-bias <PATH>
+--v-bias <PATH>
+```
+
+V execution requires `--v-bias` because the official V projection path is bias-bearing:
+
+```text
+--execute --projection v --storage-dtype bf16 --policy current,cublas-pedantic
+```
+
+The V comparison is still validation-only. It runs the same current BF16 tensor-op and scoped
+`cublas-pedantic` policies used by the K discriminator, then applies the V bias using a BF16
+round-trip policy before comparison:
+
+- Input/output storage: `CUDA_R_16BF`.
+- Current compute: `CUBLAS_COMPUTE_32F` with `CUBLAS_GEMM_DEFAULT_TENSOR_OP`.
+- Pedantic compute: `CUBLAS_COMPUTE_32F_PEDANTIC` with `CUBLAS_GEMM_DFALT`.
+- Bias policy: BF16 GEMM output plus BF16-rounded bias, rounded to BF16 output.
+- Production routing remains unchanged.
+- No CUDA kernels are changed.
+- Q projection comparison remains deferred because Q is larger and bias-bearing.
+
+The V status artifact reports current/pedantic metrics versus the V oracle, pedantic/current
+metrics versus the CPU BF16 replay, current-vs-pedantic delta, latency per policy, bias metadata,
+and cuBLAS math/atomics restore status.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.
