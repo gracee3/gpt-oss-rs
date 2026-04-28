@@ -56,6 +56,30 @@ struct Cli {
     #[arg(long, default_value_t = 150000.0)]
     rope_theta: f32,
 
+    /// RoPE scaling type for validation table construction.
+    #[arg(long, default_value = "yarn")]
+    rope_scaling_type: String,
+
+    /// RoPE scaling factor for YaRN validation tables.
+    #[arg(long, default_value_t = 32.0)]
+    rope_scaling_factor: f32,
+
+    /// YaRN beta_slow / alpha parameter for validation tables.
+    #[arg(long, default_value_t = 1.0)]
+    rope_ntk_alpha: f32,
+
+    /// YaRN beta_fast / beta parameter for validation tables.
+    #[arg(long, default_value_t = 32.0)]
+    rope_ntk_beta: f32,
+
+    /// Original pre-YaRN context length for validation tables.
+    #[arg(long, default_value_t = 4096)]
+    initial_context_length: usize,
+
+    /// Whether to truncate YaRN low/high ramp bounds.
+    #[arg(long, default_value_t = false)]
+    rope_scaling_truncate: bool,
+
     /// JSON status output path.
     #[arg(long)]
     output: PathBuf,
@@ -94,6 +118,7 @@ struct KRopeStatus {
     cuda_execution: bool,
     kernel_used: Option<&'static str>,
     api_used: &'static str,
+    table_source: &'static str,
     artifacts: KRopeArtifacts,
     rope_config: KRopeConfig,
     metrics: Option<ComparisonMetrics>,
@@ -127,9 +152,16 @@ struct KRopeConfig {
     head_dim: usize,
     positions: String,
     rope_theta: f32,
+    rope_scaling_type: Option<String>,
+    rope_scaling_factor: f32,
+    rope_ntk_alpha: f32,
+    rope_ntk_beta: f32,
+    initial_context_length: usize,
+    rope_scaling_truncate: bool,
     table_source: &'static str,
     lane_pairing: &'static str,
     dtype: String,
+    output_boundary: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -252,6 +284,7 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
                 kind: "artifact_shape_or_values",
                 detail: "K pre/post RoPE artifacts did not expose a supported value key or expected value count",
             }),
+            table_source: "unavailable",
         }
     };
 
@@ -260,7 +293,7 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             "implement layer0 attention-only validation through raw QK guard using the same runtime RoPE helper"
         }
         "layer0_validation_k_rope_mismatch" => {
-            "pin K pre-RoPE artifact identity; then align runtime RoPE table source if artifact identity holds"
+            "localize remaining f16 kernel and BF16 official/model factor/output casting differences"
         }
         _ => "resolve the reported K RoPE validation blocker",
     };
@@ -278,10 +311,11 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             .is_none()
             .then_some("rotary_embedding_f16_kernel"),
         api_used: if execution.blocker.is_none() {
-            "gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation"
+            "gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config"
         } else {
             "blocked before launch"
         },
+        table_source: execution.table_source,
         artifacts: KRopeArtifacts {
             k_pre_rope: pre,
             k_post_rope_oracle: post,
@@ -292,9 +326,16 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             head_dim: cli.head_dim,
             positions: cli.positions.clone(),
             rope_theta: cli.rope_theta,
-            table_source: "gpt_oss_model_runner::rope_validation::build_runtime_rope_tables",
+            rope_scaling_type: rope_scaling_type(cli),
+            rope_scaling_factor: cli.rope_scaling_factor,
+            rope_ntk_alpha: cli.rope_ntk_alpha,
+            rope_ntk_beta: cli.rope_ntk_beta,
+            initial_context_length: cli.initial_context_length,
+            rope_scaling_truncate: cli.rope_scaling_truncate,
+            table_source: execution.table_source,
             lane_pairing: "half_split",
             dtype: cli.dtype.clone(),
+            output_boundary: "bf16_rounded_after_f16_kernel",
         },
         metrics: execution.metrics,
         first_mismatch: execution.first_mismatch,
@@ -312,19 +353,20 @@ struct KRopeExecution {
     first_mismatch: Option<LogicalDiff>,
     worst_mismatch: Option<LogicalDiff>,
     blocker: Option<Blocker>,
+    table_source: &'static str,
 }
 
 #[cfg(feature = "cuda")]
 fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
-    let result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation(
+    let config = validation_rope_config(cli);
+    let result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config(
         k_pre,
         cli.token_count,
         cli.kv_heads,
-        cli.head_dim,
-        cli.rope_theta,
+        &config,
     );
     match result {
-        Ok(actual) => {
+        Ok((actual, table_source)) => {
             let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
             let matched = comparison.metrics.mismatches == 0;
             KRopeExecution {
@@ -337,6 +379,7 @@ fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
                 first_mismatch: comparison.first_mismatch,
                 worst_mismatch: comparison.worst_mismatch,
                 blocker: None,
+                table_source,
             }
         }
         Err(_) => KRopeExecution {
@@ -348,6 +391,7 @@ fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
                 kind: "cuda_execution_failed",
                 detail: "runtime RoPE validation helper failed; rerun with stderr for detailed CUDA error",
             }),
+            table_source: "unavailable",
         },
     }
 }
@@ -363,6 +407,29 @@ fn execute_k_rope(_k_pre: &[f32], _oracle: &[f32], _cli: &Cli) -> KRopeExecution
             kind: "cuda_feature_disabled",
             detail: "k-rope execution requires the cuda feature",
         }),
+        table_source: "unavailable",
+    }
+}
+
+fn validation_rope_config(cli: &Cli) -> gpt_oss_model_runner::runner::ModelRunnerConfig {
+    let mut config = gpt_oss_model_runner::runner::ModelRunnerConfig::default();
+    config.head_dim = cli.head_dim;
+    config.rope_theta = cli.rope_theta;
+    config.rope_scaling_type = rope_scaling_type(cli);
+    config.rope_scaling_factor = cli.rope_scaling_factor;
+    config.rope_ntk_alpha = cli.rope_ntk_alpha;
+    config.rope_ntk_beta = cli.rope_ntk_beta;
+    config.initial_context_length = cli.initial_context_length;
+    config.rope_scaling_truncate = cli.rope_scaling_truncate;
+    config
+}
+
+fn rope_scaling_type(cli: &Cli) -> Option<String> {
+    let value = cli.rope_scaling_type.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 

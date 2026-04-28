@@ -339,6 +339,75 @@ Add a validation-safe YaRN-aware table helper that reuses the proven
 runtime behavior until the helper is validated, then rerun `--mode k-rope`
 against the same confirmed K pre/post artifact pair.
 
+## YaRN-Aware RoPE Validation Helper Status
+
+Validation helper added:
+
+- `build_validation_rope_tables_from_config`
+- `apply_k_rope_f16_validation_with_config`
+
+Scope:
+
+- validation-only
+- uses `ModelRunnerConfig` RoPE fields
+- does not change production runtime table construction
+- does not modify CUDA kernel math
+- launches the existing `rotary_embedding_f16_kernel`
+
+YaRN configuration used for the exact smoke case:
+
+| field | value |
+| --- | --- |
+| `rope_theta` | `150000` |
+| `rope_scaling_type` | `yarn` |
+| `rope_scaling_factor` | `32` |
+| `rope_ntk_alpha` / beta_slow | `1` |
+| `rope_ntk_beta` / beta_fast | `32` |
+| `initial_context_length` | `4096` |
+| `rope_scaling_truncate` | `false` |
+
+Result:
+
+`layer0_validation_k_rope_mismatch`
+
+| comparison | table source | max abs diff | mean abs diff | mismatches |
+| --- | --- | ---: | ---: | ---: |
+| validation K RoPE vs official K post-RoPE | `yarn_scaled` | `0.5` | `0.006694896` | `15473` |
+
+First mismatch:
+
+- token `0`, kv head `0`, lane `1`
+- validation output `-5.5625`
+- official output `-5.53125`
+- abs diff `0.03125`
+
+Worst mismatch:
+
+- token `1`, kv head `5`, lane `11`
+- validation output `73.0`
+- official output `72.5`
+- abs diff `0.5`
+
+Interpretation:
+
+- The YaRN-aware helper eliminates the plain-table failure scale
+  (`31.828125` max abs diff down to `0.5`).
+- The remaining mismatch matches the earlier "YaRN family but not exact
+  official/model call" pattern.
+- Because the official/model implementation casts cos/sin factors to the
+  tensor dtype inside `_apply_rotary_emb`, and the current validation launcher
+  still uses the f16 runtime kernel, the remaining delta is likely in the
+  BF16 official/model factor/input/output casting boundary rather than the
+  YaRN frequency formula.
+
+Recommended next bounded step:
+
+Keep production runtime unchanged. Add a validation-only BF16-boundary RoPE
+application path using the existing float kernel or a scoped helper that
+rounds factors, inputs, and outputs like `gpt_oss.torch.model.py`, then compare
+against the same confirmed K pre/post artifact pair before implementing the
+attention-only path.
+
 ## Validation Commands
 
 For the skeleton slice:

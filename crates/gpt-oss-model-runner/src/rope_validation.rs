@@ -7,9 +7,10 @@
 use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaStream, LaunchConfig, PushKernelArg};
-use half::f16;
+use half::{bf16, f16};
 
 use crate::bridge::{LLMError, Result};
+use crate::runner::ModelRunnerConfig;
 use gpt_oss_gpu::kernel_loader::KernelLoader;
 
 /// Build the runtime RoPE cos/sin tables.
@@ -35,6 +36,71 @@ pub fn build_runtime_rope_tables(
     (cos_table, sin_table)
 }
 
+/// Build validation RoPE tables from the full runner config.
+///
+/// This mirrors the proven YaRN-aware table source used by the runtime-forward
+/// validation branch while remaining validation-only in this branch. Production
+/// callers are not routed through this helper.
+pub fn build_validation_rope_tables_from_config(
+    config: &ModelRunnerConfig,
+    max_position: usize,
+) -> (Vec<f32>, Vec<f32>, &'static str) {
+    let head_dim = config.head_dim;
+    let half_dim = head_dim / 2;
+    let mut inv_freq = vec![0.0f32; half_dim];
+    let mut concentration = 1.0f32;
+    let use_yarn = matches!(config.rope_scaling_type.as_deref(), Some("yarn"))
+        && config.rope_scaling_factor > 1.0;
+
+    if use_yarn {
+        concentration = 0.1 * config.rope_scaling_factor.ln() + 1.0;
+        let d_half = head_dim as f32 / 2.0;
+        let base_ln = config.rope_theta.ln();
+        let context_len = config.initial_context_length.max(1) as f32;
+        let mut low = d_half
+            * (context_len / (config.rope_ntk_beta * 2.0 * std::f32::consts::PI)).ln()
+            / base_ln;
+        let mut high = d_half
+            * (context_len / (config.rope_ntk_alpha * 2.0 * std::f32::consts::PI)).ln()
+            / base_ln;
+        if config.rope_scaling_truncate {
+            low = low.floor();
+            high = high.ceil();
+        }
+        if (high - low).abs() < f32::EPSILON {
+            high = low + 0.001;
+        }
+        for (i, inv) in inv_freq.iter_mut().enumerate() {
+            let freq = config.rope_theta.powf(2.0 * i as f32 / head_dim as f32);
+            let extrapolation = 1.0 / freq;
+            let interpolation = 1.0 / (config.rope_scaling_factor * freq);
+            let ramp = ((i as f32 - low) / (high - low)).clamp(0.0, 1.0);
+            let mask = 1.0 - ramp;
+            *inv = interpolation * (1.0 - mask) + extrapolation * mask;
+        }
+    } else {
+        for (i, inv) in inv_freq.iter_mut().enumerate() {
+            *inv = 1.0 / config.rope_theta.powf(2.0 * i as f32 / head_dim as f32);
+        }
+    }
+
+    let mut cos_table = vec![0.0f32; max_position * half_dim];
+    let mut sin_table = vec![0.0f32; max_position * half_dim];
+    for pos in 0..max_position {
+        for (i, freq) in inv_freq.iter().enumerate() {
+            let theta = pos as f32 * freq;
+            cos_table[pos * half_dim + i] = theta.cos() * concentration;
+            sin_table[pos * half_dim + i] = theta.sin() * concentration;
+        }
+    }
+    let source = if use_yarn {
+        "yarn_scaled"
+    } else {
+        "plain_rope_theta"
+    };
+    (cos_table, sin_table, source)
+}
+
 /// Apply the runtime f16 RoPE kernel to a supplied K tensor.
 ///
 /// Input and output layout is `[token, kv_head, lane]`, flattened row-major.
@@ -46,6 +112,50 @@ pub fn apply_k_rope_f16_validation(
     kv_heads: usize,
     head_dim: usize,
     rope_theta: f32,
+) -> Result<Vec<f32>> {
+    let max_position = token_count;
+    let (cos_table, sin_table) = build_runtime_rope_tables(head_dim, max_position, rope_theta);
+    apply_k_rope_f16_validation_with_tables(
+        k_pre_rope,
+        token_count,
+        kv_heads,
+        head_dim,
+        &cos_table,
+        &sin_table,
+    )
+}
+
+/// Apply the runtime f16 RoPE kernel using validation tables from config.
+pub fn apply_k_rope_f16_validation_with_config(
+    k_pre_rope: &[f32],
+    token_count: usize,
+    kv_heads: usize,
+    config: &ModelRunnerConfig,
+) -> Result<(Vec<f32>, &'static str)> {
+    let max_position = token_count;
+    let (cos_table, sin_table, table_source) =
+        build_validation_rope_tables_from_config(config, max_position);
+    let mut output = apply_k_rope_f16_validation_with_tables(
+        k_pre_rope,
+        token_count,
+        kv_heads,
+        config.head_dim,
+        &cos_table,
+        &sin_table,
+    )?;
+    for value in &mut output {
+        *value = bf16::from_f32(*value).to_f32();
+    }
+    Ok((output, table_source))
+}
+
+fn apply_k_rope_f16_validation_with_tables(
+    k_pre_rope: &[f32],
+    token_count: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    cos_table: &[f32],
+    sin_table: &[f32],
 ) -> Result<Vec<f32>> {
     let expected = token_count * kv_heads * head_dim;
     if k_pre_rope.len() != expected {
@@ -67,14 +177,11 @@ pub fn apply_k_rope_f16_validation(
         gpt_oss_gpu::kernel_loader::default_ptx_dir(),
     )
     .map_err(|e| LLMError::GpuError(format!("validation RoPE kernel loader: {e}")))?;
-
-    let max_position = token_count;
-    let (cos_table, sin_table) = build_runtime_rope_tables(head_dim, max_position, rope_theta);
     let rope_cos = stream
-        .clone_htod(&cos_table)
+        .clone_htod(cos_table)
         .map_err(|e| LLMError::GpuError(format!("validation RoPE cos upload: {e}")))?;
     let rope_sin = stream
-        .clone_htod(&sin_table)
+        .clone_htod(sin_table)
         .map_err(|e| LLMError::GpuError(format!("validation RoPE sin upload: {e}")))?;
     let positions = (0..token_count as i32).collect::<Vec<_>>();
     let positions_dev = stream
