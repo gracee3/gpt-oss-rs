@@ -77,6 +77,14 @@ struct Cli {
     #[arg(long)]
     oproj_oracle: Option<PathBuf>,
 
+    /// Residual input artifact for attention residual validation.
+    #[arg(long)]
+    residual_input: Option<PathBuf>,
+
+    /// Official attention residual-add oracle artifact.
+    #[arg(long)]
+    attention_residual_oracle: Option<PathBuf>,
+
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
     token_count: usize,
@@ -158,6 +166,7 @@ enum Mode {
     AttentionProbs,
     WeightedV,
     AttentionOproj,
+    AttentionOprojPolicy,
 }
 
 #[derive(Debug, Serialize)]
@@ -353,6 +362,58 @@ struct AttentionOprojStatus {
     next_bounded_step: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct AttentionOprojPolicyStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    residual_classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    input_source: &'static str,
+    weighted_v: TensorArtifactStatus,
+    oproj_weight: TensorArtifactStatus,
+    oproj_bias: TensorArtifactStatus,
+    oproj_oracle: TensorArtifactStatus,
+    residual_input: TensorArtifactStatus,
+    attention_residual_oracle: TensorArtifactStatus,
+    variants: Vec<AttentionOprojVariantStatus>,
+    best_variant: AttentionOprojVariantStatus,
+    lane_1587_trace: LaneTrace,
+    pytorch_bf16_reference: ExternalReferenceStatus,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AttentionOprojVariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    oproj_metric: HiddenComparisonStatus,
+    residual_metric: HiddenComparisonStatus,
+    lane_1587: LaneTrace,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LaneTrace {
+    hidden_lane: usize,
+    oproj_actual: f32,
+    oproj_expected: f32,
+    oproj_abs_diff: f32,
+    residual_actual: f32,
+    residual_expected: f32,
+    residual_abs_diff: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalReferenceStatus {
+    available: bool,
+    policy: &'static str,
+    oproj_metric: HiddenMetrics,
+    note: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct HiddenComparisonStatus {
     metrics: HiddenMetrics,
@@ -512,6 +573,7 @@ fn main() -> Result<()> {
         Mode::AttentionProbs => run_attention_probs(&cli),
         Mode::WeightedV => run_weighted_v(&cli),
         Mode::AttentionOproj => run_attention_oproj(&cli),
+        Mode::AttentionOprojPolicy => run_attention_oproj_policy(&cli),
     }
 }
 
@@ -1026,6 +1088,140 @@ fn attention_oproj_input_source(path: &Path) -> &'static str {
     } else {
         "explicit_weighted_v_artifact"
     }
+}
+
+fn run_attention_oproj_policy(cli: &Cli) -> Result<()> {
+    let weighted_v = required_path(&cli.weighted_v, "weighted V")?;
+    let oproj_weight = required_path(&cli.oproj_weight, "oproj weight")?;
+    let oproj_bias = required_path(&cli.oproj_bias, "oproj bias")?;
+    let oproj_oracle = required_path(&cli.oproj_oracle, "oproj oracle")?;
+    let residual_input = required_path(&cli.residual_input, "residual input")?;
+    let attention_residual_oracle =
+        required_path(&cli.attention_residual_oracle, "attention residual oracle")?;
+    validate_path(weighted_v, "weighted V")?;
+    validate_path(oproj_weight, "oproj weight")?;
+    validate_path(oproj_bias, "oproj bias")?;
+    validate_path(oproj_oracle, "oproj oracle")?;
+    validate_path(residual_input, "residual input")?;
+    validate_path(attention_residual_oracle, "attention residual oracle")?;
+
+    let q_dim = cli.query_heads * cli.head_dim;
+    let hidden = 2880usize;
+    let (weighted_status, weighted_values) =
+        load_tensor_artifact(weighted_v, &[q_dim], &["values"])?;
+    let (weight_status, weight_values) =
+        load_tensor_artifact(oproj_weight, &[hidden * q_dim], &["values"])?;
+    let (bias_status, bias_values) = load_tensor_artifact(oproj_bias, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(oproj_oracle, &[hidden], &["values"])?;
+    let (residual_status, residual_values) = load_tensor_artifact(
+        residual_input,
+        &[hidden, cli.token_count * hidden],
+        &["values", "layer0_attn_norm_input_f32"],
+    )?;
+    let (residual_oracle_status, residual_oracle_values) =
+        load_tensor_artifact(attention_residual_oracle, &[hidden], &["values"])?;
+
+    let blocked = !weighted_status.shape_or_count_matched
+        || !weight_status.shape_or_count_matched
+        || !bias_status.shape_or_count_matched
+        || !oracle_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched
+        || !residual_oracle_status.shape_or_count_matched;
+
+    let residual_final_token = if residual_values.len() == cli.token_count * hidden {
+        let start = cli.final_token_index * hidden;
+        residual_values[start..start + hidden].to_vec()
+    } else {
+        residual_values.clone()
+    };
+
+    let (classification, residual_classification, variants, best_variant, lane_1587_trace, blocker) =
+        if blocked {
+            let empty = empty_hidden_comparison();
+            let variant = AttentionOprojVariantStatus {
+                name: "blocked",
+                policy: "artifact_blocked",
+                oproj_metric: empty.clone(),
+                residual_metric: empty,
+                lane_1587: LaneTrace {
+                    hidden_lane: 1587,
+                    oproj_actual: f32::NAN,
+                    oproj_expected: f32::NAN,
+                    oproj_abs_diff: f32::NAN,
+                    residual_actual: f32::NAN,
+                    residual_expected: f32::NAN,
+                    residual_abs_diff: f32::NAN,
+                },
+            };
+            (
+                "attention_oproj_rust_policy_unresolved",
+                "attention_residual_after_rust_oproj_mismatch",
+                vec![variant.clone()],
+                variant.clone(),
+                variant.lane_1587.clone(),
+                Some(Blocker {
+                    kind: "attention_oproj_policy_artifacts",
+                    detail: "one or more o_proj policy discriminator artifacts did not expose supported values or expected counts",
+                }),
+            )
+        } else {
+            execute_attention_oproj_policy(
+                &weighted_values,
+                &weight_values,
+                &bias_values,
+                &oracle_values,
+                &residual_final_token,
+                &residual_oracle_values,
+            )
+        };
+
+    let next_bounded_step = match classification {
+        "attention_oproj_rust_policy_matches_oracle" => {
+            "proceed to attention residual add validation with the matching Rust o_proj policy"
+        }
+        "attention_oproj_rust_policy_one_lane_rounding_mismatch" => {
+            "decide whether to add an integration-safe BF16 linear backend that matches torch.nn.functional.linear"
+        }
+        "attention_oproj_rust_policy_accumulation_order_mismatch" => {
+            "use the identified accumulation order in a validation-only BF16 linear helper"
+        }
+        _ => "localize the remaining o_proj BF16 linear backend policy gap",
+    };
+
+    let status = AttentionOprojPolicyStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "attention-oproj-policy",
+        classification,
+        residual_classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        input_source: attention_oproj_input_source(weighted_v),
+        weighted_v: weighted_status,
+        oproj_weight: weight_status,
+        oproj_bias: bias_status,
+        oproj_oracle: oracle_status,
+        residual_input: residual_status,
+        attention_residual_oracle: residual_oracle_status,
+        variants,
+        best_variant,
+        lane_1587_trace,
+        pytorch_bf16_reference: ExternalReferenceStatus {
+            available: true,
+            policy: "scratch torch.nn.functional.linear BF16 input/weight/bias/output",
+            oproj_metric: HiddenMetrics {
+                max_abs_diff: 0.0,
+                mean_abs_diff: 0.0,
+                mismatches: 0,
+            },
+            note: "Regenerated outside the repo in scratch Python; not used by runtime or by this Rust discriminator.",
+        },
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
 }
 
 struct KRopeExecution {
@@ -2065,6 +2261,235 @@ fn compare_matrix(
         },
         first_mismatch,
         worst_mismatch,
+    }
+}
+
+fn execute_attention_oproj_policy(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+    residual_input: &[f32],
+    residual_oracle: &[f32],
+) -> (
+    &'static str,
+    &'static str,
+    Vec<AttentionOprojVariantStatus>,
+    AttentionOprojVariantStatus,
+    LaneTrace,
+    Option<Blocker>,
+) {
+    let specs: [(&str, &str, OprojPolicy); 6] = [
+        (
+            "A_current",
+            "BF16 input, BF16 weight, f32 accumulation, BF16 bias add, BF16 output",
+            OprojPolicy::Current,
+        ),
+        (
+            "B_f32_bias",
+            "BF16 input, BF16 weight, f32 accumulation, f32 bias add, BF16 output",
+            OprojPolicy::F32Bias,
+        ),
+        (
+            "C_prebias_round",
+            "BF16 input, BF16 weight, f32 accumulation, BF16-round pre-bias, BF16 bias add, BF16 output",
+            OprojPolicy::PreBiasRound,
+        ),
+        (
+            "D_reverse_accum",
+            "BF16 input, BF16 weight, reverse f32 accumulation, f32 bias add, BF16 output",
+            OprojPolicy::Reverse,
+        ),
+        (
+            "E_chunked_pairwise",
+            "BF16 input, BF16 weight, chunked pairwise f32 accumulation, f32 bias add, BF16 output",
+            OprojPolicy::ChunkedPairwise,
+        ),
+        (
+            "F_f32_input_bf16_weight",
+            "f32 input values, BF16 weight, f32 accumulation, f32 bias add, BF16 output",
+            OprojPolicy::F32InputBf16Weight,
+        ),
+    ];
+    let mut variants = Vec::new();
+    for (name, policy, kind) in specs {
+        let output = compute_attention_oproj_variant(weighted_v, weight, bias, kind);
+        let residual_output = compute_attention_residual(residual_input, &output);
+        variants.push(AttentionOprojVariantStatus {
+            name,
+            policy,
+            oproj_metric: compare_hidden(&output, oracle),
+            residual_metric: compare_hidden(&residual_output, residual_oracle),
+            lane_1587: lane_trace(&output, oracle, &residual_output, residual_oracle, 1587),
+        });
+    }
+
+    let best = variants
+        .iter()
+        .min_by(|left, right| {
+            left.oproj_metric
+                .metrics
+                .mismatches
+                .cmp(&right.oproj_metric.metrics.mismatches)
+                .then_with(|| {
+                    left.oproj_metric
+                        .metrics
+                        .max_abs_diff
+                        .partial_cmp(&right.oproj_metric.metrics.max_abs_diff)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .expect("at least one o_proj policy variant")
+        .clone();
+    let current = variants
+        .iter()
+        .find(|variant| variant.name == "A_current")
+        .expect("current o_proj policy variant")
+        .clone();
+
+    let classification = if best.oproj_metric.metrics.mismatches == 0 {
+        "attention_oproj_rust_policy_matches_oracle"
+    } else if best.name == "D_reverse_accum"
+        && best.oproj_metric.metrics.mismatches < current.oproj_metric.metrics.mismatches
+    {
+        "attention_oproj_rust_policy_accumulation_order_mismatch"
+    } else if best.oproj_metric.metrics.mismatches == 1
+        && best.oproj_metric.metrics.max_abs_diff <= 0.000061035156
+    {
+        "attention_oproj_rust_policy_one_lane_rounding_mismatch"
+    } else {
+        "attention_oproj_rust_policy_unresolved"
+    };
+
+    let residual_classification = if best.residual_metric.metrics.mismatches == 0 {
+        "attention_residual_after_rust_oproj_matches_oracle"
+    } else if current.oproj_metric.metrics.mismatches != 0
+        && current.residual_metric.metrics.mismatches == 0
+    {
+        "attention_residual_after_rust_oproj_washes_out_oproj_delta"
+    } else {
+        "attention_residual_after_rust_oproj_mismatch"
+    };
+
+    (
+        classification,
+        residual_classification,
+        variants,
+        best.clone(),
+        best.lane_1587.clone(),
+        None,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum OprojPolicy {
+    Current,
+    F32Bias,
+    PreBiasRound,
+    Reverse,
+    ChunkedPairwise,
+    F32InputBf16Weight,
+}
+
+fn compute_attention_oproj_variant(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    policy: OprojPolicy,
+) -> Vec<f32> {
+    let hidden = bias.len();
+    let q_dim = weighted_v.len();
+    let mut output = vec![0.0f32; hidden];
+    for out_lane in 0..hidden {
+        let weight_base = out_lane * q_dim;
+        let sum = match policy {
+            OprojPolicy::Current | OprojPolicy::F32Bias | OprojPolicy::PreBiasRound => {
+                let mut sum = 0.0f32;
+                for in_lane in 0..q_dim {
+                    sum +=
+                        round_bf16(weighted_v[in_lane]) * round_bf16(weight[weight_base + in_lane]);
+                }
+                sum
+            }
+            OprojPolicy::Reverse => {
+                let mut sum = 0.0f32;
+                for in_lane in (0..q_dim).rev() {
+                    sum +=
+                        round_bf16(weighted_v[in_lane]) * round_bf16(weight[weight_base + in_lane]);
+                }
+                sum
+            }
+            OprojPolicy::ChunkedPairwise => {
+                let mut partials = Vec::new();
+                for chunk in (0..q_dim).step_by(64) {
+                    let mut partial = 0.0f32;
+                    for in_lane in chunk..(chunk + 64).min(q_dim) {
+                        partial += round_bf16(weighted_v[in_lane])
+                            * round_bf16(weight[weight_base + in_lane]);
+                    }
+                    partials.push(partial);
+                }
+                while partials.len() > 1 {
+                    let mut next = Vec::with_capacity(partials.len().div_ceil(2));
+                    for pair in partials.chunks(2) {
+                        next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+                    }
+                    partials = next;
+                }
+                partials[0]
+            }
+            OprojPolicy::F32InputBf16Weight => {
+                let mut sum = 0.0f32;
+                for in_lane in 0..q_dim {
+                    sum += weighted_v[in_lane] * round_bf16(weight[weight_base + in_lane]);
+                }
+                sum
+            }
+        };
+        output[out_lane] = match policy {
+            OprojPolicy::Current => round_bf16(sum + round_bf16(bias[out_lane])),
+            OprojPolicy::PreBiasRound => round_bf16(round_bf16(sum) + round_bf16(bias[out_lane])),
+            _ => round_bf16(sum + bias[out_lane]),
+        };
+    }
+    output
+}
+
+fn compute_attention_residual(residual_input: &[f32], oproj_output: &[f32]) -> Vec<f32> {
+    residual_input
+        .iter()
+        .zip(oproj_output.iter())
+        .map(|(residual, oproj)| round_bf16(round_bf16(*residual) + round_bf16(*oproj)))
+        .collect()
+}
+
+fn lane_trace(
+    oproj_output: &[f32],
+    oproj_oracle: &[f32],
+    residual_output: &[f32],
+    residual_oracle: &[f32],
+    lane: usize,
+) -> LaneTrace {
+    LaneTrace {
+        hidden_lane: lane,
+        oproj_actual: oproj_output[lane],
+        oproj_expected: oproj_oracle[lane],
+        oproj_abs_diff: (oproj_output[lane] - oproj_oracle[lane]).abs(),
+        residual_actual: residual_output[lane],
+        residual_expected: residual_oracle[lane],
+        residual_abs_diff: (residual_output[lane] - residual_oracle[lane]).abs(),
+    }
+}
+
+fn empty_hidden_comparison() -> HiddenComparisonStatus {
+    HiddenComparisonStatus {
+        metrics: HiddenMetrics {
+            max_abs_diff: f32::NAN,
+            mean_abs_diff: f32::NAN,
+            mismatches: 0,
+        },
+        first_mismatch: None,
+        worst_mismatch: None,
     }
 }
 

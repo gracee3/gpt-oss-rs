@@ -744,6 +744,77 @@ Either emit the validation weighted-V BF16 artifact and rerun this seam from
 that source, or add a validation-only BF16 linear policy discriminator for
 o_proj before proceeding to the attention residual add.
 
+## Attention o_proj BF16 Linear Policy Discriminator
+
+Submode added:
+
+- `--mode attention-oproj-policy`
+
+Why this slice was needed:
+
+- The initial Rust o_proj replay had one tiny mismatch against the official
+  o_proj-before-residual oracle at hidden lane `1587`.
+- Scratch PyTorch BF16 `torch.nn.functional.linear` with the same weighted-V
+  input, o_proj weight, and o_proj bias matched the official oracle exactly.
+- That isolated the issue to Rust-side BF16 linear accumulation policy rather
+  than the weighted-V input or o_proj tensor source.
+
+Inputs for the discriminator:
+
+| input | source |
+| --- | --- |
+| weighted V | official weighted-V oracle, already matched by weighted-V validation at BF16 boundary |
+| o_proj weight/bias | scratch safetensors extraction from the restricted integration checkpoint |
+| o_proj oracle | official attention o_proj before residual artifact |
+| residual input | `layer0_attn_norm_input_f32` final token from the official attention-norm full-input artifact |
+| residual oracle | official hidden after attention residual add before MLP artifact |
+
+Bounded Rust variants tested:
+
+| variant | policy | o_proj max diff | o_proj mismatches | residual max diff | residual mismatches |
+| --- | --- | ---: | ---: | ---: | ---: |
+| A current | BF16 input, BF16 weight, sequential f32 accumulation, BF16 bias add, BF16 output | `0.000061035156` | `1` | `0` | `0` |
+| B f32 bias | BF16 input, BF16 weight, sequential f32 accumulation, f32 bias add, BF16 output | `0.000061035156` | `1` | `0` | `0` |
+| C pre-bias round | BF16 input, BF16 weight, f32 accumulation, BF16-round pre-bias, BF16 bias add, BF16 output | `0.03125` | `858` | `0.0625` | `426` |
+| D reverse accumulation | BF16 input, BF16 weight, reverse f32 accumulation, f32 bias add, BF16 output | `0.000061035156` | `1` | `0` | `0` |
+| E chunked pairwise | BF16 input, BF16 weight, chunked pairwise f32 accumulation, f32 bias add, BF16 output | `0` | `0` | `0` | `0` |
+| F f32 input/BF16 weight | f32 input values, BF16 weight, f32 accumulation, f32 bias add, BF16 output | `0.000061035156` | `1` | `0` | `0` |
+
+Lane `1587` trace:
+
+| variant | o_proj actual | o_proj expected | o_proj diff | residual actual | residual expected | residual diff |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A current | `-0.01171875` | `-0.011657715` | `0.000061035156` | `0.24023438` | `0.24023438` | `0` |
+| E chunked pairwise | `-0.011657715` | `-0.011657715` | `0` | `0.24023438` | `0.24023438` | `0` |
+
+Current classifications:
+
+```text
+attention_oproj_rust_policy_matches_oracle
+attention_residual_after_rust_oproj_matches_oracle
+```
+
+Status JSON:
+
+```text
+/tmp/layer0_validation_attention_oproj_policy_status.json
+```
+
+Conclusion:
+
+- A bounded Rust-side policy reproduces the official o_proj boundary exactly:
+  chunked pairwise f32 accumulation over BF16 input/weight, f32 bias add, BF16
+  output.
+- The original one-lane sequential replay mismatch also washes out at the BF16
+  attention residual add boundary.
+- The discriminator is validation-only and does not change production runtime
+  behavior.
+
+Recommended next bounded step:
+
+Use the identified validation-only o_proj policy to continue the clean
+validation-runtime path through the attention residual add before MLP.
+
 ## Validation Commands
 
 For the skeleton slice:
