@@ -216,6 +216,27 @@ Commit 2:
 - No proof harness import.
 - No `.live` raw artifact commit.
 
+## Harness Skeleton Status
+
+The `qkv_projection_policy_compare` skeleton exists at
+`crates/gpt-oss-bench/src/bin/qkv_projection_policy_compare.rs`.
+
+Current status:
+
+- Validates explicit local artifact paths for norm input, Q/K/V weights, and Q/K/V oracle
+  outputs.
+- Emits the planned JSON status/schema with expected Q/K/V shapes.
+- Accepts comma-separated policy names such as `current` and future names like
+  `current,cublas-pedantic`.
+- Does not parse full tensor payloads yet.
+- Does not execute CUDA projection comparison yet.
+- Does not route or change runtime projection behavior.
+
+Next implementation step:
+
+- Add artifact shape/digest loading and a baseline current CUDA helper comparison while keeping
+  default runtime behavior unchanged.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.
@@ -247,7 +268,6 @@ Commit 4:
 
 ## Next Bounded Step
 
-Implement only the validation harness skeleton and schema in a separate branch/slice. The first
-implementation should compare current CUDA helper outputs against explicit local oracle
-artifacts and record latency, with no production routing and no CUDA kernel changes unless a
-candidate policy is explicitly approved later.
+Implement artifact shape/digest loading and baseline current CUDA helper comparison against
+explicit local oracle artifacts. Keep the harness validation-only, with no production routing
+and no CUDA kernel changes unless a candidate policy is explicitly approved later.
