@@ -1032,6 +1032,68 @@ Conclusion:
   pre/post artifacts, then regenerate custom/decomposed Q/K post-RoPE and rerun raw-QK attribution.
 - No runtime behavior changed and no raw artifacts are committed.
 
+## RoPE Pinning For Q/K Downstream Artifacts
+
+A bounded RoPE pinning sweep was run against official K pre/post full-value artifacts:
+
+- Summary JSON:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/rope_pinning_summary.json`.
+- Official K pre-RoPE source:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json`.
+- Official K post-RoPE source:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json`.
+
+Variants tested:
+
+- Lane pairing:
+  half-split and adjacent.
+- Sign convention:
+  standard promoted sign and inverse sign.
+- Position indexing:
+  token index `0..73`, plus `+1` and `-1` sanity offsets.
+- Table source:
+  YaRN-scaled config table, plain config `rope_theta`, and base `10000`.
+- Input/output dtype:
+  f32, BF16, and F16 combinations.
+
+Classification: `rope_pinning_unresolved`.
+
+Best variant:
+
+- Table source: YaRN-scaled config table.
+- Pairing: half-split.
+- Sign: promoted sign convention.
+- Position offset: `0`.
+- Input dtype: f32/BF16/F16 all tied.
+- Output dtype: BF16.
+- Metrics vs official K post-RoPE:
+  `max_abs_diff=0.5`, `mean_abs_diff=0.006613972131162882`, `mismatches=15416`.
+
+Important contrast:
+
+- The current integration/runtime RoPE table code path observed in `gpu_runner.rs` and
+  `rotary_cuda.rs` uses plain `rope_theta` table generation, not the YaRN-scaled table used by the
+  best local scratch variant.
+- Plain config `rope_theta` with half-split, promoted sign, and BF16 output was much worse:
+  `max_abs_diff=31.875`, `mean_abs_diff=0.8329102993011475`, `mismatches=37845`.
+- Therefore the exact official/model RoPE path is not captured by the bounded local generator, and
+  the integration/runtime table source needs explicit follow-up before using scratch-generated Q/K
+  post-RoPE artifacts for downstream policy decisions.
+
+Decision:
+
+- No exact RoPE variant was found.
+- Custom/decomposed Q/K post-RoPE artifacts were not regenerated in this slice.
+- Raw-QK and mixed attribution were not rerun because doing so would keep using unpinned RoPE.
+
+Next bounded step:
+
+- Pin the official/model RoPE table source and transform more directly, preferably by extracting a
+  compact official RoPE table or by using the model/module RoPE call to generate local scratch
+  Q/K post-RoPE artifacts.
+- Only after that, regenerate custom/decomposed Q/K post-RoPE and rerun raw-QK attribution.
+- Keep this validation-only; do not route production Q/K/V projections.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
