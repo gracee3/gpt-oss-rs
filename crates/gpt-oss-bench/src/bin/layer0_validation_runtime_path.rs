@@ -94,6 +94,18 @@ struct Cli {
     #[arg(long)]
     mlp_norm_oracle: Option<PathBuf>,
 
+    /// MLP norm artifact for router validation.
+    #[arg(long)]
+    mlp_norm: Option<PathBuf>,
+
+    /// Official router logits oracle artifact.
+    #[arg(long)]
+    router_logits_oracle: Option<PathBuf>,
+
+    /// Official top-k indices and routing weights oracle artifact.
+    #[arg(long)]
+    topk_routing_oracle: Option<PathBuf>,
+
     /// Local model/checkpoint directory for validation-only tensor loading.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -182,6 +194,7 @@ enum Mode {
     AttentionOprojPolicy,
     AttentionResidual,
     MlpNorm,
+    Router,
 }
 
 #[derive(Debug, Serialize)]
@@ -442,6 +455,38 @@ struct MlpNormStatus {
     next_bounded_step: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct RouterStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    input_source: &'static str,
+    router_policy: &'static str,
+    mlp_norm: TensorArtifactStatus,
+    router_logits_oracle: TensorArtifactStatus,
+    topk_routing_oracle: TensorArtifactStatus,
+    router_weight_source: Option<ModelTensorStatus>,
+    router_bias_source: Option<ModelTensorStatus>,
+    logits_metric: Option<HiddenComparisonStatus>,
+    topk: Option<TopkStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TopkStatus {
+    selected_experts_local: Vec<i64>,
+    selected_experts_official: Vec<i64>,
+    ordered_match: bool,
+    selected_logits_metric: HiddenComparisonStatus,
+    routing_weights_metric: HiddenComparisonStatus,
+    local_weight_sum: f32,
+    official_weight_sum: f32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ModelTensorStatus {
     model_path: String,
@@ -642,6 +687,7 @@ fn main() -> Result<()> {
         Mode::AttentionOprojPolicy => run_attention_oproj_policy(&cli),
         Mode::AttentionResidual => run_attention_residual(&cli),
         Mode::MlpNorm => run_mlp_norm(&cli),
+        Mode::Router => run_router(&cli),
     }
 }
 
@@ -1169,6 +1215,15 @@ fn mlp_norm_input_source(path: &Path) -> &'static str {
     }
 }
 
+fn router_input_source(path: &Path) -> &'static str {
+    let display = path.display().to_string();
+    if display.contains("mlp-norm-output-before-mlp-projections") {
+        "official_mlp_norm_oracle_because_prior_mode_exact"
+    } else {
+        "validation_mlp_norm_output"
+    }
+}
+
 fn run_attention_oproj_policy(cli: &Cli) -> Result<()> {
     let weighted_v = required_path(&cli.weighted_v, "weighted V")?;
     let oproj_weight = required_path(&cli.oproj_weight, "oproj weight")?;
@@ -1509,6 +1564,148 @@ fn run_mlp_norm(cli: &Cli) -> Result<()> {
         mlp_norm_oracle: oracle_status,
         weight_source,
         metrics,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_router(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let router_logits_oracle = required_path(&cli.router_logits_oracle, "router logits oracle")?;
+    let topk_routing_oracle = required_path(&cli.topk_routing_oracle, "topk routing oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(router_logits_oracle, "router logits oracle")?;
+    validate_path(topk_routing_oracle, "topk routing oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let top_k = 4usize;
+    let (mlp_norm_status, mlp_norm_values) =
+        load_tensor_artifact(mlp_norm, &[hidden], &["values"])?;
+    let (logits_oracle_status, logits_oracle_values) =
+        load_tensor_artifact(router_logits_oracle, &[experts], &["values"])?;
+    let (topk_oracle_status, topk_oracle) = load_topk_oracle(topk_routing_oracle, top_k)?;
+    let weight_result = load_model_tensor_f32(model, &["model.layers.0.mlp.router.weight"]);
+    let bias_result = load_model_tensor_f32(model, &["model.layers.0.mlp.router.bias"]);
+
+    let (classification, logits_metric, topk, weight_source, bias_source, blocker) = match (
+        mlp_norm_status.shape_or_count_matched,
+        logits_oracle_status.shape_or_count_matched,
+        topk_oracle_status.shape_or_count_matched,
+        weight_result,
+        bias_result,
+    ) {
+        (true, true, true, Ok((weight_source, weight_values)), Ok((bias_source, bias_values)))
+            if weight_values.len() == experts * hidden && bias_values.len() == experts =>
+        {
+            let logits =
+                compute_router_logits_bf16_linear(&mlp_norm_values, &weight_values, &bias_values);
+            let logits_metric = compare_hidden(&logits, &logits_oracle_values);
+            let local_topk = compute_router_topk(&logits, top_k);
+            let ordered_match = local_topk.indices == topk_oracle.indices;
+            let topk = TopkStatus {
+                selected_experts_local: local_topk.indices.clone(),
+                selected_experts_official: topk_oracle.indices,
+                ordered_match,
+                selected_logits_metric: compare_hidden(&local_topk.logits, &topk_oracle.logits),
+                routing_weights_metric: compare_hidden(
+                    &local_topk.routing_weights,
+                    &topk_oracle.routing_weights,
+                ),
+                local_weight_sum: local_topk.routing_weights.iter().sum(),
+                official_weight_sum: topk_oracle.routing_weights.iter().sum(),
+            };
+            let classification = if logits_metric.metrics.mismatches != 0 {
+                "layer0_validation_router_logits_mismatch"
+            } else if !topk.ordered_match
+                || topk.selected_logits_metric.metrics.mismatches != 0
+                || topk.routing_weights_metric.metrics.mismatches != 0
+            {
+                "layer0_validation_topk_routing_mismatch"
+            } else {
+                "layer0_validation_router_and_topk_match_oracle"
+            };
+            (
+                classification,
+                Some(logits_metric),
+                Some(topk),
+                Some(weight_source),
+                Some(bias_source),
+                None,
+            )
+        }
+        (_, _, _, Err(_), _) => (
+            "layer0_validation_router_blocked_by_artifacts",
+            None,
+            None,
+            None,
+            None,
+            Some(Blocker {
+                kind: "router_weight",
+                detail: "could not load model.layers.0.mlp.router.weight from --model",
+            }),
+        ),
+        (_, _, _, _, Err(_)) => (
+            "layer0_validation_router_blocked_by_artifacts",
+            None,
+            None,
+            None,
+            None,
+            Some(Blocker {
+                kind: "router_bias",
+                detail: "could not load model.layers.0.mlp.router.bias from --model",
+            }),
+        ),
+        _ => (
+            "layer0_validation_router_blocked_by_artifacts",
+            None,
+            None,
+            None,
+            None,
+            Some(Blocker {
+                kind: "router_artifacts",
+                detail: "MLP norm, router logits oracle, or top-k/routing oracle did not expose supported values or expected counts",
+            }),
+        ),
+    };
+
+    let next_bounded_step = match classification {
+        "layer0_validation_router_and_topk_match_oracle" => {
+            "extend validation-runtime path to selected expert outputs"
+        }
+        "layer0_validation_router_logits_mismatch" => {
+            "localize router BF16 linear accumulation or bias policy"
+        }
+        "layer0_validation_topk_routing_mismatch" => {
+            "localize top-k ordering or selected-logit softmax policy"
+        }
+        _ => "resolve the reported router validation blocker",
+    };
+
+    let status = RouterStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "router",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        input_source: router_input_source(mlp_norm),
+        router_policy: "bf16_input_bf16_weight_bf16_bias_f32_accum_bf16_output_topk_sorted_softmax_bf16_weights",
+        mlp_norm: mlp_norm_status,
+        router_logits_oracle: logits_oracle_status,
+        topk_routing_oracle: topk_oracle_status,
+        router_weight_source: weight_source,
+        router_bias_source: bias_source,
+        logits_metric,
+        topk,
         blocker,
         next_bounded_step,
     };
@@ -2414,6 +2611,58 @@ fn load_tensor_artifact(
     ))
 }
 
+#[derive(Debug)]
+struct TopkOracle {
+    indices: Vec<i64>,
+    logits: Vec<f32>,
+    routing_weights: Vec<f32>,
+}
+
+fn load_topk_oracle(path: &Path, top_k: usize) -> Result<(TensorArtifactStatus, TopkOracle)> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let indices: Vec<i64> = value
+        .get("selected_expert_indices")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_i64(values))
+        .unwrap_or_default();
+    let logits: Vec<f32> = value
+        .get("selected_expert_logits")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_f32(values))
+        .unwrap_or_default();
+    let routing_weights: Vec<f32> = value
+        .get("routing_weights")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_f32(values))
+        .unwrap_or_default();
+    let matched = indices.len() == top_k && logits.len() == top_k && routing_weights.len() == top_k;
+    Ok((
+        TensorArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape: Some(vec![top_k]),
+            value_count: Some(routing_weights.len()),
+            expected_value_counts: vec![top_k],
+            shape_or_count_matched: matched,
+            value_key: Some(
+                "selected_expert_indices.values,selected_expert_logits.values,routing_weights.values"
+                    .to_string(),
+            ),
+        },
+        TopkOracle {
+            indices,
+            logits,
+            routing_weights,
+        },
+    ))
+}
+
 fn extract_shape(value: &Value) -> Option<Vec<usize>> {
     ["shape", "tensor_shape", "output_shape"]
         .iter()
@@ -2486,6 +2735,13 @@ fn json_values_to_f32(values: &[Value]) -> Vec<f32> {
     values
         .iter()
         .map(|value| value.as_f64().unwrap_or(f64::NAN) as f32)
+        .collect()
+}
+
+fn json_values_to_i64(values: &[Value]) -> Vec<i64> {
+    values
+        .iter()
+        .map(|value| value.as_i64().unwrap_or_default())
         .collect()
 }
 
@@ -2912,6 +3168,66 @@ fn compute_mlp_rms_norm(input: &[f32], weight: &[f32], epsilon: f32) -> Vec<f32>
         .zip(weight.iter())
         .map(|(x, scale)| round_bf16(round_bf16(*x) * inverse_rms * *scale))
         .collect()
+}
+
+fn compute_router_logits_bf16_linear(input: &[f32], weight: &[f32], bias: &[f32]) -> Vec<f32> {
+    let experts = bias.len();
+    let hidden = input.len();
+    let mut output = vec![0.0f32; experts];
+    for expert in 0..experts {
+        let weight_base = expert * hidden;
+        let mut sum = 0.0f32;
+        for hidden_lane in 0..hidden {
+            sum += round_bf16(input[hidden_lane]) * round_bf16(weight[weight_base + hidden_lane]);
+        }
+        output[expert] = round_bf16(sum + round_bf16(bias[expert]));
+    }
+    output
+}
+
+#[derive(Debug)]
+struct RouterTopk {
+    indices: Vec<i64>,
+    logits: Vec<f32>,
+    routing_weights: Vec<f32>,
+}
+
+fn compute_router_topk(logits: &[f32], top_k: usize) -> RouterTopk {
+    let mut indexed = logits
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (index as i64, *value))
+        .collect::<Vec<_>>();
+    indexed.sort_by(|(left_index, left_value), (right_index, right_value)| {
+        right_value
+            .partial_cmp(left_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    let selected = &indexed[..top_k.min(indexed.len())];
+    let indices = selected.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+    let selected_logits = selected
+        .iter()
+        .map(|(_, value)| round_bf16(*value))
+        .collect::<Vec<_>>();
+    let max_logit = selected_logits
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let exp_values = selected_logits
+        .iter()
+        .map(|value| (*value - max_logit).exp())
+        .collect::<Vec<_>>();
+    let exp_sum = exp_values.iter().sum::<f32>();
+    let routing_weights = exp_values
+        .iter()
+        .map(|value| round_bf16(*value / exp_sum))
+        .collect::<Vec<_>>();
+    RouterTopk {
+        indices,
+        logits: selected_logits,
+        routing_weights,
+    }
 }
 
 fn lane_trace(

@@ -922,6 +922,70 @@ Recommended next bounded step:
 
 Extend the validation-runtime path to router logits and top-k routing.
 
+## Router And Top-K Validation Status
+
+Submode added:
+
+- `--mode router`
+
+Target seams:
+
+```text
+layer0_final_token_mlp_router_logits_before_routing
+layer0_final_token_mlp_topk_expert_indices_and_routing_weights
+```
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| MLP norm input | official MLP norm oracle, accepted because `--mode mlp-norm` matched this boundary exactly |
+| router weight | `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors` |
+| router weight tensor | `model.layers.0.mlp.router.weight`, BF16, shape `[32,2880]` |
+| router bias | `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors` |
+| router bias tensor | `model.layers.0.mlp.router.bias`, BF16, shape `[32]` |
+| router logits oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json` |
+| top-k/routing oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-topk-expert-indices-and-routing-weights-status.json` |
+
+Policy:
+
+- Router logits use BF16 input, BF16 weight, BF16 bias, f32 accumulation, and
+  BF16 output.
+- Top-k uses sorted descending selected logits with `top_k = 4`.
+- Routing weights are softmax over selected logits with BF16 output.
+
+Current classification:
+
+```text
+layer0_validation_router_and_topk_match_oracle
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| router logits vs official | `0` | `0` | `0` |
+| selected expert logits vs official | `0` | `0` | `0` |
+| routing weights vs official | `0` | `0` | `0` |
+
+Top-k result:
+
+| field | value |
+| --- | --- |
+| selected experts | `[3, 30, 11, 27]` |
+| routing weights | `[0.4453125, 0.2275390625, 0.189453125, 0.13671875]` |
+| routing weight sum | `0.99902344` |
+
+Conclusion:
+
+- The validation-runtime path now clears the layer0 final-token router logits
+  and top-k/routing boundaries exactly after the exact MLP norm boundary.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Extend the validation-runtime path to selected expert outputs.
+
 ## Validation Commands
 
 For the skeleton slice:
