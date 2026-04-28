@@ -41,6 +41,14 @@ struct Cli {
     #[arg(long)]
     raw_qk_oracle: Option<PathBuf>,
 
+    /// Official masked scaled QK logits pre-softmax oracle artifact.
+    #[arg(long)]
+    masked_logits_oracle: Option<PathBuf>,
+
+    /// Official attention probabilities post-softmax oracle artifact.
+    #[arg(long)]
+    attention_probs_oracle: Option<PathBuf>,
+
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
     token_count: usize,
@@ -111,6 +119,7 @@ enum Mode {
     Skeleton,
     KRope,
     RawQk,
+    AttentionProbs,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +255,89 @@ struct RawQkStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct AttentionProbsStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    table_source: &'static str,
+    rope_policy: &'static str,
+    q_source: TensorArtifactStatus,
+    k_source: TensorArtifactStatus,
+    raw_qk_oracle: Option<TensorArtifactStatus>,
+    masked_logits_oracle: TensorArtifactStatus,
+    attention_probs_oracle: TensorArtifactStatus,
+    config: AttentionProbsConfig,
+    raw_qk_guard: Option<MatrixComparisonStatus>,
+    masked_logits: Option<MaskedLogitsStatus>,
+    attention_probs: Option<AttentionProbabilityStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct AttentionProbsConfig {
+    token_count: usize,
+    query_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    final_token_index: usize,
+    scale: f32,
+    masked_width: usize,
+    output_boundary: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct MaskedLogitsStatus {
+    real_keys: MatrixComparisonStatus,
+    sink: MatrixComparisonStatus,
+    all: MatrixComparisonStatus,
+    sink_source: &'static str,
+    masked_real_key_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AttentionProbabilityStatus {
+    real_keys: MatrixComparisonStatus,
+    sink: MatrixComparisonStatus,
+    all: MatrixComparisonStatus,
+    row_sums: RowSumSummary,
+    softmax_policy: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MatrixComparisonStatus {
+    metrics: MatrixMetrics,
+    first_mismatch: Option<MatrixDiff>,
+    worst_mismatch: Option<MatrixDiff>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MatrixMetrics {
+    max_abs_diff: f32,
+    mean_abs_diff: f32,
+    mismatches: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MatrixDiff {
+    q_head: usize,
+    column: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct RowSumSummary {
+    min: f32,
+    max: f32,
+    mean: f32,
+}
+
+#[derive(Debug, Serialize)]
 struct RawQkConfig {
     token_count: usize,
     query_heads: usize,
@@ -309,6 +401,7 @@ fn main() -> Result<()> {
         Mode::Skeleton => run_skeleton(&cli),
         Mode::KRope => run_k_rope(&cli),
         Mode::RawQk => run_raw_qk(&cli),
+        Mode::AttentionProbs => run_attention_probs(&cli),
     }
 }
 
@@ -547,6 +640,130 @@ fn run_raw_qk(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_attention_probs(cli: &Cli) -> Result<()> {
+    let q_pre_rope = required_path(&cli.q_pre_rope, "Q pre-RoPE")?;
+    let k_pre_rope = required_path(&cli.k_pre_rope, "K pre-RoPE")?;
+    let masked_logits_oracle = required_path(&cli.masked_logits_oracle, "masked logits oracle")?;
+    let attention_probs_oracle =
+        required_path(&cli.attention_probs_oracle, "attention probs oracle")?;
+    validate_path(q_pre_rope, "Q pre-RoPE")?;
+    validate_path(k_pre_rope, "K pre-RoPE")?;
+    validate_path(masked_logits_oracle, "masked logits oracle")?;
+    validate_path(attention_probs_oracle, "attention probs oracle")?;
+    if let Some(raw_qk_oracle) = &cli.raw_qk_oracle {
+        validate_path(raw_qk_oracle, "raw QK oracle")?;
+    }
+
+    let q_full_count = cli.token_count * cli.query_heads * cli.head_dim;
+    let q_final_count = cli.query_heads * cli.head_dim;
+    let k_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let raw_qk_count = cli.query_heads * cli.token_count;
+    let masked_width = cli.token_count + 1;
+    let masked_count = cli.query_heads * masked_width;
+
+    let (q_status, q_values) = load_tensor_artifact(
+        q_pre_rope,
+        &[q_full_count, q_final_count],
+        &["values", "local_q_pre_rope_f32"],
+    )?;
+    let (k_status, k_values) = load_tensor_artifact(
+        k_pre_rope,
+        &[k_count],
+        &[
+            "values",
+            "official_projection_outputs.official_module_k_output_f32",
+        ],
+    )?;
+    let (raw_oracle_status, raw_oracle_values) = match &cli.raw_qk_oracle {
+        Some(path) => {
+            let (status, values) = load_tensor_artifact(path, &[raw_qk_count], &["values"])?;
+            (Some(status), Some(values))
+        }
+        None => (None, None),
+    };
+    let (masked_status, masked_values) =
+        load_tensor_artifact(masked_logits_oracle, &[masked_count], &["values"])?;
+    let (probs_status, probs_values) =
+        load_tensor_artifact(attention_probs_oracle, &[masked_count], &["values"])?;
+
+    let execution = if !q_status.shape_or_count_matched {
+        AttentionProbsExecution::blocked(
+            "layer0_validation_attention_probs_blocked_by_artifacts",
+            "q_pre_rope_artifact",
+            "Q pre-RoPE artifact did not expose a supported value key or expected value count",
+        )
+    } else if !k_status.shape_or_count_matched
+        || !masked_status.shape_or_count_matched
+        || !probs_status.shape_or_count_matched
+        || raw_oracle_status
+            .as_ref()
+            .map(|status| !status.shape_or_count_matched)
+            .unwrap_or(false)
+    {
+        AttentionProbsExecution::blocked(
+            "layer0_validation_attention_probs_blocked_by_artifacts",
+            "attention_artifacts",
+            "K pre-RoPE, raw-QK, masked-logits, or attention-probs artifact did not expose a supported value key or expected value count",
+        )
+    } else {
+        execute_attention_probs(
+            &q_values,
+            &k_values,
+            raw_oracle_values.as_deref(),
+            &masked_values,
+            &probs_values,
+            cli,
+        )
+    };
+
+    let next_bounded_step = match execution.classification {
+        "layer0_validation_attention_probs_match_oracle" => {
+            "extend attention-only validation to weighted V using the exact attention probabilities"
+        }
+        "layer0_validation_masked_logits_mismatch" => {
+            "localize masked-logit mismatch between raw-QK real keys and sink-source handling"
+        }
+        "layer0_validation_attention_probs_mismatch"
+        | "layer0_validation_attention_probs_softmax_policy_unresolved" => {
+            "reconcile softmax dtype/output policy against the official attention probability boundary"
+        }
+        _ => "resolve the reported attention probability validation blocker",
+    };
+
+    let status = AttentionProbsStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "attention-probs",
+        classification: execution.classification,
+        implemented: execution.blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        table_source: execution.table_source,
+        rope_policy: "bf16_input_bf16_factors_bf16_rounded_math_bf16_output",
+        q_source: q_status,
+        k_source: k_status,
+        raw_qk_oracle: raw_oracle_status,
+        masked_logits_oracle: masked_status,
+        attention_probs_oracle: probs_status,
+        config: AttentionProbsConfig {
+            token_count: cli.token_count,
+            query_heads: cli.query_heads,
+            kv_heads: cli.kv_heads,
+            head_dim: cli.head_dim,
+            final_token_index: cli.final_token_index,
+            scale: cli.scale,
+            masked_width,
+            output_boundary: "bf16_masked_logits_and_bf16_attention_probabilities",
+        },
+        raw_qk_guard: execution.raw_qk_guard,
+        masked_logits: execution.masked_logits,
+        attention_probs: execution.attention_probs,
+        blocker: execution.blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -568,6 +785,37 @@ struct RawQkExecution {
     worst_mismatch: Option<RawQkDiff>,
     blocker: Option<Blocker>,
     table_source: &'static str,
+}
+
+struct RawQkValues {
+    values: Vec<f32>,
+    table_source: &'static str,
+}
+
+struct AttentionProbsExecution {
+    classification: &'static str,
+    table_source: &'static str,
+    raw_qk_guard: Option<MatrixComparisonStatus>,
+    masked_logits: Option<MaskedLogitsStatus>,
+    attention_probs: Option<AttentionProbabilityStatus>,
+    blocker: Option<Blocker>,
+}
+
+impl AttentionProbsExecution {
+    fn blocked(
+        classification: &'static str,
+        kind: &'static str,
+        detail: &'static str,
+    ) -> AttentionProbsExecution {
+        AttentionProbsExecution {
+            classification,
+            table_source: "unavailable",
+            raw_qk_guard: None,
+            masked_logits: None,
+            attention_probs: None,
+            blocker: Some(Blocker { kind, detail }),
+        }
+    }
 }
 
 impl RawQkExecution {
@@ -713,6 +961,30 @@ fn validation_rope_config(cli: &Cli) -> gpt_oss_model_runner::runner::ModelRunne
 }
 
 fn execute_raw_qk(q_pre: &[f32], k_pre: &[f32], oracle: &[f32], cli: &Cli) -> RawQkExecution {
+    let raw_values = match compute_raw_qk_values(q_pre, k_pre, cli) {
+        Ok(values) => values,
+        Err(execution) => return execution,
+    };
+    let comparison = compare_raw_qk(&raw_values.values, oracle, cli);
+    RawQkExecution {
+        classification: if comparison.metrics.mismatches == 0 {
+            "layer0_validation_raw_qk_matches_oracle"
+        } else {
+            "layer0_validation_raw_qk_mismatch"
+        },
+        metrics: Some(comparison.metrics),
+        first_mismatch: comparison.first_mismatch,
+        worst_mismatch: comparison.worst_mismatch,
+        blocker: None,
+        table_source: raw_values.table_source,
+    }
+}
+
+fn compute_raw_qk_values(
+    q_pre: &[f32],
+    k_pre: &[f32],
+    cli: &Cli,
+) -> Result<RawQkValues, RawQkExecution> {
     let config = validation_rope_config(cli);
     let q_rope_input = q_rope_input_for_helper(q_pre, cli);
     let q_result = gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
@@ -730,41 +1002,161 @@ fn execute_raw_qk(q_pre: &[f32], k_pre: &[f32], oracle: &[f32], cli: &Cli) -> Ra
     let (q_post, q_table_source) = match q_result {
         Ok(result) => result,
         Err(_) => {
-            return RawQkExecution::blocked(
+            return Err(RawQkExecution::blocked(
                 "layer0_validation_raw_qk_execution_failed",
                 "q_rope_failed",
                 "BF16-boundary Q RoPE helper failed",
-            );
+            ));
         }
     };
     let (k_post, k_table_source) = match k_result {
         Ok(result) => result,
         Err(_) => {
-            return RawQkExecution::blocked(
+            return Err(RawQkExecution::blocked(
                 "layer0_validation_raw_qk_execution_failed",
                 "k_rope_failed",
                 "BF16-boundary K RoPE helper failed",
-            );
+            ));
         }
     };
     let q_final = q_final_post_rope_slice(&q_post, q_pre.len(), cli);
     let actual = compute_raw_qk(q_final, &k_post, cli);
-    let comparison = compare_raw_qk(&actual, oracle, cli);
-    RawQkExecution {
-        classification: if comparison.metrics.mismatches == 0 {
-            "layer0_validation_raw_qk_matches_oracle"
-        } else {
-            "layer0_validation_raw_qk_mismatch"
-        },
-        metrics: Some(comparison.metrics),
-        first_mismatch: comparison.first_mismatch,
-        worst_mismatch: comparison.worst_mismatch,
-        blocker: None,
+    Ok(RawQkValues {
+        values: actual,
         table_source: if q_table_source == k_table_source {
             q_table_source
         } else {
             "mixed_table_sources"
         },
+    })
+}
+
+fn execute_attention_probs(
+    q_pre: &[f32],
+    k_pre: &[f32],
+    raw_oracle: Option<&[f32]>,
+    masked_oracle: &[f32],
+    probs_oracle: &[f32],
+    cli: &Cli,
+) -> AttentionProbsExecution {
+    let raw_values = match compute_raw_qk_values(q_pre, k_pre, cli) {
+        Ok(values) => values,
+        Err(execution) => {
+            return AttentionProbsExecution::blocked(
+                "layer0_validation_attention_probs_execution_failed",
+                execution
+                    .blocker
+                    .map(|blocker| blocker.kind)
+                    .unwrap_or("raw_qk_execution_failed"),
+                "raw-QK generation failed before mask/softmax validation",
+            );
+        }
+    };
+    let raw_qk_guard = raw_oracle.map(|oracle| {
+        compare_matrix(
+            &raw_values.values,
+            oracle,
+            cli.query_heads,
+            cli.token_count,
+            MatrixSelection::All,
+        )
+    });
+
+    let masked_width = cli.token_count + 1;
+    let masked_logits = build_masked_logits_from_raw_qk(
+        &raw_values.values,
+        masked_oracle,
+        cli.query_heads,
+        cli.token_count,
+    );
+    let masked_real_keys = compare_matrix(
+        &masked_logits,
+        masked_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::Columns {
+            start: 0,
+            end: cli.token_count,
+        },
+    );
+    let masked_sink = compare_matrix(
+        &masked_logits,
+        masked_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::Column(cli.token_count),
+    );
+    let masked_all = compare_matrix(
+        &masked_logits,
+        masked_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::All,
+    );
+    let masked_status = MaskedLogitsStatus {
+        real_keys: masked_real_keys,
+        sink: masked_sink,
+        all: masked_all,
+        sink_source: "official_masked_logits_oracle_sink_column",
+        masked_real_key_count: 0,
+    };
+
+    if masked_status.all.metrics.mismatches != 0 {
+        return AttentionProbsExecution {
+            classification: "layer0_validation_masked_logits_mismatch",
+            table_source: raw_values.table_source,
+            raw_qk_guard,
+            masked_logits: Some(masked_status),
+            attention_probs: None,
+            blocker: None,
+        };
+    }
+
+    let probs = softmax_rows_bf16_output(&masked_logits, cli.query_heads, masked_width);
+    let probs_real_keys = compare_matrix(
+        &probs,
+        probs_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::Columns {
+            start: 0,
+            end: cli.token_count,
+        },
+    );
+    let probs_sink = compare_matrix(
+        &probs,
+        probs_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::Column(cli.token_count),
+    );
+    let probs_all = compare_matrix(
+        &probs,
+        probs_oracle,
+        cli.query_heads,
+        masked_width,
+        MatrixSelection::All,
+    );
+    let probs_status = AttentionProbabilityStatus {
+        real_keys: probs_real_keys,
+        sink: probs_sink,
+        all: probs_all,
+        row_sums: row_sum_summary(&probs, cli.query_heads, masked_width),
+        softmax_policy: "f32_subtract_max_exp_sum_bf16_output",
+    };
+    let classification = if probs_status.all.metrics.mismatches == 0 {
+        "layer0_validation_attention_probs_match_oracle"
+    } else {
+        "layer0_validation_attention_probs_mismatch"
+    };
+
+    AttentionProbsExecution {
+        classification,
+        table_source: raw_values.table_source,
+        raw_qk_guard,
+        masked_logits: Some(masked_status),
+        attention_probs: Some(probs_status),
+        blocker: None,
     }
 }
 
@@ -813,6 +1205,62 @@ fn compute_raw_qk(q_final: &[f32], k_post: &[f32], cli: &Cli) -> Vec<f32> {
         }
     }
     output
+}
+
+fn build_masked_logits_from_raw_qk(
+    raw_qk: &[f32],
+    masked_oracle: &[f32],
+    query_heads: usize,
+    token_count: usize,
+) -> Vec<f32> {
+    let masked_width = token_count + 1;
+    let mut output = vec![0.0f32; query_heads * masked_width];
+    for q_head in 0..query_heads {
+        let raw_base = q_head * token_count;
+        let masked_base = q_head * masked_width;
+        output[masked_base..masked_base + token_count]
+            .copy_from_slice(&raw_qk[raw_base..raw_base + token_count]);
+        output[masked_base + token_count] = masked_oracle[masked_base + token_count];
+    }
+    output
+}
+
+fn softmax_rows_bf16_output(values: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut output = vec![0.0f32; rows * cols];
+    for row in 0..rows {
+        let base = row * cols;
+        let row_values = &values[base..base + cols];
+        let max_value = row_values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0.0f32;
+        let mut exp_values = vec![0.0f32; cols];
+        for (idx, value) in row_values.iter().copied().enumerate() {
+            let exp_value = (value - max_value).exp();
+            exp_values[idx] = exp_value;
+            sum += exp_value;
+        }
+        for (idx, exp_value) in exp_values.into_iter().enumerate() {
+            output[base + idx] = round_bf16(exp_value / sum);
+        }
+    }
+    output
+}
+
+fn row_sum_summary(values: &[f32], rows: usize, cols: usize) -> RowSumSummary {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+    for row in 0..rows {
+        let base = row * cols;
+        let row_sum = values[base..base + cols].iter().sum::<f32>();
+        min = min.min(row_sum);
+        max = max.max(row_sum);
+        sum += row_sum as f64;
+    }
+    RowSumSummary {
+        min,
+        max,
+        mean: (sum / rows.max(1) as f64) as f32,
+    }
 }
 
 fn rope_scaling_type(cli: &Cli) -> Option<String> {
@@ -1133,6 +1581,78 @@ struct RawQkComparison {
     metrics: RawQkMetrics,
     first_mismatch: Option<RawQkDiff>,
     worst_mismatch: Option<RawQkDiff>,
+}
+
+enum MatrixSelection {
+    All,
+    Column(usize),
+    Columns { start: usize, end: usize },
+}
+
+impl MatrixSelection {
+    fn includes(&self, column: usize) -> bool {
+        match *self {
+            MatrixSelection::All => true,
+            MatrixSelection::Column(selected) => column == selected,
+            MatrixSelection::Columns { start, end } => (start..end).contains(&column),
+        }
+    }
+}
+
+fn compare_matrix(
+    actual: &[f32],
+    expected: &[f32],
+    rows: usize,
+    cols: usize,
+    selection: MatrixSelection,
+) -> MatrixComparisonStatus {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut compared = 0usize;
+    let mut mismatches = 0usize;
+    let mut first_mismatch = None;
+    let mut worst_mismatch = None;
+
+    for row in 0..rows {
+        for col in 0..cols {
+            if !selection.includes(col) {
+                continue;
+            }
+            let idx = row * cols + col;
+            let actual_value = actual[idx];
+            let expected_value = expected[idx];
+            let abs_diff = (actual_value - expected_value).abs();
+            compared += 1;
+            sum_abs_diff += abs_diff as f64;
+            if abs_diff != 0.0 {
+                mismatches += 1;
+                let diff = MatrixDiff {
+                    q_head: row,
+                    column: col,
+                    actual: actual_value,
+                    expected: expected_value,
+                    abs_diff,
+                };
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(diff.clone());
+                }
+                if abs_diff > max_abs_diff {
+                    max_abs_diff = abs_diff;
+                    worst_mismatch = Some(diff);
+                }
+            }
+        }
+    }
+
+    MatrixComparisonStatus {
+        metrics: MatrixMetrics {
+            max_abs_diff,
+            mean_abs_diff: (sum_abs_diff / compared.max(1) as f64) as f32,
+            mismatches,
+        },
+        first_mismatch,
+        worst_mismatch,
+    }
 }
 
 fn compare_raw_qk(actual: &[f32], expected: &[f32], cli: &Cli) -> RawQkComparison {

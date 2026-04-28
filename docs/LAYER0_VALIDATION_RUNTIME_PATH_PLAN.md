@@ -555,6 +555,64 @@ Recommended next bounded step:
 Extend attention-only validation to the mask/softmax probability boundary, then
 weighted V.
 
+## Attention Mask and Softmax Validation Status
+
+Submode added:
+
+- `--mode attention-probs`
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| Q pre-RoPE | `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/q_pre_rope_custom.json` |
+| K pre-RoPE | `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json` |
+| raw-QK oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json` |
+| masked-logits oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-masked-scaled-qk-logits-pre-softmax-status.json` |
+| attention-probs oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json` |
+
+Policy:
+
+- Regenerate final-token raw-QK internally from Q/K pre-RoPE using the
+  BF16-boundary RoPE helper.
+- Real-key masked-logit columns are copied from the regenerated raw-QK scores.
+- No real key is masked for the final token in this 74-token prompt.
+- Sink column source:
+  `official_masked_logits_oracle_sink_column`.
+- Softmax policy:
+  `f32_subtract_max_exp_sum_bf16_output`.
+
+Current classification:
+
+```text
+layer0_validation_attention_probs_match_oracle
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| raw-QK guard | `0` | `0` | `0` |
+| masked logits, real-key columns | `0` | `0` | `0` |
+| masked logits, sink column | `0` | `0` | `0` |
+| masked logits, all columns | `0` | `0` | `0` |
+| attention probabilities, real-key columns | `0` | `0` | `0` |
+| attention probabilities, sink column | `0` | `0` | `0` |
+| attention probabilities, all columns | `0` | `0` | `0` |
+
+Conclusion:
+
+- The validation-runtime path now reproduces the layer0 final-token attention
+  mask and post-softmax probability boundary exactly.
+- Sink generation is not integration-native yet; this slice uses the official
+  masked-logits sink column as an explicit validation input.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Use the exact attention probabilities to validate weighted V, then continue to
+attention o-proj only after weighted V clears.
+
 ## Validation Commands
 
 For the skeleton slice:
