@@ -1195,6 +1195,90 @@ Localize the official SwiGLU policy using the expert30 MLP1 oracle as input:
 operator order, clamp/rounding boundaries, sigmoid implementation, and output
 dtype. Keep MXFP4 dequant/layout changes deferred until SwiGLU policy is pinned.
 
+## SwiGLU Dtype Policy Localization
+
+Focused mode added:
+
+```text
+--mode swiglu-debug
+```
+
+Why this slice was needed:
+
+- The previous selected-experts debug run showed only one BF16 lane mismatch at
+  expert30 MLP1 before SwiGLU, but the mismatch expanded to 1383 lanes at the
+  SwiGLU boundary.
+- This mode removes MXFP4 and MLP1 replay from the equation by using the
+  official expert30 MLP1-before-SwiGLU oracle as the sole input.
+
+Official implementation summary from `gpt_oss/torch/model.py`:
+
+```python
+x_glu, x_linear = x[..., ::2], x[..., 1::2]
+x_glu = x_glu.clamp(min=None, max=limit)
+x_linear = x_linear.clamp(min=-limit, max=limit)
+out_glu = x_glu * torch.sigmoid(alpha * x_glu)
+return out_glu * (x_linear + 1)
+```
+
+Key official semantics:
+
+- Split is interleaved gate/up, not half split.
+- Gate clamp is max-only at `7.0`.
+- Up/value clamp is `[-7.0, 7.0]`.
+- Sigmoid scale is `1.702`.
+- The official function has no explicit cast; the tensor expression runs on
+  BF16 tensors and the official boundary is BF16.
+
+Rust bounded-variant result:
+
+```text
+swiglu_dtype_rounding_policy_mismatch
+```
+
+Best Rust variant:
+
+| variant | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| interleaved official clamp, BF16-round `1.702 * gate` before sigmoid, BF16 output | `0.03125` | `0.00037176925` | `1035` |
+
+Important guards:
+
+| guard | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| interleaved official clamp, f32 sigmoid/multiply, BF16 output | `0.03125` | `0.00045188385` | `1382` |
+| interleaved official clamp, BF16-round `gate * sigmoid`, BF16 output | `0.015625` | `0.00037546654` | `1133` |
+| half-split gate/up | `5.486328` | `0.30293885` | `2877` |
+
+External PyTorch BF16 discriminator:
+
+- Using `/data/models/.venv-awq/bin/python`, the exact official tensor
+  expression on a `torch.bfloat16` MLP1 tensor matched the official SwiGLU
+  oracle exactly:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+```
+
+Interpretation:
+
+- The split and clamp policy are pinned.
+- The exact behavior is PyTorch BF16 elementwise sigmoid/multiply semantics, not
+  the current Rust `f32::exp` approximation with BF16 boundary rounding.
+- No selected-experts replay policy was changed in this slice, because encoding
+  the PyTorch BF16 elementwise sigmoid behavior in Rust/CUDA needs a separate
+  narrow validation helper rather than a Torch runtime dependency.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Add a validation-only SwiGLU helper that reproduces PyTorch BF16 elementwise
+semantics, or temporarily use the official SwiGLU boundary as the MLP2 seam input
+to localize down-projection independently. Do not change MXFP4 dequant/layout
+semantics until this SwiGLU policy is resolved.
+
 ## Validation Commands
 
 For the skeleton slice:

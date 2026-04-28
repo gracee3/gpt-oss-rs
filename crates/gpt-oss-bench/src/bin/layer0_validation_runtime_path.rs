@@ -127,6 +127,10 @@ struct Cli {
     #[arg(long)]
     expert30_mlp2_pre_bias_oracle: Option<PathBuf>,
 
+    /// Optional official expert30 selected output after bias oracle artifact.
+    #[arg(long)]
+    expert30_selected_output_oracle: Option<PathBuf>,
+
     /// Selected expert ids in rank order.
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
@@ -222,6 +226,7 @@ enum Mode {
     Router,
     SelectedExperts,
     SelectedExpertsDebug,
+    SwigluDebug,
 }
 
 #[derive(Debug, Serialize)]
@@ -585,6 +590,43 @@ struct SelectedExpertDebugVariantStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct SwigluDebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    official_summary: OfficialSwigluSummary,
+    mlp1_oracle: TensorArtifactStatus,
+    swiglu_oracle: TensorArtifactStatus,
+    variant_results: Vec<SwigluVariantStatus>,
+    best_variant: SwigluVariantStatus,
+    selected_experts_rerun: Option<Value>,
+    weighted_sum_rerun: Option<Value>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OfficialSwigluSummary {
+    gate_up_split: &'static str,
+    gate_clamp: &'static str,
+    up_clamp: &'static str,
+    sigmoid_scale: f32,
+    multiply_order: &'static str,
+    dtype_cast_behavior: &'static str,
+    output_dtype: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SwigluVariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    metric: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Serialize)]
 struct Mxfp4LoaderStatus {
     helper_name: &'static str,
     decode_source: &'static str,
@@ -861,6 +903,7 @@ fn main() -> Result<()> {
         Mode::Router => run_router(&cli),
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
+        Mode::SwigluDebug => run_swiglu_debug(&cli),
     }
 }
 
@@ -2193,6 +2236,100 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
         variant_results,
         root_cause_summary,
         weighted_sum_replacement: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_swiglu_debug(cli: &Cli) -> Result<()> {
+    let mlp1_oracle = required_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let swiglu_oracle = required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    validate_path(mlp1_oracle, "expert30 MLP1 oracle")?;
+    validate_path(swiglu_oracle, "expert30 SwiGLU oracle")?;
+
+    let (mlp1_status, mlp1_values) = load_tensor_artifact(mlp1_oracle, &[5760], &["values"])?;
+    let (swiglu_status, swiglu_values) = load_tensor_artifact(swiglu_oracle, &[2880], &["values"])?;
+    let artifact_blocked =
+        !mlp1_status.shape_or_count_matched || !swiglu_status.shape_or_count_matched;
+    let (classification, variant_results, best_variant, blocker, next_bounded_step) =
+        if artifact_blocked {
+            let empty = SwigluVariantStatus {
+                name: "not_run",
+                policy: "artifact blocker",
+                metric: empty_hidden_comparison(),
+            };
+            (
+                "swiglu_policy_unresolved",
+                Vec::new(),
+                empty,
+                Some(Blocker {
+                    kind: "swiglu_debug_artifacts",
+                    detail: "expert30 MLP1 or SwiGLU oracle did not expose supported values or expected counts",
+                }),
+                "resolve the reported SwiGLU debug artifact blocker",
+            )
+        } else {
+            let variants = compute_swiglu_policy_variants(&mlp1_values, &swiglu_values);
+            let best = variants
+                .iter()
+                .min_by(|left, right| {
+                    left.metric
+                        .metrics
+                        .mismatches
+                        .cmp(&right.metric.metrics.mismatches)
+                        .then_with(|| {
+                            left.metric
+                                .metrics
+                                .max_abs_diff
+                                .partial_cmp(&right.metric.metrics.max_abs_diff)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                })
+                .cloned()
+                .expect("SwiGLU discriminator must include variants");
+            let classification = classify_swiglu_policy(&variants, &best);
+            let next_bounded_step = match classification {
+                "swiglu_policy_matches_oracle" => {
+                    "encode the exact SwiGLU policy in selected expert validation replay and rerun selected-experts"
+                }
+                "swiglu_split_policy_mismatch" => {
+                    "update selected expert validation split policy only after confirming downstream selected-output impact"
+                }
+                "swiglu_clamp_policy_mismatch" => {
+                    "update selected expert validation clamp policy only after confirming downstream selected-output impact"
+                }
+                "swiglu_dtype_rounding_policy_mismatch" => {
+                    "inspect PyTorch BF16 elementwise SwiGLU behavior or use official SwiGLU as a temporary seam input for MLP2 localization"
+                }
+                _ => "inspect official SwiGLU operator/dtype behavior beyond the bounded Rust variants",
+            };
+            (classification, variants, best, None, next_bounded_step)
+        };
+
+    let status = SwigluDebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "swiglu-debug",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        official_summary: OfficialSwigluSummary {
+            gate_up_split: "x_glu = x[..., ::2], x_linear = x[..., 1::2]",
+            gate_clamp: "x_glu.clamp(min=None, max=limit)",
+            up_clamp: "x_linear.clamp(min=-limit, max=limit)",
+            sigmoid_scale: 1.702,
+            multiply_order: "x_glu * sigmoid(alpha * x_glu), then multiply by x_linear + 1",
+            dtype_cast_behavior: "no explicit cast in swiglu; torch operations inherit BF16 tensor semantics from MLP1 boundary",
+            output_dtype: "BF16 official boundary",
+        },
+        mlp1_oracle: mlp1_status,
+        swiglu_oracle: swiglu_status,
+        variant_results,
+        best_variant,
+        selected_experts_rerun: None,
+        weighted_sum_rerun: None,
         blocker,
         next_bounded_step,
     };
@@ -4121,6 +4258,38 @@ enum SwigluReplayPolicy {
     Swapped,
 }
 
+#[derive(Clone, Copy)]
+enum SwigluSplit {
+    Interleaved,
+    Half,
+}
+
+#[derive(Clone, Copy)]
+enum SwigluClamp {
+    Official,
+    None,
+    BothMinMax,
+}
+
+#[derive(Clone, Copy)]
+enum SwigluRound {
+    F32AllBf16Output,
+    Bf16InputF32MathBf16Output,
+    Bf16AfterClamp,
+    Bf16SigmoidArg,
+    Bf16SigmoidOutput,
+    Bf16MulStage,
+    Bf16UpPlusOne,
+}
+
+struct SwigluVariantSpec {
+    name: &'static str,
+    policy: &'static str,
+    split: SwigluSplit,
+    clamp: SwigluClamp,
+    rounding: SwigluRound,
+}
+
 #[cfg(feature = "cuda")]
 fn compute_selected_expert_trace(
     mlp_norm: &[f32],
@@ -4307,6 +4476,175 @@ fn compute_swiglu_with_policy(gate_up: &[f32], policy: SwigluReplayPolicy) -> Ve
         out[idx] = round_bf16(glu * (up + 1.0));
     }
     out
+}
+
+fn compute_swiglu_policy_variants(mlp1: &[f32], oracle: &[f32]) -> Vec<SwigluVariantStatus> {
+    let specs = [
+        SwigluVariantSpec {
+            name: "interleaved_official_f32_all_bf16_output",
+            policy: "interleaved gate/up, official clamp, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::F32AllBf16Output,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_input_f32_math_bf16_output",
+            policy: "interleaved gate/up, BF16 input slices, official clamp, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16InputF32MathBf16Output,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_after_clamp",
+            policy: "interleaved gate/up, BF16 input and BF16-round after clamp, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16AfterClamp,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_sigmoid_arg",
+            policy: "interleaved gate/up, official clamp, BF16-round 1.702*gate before sigmoid, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16SigmoidArg,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_sigmoid_output",
+            policy: "interleaved gate/up, official clamp, BF16-round sigmoid output before multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16SigmoidOutput,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_mul_stage",
+            policy: "interleaved gate/up, official clamp, BF16-round gate*sigmoid before final multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16MulStage,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_official_bf16_up_plus_one",
+            policy: "interleaved gate/up, official clamp, BF16-round up+1 before final multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16UpPlusOne,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_no_clamp_bf16_input_f32_math_bf16_output",
+            policy: "interleaved gate/up, no clamp, BF16 input slices, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::None,
+            rounding: SwigluRound::Bf16InputF32MathBf16Output,
+        },
+        SwigluVariantSpec {
+            name: "interleaved_clamp_both_minmax_bf16_input_f32_math_bf16_output",
+            policy: "interleaved gate/up, clamp both gate and up to [-7,7], BF16 input slices, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Interleaved,
+            clamp: SwigluClamp::BothMinMax,
+            rounding: SwigluRound::Bf16InputF32MathBf16Output,
+        },
+        SwigluVariantSpec {
+            name: "half_split_official_bf16_input_f32_math_bf16_output",
+            policy: "half-split gate/up, official clamp, BF16 input slices, f32 sigmoid/multiply, BF16 output",
+            split: SwigluSplit::Half,
+            clamp: SwigluClamp::Official,
+            rounding: SwigluRound::Bf16InputF32MathBf16Output,
+        },
+    ];
+
+    specs
+        .iter()
+        .map(|spec| {
+            let output = compute_swiglu_variant(mlp1, spec);
+            SwigluVariantStatus {
+                name: spec.name,
+                policy: spec.policy,
+                metric: compare_hidden(&output, oracle),
+            }
+        })
+        .collect()
+}
+
+fn compute_swiglu_variant(mlp1: &[f32], spec: &SwigluVariantSpec) -> Vec<f32> {
+    let intermediate = mlp1.len() / 2;
+    let mut out = vec![0.0f32; intermediate];
+    for idx in 0..intermediate {
+        let (gate_lane, up_lane) = match spec.split {
+            SwigluSplit::Interleaved => (2 * idx, 2 * idx + 1),
+            SwigluSplit::Half => (idx, idx + intermediate),
+        };
+        let mut gate = mlp1[gate_lane];
+        let mut up = mlp1[up_lane];
+        if !matches!(spec.rounding, SwigluRound::F32AllBf16Output) {
+            gate = round_bf16(gate);
+            up = round_bf16(up);
+        }
+        match spec.clamp {
+            SwigluClamp::Official => {
+                gate = gate.min(7.0);
+                up = up.clamp(-7.0, 7.0);
+            }
+            SwigluClamp::None => {}
+            SwigluClamp::BothMinMax => {
+                gate = gate.clamp(-7.0, 7.0);
+                up = up.clamp(-7.0, 7.0);
+            }
+        }
+        if matches!(spec.rounding, SwigluRound::Bf16AfterClamp) {
+            gate = round_bf16(gate);
+            up = round_bf16(up);
+        }
+
+        let mut sigmoid_arg = 1.702 * gate;
+        if matches!(spec.rounding, SwigluRound::Bf16SigmoidArg) {
+            sigmoid_arg = round_bf16(sigmoid_arg);
+        }
+        let mut sigmoid = 1.0 / (1.0 + (-sigmoid_arg).exp());
+        if matches!(spec.rounding, SwigluRound::Bf16SigmoidOutput) {
+            sigmoid = round_bf16(sigmoid);
+        }
+        let mut gate_sigmoid = gate * sigmoid;
+        if matches!(spec.rounding, SwigluRound::Bf16MulStage) {
+            gate_sigmoid = round_bf16(gate_sigmoid);
+        }
+        let mut up_plus_one = up + 1.0;
+        if matches!(spec.rounding, SwigluRound::Bf16UpPlusOne) {
+            up_plus_one = round_bf16(up_plus_one);
+        }
+        out[idx] = round_bf16(gate_sigmoid * up_plus_one);
+    }
+    out
+}
+
+fn classify_swiglu_policy(
+    variants: &[SwigluVariantStatus],
+    best: &SwigluVariantStatus,
+) -> &'static str {
+    if best.metric.metrics.mismatches == 0 {
+        return "swiglu_policy_matches_oracle";
+    }
+    let half_split_best = variants
+        .iter()
+        .filter(|variant| variant.name.starts_with("half_split"))
+        .map(|variant| variant.metric.metrics.mismatches)
+        .min()
+        .unwrap_or(usize::MAX);
+    let interleaved_best = variants
+        .iter()
+        .filter(|variant| variant.name.starts_with("interleaved"))
+        .map(|variant| variant.metric.metrics.mismatches)
+        .min()
+        .unwrap_or(usize::MAX);
+    if half_split_best < interleaved_best {
+        return "swiglu_split_policy_mismatch";
+    }
+    if best.name.contains("no_clamp") || best.name.contains("clamp_both") {
+        return "swiglu_clamp_policy_mismatch";
+    }
+    if best.name.contains("bf16") || best.name.contains("f32") {
+        return "swiglu_dtype_rounding_policy_mismatch";
+    }
+    "swiglu_policy_unresolved"
 }
 
 fn compare_selected_experts(
