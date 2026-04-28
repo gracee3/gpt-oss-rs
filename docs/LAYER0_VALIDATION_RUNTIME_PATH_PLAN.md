@@ -143,6 +143,68 @@ It intentionally does not:
 - import Torch/oneDNN/runtime-forward proof code, or
 - write raw tensor artifacts.
 
+## K RoPE Validation Status
+
+The first attention-only validation slice targets the K RoPE guard:
+
+```text
+official K pre-RoPE
+  -> runtime/kernel RoPE path
+  -> official K post-RoPE
+```
+
+This guard comes first because the prior scratch Python RoPE generator was
+wrong, while the official/model RoPE call made Q/K raw-QK exact. The validation
+runtime path must therefore prove it can reproduce official K post-RoPE before
+it uses K/Q downstream evidence.
+
+Status:
+
+- Submode added: `--mode k-rope`.
+- Required inputs:
+  - `--k-pre-rope`
+  - `--k-post-rope-oracle`
+  - `--output`
+- Artifact metadata/loading supports:
+  - pre-RoPE `[74,512]` flat K or `[74,8,64]` grouped K,
+  - post-RoPE `[74,8,64]`,
+  - the existing runtime-forward K projection status key
+    `official_projection_outputs.official_module_k_output_f32`.
+- Runtime behavior changed: no.
+- CUDA execution in this submode: no.
+
+Current classification:
+
+```text
+layer0_validation_k_rope_blocked_by_private_table_api
+```
+
+Reason:
+
+- The runtime f16 RoPE kernel launch helper is private inside
+  `crates/gpt-oss-model-runner/src/gpu_layer.rs`.
+- Runtime RoPE table construction is inline inside
+  `crates/gpt-oss-model-runner/src/gpu_runner.rs`, not exposed as a narrow
+  reusable validation API.
+- Reimplementing table math in this bench binary would repeat the failure mode
+  that contaminated the earlier scratch Q/K downstream artifacts.
+
+Required next bounded step:
+
+Extract a small validation-safe runtime RoPE table/kernel API, then rerun:
+
+```bash
+cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda -- \
+  --mode k-rope \
+  --k-pre-rope /home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json \
+  --k-post-rope-oracle /home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json \
+  --output /tmp/layer0_validation_k_rope_status.json
+```
+
+The rerun should only be considered meaningful once it uses the same runtime
+RoPE table source and kernel path that production code uses, without changing
+default routing.
+
 ## Validation Commands
 
 For the skeleton slice:
@@ -154,10 +216,21 @@ cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda 
 git diff --check
 ```
 
+For the K RoPE API-boundary slice:
+
+```bash
+cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda -- \
+  --mode k-rope \
+  --k-pre-rope <official-k-pre-rope-json> \
+  --k-post-rope-oracle <official-k-post-rope-json> \
+  --output /tmp/layer0_validation_k_rope_status.json
+```
+
 For a future status run:
 
 ```bash
 cargo run -p gpt-oss-bench --bin layer0_validation_runtime_path --features cuda -- \
+  --mode skeleton \
   --layer0-input <layer0-input-json> \
   --official-layer0-output <official-layer0-output-json> \
   --output /tmp/layer0_validation_runtime_path_status.json
