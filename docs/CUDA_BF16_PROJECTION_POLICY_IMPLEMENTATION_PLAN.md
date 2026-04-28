@@ -241,6 +241,40 @@ Next implementation step:
 - Add baseline current CUDA helper comparison against the loaded artifacts while keeping default
   runtime behavior unchanged.
 
+## Harness CUDA Dependency/API Decision
+
+Blocked classification observed:
+`qkv_projection_policy_compare_k_current_blocked_by_helper_api_gap`.
+
+Reason:
+
+- `gpt-oss-model-runner::gpu_layer::hgemm_dispatch` is private layer internals and should not
+  be used by a validation harness.
+- `gpt-oss-engine::GpuWorker` can execute model paths, but it does not expose a standalone
+  artifact-tensor GEMM comparison surface.
+- The public current CUDA GEMM surface is in `gpt-oss-gpu::cublas::CublasHandle`.
+
+Chosen option: `qkv_projection_dependency_plan_ready_direct_gpu_dep`.
+
+Dependency/API boundary:
+
+- `gpt-oss-bench` has an optional direct `gpt-oss-gpu` dependency enabled only by the existing
+  `cuda` feature.
+- The default non-CUDA bench build remains unchanged.
+- Validation binaries can call public `gpt-oss-gpu` APIs such as `CublasHandle::hgemm` or
+  `CublasHandle::hgemm_into`.
+- No new `gpt-oss-gpu` runtime API is introduced for this decision.
+- No private `gpu_layer` helpers are exposed or used.
+- Default runtime behavior remains unchanged.
+
+Next implementation slice expected files:
+
+- `crates/gpt-oss-bench/src/bin/qkv_projection_policy_compare.rs`
+- `docs/CUDA_BF16_PROJECTION_POLICY_IMPLEMENTATION_PLAN.md`
+
+The next slice should implement K-only current CUDA helper comparison using the public
+`gpt-oss-gpu::cublas::CublasHandle` API. It should not add a candidate/pedantic policy yet.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.

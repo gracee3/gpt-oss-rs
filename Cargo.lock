@@ -1367,6 +1367,7 @@ dependencies = [
  "criterion",
  "gpt-oss-core",
  "gpt-oss-engine",
+ "gpt-oss-gpu",
  "gpt-oss-tokenizer",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
