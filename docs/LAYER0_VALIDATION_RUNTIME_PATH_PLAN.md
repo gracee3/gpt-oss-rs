@@ -233,6 +233,112 @@ Pin the exact K pre-RoPE artifact identity against the official K post-RoPE
 artifact. If token-0 identity still fails with the correct source tensor, expose
 or align the runtime RoPE table source with the official/model RoPE source.
 
+## RoPE Table/Artifact Identity Investigation
+
+Status JSON:
+
+`/tmp/layer0_validation_rope_table_investigation.json`
+
+The K pre-RoPE artifact used by `--mode k-rope` is:
+
+`/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json`
+
+Metadata:
+
+- boundary: `layer0_attn_qkv_k_projection_before_grouped_view`
+- case: `developer-message-user-smoke`
+- schema: `runtime_forward_layer0_k_projection_official_weight_arithmetic/v1`
+- token count: `74`
+- K dimension: `512`
+- value count: `37888`
+- selected value key: `official_projection_outputs.official_module_k_output_f32`
+- source: official Torch CPU BF16 `torch.nn.functional.linear/module attn.qkv`
+- model root: `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- K weight tensor: `block.0.attn.qkv.weight[K slice]`
+- K bias: present, BF16, all zero
+
+The official K post-RoPE oracle is:
+
+`/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-k-post-rope-grouped.cpu.json`
+
+Metadata:
+
+- boundary: `layer0_k_post_rope_grouped`
+- case: `developer-message-user-smoke`
+- schema: `pinned-prompt-official-intermediate-capture-output/v2`
+- token count: `74`
+- shape: `[74, 8, 64]`
+- value count: `37888`
+- backend: official Torch
+- official model: `/data/models/openai/gpt-oss-20b`
+- prompt renderer: `harmony_gpt_oss_rs`
+
+Artifact identity finding:
+
+`k_pre_rope_artifact_identity_confirmed`
+
+A prior official/model RoPE guard summary at
+`/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/qk_official_rope_attribution_summary.json`
+records that applying
+`gpt_oss.torch.model.py::RotaryEmbedding.forward` through
+`AttentionBlock.rope` to this same K pre-RoPE artifact reproduces the official
+K post-RoPE oracle exactly:
+
+| guard | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| official K pre-RoPE through official/model RoPE vs official K post-RoPE | `0` | `0` | `0` |
+
+This rules out the K pre/post artifact pair as the source of the current
+validation mismatch.
+
+Runtime table source finding:
+
+`build_runtime_rope_tables` currently constructs a plain `rope_theta`
+inverse-frequency table:
+
+```text
+freq = 1 / rope_theta^(2i / head_dim)
+theta = position * freq
+cos = cos(theta)
+sin = sin(theta)
+```
+
+This matches the previous plain-table failure pattern:
+
+| source | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| validation runtime helper / plain `rope_theta` table | `31.828125` | `0.8329416` | `37882` |
+| prior scratch plain config `rope_theta` table | about `31.875` | about `0.8329` | not recorded here |
+
+The integration/runtime branch does carry RoPE scaling fields in
+`ModelRunnerConfig`, but the current runtime table helper does not consume
+`rope_scaling_type`, `rope_scaling_factor`, `rope_ntk_alpha`,
+`rope_ntk_beta`, `initial_context_length`, or `rope_scaling_truncate`.
+
+The proven/runtime-forward and archived replay-probe branches contain a
+YaRN-aware table helper. That helper:
+
+- enables YaRN when `rope_scaling_type == "yarn"` and factor `> 1`
+- computes `concentration = 0.1 * ln(factor) + 1`
+- derives a low/high ramp from `initial_context_length`, `beta_fast`,
+  `beta_slow`, and `rope_theta`
+- blends interpolation/extrapolation inverse frequencies
+- scales cos/sin rows by the concentration factor
+
+Conclusion:
+
+The current K RoPE mismatch is no longer an API-access blocker or an artifact
+identity ambiguity. It is a runtime table-source mismatch: validation is using
+the plain `rope_theta` table while the official/proven path requires the
+YaRN-scaled table for this restricted GPT-OSS checkpoint.
+
+Recommended next bounded step:
+
+Add a validation-safe YaRN-aware table helper that reuses the proven
+`ModelRunnerConfig` fields instead of changing kernel math. Preserve existing
+runtime behavior until the helper is validated, then rerun `--mode k-rope`
+against the same confirmed K pre/post artifact pair.
+
 ## Validation Commands
 
 For the skeleton slice:
