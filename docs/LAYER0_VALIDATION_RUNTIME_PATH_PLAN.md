@@ -613,6 +613,68 @@ Recommended next bounded step:
 Use the exact attention probabilities to validate weighted V, then continue to
 attention o-proj only after weighted V clears.
 
+## Weighted V Validation Status
+
+Submode added:
+
+- `--mode weighted-v`
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| attention probabilities | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json` |
+| V values | `/tmp/qkv_projection_v_artifacts-pinned-20260428-092126/v_oracle_matmul_plus_bias.json` |
+| weighted-V oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json` |
+
+V source note:
+
+- The pinned V pack also contains
+  `/tmp/qkv_projection_v_artifacts-pinned-20260428-092126/v_cpu_bf16_replay_post_bias.json`,
+  but that artifact does not clear this weighted-V boundary against the current
+  official oracle.
+- This run uses the pinned explicit matmul-plus-bias BF16 output artifact. That
+  artifact differs from the official/module V projection boundary by only the
+  known tiny projection-boundary ambiguity, and it clears weighted V exactly
+  after BF16 output rounding.
+- The selected V artifact is not committed.
+
+Policy:
+
+- Attention probabilities are `[64,75]` and include the sink column.
+- Sink position `74` is dropped for weighted V.
+- V is accepted as `[74,512]` or logical `[74,8,64]`.
+- GQA mapping uses `kv_head = q_head / 8`.
+- The validation binary emits both:
+  - f32 exploratory weighted sum vs oracle,
+  - BF16-rounded weighted sum vs oracle.
+
+Current classification:
+
+```text
+layer0_validation_weighted_v_matches_oracle
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| f32 exploratory weighted V vs official | `0.013309479` | `0.0006673922` | `4096` |
+| BF16-rounded weighted V vs official | `0` | `0` | `0` |
+
+Conclusion:
+
+- The validation-runtime path now reproduces the layer0 final-token weighted-V
+  boundary exactly after BF16 output rounding.
+- Sink handling is explicit: the sink participates in softmax normalization but
+  is not included in weighted V.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Extend attention-only validation to the attention output projection before the
+attention residual add.
+
 ## Validation Commands
 
 For the skeleton slice:

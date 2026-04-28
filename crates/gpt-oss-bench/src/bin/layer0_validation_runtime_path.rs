@@ -49,6 +49,18 @@ struct Cli {
     #[arg(long)]
     attention_probs_oracle: Option<PathBuf>,
 
+    /// Attention probabilities artifact for weighted-V validation.
+    #[arg(long)]
+    attention_probs: Option<PathBuf>,
+
+    /// V values artifact for weighted-V validation.
+    #[arg(long)]
+    v_values: Option<PathBuf>,
+
+    /// Official weighted V oracle artifact.
+    #[arg(long)]
+    weighted_v_oracle: Option<PathBuf>,
+
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
     token_count: usize,
@@ -60,6 +72,10 @@ struct Cli {
     /// Number of grouped-query K/V heads for K RoPE validation.
     #[arg(long, default_value_t = 8)]
     kv_heads: usize,
+
+    /// Number of query heads per K/V head for GQA.
+    #[arg(long, default_value_t = 8)]
+    heads_per_kv: usize,
 
     /// Per-head dimension for K RoPE validation.
     #[arg(long, default_value_t = 64)]
@@ -109,6 +125,10 @@ struct Cli {
     #[arg(long, default_value_t = 0.125)]
     scale: f32,
 
+    /// Sink column position for attention probabilities.
+    #[arg(long, default_value_t = 74)]
+    sink_position: usize,
+
     /// JSON status output path.
     #[arg(long)]
     output: PathBuf,
@@ -120,6 +140,7 @@ enum Mode {
     KRope,
     RawQk,
     AttentionProbs,
+    WeightedV,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +299,35 @@ struct AttentionProbsStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct WeightedVStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    sink_dropped: bool,
+    gqa: GqaConfig,
+    attention_probs: TensorArtifactStatus,
+    v_values: TensorArtifactStatus,
+    weighted_v_oracle: TensorArtifactStatus,
+    f32_metric: Option<MatrixComparisonStatus>,
+    bf16_metric: Option<MatrixComparisonStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct GqaConfig {
+    query_heads: usize,
+    kv_heads: usize,
+    heads_per_kv: usize,
+    head_dim: usize,
+    token_count: usize,
+    sink_position: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct AttentionProbsConfig {
     token_count: usize,
     query_heads: usize,
@@ -402,6 +452,7 @@ fn main() -> Result<()> {
         Mode::KRope => run_k_rope(&cli),
         Mode::RawQk => run_raw_qk(&cli),
         Mode::AttentionProbs => run_attention_probs(&cli),
+        Mode::WeightedV => run_weighted_v(&cli),
     }
 }
 
@@ -764,6 +815,75 @@ fn run_attention_probs(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_weighted_v(cli: &Cli) -> Result<()> {
+    let attention_probs = required_path(&cli.attention_probs, "attention probs")?;
+    let v_values = required_path(&cli.v_values, "V values")?;
+    let weighted_v_oracle = required_path(&cli.weighted_v_oracle, "weighted V oracle")?;
+    validate_path(attention_probs, "attention probs")?;
+    validate_path(v_values, "V values")?;
+    validate_path(weighted_v_oracle, "weighted V oracle")?;
+
+    let probs_count = cli.query_heads * (cli.token_count + 1);
+    let v_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let weighted_count = cli.query_heads * cli.head_dim;
+
+    let (probs_status, probs_values) =
+        load_tensor_artifact(attention_probs, &[probs_count], &["values"])?;
+    let (v_status, v_values_data) = load_tensor_artifact(v_values, &[v_count], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(weighted_v_oracle, &[weighted_count], &["values"])?;
+
+    let execution = if !probs_status.shape_or_count_matched
+        || !v_status.shape_or_count_matched
+        || !oracle_status.shape_or_count_matched
+    {
+        WeightedVExecution::blocked(
+            "layer0_validation_weighted_v_blocked_by_artifacts",
+            "weighted_v_artifacts",
+            "attention probabilities, V values, or weighted-V oracle did not expose supported values or expected counts",
+        )
+    } else {
+        execute_weighted_v(&probs_values, &v_values_data, &oracle_values, cli)
+    };
+
+    let next_bounded_step = match execution.classification {
+        "layer0_validation_weighted_v_matches_oracle" => {
+            "extend attention-only validation to attention output projection before residual"
+        }
+        "layer0_validation_weighted_v_mismatch" => {
+            "localize weighted-V mismatch between probability source, V source, GQA mapping, and BF16 output policy"
+        }
+        _ => "resolve the reported weighted-V validation blocker",
+    };
+
+    let status = WeightedVStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "weighted-v",
+        classification: execution.classification,
+        implemented: execution.blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        sink_dropped: true,
+        gqa: GqaConfig {
+            query_heads: cli.query_heads,
+            kv_heads: cli.kv_heads,
+            heads_per_kv: cli.heads_per_kv,
+            head_dim: cli.head_dim,
+            token_count: cli.token_count,
+            sink_position: cli.sink_position,
+        },
+        attention_probs: probs_status,
+        v_values: v_status,
+        weighted_v_oracle: oracle_status,
+        f32_metric: execution.f32_metric,
+        bf16_metric: execution.bf16_metric,
+        blocker: execution.blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -799,6 +919,28 @@ struct AttentionProbsExecution {
     masked_logits: Option<MaskedLogitsStatus>,
     attention_probs: Option<AttentionProbabilityStatus>,
     blocker: Option<Blocker>,
+}
+
+struct WeightedVExecution {
+    classification: &'static str,
+    f32_metric: Option<MatrixComparisonStatus>,
+    bf16_metric: Option<MatrixComparisonStatus>,
+    blocker: Option<Blocker>,
+}
+
+impl WeightedVExecution {
+    fn blocked(
+        classification: &'static str,
+        kind: &'static str,
+        detail: &'static str,
+    ) -> WeightedVExecution {
+        WeightedVExecution {
+            classification,
+            f32_metric: None,
+            bf16_metric: None,
+            blocker: Some(Blocker { kind, detail }),
+        }
+    }
 }
 
 impl AttentionProbsExecution {
@@ -1160,6 +1302,56 @@ fn execute_attention_probs(
     }
 }
 
+fn execute_weighted_v(
+    probs: &[f32],
+    v_values: &[f32],
+    oracle: &[f32],
+    cli: &Cli,
+) -> WeightedVExecution {
+    if cli.sink_position != cli.token_count {
+        return WeightedVExecution::blocked(
+            "layer0_validation_weighted_v_execution_failed",
+            "unsupported_sink_position",
+            "weighted-V validation currently expects the sink column at token_count",
+        );
+    }
+    if cli.heads_per_kv != cli.query_heads / cli.kv_heads {
+        return WeightedVExecution::blocked(
+            "layer0_validation_weighted_v_execution_failed",
+            "invalid_gqa_mapping",
+            "heads_per_kv does not match query_heads / kv_heads",
+        );
+    }
+
+    let f32_output = compute_weighted_v(probs, v_values, cli, false);
+    let bf16_output = compute_weighted_v(probs, v_values, cli, true);
+    let f32_metric = compare_matrix(
+        &f32_output,
+        oracle,
+        cli.query_heads,
+        cli.head_dim,
+        MatrixSelection::All,
+    );
+    let bf16_metric = compare_matrix(
+        &bf16_output,
+        oracle,
+        cli.query_heads,
+        cli.head_dim,
+        MatrixSelection::All,
+    );
+    let classification = if bf16_metric.metrics.mismatches == 0 {
+        "layer0_validation_weighted_v_matches_oracle"
+    } else {
+        "layer0_validation_weighted_v_mismatch"
+    };
+    WeightedVExecution {
+        classification,
+        f32_metric: Some(f32_metric),
+        bf16_metric: Some(bf16_metric),
+        blocker: None,
+    }
+}
+
 fn q_rope_token_count(q_pre: &[f32], cli: &Cli) -> usize {
     if q_pre.len() == cli.query_heads * cli.head_dim {
         cli.final_token_index + 1
@@ -1240,6 +1432,33 @@ fn softmax_rows_bf16_output(values: &[f32], rows: usize, cols: usize) -> Vec<f32
         }
         for (idx, exp_value) in exp_values.into_iter().enumerate() {
             output[base + idx] = round_bf16(exp_value / sum);
+        }
+    }
+    output
+}
+
+fn compute_weighted_v(
+    probs: &[f32],
+    v_values: &[f32],
+    cli: &Cli,
+    round_output_bf16: bool,
+) -> Vec<f32> {
+    let prob_width = cli.token_count + 1;
+    let mut output = vec![0.0f32; cli.query_heads * cli.head_dim];
+    for q_head in 0..cli.query_heads {
+        let kv_head = q_head / cli.heads_per_kv;
+        for lane in 0..cli.head_dim {
+            let mut sum = 0.0f32;
+            for token in 0..cli.token_count {
+                let prob = probs[q_head * prob_width + token];
+                let v_idx = (token * cli.kv_heads + kv_head) * cli.head_dim + lane;
+                sum += prob * v_values[v_idx];
+            }
+            output[q_head * cli.head_dim + lane] = if round_output_bf16 {
+                round_bf16(sum)
+            } else {
+                sum
+            };
         }
     }
     output
