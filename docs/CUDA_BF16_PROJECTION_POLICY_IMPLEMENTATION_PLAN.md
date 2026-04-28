@@ -573,6 +573,70 @@ Interpretation:
 - Candidate policy work should remain validation-only until V oracle generation and bias-add
   semantics are pinned against runtime-forward source evidence with comparable digests.
 
+## V Oracle Pinning Status
+
+A new pinned local scratch pack was generated outside the repository:
+
+```text
+/tmp/qkv_projection_v_artifacts-pinned-20260428-092126/
+```
+
+Pinned artifact conventions:
+
+- `sha256_f32_le_full`: SHA-256 over every row-major value encoded as little-endian f32.
+- `sha256_prefix4096_f32_le`: SHA-256 over the first 4096 row-major values encoded as
+  little-endian f32.
+- Existing `digest` remains `sha256-float-hex` for compatibility with the earlier scratch pack.
+- Raw pinned artifacts are local-only and are not committed.
+
+Pinned source details:
+
+- Exact case: `developer-message-user-smoke`.
+- Source runtime-forward commit: `5bcba1d2edcb9c15b1ed567700976dad03e12300`.
+- Norm input source: runtime-forward layer0 attention norm artifact.
+- V weight/bias source: separate safetensors tensors
+  `model.layers.0.self_attn.v_proj.weight` and `model.layers.0.self_attn.v_proj.bias`.
+- Torch version: `2.10.0+cu128`; MKLDNN enabled; thread count `8`.
+
+Oracle variant comparison:
+
+- `torch.nn.Linear` module call vs `torch.nn.functional.linear`: exact match.
+- Module/F.linear vs explicit f32 matmul plus f32 bias then BF16 output:
+  `max_abs_diff=0.00048828125`, `mismatches=16`.
+- CPU BF16 replay post-bias vs module/F.linear oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012496220942183926`, `mismatches=11366`.
+
+Pinned digest identity:
+
+- The pinned artifacts now carry full and prefix little-endian f32 digests.
+- Available runtime-forward status evidence still records `sha256-prefix4096` digests with a
+  proof-specific convention that does not equal the pinned `sha256_prefix4096_f32_le` values.
+- Artifact identity is therefore classified as `incomparable_digest_scheme_or_source`, not as a
+  proven value mismatch.
+
+Pinned V harness result using the module/F.linear oracle:
+
+- Classification: `qkv_projection_policy_compare_v_oracle_differs_from_cpu_bf16_replay`.
+- Current BF16 tensor-op vs oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0018099253065884113`, `mismatches=17446`.
+- Pedantic BF16 vs oracle:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012496220879256725`, `mismatches=11366`.
+- Pedantic BF16 vs CPU BF16 replay:
+  `max_abs_diff=0.03125`, `mean_abs_diff=0.0012498591095209122`, `mismatches=11368`.
+- CPU BF16 replay vs oracle:
+  `max_abs_diff=0.015625`, `mean_abs_diff=7.029975108707731e-7`, `mismatches=15`.
+
+Conclusion:
+
+- V pre-bias GEMM remains calibrated for the pedantic path.
+- The V oracle is now pinned to module/F.linear behavior, and explicit matmul-plus-bias is not an
+  equivalent oracle.
+- The remaining issue is the exact oneDNN/module BF16 bias/reduction contract, not CUDA runtime
+  routing.
+- Do not move to Q or production policy extraction until the V oracle/backend ambiguity is
+  accepted as a validation finding or reproduced from runtime-forward with directly comparable
+  digest conventions.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.

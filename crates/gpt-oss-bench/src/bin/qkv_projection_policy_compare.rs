@@ -1887,27 +1887,36 @@ fn load_v_artifact_identity(
     let candidate_status_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-v-provenance-20260423/developer-message.runner-layer0-v-projection-onednn-oracle-scoped-candidate-status.json");
     let weight_status = read_json_file(weight_status_path);
     let candidate_status = read_json_file(candidate_status_path);
+    let norm_identity = artifact_identity_from_file(norm_input);
+    let weight_identity = artifact_identity_from_file(v_weight);
+    let bias_identity = artifact_identity_from_file(v_bias);
+    let oracle_identity = artifact_identity_from_file(v_oracle);
+    let runtime_weight_digest = weight_status
+        .as_ref()
+        .and_then(|value| {
+            value.pointer("/v_weight_metadata/v_weight_comparison_metrics/official_digest")
+        })
+        .cloned();
+    let runtime_bias_digest = weight_status
+        .as_ref()
+        .and_then(|value| value.pointer("/v_bias_metadata/official_v_bias_summary/digest"))
+        .cloned();
+    let runtime_oracle_digest = candidate_status
+        .as_ref()
+        .and_then(|value| value.pointer("/oneDNN_v_candidate_construction_metadata/output_digest"))
+        .cloned();
 
     json!({
         "scratch_artifacts": {
-            "norm_input": artifact_digest_from_file(norm_input),
-            "v_weight": artifact_digest_from_file(v_weight),
-            "v_bias": artifact_digest_from_file(v_bias),
-            "v_oracle": artifact_digest_from_file(v_oracle),
+            "norm_input": norm_identity,
+            "v_weight": weight_identity,
+            "v_bias": bias_identity,
+            "v_oracle": oracle_identity,
         },
         "runtime_forward_status": {
-            "v_weight_digest": weight_status
-                .as_ref()
-                .and_then(|value| value.pointer("/v_weight_metadata/v_weight_comparison_metrics/official_digest"))
-                .cloned(),
-            "v_bias_digest": weight_status
-                .as_ref()
-                .and_then(|value| value.pointer("/v_bias_metadata/official_v_bias_summary/digest"))
-                .cloned(),
-            "onednn_v_oracle_digest": candidate_status
-                .as_ref()
-                .and_then(|value| value.pointer("/oneDNN_v_candidate_construction_metadata/output_digest"))
-                .cloned(),
+            "v_weight_digest": runtime_weight_digest.clone(),
+            "v_bias_digest": runtime_bias_digest.clone(),
+            "onednn_v_oracle_digest": runtime_oracle_digest.clone(),
             "candidate_vs_official_metrics": candidate_status
                 .as_ref()
                 .and_then(|value| value.pointer("/v_candidate_vs_official_metrics"))
@@ -1917,19 +1926,48 @@ fn load_v_artifact_identity(
                 .and_then(|value| value.pointer("/legacy_local_rust_v_metrics"))
                 .cloned(),
         },
-        "comparison_status": "unavailable_digest_scheme_differs",
+        "comparable_digest_checks": {
+            "v_weight": runtime_digest_check(&artifact_identity_from_file(v_weight), &runtime_weight_digest),
+            "v_bias": runtime_digest_check(&artifact_identity_from_file(v_bias), &runtime_bias_digest),
+            "v_oracle": runtime_digest_check(&artifact_identity_from_file(v_oracle), &runtime_oracle_digest),
+        },
+        "comparison_status": "incomparable_digest_scheme_or_source",
         "notes": [
-            "Scratch artifacts use sha256-float-hex over full JSON f32 values.",
-            "Runtime-forward status artifacts record sha256-prefix4096 digests.",
-            "Digest equality is therefore not asserted by this harness."
+            "Pinned scratch artifacts may include sha256_f32_le_full and sha256_prefix4096_f32_le.",
+            "Runtime-forward status artifacts record sha256-prefix4096 digests with a proof-specific convention.",
+            "Digest equality is asserted only when a runtime digest matches the pinned prefix digest exactly."
         ],
     })
 }
 
-fn artifact_digest_from_file(path: &Path) -> Value {
-    read_json_file(path)
-        .and_then(|value| value.get("digest").cloned())
-        .unwrap_or(Value::Null)
+fn artifact_identity_from_file(path: &Path) -> Value {
+    let Some(value) = read_json_file(path) else {
+        return Value::Null;
+    };
+    json!({
+        "path": path.display().to_string(),
+        "shape": value.get("shape").cloned(),
+        "dtype": value.get("dtype").cloned(),
+        "digest": value.get("digest").cloned(),
+        "sha256_f32_le_full": value.get("sha256_f32_le_full").cloned(),
+        "sha256_prefix4096_f32_le": value.get("sha256_prefix4096_f32_le").cloned(),
+        "finite_summary": value.get("finite_summary").cloned(),
+    })
+}
+
+fn runtime_digest_check(artifact_identity: &Value, runtime_digest: &Option<Value>) -> Value {
+    let runtime_digest = runtime_digest.as_ref().and_then(Value::as_str);
+    let pinned_prefix = artifact_identity
+        .get("sha256_prefix4096_f32_le")
+        .and_then(Value::as_str)
+        .map(|digest| format!("sha256-prefix4096:{digest}"));
+    json!({
+        "runtime_digest": runtime_digest,
+        "pinned_sha256_prefix4096_f32_le": pinned_prefix,
+        "matched": runtime_digest
+            .zip(pinned_prefix.as_deref())
+            .is_some_and(|(runtime, pinned)| runtime == pinned),
+    })
 }
 
 #[cfg(feature = "cuda")]
