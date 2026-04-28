@@ -1125,6 +1125,76 @@ MLP1 boundary, SwiGLU boundary, and down-projection/bias boundary against any
 available official internal artifacts, and test bounded BF16/F16 accumulation
 and boundary variants without changing production routing.
 
+## Selected Expert MXFP4 Replay Localization
+
+Debug mode added:
+
+```text
+--mode selected-experts-debug
+```
+
+Scope:
+
+- Focuses on selected experts `[3, 30, 11, 27]`, with expert30 as the internal
+  boundary probe because official MLP1/SwiGLU/MLP2-pre-bias artifacts are
+  available for it.
+- Reuses
+  `gpt_oss_model_runner::mxfp4_validation::load_selected_experts_mxfp4_validation`.
+- Emits finite summaries for decoded expert30 gate/up and down weights/biases,
+  but does not write full decoded weights to the repo.
+- Does not change production runtime behavior, routing, or CUDA kernels.
+
+Root classification:
+
+```text
+selected_expert_mismatch_starts_at_mxfp4_dequant_or_mlp1
+```
+
+Expert30 internal-boundary metrics:
+
+| boundary | max abs diff | mean abs diff | mismatches | first/worst lane |
+| --- | ---: | ---: | ---: | --- |
+| MLP1 before SwiGLU | `0.00390625` | `0.0000006781684` | `1` | lane `522` |
+| SwiGLU before MLP2 | `0.03125` | `0.00045324018` | `1383` | worst lane `863` |
+| MLP2 before bias | `0.125` | `0.0014393684` | `1748` | worst lane `1167` |
+| selected output after bias | `0.125` | `0.0014289034` | `1585` | worst lane `1167` |
+
+Bounded MLP1 variants:
+
+| variant | result vs official expert30 MLP1 |
+| --- | --- |
+| current: BF16 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias/output | `1` mismatch, max `0.00390625` |
+| BF16-rounded dequant weight | `1` mismatch, max `0.00390625` |
+| f32 input | `1` mismatch, max `0.00390625` |
+| f16 output | `4869` mismatches, max `0.03125` |
+
+Bounded SwiGLU variants using official MLP1 as input:
+
+| variant | result vs official expert30 SwiGLU |
+| --- | --- |
+| current BF16 inputs/output, interleaved gate/up | `1382` mismatches, max `0.03125` |
+| BF16-round `gate * sigmoid` before multiplying by `up + 1` | `1133` mismatches, max `0.015625` |
+| BF16-round sigmoid value | `1296` mismatches, max `0.03125` |
+| swapped gate/up lane order | `2877` mismatches, max `13.749096` |
+
+Interpretation:
+
+- The first nonzero expert30 divergence appears at MLP1, but it is isolated to
+  one BF16 lane.
+- The broad mismatch starts at the SwiGLU boundary and remains broad through
+  MLP2 and selected-output readout.
+- Since the SwiGLU variants still mismatch even when fed the official MLP1
+  boundary, the next slice should inspect the official SwiGLU dtype/operator
+  policy before changing MXFP4 decode semantics.
+- The swapped gate/up guard strongly argues against a simple gate/up lane-order
+  reversal.
+
+Recommended next bounded step:
+
+Localize the official SwiGLU policy using the expert30 MLP1 oracle as input:
+operator order, clamp/rounding boundaries, sigmoid implementation, and output
+dtype. Keep MXFP4 dequant/layout changes deferred until SwiGLU policy is pinned.
+
 ## Validation Commands
 
 For the skeleton slice:

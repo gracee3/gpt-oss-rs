@@ -115,6 +115,18 @@ struct Cli {
     #[arg(long)]
     selected_experts_oracle: Option<PathBuf>,
 
+    /// Optional official expert30 MLP1 output before SwiGLU oracle artifact.
+    #[arg(long)]
+    expert30_mlp1_oracle: Option<PathBuf>,
+
+    /// Optional official expert30 SwiGLU output before MLP2 oracle artifact.
+    #[arg(long)]
+    expert30_swiglu_oracle: Option<PathBuf>,
+
+    /// Optional official expert30 MLP2 output before bias oracle artifact.
+    #[arg(long)]
+    expert30_mlp2_pre_bias_oracle: Option<PathBuf>,
+
     /// Selected expert ids in rank order.
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
@@ -209,6 +221,7 @@ enum Mode {
     MlpNorm,
     Router,
     SelectedExperts,
+    SelectedExpertsDebug,
 }
 
 #[derive(Debug, Serialize)]
@@ -513,6 +526,65 @@ struct SelectedExpertsStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct SelectedExpertsDebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    selected_experts: Vec<usize>,
+    debug_expert: usize,
+    input_source: &'static str,
+    mlp_norm: TensorArtifactStatus,
+    selected_experts_oracle: TensorArtifactStatus,
+    mxfp4_loader: Option<Mxfp4LoaderStatus>,
+    dequant_diagnostics: Option<SelectedExpertDequantDiagnostics>,
+    expert30_boundary_metrics: Expert30BoundaryMetrics,
+    variant_results: Vec<SelectedExpertDebugVariantStatus>,
+    root_cause_summary: &'static str,
+    weighted_sum_replacement: Option<Value>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertDequantDiagnostics {
+    gate_up_weight: FiniteSummary,
+    gate_up_bias: FiniteSummary,
+    down_weight: FiniteSummary,
+    down_bias: FiniteSummary,
+    decoded_gate_up_dtype_shape: &'static str,
+    decoded_down_dtype_shape: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteSummary {
+    len: usize,
+    finite_count: usize,
+    non_finite_count: usize,
+    min: f32,
+    max: f32,
+    mean: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct Expert30BoundaryMetrics {
+    mlp1_before_swiglu: Option<HiddenComparisonStatus>,
+    swiglu_before_mlp2: Option<HiddenComparisonStatus>,
+    mlp2_before_bias: Option<HiddenComparisonStatus>,
+    selected_output_after_bias: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertDebugVariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    mlp1_before_swiglu: Option<HiddenComparisonStatus>,
+    swiglu_from_official_mlp1: Option<HiddenComparisonStatus>,
+}
+
+#[derive(Debug, Serialize)]
 struct Mxfp4LoaderStatus {
     helper_name: &'static str,
     decode_source: &'static str,
@@ -788,6 +860,7 @@ fn main() -> Result<()> {
         Mode::MlpNorm => run_mlp_norm(&cli),
         Mode::Router => run_router(&cli),
         Mode::SelectedExperts => run_selected_experts(&cli),
+        Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
     }
 }
 
@@ -2001,6 +2074,125 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
         overall_metric,
         per_rank_metrics,
         expert30_internal_guard: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let hidden = 2880usize;
+    let selected_count = selected_experts.len();
+    let (mlp_norm_status, mlp_norm_values) =
+        load_tensor_artifact(mlp_norm, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+
+    let expert30_rank = selected_experts.iter().position(|&expert| expert == 30);
+    let artifact_blocked =
+        !mlp_norm_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+
+    let (
+        classification,
+        loader,
+        dequant_diagnostics,
+        boundary_metrics,
+        variant_results,
+        root_cause_summary,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked {
+        (
+            "layer0_validation_selected_experts_blocked_by_artifacts",
+            None,
+            None,
+            empty_expert30_boundary_metrics(),
+            Vec::new(),
+            "MLP norm input or selected expert oracle artifact did not expose supported values",
+            Some(Blocker {
+                kind: "selected_expert_debug_artifacts",
+                detail: "MLP norm input or selected expert oracle did not expose supported values or expected counts",
+            }),
+            "resolve the reported selected expert debug artifact blocker",
+        )
+    } else if expert30_rank.is_none() {
+        (
+            "selected_expert_debug_blocked_by_missing_internal_oracles",
+            None,
+            None,
+            empty_expert30_boundary_metrics(),
+            Vec::new(),
+            "selected expert list did not include expert30, so the focused expert30 localization could not run",
+            Some(Blocker {
+                kind: "selected_expert_debug_expert30",
+                detail: "selected expert list must include expert30 for this focused debug mode",
+            }),
+            "rerun selected-experts-debug with expert30 included in --selected-experts",
+        )
+    } else {
+        match execute_selected_experts_debug_mxfp4(
+            model,
+            &selected_experts,
+            &mlp_norm_values,
+            &oracle_values,
+            expert30_rank.unwrap(),
+            cli.expert30_mlp1_oracle.as_deref(),
+            cli.expert30_swiglu_oracle.as_deref(),
+            cli.expert30_mlp2_pre_bias_oracle.as_deref(),
+        ) {
+            Ok(debug) => debug,
+            Err(_) => (
+                "selected_expert_debug_blocked_by_mxfp4_api",
+                None,
+                None,
+                empty_expert30_boundary_metrics(),
+                Vec::new(),
+                "MXFP4 validation helper failed before expert30 internal-boundary comparison",
+                Some(Blocker {
+                    kind: "mxfp4_debug_loader_api",
+                    detail:
+                        "validation MXFP4 selected-expert debug helper failed before comparison",
+                }),
+                "fix the narrow validation MXFP4 selected-expert loader/debug helper",
+            ),
+        }
+    };
+
+    let status = SelectedExpertsDebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "selected-experts-debug",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        selected_experts,
+        debug_expert: 30,
+        input_source: router_input_source(mlp_norm),
+        mlp_norm: mlp_norm_status,
+        selected_experts_oracle: oracle_status,
+        mxfp4_loader: loader,
+        dequant_diagnostics,
+        expert30_boundary_metrics: boundary_metrics,
+        variant_results,
+        root_cause_summary,
+        weighted_sum_replacement: None,
         blocker,
         next_bounded_step,
     };
@@ -3673,6 +3865,388 @@ fn execute_selected_experts_mxfp4(
     anyhow::bail!("MXFP4 selected expert validation requires the cuda feature")
 }
 
+type SelectedExpertsDebugResult = (
+    &'static str,
+    Option<Mxfp4LoaderStatus>,
+    Option<SelectedExpertDequantDiagnostics>,
+    Expert30BoundaryMetrics,
+    Vec<SelectedExpertDebugVariantStatus>,
+    &'static str,
+    Option<Blocker>,
+    &'static str,
+);
+
+#[cfg(feature = "cuda")]
+fn execute_selected_experts_debug_mxfp4(
+    model: &Path,
+    selected_experts: &[usize],
+    mlp_norm: &[f32],
+    selected_oracle: &[f32],
+    expert30_rank: usize,
+    mlp1_oracle_path: Option<&Path>,
+    swiglu_oracle_path: Option<&Path>,
+    mlp2_pre_bias_oracle_path: Option<&Path>,
+) -> Result<SelectedExpertsDebugResult> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == 30)
+        .context("MXFP4 validation loader did not return expert30")?;
+    let selected_start = expert30_rank * 2880;
+    let selected_end = selected_start + 2880;
+    let selected_oracle = &selected_oracle[selected_start..selected_end];
+
+    let trace = compute_selected_expert_trace(mlp_norm, expert, MlpReplayPolicy::Current);
+    let selected_output_metric = compare_hidden(&trace.selected_output, selected_oracle);
+
+    let mlp1_oracle = load_optional_debug_oracle(mlp1_oracle_path, 5760)?;
+    let swiglu_oracle = load_optional_debug_oracle(swiglu_oracle_path, 2880)?;
+    let mlp2_pre_bias_oracle = load_optional_debug_oracle(mlp2_pre_bias_oracle_path, 2880)?;
+
+    let mlp1_metric = mlp1_oracle
+        .as_ref()
+        .map(|oracle| compare_hidden(&trace.mlp1_before_swiglu, oracle));
+    let swiglu_metric = swiglu_oracle
+        .as_ref()
+        .map(|oracle| compare_hidden(&trace.swiglu_before_mlp2, oracle));
+    let mlp2_metric = mlp2_pre_bias_oracle
+        .as_ref()
+        .map(|oracle| compare_hidden(&trace.mlp2_before_bias, oracle));
+
+    let variant_specs = [
+        (
+            "current",
+            "BF16 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::Current,
+        ),
+        (
+            "weight_bf16",
+            "BF16 input, BF16-rounded dequant weight, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::WeightBf16,
+        ),
+        (
+            "f32_input",
+            "f32 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::F32Input,
+        ),
+        (
+            "output_f16",
+            "BF16 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, f16 output",
+            MlpReplayPolicy::OutputF16,
+        ),
+    ];
+    let mut variant_results = variant_specs
+        .into_iter()
+        .map(|(name, policy, replay_policy)| {
+            let variant_trace = compute_selected_expert_trace(mlp_norm, expert, replay_policy);
+            SelectedExpertDebugVariantStatus {
+                name,
+                policy,
+                mlp1_before_swiglu: mlp1_oracle
+                    .as_ref()
+                    .map(|oracle| compare_hidden(&variant_trace.mlp1_before_swiglu, oracle)),
+                swiglu_from_official_mlp1: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    if let (Some(mlp1_oracle), Some(swiglu_oracle)) = (mlp1_oracle.as_ref(), swiglu_oracle.as_ref())
+    {
+        let swiglu_specs = [
+            (
+                "swiglu_current_from_official_mlp1",
+                "official MLP1 input, gate/up interleaved, BF16 inputs, sigmoid scale 1.702, BF16 output",
+                SwigluReplayPolicy::Current,
+            ),
+            (
+                "swiglu_mul_round_from_official_mlp1",
+                "official MLP1 input, BF16-round gate*sigmoid before multiplying by up+1, BF16 output",
+                SwigluReplayPolicy::MulRound,
+            ),
+            (
+                "swiglu_sigmoid_round_from_official_mlp1",
+                "official MLP1 input, BF16-round sigmoid value, BF16 output",
+                SwigluReplayPolicy::SigmoidRound,
+            ),
+            (
+                "swiglu_swapped_from_official_mlp1",
+                "official MLP1 input, swapped gate/up lane order, BF16 output",
+                SwigluReplayPolicy::Swapped,
+            ),
+        ];
+        variant_results.extend(
+            swiglu_specs
+                .into_iter()
+                .map(|(name, policy, swiglu_policy)| {
+                    let swiglu = compute_swiglu_with_policy(mlp1_oracle, swiglu_policy);
+                    SelectedExpertDebugVariantStatus {
+                        name,
+                        policy,
+                        mlp1_before_swiglu: None,
+                        swiglu_from_official_mlp1: Some(compare_hidden(&swiglu, swiglu_oracle)),
+                    }
+                }),
+        );
+    }
+
+    let boundary_metrics = Expert30BoundaryMetrics {
+        mlp1_before_swiglu: mlp1_metric.clone(),
+        swiglu_before_mlp2: swiglu_metric,
+        mlp2_before_bias: mlp2_metric,
+        selected_output_after_bias: selected_output_metric,
+    };
+
+    let classification = if let Some(metric) = &boundary_metrics.mlp1_before_swiglu {
+        if metric.metrics.mismatches != 0 {
+            "selected_expert_mismatch_starts_at_mxfp4_dequant_or_mlp1"
+        } else if boundary_metrics
+            .swiglu_before_mlp2
+            .as_ref()
+            .map(|metric| metric.metrics.mismatches != 0)
+            .unwrap_or(false)
+        {
+            "selected_expert_mismatch_starts_at_swiglu"
+        } else if boundary_metrics
+            .mlp2_before_bias
+            .as_ref()
+            .map(|metric| metric.metrics.mismatches != 0)
+            .unwrap_or(false)
+        {
+            "selected_expert_mismatch_starts_at_down_projection"
+        } else if boundary_metrics
+            .selected_output_after_bias
+            .metrics
+            .mismatches
+            != 0
+        {
+            "selected_expert_mismatch_starts_at_bias_or_output"
+        } else {
+            "selected_expert_replay_policy_identified"
+        }
+    } else {
+        "selected_expert_debug_blocked_by_missing_internal_oracles"
+    };
+    let root_cause_summary = match classification {
+        "selected_expert_mismatch_starts_at_mxfp4_dequant_or_mlp1" => {
+            "expert30 MLP1 output already diverges, so the next bounded target is MXFP4 dequant layout/scale interpretation or MLP1 replay policy"
+        }
+        "selected_expert_mismatch_starts_at_swiglu" => {
+            "expert30 MLP1 matches but SwiGLU diverges, so the next bounded target is clamp/activation/dtype policy"
+        }
+        "selected_expert_mismatch_starts_at_down_projection" => {
+            "expert30 MLP1 and SwiGLU match but MLP2 pre-bias diverges, so the next bounded target is down projection layout or replay policy"
+        }
+        "selected_expert_mismatch_starts_at_bias_or_output" => {
+            "expert30 pre-bias boundaries match but selected output diverges, so the next bounded target is bias/output boundary policy"
+        }
+        "selected_expert_replay_policy_identified" => {
+            "expert30 internal boundaries and selected output match with the current validation replay"
+        }
+        _ => "expert30 internal boundary oracles were not provided, so first divergence could not be localized",
+    };
+    let next_bounded_step = match classification {
+        "selected_expert_mismatch_starts_at_mxfp4_dequant_or_mlp1" => {
+            "inspect MXFP4 dequant layout and scale interpretation against proven/runtime semantics"
+        }
+        "selected_expert_debug_blocked_by_missing_internal_oracles" => {
+            "rerun selected-experts-debug with expert30 internal boundary oracle paths"
+        }
+        _ => "continue the selected expert boundary indicated by the root classification",
+    };
+
+    let loader = Mxfp4LoaderStatus {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        selected_experts: loaded.selected_experts,
+        dtype_outputs: loaded.dtype_outputs,
+    };
+    let dequant_diagnostics = SelectedExpertDequantDiagnostics {
+        gate_up_weight: finite_summary(&expert.gate_up_weight),
+        gate_up_bias: finite_summary(&expert.gate_up_bias),
+        down_weight: finite_summary(&expert.down_weight),
+        down_bias: finite_summary(&expert.down_bias),
+        decoded_gate_up_dtype_shape: "f16_dequant_widened_to_f32 [5760,2880]",
+        decoded_down_dtype_shape: "f16_dequant_widened_to_f32 [2880,2880]",
+    };
+
+    Ok((
+        classification,
+        Some(loader),
+        Some(dequant_diagnostics),
+        boundary_metrics,
+        variant_results,
+        root_cause_summary,
+        None,
+        next_bounded_step,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_selected_experts_debug_mxfp4(
+    _model: &Path,
+    _selected_experts: &[usize],
+    _mlp_norm: &[f32],
+    _selected_oracle: &[f32],
+    _expert30_rank: usize,
+    _mlp1_oracle_path: Option<&Path>,
+    _swiglu_oracle_path: Option<&Path>,
+    _mlp2_pre_bias_oracle_path: Option<&Path>,
+) -> Result<SelectedExpertsDebugResult> {
+    anyhow::bail!("MXFP4 selected expert debug validation requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+struct SelectedExpertTrace {
+    mlp1_before_swiglu: Vec<f32>,
+    swiglu_before_mlp2: Vec<f32>,
+    mlp2_before_bias: Vec<f32>,
+    selected_output: Vec<f32>,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Clone, Copy)]
+enum MlpReplayPolicy {
+    Current,
+    WeightBf16,
+    F32Input,
+    OutputF16,
+}
+
+#[derive(Clone, Copy)]
+enum SwigluReplayPolicy {
+    Current,
+    MulRound,
+    SigmoidRound,
+    Swapped,
+}
+
+#[cfg(feature = "cuda")]
+fn compute_selected_expert_trace(
+    mlp_norm: &[f32],
+    expert: &Mxfp4SelectedExpertWeights,
+    policy: MlpReplayPolicy,
+) -> SelectedExpertTrace {
+    let mlp1_pre_bias =
+        linear_out_in_prebias_with_policy(mlp_norm, &expert.gate_up_weight, 2880, 5760, policy);
+    let mlp1_before_swiglu =
+        add_bias_with_output_round(&mlp1_pre_bias, &expert.gate_up_bias, policy);
+    let swiglu_before_mlp2 = compute_swiglu_bf16(&mlp1_before_swiglu);
+    let mlp2_before_bias = linear_out_in_prebias_with_policy(
+        &swiglu_before_mlp2,
+        &expert.down_weight,
+        2880,
+        2880,
+        policy,
+    );
+    let selected_output = add_bias_with_output_round(&mlp2_before_bias, &expert.down_bias, policy);
+    SelectedExpertTrace {
+        mlp1_before_swiglu,
+        swiglu_before_mlp2,
+        mlp2_before_bias,
+        selected_output,
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn linear_out_in_prebias_with_policy(
+    input: &[f32],
+    weight_out_in: &[f32],
+    in_features: usize,
+    out_features: usize,
+    policy: MlpReplayPolicy,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; out_features];
+    for out_idx in 0..out_features {
+        let mut acc = 0.0f32;
+        let weight_offset = out_idx * in_features;
+        for in_idx in 0..in_features {
+            let input_value = match policy {
+                MlpReplayPolicy::F32Input => input[in_idx],
+                _ => round_bf16(input[in_idx]),
+            };
+            let weight_value = match policy {
+                MlpReplayPolicy::WeightBf16 => round_bf16(weight_out_in[weight_offset + in_idx]),
+                _ => weight_out_in[weight_offset + in_idx],
+            };
+            acc += input_value * weight_value;
+        }
+        out[out_idx] = match policy {
+            MlpReplayPolicy::OutputF16 => round_f16(acc),
+            _ => round_bf16(acc),
+        };
+    }
+    out
+}
+
+#[cfg(feature = "cuda")]
+fn add_bias_with_output_round(pre_bias: &[f32], bias: &[f32], policy: MlpReplayPolicy) -> Vec<f32> {
+    pre_bias
+        .iter()
+        .zip(bias.iter())
+        .map(|(&value, &bias)| {
+            let output = value + round_bf16(bias);
+            match policy {
+                MlpReplayPolicy::OutputF16 => round_f16(output),
+                _ => round_bf16(output),
+            }
+        })
+        .collect()
+}
+
+fn load_optional_debug_oracle(
+    path: Option<&Path>,
+    expected_count: usize,
+) -> Result<Option<Vec<f32>>> {
+    path.map(|path| {
+        load_tensor_artifact(path, &[expected_count], &["values"]).map(|(_, values)| values)
+    })
+    .transpose()
+}
+
+fn empty_expert30_boundary_metrics() -> Expert30BoundaryMetrics {
+    Expert30BoundaryMetrics {
+        mlp1_before_swiglu: None,
+        swiglu_before_mlp2: None,
+        mlp2_before_bias: None,
+        selected_output_after_bias: empty_hidden_comparison(),
+    }
+}
+
+fn finite_summary(values: &[f32]) -> FiniteSummary {
+    let mut finite_count = 0usize;
+    let mut non_finite_count = 0usize;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+    for &value in values {
+        if value.is_finite() {
+            finite_count += 1;
+            min = min.min(value);
+            max = max.max(value);
+            sum += value as f64;
+        } else {
+            non_finite_count += 1;
+        }
+    }
+    if finite_count == 0 {
+        min = f32::NAN;
+        max = f32::NAN;
+    }
+    FiniteSummary {
+        len: values.len(),
+        finite_count,
+        non_finite_count,
+        min,
+        max,
+        mean: if finite_count == 0 {
+            f32::NAN
+        } else {
+            (sum / finite_count as f64) as f32
+        },
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn compute_selected_expert_output(
     mlp_norm: &[f32],
@@ -3709,12 +4283,27 @@ fn linear_out_in_bf16_output(
 }
 
 fn compute_swiglu_bf16(gate_up: &[f32]) -> Vec<f32> {
+    compute_swiglu_with_policy(gate_up, SwigluReplayPolicy::Current)
+}
+
+fn compute_swiglu_with_policy(gate_up: &[f32], policy: SwigluReplayPolicy) -> Vec<f32> {
     let intermediate = gate_up.len() / 2;
     let mut out = vec![0.0f32; intermediate];
     for idx in 0..intermediate {
-        let gate = round_bf16(gate_up[2 * idx]).min(7.0);
-        let up = round_bf16(gate_up[2 * idx + 1]).clamp(-7.0, 7.0);
-        let glu = gate * (1.0 / (1.0 + (-(1.702 * gate)).exp()));
+        let (gate_lane, up_lane) = match policy {
+            SwigluReplayPolicy::Swapped => (2 * idx + 1, 2 * idx),
+            _ => (2 * idx, 2 * idx + 1),
+        };
+        let gate = round_bf16(gate_up[gate_lane]).min(7.0);
+        let up = round_bf16(gate_up[up_lane]).clamp(-7.0, 7.0);
+        let mut sigmoid = 1.0 / (1.0 + (-(1.702 * gate)).exp());
+        if matches!(policy, SwigluReplayPolicy::SigmoidRound) {
+            sigmoid = round_bf16(sigmoid);
+        }
+        let mut glu = gate * sigmoid;
+        if matches!(policy, SwigluReplayPolicy::MulRound) {
+            glu = round_bf16(glu);
+        }
         out[idx] = round_bf16(glu * (up + 1.0));
     }
     out
