@@ -934,6 +934,48 @@ Conclusion:
 - No production Q/K/V projection routing should be added from the current custom/decomposed policy.
 - The scratch artifacts are local-only and are not committed.
 
+## Q/K Raw-QK Mismatch Attribution
+
+A local mixed-source attribution check was run against the same scratch pack:
+
+- Artifact pack:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/`.
+- Summary JSON:
+  `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/qk_mixed_attribution_summary.json`.
+- Official Q/K/raw-QK artifacts:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/`.
+- Comparison boundary:
+  raw scores rounded to BF16 before comparison against the official raw-QK oracle.
+
+| Q source | K source | max abs diff | mean abs diff | mismatches | Conclusion |
+| --- | --- | ---: | ---: | ---: | --- |
+| official | official | `0.0` | `0.0` | `0` | Guard passes; formula and BF16 boundary are correct. |
+| custom/decomposed | official | `0.5` | `0.03450170159339905` | `1947` | Q-side custom/decomposed differences alone are large. |
+| official | custom/decomposed | `0.5` | `0.04469071328639984` | `2338` | K-side custom/decomposed differences alone are large. |
+| custom/decomposed | custom/decomposed | `1.0` | `0.06418905407190323` | `2847` | Q and K differences compound. |
+
+Classification: `qk_downstream_mismatch_q_and_k_contribute`.
+
+Focused locations:
+
+- Custom Q + official K first mismatch:
+  `q_head=0`, `token=13`, custom `-4.6875`, oracle `-4.65625`, abs diff `0.03125`.
+- Custom Q + official K worst mismatch:
+  `q_head=16`, `token=4`, custom `-68.0`, oracle `-67.5`, abs diff `0.5`.
+- Official Q + custom K first mismatch:
+  `q_head=0`, `token=0`, custom `-3.578125`, oracle `-3.5625`, abs diff `0.015625`.
+- Official Q + custom K worst mismatch:
+  `q_head=16`, `token=6`, custom `-78.5`, oracle `-78.0`, abs diff `0.5`.
+
+Conclusion:
+
+- The raw-QK downstream failure is not Q-only or K-only; both custom/decomposed Q and
+  custom/decomposed K independently contribute large mismatches.
+- The next projection-policy work must focus on both Q and K projection/RoPE boundary parity, not
+  just the Q bias epilogue or the K six-lane projection boundary.
+- The V weighted-sum result should remain scoped to V; it does not generalize to Q/K raw-QK.
+- No runtime behavior changed and no raw artifacts are committed.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
