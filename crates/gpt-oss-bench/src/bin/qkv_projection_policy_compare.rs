@@ -49,6 +49,12 @@ struct Cli {
     #[arg(long)]
     v_oracle: PathBuf,
 
+    #[arg(long)]
+    attention_probs: Option<PathBuf>,
+
+    #[arg(long)]
+    weighted_v_oracle: Option<PathBuf>,
+
     #[arg(long, default_value = "current")]
     policy: String,
 
@@ -102,6 +108,8 @@ struct Inputs {
     q_oracle: String,
     k_oracle: String,
     v_oracle: String,
+    attention_probs: Option<String>,
+    weighted_v_oracle: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +203,8 @@ fn main() -> Result<()> {
             q_oracle: path_string(&cli.q_oracle),
             k_oracle: path_string(&cli.k_oracle),
             v_oracle: path_string(&cli.v_oracle),
+            attention_probs: cli.attention_probs.as_ref().map(|path| path_string(path)),
+            weighted_v_oracle: cli.weighted_v_oracle.as_ref().map(|path| path_string(path)),
         },
         shape_validation,
         artifacts,
@@ -259,6 +269,8 @@ fn validate_inputs(cli: &Cli) -> Result<()> {
         ("q_bias", cli.q_bias.as_ref()),
         ("k_bias", cli.k_bias.as_ref()),
         ("v_bias", cli.v_bias.as_ref()),
+        ("attention_probs", cli.attention_probs.as_ref()),
+        ("weighted_v_oracle", cli.weighted_v_oracle.as_ref()),
     ] {
         if let Some(path) = path {
             if !path.exists() {
@@ -1445,7 +1457,118 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
         }));
     }
 
-    let classification = if let (Some(custom_vs_oracle), Some(custom_vs_cpu_bf16)) =
+    let mut downstream_classification = None;
+    let downstream_weighted_v = match (
+        custom_output.as_ref(),
+        cli.attention_probs.as_ref(),
+        cli.weighted_v_oracle.as_ref(),
+    ) {
+        (Some(custom_output), Some(attention_probs_path), Some(weighted_v_oracle_path)) => {
+            let attention_probs = load_values(
+                attention_probs_path,
+                64 * (M + 1),
+                "attention_probs",
+                "v_custom_projection_downstream_blocked_by_missing_artifacts",
+            )?;
+            let weighted_v_oracle = load_values(
+                weighted_v_oracle_path,
+                64 * HEAD_DIM,
+                "weighted_v_oracle",
+                "v_custom_projection_downstream_blocked_by_missing_artifacts",
+            )?;
+            let weighted_v = compute_weighted_v_from_projection(custom_output, &attention_probs);
+            let weighted_v_bf16: Vec<f32> = weighted_v
+                .iter()
+                .map(|value| half::bf16::from_f32(*value).to_f32())
+                .collect();
+            let f32_metrics = compare_outputs_with_width(&weighted_v, &weighted_v_oracle, HEAD_DIM);
+            let bf16_metrics =
+                compare_outputs_with_width(&weighted_v_bf16, &weighted_v_oracle, HEAD_DIM);
+            downstream_classification = Some(if bf16_metrics.matched || f32_metrics.matched {
+                "v_custom_projection_downstream_weighted_sum_matches_oracle"
+            } else if bf16_metrics.max_abs_diff <= 0.015625
+                && bf16_metrics.mismatching_element_count <= 20
+            {
+                "v_custom_projection_downstream_weighted_sum_mismatch_small"
+            } else {
+                "v_custom_projection_downstream_weighted_sum_mismatch_large"
+            });
+            comparisons.push(json!({
+                "projection": "v",
+                "comparison": "custom_bf16_linear_downstream_weighted_v_f32_accum_vs_oracle",
+                "shape": [64, HEAD_DIM],
+                "metrics": metrics_with_q_head(&f32_metrics),
+                "semantics": {
+                    "attention_probs_shape": [64, M + 1],
+                    "sink_probability_column": M,
+                    "sink_probability_dropped_before_v_sum": true,
+                    "gqa_mapping": "kv_head = q_head / 8",
+                    "accumulation_dtype": "f32 exploratory",
+                },
+            }));
+            comparisons.push(json!({
+                "projection": "v",
+                "comparison": "custom_bf16_linear_downstream_weighted_v_bf16_output_vs_oracle",
+                "shape": [64, HEAD_DIM],
+                "metrics": metrics_with_q_head(&bf16_metrics),
+                "semantics": {
+                    "attention_probs_shape": [64, M + 1],
+                    "sink_probability_column": M,
+                    "sink_probability_dropped_before_v_sum": true,
+                    "gqa_mapping": "kv_head = q_head / 8",
+                    "accumulation_dtype": "f32 exploratory",
+                    "output_rounding": "BF16",
+                },
+            }));
+            Some(json!({
+                "available": true,
+                "attention_probs_path": path_string(attention_probs_path),
+                "weighted_v_oracle_path": path_string(weighted_v_oracle_path),
+                "custom_v_projection_source": "custom-bf16-linear policy output from this run",
+                "attention_probs_shape": [64, M + 1],
+                "weighted_v_shape": [64, HEAD_DIM],
+                "sink_probability_dropped_before_v_sum": true,
+                "gqa_mapping": {
+                    "num_query_heads": 64,
+                    "num_kv_heads": 8,
+                    "heads_per_kv": 8,
+                    "kv_head": "q_head / 8",
+                },
+                "f32_accum_vs_oracle": metrics_with_q_head(&f32_metrics),
+                "bf16_output_vs_oracle": metrics_with_q_head(&bf16_metrics),
+                "projection_mismatch_count": custom_vs_oracle
+                    .as_ref()
+                    .map(|metrics| metrics.mismatching_element_count),
+                "weighted_v_f32_mismatch_count": f32_metrics.mismatching_element_count,
+                "weighted_v_bf16_mismatch_count": bf16_metrics.mismatching_element_count,
+                "impact_summary": if bf16_metrics.matched || f32_metrics.matched {
+                    "projection-level differences disappear in weighted V sum under this exploratory check"
+                } else if bf16_metrics.max_abs_diff <= 0.015625 && bf16_metrics.mismatching_element_count <= 20 {
+                    "projection-level differences remain small after weighted V sum"
+                } else {
+                    "projection-level differences remain material after weighted V sum"
+                },
+            }))
+        }
+        (Some(_), None, None) => Some(json!({
+            "available": false,
+            "classification": "v_custom_projection_downstream_blocked_by_missing_artifacts",
+            "reason": "no --attention-probs or --weighted-v-oracle path supplied",
+            "required_inputs": ["--attention-probs", "--weighted-v-oracle"],
+        })),
+        (Some(_), _, _) => Some(json!({
+            "available": false,
+            "classification": "v_custom_projection_downstream_blocked_by_missing_artifacts",
+            "reason": "both --attention-probs and --weighted-v-oracle are required",
+            "attention_probs_supplied": cli.attention_probs.is_some(),
+            "weighted_v_oracle_supplied": cli.weighted_v_oracle.is_some(),
+        })),
+        _ => None,
+    };
+
+    let classification = if let Some(classification) = downstream_classification {
+        classification
+    } else if let (Some(custom_vs_oracle), Some(custom_vs_cpu_bf16)) =
         (custom_vs_oracle.as_ref(), custom_vs_cpu_bf16.as_ref())
     {
         if custom_vs_oracle.matched {
@@ -1476,7 +1599,13 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
     };
 
     let next_bounded_step = if classification
-        == "qkv_projection_policy_compare_v_custom_bf16_linear_matches_oracle"
+        == "v_custom_projection_downstream_weighted_sum_matches_oracle"
+        || classification == "v_custom_projection_downstream_weighted_sum_mismatch_small"
+    {
+        "run the same downstream-impact framing for Q/K raw QK and final logits before production policy decisions"
+    } else if classification == "v_custom_projection_downstream_weighted_sum_mismatch_large" {
+        "investigate module/F.linear epilogue exactness before treating decomposed BF16 policy as sufficient"
+    } else if classification == "qkv_projection_policy_compare_v_custom_bf16_linear_matches_oracle"
     {
         "extend custom BF16 biased linear validation kernel to Q projection"
     } else if classification
@@ -1530,6 +1659,7 @@ fn run_current_v_bf16(cli: &Cli, policies: &[String]) -> Result<ExecutionResult>
             "custom_bf16_linear_vs_cpu_bf16": custom_vs_cpu_bf16,
             "cpu_bf16_vs_oracle": cpu_bf16_vs_oracle,
         },
+        "downstream_weighted_v": downstream_weighted_v,
         "bias_variants": bias_variants
             .iter()
             .map(|(name, metrics)| json!({"name": name, "vs_oracle": metrics}))
@@ -2159,6 +2289,23 @@ fn compare_outputs_with_width(local: &[f32], oracle: &[f32], width: usize) -> Co
         worst_mismatch,
         mismatch_table,
     }
+}
+
+fn compute_weighted_v_from_projection(v_output: &[f32], attention_probs: &[f32]) -> Vec<f32> {
+    let mut weighted = vec![0.0f32; 64 * HEAD_DIM];
+    for q_head in 0..64 {
+        let kv_head = q_head / 8;
+        for lane in 0..HEAD_DIM {
+            let mut sum = 0.0f32;
+            for token in 0..M {
+                let prob = attention_probs[q_head * (M + 1) + token];
+                let v = v_output[token * KV_OUT + kv_head * HEAD_DIM + lane];
+                sum += prob * v;
+            }
+            weighted[q_head * HEAD_DIM + lane] = sum;
+        }
+    }
+    weighted
 }
 
 fn make_mismatch_with_width(

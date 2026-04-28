@@ -746,6 +746,66 @@ Conclusion:
 - The custom kernel is intentionally slow and validation-only. It should not be routed into
   production runtime.
 
+## Downstream Impact Question
+
+There are now two possible correctness standards for CUDA/Rust projection work:
+
+- Strict oneDNN/F.linear epilogue parity: reproduce the official PyTorch/oneDNN module output at
+  the projection boundary, including fused bias/output rounding details.
+- Rust/CUDA decomposed BF16 policy: define a deterministic BF16 projection contract that matches
+  the custom kernel/CPU BF16 replay, then require downstream validation to show projection-level
+  differences do not affect the proof-relevant seams.
+
+The current custom V kernel matches decomposed CPU BF16 replay exactly, but it remains 15 lanes
+from the module/F.linear V projection oracle. Before chasing exact oneDNN epilogue behavior, the
+harness now supports an opt-in weighted-V downstream check:
+
+```text
+--attention-probs <PATH>
+--weighted-v-oracle <PATH>
+```
+
+For V, the check uses official final-token attention probabilities shaped `[64,75]`, drops the
+sink probability column before the value sum, applies GQA mapping `kv_head = q_head / 8`, and
+compares the custom V weighted sum against the official pre-`o_proj` weighted-value oracle shaped
+`[4096]`.
+
+Next evidence needed:
+
+- Weighted V sum impact for custom/decomposed V output.
+- Q/K raw QK impact for custom/decomposed Q/K outputs.
+- Final logits and top-k impact if future harness extraction makes this integration-safe.
+
+Recommended compact artifact pack for downstream checks:
+
+- Attention probabilities `[64,75]` with sink column.
+- Weighted V oracle `[4096]` before `o_proj`.
+- Custom V output `[74,512]` or inputs sufficient to regenerate it.
+
+V downstream result using the pinned official reference artifacts:
+
+- Attention probabilities:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-probs-post-softmax-status.json`.
+- Weighted V oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json`.
+- Classification: `v_custom_projection_downstream_weighted_sum_matches_oracle`.
+- Custom V projection vs module/F.linear V oracle still has 15 mismatching projection lanes.
+- Weighted V with f32 exploratory output vs oracle:
+  `max_abs_diff=0.013309478759765625`, `mean_abs_diff=0.0006673983880318701`,
+  `mismatches=4096`.
+- Weighted V rounded to BF16 output vs oracle:
+  exact match.
+
+Conclusion:
+
+- For the exact layer0 final-token V downstream boundary, the 15 projection-level custom/decomposed
+  BF16 differences disappear after the official sink-dropping weighted V sum when the weighted sum
+  is compared at the BF16 output boundary.
+- This does not prove production suitability, but it is evidence that strict module/F.linear V
+  projection epilogue parity may be stronger than needed for this downstream seam.
+- Equivalent downstream-impact checks are still needed for Q/K raw QK and final logits before any
+  production projection routing decision.
+
 Recommended next design step:
 
 - Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
