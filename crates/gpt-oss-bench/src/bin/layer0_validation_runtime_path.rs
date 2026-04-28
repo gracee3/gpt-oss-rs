@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use half::{bf16, f16};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -119,8 +120,13 @@ struct KRopeStatus {
     kernel_used: Option<&'static str>,
     api_used: &'static str,
     table_source: &'static str,
+    rope_application_policy: &'static str,
     artifacts: KRopeArtifacts,
     rope_config: KRopeConfig,
+    f16_kernel_metrics: Option<ComparisonMetrics>,
+    f16_kernel_first_mismatch: Option<LogicalDiff>,
+    f16_kernel_worst_mismatch: Option<LogicalDiff>,
+    cpu_discriminator: Vec<RopeDiscriminatorResult>,
     metrics: Option<ComparisonMetrics>,
     first_mismatch: Option<LogicalDiff>,
     worst_mismatch: Option<LogicalDiff>,
@@ -164,14 +170,14 @@ struct KRopeConfig {
     output_boundary: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ComparisonMetrics {
     max_abs_diff: f32,
     mean_abs_diff: f32,
     mismatches: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct LogicalDiff {
     token: usize,
     kv_head: usize,
@@ -179,6 +185,16 @@ struct LogicalDiff {
     actual: f32,
     expected: f32,
     abs_diff: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct RopeDiscriminatorResult {
+    variant: &'static str,
+    policy: &'static str,
+    metrics: ComparisonMetrics,
+    first_mismatch: Option<LogicalDiff>,
+    worst_mismatch: Option<LogicalDiff>,
+    matched: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -285,6 +301,11 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
                 detail: "K pre/post RoPE artifacts did not expose a supported value key or expected value count",
             }),
             table_source: "unavailable",
+            rope_application_policy: "blocked_before_launch",
+            f16_kernel_metrics: None,
+            f16_kernel_first_mismatch: None,
+            f16_kernel_worst_mismatch: None,
+            cpu_discriminator: Vec::new(),
         }
     };
 
@@ -292,8 +313,13 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
         "layer0_validation_k_rope_matches_oracle" => {
             "implement layer0 attention-only validation through raw QK guard using the same runtime RoPE helper"
         }
-        "layer0_validation_k_rope_mismatch" => {
-            "localize remaining f16 kernel and BF16 official/model factor/output casting differences"
+        "layer0_validation_k_rope_bf16_boundary_matches_oracle"
+        | "layer0_validation_k_rope_dtype_policy_identified" => {
+            "replace the k-rope validation guard with the identified BF16-boundary RoPE application policy"
+        }
+        "layer0_validation_k_rope_dtype_policy_unresolved"
+        | "layer0_validation_k_rope_mismatch" => {
+            "compare the best discriminator policy against the official/model RoPE call to identify the remaining tensor-operation boundary"
         }
         _ => "resolve the reported K RoPE validation blocker",
     };
@@ -316,6 +342,7 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             "blocked before launch"
         },
         table_source: execution.table_source,
+        rope_application_policy: execution.rope_application_policy,
         artifacts: KRopeArtifacts {
             k_pre_rope: pre,
             k_post_rope_oracle: post,
@@ -337,6 +364,10 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
             dtype: cli.dtype.clone(),
             output_boundary: "bf16_rounded_after_f16_kernel",
         },
+        f16_kernel_metrics: execution.f16_kernel_metrics,
+        f16_kernel_first_mismatch: execution.f16_kernel_first_mismatch,
+        f16_kernel_worst_mismatch: execution.f16_kernel_worst_mismatch,
+        cpu_discriminator: execution.cpu_discriminator,
         metrics: execution.metrics,
         first_mismatch: execution.first_mismatch,
         worst_mismatch: execution.worst_mismatch,
@@ -354,11 +385,38 @@ struct KRopeExecution {
     worst_mismatch: Option<LogicalDiff>,
     blocker: Option<Blocker>,
     table_source: &'static str,
+    rope_application_policy: &'static str,
+    f16_kernel_metrics: Option<ComparisonMetrics>,
+    f16_kernel_first_mismatch: Option<LogicalDiff>,
+    f16_kernel_worst_mismatch: Option<LogicalDiff>,
+    cpu_discriminator: Vec<RopeDiscriminatorResult>,
 }
 
 #[cfg(feature = "cuda")]
 fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
     let config = validation_rope_config(cli);
+    let (cos_table, sin_table, table_source) =
+        gpt_oss_model_runner::rope_validation::build_validation_rope_tables_from_config(
+            &config,
+            cli.token_count,
+        );
+    let cpu_discriminator = run_rope_cpu_discriminator(k_pre, oracle, &cos_table, &sin_table, cli);
+    let best_cpu = cpu_discriminator.iter().min_by(|left, right| {
+        left.metrics
+            .mismatches
+            .cmp(&right.metrics.mismatches)
+            .then_with(|| {
+                left.metrics
+                    .max_abs_diff
+                    .total_cmp(&right.metrics.max_abs_diff)
+            })
+            .then_with(|| {
+                left.metrics
+                    .mean_abs_diff
+                    .total_cmp(&right.metrics.mean_abs_diff)
+            })
+    });
+
     let result = gpt_oss_model_runner::rope_validation::apply_k_rope_f16_validation_with_config(
         k_pre,
         cli.token_count,
@@ -366,20 +424,49 @@ fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
         &config,
     );
     match result {
-        Ok((actual, table_source)) => {
-            let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
-            let matched = comparison.metrics.mismatches == 0;
-            KRopeExecution {
-                classification: if matched {
-                    "layer0_validation_k_rope_matches_oracle"
+        Ok((actual, kernel_table_source)) => {
+            let f16_comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
+            let f16_matched = f16_comparison.metrics.mismatches == 0;
+            let exact_cpu = cpu_discriminator.iter().find(|result| result.matched);
+            let final_comparison = exact_cpu.map(discriminator_to_comparison).or_else(|| {
+                best_cpu.map(discriminator_to_comparison)
+            });
+            let classification = if f16_matched {
+                "layer0_validation_k_rope_matches_oracle"
+            } else if let Some(result) = exact_cpu {
+                if result.variant.contains("bf16") {
+                    "layer0_validation_k_rope_bf16_boundary_matches_oracle"
                 } else {
-                    "layer0_validation_k_rope_mismatch"
-                },
-                metrics: Some(comparison.metrics),
-                first_mismatch: comparison.first_mismatch,
-                worst_mismatch: comparison.worst_mismatch,
+                    "layer0_validation_k_rope_dtype_policy_identified"
+                }
+            } else {
+                "layer0_validation_k_rope_dtype_policy_unresolved"
+            };
+            let rope_application_policy = if f16_matched {
+                "rotary_embedding_f16_kernel_then_bf16_output"
+            } else if let Some(result) = exact_cpu.or(best_cpu) {
+                result.variant
+            } else {
+                "unresolved"
+            };
+            KRopeExecution {
+                classification,
+                metrics: final_comparison
+                    .as_ref()
+                    .map(|comparison| comparison.metrics.clone()),
+                first_mismatch: final_comparison
+                    .as_ref()
+                    .and_then(|comparison| comparison.first_mismatch.clone()),
+                worst_mismatch: final_comparison
+                    .as_ref()
+                    .and_then(|comparison| comparison.worst_mismatch.clone()),
                 blocker: None,
-                table_source,
+                table_source: kernel_table_source,
+                rope_application_policy,
+                f16_kernel_metrics: Some(f16_comparison.metrics),
+                f16_kernel_first_mismatch: f16_comparison.first_mismatch,
+                f16_kernel_worst_mismatch: f16_comparison.worst_mismatch,
+                cpu_discriminator,
             }
         }
         Err(_) => KRopeExecution {
@@ -391,7 +478,12 @@ fn execute_k_rope(k_pre: &[f32], oracle: &[f32], cli: &Cli) -> KRopeExecution {
                 kind: "cuda_execution_failed",
                 detail: "runtime RoPE validation helper failed; rerun with stderr for detailed CUDA error",
             }),
-            table_source: "unavailable",
+            table_source,
+            rope_application_policy: "cuda_execution_failed",
+            f16_kernel_metrics: None,
+            f16_kernel_first_mismatch: None,
+            f16_kernel_worst_mismatch: None,
+            cpu_discriminator,
         },
     }
 }
@@ -408,6 +500,19 @@ fn execute_k_rope(_k_pre: &[f32], _oracle: &[f32], _cli: &Cli) -> KRopeExecution
             detail: "k-rope execution requires the cuda feature",
         }),
         table_source: "unavailable",
+        rope_application_policy: "cuda_feature_disabled",
+        f16_kernel_metrics: None,
+        f16_kernel_first_mismatch: None,
+        f16_kernel_worst_mismatch: None,
+        cpu_discriminator: Vec::new(),
+    }
+}
+
+fn discriminator_to_comparison(result: &RopeDiscriminatorResult) -> KRopeComparison {
+    KRopeComparison {
+        metrics: result.metrics.clone(),
+        first_mismatch: result.first_mismatch.clone(),
+        worst_mismatch: result.worst_mismatch.clone(),
     }
 }
 
@@ -548,6 +653,133 @@ fn json_values_to_f32(values: &[Value]) -> Vec<f32> {
         .iter()
         .map(|value| value.as_f64().unwrap_or(f64::NAN) as f32)
         .collect()
+}
+
+fn run_rope_cpu_discriminator(
+    k_pre: &[f32],
+    oracle: &[f32],
+    cos_table: &[f32],
+    sin_table: &[f32],
+    cli: &Cli,
+) -> Vec<RopeDiscriminatorResult> {
+    let variants = [
+        (
+            "f32_input_f32_factors_f32_math_bf16_output",
+            "f32 input, f32 cos/sin, f32 math, BF16 output",
+            RopeCpuPolicy::F32MathBf16Output,
+        ),
+        (
+            "bf16_input_bf16_factors_bf16ish_math_bf16_output",
+            "BF16 input, BF16 cos/sin, BF16-rounded multiply/add, BF16 output",
+            RopeCpuPolicy::Bf16ishMath,
+        ),
+        (
+            "bf16_input_bf16_factors_f32_math_bf16_output",
+            "BF16 input, BF16 cos/sin widened to f32 math, BF16 output",
+            RopeCpuPolicy::Bf16FactorsF32Math,
+        ),
+        (
+            "f16_input_f16_factors_f16ish_output",
+            "F16 input, F16 cos/sin widened to f32 math, F16 output",
+            RopeCpuPolicy::F16FactorsF16Output,
+        ),
+    ];
+
+    variants
+        .into_iter()
+        .map(|(variant, policy, cpu_policy)| {
+            let actual = apply_rope_cpu_policy(k_pre, cos_table, sin_table, cli, cpu_policy);
+            let comparison = compare_k_rope(&actual, oracle, cli.kv_heads, cli.head_dim);
+            RopeDiscriminatorResult {
+                variant,
+                policy,
+                matched: comparison.metrics.mismatches == 0,
+                metrics: comparison.metrics,
+                first_mismatch: comparison.first_mismatch,
+                worst_mismatch: comparison.worst_mismatch,
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum RopeCpuPolicy {
+    F32MathBf16Output,
+    Bf16ishMath,
+    Bf16FactorsF32Math,
+    F16FactorsF16Output,
+}
+
+fn apply_rope_cpu_policy(
+    k_pre: &[f32],
+    cos_table: &[f32],
+    sin_table: &[f32],
+    cli: &Cli,
+    policy: RopeCpuPolicy,
+) -> Vec<f32> {
+    let half_dim = cli.head_dim / 2;
+    let mut output = vec![0.0f32; k_pre.len()];
+    for token in 0..cli.token_count {
+        for kv_head in 0..cli.kv_heads {
+            let head_base = (token * cli.kv_heads + kv_head) * cli.head_dim;
+            let table_base = token * half_dim;
+            for lane in 0..half_dim {
+                let x1 = k_pre[head_base + lane];
+                let x2 = k_pre[head_base + half_dim + lane];
+                let cos = cos_table[table_base + lane];
+                let sin = sin_table[table_base + lane];
+                let (out1, out2) = apply_rope_pair(policy, x1, x2, cos, sin);
+                output[head_base + lane] = out1;
+                output[head_base + half_dim + lane] = out2;
+            }
+        }
+    }
+    output
+}
+
+fn apply_rope_pair(policy: RopeCpuPolicy, x1: f32, x2: f32, cos: f32, sin: f32) -> (f32, f32) {
+    match policy {
+        RopeCpuPolicy::F32MathBf16Output => {
+            let out1 = x1 * cos - x2 * sin;
+            let out2 = x2 * cos + x1 * sin;
+            (round_bf16(out1), round_bf16(out2))
+        }
+        RopeCpuPolicy::Bf16ishMath => {
+            let x1 = round_bf16(x1);
+            let x2 = round_bf16(x2);
+            let cos = round_bf16(cos);
+            let sin = round_bf16(sin);
+            let out1 = round_bf16(round_bf16(x1 * cos) - round_bf16(x2 * sin));
+            let out2 = round_bf16(round_bf16(x2 * cos) + round_bf16(x1 * sin));
+            (out1, out2)
+        }
+        RopeCpuPolicy::Bf16FactorsF32Math => {
+            let x1 = round_bf16(x1);
+            let x2 = round_bf16(x2);
+            let cos = round_bf16(cos);
+            let sin = round_bf16(sin);
+            let out1 = x1 * cos - x2 * sin;
+            let out2 = x2 * cos + x1 * sin;
+            (round_bf16(out1), round_bf16(out2))
+        }
+        RopeCpuPolicy::F16FactorsF16Output => {
+            let x1 = round_f16(x1);
+            let x2 = round_f16(x2);
+            let cos = round_f16(cos);
+            let sin = round_f16(sin);
+            let out1 = x1 * cos - x2 * sin;
+            let out2 = x2 * cos + x1 * sin;
+            (round_f16(out1), round_f16(out2))
+        }
+    }
+}
+
+fn round_bf16(value: f32) -> f32 {
+    bf16::from_f32(value).to_f32()
+}
+
+fn round_f16(value: f32) -> f32 {
+    f16::from_f32(value).to_f32()
 }
 
 struct KRopeComparison {

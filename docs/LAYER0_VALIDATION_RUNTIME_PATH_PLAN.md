@@ -408,6 +408,56 @@ rounds factors, inputs, and outputs like `gpt_oss.torch.model.py`, then compare
 against the same confirmed K pre/post artifact pair before implementing the
 attention-only path.
 
+## RoPE Application Dtype Policy
+
+Official/model behavior inspected:
+
+- Source: `/home/emmy/openai/gpt-oss/gpt_oss/torch/model.py`
+- `_apply_rotary_emb` casts `cos` and `sin` to `x.dtype` before applying RoPE.
+- The official K tensor for this boundary is BF16.
+- The official formula uses half-split lanes:
+  `x1*cos - x2*sin`, `x2*cos + x1*sin`.
+- Output remains at the BF16 tensor boundary.
+
+The validation binary now emits a CPU-side discriminator before introducing a
+new CUDA path. This keeps the YaRN table source shared with
+`build_validation_rope_tables_from_config` while isolating the application
+dtype boundary.
+
+Current f16-kernel guard:
+
+| comparison | table source | application policy | max abs diff | mean abs diff | mismatches |
+| --- | --- | --- | ---: | ---: | ---: |
+| `rotary_embedding_f16_kernel` then BF16 output | `yarn_scaled` | f16 input/output kernel | `0.5` | `0.006694896` | `15473` |
+
+CPU discriminator results:
+
+| variant | max abs diff | mean abs diff | mismatches | result |
+| --- | ---: | ---: | ---: | --- |
+| f32 input, f32 cos/sin, f32 math, BF16 output | `0.5` | `0.006613972` | `15416` | mismatch |
+| BF16 input, BF16 cos/sin, BF16-rounded multiply/add, BF16 output | `0` | `0` | `0` | exact |
+| BF16 input, BF16 cos/sin widened to f32 math, BF16 output | `0.5` | `0.0037691281` | `7783` | mismatch |
+| f16 input, f16 cos/sin widened to f32 math, f16 output | `0.5625` | `0.0076969406` | `34468` | mismatch |
+
+Classification:
+
+`layer0_validation_k_rope_bf16_boundary_matches_oracle`
+
+Conclusion:
+
+- The YaRN table is correct for the validation artifact pair.
+- The production f16 RoPE kernel is not the official/model BF16 boundary for
+  this check.
+- The official/model K post-RoPE boundary is reproduced exactly by BF16 input,
+  BF16 RoPE factors, BF16-rounded multiply/add, and BF16 output.
+- This remains validation-only. No production runtime routing or CUDA kernel
+  math changed.
+
+Recommended next bounded step:
+
+Add a narrow validation-only RoPE application helper for the identified BF16
+boundary, then use it in the attention-only validation path through raw QK.
+
 ## Validation Commands
 
 For the skeleton slice:
