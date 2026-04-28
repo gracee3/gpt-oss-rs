@@ -1158,6 +1158,11 @@ module/F.linear comparisons alone:
 - V:
   custom/decomposed V projection still differs from module/F.linear at 15 projection lanes, but the
   downstream weighted-V sum matched the official BF16 boundary exactly.
+- Attention o-proj:
+  the downstream-equivalent weighted-V boundary passed through BF16 output projection matched the
+  official o-proj-before-residual boundary exactly.
+- Attention residual:
+  BF16 residual input plus BF16 o-proj output matched the official hidden state before MLP exactly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1198,6 +1203,47 @@ Context:
 - This confirms that the attention o-proj seam can be reproduced exactly with the official BF16
   linear backend when fed the downstream-equivalent weighted-V boundary, but it does not yet justify
   production routing through any custom projection path.
+
+### Layer0 Attention Residual Downstream Check
+
+A bounded scratch check was run for the next seam after attention o-proj:
+
+- Summary JSON:
+  `/tmp/qkv_projection_attention_residual_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch output:
+  `/tmp/qkv_projection_attention_residual_artifacts-20260428-validated/custom_attention_residual_add.json`.
+- Boundary:
+  `layer0_final_token_hidden_state_after_attention_residual_add_before_mlp`.
+- Residual input:
+  `/tmp/pinned-prompt-parity-official-reference-20260423/developer-message.official-layer0-residual-input.cpu.json`.
+- Attention o-proj input:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json`.
+- Oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json`.
+
+Residual add policy:
+
+- BF16 residual input.
+- BF16 attention o-proj output.
+- BF16 add/output, matching the official boundary metadata:
+  `AttentionBlock.forward: t = self.out(sdpa(...)); t = x + t`.
+
+Classification: `attention_residual_custom_policy_matches_oracle`.
+
+Metrics:
+
+- `max_abs_diff=0.0`.
+- `mean_abs_diff=0.0`.
+- `mismatches=0`.
+
+Conclusion:
+
+- The downstream-equivalent custom/decomposed attention path carries through the final-token layer0
+  attention residual add exactly at the official BF16 boundary.
+- This extends the validation chain from Q/K raw-QK, V weighted-sum, and attention o-proj through
+  the hidden state before MLP.
+- This is still validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
+  are committed.
 
 Current decision:
 
