@@ -275,6 +275,28 @@ Next implementation slice expected files:
 The next slice should implement K-only current CUDA helper comparison using the public
 `gpt-oss-gpu::cublas::CublasHandle` API. It should not add a candidate/pedantic policy yet.
 
+## K Current CUDA Baseline Status
+
+`qkv_projection_policy_compare` now has an explicit validation-only execution path for
+`--execute --projection k --policy current`.
+
+Current behavior:
+
+- Loads norm input, K weight, and K oracle JSON values only for explicit K execution.
+- Runs `K_out [74, 512] = norm_input [74, 2880] x K_weight [512, 2880]^T` through the public
+  `gpt-oss-gpu::cublas::CublasHandle::hgemm` path.
+- Emits max/mean absolute error, exact mismatch count, first/worst mismatch metadata, a compact
+  mismatch table, a local output checksum, and a small latency sample.
+- Leaves metadata-only mode as the default when `--execute` is absent.
+- Does not add a candidate policy, pedantic/no-tensor-op path, runtime routing, CUDA kernel change,
+  or proof-harness dependency.
+
+Next step depends on the K result:
+
+- If current K matches the oracle, extend the same baseline to Q/V.
+- If current K mismatches the oracle, design a K-only candidate comparison path before considering
+  any runtime projection policy.
+
 Commit 3:
 
 - Add a guarded projection-policy implementation behind an explicit validation flag.

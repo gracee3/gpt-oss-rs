@@ -14,6 +14,7 @@ gpt-oss-core.workspace = true
 gpt-oss-engine.workspace = true
 gpt-oss-gpu = { workspace = true, optional = true }
 gpt-oss-tokenizer.workspace = true
+half.workspace = true
 
 [features]
 default = []
