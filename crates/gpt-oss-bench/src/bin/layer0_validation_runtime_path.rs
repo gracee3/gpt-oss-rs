@@ -167,6 +167,7 @@ enum Mode {
     WeightedV,
     AttentionOproj,
     AttentionOprojPolicy,
+    AttentionResidual,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,6 +387,28 @@ struct AttentionOprojPolicyStatus {
     next_bounded_step: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct AttentionResidualStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    input_source: &'static str,
+    o_proj_policy: &'static str,
+    residual_policy: &'static str,
+    weighted_v: TensorArtifactStatus,
+    oproj_weight: TensorArtifactStatus,
+    oproj_bias: TensorArtifactStatus,
+    residual_input: TensorArtifactStatus,
+    attention_residual_oracle: TensorArtifactStatus,
+    o_proj_metric: Option<HiddenComparisonStatus>,
+    residual_metric: Option<HiddenComparisonStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AttentionOprojVariantStatus {
     name: &'static str,
@@ -574,6 +597,7 @@ fn main() -> Result<()> {
         Mode::WeightedV => run_weighted_v(&cli),
         Mode::AttentionOproj => run_attention_oproj(&cli),
         Mode::AttentionOprojPolicy => run_attention_oproj_policy(&cli),
+        Mode::AttentionResidual => run_attention_residual(&cli),
     }
 }
 
@@ -1217,6 +1241,120 @@ fn run_attention_oproj_policy(cli: &Cli) -> Result<()> {
             },
             note: "Regenerated outside the repo in scratch Python; not used by runtime or by this Rust discriminator.",
         },
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_attention_residual(cli: &Cli) -> Result<()> {
+    let weighted_v = required_path(&cli.weighted_v, "weighted V")?;
+    let oproj_weight = required_path(&cli.oproj_weight, "oproj weight")?;
+    let oproj_bias = required_path(&cli.oproj_bias, "oproj bias")?;
+    let residual_input = required_path(&cli.residual_input, "residual input")?;
+    let attention_residual_oracle =
+        required_path(&cli.attention_residual_oracle, "attention residual oracle")?;
+    validate_path(weighted_v, "weighted V")?;
+    validate_path(oproj_weight, "oproj weight")?;
+    validate_path(oproj_bias, "oproj bias")?;
+    validate_path(residual_input, "residual input")?;
+    validate_path(attention_residual_oracle, "attention residual oracle")?;
+    if let Some(oproj_oracle) = cli.oproj_oracle.as_ref() {
+        validate_path(oproj_oracle, "oproj oracle")?;
+    }
+
+    let q_dim = cli.query_heads * cli.head_dim;
+    let hidden = 2880usize;
+    let (weighted_status, weighted_values) =
+        load_tensor_artifact(weighted_v, &[q_dim], &["values"])?;
+    let (weight_status, weight_values) =
+        load_tensor_artifact(oproj_weight, &[hidden * q_dim], &["values"])?;
+    let (bias_status, bias_values) = load_tensor_artifact(oproj_bias, &[hidden], &["values"])?;
+    let (residual_status, residual_values) = load_tensor_artifact(
+        residual_input,
+        &[hidden, cli.token_count * hidden],
+        &["values", "layer0_attn_norm_input_f32"],
+    )?;
+    let (residual_oracle_status, residual_oracle_values) =
+        load_tensor_artifact(attention_residual_oracle, &[hidden], &["values"])?;
+    let oproj_oracle_loaded = cli
+        .oproj_oracle
+        .as_ref()
+        .map(|path| load_tensor_artifact(path, &[hidden], &["values"]))
+        .transpose()?;
+
+    let blocked = !weighted_status.shape_or_count_matched
+        || !weight_status.shape_or_count_matched
+        || !bias_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched
+        || !residual_oracle_status.shape_or_count_matched;
+
+    let residual_final_token = if residual_values.len() == cli.token_count * hidden {
+        let start = cli.final_token_index * hidden;
+        residual_values[start..start + hidden].to_vec()
+    } else {
+        residual_values.clone()
+    };
+
+    let (classification, o_proj_metric, residual_metric, blocker) = if blocked {
+        (
+            "layer0_validation_attention_residual_blocked_by_artifacts",
+            None,
+            None,
+            Some(Blocker {
+                kind: "attention_residual_artifacts",
+                detail: "weighted V, o_proj weight, o_proj bias, residual input, or residual oracle did not expose supported values or expected counts",
+            }),
+        )
+    } else {
+        let oproj_output = compute_attention_oproj_variant(
+            &weighted_values,
+            &weight_values,
+            &bias_values,
+            OprojPolicy::ChunkedPairwise,
+        );
+        let o_proj_metric = oproj_oracle_loaded
+            .as_ref()
+            .filter(|(status, _)| status.shape_or_count_matched)
+            .map(|(_, oracle)| compare_hidden(&oproj_output, oracle));
+        let residual_output = compute_attention_residual(&residual_final_token, &oproj_output);
+        let residual_metric = compare_hidden(&residual_output, &residual_oracle_values);
+        let classification = if residual_metric.metrics.mismatches == 0 {
+            "layer0_validation_attention_residual_matches_oracle"
+        } else {
+            "layer0_validation_attention_residual_mismatch"
+        };
+        (classification, o_proj_metric, Some(residual_metric), None)
+    };
+
+    let next_bounded_step = match classification {
+        "layer0_validation_attention_residual_matches_oracle" => {
+            "extend validation-runtime path to MLP norm"
+        }
+        "layer0_validation_attention_residual_mismatch" => {
+            "localize residual input source, o_proj policy, or BF16 residual-add policy"
+        }
+        _ => "resolve the reported attention residual validation blocker",
+    };
+
+    let status = AttentionResidualStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "attention-residual",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        input_source: attention_oproj_input_source(weighted_v),
+        o_proj_policy: "E_chunked_pairwise_bf16_input_bf16_weight_chunked_pairwise_f32_accum_f32_bias_bf16_output",
+        residual_policy: "bf16_plus_bf16_to_bf16",
+        weighted_v: weighted_status,
+        oproj_weight: weight_status,
+        oproj_bias: bias_status,
+        residual_input: residual_status,
+        attention_residual_oracle: residual_oracle_status,
+        o_proj_metric,
+        residual_metric,
         blocker,
         next_bounded_step,
     };

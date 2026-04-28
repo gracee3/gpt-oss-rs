@@ -815,6 +815,61 @@ Recommended next bounded step:
 Use the identified validation-only o_proj policy to continue the clean
 validation-runtime path through the attention residual add before MLP.
 
+## Attention Residual Validation Status
+
+Submode added:
+
+- `--mode attention-residual`
+
+Target seam:
+
+```text
+layer0_final_token_hidden_state_after_attention_residual_add_before_mlp
+```
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| weighted V | official weighted-V oracle, already matched by weighted-V validation at BF16 boundary |
+| o_proj weight/bias | scratch safetensors extraction from the restricted integration checkpoint |
+| residual input | `layer0_attn_norm_input_f32` final token from `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-attn-norm-full-input.cpu.json` |
+| attention residual oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-attention-residual-add-before-mlp-status.json` |
+
+Policy:
+
+- o_proj uses the validation-only `E_chunked_pairwise` policy identified by the
+  BF16 linear discriminator:
+  - BF16 input,
+  - BF16 weight,
+  - chunked pairwise f32 accumulation,
+  - f32 bias add,
+  - BF16 output.
+- Residual add uses BF16 residual input plus BF16 o_proj output with BF16 output.
+
+Current classification:
+
+```text
+layer0_validation_attention_residual_matches_oracle
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| o_proj guard vs official | `0` | `0` | `0` |
+| attention residual before MLP vs official | `0` | `0` | `0` |
+
+Conclusion:
+
+- The validation-runtime path now clears the layer0 final-token attention
+  residual-add boundary exactly using the chunked pairwise o_proj policy.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Extend the validation-runtime path to MLP norm.
+
 ## Validation Commands
 
 For the skeleton slice:
