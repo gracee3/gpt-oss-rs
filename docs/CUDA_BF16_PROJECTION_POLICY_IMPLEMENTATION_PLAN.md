@@ -1169,6 +1169,9 @@ module/F.linear comparisons alone:
 - Router:
   BF16 router logits over the exact MLP norm output matched official logits, selected experts, and
   routing weights exactly.
+- Selected experts:
+  selected expert outputs are exact for experts `3`, `11`, and `27`; expert `30` remains an isolated
+  small mismatch that matches the known expert30 diagnostic sensitivity.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1339,6 +1342,71 @@ Conclusion:
   attention residual add, MLP norm, router logits, and top-k/routing weights.
 - This remains validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
   are committed.
+
+### Layer0 Selected Expert Outputs Downstream Check
+
+A bounded scratch check was run for selected expert outputs before routing-weighted sum:
+
+- Summary JSON:
+  `/tmp/qkv_projection_selected_expert_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch output:
+  `/tmp/qkv_projection_selected_expert_artifacts-20260428-validated/selected_expert_outputs_custom.json`.
+- Boundary:
+  `layer0_final_token_selected_expert_outputs_before_routing_weighted_sum`.
+- Input:
+  `/tmp/qkv_projection_mlp_norm_artifacts-20260428-validated/custom_mlp_norm_output.json`.
+- Official selected expert output oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json`.
+- Selected expert order:
+  `[3, 30, 11, 27]`.
+
+Expert replay policy:
+
+- Dequantize only selected expert MXFP4 weights from the local model checkpoint.
+- BF16 MLP norm input.
+- BF16 MLP1 weight and bias, with BF16 MLP1 output.
+- SwiGLU formula:
+  `gate * sigmoid(1.702 * gate) * (up + 1)`.
+- Clamp policy:
+  gate max `7.0`; up/value min `-7.0`, max `7.0`.
+- BF16 SwiGLU output before MLP2.
+- BF16 MLP2 weight and bias, with BF16 selected expert output after MLP2 bias.
+
+Classification: `selected_expert_outputs_after_custom_mlp_norm_mismatch_isolated`.
+
+Overall selected-output metrics:
+
+- `max_abs_diff=0.015625`.
+- `mean_abs_diff=1.8388032913208008e-05`.
+- `mismatches=151`.
+
+Per-rank metrics:
+
+| Rank | Expert | max abs diff | mean abs diff | mismatches |
+| ---: | ---: | ---: | ---: | ---: |
+| `0` | `3` | `0.0` | `0.0` | `0` |
+| `1` | `30` | `0.015625` | `7.355213165283203e-05` | `151` |
+| `2` | `11` | `0.0` | `0.0` | `0` |
+| `3` | `27` | `0.0` | `0.0` | `0` |
+
+Expert30 internal guard:
+
+- Expert30 MLP1 before SwiGLU vs official:
+  `max_abs_diff=0.00390625`, `mean_abs_diff=6.781684191992099e-7`, `mismatches=1`.
+- Expert30 SwiGLU before MLP2 vs official:
+  `max_abs_diff=0.0048828125`, `mean_abs_diff=1.6954210195763153e-6`, `mismatches=1`.
+- Expert30 MLP2 before bias vs official:
+  `max_abs_diff=0.015625`, `mean_abs_diff=8.200473530450836e-05`,
+  `mismatches=262`.
+
+Conclusion:
+
+- The selected-output seam is exact for three of the four selected experts.
+- The only mismatch is isolated to rank `1` / expert `30`, consistent with the prior
+  runtime-forward note that expert30 selected-output capture/readout required special handling.
+- This slice does not import the selected-expert readout correction into integration and does not
+  change runtime behavior.
+- The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
 
 Current decision:
 
