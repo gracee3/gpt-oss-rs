@@ -675,6 +675,75 @@ Recommended next bounded step:
 Extend attention-only validation to the attention output projection before the
 attention residual add.
 
+## Attention o_proj Validation Status
+
+Submode added:
+
+- `--mode attention-oproj`
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| weighted V | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-weighted-value-sum-before-output-projection-status.json` |
+| o_proj weight | `/tmp/layer0_validation_attention_oproj_artifacts-20260428-180208/oproj_weight.json` |
+| o_proj bias | `/tmp/layer0_validation_attention_oproj_artifacts-20260428-180208/oproj_bias.json` |
+| o_proj oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-attention-output-after-o-proj-before-residual-status.json` |
+
+Input-source caveat:
+
+- This first o_proj validation run uses the official weighted-V oracle as the
+  o_proj input because the weighted-V submode does not yet emit its BF16 output
+  values as a reusable artifact.
+- The prior weighted-V seam established that the BF16-rounded weighted-V output
+  matches this official weighted-V oracle exactly.
+- The o_proj weight and bias JSON files are scratch artifacts generated from
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors`
+  using tensor names `model.layers.0.self_attn.o_proj.weight` and
+  `model.layers.0.self_attn.o_proj.bias`.
+- No scratch artifacts are committed.
+
+Policy tested in the Rust validation binary:
+
+- Weighted-V input is rounded to BF16.
+- o_proj weight and bias are rounded to BF16.
+- Products are accumulated in f32.
+- The post-bias output is rounded to BF16.
+
+Current classification:
+
+```text
+layer0_validation_attention_oproj_mismatch
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| Rust BF16-input/f32-accum/BF16-output o_proj vs official | `0.000061035156` | `2.1192763e-8` | `1` |
+
+Local policy discriminator:
+
+- Scratch PyTorch BF16 `torch.nn.functional.linear` with the same weighted-V
+  input, o_proj weight, and o_proj bias reproduces the official o_proj oracle
+  exactly.
+- Therefore the remaining one-lane mismatch is a BF16 linear backend policy
+  issue in the Rust replay path, not evidence of a weighted-V or tensor-source
+  mismatch.
+
+Conclusion:
+
+- The validation-runtime path reaches the attention o_proj seam, but the current
+  Rust BF16 linear replay does not yet reproduce the official/module BF16
+  `F.linear` boundary exactly.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Either emit the validation weighted-V BF16 artifact and rerun this seam from
+that source, or add a validation-only BF16 linear policy discriminator for
+o_proj before proceeding to the attention residual add.
+
 ## Validation Commands
 
 For the skeleton slice:

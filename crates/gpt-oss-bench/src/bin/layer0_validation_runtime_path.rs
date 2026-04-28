@@ -61,6 +61,22 @@ struct Cli {
     #[arg(long)]
     weighted_v_oracle: Option<PathBuf>,
 
+    /// Weighted V artifact for attention o-proj validation.
+    #[arg(long)]
+    weighted_v: Option<PathBuf>,
+
+    /// Attention o_proj weight artifact for o-proj validation.
+    #[arg(long)]
+    oproj_weight: Option<PathBuf>,
+
+    /// Attention o_proj bias artifact for o-proj validation.
+    #[arg(long)]
+    oproj_bias: Option<PathBuf>,
+
+    /// Official attention o_proj oracle artifact.
+    #[arg(long)]
+    oproj_oracle: Option<PathBuf>,
+
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
     token_count: usize,
@@ -141,6 +157,7 @@ enum Mode {
     RawQk,
     AttentionProbs,
     WeightedV,
+    AttentionOproj,
 }
 
 #[derive(Debug, Serialize)]
@@ -318,6 +335,47 @@ struct WeightedVStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct AttentionOprojStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    input_source: &'static str,
+    o_proj_policy: &'static str,
+    weighted_v: TensorArtifactStatus,
+    oproj_weight: TensorArtifactStatus,
+    oproj_bias: TensorArtifactStatus,
+    oproj_oracle: TensorArtifactStatus,
+    metrics: Option<HiddenComparisonStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HiddenComparisonStatus {
+    metrics: HiddenMetrics,
+    first_mismatch: Option<HiddenDiff>,
+    worst_mismatch: Option<HiddenDiff>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HiddenMetrics {
+    max_abs_diff: f32,
+    mean_abs_diff: f32,
+    mismatches: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HiddenDiff {
+    hidden_lane: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
+}
+
+#[derive(Debug, Serialize)]
 struct GqaConfig {
     query_heads: usize,
     kv_heads: usize,
@@ -453,6 +511,7 @@ fn main() -> Result<()> {
         Mode::RawQk => run_raw_qk(&cli),
         Mode::AttentionProbs => run_attention_probs(&cli),
         Mode::WeightedV => run_weighted_v(&cli),
+        Mode::AttentionOproj => run_attention_oproj(&cli),
     }
 }
 
@@ -884,6 +943,91 @@ fn run_weighted_v(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_attention_oproj(cli: &Cli) -> Result<()> {
+    let weighted_v = required_path(&cli.weighted_v, "weighted V")?;
+    let oproj_weight = required_path(&cli.oproj_weight, "oproj weight")?;
+    let oproj_bias = required_path(&cli.oproj_bias, "oproj bias")?;
+    let oproj_oracle = required_path(&cli.oproj_oracle, "oproj oracle")?;
+    validate_path(weighted_v, "weighted V")?;
+    validate_path(oproj_weight, "oproj weight")?;
+    validate_path(oproj_bias, "oproj bias")?;
+    validate_path(oproj_oracle, "oproj oracle")?;
+
+    let q_dim = cli.query_heads * cli.head_dim;
+    let hidden = 2880usize;
+    let (weighted_status, weighted_values) =
+        load_tensor_artifact(weighted_v, &[q_dim], &["values"])?;
+    let (weight_status, weight_values) =
+        load_tensor_artifact(oproj_weight, &[hidden * q_dim], &["values"])?;
+    let (bias_status, bias_values) = load_tensor_artifact(oproj_bias, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(oproj_oracle, &[hidden], &["values"])?;
+
+    let execution = if !weighted_status.shape_or_count_matched
+        || !weight_status.shape_or_count_matched
+        || !bias_status.shape_or_count_matched
+        || !oracle_status.shape_or_count_matched
+    {
+        AttentionOprojExecution::blocked(
+            "layer0_validation_attention_oproj_blocked_by_artifacts",
+            "attention_oproj_artifacts",
+            "weighted V, o_proj weight, o_proj bias, or o_proj oracle did not expose supported values or expected counts",
+        )
+    } else {
+        execute_attention_oproj(
+            &weighted_values,
+            &weight_values,
+            &bias_values,
+            &oracle_values,
+        )
+    };
+
+    let next_bounded_step = match execution.classification {
+        "layer0_validation_attention_oproj_matches_oracle" => {
+            "extend validation to attention residual add before MLP"
+        }
+        "layer0_validation_attention_oproj_source_is_official_weighted_v" => {
+            "rerun attention o-proj from validation-generated weighted V when that value artifact is available"
+        }
+        "layer0_validation_attention_oproj_mismatch" => {
+            "localize o-proj mismatch between input source, weight/bias source, and BF16 linear policy"
+        }
+        _ => "resolve the reported attention o-proj validation blocker",
+    };
+
+    let status = AttentionOprojStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "attention-oproj",
+        classification: execution.classification,
+        implemented: execution.blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        input_source: attention_oproj_input_source(weighted_v),
+        o_proj_policy: "bf16_input_weight_bias_f32_accum_bf16_output",
+        weighted_v: weighted_status,
+        oproj_weight: weight_status,
+        oproj_bias: bias_status,
+        oproj_oracle: oracle_status,
+        metrics: execution.metrics,
+        blocker: execution.blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn attention_oproj_input_source(path: &Path) -> &'static str {
+    let path = path.to_string_lossy();
+    if path.contains("attention-weighted-value-sum-before-output-projection")
+        || path.contains("weighted-v-oracle")
+        || path.contains("weighted_v_oracle")
+    {
+        "official_weighted_v_oracle"
+    } else {
+        "explicit_weighted_v_artifact"
+    }
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -926,6 +1070,26 @@ struct WeightedVExecution {
     f32_metric: Option<MatrixComparisonStatus>,
     bf16_metric: Option<MatrixComparisonStatus>,
     blocker: Option<Blocker>,
+}
+
+struct AttentionOprojExecution {
+    classification: &'static str,
+    metrics: Option<HiddenComparisonStatus>,
+    blocker: Option<Blocker>,
+}
+
+impl AttentionOprojExecution {
+    fn blocked(
+        classification: &'static str,
+        kind: &'static str,
+        detail: &'static str,
+    ) -> AttentionOprojExecution {
+        AttentionOprojExecution {
+            classification,
+            metrics: None,
+            blocker: Some(Blocker { kind, detail }),
+        }
+    }
 }
 
 impl WeightedVExecution {
@@ -1348,6 +1512,36 @@ fn execute_weighted_v(
         classification,
         f32_metric: Some(f32_metric),
         bf16_metric: Some(bf16_metric),
+        blocker: None,
+    }
+}
+
+fn execute_attention_oproj(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+) -> AttentionOprojExecution {
+    let hidden = bias.len();
+    let q_dim = weighted_v.len();
+    let mut output = vec![0.0f32; hidden];
+    for out_lane in 0..hidden {
+        let mut sum = 0.0f32;
+        let weight_base = out_lane * q_dim;
+        for in_lane in 0..q_dim {
+            sum += round_bf16(weighted_v[in_lane]) * round_bf16(weight[weight_base + in_lane]);
+        }
+        output[out_lane] = round_bf16(sum + round_bf16(bias[out_lane]));
+    }
+    let comparison = compare_hidden(&output, oracle);
+    let classification = if comparison.metrics.mismatches == 0 {
+        "layer0_validation_attention_oproj_matches_oracle"
+    } else {
+        "layer0_validation_attention_oproj_mismatch"
+    };
+    AttentionOprojExecution {
+        classification,
+        metrics: Some(comparison),
         blocker: None,
     }
 }
@@ -1867,6 +2061,48 @@ fn compare_matrix(
         metrics: MatrixMetrics {
             max_abs_diff,
             mean_abs_diff: (sum_abs_diff / compared.max(1) as f64) as f32,
+            mismatches,
+        },
+        first_mismatch,
+        worst_mismatch,
+    }
+}
+
+fn compare_hidden(actual: &[f32], expected: &[f32]) -> HiddenComparisonStatus {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut mismatches = 0usize;
+    let mut first_mismatch = None;
+    let mut worst_mismatch = None;
+
+    for (hidden_lane, (&actual_value, &expected_value)) in
+        actual.iter().zip(expected.iter()).enumerate()
+    {
+        let abs_diff = (actual_value - expected_value).abs();
+        sum_abs_diff += abs_diff as f64;
+        if abs_diff != 0.0 {
+            mismatches += 1;
+            let diff = HiddenDiff {
+                hidden_lane,
+                actual: actual_value,
+                expected: expected_value,
+                abs_diff,
+            };
+            if first_mismatch.is_none() {
+                first_mismatch = Some(diff.clone());
+            }
+            if abs_diff > max_abs_diff {
+                max_abs_diff = abs_diff;
+                worst_mismatch = Some(diff);
+            }
+        }
+    }
+
+    let len = actual.len().min(expected.len()).max(1);
+    HiddenComparisonStatus {
+        metrics: HiddenMetrics {
+            max_abs_diff,
+            mean_abs_diff: (sum_abs_diff / len as f64) as f32,
             mismatches,
         },
         first_mismatch,
