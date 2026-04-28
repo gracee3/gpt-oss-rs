@@ -504,6 +504,57 @@ Recommended next bounded step:
 Use the BF16-boundary helper in the layer0 attention-only validation path
 through raw QK, then compare against the official raw-QK oracle.
 
+## Raw-QK Validation Status
+
+Submode added:
+
+- `--mode raw-qk`
+
+Inputs used for the current validation run:
+
+| input | source |
+| --- | --- |
+| Q pre-RoPE | `/tmp/qkv_projection_qk_downstream_artifacts-20260428-111933/q_pre_rope_custom.json` |
+| K pre-RoPE | `/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.official-layer0-k-projection-weight-arithmetic.cpu.json` |
+| raw-QK oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.official-layer0-final-token-raw-scaled-qk-logits-pre-mask.cpu.json` |
+
+Q source note:
+
+- No full-value official Q pre-RoPE artifact was found in the runtime-forward
+  `.live` search.
+- This run uses the previously validated custom/decomposed Q pre-RoPE scratch
+  artifact from the downstream Q/K artifact pack.
+- The scratch artifact is not committed.
+
+Policy:
+
+- Q and K pre-RoPE values are passed through
+  `apply_k_rope_bf16_boundary_validation`.
+- RoPE table source is `yarn_scaled`.
+- RoPE application policy is
+  `bf16_input_bf16_factors_bf16_rounded_math_bf16_output`.
+- Final-token raw QK uses `kv_head = q_head / 8`, scale `0.125`, and BF16
+  output before mask.
+
+Result:
+
+`layer0_validation_raw_qk_matches_oracle`
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| BF16-boundary Q/K RoPE + raw-QK vs official raw-QK oracle | `0` | `0` | `0` |
+
+Conclusion:
+
+- The validation-runtime path can now reproduce the first layer0 attention seam
+  through final-token raw scaled QK pre-mask.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Extend attention-only validation to the mask/softmax probability boundary, then
+weighted V.
+
 ## Validation Commands
 
 For the skeleton slice:

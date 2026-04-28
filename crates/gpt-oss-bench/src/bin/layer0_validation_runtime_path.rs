@@ -33,9 +33,21 @@ struct Cli {
     #[arg(long)]
     k_post_rope_oracle: Option<PathBuf>,
 
+    /// Q pre-RoPE artifact for raw-QK validation.
+    #[arg(long)]
+    q_pre_rope: Option<PathBuf>,
+
+    /// Official raw scaled QK logits pre-mask oracle artifact.
+    #[arg(long)]
+    raw_qk_oracle: Option<PathBuf>,
+
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
     token_count: usize,
+
+    /// Query head count for raw-QK validation.
+    #[arg(long, default_value_t = 64)]
+    query_heads: usize,
 
     /// Number of grouped-query K/V heads for K RoPE validation.
     #[arg(long, default_value_t = 8)]
@@ -81,6 +93,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     rope_scaling_truncate: bool,
 
+    /// Final token index for raw-QK validation.
+    #[arg(long, default_value_t = 73)]
+    final_token_index: usize,
+
+    /// Raw QK scale.
+    #[arg(long, default_value_t = 0.125)]
+    scale: f32,
+
     /// JSON status output path.
     #[arg(long)]
     output: PathBuf,
@@ -90,6 +110,7 @@ struct Cli {
 enum Mode {
     Skeleton,
     KRope,
+    RawQk,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +225,65 @@ struct Blocker {
 }
 
 #[derive(Debug, Serialize)]
+struct RawQkStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    table_source: &'static str,
+    rope_policy: &'static str,
+    q_source: TensorArtifactStatus,
+    k_source: TensorArtifactStatus,
+    raw_qk_oracle: TensorArtifactStatus,
+    raw_qk_config: RawQkConfig,
+    metrics: Option<RawQkMetrics>,
+    first_mismatch: Option<RawQkDiff>,
+    worst_mismatch: Option<RawQkDiff>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct RawQkConfig {
+    token_count: usize,
+    query_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    final_token_index: usize,
+    scale: f32,
+    output_boundary: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct TensorArtifactStatus {
+    path: String,
+    json_loaded: bool,
+    shape: Option<Vec<usize>>,
+    value_count: Option<usize>,
+    expected_value_counts: Vec<usize>,
+    shape_or_count_matched: bool,
+    value_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RawQkMetrics {
+    max_abs_diff: f32,
+    mean_abs_diff: f32,
+    mismatches: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RawQkDiff {
+    q_head: usize,
+    token: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
+}
+
+#[derive(Debug, Serialize)]
 struct Inputs {
     layer0_input: ArtifactPath,
     official_layer0_output: ArtifactPath,
@@ -228,6 +308,7 @@ fn main() -> Result<()> {
     match cli.mode {
         Mode::Skeleton => run_skeleton(&cli),
         Mode::KRope => run_k_rope(&cli),
+        Mode::RawQk => run_raw_qk(&cli),
     }
 }
 
@@ -380,6 +461,92 @@ fn run_k_rope(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_raw_qk(cli: &Cli) -> Result<()> {
+    let q_pre_rope = required_path(&cli.q_pre_rope, "Q pre-RoPE")?;
+    let k_pre_rope = required_path(&cli.k_pre_rope, "K pre-RoPE")?;
+    let raw_qk_oracle = required_path(&cli.raw_qk_oracle, "raw QK oracle")?;
+    validate_path(q_pre_rope, "Q pre-RoPE")?;
+    validate_path(k_pre_rope, "K pre-RoPE")?;
+    validate_path(raw_qk_oracle, "raw QK oracle")?;
+
+    let q_full_count = cli.token_count * cli.query_heads * cli.head_dim;
+    let q_final_count = cli.query_heads * cli.head_dim;
+    let k_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let raw_qk_count = cli.query_heads * cli.token_count;
+
+    let (q_status, q_values) = load_tensor_artifact(
+        q_pre_rope,
+        &[q_full_count, q_final_count],
+        &["values", "local_q_pre_rope_f32"],
+    )?;
+    let (k_status, k_values) = load_tensor_artifact(
+        k_pre_rope,
+        &[k_count],
+        &[
+            "values",
+            "official_projection_outputs.official_module_k_output_f32",
+        ],
+    )?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(raw_qk_oracle, &[raw_qk_count], &["values"])?;
+
+    let execution = if !q_status.shape_or_count_matched {
+        RawQkExecution::blocked(
+            "layer0_validation_raw_qk_blocked_by_q_pre_rope",
+            "q_pre_rope_artifact",
+            "Q pre-RoPE artifact did not expose a supported value key or expected value count",
+        )
+    } else if !k_status.shape_or_count_matched || !oracle_status.shape_or_count_matched {
+        RawQkExecution::blocked(
+            "layer0_validation_raw_qk_blocked_by_artifacts",
+            "k_or_raw_qk_artifact",
+            "K pre-RoPE or raw-QK oracle artifact did not expose a supported value key or expected value count",
+        )
+    } else {
+        execute_raw_qk(&q_values, &k_values, &oracle_values, cli)
+    };
+
+    let next_bounded_step = match execution.classification {
+        "layer0_validation_raw_qk_matches_oracle" => {
+            "extend attention-only validation to mask and softmax probability boundary"
+        }
+        "layer0_validation_raw_qk_mismatch" => {
+            "localize raw-QK mismatch between Q source, K source, RoPE, and score rounding"
+        }
+        _ => "resolve the reported raw-QK validation blocker",
+    };
+
+    let status = RawQkStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "raw-qk",
+        classification: execution.classification,
+        implemented: execution.blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        table_source: execution.table_source,
+        rope_policy: "bf16_input_bf16_factors_bf16_rounded_math_bf16_output",
+        q_source: q_status,
+        k_source: k_status,
+        raw_qk_oracle: oracle_status,
+        raw_qk_config: RawQkConfig {
+            token_count: cli.token_count,
+            query_heads: cli.query_heads,
+            kv_heads: cli.kv_heads,
+            head_dim: cli.head_dim,
+            final_token_index: cli.final_token_index,
+            scale: cli.scale,
+            output_boundary: "bf16_rounded_score_before_mask",
+        },
+        metrics: execution.metrics,
+        first_mismatch: execution.first_mismatch,
+        worst_mismatch: execution.worst_mismatch,
+        blocker: execution.blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -392,6 +559,32 @@ struct KRopeExecution {
     f16_kernel_first_mismatch: Option<LogicalDiff>,
     f16_kernel_worst_mismatch: Option<LogicalDiff>,
     cpu_discriminator: Vec<RopeDiscriminatorResult>,
+}
+
+struct RawQkExecution {
+    classification: &'static str,
+    metrics: Option<RawQkMetrics>,
+    first_mismatch: Option<RawQkDiff>,
+    worst_mismatch: Option<RawQkDiff>,
+    blocker: Option<Blocker>,
+    table_source: &'static str,
+}
+
+impl RawQkExecution {
+    fn blocked(
+        classification: &'static str,
+        kind: &'static str,
+        detail: &'static str,
+    ) -> RawQkExecution {
+        RawQkExecution {
+            classification,
+            metrics: None,
+            first_mismatch: None,
+            worst_mismatch: None,
+            blocker: Some(Blocker { kind, detail }),
+            table_source: "unavailable",
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -519,6 +712,109 @@ fn validation_rope_config(cli: &Cli) -> gpt_oss_model_runner::runner::ModelRunne
     config
 }
 
+fn execute_raw_qk(q_pre: &[f32], k_pre: &[f32], oracle: &[f32], cli: &Cli) -> RawQkExecution {
+    let config = validation_rope_config(cli);
+    let q_rope_input = q_rope_input_for_helper(q_pre, cli);
+    let q_result = gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
+        &q_rope_input,
+        q_rope_token_count(q_pre, cli),
+        cli.query_heads,
+        &config,
+    );
+    let k_result = gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
+        k_pre,
+        cli.token_count,
+        cli.kv_heads,
+        &config,
+    );
+    let (q_post, q_table_source) = match q_result {
+        Ok(result) => result,
+        Err(_) => {
+            return RawQkExecution::blocked(
+                "layer0_validation_raw_qk_execution_failed",
+                "q_rope_failed",
+                "BF16-boundary Q RoPE helper failed",
+            );
+        }
+    };
+    let (k_post, k_table_source) = match k_result {
+        Ok(result) => result,
+        Err(_) => {
+            return RawQkExecution::blocked(
+                "layer0_validation_raw_qk_execution_failed",
+                "k_rope_failed",
+                "BF16-boundary K RoPE helper failed",
+            );
+        }
+    };
+    let q_final = q_final_post_rope_slice(&q_post, q_pre.len(), cli);
+    let actual = compute_raw_qk(q_final, &k_post, cli);
+    let comparison = compare_raw_qk(&actual, oracle, cli);
+    RawQkExecution {
+        classification: if comparison.metrics.mismatches == 0 {
+            "layer0_validation_raw_qk_matches_oracle"
+        } else {
+            "layer0_validation_raw_qk_mismatch"
+        },
+        metrics: Some(comparison.metrics),
+        first_mismatch: comparison.first_mismatch,
+        worst_mismatch: comparison.worst_mismatch,
+        blocker: None,
+        table_source: if q_table_source == k_table_source {
+            q_table_source
+        } else {
+            "mixed_table_sources"
+        },
+    }
+}
+
+fn q_rope_token_count(q_pre: &[f32], cli: &Cli) -> usize {
+    if q_pre.len() == cli.query_heads * cli.head_dim {
+        cli.final_token_index + 1
+    } else {
+        cli.token_count
+    }
+}
+
+fn q_rope_input_for_helper(q_pre: &[f32], cli: &Cli) -> Vec<f32> {
+    let q_final_count = cli.query_heads * cli.head_dim;
+    if q_pre.len() != q_final_count {
+        return q_pre.to_vec();
+    }
+    let mut padded = vec![0.0f32; (cli.final_token_index + 1) * q_final_count];
+    let start = cli.final_token_index * q_final_count;
+    padded[start..start + q_final_count].copy_from_slice(q_pre);
+    padded
+}
+
+fn q_final_post_rope_slice<'a>(q_post: &'a [f32], original_q_len: usize, cli: &Cli) -> &'a [f32] {
+    let q_final_count = cli.query_heads * cli.head_dim;
+    if original_q_len == q_final_count {
+        let start = cli.final_token_index * q_final_count;
+        &q_post[start..start + q_final_count]
+    } else {
+        let start = cli.final_token_index * q_final_count;
+        &q_post[start..start + q_final_count]
+    }
+}
+
+fn compute_raw_qk(q_final: &[f32], k_post: &[f32], cli: &Cli) -> Vec<f32> {
+    let mut output = vec![0.0f32; cli.query_heads * cli.token_count];
+    for q_head in 0..cli.query_heads {
+        let kv_head = q_head / (cli.query_heads / cli.kv_heads);
+        for token in 0..cli.token_count {
+            let mut sum = 0.0f32;
+            let q_base = q_head * cli.head_dim;
+            let k_base = (token * cli.kv_heads + kv_head) * cli.head_dim;
+            for lane in 0..cli.head_dim {
+                sum += q_final[q_base + lane] * k_post[k_base + lane];
+            }
+            output[q_head * cli.token_count + token] = round_bf16(sum * cli.scale);
+        }
+    }
+    output
+}
+
 fn rope_scaling_type(cli: &Cli) -> Option<String> {
     let value = cli.rope_scaling_type.trim();
     if value.is_empty() || value.eq_ignore_ascii_case("none") {
@@ -596,6 +892,35 @@ fn load_k_artifact(
     ))
 }
 
+fn load_tensor_artifact(
+    path: &Path,
+    expected_counts: &[usize],
+    value_keys: &[&str],
+) -> Result<(TensorArtifactStatus, Vec<f32>)> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let shape = extract_shape(&value);
+    let (values, value_key) = extract_values_by_keys(&value, value_keys);
+    let value_count = values.as_ref().map(Vec::len);
+    let count_matches = value_count
+        .map(|count| expected_counts.contains(&count))
+        .unwrap_or(false);
+    Ok((
+        TensorArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape,
+            value_count,
+            expected_value_counts: expected_counts.to_vec(),
+            shape_or_count_matched: count_matches,
+            value_key,
+        },
+        values.unwrap_or_default(),
+    ))
+}
+
 fn extract_shape(value: &Value) -> Option<Vec<usize>> {
     ["shape", "tensor_shape", "output_shape"]
         .iter()
@@ -633,6 +958,32 @@ fn extract_values(value: &Value, allow_projection_key: bool) -> (Option<Vec<f32>
             .and_then(Value::as_array)
         {
             return (Some(json_values_to_f32(values)), Some(key.to_string()));
+        }
+    }
+    (None, None)
+}
+
+fn extract_values_by_keys(value: &Value, keys: &[&str]) -> (Option<Vec<f32>>, Option<String>) {
+    for key in keys {
+        if let Some(values) = value.pointer(&format!("/{}", key.replace('.', "/"))) {
+            if let Some(array) = values.as_array() {
+                return (Some(json_values_to_f32(array)), Some((*key).to_string()));
+            }
+        }
+        let mut current = value;
+        let mut found = true;
+        for part in key.split('.') {
+            if let Some(next) = current.get(part) {
+                current = next;
+            } else {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            if let Some(array) = current.as_array() {
+                return (Some(json_values_to_f32(array)), Some((*key).to_string()));
+            }
         }
     }
     (None, None)
@@ -776,6 +1127,53 @@ struct KRopeComparison {
     metrics: ComparisonMetrics,
     first_mismatch: Option<LogicalDiff>,
     worst_mismatch: Option<LogicalDiff>,
+}
+
+struct RawQkComparison {
+    metrics: RawQkMetrics,
+    first_mismatch: Option<RawQkDiff>,
+    worst_mismatch: Option<RawQkDiff>,
+}
+
+fn compare_raw_qk(actual: &[f32], expected: &[f32], cli: &Cli) -> RawQkComparison {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f64;
+    let mut mismatches = 0usize;
+    let mut first_mismatch = None;
+    let mut worst_mismatch = None;
+
+    for (idx, (&actual_value, &expected_value)) in actual.iter().zip(expected.iter()).enumerate() {
+        let abs_diff = (actual_value - expected_value).abs();
+        sum_abs_diff += abs_diff as f64;
+        if abs_diff != 0.0 {
+            mismatches += 1;
+            let diff = RawQkDiff {
+                q_head: idx / cli.token_count,
+                token: idx % cli.token_count,
+                actual: actual_value,
+                expected: expected_value,
+                abs_diff,
+            };
+            if first_mismatch.is_none() {
+                first_mismatch = Some(diff.clone());
+            }
+            if abs_diff > max_abs_diff {
+                max_abs_diff = abs_diff;
+                worst_mismatch = Some(diff);
+            }
+        }
+    }
+
+    let len = actual.len().min(expected.len()).max(1);
+    RawQkComparison {
+        metrics: RawQkMetrics {
+            max_abs_diff,
+            mean_abs_diff: (sum_abs_diff / len as f64) as f32,
+            mismatches,
+        },
+        first_mismatch,
+        worst_mismatch,
+    }
 }
 
 fn compare_k_rope(
