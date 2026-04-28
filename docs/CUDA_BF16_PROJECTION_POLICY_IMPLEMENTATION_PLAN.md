@@ -1178,6 +1178,9 @@ module/F.linear comparisons alone:
 - Expert30 reconstruction:
   a fresh local expert30 reconstruction clears both selected-output and weighted-sum metrics without
   using the official final selected-output tensor directly.
+- MLP residual:
+  fresh selected expert outputs, including reconstructed expert30, clear both the weighted expert
+  sum and final layer0 MLP residual-add boundary exactly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1540,6 +1543,57 @@ Conclusion:
 - This slice does not import selected-expert readout plumbing into integration and does not change
   runtime behavior.
 - The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
+
+### Layer0 MLP Residual Downstream Check
+
+A bounded scratch check was run with the fresh reconstructed expert30 selected output:
+
+- Summary JSON:
+  `/tmp/qkv_projection_mlp_residual_artifacts-20260428-validated/comparison_summary.json`.
+- Fresh selected expert outputs:
+  `/tmp/qkv_projection_mlp_residual_artifacts-20260428-validated/fresh_selected_expert_outputs.json`.
+- Fresh weighted expert sum:
+  `/tmp/qkv_projection_mlp_residual_artifacts-20260428-validated/fresh_weighted_expert_sum.json`.
+- Hidden state after MLP residual add:
+  `/tmp/qkv_projection_mlp_residual_artifacts-20260428-validated/custom_hidden_after_mlp_residual_add.json`.
+- Boundary:
+  `layer0_final_token_hidden_state_after_mlp_residual_add`.
+- Official weighted-sum oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json`.
+- Official MLP residual oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json`.
+
+Policy:
+
+- Replace rank `1` / expert `30` in the selected-output matrix with the fresh local expert30
+  reconstruction.
+- Compute weighted expert sum with BF16 tensor `einsum` semantics.
+- Compute residual add as BF16 post-attention residual input plus BF16 MLP weighted sum, with BF16
+  output.
+
+Weighted expert sum metric:
+
+- `max_abs_diff=0.0`.
+- `mean_abs_diff=0.0`.
+- `mismatches=0`.
+
+Classification: `mlp_residual_after_fresh_weighted_sum_matches_oracle`.
+
+MLP residual metric:
+
+- `max_abs_diff=0.0`.
+- `mean_abs_diff=0.0`.
+- `mismatches=0`.
+
+Conclusion:
+
+- With fresh expert30 reconstruction, the selected expert path clears the weighted expert sum and
+  final layer0 MLP residual-add boundary exactly.
+- The custom/decomposed validation chain now reaches the full layer0 final-token output exactly:
+  Q/K raw-QK, V weighted-sum, attention o-proj, attention residual, MLP norm, router/top-k,
+  selected expert reconstruction, weighted expert sum, and MLP residual add.
+- This is still validation-only. No runtime behavior changed, no MLP/projection routing was added,
+  and no raw `/tmp` or `.live` artifacts are committed.
 
 Current decision:
 
