@@ -1,10 +1,11 @@
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use half::{bf16, f16};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Parser)]
@@ -84,6 +85,18 @@ struct Cli {
     /// Official attention residual-add oracle artifact.
     #[arg(long)]
     attention_residual_oracle: Option<PathBuf>,
+
+    /// Attention residual artifact for MLP norm validation.
+    #[arg(long)]
+    attention_residual: Option<PathBuf>,
+
+    /// Official MLP norm output oracle artifact.
+    #[arg(long)]
+    mlp_norm_oracle: Option<PathBuf>,
+
+    /// Local model/checkpoint directory for validation-only tensor loading.
+    #[arg(long)]
+    model: Option<PathBuf>,
 
     /// Token count for K RoPE validation.
     #[arg(long, default_value_t = 74)]
@@ -168,6 +181,7 @@ enum Mode {
     AttentionOproj,
     AttentionOprojPolicy,
     AttentionResidual,
+    MlpNorm,
 }
 
 #[derive(Debug, Serialize)]
@@ -409,6 +423,35 @@ struct AttentionResidualStatus {
     next_bounded_step: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct MlpNormStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    input_source: &'static str,
+    norm_policy: &'static str,
+    epsilon: f32,
+    attention_residual: TensorArtifactStatus,
+    mlp_norm_oracle: TensorArtifactStatus,
+    weight_source: Option<ModelTensorStatus>,
+    metrics: Option<HiddenComparisonStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelTensorStatus {
+    model_path: String,
+    shard_path: String,
+    tensor_name: String,
+    dtype: String,
+    shape: Vec<usize>,
+    value_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AttentionOprojVariantStatus {
     name: &'static str,
@@ -598,6 +641,7 @@ fn main() -> Result<()> {
         Mode::AttentionOproj => run_attention_oproj(&cli),
         Mode::AttentionOprojPolicy => run_attention_oproj_policy(&cli),
         Mode::AttentionResidual => run_attention_residual(&cli),
+        Mode::MlpNorm => run_mlp_norm(&cli),
     }
 }
 
@@ -1114,6 +1158,17 @@ fn attention_oproj_input_source(path: &Path) -> &'static str {
     }
 }
 
+fn mlp_norm_input_source(path: &Path) -> &'static str {
+    let display = path.display().to_string();
+    if display.contains("hidden-state-after-attention-residual-add-before-mlp")
+        || display.contains("attention-residual-add-before-mlp")
+    {
+        "official_attention_residual_oracle_because_prior_mode_exact"
+    } else {
+        "validation_attention_residual_output"
+    }
+}
+
 fn run_attention_oproj_policy(cli: &Cli) -> Result<()> {
     let weighted_v = required_path(&cli.weighted_v, "weighted V")?;
     let oproj_weight = required_path(&cli.oproj_weight, "oproj weight")?;
@@ -1355,6 +1410,105 @@ fn run_attention_residual(cli: &Cli) -> Result<()> {
         attention_residual_oracle: residual_oracle_status,
         o_proj_metric,
         residual_metric,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_mlp_norm(cli: &Cli) -> Result<()> {
+    let attention_residual = required_path(&cli.attention_residual, "attention residual")?;
+    let mlp_norm_oracle = required_path(&cli.mlp_norm_oracle, "MLP norm oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(attention_residual, "attention residual")?;
+    validate_path(mlp_norm_oracle, "MLP norm oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let (attention_status, attention_values) = load_tensor_artifact(
+        attention_residual,
+        &[hidden, cli.token_count * hidden],
+        &["values", "layer0_attn_norm_input_f32"],
+    )?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(mlp_norm_oracle, &[hidden], &["values"])?;
+    let weight_result = load_model_tensor_f32(
+        model,
+        &[
+            "model.layers.0.post_attention_layernorm.weight",
+            "model.layers.0.mlp.norm.weight",
+            "block.0.mlp.norm.scale",
+            "post_attention_layernorm.weight",
+        ],
+    );
+
+    let (classification, metrics, weight_source, blocker) =
+        match (attention_status.shape_or_count_matched, oracle_status.shape_or_count_matched, weight_result) {
+            (true, true, Ok((weight_source, weight_values))) if weight_values.len() == hidden => {
+                let residual_final_token = if attention_values.len() == cli.token_count * hidden {
+                    let start = cli.final_token_index * hidden;
+                    attention_values[start..start + hidden].to_vec()
+                } else {
+                    attention_values.clone()
+                };
+                let output = compute_mlp_rms_norm(&residual_final_token, &weight_values, 1e-5);
+                let metrics = compare_hidden(&output, &oracle_values);
+                let classification = if metrics.metrics.mismatches == 0 {
+                    "layer0_validation_mlp_norm_matches_oracle"
+                } else {
+                    "layer0_validation_mlp_norm_mismatch"
+                };
+                (classification, Some(metrics), Some(weight_source), None)
+            }
+            (_, _, Err(_)) => (
+                "layer0_validation_mlp_norm_blocked_by_artifacts",
+                None,
+                None,
+                Some(Blocker {
+                    kind: "mlp_norm_weight",
+                    detail: "could not load a supported layer0 MLP/post-attention norm weight tensor from --model",
+                }),
+            ),
+            _ => (
+                "layer0_validation_mlp_norm_blocked_by_artifacts",
+                None,
+                None,
+                Some(Blocker {
+                    kind: "mlp_norm_artifacts",
+                    detail: "attention residual input or MLP norm oracle did not expose supported values or expected counts",
+                }),
+            ),
+        };
+
+    let next_bounded_step = match classification {
+        "layer0_validation_mlp_norm_matches_oracle" => {
+            "extend validation-runtime path to router logits and top-k"
+        }
+        "layer0_validation_mlp_norm_mismatch" => {
+            "localize RMSNorm reduction, scale dtype, or BF16 output boundary policy"
+        }
+        _ => "resolve the reported MLP norm validation blocker",
+    };
+
+    let status = MlpNormStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "mlp-norm",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        input_source: mlp_norm_input_source(attention_residual),
+        norm_policy: "bf16_input_fp32_rms_reduction_x_times_inverse_rms_then_scale_bf16_output",
+        epsilon: 1e-5,
+        attention_residual: attention_status,
+        mlp_norm_oracle: oracle_status,
+        weight_source,
+        metrics,
         blocker,
         next_bounded_step,
     };
@@ -2059,6 +2213,150 @@ fn write_json<T: Serialize>(output: &Path, status: &T) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct SafetensorEntry {
+    dtype: String,
+    shape: Vec<usize>,
+    data_offsets: [usize; 2],
+}
+
+fn load_model_tensor_f32(
+    model_path: &Path,
+    candidate_names: &[&str],
+) -> Result<(ModelTensorStatus, Vec<f32>)> {
+    let mut shards = if model_path.is_file() {
+        vec![model_path.to_path_buf()]
+    } else {
+        let mut paths = fs::read_dir(model_path)
+            .with_context(|| format!("failed to read model directory {}", model_path.display()))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    anyhow::ensure!(
+        !shards.is_empty(),
+        "no safetensors shards found in {}",
+        model_path.display()
+    );
+
+    for shard in shards.drain(..) {
+        if let Some(result) = try_load_tensor_from_safetensors(&shard, candidate_names)
+            .with_context(|| format!("failed to inspect {}", shard.display()))?
+        {
+            let (tensor_name, entry, values) = result;
+            let status = ModelTensorStatus {
+                model_path: model_path.display().to_string(),
+                shard_path: shard.display().to_string(),
+                tensor_name,
+                dtype: entry.dtype,
+                shape: entry.shape,
+                value_count: values.len(),
+            };
+            return Ok((status, values));
+        }
+    }
+
+    anyhow::bail!(
+        "none of {:?} found in {}",
+        candidate_names,
+        model_path.display()
+    )
+}
+
+fn try_load_tensor_from_safetensors(
+    shard: &Path,
+    candidate_names: &[&str],
+) -> Result<Option<(String, SafetensorEntry, Vec<f32>)>> {
+    let mut file =
+        fs::File::open(shard).with_context(|| format!("failed to open {}", shard.display()))?;
+    let mut len_bytes = [0u8; 8];
+    file.read_exact(&mut len_bytes).with_context(|| {
+        format!(
+            "failed to read safetensors header length from {}",
+            shard.display()
+        )
+    })?;
+    let header_len = u64::from_le_bytes(len_bytes) as usize;
+    let mut header_bytes = vec![0u8; header_len];
+    file.read_exact(&mut header_bytes)
+        .with_context(|| format!("failed to read safetensors header from {}", shard.display()))?;
+    let header: serde_json::Map<String, Value> = serde_json::from_slice(&header_bytes)
+        .with_context(|| {
+            format!(
+                "failed to parse safetensors header from {}",
+                shard.display()
+            )
+        })?;
+    let data_start = 8u64 + header_len as u64;
+
+    for name in candidate_names {
+        if let Some(value) = header.get(*name) {
+            let entry: SafetensorEntry = serde_json::from_value(value.clone())
+                .with_context(|| format!("failed to parse tensor metadata for {}", name))?;
+            let byte_len = entry.data_offsets[1] - entry.data_offsets[0];
+            let mut bytes = vec![0u8; byte_len];
+            file.seek(SeekFrom::Start(data_start + entry.data_offsets[0] as u64))
+                .with_context(|| {
+                    format!("failed to seek to tensor {} in {}", name, shard.display())
+                })?;
+            file.read_exact(&mut bytes).with_context(|| {
+                format!("failed to read tensor {} from {}", name, shard.display())
+            })?;
+            let numel = entry.shape.iter().product::<usize>();
+            let values = convert_safetensor_values_to_f32(&bytes, &entry.dtype, numel, name)?;
+            return Ok(Some(((*name).to_string(), entry, values)));
+        }
+    }
+
+    Ok(None)
+}
+
+fn convert_safetensor_values_to_f32(
+    bytes: &[u8],
+    dtype: &str,
+    numel: usize,
+    tensor_name: &str,
+) -> Result<Vec<f32>> {
+    match dtype {
+        "F32" => {
+            anyhow::ensure!(
+                bytes.len() == numel * 4,
+                "{} F32 byte count mismatch",
+                tensor_name
+            );
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect())
+        }
+        "F16" => {
+            anyhow::ensure!(
+                bytes.len() == numel * 2,
+                "{} F16 byte count mismatch",
+                tensor_name
+            );
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|chunk| f16::from_bits(u16::from_le_bytes([chunk[0], chunk[1]])).to_f32())
+                .collect())
+        }
+        "BF16" => {
+            anyhow::ensure!(
+                bytes.len() == numel * 2,
+                "{} BF16 byte count mismatch",
+                tensor_name
+            );
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|chunk| bf16::from_bits(u16::from_le_bytes([chunk[0], chunk[1]])).to_f32())
+                .collect())
+        }
+        _ => anyhow::bail!("unsupported dtype {} for {}", dtype, tensor_name),
+    }
+}
+
 fn load_k_artifact(
     path: &Path,
     expected_count: usize,
@@ -2598,6 +2896,21 @@ fn compute_attention_residual(residual_input: &[f32], oproj_output: &[f32]) -> V
         .iter()
         .zip(oproj_output.iter())
         .map(|(residual, oproj)| round_bf16(round_bf16(*residual) + round_bf16(*oproj)))
+        .collect()
+}
+
+fn compute_mlp_rms_norm(input: &[f32], weight: &[f32], epsilon: f32) -> Vec<f32> {
+    let mut square_sum = 0.0f32;
+    for value in input {
+        let x = round_bf16(*value);
+        square_sum += x * x;
+    }
+    let mean_square = square_sum / input.len().max(1) as f32;
+    let inverse_rms = 1.0f32 / (mean_square + epsilon).sqrt();
+    input
+        .iter()
+        .zip(weight.iter())
+        .map(|(x, scale)| round_bf16(round_bf16(*x) * inverse_rms * *scale))
         .collect()
 }
 

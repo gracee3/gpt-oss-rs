@@ -870,6 +870,58 @@ Recommended next bounded step:
 
 Extend the validation-runtime path to MLP norm.
 
+## MLP Norm Validation Status
+
+Submode added:
+
+- `--mode mlp-norm`
+
+Target seam:
+
+```text
+layer0_final_token_mlp_norm_output_before_mlp_projections
+```
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| attention residual input | official attention-residual oracle, accepted because `--mode attention-residual` matched this boundary exactly |
+| MLP norm weight | `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors` |
+| MLP norm tensor name | `model.layers.0.post_attention_layernorm.weight` |
+| MLP norm oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json` |
+
+Policy:
+
+- Input is rounded to the BF16 attention-residual boundary.
+- RMS reduction computes `mean(x*x)` in f32 over hidden size `2880`.
+- Epsilon is `1e-5`.
+- Operation order is `x * inverse_rms` then scale.
+- Output is BF16.
+
+Current classification:
+
+```text
+layer0_validation_mlp_norm_matches_oracle
+```
+
+Metrics:
+
+| comparison | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| MLP norm output before projections vs official | `0` | `0` | `0` |
+
+Conclusion:
+
+- The validation-runtime path now clears the layer0 final-token MLP norm
+  boundary exactly after the exact attention residual boundary.
+- The mode uses a narrow local safetensors reader for this validation tensor
+  only; it does not change model-runner loading or production runtime behavior.
+
+Recommended next bounded step:
+
+Extend the validation-runtime path to router logits and top-k routing.
+
 ## Validation Commands
 
 For the skeleton slice:
