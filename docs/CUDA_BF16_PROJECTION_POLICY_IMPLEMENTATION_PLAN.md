@@ -688,21 +688,34 @@ Pinned Q harness result using the module/F.linear oracle:
 - Latency:
   current BF16 `0.069368 ms`; pedantic BF16 `0.3861728 ms`.
 
-Q/K/V validation matrix:
+## Q/K/V Validation Matrix Summary
 
-| Projection | Bias | Pedantic pre-bias vs CPU BF16 replay | Pedantic post-bias vs oracle | Interpretation |
-| --- | --- | --- | --- | --- |
-| K | No | Exact | Six BF16 replay-vs-oracle lanes remain | Pedantic is calibrated to CPU BF16 replay, not fully to oneDNN oracle. |
-| V | Yes | Exact | `11366` mismatches | V exposes fused-linear/bias-backend contract not reproduced by decomposed bias variants. |
-| Q | Yes | Exact | `88227` mismatches | Q follows the V pattern at larger scale; pre-bias GEMM is calibrated, post-bias/module oracle is not. |
+The validation-only harness now covers K, V, and Q with the current BF16 tensor-op policy and the
+scoped `cublas-pedantic` BF16 policy. All results below use explicit local artifact paths; no raw
+artifacts are committed.
 
-Conclusion:
+| Projection | Bias? | Current BF16 vs oracle | Pedantic BF16 vs oracle | Pedantic vs CPU BF16 replay | CPU BF16 replay vs oracle | Current latency | Pedantic latency | Conclusion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| K | No | `max=0.5`, `mismatches=12729` | `max=0.0078125`, `mismatches=6` | Exact match | Six BF16 replay-vs-oracle lanes remain | `~0.0158 ms` | `~0.29-0.33 ms` | Pedantic calibrates K to CPU BF16 replay, but not exactly to the oneDNN/PyTorch oracle. |
+| V | Yes | `max=0.03125`, `mean=0.0018099253065884113`, `mismatches=17446` | `max=0.03125`, `mean=0.0012496220879256725`, `mismatches=11366` | Pre-bias exact; post-bias `max=0.03125`, `mismatches=11368` | `max=0.015625`, `mean=7.029975108707731e-7`, `mismatches=15` | `~0.0158 ms` | `~0.35 ms` | V exposes a module/F.linear fused-backend bias/output contract gap after calibrated pre-bias GEMM. |
+| Q | Yes | `max=0.0625`, `mean=0.0010602121474221349`, `mismatches=107138` | `max=0.0625`, `mean=0.0008867621072567999`, `mismatches=88227` | Pre-bias exact; post-bias `max=0.0625`, `mismatches=88214` | `max=0.00390625`, `mean=2.185926462061616e-7`, `mismatches=92` | `0.069368 ms` | `0.3861728 ms` | Q follows the V pattern at larger scale: calibrated pre-bias GEMM, unresolved module/F.linear post-bias oracle contract. |
 
-- Pedantic BF16 is a useful validation discriminator for pre-bias Q/K/V GEMM behavior.
-- Pedantic BF16 is not a production policy candidate as-is: it is slower and does not reproduce
-  the module/F.linear post-bias oracle for bias-bearing Q/V.
-- Do not add new candidate policies or production routing until the Q/K/V matrix is summarized
-  and the next validation question is chosen explicitly.
+Design conclusion:
+
+- Pedantic BF16 is useful as a validation/pre-bias replay proxy for Q/K/V GEMM behavior.
+- Pedantic BF16 is much slower than current tensor-op BF16 for these shapes.
+- Pedantic BF16 does not reproduce the official module/F.linear post-bias oracle for Q/V.
+- The remaining oracle gap appears to be the fused backend/module linear contract, especially
+  post-bias/output rounding for biased projections.
+- Pedantic BF16 should not be production-routed.
+- No production Q/K/V projection policy should be promoted from the current validation findings.
+
+Recommended next design step:
+
+- Investigate a module/F.linear-equivalent biased projection validation policy, including epilogue
+  and output-rounding semantics, before any runtime projection routing.
+- In parallel, define production acceptance criteria: whether top-k/logit-order parity is
+  sufficient for production while exact full-logit oracle parity remains a validation-only target.
 
 Commit 3:
 
@@ -735,6 +748,8 @@ Commit 4:
 
 ## Next Bounded Step
 
-Summarize the Q/K/V projection-policy matrix before adding any new candidate policy. Keep the
-harness validation-only, with no production routing and no CUDA kernel changes unless a candidate
-policy is explicitly approved later.
+Choose the next design question before adding any new candidate policy: either investigate a
+module/F.linear-equivalent biased projection validation policy, or define whether top-k/logit-order
+parity is an acceptable production criterion while exact full-logit oracle parity remains
+validation-only. Keep the harness validation-only, with no production routing and no CUDA kernel
+changes unless a candidate policy is explicitly approved later.
