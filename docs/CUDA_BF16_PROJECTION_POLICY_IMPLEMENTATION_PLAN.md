@@ -373,13 +373,40 @@ Boundaries:
 - No CUDA kernels changed.
 - No cuBLAS math-mode or atomics-mode changes were added.
 - No pedantic/no-tensor-op behavior was introduced.
-- `qkv_projection_policy_compare` has not yet been wired to execute the BF16 baseline.
+- `qkv_projection_policy_compare` now wires this API only for explicit K baseline validation.
+
+## K BF16 CUDA Baseline Status
+
+`qkv_projection_policy_compare` now supports:
+
+```bash
+--execute --projection k --policy current --storage-dtype bf16
+```
+
+Current behavior:
+
+- Loads norm input, K weight, and K oracle JSON values only for explicit K execution.
+- Converts norm input and K weight values to `half::bf16` before CUDA upload.
+- Runs `K_out [74, 512] = norm_input [74, 2880] x K_weight [512, 2880]^T` through
+  `CublasHandle::bf16_gemm_into`.
+- Downloads BF16 output and widens to f32 for comparison.
+- Compares BF16 CUDA output against the K oracle and against the CPU BF16 replay.
+- Includes CPU BF16 replay vs oracle metrics in the same status artifact.
+
+Boundaries:
+
+- Validation-only; no runtime projection routing changed.
+- No CUDA kernels changed.
+- No pedantic/no-tensor-op candidate policy was added.
+- Q and V CUDA BF16 comparisons remain unimplemented.
+
+The result determines whether current BF16 tensor-op GEMM matches the oneDNN oracle, matches the
+legacy BF16 helper contract, or needs more contract reconciliation before any candidate policy work.
 
 Next bounded step:
 
-- Wire `qkv_projection_policy_compare --execute --projection k --policy current --storage-dtype
-  bf16` to `CublasHandle::bf16_gemm_into` for a K-only BF16 CUDA baseline comparison against the
-  CPU BF16 replay and oneDNN oracle.
+- Use the BF16 K baseline result to decide whether to extend current-baseline comparison to Q/V or
+  design a K-only candidate policy comparison.
 
 Commit 3:
 

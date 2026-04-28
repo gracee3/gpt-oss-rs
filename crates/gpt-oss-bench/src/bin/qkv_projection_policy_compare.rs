@@ -46,6 +46,9 @@ struct Cli {
     #[arg(long, default_value = "all")]
     projection: String,
 
+    #[arg(long, default_value = "f16", value_parser = ["f16", "bf16"])]
+    storage_dtype: String,
+
     #[arg(long)]
     execute: bool,
 
@@ -61,6 +64,7 @@ struct Status {
     runtime_behavior_changed: bool,
     projection_execution: bool,
     projection: String,
+    storage_dtype: String,
     artifact_metadata_loaded: bool,
     policies_requested: Vec<String>,
     inputs: Inputs,
@@ -161,6 +165,7 @@ fn main() -> Result<()> {
         runtime_behavior_changed: false,
         projection_execution,
         projection: cli.projection.clone(),
+        storage_dtype: cli.storage_dtype.clone(),
         artifact_metadata_loaded,
         policies_requested,
         inputs: Inputs {
@@ -369,8 +374,13 @@ struct ExecutionResult {
 
 fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
     if cli.projection != "k" {
+        let classification = if cli.storage_dtype == "bf16" {
+            "qkv_projection_policy_compare_k_bf16_cuda_projection_not_implemented"
+        } else {
+            "qkv_projection_policy_compare_projection_not_implemented"
+        };
         return Ok(ExecutionResult {
-            classification: "qkv_projection_policy_compare_projection_not_implemented",
+            classification,
             projection_execution: false,
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
@@ -381,8 +391,13 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
     }
 
     if policies != ["current"] {
+        let classification = if cli.storage_dtype == "bf16" {
+            "qkv_projection_policy_compare_k_bf16_cuda_policy_not_implemented"
+        } else {
+            "qkv_projection_policy_compare_policy_not_implemented"
+        };
         return Ok(ExecutionResult {
-            classification: "qkv_projection_policy_compare_policy_not_implemented",
+            classification,
             projection_execution: false,
             comparisons: Vec::new(),
             latency: BTreeMap::new(),
@@ -397,9 +412,32 @@ fn run_execution(cli: &Cli, policies: &[String]) -> Result<ExecutionResult> {
 
 #[cfg(feature = "cuda")]
 fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
-    let norm = load_values(&cli.norm_input, M * HIDDEN, "norm_input")?;
-    let k_weight = load_values(&cli.k_weight, KV_OUT * HIDDEN, "k_weight")?;
-    let k_oracle = load_values(&cli.k_oracle, M * KV_OUT, "k_oracle")?;
+    if cli.storage_dtype == "bf16" {
+        return run_current_k_bf16(cli);
+    }
+    run_current_k_f16(cli)
+}
+
+#[cfg(feature = "cuda")]
+fn run_current_k_f16(cli: &Cli) -> Result<ExecutionResult> {
+    let norm = load_values(
+        &cli.norm_input,
+        M * HIDDEN,
+        "norm_input",
+        "qkv_projection_policy_compare_k_current_blocked_by_artifact_values",
+    )?;
+    let k_weight = load_values(
+        &cli.k_weight,
+        KV_OUT * HIDDEN,
+        "k_weight",
+        "qkv_projection_policy_compare_k_current_blocked_by_artifact_values",
+    )?;
+    let k_oracle = load_values(
+        &cli.k_oracle,
+        M * KV_OUT,
+        "k_oracle",
+        "qkv_projection_policy_compare_k_current_blocked_by_artifact_values",
+    )?;
 
     let norm_f16 = to_f16_values(&norm);
     let k_weight_f16 = to_f16_values(&k_weight);
@@ -626,6 +664,196 @@ fn run_current_k(cli: &Cli) -> Result<ExecutionResult> {
     })
 }
 
+#[cfg(feature = "cuda")]
+fn run_current_k_bf16(cli: &Cli) -> Result<ExecutionResult> {
+    let norm = load_values(
+        &cli.norm_input,
+        M * HIDDEN,
+        "norm_input",
+        "qkv_projection_policy_compare_k_bf16_cuda_blocked_by_artifact_values",
+    )?;
+    let k_weight = load_values(
+        &cli.k_weight,
+        KV_OUT * HIDDEN,
+        "k_weight",
+        "qkv_projection_policy_compare_k_bf16_cuda_blocked_by_artifact_values",
+    )?;
+    let k_oracle = load_values(
+        &cli.k_oracle,
+        M * KV_OUT,
+        "k_oracle",
+        "qkv_projection_policy_compare_k_bf16_cuda_blocked_by_artifact_values",
+    )?;
+
+    let norm_bf16 = to_bf16_values(&norm);
+    let k_weight_bf16 = to_bf16_values(&k_weight);
+
+    let context = gpt_oss_gpu::CudaContext::new(0)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; CUDA context init failed: {err}"))?;
+    let stream = context
+        .new_stream()
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; CUDA stream init failed: {err}"))?;
+    let blas = gpt_oss_gpu::cublas::CublasHandle::new(stream.clone())
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; cuBLAS handle init failed: {err}"))?;
+
+    let norm_gpu = stream
+        .clone_htod(&norm_bf16)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; norm input upload failed: {err}"))?;
+    let k_weight_gpu = stream
+        .clone_htod(&k_weight_bf16)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; K weight upload failed: {err}"))?;
+    let mut output_gpu = stream
+        .alloc_zeros::<half::bf16>(M * KV_OUT)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output allocation failed: {err}"))?;
+
+    let warmup_iters = 3usize;
+    let timed_iters = 10usize;
+    for _ in 0..warmup_iters {
+        blas.bf16_gemm_into(
+            M,
+            KV_OUT,
+            HIDDEN,
+            1.0,
+            &norm_gpu,
+            &k_weight_gpu,
+            0.0,
+            &mut output_gpu,
+        )
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM warmup failed: {err}"))?;
+    }
+    stream
+        .synchronize()
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; warmup synchronize failed: {err}"))?;
+
+    let start = Instant::now();
+    for _ in 0..timed_iters {
+        blas.bf16_gemm_into(
+            M,
+            KV_OUT,
+            HIDDEN,
+            1.0,
+            &norm_gpu,
+            &k_weight_gpu,
+            0.0,
+            &mut output_gpu,
+        )
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; current K BF16 GEMM timed run failed: {err}"))?;
+    }
+    stream
+        .synchronize()
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; timed synchronize failed: {err}"))?;
+    let mean_ms = start.elapsed().as_secs_f64() * 1000.0 / timed_iters as f64;
+
+    let output_bf16 = stream
+        .clone_dtoh(&output_gpu)
+        .map_err(|err| anyhow::anyhow!("classification=qkv_projection_policy_compare_k_bf16_cuda_execution_failed; output download failed: {err}"))?;
+    let output: Vec<f32> = output_bf16.iter().map(|value| value.to_f32()).collect();
+
+    let cpu_bf16 = cpu_k_projection(
+        &norm,
+        &k_weight,
+        RoundingPolicy::BFloat16,
+        WeightLayout::RowMajor,
+    );
+    let cuda_vs_oracle = compare_outputs(&output, &k_oracle);
+    let cuda_vs_cpu_bf16 = compare_outputs(&output, &cpu_bf16);
+    let cpu_bf16_vs_oracle = compare_outputs(&cpu_bf16, &k_oracle);
+
+    let classification =
+        classify_k_bf16_contract(&cuda_vs_oracle, &cuda_vs_cpu_bf16, &cpu_bf16_vs_oracle);
+    let next_bounded_step = if classification
+        == "qkv_projection_policy_compare_k_bf16_cuda_matches_oracle"
+    {
+        "implement Q/V current CUDA baseline comparisons"
+    } else if classification
+        == "qkv_projection_policy_compare_k_bf16_cuda_matches_legacy_bf16_contract"
+    {
+        "implement K-only candidate policy comparison, starting with scoped cuBLAS pedantic/no-tensor-op if approved"
+    } else {
+        "reconcile BF16 CUDA helper contract before candidate policy work"
+    };
+
+    let k_contract = json!({
+        "storage_dtype": "bf16",
+        "activation_shape": [M, HIDDEN],
+        "weight_shape": [KV_OUT, HIDDEN],
+        "oracle_shape": [M, KV_OUT],
+        "activation_conversion": "JSON f32 values rounded to BF16 before CUDA upload",
+        "weight_conversion": "JSON f32 values rounded to BF16 before CUDA upload",
+        "bf16_conversion_policy": "half::bf16::from_f32 on JSON f32 values",
+        "cublas_input_dtype": "CUDA_R_16BF via CublasHandle::bf16_gemm_into",
+        "cublas_output_dtype": "CUDA_R_16BF downloaded and widened to f32 for comparison",
+        "compute_dtype": "CUBLAS_COMPUTE_32F",
+        "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
+        "gemm_operation": "norm_input @ k_weight.T",
+        "transa": "CUBLAS_OP_T on K weight in row-major [512, 2880]",
+        "transb": "CUBLAS_OP_N on activation in row-major [74, 2880]",
+        "m": KV_OUT,
+        "n": M,
+        "k": HIDDEN,
+        "logical_m": M,
+        "logical_n": KV_OUT,
+        "lda": HIDDEN,
+        "ldb": HIDDEN,
+        "ldc": KV_OUT,
+        "bias_applied": false,
+        "output_layout": "[token, feature]",
+        "oracle_layout": "[token, feature] flat row-major values loaded from K oracle artifact",
+        "notes": [
+            "This harness uses the public BF16 validation API, not runtime projection routing.",
+            "No K bias is applied in this baseline.",
+            "No pedantic/no-tensor-op cuBLAS policy is used."
+        ]
+    });
+
+    let comparison_value = json!({
+        "projection": "k",
+        "policy": "current",
+        "storage_dtype": "bf16",
+        "shape": [M, KV_OUT],
+        "output_checksum": digest_f32_le(&output),
+        "gemm": {
+            "m": M,
+            "n": KV_OUT,
+            "k": HIDDEN,
+            "operation": "norm_input @ k_weight.T",
+            "backend": "CublasHandle::bf16_gemm_into",
+            "input_dtype": "CUDA_R_16BF",
+            "output_dtype": "CUDA_R_16BF",
+            "compute_dtype": "CUBLAS_COMPUTE_32F",
+            "algorithm": "CUBLAS_GEMM_DEFAULT_TENSOR_OP",
+        },
+        "vs_oracle": cuda_vs_oracle,
+    });
+    let cuda_vs_cpu_bf16_value =
+        comparison_json("cuda_bf16_current_vs_cpu_bf16", &cuda_vs_cpu_bf16);
+    let cpu_bf16_value = replay_json(
+        "cpu_bf16_rounded_inputs_f32_accum_bf16_output",
+        &cpu_bf16,
+        &cpu_bf16_vs_oracle,
+    );
+    let mut latency = BTreeMap::new();
+    latency.insert(
+        "current_k_bf16".to_string(),
+        json!({
+            "available": true,
+            "warmup_iters": warmup_iters,
+            "timed_iters": timed_iters,
+            "mean_ms": mean_ms,
+        }),
+    );
+
+    Ok(ExecutionResult {
+        classification,
+        projection_execution: true,
+        comparisons: vec![comparison_value, cuda_vs_cpu_bf16_value, cpu_bf16_value],
+        latency,
+        k_contract,
+        runtime_forward_reference: load_runtime_forward_reference(),
+        next_bounded_step,
+    })
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_current_k(_cli: &Cli) -> Result<ExecutionResult> {
     Ok(ExecutionResult {
@@ -808,6 +1036,20 @@ fn classify_k_contract(
     }
 }
 
+fn classify_k_bf16_contract(
+    cuda_vs_oracle: &ComparisonMetrics,
+    cuda_vs_cpu_bf16: &ComparisonMetrics,
+    cpu_bf16_vs_oracle: &ComparisonMetrics,
+) -> &'static str {
+    if cuda_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_bf16_cuda_matches_oracle"
+    } else if cuda_vs_cpu_bf16.matched && !cpu_bf16_vs_oracle.matched {
+        "qkv_projection_policy_compare_k_bf16_cuda_matches_legacy_bf16_contract"
+    } else {
+        "qkv_projection_policy_compare_k_bf16_cuda_contract_unmodeled"
+    }
+}
+
 fn load_runtime_forward_reference() -> Value {
     let helper_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-helper-proof-status.json");
     let scoped_path = Path::new("/home/emmy/openai/worktrees/runtime-forward/.live/runtime-forward-layer0-k-consumption-20260423/developer-message.runner-layer0-k-projection-onednn-oracle-scoped-helper-fix-status.json");
@@ -847,26 +1089,28 @@ fn read_json_file(path: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-fn load_values(path: &Path, expected_count: usize, name: &str) -> Result<Vec<f32>> {
+fn load_values(
+    path: &Path,
+    expected_count: usize,
+    name: &str,
+    classification: &str,
+) -> Result<Vec<f32>> {
     let text = std::fs::read_to_string(path).with_context(|| {
         format!(
-            "classification=qkv_projection_policy_compare_k_current_blocked_by_artifact_values; failed to read {name} values from {}",
+            "classification={classification}; failed to read {name} values from {}",
             path.display()
         )
     })?;
-    let json: Value = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "classification=qkv_projection_policy_compare_k_current_blocked_by_artifact_values; {name} is not valid JSON"
-        )
-    })?;
+    let json: Value = serde_json::from_str(&text)
+        .with_context(|| format!("classification={classification}; {name} is not valid JSON"))?;
     let values = find_numeric_values_for_artifact(&json, name).with_context(|| {
         format!(
-            "classification=qkv_projection_policy_compare_k_current_blocked_by_artifact_values; {name} has no supported values/tensor_values/data/output_values/value field"
+            "classification={classification}; {name} has no supported values/tensor_values/data/output_values/value field"
         )
     })?;
     if values.len() != expected_count {
         bail!(
-            "classification=qkv_projection_policy_compare_k_current_blocked_by_artifact_values; {name} value count mismatch: expected {expected_count}, found {}",
+            "classification={classification}; {name} value count mismatch: expected {expected_count}, found {}",
             values.len()
         );
     }
@@ -938,6 +1182,13 @@ fn to_f16_values(values: &[f32]) -> Vec<half::f16> {
     values
         .iter()
         .map(|value| half::f16::from_f32(*value))
+        .collect()
+}
+
+fn to_bf16_values(values: &[f32]) -> Vec<half::bf16> {
+    values
+        .iter()
+        .map(|value| half::bf16::from_f32(*value))
         .collect()
 }
 
