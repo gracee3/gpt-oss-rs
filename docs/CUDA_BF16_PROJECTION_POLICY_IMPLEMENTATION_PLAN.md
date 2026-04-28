@@ -1172,6 +1172,9 @@ module/F.linear comparisons alone:
 - Selected experts:
   selected expert outputs are exact for experts `3`, `11`, and `27`; expert `30` remains an isolated
   small mismatch that matches the known expert30 diagnostic sensitivity.
+- Weighted expert sum:
+  the isolated expert30 selected-output mismatch causes a small weighted-sum mismatch; replacing
+  only expert30 with the official selected output clears the weighted sum exactly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1406,6 +1409,65 @@ Conclusion:
   runtime-forward note that expert30 selected-output capture/readout required special handling.
 - This slice does not import the selected-expert readout correction into integration and does not
   change runtime behavior.
+- The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
+
+### Layer0 Weighted Expert Sum Downstream Check
+
+A bounded scratch check was run for the selected-expert routing-weighted sum before residual:
+
+- Summary JSON:
+  `/tmp/qkv_projection_mlp_weighted_sum_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch output:
+  `/tmp/qkv_projection_mlp_weighted_sum_artifacts-20260428-validated/custom_weighted_expert_sum.json`.
+- Boundary:
+  `layer0_final_token_mlp_output_after_routing_weighted_sum_before_residual`.
+- Selected expert output input:
+  `/tmp/qkv_projection_selected_expert_artifacts-20260428-validated/selected_expert_outputs_custom.json`.
+- Official weighted-sum oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-output-after-routing-weighted-sum-before-residual-status.json`.
+- Official selected expert output source for expert30 replacement diagnostic:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json`.
+
+Selected expert order and routing weights:
+
+- Experts:
+  `[3, 30, 11, 27]`.
+- Routing weights:
+  `[0.4453125, 0.2275390625, 0.189453125, 0.13671875]`.
+
+Policy variants:
+
+| Variant | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| BF16 tensor `einsum` output | `0.00390625` | `1.0595056664897129e-05` | `32` |
+| f32 accumulation then BF16 output | `0.00390625` | `1.0595056664897129e-05` | `32` |
+| sequential BF16-rounded accumulation | `0.25` | `0.0008961528656072915` | `1417` |
+
+Classification: `weighted_expert_sum_after_custom_selected_outputs_mismatch_small`.
+
+Best variant:
+
+- BF16 tensor `einsum` output.
+- Metrics:
+  `max_abs_diff=0.00390625`, `mean_abs_diff=1.0595056664897129e-05`,
+  `mismatches=32`.
+
+Expert30 impact analysis:
+
+- Replacing only rank `1` / expert `30` with the official selected expert output while keeping the
+  other three custom selected outputs clears the weighted sum exactly for BF16 tensor `einsum` and
+  f32-accumulation variants:
+  `max_abs_diff=0.0`, `mean_abs_diff=0.0`, `mismatches=0`.
+- Classification:
+  `expert30_selected_output_mismatch_affects_weighted_sum`.
+
+Conclusion:
+
+- The isolated expert30 selected-output mismatch is causal for the small weighted-sum mismatch.
+- This matches the historical runtime-forward finding that expert30 selected-output capture/readout
+  needed correction before weighted-sum parity.
+- This slice does not import selected-expert readout plumbing into integration and does not change
+  runtime behavior.
 - The downstream chain remains validation-only and no raw `/tmp` or `.live` artifacts are committed.
 
 Current decision:
