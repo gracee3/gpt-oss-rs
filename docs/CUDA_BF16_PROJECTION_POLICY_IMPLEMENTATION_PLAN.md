@@ -1166,6 +1166,9 @@ module/F.linear comparisons alone:
 - MLP norm:
   RMSNorm over the exact hidden state before MLP matched the official MLP norm output before
   projections exactly.
+- Router:
+  BF16 router logits over the exact MLP norm output matched official logits, selected experts, and
+  routing weights exactly.
 - RoPE:
   the earlier large Q/K raw-QK mismatch was caused by an unpinned scratch RoPE generator. It is not a
   projection-policy verdict.
@@ -1287,6 +1290,53 @@ Conclusion:
   exactly for the final token.
 - The downstream validation chain now covers Q/K raw-QK, V weighted-sum, attention o-proj,
   attention residual add, and MLP norm before MLP projections.
+- This remains validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
+  are committed.
+
+### Layer0 MLP Router Downstream Check
+
+A bounded scratch check was run for the first MoE seam after MLP norm:
+
+- Summary JSON:
+  `/tmp/qkv_projection_router_artifacts-20260428-validated/comparison_summary.json`.
+- Scratch output:
+  `/tmp/qkv_projection_router_artifacts-20260428-validated/custom_router_logits.json`.
+- Boundary:
+  `layer0_final_token_mlp_router_logits_before_routing`.
+- Input:
+  `/tmp/qkv_projection_mlp_norm_artifacts-20260428-validated/custom_mlp_norm_output.json`.
+- Router oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-router-logits-before-routing-status.json`.
+- Top-k/routing oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-topk-expert-indices-and-routing-weights-status.json`.
+
+Router policy:
+
+- BF16 MLP norm input.
+- BF16 router weight and bias from the local model checkpoint.
+- BF16 `torch.nn.functional.linear` output.
+
+Classification: `router_logits_after_custom_mlp_norm_matches_oracle`.
+
+Router logits metrics:
+
+- `max_abs_diff=0.0`.
+- `mean_abs_diff=0.0`.
+- `mismatches=0`.
+
+Top-k/routing result:
+
+- Selected experts matched exactly:
+  `[3, 30, 11, 27]`.
+- Routing weights matched exactly:
+  `[0.4453125, 0.2275390625, 0.189453125, 0.13671875]`.
+
+Conclusion:
+
+- The exact custom/decomposed attention chain reaches the layer0 MoE routing decision exactly for
+  the final token.
+- The downstream validation chain now covers Q/K raw-QK, V weighted-sum, attention o-proj,
+  attention residual add, MLP norm, router logits, and top-k/routing weights.
 - This remains validation-only: no runtime behavior changed and no raw `/tmp` or `.live` artifacts
   are committed.
 
