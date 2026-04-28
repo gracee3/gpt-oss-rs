@@ -225,17 +225,21 @@ Current status:
 
 - Validates explicit local artifact paths for norm input, Q/K/V weights, and Q/K/V oracle
   outputs.
-- Emits the planned JSON status/schema with expected Q/K/V shapes.
+- Loads JSON artifact metadata and validates expected norm, Q/K/V weight, and Q/K/V oracle
+  output shapes when shape metadata is present.
+- Records discovered dtype, digest/checksum, and value-count metadata when available.
+- Emits the planned JSON status/schema with expected Q/K/V shapes and per-artifact metadata
+  status.
 - Accepts comma-separated policy names such as `current` and future names like
   `current,cublas-pedantic`.
-- Does not parse full tensor payloads yet.
+- Does not perform numerical tensor comparison yet.
 - Does not execute CUDA projection comparison yet.
 - Does not route or change runtime projection behavior.
 
 Next implementation step:
 
-- Add artifact shape/digest loading and a baseline current CUDA helper comparison while keeping
-  default runtime behavior unchanged.
+- Add baseline current CUDA helper comparison against the loaded artifacts while keeping default
+  runtime behavior unchanged.
 
 Commit 3:
 
@@ -268,6 +272,6 @@ Commit 4:
 
 ## Next Bounded Step
 
-Implement artifact shape/digest loading and baseline current CUDA helper comparison against
-explicit local oracle artifacts. Keep the harness validation-only, with no production routing
-and no CUDA kernel changes unless a candidate policy is explicitly approved later.
+Implement baseline current CUDA helper comparison against explicit local oracle artifacts. Keep
+the harness validation-only, with no production routing and no CUDA kernel changes unless a
+candidate policy is explicitly approved later.
