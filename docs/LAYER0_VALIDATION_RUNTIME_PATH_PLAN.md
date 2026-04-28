@@ -986,6 +986,84 @@ Recommended next bounded step:
 
 Extend the validation-runtime path to selected expert outputs.
 
+## Selected Expert Output Validation Status
+
+Submode added:
+
+- `--mode selected-experts`
+
+Target seam:
+
+```text
+layer0_final_token_selected_expert_outputs_before_routing_weighted_sum
+```
+
+Selected expert rank order:
+
+| rank | expert |
+| ---: | ---: |
+| 0 | `3` |
+| 1 | `30` |
+| 2 | `11` |
+| 3 | `27` |
+
+Inputs for the validation run:
+
+| input | source |
+| --- | --- |
+| MLP norm input | official MLP norm oracle, accepted because `--mode mlp-norm` matched this boundary exactly |
+| selected expert outputs oracle | `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json` |
+| expert tensor source | `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration/model-00000-of-00002.safetensors` |
+
+Detected expert tensors:
+
+| tensor | dtype | shape |
+| --- | --- | --- |
+| `model.layers.0.mlp.experts.gate_up_proj_blocks` | `U8` | `[32,5760,90,16]` |
+| `model.layers.0.mlp.experts.gate_up_proj_scales` | `U8` | `[32,5760,90]` |
+| `model.layers.0.mlp.experts.gate_up_proj_bias` | `BF16` | `[32,5760]` |
+| `model.layers.0.mlp.experts.down_proj_blocks` | `U8` | `[32,2880,90,16]` |
+| `model.layers.0.mlp.experts.down_proj_scales` | `U8` | `[32,2880,90]` |
+| `model.layers.0.mlp.experts.down_proj_bias` | `BF16` | `[32,2880]` |
+
+Expert formula recorded for the eventual replay:
+
+- `mlp1` fused output shape is `[5760]`.
+- Gate slice is `values[0::2]`; up/value slice is `values[1::2]`.
+- Clamp policy is gate max `7.0`, up min `-7.0`, up max `7.0`.
+- SwiGLU is `gate * sigmoid(1.702 * gate) * (up + 1)`.
+- Selected expert output boundary is BF16.
+
+Current classification:
+
+```text
+layer0_validation_selected_experts_blocked_by_mxfp4_loader_api
+```
+
+Metrics:
+
+| comparison | result |
+| --- | --- |
+| selected expert outputs vs official | not run, blocked before replay |
+| per-rank metrics | not run |
+| expert30 fresh replay | not run |
+
+Conclusion:
+
+- The validation mode now validates the selected expert input/oracle paths and
+  records the actual checkpoint expert tensor layout.
+- The checkpoint stores expert weights as MXFP4 `U8` blocks/scales plus BF16
+  biases. The bench path currently has no narrow validation dequantization and
+  selected-expert replay API, so the mode stops before arithmetic rather than
+  importing proof/debug plumbing or reusing stale selected-output artifacts.
+- Production runtime behavior remains unchanged.
+
+Recommended next bounded step:
+
+Extract a narrow validation-only MXFP4 selected-expert loader/replay helper that
+uses existing model-runner semantics, then rerun `--mode selected-experts` for
+fresh experts `[3, 30, 11, 27]`.
+
 ## Validation Commands
 
 For the skeleton slice:

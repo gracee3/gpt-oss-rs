@@ -106,6 +106,14 @@ struct Cli {
     #[arg(long)]
     topk_routing_oracle: Option<PathBuf>,
 
+    /// Official selected expert outputs oracle artifact.
+    #[arg(long)]
+    selected_experts_oracle: Option<PathBuf>,
+
+    /// Selected expert ids in rank order.
+    #[arg(long, default_value = "3,30,11,27")]
+    selected_experts: String,
+
     /// Local model/checkpoint directory for validation-only tensor loading.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -195,6 +203,7 @@ enum Mode {
     AttentionResidual,
     MlpNorm,
     Router,
+    SelectedExperts,
 }
 
 #[derive(Debug, Serialize)]
@@ -476,6 +485,82 @@ struct RouterStatus {
     next_bounded_step: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct SelectedExpertsStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    selected_experts: Vec<usize>,
+    input_source: &'static str,
+    mlp_norm: TensorArtifactStatus,
+    selected_experts_oracle: TensorArtifactStatus,
+    tensor_sources: SelectedExpertTensorSources,
+    expert_formula: ExpertFormulaStatus,
+    overall_metric: Option<SelectedExpertsComparisonStatus>,
+    per_rank_metrics: Vec<SelectedExpertRankMetric>,
+    expert30_internal_guard: Option<Value>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertTensorSources {
+    gate_up_proj_blocks: Option<ModelTensorStatus>,
+    gate_up_proj_scales: Option<ModelTensorStatus>,
+    gate_up_proj_bias: Option<ModelTensorStatus>,
+    down_proj_blocks: Option<ModelTensorStatus>,
+    down_proj_scales: Option<ModelTensorStatus>,
+    down_proj_bias: Option<ModelTensorStatus>,
+    loader_status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ExpertFormulaStatus {
+    mlp1_fused_output_shape: [usize; 1],
+    gate_slice: &'static str,
+    up_slice: &'static str,
+    gate_clamp_max: f32,
+    up_clamp_min: f32,
+    up_clamp_max: f32,
+    sigmoid_scale: f32,
+    swiglu: &'static str,
+    output_dtype: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertsComparisonStatus {
+    metrics: SelectedExpertsMetrics,
+    first_mismatch: Option<SelectedExpertsDiff>,
+    worst_mismatch: Option<SelectedExpertsDiff>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertsMetrics {
+    max_abs_diff: f32,
+    mean_abs_diff: f32,
+    mismatches: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertsDiff {
+    rank: usize,
+    expert: usize,
+    hidden_lane: usize,
+    actual: f32,
+    expected: f32,
+    abs_diff: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertRankMetric {
+    rank: usize,
+    expert: usize,
+    metrics: Option<SelectedExpertsMetrics>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct TopkStatus {
     selected_experts_local: Vec<i64>,
@@ -688,6 +773,7 @@ fn main() -> Result<()> {
         Mode::AttentionResidual => run_attention_residual(&cli),
         Mode::MlpNorm => run_mlp_norm(&cli),
         Mode::Router => run_router(&cli),
+        Mode::SelectedExperts => run_selected_experts(&cli),
     }
 }
 
@@ -1713,6 +1799,145 @@ fn run_router(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_selected_experts(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let hidden = 2880usize;
+    let selected_count = selected_experts.len();
+    let (mlp_norm_status, _mlp_norm_values) =
+        load_tensor_artifact(mlp_norm, &[hidden], &["values"])?;
+    let (oracle_status, _oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+
+    let gate_up_proj_blocks =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.gate_up_proj_blocks"]).ok();
+    let gate_up_proj_scales =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.gate_up_proj_scales"]).ok();
+    let gate_up_proj_bias =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.gate_up_proj_bias"]).ok();
+    let down_proj_blocks =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.down_proj_blocks"]).ok();
+    let down_proj_scales =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.down_proj_scales"]).ok();
+    let down_proj_bias =
+        find_model_tensor_status(model, &["model.layers.0.mlp.experts.down_proj_bias"]).ok();
+
+    let mx_fp4_sources = [
+        gate_up_proj_blocks.as_ref(),
+        gate_up_proj_scales.as_ref(),
+        down_proj_blocks.as_ref(),
+        down_proj_scales.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|source| source.dtype == "U8");
+
+    let missing_required_sources = gate_up_proj_blocks.is_none()
+        || gate_up_proj_scales.is_none()
+        || gate_up_proj_bias.is_none()
+        || down_proj_blocks.is_none()
+        || down_proj_scales.is_none()
+        || down_proj_bias.is_none();
+    let artifact_blocked =
+        !mlp_norm_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+
+    let (classification, blocker, loader_status, next_bounded_step) = if artifact_blocked {
+        (
+            "layer0_validation_selected_experts_blocked_by_artifacts",
+            Some(Blocker {
+                kind: "selected_expert_artifacts",
+                detail: "MLP norm input or selected expert oracle did not expose supported values or expected counts",
+            }),
+            "not_reached",
+            "resolve the reported selected expert artifact blocker",
+        )
+    } else if missing_required_sources {
+        (
+            "layer0_validation_selected_experts_blocked_by_artifacts",
+            Some(Blocker {
+                kind: "selected_expert_tensors",
+                detail: "could not find the complete layer0 expert tensor set in --model",
+            }),
+            "missing_required_tensors",
+            "resolve the reported selected expert tensor source blocker",
+        )
+    } else if mx_fp4_sources {
+        (
+            "layer0_validation_selected_experts_blocked_by_mxfp4_loader_api",
+            Some(Blocker {
+                kind: "mxfp4_loader_api",
+                detail: "layer0 expert weights are MXFP4 U8 blocks/scales, and this validation binary does not yet expose a narrow dequantized selected-expert replay helper",
+            }),
+            "mxfp4_blocks_scales_detected_no_clean_validation_dequant_api",
+            "extract a narrow validation MXFP4 selected-expert loader/replay helper without importing proof/debug plumbing",
+        )
+    } else {
+        (
+            "layer0_validation_selected_experts_blocked_by_artifacts",
+            Some(Blocker {
+                kind: "unsupported_dense_expert_replay",
+                detail: "expert tensor metadata did not match the current MXFP4 blocker path, but dense selected-expert replay is not implemented in this slice",
+            }),
+            "unsupported_dense_replay",
+            "add a bounded selected-expert replay implementation for the detected expert tensor layout",
+        )
+    };
+
+    let status = SelectedExpertsStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "selected-experts",
+        classification,
+        implemented: false,
+        runtime_behavior_changed: false,
+        validation_only: true,
+        selected_experts,
+        input_source: router_input_source(mlp_norm),
+        mlp_norm: mlp_norm_status,
+        selected_experts_oracle: oracle_status,
+        tensor_sources: SelectedExpertTensorSources {
+            gate_up_proj_blocks,
+            gate_up_proj_scales,
+            gate_up_proj_bias,
+            down_proj_blocks,
+            down_proj_scales,
+            down_proj_bias,
+            loader_status,
+        },
+        expert_formula: ExpertFormulaStatus {
+            mlp1_fused_output_shape: [5760],
+            gate_slice: "values[0::2]",
+            up_slice: "values[1::2]",
+            gate_clamp_max: 7.0,
+            up_clamp_min: -7.0,
+            up_clamp_max: 7.0,
+            sigmoid_scale: 1.702,
+            swiglu: "gate * sigmoid(1.702 * gate) * (up + 1)",
+            output_dtype: "BF16",
+        },
+        overall_metric: None,
+        per_rank_metrics: Vec::new(),
+        expert30_internal_guard: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -2460,6 +2685,85 @@ fn load_model_tensor_f32(
         candidate_names,
         model_path.display()
     )
+}
+
+fn find_model_tensor_status(
+    model_path: &Path,
+    candidate_names: &[&str],
+) -> Result<ModelTensorStatus> {
+    let mut shards = if model_path.is_file() {
+        vec![model_path.to_path_buf()]
+    } else {
+        let mut paths = fs::read_dir(model_path)
+            .with_context(|| format!("failed to read model directory {}", model_path.display()))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    anyhow::ensure!(
+        !shards.is_empty(),
+        "no safetensors shards found in {}",
+        model_path.display()
+    );
+
+    for shard in shards.drain(..) {
+        if let Some((tensor_name, entry)) = try_find_tensor_metadata(&shard, candidate_names)
+            .with_context(|| format!("failed to inspect {}", shard.display()))?
+        {
+            return Ok(ModelTensorStatus {
+                model_path: model_path.display().to_string(),
+                shard_path: shard.display().to_string(),
+                tensor_name,
+                dtype: entry.dtype,
+                value_count: entry.shape.iter().product(),
+                shape: entry.shape,
+            });
+        }
+    }
+
+    anyhow::bail!(
+        "none of {:?} found in {}",
+        candidate_names,
+        model_path.display()
+    )
+}
+
+fn try_find_tensor_metadata(
+    shard: &Path,
+    candidate_names: &[&str],
+) -> Result<Option<(String, SafetensorEntry)>> {
+    let mut file =
+        fs::File::open(shard).with_context(|| format!("failed to open {}", shard.display()))?;
+    let mut len_bytes = [0u8; 8];
+    file.read_exact(&mut len_bytes).with_context(|| {
+        format!(
+            "failed to read safetensors header length from {}",
+            shard.display()
+        )
+    })?;
+    let header_len = u64::from_le_bytes(len_bytes) as usize;
+    let mut header_bytes = vec![0u8; header_len];
+    file.read_exact(&mut header_bytes)
+        .with_context(|| format!("failed to read safetensors header from {}", shard.display()))?;
+    let header: serde_json::Map<String, Value> = serde_json::from_slice(&header_bytes)
+        .with_context(|| {
+            format!(
+                "failed to parse safetensors header from {}",
+                shard.display()
+            )
+        })?;
+
+    for name in candidate_names {
+        if let Some(value) = header.get(*name) {
+            let entry: SafetensorEntry = serde_json::from_value(value.clone())
+                .with_context(|| format!("failed to parse tensor metadata for {}", name))?;
+            return Ok(Some(((*name).to_string(), entry)));
+        }
+    }
+
+    Ok(None)
 }
 
 fn try_load_tensor_from_safetensors(
@@ -3228,6 +3532,19 @@ fn compute_router_topk(logits: &[f32], top_k: usize) -> RouterTopk {
         logits: selected_logits,
         routing_weights,
     }
+}
+
+fn parse_selected_experts(value: &str) -> Result<Vec<usize>> {
+    let experts = value
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<usize>()
+                .with_context(|| format!("invalid selected expert id: {part}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(!experts.is_empty(), "--selected-experts cannot be empty");
+    Ok(experts)
 }
 
 fn lane_trace(
