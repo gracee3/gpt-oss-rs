@@ -1044,6 +1044,77 @@ Primary classification:
 
 multi_gpu_layer_sharding_upload_manifest_helper_complete
 
+## KV cache planning skeleton status
+
+Added a CUDA-free KV cache planning skeleton in
+`crates/gpt-oss-model-runner/src/shard_plan.rs`. It derives pure cache
+ownership metadata from `ShardedModelPlan` and does not instantiate
+`CudaCacheEngine`, allocate `CudaSlice`, or alter runtime cache access.
+
+New pure KV planning types:
+
+- `ShardedKvCachePlan`
+- `ShardKvCachePlan`
+- `LayerKvCachePlan`
+
+Behavior:
+
+- `ShardedModelPlan::kv_cache_plan()` creates one KV shard plan per model shard.
+- Each `LayerKvCachePlan` stores an `absolute_layer_idx` and a shard-local
+  `local_cache_idx`.
+- Local indices start at 0 within each shard.
+- Absolute layer ids are preserved for validation, logging, and future runtime
+  access.
+- `ShardKvCachePlan::entry_for_absolute_layer(layer_idx)` returns the local
+  entry only when that shard owns the absolute layer.
+- `ShardedKvCachePlan::entry_for_absolute_layer(layer_idx)` can find the owning
+  shard and local entry across the full plan.
+
+Single-device behavior:
+
+- A single map produces one KV shard with entries for every absolute layer.
+- In the all-layer single-device case, `local_cache_idx` matches
+  `absolute_layer_idx`.
+
+Split behavior:
+
+- `split:0-11@0,12-23@1` produces two KV shard plans.
+- GPU0 owns absolute layers 0..11 with local cache indices 0..11.
+- GPU1 owns absolute layers 12..23 with local cache indices 0..11.
+- Looking up layer 11 succeeds on GPU0 and returns `None` on GPU1.
+- Looking up layer 12 succeeds on GPU1 and returns `None` on GPU0.
+- The full plan covers every model layer exactly once and has no duplicate
+  absolute layer ids.
+
+Why access stays absolute:
+
+The current CUDA runner indexes `gpu_cache[layer_idx]` because one
+`CudaCacheEngine` owns all layers. A split runtime cannot safely reuse that
+assumption on shard-local vectors. The planning API therefore exposes
+absolute-layer lookup first and treats `local_cache_idx` as the resolved shard
+slot, making the future runtime boundary explicit.
+
+Still deferred:
+
+- `CudaCacheEngine` runtime behavior did not change.
+- Existing KV cache allocation and indexing are unchanged.
+- No CUDA contexts, streams, cache engines, or GPU buffers were created.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes, or
+  runtime math branching were added.
+- Split maps remain non-executable and continue to be rejected before CUDA
+  allocation in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_kv_cache_plan_skeleton_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_upload_manifest_helper_complete
+multi_gpu_layer_sharding_kv_cache_plan_skeleton_complete

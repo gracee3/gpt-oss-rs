@@ -52,6 +52,26 @@ pub struct ShardTensorManifest {
     pub deferred_or_late_gpu_allocations: Vec<LateAllocationKind>,
 }
 
+/// CUDA-free KV cache ownership plan for future split allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedKvCachePlan {
+    pub shards: Vec<ShardKvCachePlan>,
+}
+
+/// Per-shard KV cache metadata keyed by absolute layer id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardKvCachePlan {
+    pub device_id: DeviceId,
+    pub entries: Vec<LayerKvCachePlan>,
+}
+
+/// Mapping between an absolute model layer and a shard-local KV cache slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerKvCachePlan {
+    pub absolute_layer_idx: usize,
+    pub local_cache_idx: usize,
+}
+
 /// Late shard-local allocations that are not initial safetensor uploads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LateAllocationKind {
@@ -252,6 +272,17 @@ impl ShardedModelPlan {
 
         Ok(manifest)
     }
+
+    /// Build a CUDA-free KV cache plan with absolute-layer lookup metadata.
+    pub fn kv_cache_plan(&self) -> ShardedKvCachePlan {
+        ShardedKvCachePlan {
+            shards: self
+                .shards
+                .iter()
+                .map(ShardKvCachePlan::from_shard_plan)
+                .collect(),
+        }
+    }
 }
 
 impl ShardedUploadManifest {
@@ -300,6 +331,51 @@ impl ShardTensorManifest {
             host_u8_tensor_names: Vec::new(),
             deferred_or_late_gpu_allocations,
         }
+    }
+}
+
+impl ShardedKvCachePlan {
+    /// Return the KV cache plan shard for a device.
+    pub fn shard_for_device(&self, device_id: DeviceId) -> Option<&ShardKvCachePlan> {
+        self.shards
+            .iter()
+            .find(|shard| shard.device_id == device_id)
+    }
+
+    /// Return the planned cache entry for an absolute layer across all shards.
+    pub fn entry_for_absolute_layer(
+        &self,
+        layer_idx: usize,
+    ) -> Option<(&ShardKvCachePlan, &LayerKvCachePlan)> {
+        self.shards.iter().find_map(|shard| {
+            shard
+                .entry_for_absolute_layer(layer_idx)
+                .map(|entry| (shard, entry))
+        })
+    }
+}
+
+impl ShardKvCachePlan {
+    fn from_shard_plan(shard: &GpuShardPlan) -> Self {
+        Self {
+            device_id: shard.device_id,
+            entries: shard
+                .absolute_layers
+                .iter()
+                .enumerate()
+                .map(|(local_cache_idx, &absolute_layer_idx)| LayerKvCachePlan {
+                    absolute_layer_idx,
+                    local_cache_idx,
+                })
+                .collect(),
+        }
+    }
+
+    /// Return this shard's local cache entry for an absolute layer id.
+    pub fn entry_for_absolute_layer(&self, layer_idx: usize) -> Option<&LayerKvCachePlan> {
+        self.entries
+            .iter()
+            .find(|entry| entry.absolute_layer_idx == layer_idx)
     }
 }
 
@@ -444,6 +520,11 @@ mod tests {
         manifest
             .shard_for_device(DeviceId(device_id))
             .unwrap_or_else(|| panic!("missing shard for device {device_id}"))
+    }
+
+    fn kv_shard(plan: &ShardedKvCachePlan, device_id: usize) -> &ShardKvCachePlan {
+        plan.shard_for_device(DeviceId(device_id))
+            .unwrap_or_else(|| panic!("missing KV shard for device {device_id}"))
     }
 
     #[test]
@@ -804,5 +885,159 @@ mod tests {
         assert!(gpu1
             .deferred_or_late_gpu_allocations
             .contains(&LateAllocationKind::GptOssMoeGpuUpload { layer_idx: 23 }));
+    }
+
+    #[test]
+    fn kv_cache_plan_single_has_one_shard_with_all_absolute_layers() {
+        let plan = single_plan().kv_cache_plan();
+
+        assert_eq!(plan.shards.len(), 1);
+        let shard = kv_shard(&plan, 3);
+        assert_eq!(shard.entries.len(), 24);
+        assert_eq!(
+            shard
+                .entries
+                .iter()
+                .map(|entry| entry.absolute_layer_idx)
+                .collect::<Vec<_>>(),
+            (0..24).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn kv_cache_plan_single_local_indices_match_absolute_layers() {
+        let plan = single_plan().kv_cache_plan();
+        let shard = kv_shard(&plan, 3);
+
+        for layer_idx in 0..24 {
+            let entry = shard.entry_for_absolute_layer(layer_idx).unwrap();
+            assert_eq!(entry.local_cache_idx, layer_idx);
+        }
+    }
+
+    #[test]
+    fn kv_cache_plan_split_has_two_shards() {
+        let plan = split_plan().kv_cache_plan();
+
+        assert_eq!(plan.shards.len(), 2);
+        assert!(plan.shard_for_device(DeviceId(0)).is_some());
+        assert!(plan.shard_for_device(DeviceId(1)).is_some());
+    }
+
+    #[test]
+    fn kv_cache_plan_split_gpu0_owns_layers_0_through_11_only() {
+        let plan = split_plan().kv_cache_plan();
+        let shard = kv_shard(&plan, 0);
+
+        assert_eq!(
+            shard
+                .entries
+                .iter()
+                .map(|entry| entry.absolute_layer_idx)
+                .collect::<Vec<_>>(),
+            (0..=11).collect::<Vec<_>>()
+        );
+        assert!(shard.entry_for_absolute_layer(12).is_none());
+    }
+
+    #[test]
+    fn kv_cache_plan_split_gpu1_owns_layers_12_through_23_only() {
+        let plan = split_plan().kv_cache_plan();
+        let shard = kv_shard(&plan, 1);
+
+        assert_eq!(
+            shard
+                .entries
+                .iter()
+                .map(|entry| entry.absolute_layer_idx)
+                .collect::<Vec<_>>(),
+            (12..=23).collect::<Vec<_>>()
+        );
+        assert!(shard.entry_for_absolute_layer(11).is_none());
+    }
+
+    #[test]
+    fn kv_cache_plan_split_gpu1_local_index_starts_at_zero() {
+        let plan = split_plan().kv_cache_plan();
+        let shard = kv_shard(&plan, 1);
+
+        assert_eq!(
+            shard.entry_for_absolute_layer(12),
+            Some(&LayerKvCachePlan {
+                absolute_layer_idx: 12,
+                local_cache_idx: 0,
+            })
+        );
+        assert_eq!(
+            shard.entry_for_absolute_layer(23),
+            Some(&LayerKvCachePlan {
+                absolute_layer_idx: 23,
+                local_cache_idx: 11,
+            })
+        );
+    }
+
+    #[test]
+    fn kv_cache_plan_absolute_lookup_is_shard_specific() {
+        let plan = split_plan().kv_cache_plan();
+        let gpu0 = kv_shard(&plan, 0);
+        let gpu1 = kv_shard(&plan, 1);
+
+        assert_eq!(
+            gpu0.entry_for_absolute_layer(11),
+            Some(&LayerKvCachePlan {
+                absolute_layer_idx: 11,
+                local_cache_idx: 11,
+            })
+        );
+        assert!(gpu1.entry_for_absolute_layer(11).is_none());
+
+        assert_eq!(
+            gpu1.entry_for_absolute_layer(12),
+            Some(&LayerKvCachePlan {
+                absolute_layer_idx: 12,
+                local_cache_idx: 0,
+            })
+        );
+        assert!(gpu0.entry_for_absolute_layer(12).is_none());
+    }
+
+    #[test]
+    fn kv_cache_plan_global_absolute_lookup_returns_owner_shard() {
+        let plan = split_plan().kv_cache_plan();
+
+        let (shard, entry) = plan.entry_for_absolute_layer(12).unwrap();
+        assert_eq!(shard.device_id, DeviceId(1));
+        assert_eq!(entry.local_cache_idx, 0);
+        assert_eq!(entry.absolute_layer_idx, 12);
+        assert!(plan.entry_for_absolute_layer(24).is_none());
+    }
+
+    #[test]
+    fn kv_cache_plan_has_no_duplicate_absolute_layers() {
+        let plan = split_plan().kv_cache_plan();
+        let mut layers = plan
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries.iter().map(|entry| entry.absolute_layer_idx))
+            .collect::<Vec<_>>();
+        let original_len = layers.len();
+        layers.sort_unstable();
+        layers.dedup();
+
+        assert_eq!(layers.len(), original_len);
+    }
+
+    #[test]
+    fn kv_cache_plan_covers_every_model_layer_once() {
+        let plan = split_plan().kv_cache_plan();
+        let mut layers = plan
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries.iter().map(|entry| entry.absolute_layer_idx))
+            .collect::<Vec<_>>();
+        layers.sort_unstable();
+
+        assert_eq!(layers, (0..24).collect::<Vec<_>>());
     }
 }
