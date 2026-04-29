@@ -3377,8 +3377,14 @@ fn run_layer1_k_rope(cli: &Cli) -> Result<()> {
     } else {
         Some(execute_k_rope(&pre_values, &oracle_values, cli))
     };
+    let missing_all_token_k_pre =
+        !pre_status.shape_or_count_matched && post_status.shape_or_count_matched;
     let classification = if artifact_blocked {
-        "layer1_k_rope_blocked_by_artifacts"
+        if missing_all_token_k_pre {
+            "layer1_qkv_history_blocked_by_all_token_input_generation"
+        } else {
+            "layer1_k_rope_blocked_by_artifacts"
+        }
     } else {
         match execution.as_ref().map(|execution| execution.classification) {
             Some("layer0_validation_k_rope_matches_oracle")
@@ -3411,9 +3417,27 @@ fn run_layer1_k_rope(cli: &Cli) -> Result<()> {
     });
     let blocker = if artifact_blocked {
         Some(json!({
-            "kind": "layer1_k_rope_artifacts",
-            "detail": "layer1 K RoPE requires all-token K pre-RoPE [74,8,64]/[74,512] and K post-RoPE [74,8,64]; available pinned attention bundle exposes only final-token K pre-RoPE plus all-token grouped K post-RoPE",
-            "missing_boundary": k_pre_boundary
+            "kind": if missing_all_token_k_pre {
+                "layer1_qkv_history_all_token_input_generation"
+            } else {
+                "layer1_k_rope_artifacts"
+            },
+            "detail": if missing_all_token_k_pre {
+                "layer1 K RoPE requires all-token K pre-RoPE [74,8,64]/[74,512]; the available pinned attention bundle exposes final-token K pre-RoPE plus all-token grouped K post-RoPE, and scratch generation needs an all-token layer1 residual/norm/QKV source"
+            } else {
+                "layer1 K RoPE requires all-token K pre-RoPE [74,8,64]/[74,512] and K post-RoPE [74,8,64]"
+            },
+            "missing_boundary": k_pre_boundary,
+            "generation_attempt": if missing_all_token_k_pre {
+                Some(json!({
+                    "generator_kind": "external_pytorch_transformers_scratch_under_tmp",
+                    "result": "blocked",
+                    "reason": "full official model forward dequantized MXFP4 weights to BF16 and exceeded the available 24GB CUDA memory before all-token layer1 QKV capture",
+                    "scratch_artifacts_committed": false
+                }))
+            } else {
+                None
+            }
         }))
     } else {
         execution
@@ -3441,14 +3465,51 @@ fn run_layer1_k_rope(cli: &Cli) -> Result<()> {
             "k_pre_rope": pre_status,
             "k_post_rope_oracle": post_status
         },
+        "artifact_sources": {
+            "k_pre_rope_source": if artifact_blocked {
+                "missing_all_token_layer1_k_pre_rope"
+            } else {
+                "all_token_layer1_k_pre_rope_artifact"
+            },
+            "k_post_rope_source": if post_status.shape_or_count_matched {
+                "official_bundle_or_oracle_k_post_rope"
+            } else {
+                "missing_layer1_k_post_rope_oracle"
+            }
+        },
+        "generated_pack_path": serde_json::Value::Null,
+        "k_pre_rope_source": if artifact_blocked {
+            "missing_all_token_layer1_k_pre_rope"
+        } else {
+            "all_token_layer1_k_pre_rope_artifact"
+        },
+        "k_post_rope_source": if post_status.shape_or_count_matched {
+            "official_bundle_or_oracle_k_post_rope"
+        } else {
+            "missing_layer1_k_post_rope_oracle"
+        },
         "expected_value_count": expected_count,
+        "metric": metrics,
         "metrics": metrics,
         "first_mismatch": first_mismatch,
         "worst_mismatch": worst_mismatch,
+        "qkv_artifact_summary": if missing_all_token_k_pre {
+            Some(json!({
+                "q_pre_rope_shape": serde_json::Value::Null,
+                "k_pre_rope_shape": serde_json::Value::Null,
+                "v_shape": serde_json::Value::Null,
+                "k_post_rope_shape": [cli.token_count, cli.kv_heads, cli.head_dim],
+                "available_bundle_scope": "final-token Q/K/V plus grouped all-token K post-RoPE",
+                "missing": "all-token layer1 residual/norm/Q/K/V source, especially K pre-RoPE [74,512] or [74,8,64]"
+            }))
+        } else {
+            None
+        },
         "blocker": blocker,
         "next_bounded_step": match classification {
             "layer1_k_rope_matches_oracle" => "build raw-QK and attention-probability guards from the layer1 K/V history",
             "layer1_k_rope_mismatch" => "localize layer1 K RoPE dtype policy against the grouped K post-RoPE oracle",
+            "layer1_qkv_history_blocked_by_all_token_input_generation" => "generate or locate an all-token layer1 residual/norm/QKV pack before rerunning layer1 K RoPE",
             _ => "generate or locate all-token layer1 K pre-RoPE history before K RoPE validation",
         }
     });

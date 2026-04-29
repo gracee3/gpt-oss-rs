@@ -2528,7 +2528,7 @@ No production runtime behavior, default model-runner routing, CUDA kernels, raw
 Next bounded step: localize the layer1 attention path next, starting with Q/K/V
 projection and K/V history construction.
 
-## Layer1 QKV History Validation Status
+## Layer1 QKV History / K RoPE Validation Status
 
 Full-layer1 remains blocked because the exact final-token layer1 input is not
 enough to compute attention. Layer1 attention needs all-token K/V history.
@@ -2558,19 +2558,30 @@ Mode added:
 Current result:
 
 ```text
-classification = layer1_k_rope_blocked_by_artifacts
+classification = layer1_qkv_history_blocked_by_all_token_input_generation
 ```
 
 The blocker is the missing all-token layer1 K pre-RoPE history boundary. The
 bundle has only final-token K pre-RoPE plus all-token grouped K post-RoPE, so
 the BF16-boundary RoPE helper cannot reconstruct the K/V history yet.
 
+Scratch pack generation was attempted under `/tmp` with the external
+PyTorch/Transformers model path. It did not emit artifacts: the loader
+dequantized MXFP4 weights to BF16 and ran out of 24 GB CUDA memory before
+layer1 all-token QKV capture. No generated JSON values are committed.
+
+K pre-RoPE source: missing all-token layer1 K pre-RoPE history.
+
+K post-RoPE source: official pinned attention ordered bundle
+`layer1_grouped_k_post_rope_before_attention`.
+
 No production runtime behavior, default model-runner routing, CUDA kernels, raw
 `.live` artifacts, or `/tmp` artifacts are committed.
 
-Next bounded step: generate or locate all-token layer1 residual/norm/QKV
-artifacts, then rerun `layer1-k-rope`; if K RoPE clears, build raw-QK and
-attention-probability guards.
+Next bounded step: generate or locate an all-token layer1 residual/norm/QKV
+pack with K pre-RoPE `[74,512]` or `[74,8,64]`, then rerun `layer1-k-rope`. If
+K RoPE clears, validate final-token raw-QK using the known final-token Q
+post-RoPE and grouped K post-RoPE boundaries.
 
 ## Validation Commands
 
