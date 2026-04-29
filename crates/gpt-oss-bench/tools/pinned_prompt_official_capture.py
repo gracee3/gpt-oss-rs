@@ -77,6 +77,18 @@ def parse_args() -> argparse.Namespace:
         help="Reserved for wrapper compatibility; final-token-only layer input is not enough for attention reconstruction.",
     )
     parser.add_argument("--lane", type=int, help="Optional focus lane metadata.")
+    parser.add_argument("--selected-rank", type=int, help="Selected expert rank for internal capture.")
+    parser.add_argument("--expert-index", type=int, help="Expected expert index for internal capture.")
+    parser.add_argument(
+        "--source-ordered-mlp-status",
+        type=Path,
+        help="Prior ordered MLP oracle status used as provenance for internal capture.",
+    )
+    parser.add_argument(
+        "--source-consumer-compare-status",
+        type=Path,
+        help="Consumer compare status requesting selected expert internals.",
+    )
     parser.add_argument("--output-dir", type=Path, help="Optional supporting output directory.")
     parser.add_argument("--status-output", type=Path, help="Direct-mode status output JSON.")
     parser.add_argument(
@@ -173,6 +185,34 @@ def parse_ordered_mlp_selector(boundary: str, layer_idx: int | None) -> int | No
             raise ValueError("layerN_final_token_mlp_ordered_boundary_bundle requires --layer-idx")
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_mlp_ordered_boundary_bundle", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_selected_expert_internal_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_selected_expert_internal_boundary_bundle":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_selected_expert_internal_boundary_bundle requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(
+        r"layer(\d+)_final_token_selected_expert_internal_boundary_bundle", boundary
+    )
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    match = re.fullmatch(r"layer(\d+)_final_token_expert(\d+)_internal_boundary_bundle", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -745,6 +785,353 @@ def write_selected_outputs_artifact(
     return str(path)
 
 
+def gate_up_lane_window(values: list[float], lane: int, radius: int = 2) -> dict[str, Any]:
+    start = max(0, lane - radius)
+    end = min((len(values) // 2) - 1, lane + radius)
+    return {
+        "start": start,
+        "end": end,
+        "values": [
+            {
+                "hidden_lane": hidden_lane,
+                "gate_index": 2 * hidden_lane,
+                "gate_value": float(values[2 * hidden_lane]),
+                "up_index": 2 * hidden_lane + 1,
+                "up_value": float(values[2 * hidden_lane + 1]),
+            }
+            for hidden_lane in range(start, end + 1)
+        ],
+    }
+
+
+def write_internal_artifact(
+    output_dir: Path,
+    name: str,
+    boundary: str,
+    values: list[float],
+    shape: list[int],
+    dtype: str,
+    lane: int,
+    *,
+    gate_up: bool = False,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    artifact = {
+        "boundary": boundary,
+        "shape": shape,
+        "dtype": dtype,
+        "summary": finite_summary(values),
+        "focus_lane": lane,
+        "focus_lane_value": None
+        if gate_up
+        else (values[lane] if 0 <= lane < len(values) else None),
+        "lane_window": gate_up_lane_window(values, lane)
+        if gate_up
+        else lane_window(values, lane),
+        "values": values,
+    }
+    if extra:
+        artifact.update(extra)
+    path = output_dir / f"{name}.json"
+    write_json(path, artifact)
+    return str(path)
+
+
+def capture_layer_selected_expert_internal_boundary_bundle(
+    model: Any,
+    input_token_ids: list[int] | None,
+    torch: Any,
+    layer_index: int,
+    selected_rank: int,
+    expert_index: int,
+    *,
+    coarse_bundle: Path | None,
+    lane: int,
+    source_ordered_mlp_status: Path | None,
+    source_consumer_compare_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    with torch.inference_mode():
+        block = model.block[layer_index]
+        mlp = block.mlp
+        final_token_index = None
+
+        if coarse_bundle is not None:
+            residual_boundary = (
+                f"layer{layer_index}_final_token_hidden_state_after_attention_residual_add_before_mlp"
+            )
+            source_values, coarse_seed_entry = extract_boundary_values(
+                coarse_bundle, residual_boundary
+            )
+            layer_after_attention = tensor_from_values(
+                source_values,
+                torch,
+                mlp.gate.weight.device,
+                model.embedding.weight.dtype,
+            )
+            final_token_index = coarse_seed_entry.get("token_index")
+            final_position = 0
+            source_seed = "coarse_bundle_attention_residual"
+        else:
+            if input_token_ids is None:
+                raise ValueError(
+                    "input_token_ids are required when --coarse-bundle is not provided"
+                )
+            layer_after_attention = compute_layer_attention_residual(
+                model, input_token_ids, layer_index, torch
+            )
+            final_token_index = len(input_token_ids) - 1
+            final_position = final_token_index
+            source_seed = "official_full_prefix_attention_residual"
+
+        normed = mlp.norm(layer_after_attention)
+        final_normed = normed[final_position]
+        router_logits = mlp.gate(normed)
+        final_logits = router_logits[final_position]
+        experts = torch.topk(
+            final_logits, k=mlp.experts_per_token, dim=-1, sorted=True
+        )
+        routing_weights = torch.nn.functional.softmax(experts.values, dim=0)
+        selected_indices = [int(value) for value in experts.indices.cpu().tolist()]
+        routing_weight_values = routing_weights.float().cpu().tolist()
+
+        if selected_rank < 0 or selected_rank >= len(selected_indices):
+            return internal_blocked_status(
+                layer_index,
+                lane,
+                selected_rank,
+                expert_index,
+                "selected rank is outside top-k range",
+                source_ordered_mlp_status,
+                source_consumer_compare_status,
+                output_dir,
+            )
+        actual_expert = selected_indices[selected_rank]
+        if actual_expert != expert_index:
+            return internal_blocked_status(
+                layer_index,
+                lane,
+                selected_rank,
+                expert_index,
+                f"selected rank {selected_rank} is expert {actual_expert}, expected {expert_index}",
+                source_ordered_mlp_status,
+                source_consumer_compare_status,
+                output_dir,
+                selected_experts=selected_indices,
+                routing_weights=routing_weight_values,
+            )
+
+        expert_id_tensor = experts.indices[selected_rank]
+        mlp1_weight = mlp.mlp1_weight[expert_id_tensor, ...]
+        mlp1_bias = mlp.mlp1_bias[expert_id_tensor, ...]
+        mlp1_output = torch.einsum("ch,h->c", mlp1_weight, final_normed)
+        mlp1_output += mlp1_bias
+
+        x_glu = mlp1_output[..., ::2].clamp(min=None, max=mlp.swiglu_limit)
+        x_linear = mlp1_output[..., 1::2].clamp(
+            min=-mlp.swiglu_limit, max=mlp.swiglu_limit
+        )
+        swiglu_output = x_glu * torch.sigmoid(1.702 * x_glu) * (x_linear + 1)
+
+        mlp2_weight = mlp.mlp2_weight[expert_id_tensor, ...]
+        down_bias = mlp.mlp2_bias[expert_id_tensor, ...]
+        mlp2_pre_bias = torch.einsum("hk,k->h", mlp2_weight, swiglu_output)
+        if mlp.world_size > 1:
+            torch.distributed.all_reduce(
+                mlp2_pre_bias, op=torch.distributed.ReduceOp.SUM
+            )
+        selected_output = mlp2_pre_bias + down_bias
+
+        expert_input_values = final_normed.float().cpu().tolist()
+        mlp1_values = mlp1_output.float().cpu().tolist()
+        swiglu_values = swiglu_output.float().cpu().tolist()
+        mlp2_pre_bias_values = mlp2_pre_bias.float().cpu().tolist()
+        down_bias_values = down_bias.float().cpu().tolist()
+        selected_output_values = selected_output.float().cpu().tolist()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {
+        "bundle_dir": str(output_dir) + "/",
+        "expert_input": write_internal_artifact(
+            output_dir,
+            "expert_input",
+            f"layer{layer_index}_final_token_expert{expert_index}_input_mlp_norm",
+            expert_input_values,
+            [len(expert_input_values)],
+            str(final_normed.dtype),
+            lane,
+            extra={"source_seed": source_seed, "token_index": final_token_index},
+        ),
+        "mlp1_gate_up": write_internal_artifact(
+            output_dir,
+            "mlp1_gate_up",
+            f"layer{layer_index}_final_token_expert{expert_index}_mlp1_gate_up_output_before_swiglu",
+            mlp1_values,
+            [len(mlp1_values)],
+            str(mlp1_output.dtype),
+            lane,
+            gate_up=True,
+            extra={
+                "indexing_metadata": {
+                    "layout": "interleaved gate/up",
+                    "hidden_lane_to_gate_index": "2 * hidden_lane",
+                    "hidden_lane_to_up_index": "2 * hidden_lane + 1",
+                }
+            },
+        ),
+        "swiglu": write_internal_artifact(
+            output_dir,
+            "swiglu",
+            f"layer{layer_index}_final_token_expert{expert_index}_swiglu_output_before_mlp2",
+            swiglu_values,
+            [len(swiglu_values)],
+            str(swiglu_output.dtype),
+            lane,
+        ),
+        "mlp2_down_pre_bias": write_internal_artifact(
+            output_dir,
+            "mlp2_down_pre_bias",
+            f"layer{layer_index}_final_token_expert{expert_index}_mlp2_down_output_before_bias",
+            mlp2_pre_bias_values,
+            [len(mlp2_pre_bias_values)],
+            str(mlp2_pre_bias.dtype),
+            lane,
+        ),
+        "down_bias": write_internal_artifact(
+            output_dir,
+            "down_bias",
+            f"layer{layer_index}_final_token_expert{expert_index}_down_bias",
+            down_bias_values,
+            [len(down_bias_values)],
+            str(down_bias.dtype),
+            lane,
+        ),
+        "selected_output_after_bias": write_internal_artifact(
+            output_dir,
+            "selected_output_after_bias",
+            f"layer{layer_index}_final_token_expert{expert_index}_selected_output_after_bias",
+            selected_output_values,
+            [len(selected_output_values)],
+            str(selected_output.dtype),
+            lane,
+        ),
+    }
+
+    expected_prior = None
+    if source_ordered_mlp_status is not None:
+        prior_status = load_json(source_ordered_mlp_status)
+        for item in prior_status.get("focus_lane_values", {}).get("selected_outputs_by_rank", []):
+            if item.get("rank") == selected_rank and item.get("expert") == expert_index:
+                expected_prior = float(item.get("value"))
+                break
+    selected_lane_value = selected_output_values[lane]
+    selected_output_matches_prior = (
+        expected_prior is not None and selected_lane_value == expected_prior
+    )
+
+    focus_gate_index = 2 * lane
+    focus_up_index = focus_gate_index + 1
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": "layer11_expert30_internal_bundle_generated"
+        if selected_output_matches_prior
+        else "layer11_expert30_internal_bundle_generated_lane_window_only",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "layer_index": layer_index,
+        "focus_lane": lane,
+        "lane_window": {"start": max(0, lane - 2), "end": min(len(selected_output_values) - 1, lane + 2)},
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "model": None,
+        "source_ordered_mlp_status": str(source_ordered_mlp_status)
+        if source_ordered_mlp_status
+        else None,
+        "source_consumer_compare_status": str(source_consumer_compare_status)
+        if source_consumer_compare_status
+        else None,
+        "selected_experts": selected_indices,
+        "routing_weights": routing_weight_values,
+        "artifacts": artifacts,
+        "focus_lane_values": {
+            "expert_input": expert_input_values[lane],
+            "mlp1_gate_up": {
+                "gate_index": focus_gate_index,
+                "gate": mlp1_values[focus_gate_index],
+                "up_index": focus_up_index,
+                "up": mlp1_values[focus_up_index],
+            },
+            "swiglu": swiglu_values[lane],
+            "mlp2_down_pre_bias": mlp2_pre_bias_values[lane],
+            "down_bias": down_bias_values[lane],
+            "selected_output_after_bias": selected_lane_value,
+        },
+        "digests": {
+            "expert_input": finite_summary(expert_input_values)["sha256_f32_le"],
+            "mlp1_gate_up": finite_summary(mlp1_values)["sha256_f32_le"],
+            "swiglu": finite_summary(swiglu_values)["sha256_f32_le"],
+            "mlp2_down_pre_bias": finite_summary(mlp2_pre_bias_values)["sha256_f32_le"],
+            "down_bias": finite_summary(down_bias_values)["sha256_f32_le"],
+            "selected_output_after_bias": finite_summary(selected_output_values)["sha256_f32_le"],
+        },
+        "selected_output_expected_prior_oracle": expected_prior,
+        "selected_output_matches_prior_oracle": selected_output_matches_prior,
+        "producer_metadata": {
+            "producer_function": "capture_layer_selected_expert_internal_boundary_bundle",
+            "boundary_selector": "layerN_final_token_selected_expert_internal_boundary_bundle",
+            "selected_expert_internals_included": True,
+            "port_source": PORT_SOURCE,
+        },
+        "consumer_next_command_hint": (
+            "Compare local expert30 MLP1/SwiGLU/MLP2/down-bias lane windows "
+            "against these oracle internals; router/top-k already matched."
+        ),
+    }
+
+
+def internal_blocked_status(
+    layer_index: int,
+    lane: int,
+    selected_rank: int,
+    expert_index: int,
+    reason: str,
+    source_ordered_mlp_status: Path | None,
+    source_consumer_compare_status: Path | None,
+    output_dir: Path,
+    *,
+    selected_experts: list[int] | None = None,
+    routing_weights: list[float] | None = None,
+) -> dict[str, Any]:
+    return {
+        "classification": "layer11_expert30_internal_bundle_blocked_by_schema",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "layer_index": layer_index,
+        "focus_lane": lane,
+        "lane_window": {"start": max(0, lane - 2), "end": lane + 2},
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "source_ordered_mlp_status": str(source_ordered_mlp_status)
+        if source_ordered_mlp_status
+        else None,
+        "source_consumer_compare_status": str(source_consumer_compare_status)
+        if source_consumer_compare_status
+        else None,
+        "selected_experts": selected_experts,
+        "routing_weights": routing_weights,
+        "selected_output_matches_prior_oracle": False,
+        "artifacts": {"bundle_dir": str(output_dir) + "/"},
+        "blocker": reason,
+    }
+
+
 def build_layer11_consumer_status(
     args: argparse.Namespace,
     boundary: str,
@@ -872,6 +1259,39 @@ def build_layer11_consumer_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    internal_layer = parse_selected_expert_internal_selector(boundary, layer_index)
+    if internal_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_idx": internal_layer,
+            "classification": "official_selected_expert_internal_capture_schema_ready",
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "focus_lane": args.lane,
+            "selected_rank": args.selected_rank,
+            "expert_index": args.expert_index,
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_boundaries": [
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_input_mlp_norm",
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_mlp1_gate_up_output_before_swiglu",
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_swiglu_output_before_mlp2",
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_mlp2_down_output_before_bias",
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_down_bias",
+                f"layer{internal_layer}_final_token_expert{args.expert_index}_selected_output_after_bias",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_selected_expert_internal_boundary_bundle",
+                "boundary_selector": boundary,
+                "requested_layer_index": internal_layer,
+                "selected_expert_internals_included": True,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": "run focused layer11 expert30 internal evidence bundle under /tmp",
+        }
     return {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "backend": "official_torch",
@@ -930,15 +1350,38 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
-    if layer_index is None:
+    if internal_layer_index is None and layer_index is None:
         raise ValueError(f"unsupported boundary selector: {boundary}")
     if args.dry_run_schema:
-        return dry_run_schema(boundary, layer_index, args)
+        return dry_run_schema(boundary, internal_layer_index or layer_index, args)
     model_path = args.official_model or args.model
     if model_path is None:
         raise ValueError("--model or --official-model is required for non-dry-run capture")
     model, torch = load_model(model_path, args.official_checkout)
+    if internal_layer_index is not None:
+        if args.selected_rank is None or args.expert_index is None:
+            raise ValueError("internal selected expert capture requires --selected-rank and --expert-index")
+        if args.lane is None:
+            raise ValueError("internal selected expert capture requires --lane")
+        if args.output_dir is None:
+            raise ValueError("internal selected expert capture requires --output-dir")
+        body = capture_layer_selected_expert_internal_boundary_bundle(
+            model,
+            None,
+            torch,
+            internal_layer_index,
+            args.selected_rank,
+            args.expert_index,
+            coarse_bundle=args.coarse_bundle,
+            lane=args.lane,
+            source_ordered_mlp_status=args.source_ordered_mlp_status,
+            source_consumer_compare_status=args.source_consumer_compare_status,
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     body = capture_layer_final_token_mlp_ordered_boundary_bundle(
         model,
         None,
@@ -966,14 +1409,22 @@ def main() -> int:
             for needle in ("out of memory", "oom", "cannot allocate", "cuda error")
         )
         output = {
-            "classification": "layer11_ordered_mlp_bundle_blocked_by_memory"
-            if memory_like
-            else "layer11_ordered_mlp_bundle_execution_failed",
+            "classification": (
+                "layer11_expert30_internal_bundle_blocked_by_memory"
+                if memory_like and args.expert_index == 30
+                else "layer11_expert30_internal_bundle_execution_failed"
+                if args.expert_index == 30
+                else "layer11_ordered_mlp_bundle_blocked_by_memory"
+                if memory_like
+                else "layer11_ordered_mlp_bundle_execution_failed"
+            ),
             "runtime_behavior_changed": False,
             "production_routing_changed": False,
             "cuda_kernels_changed": False,
             "layer_index": args.layer_idx,
             "focus_lane": args.lane,
+            "selected_rank": args.selected_rank,
+            "expert_index": args.expert_index,
             "model": str(args.official_model or args.model)
             if (args.official_model or args.model)
             else None,
