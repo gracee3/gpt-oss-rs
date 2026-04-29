@@ -1033,6 +1033,75 @@ boundaries to localize below selected output, or in a separate slice record the
 validation-only rank0/expert30/lane1480 correction metadata before emitting a
 corrected layer11 output.
 
+## Layer11 Ordered MLP Down-Projection Reduction Candidate
+
+The layer11 lane1480 proof chain now reaches a validation-only down-projection
+candidate convention. This is provenance only: no runtime behavior changed, no
+production routing changed, no CUDA kernels changed, no correction metadata was
+applied, and no final-logit, all-layer, server, or 4097-token claim is made.
+
+Status chain:
+
+```text
+/tmp/layer11_ordered_mlp_consumer_compare_status.json
+/tmp/layer11_expert30_internal_consumer_compare_status.json
+/tmp/layer11_expert30_down_terms_consumer_compare_status.json
+/tmp/layer11_expert30_down_lane1480_einsum_dtype_probe_status.json
+/tmp/layer11_expert30_down_cast_policy_sweep_status.json
+/tmp/layer11_selected_mlp_down_policy_replay_status.json
+```
+
+Proof chain:
+
+- The ordered MLP bundle localized the coarse layer11 lane1480 mismatch to
+  selected expert output for rank0 / expert30.
+- Focused expert30 internals localized that selected-output mismatch to
+  `mlp2_down_pre_bias`.
+- Down-term comparison proved the SwiGLU source vector, down weight vector,
+  weight orientation, and dot terms match the oracle evidence.
+- The dtype probe showed official CPU BF16 Torch `einsum` returns BF16 `-12.0`
+  for lane1480, while the local sequential FP32 accumulator crosses the BF16
+  midpoint and rounds to `-12.0625`.
+- The full-vector expert30 down-cast sweep cleared expert30 down-pre-bias under
+  several validation-only policies.
+- The selected MLP replay then cleared all selected expert outputs, weighted
+  expert sum, and final MLP residual output for selected experts
+  `[30, 13, 4, 20]` under those policies.
+
+Valid validation-only full-clearing policies:
+
+```text
+naive_f64_sum_then_bf16_output
+pairwise_f64_sum_then_bf16_output
+pairwise_f32_sum_then_bf16_output
+deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+Baseline and replay summary:
+
+| Policy | selected-output mismatches | weighted-sum mismatches | final-output mismatches | Status |
+| --- | ---: | ---: | ---: | --- |
+| `current_sequential_f32_accum_bf16_output` | `1` | `1` | `1` | reproduces lane1480 mismatch |
+| `naive_f64_sum_then_bf16_output` | `0` | `0` | `0` | clears ordered MLP replay |
+| `pairwise_f64_sum_then_bf16_output` | `0` | `0` | `0` | clears ordered MLP replay |
+| `pairwise_f32_sum_then_bf16_output` | `0` | `0` | `0` | clears ordered MLP replay |
+| `deterministic_f32_abs_ascending_sum_then_bf16_output` | `0` | `0` | `0` | clears ordered MLP replay |
+
+Rejected evidence-only policy:
+
+```text
+bf16_product_then_f32_sum_then_bf16_output
+```
+
+This policy is not a correction candidate: in the selected-MLP replay it
+produces `3473` selected-output mismatches, `1089` weighted-sum mismatches, and
+`444` final-output mismatches.
+
+Recommended next proof gate: before opening a runtime-design branch, validate
+the candidate convention on at least one additional ordered MLP surface if
+available. Prefer an existing layer1 ordered MLP bundle if present; otherwise
+request or generate a layer2 ordered MLP pilot before runtime-policy design.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
