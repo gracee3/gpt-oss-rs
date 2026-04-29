@@ -304,6 +304,113 @@ backend, then reuse the pinned Rust SwiGLU and existing MLP2/down projection
 validation path.
 ```
 
+## Stage 2 Selected Experts Status
+
+Status JSON:
+
+```text
+/tmp/mlp1_bf16_einsum_backend_selected_experts_status.json
+```
+
+Classification:
+
+```text
+mlp1_bf16_backend_selected_experts_mismatch
+```
+
+Selected experts:
+
+```text
+[3, 30, 11, 27]
+```
+
+Backend:
+
+```text
+cuBLAS BF16 tensor-op for MLP1/gate_up
+pinned Rust SwiGLU policy
+existing validation MLP2/down replay
+```
+
+Selected-output metric vs official oracle:
+
+```text
+max_abs_diff = 0.0625
+mean_abs_diff = 0.0007102039
+mismatches = 3295
+```
+
+Per-rank selected-output metrics:
+
+```text
+rank 0 / expert 3:
+  max_abs_diff = 0.0625
+  mean_abs_diff = 0.00075478986
+  mismatches = 790
+
+rank 1 / expert 30:
+  max_abs_diff = 0.03125
+  mean_abs_diff = 0.00060357933
+  mismatches = 899
+
+rank 2 / expert 11:
+  max_abs_diff = 0.0625
+  mean_abs_diff = 0.0007105877
+  mismatches = 779
+
+rank 3 / expert 27:
+  max_abs_diff = 0.0625
+  mean_abs_diff = 0.00077185896
+  mismatches = 827
+```
+
+Expert3 lane `1990` anomaly handling:
+
+```text
+not applied
+official selected = 0.48046875
+local post-bias selected = 0.48046875
+```
+
+The known expert3 lane `1990` selected-output oracle anomaly is not the active
+issue in this run. The selected-output mismatch is broad across all four
+selected experts.
+
+Weighted expert sum:
+
+```text
+max_abs_diff = 0.0625
+mean_abs_diff = 0.0005672084
+mismatches = 1041
+```
+
+MLP residual:
+
+```text
+max_abs_diff = 0.0625
+mean_abs_diff = 0.00054486364
+mismatches = 516
+```
+
+Conclusion:
+
+The full expert30 MLP1 result generalized for the MLP1 backend itself, but the
+end-to-end selected expert path still mismatches after applying pinned SwiGLU
+and the existing MLP2/down replay. This points the next slice at downstream
+selected-expert localization under exact cuBLAS MLP1, not at the MLP1 BF16
+backend candidate.
+
+Production runtime behavior did not change. The selected-experts mode remains
+an isolated validation/backend microbench.
+
+Next bounded step:
+
+```text
+Localize selected-expert mismatch under cuBLAS MLP1: compare per-expert
+SwiGLU and MLP2/down boundaries, starting with expert30 because its MLP1 is
+known exact.
+```
+
 ## Validation Commands
 
 Start each slice with:
