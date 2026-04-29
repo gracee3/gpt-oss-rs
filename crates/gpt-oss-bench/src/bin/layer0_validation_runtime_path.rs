@@ -93,6 +93,14 @@ struct Cli {
     #[arg(long)]
     ordered_mlp_bundle_dir: Option<PathBuf>,
 
+    /// Focused selected-expert internal oracle status for consumer diagnostics.
+    #[arg(long)]
+    oracle_internal_status: Option<PathBuf>,
+
+    /// Previous consumer ordered MLP compare status for source provenance.
+    #[arg(long)]
+    consumer_mlp_compare_status: Option<PathBuf>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
@@ -403,6 +411,7 @@ enum Mode {
     CoarseNormDebug,
     CoarseMlpOutputDebug,
     CoarseMlpOutputOrderedDebug,
+    SelectedExpertInternalCompareStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1377,6 +1386,9 @@ fn main() -> Result<()> {
         Mode::CoarseNormDebug => run_coarse_norm_debug(&cli),
         Mode::CoarseMlpOutputDebug => run_coarse_mlp_output_debug(&cli),
         Mode::CoarseMlpOutputOrderedDebug => run_coarse_mlp_output_ordered_debug(&cli),
+        Mode::SelectedExpertInternalCompareStatus => {
+            run_selected_expert_internal_compare_status(&cli)
+        }
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -6291,6 +6303,455 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
         },
     });
     write_json(&cli.output, &status)
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_expert_internal_compare_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let lane = cli.lane;
+    let selected_rank = cli.rank;
+    let expert_index = cli.expert;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let ordered_status_path =
+        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
+    let consumer_status_path = required_path(
+        &cli.consumer_mlp_compare_status,
+        "consumer MLP compare status",
+    )?;
+    let oracle_internal_status_path =
+        required_path(&cli.oracle_internal_status, "oracle internal status")?;
+    validate_path(coarse, "coarse bundle")?;
+    validate_path(ordered_status_path, "ordered MLP bundle status")?;
+    validate_path(consumer_status_path, "consumer MLP compare status")?;
+    validate_path(oracle_internal_status_path, "oracle internal status")?;
+
+    let ordered_status = load_json(ordered_status_path)?;
+    let consumer_status = load_json(consumer_status_path)?;
+    let oracle_status = load_json(oracle_internal_status_path)?;
+    for key in [
+        "runtime_behavior_changed",
+        "production_routing_changed",
+        "cuda_kernels_changed",
+    ] {
+        anyhow::ensure!(
+            oracle_status.get(key).and_then(Value::as_bool) == Some(false),
+            "oracle internal status {key} must be false"
+        );
+    }
+    let status_layer = oracle_status
+        .get("layer_index")
+        .and_then(Value::as_u64)
+        .context("oracle internal status missing layer_index")? as usize;
+    let status_lane = oracle_status
+        .get("focus_lane")
+        .and_then(Value::as_u64)
+        .context("oracle internal status missing focus_lane")? as usize;
+    let status_rank = oracle_status
+        .get("selected_rank")
+        .and_then(Value::as_u64)
+        .context("oracle internal status missing selected_rank")? as usize;
+    let status_expert = oracle_status
+        .get("expert_index")
+        .and_then(Value::as_u64)
+        .context("oracle internal status missing expert_index")? as usize;
+    anyhow::ensure!(
+        status_layer == layer,
+        "oracle layer_index {status_layer} did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_lane == lane,
+        "oracle focus_lane {status_lane} did not match requested lane {lane}"
+    );
+    anyhow::ensure!(
+        status_rank == selected_rank,
+        "oracle selected_rank {status_rank} did not match requested rank {selected_rank}"
+    );
+    anyhow::ensure!(
+        status_expert == expert_index,
+        "oracle expert_index {status_expert} did not match requested expert {expert_index}"
+    );
+
+    let ordered_selected_experts = ordered_status
+        .get("selected_experts")
+        .and_then(Value::as_array)
+        .context("ordered status missing selected_experts")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|value| value as usize)
+                .context("ordered selected expert must be integer")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        ordered_selected_experts.get(selected_rank).copied() == Some(expert_index),
+        "ordered bundle rank {selected_rank} is not expert {expert_index}"
+    );
+
+    let artifact_path = |key: &str| -> Result<PathBuf> {
+        oracle_status
+            .get("artifacts")
+            .and_then(|artifacts| artifacts.get(key))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .with_context(|| format!("oracle internal status missing artifacts.{key}"))
+    };
+    let expert_input_path = artifact_path("expert_input")?;
+    let mlp1_gate_up_path = artifact_path("mlp1_gate_up")?;
+    let swiglu_path = artifact_path("swiglu")?;
+    let mlp2_down_pre_bias_path = artifact_path("mlp2_down_pre_bias")?;
+    let down_bias_path = artifact_path("down_bias")?;
+    let selected_output_after_bias_path = artifact_path("selected_output_after_bias")?;
+    for (label, path) in [
+        ("expert input", &expert_input_path),
+        ("MLP1 gate/up", &mlp1_gate_up_path),
+        ("SwiGLU", &swiglu_path),
+        ("MLP2 down pre-bias", &mlp2_down_pre_bias_path),
+        ("down bias", &down_bias_path),
+        (
+            "selected output after bias",
+            &selected_output_after_bias_path,
+        ),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (_, oracle_expert_input) =
+        load_tensor_artifact(&expert_input_path, &[hidden], &["values"])?;
+    let (_, oracle_mlp1_gate_up) =
+        load_tensor_artifact(&mlp1_gate_up_path, &[2 * hidden], &["values"])?;
+    let (_, oracle_swiglu) = load_tensor_artifact(&swiglu_path, &[hidden], &["values"])?;
+    let (_, oracle_mlp2_down_pre_bias) =
+        load_tensor_artifact(&mlp2_down_pre_bias_path, &[hidden], &["values"])?;
+    let (_, oracle_down_bias) = load_tensor_artifact(&down_bias_path, &[hidden], &["values"])?;
+    let (_, oracle_selected_output_after_bias) =
+        load_tensor_artifact(&selected_output_after_bias_path, &[hidden], &["values"])?;
+    let mlp1_gate_up_json = load_json(&mlp1_gate_up_path)?;
+
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let (_attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let local_expert_input = compute_mlp_rms_norm_with_policy(
+        &attention_residual,
+        &post_norm_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &[expert_index])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == expert_index)
+        .with_context(|| format!("selected expert {expert_index} missing from MXFP4 loader"))?;
+    let local_mlp1_gate_up = compute_mlp1_bf16_tensor_op(&local_expert_input, expert)
+        .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_index}"))?;
+    let local_swiglu = compute_swiglu_bf16(&local_mlp1_gate_up);
+    let local_mlp2_down_pre_bias = compute_expert30_mlp2_prebias_variant(
+        &local_swiglu,
+        &expert.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let local_down_bias = expert.down_bias.clone();
+    let local_selected_output_after_bias = compute_expert30_selected_output_variant(
+        &local_mlp2_down_pre_bias,
+        &local_down_bias,
+        Expert30Mlp2Policy::Current,
+    );
+
+    let gate_up_indices_for_lane = |hidden_lane: usize| -> Result<(usize, usize)> {
+        if let Some(entries) = mlp1_gate_up_json
+            .get("lane_window")
+            .and_then(|entry| entry.get("values"))
+            .and_then(Value::as_array)
+        {
+            if let Some(entry) = entries.iter().find(|entry| {
+                entry
+                    .get("hidden_lane")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value as usize == hidden_lane)
+            }) {
+                let gate_index = entry
+                    .get("gate_index")
+                    .and_then(Value::as_u64)
+                    .context("MLP1 lane-window entry missing gate_index")?
+                    as usize;
+                let up_index = entry
+                    .get("up_index")
+                    .and_then(Value::as_u64)
+                    .context("MLP1 lane-window entry missing up_index")?
+                    as usize;
+                return Ok((gate_index, up_index));
+            }
+        }
+        if hidden_lane == lane {
+            if let (Some(gate_index), Some(up_index)) = (
+                oracle_status
+                    .pointer("/focus_lane_values/mlp1_gate_up/gate_index")
+                    .and_then(Value::as_u64),
+                oracle_status
+                    .pointer("/focus_lane_values/mlp1_gate_up/up_index")
+                    .and_then(Value::as_u64),
+            ) {
+                return Ok((gate_index as usize, up_index as usize));
+            }
+        }
+        let layout = mlp1_gate_up_json
+            .pointer("/indexing_metadata/layout")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        anyhow::ensure!(
+            layout == "interleaved gate/up",
+            "MLP1 gate/up artifact did not expose usable indexing for lane {hidden_lane}"
+        );
+        Ok((2 * hidden_lane, 2 * hidden_lane + 1))
+    };
+
+    let expert_input_metric = compare_hidden(&local_expert_input, &oracle_expert_input);
+    let mlp1_gate_up_metric = compare_hidden(&local_mlp1_gate_up, &oracle_mlp1_gate_up);
+    let swiglu_metric = compare_hidden(&local_swiglu, &oracle_swiglu);
+    let mlp2_down_pre_bias_metric =
+        compare_hidden(&local_mlp2_down_pre_bias, &oracle_mlp2_down_pre_bias);
+    let down_bias_metric = compare_hidden(&local_down_bias, &oracle_down_bias);
+    let selected_output_after_bias_metric = compare_hidden(
+        &local_selected_output_after_bias,
+        &oracle_selected_output_after_bias,
+    );
+
+    let earliest_mismatching_internal_seam = if expert_input_metric.metrics.mismatches != 0 {
+        "expert_input"
+    } else if mlp1_gate_up_metric.metrics.mismatches != 0 {
+        "mlp1_gate_up"
+    } else if swiglu_metric.metrics.mismatches != 0 {
+        "swiglu"
+    } else if mlp2_down_pre_bias_metric.metrics.mismatches != 0 {
+        "mlp2_down_pre_bias"
+    } else if down_bias_metric.metrics.mismatches != 0 {
+        "down_bias"
+    } else if selected_output_after_bias_metric.metrics.mismatches != 0 {
+        "selected_output_after_bias"
+    } else {
+        "none"
+    };
+    let classification = match earliest_mismatching_internal_seam {
+        "expert_input" => "layer11_expert30_internal_consumer_expert_input_mismatch",
+        "mlp1_gate_up" => "layer11_expert30_internal_consumer_gate_up_mismatch",
+        "swiglu" => "layer11_expert30_internal_consumer_swiglu_mismatch",
+        "mlp2_down_pre_bias" => "layer11_expert30_internal_consumer_down_pre_bias_mismatch",
+        "down_bias" => "layer11_expert30_internal_consumer_down_bias_mismatch",
+        "selected_output_after_bias" => {
+            "layer11_expert30_internal_consumer_selected_output_after_bias_mismatch"
+        }
+        "none" => "layer11_expert30_internal_consumer_available_seams_clear",
+        _ => "layer11_expert30_internal_consumer_execution_failed",
+    };
+    let oracle_next_request = match earliest_mismatching_internal_seam {
+        "none" => "none",
+        "expert_input" => "none; revalidate local MLP norm/input source against the ordered bundle",
+        "mlp1_gate_up" => {
+            "request expert30 MLP1 weight/dequant/accumulation evidence for lane1480"
+        }
+        "swiglu" => "request expert30 SwiGLU clamp/formula/rounding evidence for lane1480",
+        "mlp2_down_pre_bias" => {
+            "request expert30 MLP2/down projection source-term/dequant/accumulation evidence for lane1480"
+        }
+        "down_bias" => "none; inspect local expert30 down-bias loading only",
+        "selected_output_after_bias" => {
+            "none; inspect local selected-output bias-add rounding/readout only"
+        }
+        _ => "fix the reported selected-expert internal compare execution failure",
+    };
+    let needs_next_oracle_request = matches!(
+        earliest_mismatching_internal_seam,
+        "mlp1_gate_up" | "swiglu" | "mlp2_down_pre_bias"
+    );
+
+    let scalar_comparison = |local: f32, oracle: f32| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "abs_diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+    let (focus_gate_index, focus_up_index) = gate_up_indices_for_lane(lane)?;
+    let focus_gate_up = json!({
+        "local": {
+            "gate_index": focus_gate_index,
+            "gate": local_mlp1_gate_up[focus_gate_index],
+            "up_index": focus_up_index,
+            "up": local_mlp1_gate_up[focus_up_index],
+        },
+        "oracle": {
+            "gate_index": focus_gate_index,
+            "gate": oracle_mlp1_gate_up[focus_gate_index],
+            "up_index": focus_up_index,
+            "up": oracle_mlp1_gate_up[focus_up_index],
+        },
+        "abs_diff": {
+            "gate": (local_mlp1_gate_up[focus_gate_index] - oracle_mlp1_gate_up[focus_gate_index]).abs(),
+            "up": (local_mlp1_gate_up[focus_up_index] - oracle_mlp1_gate_up[focus_up_index]).abs(),
+        },
+        "matched": local_mlp1_gate_up[focus_gate_index] == oracle_mlp1_gate_up[focus_gate_index]
+            && local_mlp1_gate_up[focus_up_index] == oracle_mlp1_gate_up[focus_up_index],
+        "indexing": mlp1_gate_up_json["indexing_metadata"].clone(),
+    });
+
+    let lane_window_start = oracle_status
+        .pointer("/lane_window/start")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_else(|| lane.saturating_sub(2));
+    let lane_window_end = oracle_status
+        .pointer("/lane_window/end")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_else(|| (lane + 2).min(hidden - 1));
+    anyhow::ensure!(
+        lane_window_start <= lane_window_end && lane_window_end < hidden,
+        "invalid lane window {lane_window_start}..{lane_window_end}"
+    );
+    let mut lane_window_comparisons = Vec::new();
+    for window_lane in lane_window_start..=lane_window_end {
+        let (gate_index, up_index) = gate_up_indices_for_lane(window_lane)?;
+        lane_window_comparisons.push(json!({
+            "hidden_lane": window_lane,
+            "expert_input": scalar_comparison(
+                local_expert_input[window_lane],
+                oracle_expert_input[window_lane],
+            ),
+            "mlp1_gate_up": {
+                "gate": scalar_comparison(
+                    local_mlp1_gate_up[gate_index],
+                    oracle_mlp1_gate_up[gate_index],
+                ),
+                "up": scalar_comparison(
+                    local_mlp1_gate_up[up_index],
+                    oracle_mlp1_gate_up[up_index],
+                ),
+                "gate_index": gate_index,
+                "up_index": up_index,
+                "indexing": mlp1_gate_up_json["indexing_metadata"].clone(),
+            },
+            "swiglu": scalar_comparison(local_swiglu[window_lane], oracle_swiglu[window_lane]),
+            "mlp2_down_pre_bias": scalar_comparison(
+                local_mlp2_down_pre_bias[window_lane],
+                oracle_mlp2_down_pre_bias[window_lane],
+            ),
+            "down_bias": scalar_comparison(local_down_bias[window_lane], oracle_down_bias[window_lane]),
+            "selected_output_after_bias": scalar_comparison(
+                local_selected_output_after_bias[window_lane],
+                oracle_selected_output_after_bias[window_lane],
+            ),
+        }));
+    }
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-expert-internal-compare-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "norm_reduction_policy": cli.norm_reduction_policy,
+        "oracle_internal_status": oracle_internal_status_path.display().to_string(),
+        "source_statuses": {
+            "ordered_mlp_status": {
+                "path": ordered_status_path.display().to_string(),
+                "classification": ordered_status["classification"].clone(),
+                "selected_experts": ordered_selected_experts,
+            },
+            "consumer_ordered_compare_status": {
+                "path": consumer_status_path.display().to_string(),
+                "classification": consumer_status["classification"].clone(),
+                "earliest_mismatching_ordered_mlp_seam": consumer_status["earliest_mismatching_ordered_mlp_seam"].clone(),
+            },
+        },
+        "source_policy": {
+            "attention_residual": "official_coarse_attention_residual_seam",
+            "local_replay_surface": "validation_only",
+            "correction_metadata_applied": false,
+            "c_bf16_product_then_f32_sum_used": false,
+            "coarse_ladder_continued": false,
+        },
+        "artifacts": {
+            "expert_input": expert_input_path.display().to_string(),
+            "mlp1_gate_up": mlp1_gate_up_path.display().to_string(),
+            "swiglu": swiglu_path.display().to_string(),
+            "mlp2_down_pre_bias": mlp2_down_pre_bias_path.display().to_string(),
+            "down_bias": down_bias_path.display().to_string(),
+            "selected_output_after_bias": selected_output_after_bias_path.display().to_string(),
+        },
+        "metrics": {
+            "expert_input": expert_input_metric,
+            "mlp1_gate_up": mlp1_gate_up_metric,
+            "swiglu": swiglu_metric,
+            "mlp2_down_pre_bias": mlp2_down_pre_bias_metric,
+            "down_bias": down_bias_metric,
+            "selected_output_after_bias": selected_output_after_bias_metric,
+        },
+        "earliest_mismatching_internal_seam": earliest_mismatching_internal_seam,
+        "lane_1480": {
+            "expert_input": scalar_comparison(local_expert_input[lane], oracle_expert_input[lane]),
+            "mlp1_gate_up": focus_gate_up,
+            "swiglu": scalar_comparison(local_swiglu[lane], oracle_swiglu[lane]),
+            "mlp2_down_pre_bias": scalar_comparison(
+                local_mlp2_down_pre_bias[lane],
+                oracle_mlp2_down_pre_bias[lane],
+            ),
+            "down_bias": scalar_comparison(local_down_bias[lane], oracle_down_bias[lane]),
+            "selected_output_after_bias": scalar_comparison(
+                local_selected_output_after_bias[lane],
+                oracle_selected_output_after_bias[lane],
+            ),
+        },
+        "lane_window": {
+            "start": lane_window_start,
+            "end": lane_window_end,
+            "comparisons": lane_window_comparisons,
+        },
+        "needs_next_oracle_request": needs_next_oracle_request,
+        "oracle_next_request": oracle_next_request,
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": match earliest_mismatching_internal_seam {
+            "none" => "record layer11 expert30 internal compare; selected expert internals available seams clear",
+            "mlp2_down_pre_bias" => "request or inspect expert30 MLP2/down projection source-term/dequant/accumulation evidence for lane1480 only",
+            "selected_output_after_bias" => "inspect expert30 selected-output bias-add rounding/readout only",
+            "mlp1_gate_up" => "request or inspect expert30 MLP1 gate/up source-term/dequant/accumulation evidence for lane1480 only",
+            "swiglu" => "inspect expert30 SwiGLU clamp/formula/rounding only",
+            "down_bias" => "inspect expert30 down-bias loading only",
+            "expert_input" => "revalidate layer11 MLP norm/input source only",
+            _ => "fix the selected expert internal compare validation path",
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_expert_internal_compare_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected expert internal compare requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]
