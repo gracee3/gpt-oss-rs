@@ -2702,6 +2702,66 @@ source-complete construction remains open separately.
 Next bounded step: localize the rank 0 / expert 28 / hidden lane 2269 selected
 output mismatch under the layer1 MLP backend path.
 
+## Layer1 Expert28 Lane2269 Localization Status
+
+The layer1 MLP backend mismatch is localized to one selected-output lane:
+
+```text
+rank = 0
+expert = 28
+hidden lane = 2269
+```
+
+Mode:
+
+```text
+--mode layer1-expert28-lane2269-debug
+```
+
+Boundary availability:
+
+- bundle has selected expert outputs `[4,2880]`
+- bundle has weighted expert sum and MLP residual / layer1 output
+- bundle does not expose expert28 internal MLP1, SwiGLU, or MLP2 pre-bias
+  boundaries
+
+Lane 2269 values:
+
+- local MLP2 pre-bias: `-0.00115203857421875`
+- down bias: `0.024658203125`
+- local selected post-bias: `0.0235595703125`
+- official selected output: `0.0234375`
+- absolute diff: `0.0001220703125`
+
+Lane window summary:
+
+- lanes 2267, 2268, 2270, and 2271 match the official selected output exactly
+- lane 2269 is the only mismatch in the inspected window
+- no tested no-bias/pre-bias/bias-rounding variant reproduces the official lane
+  except direct official selected-lane replacement
+
+Replacement impact:
+
+- selected outputs corrected: `max_abs_diff = 0`, `mismatches = 0`
+- weighted expert sum corrected: `max_abs_diff = 0`, `mismatches = 0`
+- MLP residual corrected: `max_abs_diff = 0`, `mismatches = 0`
+
+Classification:
+
+```text
+layer1_expert28_lane2269_downstream_corrected_matches
+```
+
+No production runtime behavior, default model-runner routing, CUDA kernels, raw
+`.live` artifacts, or `/tmp` artifacts are committed.
+
+Caveat: layer1 attention was advanced from an official bundle seam; K/V
+source-complete construction remains open separately.
+
+Next bounded step: emit a corrected layer1 output artifact behind explicit
+validation metadata and guard it against the layer2 input boundary. The
+lane2269 replacement remains validation-only metadata, not a production rule.
+
 ## Validation Commands
 
 For the skeleton slice:

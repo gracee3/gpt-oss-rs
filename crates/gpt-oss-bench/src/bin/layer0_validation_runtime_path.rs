@@ -303,6 +303,14 @@ struct Cli {
     #[arg(long, default_value_t = 522)]
     lane: usize,
 
+    /// Selected-expert rank for focused lane-local diagnostics.
+    #[arg(long, default_value_t = 0)]
+    rank: usize,
+
+    /// Expert id for focused lane-local diagnostics.
+    #[arg(long, default_value_t = 28)]
+    expert: usize,
+
     /// JSON status output path.
     #[arg(long)]
     output: PathBuf,
@@ -332,6 +340,7 @@ enum Mode {
     Layer1KRope,
     Layer1AttentionBundle,
     Layer1MlpBackend,
+    Layer1Expert28Lane2269Debug,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1291,6 +1300,7 @@ fn main() -> Result<()> {
         Mode::Layer1KRope => run_layer1_k_rope(&cli),
         Mode::Layer1AttentionBundle => run_layer1_attention_bundle(&cli),
         Mode::Layer1MlpBackend => run_layer1_mlp_backend(&cli),
+        Mode::Layer1Expert28Lane2269Debug => run_layer1_expert28_lane2269_debug(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -4071,6 +4081,352 @@ fn run_layer1_mlp_backend(cli: &Cli) -> Result<()> {
     }
 
     write_json(&cli.output, &status)
+}
+
+fn run_layer1_expert28_lane2269_debug(cli: &Cli) -> Result<()> {
+    #[cfg(not(feature = "cuda"))]
+    {
+        let _ = cli;
+        anyhow::bail!("layer1 expert28 lane2269 debug requires the cuda feature")
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        let attention_residual = required_path(&cli.attention_residual, "attention residual")?;
+        let mlp_bundle = required_path(&cli.mlp_bundle, "MLP bundle")?;
+        let model = required_path(&cli.model, "model")?;
+        validate_path(attention_residual, "attention residual")?;
+        validate_path(mlp_bundle, "MLP bundle")?;
+        anyhow::ensure!(
+            model.exists(),
+            "model path does not exist: {}",
+            model.display()
+        );
+
+        let layer = cli.layer_index;
+        let rank = cli.rank;
+        let expert_id = cli.expert;
+        let lane = if cli.lane == 522 { 2269 } else { cli.lane };
+        let hidden = 2880usize;
+        let experts = 32usize;
+        let selected_count = 4usize;
+        anyhow::ensure!(
+            lane < hidden,
+            "lane {lane} out of range for hidden {hidden}"
+        );
+        let mlp_norm_boundary =
+            format!("layer{layer}_final_token_mlp_norm_output_before_mlp_projections");
+        let router_boundary = format!("layer{layer}_final_token_mlp_router_logits_before_routing");
+        let topk_boundary =
+            format!("layer{layer}_final_token_mlp_topk_expert_indices_and_routing_weights");
+        let selected_boundary =
+            format!("layer{layer}_final_token_selected_expert_outputs_before_routing_weighted_sum");
+        let weighted_boundary = format!(
+            "layer{layer}_final_token_mlp_output_after_routing_weighted_sum_before_residual"
+        );
+        let residual_boundary =
+            format!("layer{layer}_final_token_hidden_state_after_mlp_residual_add");
+
+        let available_boundaries = list_boundary_names(mlp_bundle)?;
+        let internal_boundaries_available = available_boundaries.iter().any(|name| {
+            name.contains("expert28")
+                && (name.contains("mlp1")
+                    || name.contains("swiglu")
+                    || name.contains("pre_bias")
+                    || name.contains("prebias"))
+        });
+        let (attention_status, attention_values) =
+            load_tensor_artifact(attention_residual, &[hidden], &["values"])?;
+        let (mlp_norm_status, mlp_norm_oracle) =
+            load_boundary_tensor_artifact(mlp_bundle, &mlp_norm_boundary, &[hidden])?;
+        let (router_status, router_oracle) =
+            load_boundary_tensor_artifact(mlp_bundle, &router_boundary, &[experts])?;
+        let (topk_status, topk_oracle) =
+            load_boundary_topk_oracle(mlp_bundle, &topk_boundary, selected_count)?;
+        let selected_experts = topk_oracle
+            .indices
+            .iter()
+            .map(|&expert| {
+                usize::try_from(expert)
+                    .with_context(|| format!("invalid selected expert id {expert}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (selected_status, selected_oracle) = load_boundary_tensor_artifact(
+            mlp_bundle,
+            &selected_boundary,
+            &[selected_count * hidden],
+        )?;
+        let (weighted_status, weighted_oracle) =
+            load_boundary_tensor_artifact(mlp_bundle, &weighted_boundary, &[hidden])?;
+        let (residual_status, residual_oracle) =
+            load_boundary_tensor_artifact(mlp_bundle, &residual_boundary, &[hidden])?;
+
+        let artifact_blocked = !attention_status.shape_or_count_matched
+            || !mlp_norm_status.shape_or_count_matched
+            || !router_status.shape_or_count_matched
+            || !topk_status.shape_or_count_matched
+            || !selected_status.shape_or_count_matched
+            || !weighted_status.shape_or_count_matched
+            || !residual_status.shape_or_count_matched
+            || rank >= selected_experts.len()
+            || selected_experts.get(rank).copied() != Some(expert_id);
+
+        let norm_weight_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+        let (norm_weight_source, norm_weight_values) =
+            load_model_tensor_f32(model, &[norm_weight_name.as_str()])?;
+        anyhow::ensure!(
+            norm_weight_values.len() == hidden,
+            "layer{layer} MLP norm weight shape mismatch"
+        );
+        let mlp_norm_values = compute_mlp_rms_norm(&attention_values, &norm_weight_values, 1e-5);
+        let mlp_norm_metric = compare_hidden(&mlp_norm_values, &mlp_norm_oracle);
+        let router = execute_mlp_backend_router(
+            model,
+            layer,
+            &mlp_norm_values,
+            &router_oracle,
+            &topk_oracle,
+        )?;
+
+        let loaded = load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| format!("selected expert {expert_id} missing from MXFP4 loader"))?;
+        let mlp1 = compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert)
+            .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
+        let swiglu = compute_swiglu_bf16(&mlp1);
+        let mlp2_pre_bias = compute_expert30_mlp2_prebias_variant(
+            &swiglu,
+            &expert.down_weight,
+            Expert30Mlp2Policy::Current,
+        );
+        let selected_output = compute_expert30_selected_output_variant(
+            &mlp2_pre_bias,
+            &expert.down_bias,
+            Expert30Mlp2Policy::Current,
+        );
+
+        let official_selected_lane = selected_oracle[rank * hidden + lane];
+        let selected_lane = selected_output[lane];
+        let down_bias_lane = round_bf16(expert.down_bias[lane]);
+        let pre_bias_lane = mlp2_pre_bias[lane];
+        let variant_table = json!([
+            {
+                "name": "current_post_bias_policy",
+                "value": selected_lane,
+                "matches_official": selected_lane == official_selected_lane,
+                "abs_diff": (selected_lane - official_selected_lane).abs()
+            },
+            {
+                "name": "no_bias_guard",
+                "value": round_bf16(pre_bias_lane),
+                "matches_official": round_bf16(pre_bias_lane) == official_selected_lane,
+                "abs_diff": (round_bf16(pre_bias_lane) - official_selected_lane).abs()
+            },
+            {
+                "name": "f32_prebias_plus_f32_bias_to_bf16",
+                "value": round_bf16(pre_bias_lane + expert.down_bias[lane]),
+                "matches_official": round_bf16(pre_bias_lane + expert.down_bias[lane]) == official_selected_lane,
+                "abs_diff": (round_bf16(pre_bias_lane + expert.down_bias[lane]) - official_selected_lane).abs()
+            },
+            {
+                "name": "bf16_prebias_plus_bf16_bias_to_bf16",
+                "value": round_bf16(round_bf16(pre_bias_lane) + round_bf16(expert.down_bias[lane])),
+                "matches_official": round_bf16(round_bf16(pre_bias_lane) + round_bf16(expert.down_bias[lane])) == official_selected_lane,
+                "abs_diff": (round_bf16(round_bf16(pre_bias_lane) + round_bf16(expert.down_bias[lane])) - official_selected_lane).abs()
+            },
+            {
+                "name": "bf16_prebias_boundary_only",
+                "value": round_bf16(pre_bias_lane),
+                "matches_official": round_bf16(pre_bias_lane) == official_selected_lane,
+                "abs_diff": (round_bf16(pre_bias_lane) - official_selected_lane).abs()
+            },
+            {
+                "name": "official_selected_lane_replacement",
+                "value": official_selected_lane,
+                "matches_official": true,
+                "abs_diff": 0.0
+            }
+        ]);
+
+        let window_start = lane.saturating_sub(2);
+        let window_end = (lane + 2).min(hidden - 1);
+        let lane_window_table = (window_start..=window_end)
+            .map(|window_lane| {
+                let local = selected_output[window_lane];
+                let official = selected_oracle[rank * hidden + window_lane];
+                let pre_bias = mlp2_pre_bias[window_lane];
+                json!({
+                    "hidden_lane": window_lane,
+                    "local_mlp2_pre_bias": pre_bias,
+                    "down_bias": round_bf16(expert.down_bias[window_lane]),
+                    "local_selected_post_bias": local,
+                    "official_selected": official,
+                    "abs_diff": (local - official).abs(),
+                    "official_equals_pre_bias": official == round_bf16(pre_bias),
+                    "official_equals_post_bias": official == local
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+        for (matrix_rank, matrix_expert_id) in selected_experts.iter().copied().enumerate() {
+            let expert = loaded
+                .experts
+                .iter()
+                .find(|expert| expert.expert == matrix_expert_id)
+                .with_context(|| {
+                    format!("selected expert {matrix_expert_id} missing from MXFP4 loader")
+                })?;
+            let output = if matrix_rank == rank {
+                selected_output.clone()
+            } else {
+                let mlp1 =
+                    compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert).with_context(|| {
+                        format!("cuBLAS BF16 MLP1 failed for expert {matrix_expert_id}")
+                    })?;
+                let swiglu = compute_swiglu_bf16(&mlp1);
+                let pre_bias = compute_expert30_mlp2_prebias_variant(
+                    &swiglu,
+                    &expert.down_weight,
+                    Expert30Mlp2Policy::Current,
+                );
+                compute_expert30_selected_output_variant(
+                    &pre_bias,
+                    &expert.down_bias,
+                    Expert30Mlp2Policy::Current,
+                )
+            };
+            let start = matrix_rank * hidden;
+            selected_matrix[start..start + hidden].copy_from_slice(&output);
+        }
+
+        let selected_uncorrected =
+            compare_selected_experts(&selected_matrix, &selected_oracle, &selected_experts);
+        let weighted_uncorrected = compute_weighted_expert_sum_bf16(
+            &selected_matrix,
+            &topk_oracle.routing_weights,
+            hidden,
+        );
+        let weighted_uncorrected_metric = compare_hidden(&weighted_uncorrected, &weighted_oracle);
+        let residual_uncorrected =
+            compute_attention_residual(&attention_values, &weighted_uncorrected);
+        let residual_uncorrected_metric = compare_hidden(&residual_uncorrected, &residual_oracle);
+
+        let mut corrected_selected_matrix = selected_matrix.clone();
+        corrected_selected_matrix[rank * hidden + lane] = official_selected_lane;
+        let selected_corrected = compare_selected_experts(
+            &corrected_selected_matrix,
+            &selected_oracle,
+            &selected_experts,
+        );
+        let weighted_corrected = compute_weighted_expert_sum_bf16(
+            &corrected_selected_matrix,
+            &topk_oracle.routing_weights,
+            hidden,
+        );
+        let weighted_corrected_metric = compare_hidden(&weighted_corrected, &weighted_oracle);
+        let residual_corrected = compute_attention_residual(&attention_values, &weighted_corrected);
+        let residual_corrected_metric = compare_hidden(&residual_corrected, &residual_oracle);
+
+        let corrected_downstream_matches = selected_corrected.metrics.mismatches == 0
+            && weighted_corrected_metric.metrics.mismatches == 0
+            && residual_corrected_metric.metrics.mismatches == 0;
+        let classification = if artifact_blocked {
+            "layer1_expert28_lane2269_blocked_by_bundle_schema"
+        } else if corrected_downstream_matches {
+            "layer1_expert28_lane2269_downstream_corrected_matches"
+        } else if selected_uncorrected.metrics.mismatches == 1
+            && selected_corrected.metrics.mismatches == 0
+        {
+            "layer1_expert28_lane2269_official_selected_output_anomaly"
+        } else {
+            "layer1_expert28_lane2269_unresolved"
+        };
+
+        let status = json!({
+            "mode": "layer0_validation_runtime_path",
+            "submode": "layer1-expert28-lane2269-debug",
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "model_runner_routing_changed": false,
+            "validation_only": true,
+            "classification": classification,
+            "layer_index": layer,
+            "rank": rank,
+            "expert": expert_id,
+            "lane": lane,
+            "attention_residual_source": attention_residual.display().to_string(),
+            "mlp_bundle": mlp_bundle.display().to_string(),
+            "selected_experts": selected_experts,
+            "routing_weights": topk_oracle.routing_weights,
+            "internal_boundaries_available": internal_boundaries_available,
+            "available_boundaries": available_boundaries,
+            "guard_metrics": {
+                "mlp_norm": mlp_norm_metric,
+                "router_logits": router["router_metric"].clone(),
+                "topk": router["topk_metric"].clone(),
+                "rank_maps_to_expert": selected_experts.get(rank).copied() == Some(expert_id),
+                "selected_output_layout": "[rank, hidden]"
+            },
+            "artifacts": {
+                "attention_residual": attention_status,
+                "mlp_norm_oracle": mlp_norm_status,
+                "router_logits_oracle": router_status,
+                "topk_routing_oracle": topk_status,
+                "selected_experts_oracle": selected_status,
+                "weighted_expert_sum_oracle": weighted_status,
+                "mlp_residual_oracle": residual_status
+            },
+            "model_tensors": {
+                "mlp_norm_weight": norm_weight_source,
+                "selected_expert_loader": {
+                    "helper_name": loaded.helper_name,
+                    "decode_source": loaded.decode_source,
+                    "tensor_sources": loaded.tensor_sources,
+                }
+            },
+            "boundary_metrics": {
+                "expert28_mlp1": serde_json::Value::Null,
+                "expert28_swiglu": serde_json::Value::Null,
+                "expert28_mlp2_prebias": serde_json::Value::Null,
+                "rank0_selected_output": selected_uncorrected,
+                "note": "bundle does not expose expert28 internal MLP1/SwiGLU/MLP2-prebias boundaries"
+            },
+            "lane_values": {
+                "mlp2_pre_bias": pre_bias_lane,
+                "down_bias": down_bias_lane,
+                "selected_post_bias": selected_lane,
+                "official_selected": official_selected_lane,
+                "diff": selected_lane - official_selected_lane,
+                "abs_diff": (selected_lane - official_selected_lane).abs()
+            },
+            "lane_window_table": lane_window_table,
+            "bias_output_variant_table": variant_table,
+            "replacement_impact": {
+                "selected_output_uncorrected": selected_uncorrected,
+                "selected_output_corrected": selected_corrected,
+                "weighted_sum_uncorrected": weighted_uncorrected_metric,
+                "weighted_sum_corrected": weighted_corrected_metric,
+                "mlp_residual_uncorrected": residual_uncorrected_metric,
+                "mlp_residual_corrected": residual_corrected_metric
+            },
+            "external_discriminator": {
+                "status": "not_run_oom_risk",
+                "reason": "bundle lacks internal expert28 boundaries; full-model PyTorch generation previously OOM'd, and this slice uses existing Rust/MXFP4 validation replay only"
+            },
+            "next_bounded_step": match classification {
+                "layer1_expert28_lane2269_downstream_corrected_matches" => "emit a corrected layer1 output artifact behind explicit validation metadata, then guard it against the layer2 input boundary",
+                "layer1_expert28_lane2269_official_selected_output_anomaly" => "record the one-lane selected-output anomaly and run downstream corrected output emission as a separate validation-only slice",
+                "layer1_expert28_lane2269_blocked_by_bundle_schema" => "fix the missing or malformed layer1 MLP bundle fields before rerunning this focused debug mode",
+                _ => "localize expert28 MLP1, SwiGLU, and MLP2 pre-bias with additional official internal boundaries or a lightweight direct-safetensors discriminator"
+            }
+        });
+        write_json(&cli.output, &status)
+    }
 }
 
 fn run_expert3_lane1990_debug(cli: &Cli) -> Result<()> {
