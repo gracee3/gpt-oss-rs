@@ -583,6 +583,71 @@ Next bounded step: either produce ordered layer2 attention/MLP boundary bundles
 or add a scoped adapter for the existing coarse layer2-to-final ladder bundle,
 then rerun `layer-bundle-validate` for layer2 and the ladder.
 
+## Coarse Ladder Bundle Adapter Status
+
+This slice inspected the existing coarse layer2-to-final ladder bundle to decide
+whether it can unblock layer2 validation without generating new ordered
+artifacts.
+
+Coarse bundle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+```
+
+Modes added:
+
+- `--mode coarse-ladder-inspect`
+- `--mode coarse-layer-output-guard`
+- `--mode layer-bundle-validate-from-coarse`
+
+Inspection result:
+
+```text
+classification = coarse_ladder_inspect_output_guards_only
+available_layers = [2, 3, 4, ..., 23]
+can_support_layer_output_guards = true
+can_support_ordered_bundle_adapter = false
+attention_seams_available = false
+mlp_seams_available = false
+```
+
+Available per-layer coarse boundaries for layers 2..23:
+
+- `layerN_final_token_layer_input_before_attention_norm`
+- `layerN_final_token_attention_norm_output_before_qkv`
+- `layerN_final_token_hidden_state_after_attention_residual_add_before_mlp`
+- `layerN_final_token_mlp_norm_output_before_mlp_projections`
+- `layerN_final_token_hidden_state_after_mlp_residual_add`
+
+Layer1 coarse output guard:
+
+```text
+classification = coarse_layer_output_guard_missing_layer
+```
+
+The coarse bundle starts at layer2 and does not include
+`layer1_final_token_hidden_state_after_mlp_residual_add`, so it cannot reproduce
+the already-passed corrected-layer1-to-layer2 input guard.
+
+Layer2 coarse adapter:
+
+```text
+classification = layer2_coarse_adapter_blocked_by_missing_attention_seams
+```
+
+The coarse bundle does not contain Q/K/V, raw-QK, attention probabilities,
+weighted-V, o-proj, router/top-k, selected-output, or weighted-sum seams. It
+therefore cannot be adapted into the ordered attention/MLP bundle validation
+interface.
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: generate ordered layer2 attention and MLP bundles, or add a
+deliberately narrower norm/residual-only coarse validation mode. Backend seam
+validation still requires ordered layer2 attention/MLP artifacts.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

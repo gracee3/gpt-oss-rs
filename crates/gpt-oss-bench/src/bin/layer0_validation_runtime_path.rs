@@ -113,6 +113,14 @@ struct Cli {
     #[arg(long)]
     emit_dir: Option<PathBuf>,
 
+    /// Coarse layer ladder bundle artifact.
+    #[arg(long)]
+    coarse_bundle: Option<PathBuf>,
+
+    /// Emitted layer output artifact for coarse output guards.
+    #[arg(long)]
+    layer_output: Option<PathBuf>,
+
     /// Official K pre-RoPE artifact for the runtime/kernel RoPE parity guard.
     #[arg(long)]
     k_pre_rope: Option<PathBuf>,
@@ -368,6 +376,9 @@ enum Mode {
     LayerBundleDiscover,
     LayerBundleValidate,
     LayerLadder,
+    CoarseLadderInspect,
+    CoarseLayerOutputGuard,
+    LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1333,6 +1344,9 @@ fn main() -> Result<()> {
         Mode::LayerBundleDiscover => run_layer_bundle_discover(&cli),
         Mode::LayerBundleValidate => run_layer_bundle_validate(&cli),
         Mode::LayerLadder => run_layer_ladder(&cli),
+        Mode::CoarseLadderInspect => run_coarse_ladder_inspect(&cli),
+        Mode::CoarseLayerOutputGuard => run_coarse_layer_output_guard(&cli),
+        Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -4385,6 +4399,336 @@ fn run_layer_ladder(cli: &Cli) -> Result<()> {
             "layer_ladder_stopped_on_mlp_mismatch" => "localize the first mismatching MLP seam for the stopped layer",
             _ => "fix the reported layer ladder execution failure",
         }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn collect_boundary_objects<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("boundary").and_then(Value::as_str).is_some() {
+                out.push(value);
+            }
+            for child in map.values() {
+                collect_boundary_objects(child, out);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_boundary_objects(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn load_json(path: &Path) -> Result<Value> {
+    serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn coarse_boundary_objects(value: &Value) -> Vec<&Value> {
+    let mut boundaries = Vec::new();
+    collect_boundary_objects(value, &mut boundaries);
+    boundaries
+}
+
+fn coarse_boundary_names(value: &Value) -> Vec<String> {
+    let mut names = coarse_boundary_objects(value)
+        .into_iter()
+        .filter_map(|entry| entry.get("boundary").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn coarse_boundary_value<'a>(value: &'a Value, boundary: &str) -> Option<&'a Value> {
+    coarse_boundary_objects(value).into_iter().find(|entry| {
+        entry
+            .get("boundary")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name == boundary)
+    })
+}
+
+fn load_coarse_boundary_tensor(
+    path: &Path,
+    boundary: &str,
+    expected_counts: &[usize],
+) -> Result<(TensorArtifactStatus, Vec<f32>)> {
+    let value = load_json(path)?;
+    let Some(boundary_value) = coarse_boundary_value(&value, boundary) else {
+        return Ok((
+            TensorArtifactStatus {
+                path: path.display().to_string(),
+                json_loaded: true,
+                shape: None,
+                value_count: None,
+                expected_value_counts: expected_counts.to_vec(),
+                shape_or_count_matched: false,
+                value_key: None,
+            },
+            Vec::new(),
+        ));
+    };
+    let shape = extract_shape(boundary_value);
+    let (values, value_key) = extract_values_by_keys(boundary_value, &["values"]);
+    let value_count = values.as_ref().map(Vec::len);
+    let count_matches = value_count
+        .map(|count| expected_counts.contains(&count))
+        .unwrap_or(false);
+    Ok((
+        TensorArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape,
+            value_count,
+            expected_value_counts: expected_counts.to_vec(),
+            shape_or_count_matched: count_matches,
+            value_key: value_key.map(|key| format!("coarse[{boundary}].{key}")),
+        },
+        values.unwrap_or_default(),
+    ))
+}
+
+fn coarse_available_layers(value: &Value) -> Vec<usize> {
+    let mut layers = coarse_boundary_objects(value)
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .map(|layer| layer as usize)
+                .or_else(|| {
+                    entry
+                        .get("boundary")
+                        .and_then(Value::as_str)
+                        .and_then(|boundary| {
+                            boundary
+                                .strip_prefix("layer")
+                                .and_then(|rest| rest.split('_').next())
+                                .and_then(|digits| digits.parse::<usize>().ok())
+                        })
+                })
+        })
+        .collect::<Vec<_>>();
+    layers.sort();
+    layers.dedup();
+    layers
+}
+
+fn coarse_boundary_summary(value: &Value) -> Vec<Value> {
+    coarse_boundary_objects(value)
+        .into_iter()
+        .filter_map(|entry| {
+            let boundary = entry.get("boundary").and_then(Value::as_str)?;
+            Some(json!({
+                "layer_index": entry.get("layer_index"),
+                "boundary": boundary,
+                "shape": entry.get("shape"),
+                "value_count": entry.get("values").and_then(Value::as_array).map(Vec::len),
+            }))
+        })
+        .collect()
+}
+
+fn run_coarse_ladder_inspect(cli: &Cli) -> Result<()> {
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    validate_path(coarse, "coarse bundle")?;
+    let value = load_json(coarse)?;
+    let boundaries = coarse_boundary_names(&value);
+    let available_layers = coarse_available_layers(&value);
+    let output_candidates = boundaries
+        .iter()
+        .filter(|name| name.ends_with("_final_token_hidden_state_after_mlp_residual_add"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let attention_seams_available = boundaries
+        .iter()
+        .any(|name| name.contains("_raw_scaled_qk_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_attention_probs_"))
+        || boundaries.iter().any(|name| name.contains("_q_post_rope_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_grouped_k_post_rope_"));
+    let mlp_seams_available = boundaries
+        .iter()
+        .any(|name| name.contains("_mlp_router_logits_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_selected_expert_outputs_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_routing_weighted_sum_"));
+    let can_support_layer_output_guards = !output_candidates.is_empty();
+    let can_support_ordered_bundle_adapter = attention_seams_available && mlp_seams_available;
+    let classification = if can_support_ordered_bundle_adapter {
+        "coarse_ladder_inspect_ordered_adapter_possible"
+    } else if can_support_layer_output_guards {
+        "coarse_ladder_inspect_output_guards_only"
+    } else if boundaries.is_empty() {
+        "coarse_ladder_inspect_missing_required_values"
+    } else {
+        "coarse_ladder_inspect_blocked_by_schema"
+    };
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-ladder-inspect",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "bundle_path": coarse.display().to_string(),
+        "available_layers": available_layers,
+        "available_boundaries": boundaries,
+        "boundary_summary": coarse_boundary_summary(&value),
+        "per_layer_output_candidates": output_candidates,
+        "attention_seams_available": attention_seams_available,
+        "mlp_seams_available": mlp_seams_available,
+        "can_support_layer_output_guards": can_support_layer_output_guards,
+        "can_support_ordered_bundle_adapter": can_support_ordered_bundle_adapter,
+        "source_complete_caveats": {
+            "coarse_bundle_is_final_token_only": true,
+            "ordered_attention_mlp_seams_required_for_backend_validation": true,
+            "k_v_source_complete": false,
+        },
+        "recommended_next_mode": if can_support_ordered_bundle_adapter {
+            "layer-bundle-validate-from-coarse"
+        } else if can_support_layer_output_guards {
+            "coarse-layer-output-guard"
+        } else {
+            "generate ordered layer attention/MLP bundles"
+        },
+        "next_bounded_step": if can_support_ordered_bundle_adapter {
+            "run the scoped coarse adapter for layer2"
+        } else if can_support_layer_output_guards {
+            "use coarse-layer-output-guard for emitted layer outputs; generate ordered layer2 bundles for seam validation"
+        } else {
+            "document missing coarse bundle values and generate ordered layer2 attention/MLP bundles"
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_coarse_layer_output_guard(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let layer_output = required_path(&cli.layer_output, "layer output")?;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    validate_path(layer_output, "layer output")?;
+    validate_path(coarse, "coarse bundle")?;
+    let boundary = format!("layer{layer}_final_token_hidden_state_after_mlp_residual_add");
+    let (output_status, output_values) = load_tensor_artifact(layer_output, &[2880], &["values"])?;
+    let (oracle_status, oracle_values) = load_coarse_boundary_tensor(coarse, &boundary, &[2880])?;
+    let blocked = !output_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+    let metric = (!blocked).then(|| compare_hidden(&output_values, &oracle_values));
+    let classification = if blocked {
+        if oracle_status.shape_or_count_matched {
+            "coarse_layer_output_guard_blocked_by_schema"
+        } else {
+            "coarse_layer_output_guard_missing_layer"
+        }
+    } else if metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0)
+    {
+        "coarse_layer_output_guard_matches_oracle"
+    } else {
+        "coarse_layer_output_guard_mismatch"
+    };
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-layer-output-guard",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "bundle_path": coarse.display().to_string(),
+        "layer_output_path": layer_output.display().to_string(),
+        "oracle_boundary": boundary,
+        "artifacts": {
+            "layer_output": output_status,
+            "coarse_oracle": oracle_status,
+        },
+        "metric": metric,
+        "source_complete_caveats": {
+            "guard_only": true,
+            "attention_mlp_seams_not_validated_by_this_mode": true,
+            "k_v_source_complete": false,
+        },
+        "next_bounded_step": match classification {
+            "coarse_layer_output_guard_matches_oracle" => "use coarse output guards where useful, but generate ordered bundles for attention/MLP seam validation",
+            "coarse_layer_output_guard_mismatch" => "localize emitted layer output versus coarse official layer output",
+            _ => "inspect coarse schema or locate the requested layer output boundary",
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_layer_bundle_validate_from_coarse(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    validate_path(coarse, "coarse bundle")?;
+    let value = load_json(coarse)?;
+    let boundaries = coarse_boundary_names(&value);
+    let attention_seams_available = boundaries
+        .iter()
+        .any(|name| name.contains("_raw_scaled_qk_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_attention_probs_"))
+        || boundaries.iter().any(|name| name.contains("_q_post_rope_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_grouped_k_post_rope_"));
+    let mlp_seams_available = boundaries
+        .iter()
+        .any(|name| name.contains("_mlp_router_logits_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_selected_expert_outputs_"))
+        || boundaries
+            .iter()
+            .any(|name| name.contains("_routing_weighted_sum_"));
+    let classification = if !attention_seams_available {
+        "layer2_coarse_adapter_blocked_by_missing_attention_seams"
+    } else if !mlp_seams_available {
+        "layer2_coarse_adapter_blocked_by_missing_mlp_seams"
+    } else {
+        "layer2_coarse_adapter_blocked_by_schema"
+    };
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer-bundle-validate-from-coarse",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "bundle_path": coarse.display().to_string(),
+        "available_boundaries": boundaries,
+        "attention_seams_available": attention_seams_available,
+        "mlp_seams_available": mlp_seams_available,
+        "metric": serde_json::Value::Null,
+        "blocker": {
+            "kind": "coarse_bundle_not_ordered_attention_mlp_schema",
+            "detail": "coarse bundle exposes final-token layer input/norm/residual vectors but not Q/K/V, raw-QK, probabilities, router/top-k, selected-output, or weighted-sum seams required by layer-bundle-validate"
+        },
+        "source_complete_caveats": {
+            "coarse_bundle_is_final_token_only": true,
+            "ordered_attention_mlp_seams_required_for_backend_validation": true,
+            "k_v_source_complete": false,
+        },
+        "next_bounded_step": "generate ordered layer2 attention and MLP bundles, or add a deliberately narrower norm/residual-only coarse validation mode"
     });
     write_json(&cli.output, &status)
 }

@@ -2896,6 +2896,69 @@ Next bounded step: create ordered layer2 attention/MLP bundles, or add a scoped
 adapter for the existing layer2-to-final coarse ladder bundle, then rerun
 `layer-bundle-validate` for layer2.
 
+## Coarse Ladder Bundle Adapter Status
+
+The coarse layer2-to-final bundle has been inspected with validation-only
+plumbing to determine whether it can continue the ladder.
+
+Coarse bundle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+```
+
+Modes added:
+
+- `--mode coarse-ladder-inspect`
+- `--mode coarse-layer-output-guard`
+- `--mode layer-bundle-validate-from-coarse`
+
+Inspection result:
+
+```text
+classification = coarse_ladder_inspect_output_guards_only
+available_layers = [2, 3, 4, ..., 23]
+can_support_layer_output_guards = true
+can_support_ordered_bundle_adapter = false
+attention_seams_available = false
+mlp_seams_available = false
+```
+
+For layers 2..23, the bundle has final-token coarse boundaries:
+
+- layer input before attention norm
+- attention norm output before QKV
+- attention residual before MLP
+- MLP norm output before projections
+- hidden state after MLP residual add
+
+It does not include the ordered attention/MLP seams needed by
+`layer-bundle-validate`: Q/K/V, raw-QK, attention probabilities, weighted-V,
+o-proj, router/top-k, selected expert outputs, weighted expert sum, or selected
+expert internals.
+
+Layer1 coarse output guard:
+
+```text
+classification = coarse_layer_output_guard_missing_layer
+```
+
+The coarse bundle begins at layer2, so it does not contain the layer1 final
+output boundary needed to reproduce the already-passed layer2 input guard.
+
+Layer2 coarse adapter:
+
+```text
+classification = layer2_coarse_adapter_blocked_by_missing_attention_seams
+```
+
+No production behavior changed, no default model-runner routing changed, no
+CUDA kernels changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: generate ordered layer2 attention/MLP bundles for backend
+seam validation, or add a narrower norm/residual-only coarse mode if that
+coarse-only evidence is useful.
+
 ## Validation Commands
 
 For the skeleton slice:
