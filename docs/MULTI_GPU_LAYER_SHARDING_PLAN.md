@@ -411,6 +411,257 @@ Primary classification:
 
 multi_gpu_layer_sharding_split_map_rejected_before_cuda_allocation
 
+## CUDA context ownership refactor design
+
+### Design intent
+
+Future split allocation should preserve the current single-device
+`GpuWorker`/`GpuModelRunner` path and add a separate sharded ownership path.
+The existing runner is coherent because every `CudaSlice`, kernel launch,
+cuBLAS call, metadata buffer, RoPE table, scratch buffer, and KV cache entry is
+implicitly tied to one `CudaContext` and one execution stream. The split design
+should keep that invariant inside each shard instead of teaching one
+`GpuModelRunner` to contain mixed-device pointers.
+
+The first split target remains whole-layer placement only:
+
+- GPU0 owns embeddings and layers 0..11.
+- GPU1 owns layers 12..23, final norm, and LM head.
+- QKV, MLP, experts, and individual tensors are never split in this lane.
+- Split maps remain non-executable until a later smoke explicitly constructs
+  per-device resources.
+
+### Proposed shard resource ownership
+
+Introduce a per-device ownership type for the split path. The clearest name is
+`GpuShardResources`, with a possible wrapper named `ShardedGpuModelRunner`.
+
+Design sketch:
+
+```text
+ShardedGpuModelRunner {
+  config: ModelRunnerConfig,
+  device_map: DeviceMap,
+  shards: Vec<GpuShardResources>,
+}
+
+GpuShardResources {
+  device_id: DeviceId,
+  absolute_layers: Vec<usize>,
+  owns_embeddings: bool,
+  owns_final_head: bool,
+
+  context: Arc<CudaContext>,
+  stream: Arc<CudaStream>,
+  blas: CublasHandle,
+  loader: Arc<KernelLoader>,
+
+  weights: GpuModelWeights,
+  cache: ShardCudaCache,
+  layers: Vec<GpuTransformerLayer>,
+
+  rope_cos: CudaSlice<f32>,
+  rope_sin: CudaSlice<f32>,
+  meta_packed: ReusableGpuBuf,
+  graph_output: Option<CudaSlice<i32>>,
+  cpu_scratch: Vec<i32>,
+
+  fused_qkv_weights: Vec<CudaSlice<f16>>,
+  fused_gate_up_weights: Vec<CudaSlice<f16>>,
+  fused_layernorm_f16: Vec<CudaSlice<f16>>,
+  fused_post_norm_f16: Vec<CudaSlice<f16>>,
+  fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>,
+  fused_o_proj_bias_f16: Vec<Option<CudaSlice<f16>>>,
+  final_norm_weight_f16: Option<CudaSlice<f16>>,
+  embed_tokens_f16: Option<CudaSlice<f16>>,
+  f16_scratch: Option<F16LayerScratch>,
+
+  gpt_oss_moe_layers: Vec<Option<GptOssMoeLayerWeights>>,
+}
+```
+
+Objects that must be per-device:
+
+- CUDA device id.
+- `CudaContext`.
+- Primary `CudaStream` and any cache/compute stream wrappers.
+- `CublasHandle`, because it is created from a stream.
+- `KernelLoader`, because modules are loaded into a specific context and
+  launches use that loader's context/stream.
+- `GpuModelWeights` or a shard-local equivalent, because `CudaSlice` placement
+  is implicit in the upload stream/context.
+- `CudaCacheEngine` or a shard-local cache object.
+- `GpuTransformerLayer` instances for the shard's absolute layers.
+- RoPE tables, metadata buffers, graph output buffers, CPU packing scratch that
+  is paired with shard metadata, f16 scratch, fused f16 weights, converted
+  embeddings/final norm/LM-head tensors, and GPT-OSS MoE GPU uploads.
+
+Embedding and final-head placement should be explicit booleans or ownership
+fields, not inferred from the presence of a tensor after construction. That
+keeps tied-embedding fallback visible: if `lm_head.weight` is absent, the final
+shard may still need an LM-head-compatible copy even though token embeddings
+execute on the first shard.
+
+### Shared/global state
+
+The following can remain outside per-device resources:
+
+- HuggingFace/model config and derived `ModelRunnerConfig`.
+- Tokenizer, protocol types, scheduler/request state, and sampling policy.
+- CPU-side safetensor headers, tensor shape metadata, and placement filters.
+- Host-side raw tensor views or memory maps, if they are used only as upload
+  sources and not mutated by a shard.
+- Validation/logging metadata and small status reports.
+- The parsed `DeviceMap` and derived layer-to-shard ownership tables.
+- Split allocation planning data such as total bytes per shard and tensor-name
+  manifests.
+
+Any host staging buffer used for activation transfer can be owned by the
+sharded wrapper rather than by an individual shard, because it represents the
+boundary between two devices.
+
+### Why not mixed-device GpuModelRunner
+
+`GpuModelRunner` currently has one `weights`, one `cache`, one `blas`, one
+`loader`, one `device`, one `stream`, one `layers` vector, one metadata buffer
+set, and one f16 scratch set. The forward paths assume those fields are
+compatible with every layer. `GpuModelWeights` also does not record device
+identity, so a mixed-device runner would make pointer provenance implicit and
+easy to misuse.
+
+Refactoring `GpuModelRunner` into a mixed-device container would spread
+device-routing checks through hot execution paths before split allocation has
+even been smoked. A wrapper keeps the proven single-device runner model intact:
+one shard is one coherent CUDA universe, and the sharded layer only decides
+which shard owns a whole layer and where activation handoff occurs later.
+
+### Proposed constructor boundaries
+
+Keep the current path unchanged for `single`:
+
+- `GpuLLMEngine::new` validates the default/single map.
+- `GpuWorker::new` creates one CUDA context and stream.
+- `GpuWorker::load_weights` uploads weights through that stream.
+- `GpuWorker::build_gpu_model_runner` constructs the existing
+  `GpuModelRunner`.
+
+For future split allocation, branch before `GpuWorker::new` instead of bending
+`GpuWorker` into a multi-device owner. The split path should be a new
+constructor boundary, such as:
+
+- `ShardedGpuWorker::new(config, device_map)`, or
+- `ShardedGpuModelRunner::allocate_from_plan(model_dir, config, device_map)`.
+
+That constructor should:
+
+1. Build a shard plan from `DeviceMap`.
+2. Create `GpuShardResources` independently for each device.
+3. Use existing loader primitives with shard-specific whole-tensor filters.
+4. Construct shard-local layers with absolute layer ids in their configs.
+5. Return a non-executing allocation object or status for Stage 4.
+
+`GpuWorker::load_weights` and `GpuWorker::build_gpu_model_runner` should remain
+the single-device implementation. The first split allocation smoke can share
+small helper functions, but it should not require the current worker to hold
+multiple contexts.
+
+### Future Stage 4 split allocation smoke
+
+The minimal Stage 4 smoke should prove ownership and allocation, not inference:
+
+- Parse `split:0-11@0,12-23@1` after model config is known.
+- Create CUDA resources on GPU0 and GPU1.
+- Load only whole tensors owned by each shard:
+  - GPU0: embeddings and layers 0..11.
+  - GPU1: layers 12..23, final norm, and LM head or tied LM-head fallback.
+- Allocate shard-local RoPE tables, metadata buffers, f16 conversion outputs,
+  GPT-OSS MoE uploads, and KV cache only for layers owned by the shard.
+- Do not run layer forward, sampling, final norm, or LM head.
+- Emit a small status JSON or structured log with device ids, absolute layer
+  ranges, tensor counts, and allocation byte totals.
+- Do not commit the status output or any generated traces/artifacts.
+
+This smoke must not make final-token, logit, or parity claims. Success means
+the runtime can construct two independent CUDA ownership islands according to
+the map without corrupting the existing single-device path.
+
+### KV cache ownership design
+
+The safest first split cache design is absolute-keyed, even if the physical
+storage is shard-local:
+
+```text
+ShardCudaCache {
+  entries: Vec<LayerCacheEntry>,
+}
+
+LayerCacheEntry {
+  absolute_layer_idx: usize,
+  key: CudaSlice<f16>,
+  value: CudaSlice<f16>,
+}
+```
+
+Access should go through an explicit method such as
+`cache_for_absolute_layer(layer_idx)`. A local vector plus
+`absolute_to_local_layer` map is leaner, but it preserves the exact footgun the
+current code has for sharding: `gpu_cache[layer_idx]` looks valid while using an
+absolute index against local storage. Absolute-keyed entries make validation
+logs and layer/coarse seam comparisons easier to reason about.
+
+A later performance pass can add an `absolute_to_local_layer` table internally
+after the accessor boundary is established and tested.
+
+### Future activation handoff contract
+
+The Stage 5 boundary is between the output of layer 11 on GPU0 and the input of
+layer 12 on GPU1.
+
+Contract:
+
+- Tensor: hidden state that the next layer already consumes today.
+- Shape: `[num_tokens, hidden_size]`.
+- Dtype: match the active path, `f32` for the existing f32 path and `f16` for
+  the f16 path.
+- Producer: GPU0 stream after layer 11 finishes.
+- Consumer: GPU1 stream before layer 12 starts.
+- First synchronization policy: synchronize the producer stream, copy DtoH into
+  host staging memory, copy HtoD into a GPU1 buffer, then synchronize or order
+  the GPU1 stream before launch.
+- Peer copy can be explored later if available, but the first contract is
+  host-staged and requires no NCCL, collectives, or peer access.
+
+The f16 path also has to preserve the delayed residual and `prev_mlp_out`
+semantics. The handoff should therefore occur only after the producing layer
+has returned the same representation that the current single-device loop would
+pass to the next layer.
+
+### Risks / blockers
+
+- `GpuModelWeights` has no device identity, so split loading needs ownership at
+  the shard container boundary or a typed shard-local weight container.
+- Tied LM-head fallback can require duplicating embedding-compatible data on
+  the final shard.
+- GPT-OSS MoE uploads happen after initial weight loading and must follow the
+  same shard ownership filter as layer tensors.
+- CUDA graph capture should remain disabled for split execution until
+  allocation and host-staged handoff are proven without graphs.
+- The current cache API exposes layer-indexed slices directly; split execution
+  needs an accessor that names absolute layer ids.
+- Stage 4 requires two visible CUDA devices, so CI coverage may need a
+  GPU-optional status test plus a manually run two-device smoke.
+
+### Next bounded step
+
+Add a non-executing per-device shard resource skeleton or allocation planner
+that can build and print a split allocation plan without creating mixed-device
+`GpuModelRunner` state. The planner should define tensor ownership filters
+before any code uploads split weights.
+
+### Primary classification
+
+multi_gpu_layer_sharding_sharded_runner_wrapper_design_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_split_map_rejected_before_cuda_allocation
+multi_gpu_layer_sharding_sharded_runner_wrapper_design_complete
