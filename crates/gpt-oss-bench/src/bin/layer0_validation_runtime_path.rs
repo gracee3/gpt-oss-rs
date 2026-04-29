@@ -117,6 +117,10 @@ struct Cli {
     #[arg(long)]
     selected_experts_oracle: Option<PathBuf>,
 
+    /// Comma-separated MLP1 seam artifact paths in selected-expert rank order.
+    #[arg(long)]
+    selected_experts_mlp1: Option<String>,
+
     /// Optional official expert30 MLP1 output before SwiGLU oracle artifact.
     #[arg(long)]
     expert30_mlp1_oracle: Option<PathBuf>,
@@ -136,6 +140,14 @@ struct Cli {
     /// Optional official weighted expert sum oracle artifact.
     #[arg(long)]
     weighted_expert_sum_oracle: Option<PathBuf>,
+
+    /// Official hidden state after MLP residual add oracle artifact.
+    #[arg(long)]
+    mlp_residual_oracle: Option<PathBuf>,
+
+    /// Post-attention residual input artifact for MLP residual validation.
+    #[arg(long)]
+    post_attention_residual: Option<PathBuf>,
 
     /// Optional PyTorch BF16 SwiGLU intermediate discriminator artifact.
     #[arg(long)]
@@ -245,6 +257,7 @@ enum Mode {
     SelectedExperts,
     SelectedExpertsDebug,
     SelectedExpertsPinnedSwigluDebug,
+    SelectedExpertsFromMlp1Seams,
     SwigluDebug,
     SwigluPolicyPin,
     Expert30Mlp2Debug,
@@ -688,6 +701,32 @@ struct Mlp1Bf16PolicyStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct SelectedExpertsFromMlp1SeamsStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    selected_experts: Vec<usize>,
+    mlp1_seam_sources: Vec<TensorArtifactStatus>,
+    selected_experts_oracle: TensorArtifactStatus,
+    weighted_expert_sum_oracle: TensorArtifactStatus,
+    mlp_residual_oracle: TensorArtifactStatus,
+    post_attention_residual: TensorArtifactStatus,
+    mxfp4_loader: Option<Mxfp4LoaderStatus>,
+    selected_output_metric: Option<SelectedExpertsComparisonStatus>,
+    per_rank_metrics: Vec<SelectedExpertRankMetric>,
+    weighted_sum_metric: Option<HiddenComparisonStatus>,
+    mlp_residual_metric: Option<HiddenComparisonStatus>,
+    weighted_sum_policy: &'static str,
+    mlp_residual_policy: &'static str,
+    rust_native_mlp1_bf16_einsum_backend_open: bool,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct SelectedExpertDequantDiagnostics {
     gate_up_weight: FiniteSummary,
     gate_up_bias: FiniteSummary,
@@ -1125,6 +1164,7 @@ fn main() -> Result<()> {
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
         Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
+        Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
@@ -2343,6 +2383,146 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
         overall_metric,
         per_rank_metrics,
         expert30_internal_guard: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_selected_experts_from_mlp1_seams(cli: &Cli) -> Result<()> {
+    let selected_experts_mlp1 =
+        required_string(&cli.selected_experts_mlp1, "selected experts MLP1 seams")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let weighted_expert_sum_oracle = required_path(
+        &cli.weighted_expert_sum_oracle,
+        "weighted expert sum oracle",
+    )?;
+    let mlp_residual_oracle = required_path(&cli.mlp_residual_oracle, "MLP residual oracle")?;
+    let post_attention_residual =
+        required_path(&cli.post_attention_residual, "post-attention residual")?;
+    let model = required_path(&cli.model, "model")?;
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let seam_paths = parse_path_list(selected_experts_mlp1, selected_experts.len())?;
+
+    for path in &seam_paths {
+        validate_path(path, "selected expert MLP1 seam")?;
+    }
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(weighted_expert_sum_oracle, "weighted expert sum oracle")?;
+    validate_path(mlp_residual_oracle, "MLP residual oracle")?;
+    validate_path(post_attention_residual, "post-attention residual")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let selected_count = selected_experts.len();
+    let mut seam_statuses = Vec::with_capacity(selected_count);
+    let mut seam_values = Vec::with_capacity(selected_count);
+    for path in &seam_paths {
+        let (status, values) = load_tensor_artifact(path, &[hidden * 2], &["values"])?;
+        seam_statuses.push(status);
+        seam_values.push(values);
+    }
+    let (selected_oracle_status, selected_oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (weighted_oracle_status, weighted_oracle_values) =
+        load_tensor_artifact(weighted_expert_sum_oracle, &[hidden], &["values"])?;
+    let (residual_oracle_status, residual_oracle_values) =
+        load_tensor_artifact(mlp_residual_oracle, &[hidden], &["values"])?;
+    let (post_attention_status, post_attention_values) =
+        load_tensor_artifact(post_attention_residual, &[hidden], &["values"])?;
+
+    let artifact_blocked = seam_statuses
+        .iter()
+        .any(|status| !status.shape_or_count_matched)
+        || !selected_oracle_status.shape_or_count_matched
+        || !weighted_oracle_status.shape_or_count_matched
+        || !residual_oracle_status.shape_or_count_matched
+        || !post_attention_status.shape_or_count_matched;
+
+    let routing_weights = load_selected_routing_weights(selected_experts_oracle, selected_count)
+        .unwrap_or_else(|_| vec![0.4453125, 0.2275390625, 0.189453125, 0.13671875]);
+
+    let (
+        classification,
+        selected_metric,
+        per_rank_metrics,
+        weighted_sum_metric,
+        mlp_residual_metric,
+        mxfp4_loader,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked || routing_weights.len() != selected_count {
+        (
+            "selected_experts_from_mlp1_seams_blocked_by_artifacts",
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some(Blocker {
+                kind: "selected_experts_from_mlp1_seams_artifacts",
+                detail: "MLP1 seams, selected-output oracle, weighted-sum oracle, MLP residual oracle, post-attention residual, or routing weights were unavailable or had unsupported shapes",
+            }),
+            "resolve the reported selected-experts-from-MLP1-seams artifact blocker",
+        )
+    } else {
+        match execute_selected_experts_from_mlp1_seams_mxfp4(
+            model,
+            &selected_experts,
+            &seam_values,
+            &selected_oracle_values,
+            &routing_weights,
+            &weighted_oracle_values,
+            &post_attention_values,
+            &residual_oracle_values,
+        ) {
+            Ok(result) => result,
+            Err(_) => (
+                "selected_experts_from_mlp1_seams_blocked_by_artifacts",
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                Some(Blocker {
+                    kind: "selected_experts_from_mlp1_seams_execution",
+                    detail: "validation MXFP4 down-projection replay failed while consuming MLP1 seam inputs",
+                }),
+                "fix the selected-experts-from-MLP1-seams validation replay path",
+            ),
+        }
+    };
+
+    let status = SelectedExpertsFromMlp1SeamsStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "selected-experts-from-mlp1-seams",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        selected_experts,
+        mlp1_seam_sources: seam_statuses,
+        selected_experts_oracle: selected_oracle_status,
+        weighted_expert_sum_oracle: weighted_oracle_status,
+        mlp_residual_oracle: residual_oracle_status,
+        post_attention_residual: post_attention_status,
+        mxfp4_loader,
+        selected_output_metric: selected_metric,
+        per_rank_metrics,
+        weighted_sum_metric,
+        mlp_residual_metric,
+        weighted_sum_policy: "sum BF16 selected_output * BF16 routing_weight into f32, BF16 output",
+        mlp_residual_policy: "bf16_plus_bf16_to_bf16",
+        rust_native_mlp1_bf16_einsum_backend_open: true,
         blocker,
         next_bounded_step,
     };
@@ -3743,6 +3923,50 @@ fn required_path<'a>(path: &'a Option<PathBuf>, label: &str) -> Result<&'a Path>
         .with_context(|| format!("--{} is required", label.replace(' ', "-").to_lowercase()))
 }
 
+fn required_string<'a>(value: &'a Option<String>, label: &str) -> Result<&'a str> {
+    value
+        .as_deref()
+        .with_context(|| format!("--{} is required", label.replace(' ', "-").to_lowercase()))
+}
+
+fn parse_path_list(value: &str, expected_count: usize) -> Result<Vec<PathBuf>> {
+    let paths = value
+        .split(',')
+        .map(|part| PathBuf::from(part.trim()))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        paths.len() == expected_count,
+        "expected {expected_count} comma-separated paths, got {}",
+        paths.len()
+    );
+    Ok(paths)
+}
+
+fn load_selected_routing_weights(path: &Path, expected_count: usize) -> Result<Vec<f32>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let weights = value
+        .get("selected_routing_weights")
+        .and_then(Value::as_array)
+        .context("selected_routing_weights not found")?
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|value| value as f32)
+                .context("selected_routing_weights must be numeric")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        weights.len() == expected_count,
+        "selected_routing_weights count mismatch: {} != {expected_count}",
+        weights.len()
+    );
+    Ok(weights)
+}
+
 fn artifact_path(path: &Path) -> ArtifactPath {
     ArtifactPath {
         path: path.display().to_string(),
@@ -4816,6 +5040,22 @@ fn compute_attention_residual(residual_input: &[f32], oproj_output: &[f32]) -> V
         .collect()
 }
 
+fn compute_weighted_expert_sum_bf16(
+    selected_output: &[f32],
+    routing_weights: &[f32],
+    hidden: usize,
+) -> Vec<f32> {
+    let mut output = vec![0.0f32; hidden];
+    for lane in 0..hidden {
+        let mut sum = 0.0f32;
+        for (rank, &weight) in routing_weights.iter().enumerate() {
+            sum += round_bf16(selected_output[rank * hidden + lane]) * round_bf16(weight);
+        }
+        output[lane] = round_bf16(sum);
+    }
+    output
+}
+
 fn compute_mlp_rms_norm(input: &[f32], weight: &[f32], epsilon: f32) -> Vec<f32> {
     let mut square_sum = 0.0f32;
     for value in input {
@@ -4958,6 +5198,133 @@ fn execute_selected_experts_mxfp4(
     Mxfp4LoaderStatus,
 )> {
     anyhow::bail!("MXFP4 selected expert validation requires the cuda feature")
+}
+
+type SelectedExpertsFromMlp1SeamsResult = (
+    &'static str,
+    Option<SelectedExpertsComparisonStatus>,
+    Vec<SelectedExpertRankMetric>,
+    Option<HiddenComparisonStatus>,
+    Option<HiddenComparisonStatus>,
+    Option<Mxfp4LoaderStatus>,
+    Option<Blocker>,
+    &'static str,
+);
+
+#[cfg(feature = "cuda")]
+fn execute_selected_experts_from_mlp1_seams_mxfp4(
+    model: &Path,
+    selected_experts: &[usize],
+    mlp1_seams: &[Vec<f32>],
+    selected_oracle: &[f32],
+    routing_weights: &[f32],
+    weighted_sum_oracle: &[f32],
+    post_attention_residual: &[f32],
+    mlp_residual_oracle: &[f32],
+) -> Result<SelectedExpertsFromMlp1SeamsResult> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let hidden = 2880usize;
+    let mut selected_output = Vec::with_capacity(selected_experts.len() * hidden);
+    for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| {
+                format!("MXFP4 validation loader did not return expert {expert_id}")
+            })?;
+        let swiglu = compute_swiglu_bf16(&mlp1_seams[rank]);
+        let mlp2_pre_bias = compute_expert30_mlp2_prebias_variant(
+            &swiglu,
+            &expert.down_weight,
+            Expert30Mlp2Policy::Current,
+        );
+        selected_output.extend(compute_expert30_selected_output_variant(
+            &mlp2_pre_bias,
+            &expert.down_bias,
+            Expert30Mlp2Policy::Current,
+        ));
+    }
+
+    let selected_metric =
+        compare_selected_experts(&selected_output, selected_oracle, selected_experts);
+    let per_rank_metrics = selected_experts
+        .iter()
+        .enumerate()
+        .map(|(rank, &expert)| {
+            let start = rank * hidden;
+            let end = start + hidden;
+            let comparison = compare_selected_experts(
+                &selected_output[start..end],
+                &selected_oracle[start..end],
+                &[expert],
+            );
+            SelectedExpertRankMetric {
+                rank,
+                expert,
+                metrics: Some(comparison.metrics),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let weighted_sum = compute_weighted_expert_sum_bf16(&selected_output, routing_weights, hidden);
+    let weighted_sum_metric = compare_hidden(&weighted_sum, weighted_sum_oracle);
+    let mlp_residual = compute_attention_residual(post_attention_residual, &weighted_sum);
+    let mlp_residual_metric = compare_hidden(&mlp_residual, mlp_residual_oracle);
+
+    let classification = if selected_metric.metrics.mismatches != 0 {
+        "selected_experts_from_mlp1_seams_mismatch"
+    } else if weighted_sum_metric.metrics.mismatches != 0 {
+        "selected_experts_from_mlp1_seams_match_oracle"
+    } else if mlp_residual_metric.metrics.mismatches != 0 {
+        "selected_experts_from_mlp1_seams_weighted_sum_matches_oracle"
+    } else {
+        "selected_experts_from_mlp1_seams_mlp_residual_matches_oracle"
+    };
+    let next_bounded_step = match classification {
+        "selected_experts_from_mlp1_seams_mlp_residual_matches_oracle" => {
+            "design the separate Rust-native BF16 einsum backend for MLP1"
+        }
+        "selected_experts_from_mlp1_seams_weighted_sum_matches_oracle" => {
+            "localize MLP residual add boundary or residual input source"
+        }
+        "selected_experts_from_mlp1_seams_match_oracle" => {
+            "localize weighted expert sum BF16 policy"
+        }
+        _ => "localize selected expert replay downstream of official/PyTorch MLP1 seams",
+    };
+
+    let loader = Mxfp4LoaderStatus {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        selected_experts: loaded.selected_experts,
+        dtype_outputs: loaded.dtype_outputs,
+    };
+    Ok((
+        classification,
+        Some(selected_metric),
+        per_rank_metrics,
+        Some(weighted_sum_metric),
+        Some(mlp_residual_metric),
+        Some(loader),
+        None,
+        next_bounded_step,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_selected_experts_from_mlp1_seams_mxfp4(
+    _model: &Path,
+    _selected_experts: &[usize],
+    _mlp1_seams: &[Vec<f32>],
+    _selected_oracle: &[f32],
+    _routing_weights: &[f32],
+    _weighted_sum_oracle: &[f32],
+    _post_attention_residual: &[f32],
+    _mlp_residual_oracle: &[f32],
+) -> Result<SelectedExpertsFromMlp1SeamsResult> {
+    anyhow::bail!("selected-experts-from-MLP1-seams validation requires the cuda feature")
 }
 
 type SelectedExpertsDebugResult = (

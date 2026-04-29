@@ -1802,6 +1802,74 @@ backend is developed. Production runtime behavior remains unchanged, no Torch
 runtime dependency is added, and no raw `/tmp` or `.live` artifacts are
 committed.
 
+## Selected Experts From Official MLP1 Seams Status
+
+This slice adds a validation-only seam mode that consumes official/PyTorch MLP1
+outputs before SwiGLU for the selected experts instead of using the unresolved
+Rust-native MLP1 BF16 `einsum` replay. The Rust-native MLP1 backend remains
+open; this mode exists only to continue localizing downstream layer0 MLP seams.
+
+The selected MLP1 seam pack was generated outside the repo:
+
+```text
+/tmp/layer0_validation_selected_experts_mlp1_seams-20260428-215204/
+```
+
+Source:
+
+- model:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- MLP norm input:
+  official MLP norm oracle, because `--mode mlp-norm` matched exactly
+- operation:
+  scratch PyTorch BF16 expert MLP1 `einsum` plus BF16 bias
+- selected experts:
+  `[3, 30, 11, 27]`
+
+Downstream validation result:
+
+```text
+classification:
+  selected_experts_from_mlp1_seams_mismatch
+
+selected expert outputs:
+  max_abs_diff = 0.001953125
+  mean_abs_diff = 0.0000001695421
+  mismatches = 1
+
+per-rank:
+  rank 0 / expert 3:
+    max_abs_diff = 0.001953125
+    mismatches = 1
+  rank 1 / expert 30:
+    exact
+  rank 2 / expert 11:
+    exact
+  rank 3 / expert 27:
+    exact
+
+weighted expert sum:
+  max_abs_diff = 0.0009765625
+  mean_abs_diff = 0.0000003390842
+  mismatches = 1
+
+MLP residual:
+  max_abs_diff = 0.001953125
+  mean_abs_diff = 0.0000006781684
+  mismatches = 1
+```
+
+The remaining downstream mismatch is isolated to rank `0` / expert `3`,
+hidden lane `1990`. It propagates into weighted expert sum and MLP residual at
+the same hidden lane. This is separate from the already-open Rust-native MLP1
+BF16 `einsum` backend gap and points to a bounded expert3 MLP2/down-projection
+or selected-output boundary check from exact MLP1 seam input.
+
+No production behavior changed, no Torch runtime dependency was added, and no
+raw `/tmp` or `.live` artifacts are committed. The next bounded step is either
+to design the Rust-native BF16 `einsum` backend or to localize expert3 MLP2 from
+official/PyTorch MLP1/SwiGLU seam input.
+
 ## Validation Commands
 
 For the skeleton slice:
