@@ -1260,6 +1260,84 @@ Primary classification:
 
 multi_gpu_layer_sharding_header_discovery_helper_complete
 
+## Dry-run split allocation report command status
+
+Added a CUDA-free operator/status binary:
+
+`crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_dry_run.rs`
+
+Accepted flags:
+
+- `--model <PATH>`
+- `--device-map <SPEC>`
+- `--selected-device <ID>`
+- `--tie-word-embeddings <true|false>` as an optional override
+- `--output <PATH>` as an optional JSON output path; stdout is used when absent
+
+What it reads:
+
+- `config.json` beside the model path to get `num_hidden_layers`.
+- `tie_word_embeddings` from `config.json` unless the CLI override is passed.
+- Safetensors header metadata through `SafetensorHeaderManifest`.
+- Tensor names, dtypes, shapes, source files, and byte sizes from headers only.
+
+What it builds:
+
+- `DeviceMap` from the supplied spec and config layer count.
+- `ShardedModelPlan`.
+- `ShardedUploadManifest` from header-discovered tensor names.
+- `ShardedKvCachePlan`.
+- `SplitAllocationReport`.
+
+What it emits:
+
+- success classification:
+  `multi_gpu_layer_sharding_dry_run_report_complete`
+- model path, device-map spec, selected device, layer count, tensor counts, and
+  total header-derived tensor bytes
+- `has_lm_head_weight` and effective `tie_word_embeddings`
+- per-shard device id, absolute layers, embedding/final-head ownership, tensor
+  counts, U8 host tensor counts, late allocation counts, KV cache layer counts,
+  KV cache layers, and observable tensor-name lists
+- global unassigned and invalid tensor-name lists
+
+Split-map behavior:
+
+- This dry-run tool may accept split maps because it is a non-executing
+  planner/status command.
+- It does not call the serve/runtime pre-CUDA executable-map validator, because
+  that validator intentionally rejects split maps for execution.
+- Serve/runtime split maps remain non-executable and continue to be rejected
+  before CUDA allocation with `split device maps are parsed but not executable
+  yet`.
+
+Still deferred:
+
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- No tensor payloads are converted or read into host vectors.
+- No GPU loader upload functions are called.
+- Existing model loader runtime behavior did not change.
+- No f16 or U8 loader filters were added.
+- `CudaCacheEngine` allocation and indexing behavior did not change.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes,
+  runtime math branching, final-token, logit, or parity claims were added.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_dry_run_report_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_header_discovery_helper_complete
+multi_gpu_layer_sharding_dry_run_report_complete

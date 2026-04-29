@@ -13,13 +13,13 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 gpt-oss-core.workspace = true
 gpt-oss-engine.workspace = true
 gpt-oss-gpu = { workspace = true, optional = true }
-gpt-oss-model-runner = { workspace = true, optional = true }
+gpt-oss-model-runner.workspace = true
 gpt-oss-tokenizer.workspace = true
 half.workspace = true
 
 [features]
 default = []
-cuda = ["dep:gpt-oss-gpu", "dep:gpt-oss-model-runner", "gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "gpt-oss-model-runner/cuda"]
+cuda = ["dep:gpt-oss-gpu", "gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "gpt-oss-model-runner/cuda"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 
 [dev-dependencies]
