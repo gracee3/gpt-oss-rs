@@ -1856,6 +1856,127 @@ Primary classification:
 
 multi_gpu_layer_sharding_cuda_resource_skeleton_complete
 
+## Bench-only CUDA resource smoke command status
+
+Added a bench-only CUDA resource smoke/status command:
+
+```text
+multi_gpu_layer_sharding_cuda_resource_smoke
+```
+
+Binary path:
+
+`crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_cuda_resource_smoke.rs`
+
+Accepted flags:
+
+```text
+--model <PATH>
+--device-map <SPEC>
+--selected-device <ID>
+--kernel-dir <PATH>
+--output <PATH>
+```
+
+The command reads:
+
+- `config.json` from `--model`, only to get `num_hidden_layers`
+- the `--device-map` placement intent
+- the optional `--kernel-dir` for `KernelLoader`
+
+The command does not read safetensor headers or payloads and does not load model
+weights.
+
+When built and run with `--features cuda`, the command can create one resource
+island per shard through `ShardedCudaResources`:
+
+- `CudaContext`
+- `CudaStream`
+- `CublasHandle`
+- `KernelLoader`
+
+It intentionally does not create:
+
+- model tensor uploads
+- U8 payload uploads
+- KV cache
+- RoPE tables
+- metadata buffers
+- f16 scratch
+- fused weights
+- MoE GPU weights
+- transformer layers
+- `GpuModelRunner`
+- activation-transfer buffers
+
+Status JSON includes:
+
+- `classification`
+- `model_path`
+- `device_map_spec`
+- `selected_device`
+- `num_layers`
+- `cuda_feature_enabled`
+- `resource_construction_attempted`
+- `resource_construction_succeeded`
+- `kernel_dir`
+- `shard_count`
+- per-shard device id, absolute layers, embedding/final ownership, and resource
+  creation booleans
+- `omitted_allocations`
+- `error`
+
+Success classification:
+
+```text
+multi_gpu_layer_sharding_cuda_resource_smoke_complete
+```
+
+Error classifications:
+
+```text
+multi_gpu_layer_sharding_cuda_resource_smoke_invalid_device_map
+multi_gpu_layer_sharding_cuda_resource_smoke_config_error
+multi_gpu_layer_sharding_cuda_resource_smoke_cuda_unavailable
+multi_gpu_layer_sharding_cuda_resource_smoke_resource_error
+```
+
+Manual operator command for the 2x RTX 3090 host:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0
+```
+
+This command may accept split maps because it is a non-executing bench-only
+resource smoke. Serve/runtime split maps remain rejected before CUDA allocation
+with `split device maps are parsed but not executable yet`.
+
+Still unchanged:
+
+- no tensor upload behavior changed
+- no KV cache allocation/indexing changed
+- no model loader runtime behavior changed
+- no serve/runtime behavior changed
+- no split execution path was added
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda -- --help`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_cuda_resource_smoke_command_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_cuda_resource_skeleton_complete
+multi_gpu_layer_sharding_cuda_resource_smoke_command_complete
