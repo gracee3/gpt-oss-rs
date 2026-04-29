@@ -55,6 +55,24 @@ pub struct Mxfp4SelectedExpertsValidationWeights {
     pub experts: Vec<Mxfp4SelectedExpertWeights>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Mxfp4ExpertRowValidation {
+    pub helper_name: &'static str,
+    pub decode_source: &'static str,
+    pub expert: usize,
+    pub output_row: usize,
+    pub in_features: usize,
+    pub groups: usize,
+    pub bytes_per_group: usize,
+    pub values_per_byte: usize,
+    pub tensor_sources: Mxfp4ValidationTensorSources,
+    pub bias_value: f32,
+    pub current_gpu_row: Vec<f32>,
+    pub cpu_current_row: Vec<f32>,
+    pub cpu_swapped_nibble_row: Vec<f32>,
+    pub cpu_exp2_scale_row: Vec<f32>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SafetensorEntry {
     dtype: String,
@@ -65,6 +83,116 @@ struct SafetensorEntry {
 struct LoadedTensor {
     source: Mxfp4ValidationTensorSource,
     bytes: Vec<u8>,
+}
+
+/// Load one gate/up row for focused validation diagnostics. This reuses the
+/// runtime dequant kernel for the primary row and includes CPU guard variants
+/// that mirror the visible kernel formula for row-local localization only.
+pub fn load_gate_up_row_mxfp4_validation(
+    model_path: &Path,
+    layer_idx: usize,
+    expert: usize,
+    output_row: usize,
+) -> Result<Mxfp4ExpertRowValidation> {
+    let prefix = format!("model.layers.{layer_idx}.mlp.experts");
+    let gate_up_blocks = load_tensor_bytes(model_path, &format!("{prefix}.gate_up_proj_blocks"))?;
+    let gate_up_scales = load_tensor_bytes(model_path, &format!("{prefix}.gate_up_proj_scales"))?;
+    let gate_up_bias = load_tensor_bytes(model_path, &format!("{prefix}.gate_up_proj_bias"))?;
+    let down_blocks = load_tensor_bytes(model_path, &format!("{prefix}.down_proj_blocks"))?;
+    let down_scales = load_tensor_bytes(model_path, &format!("{prefix}.down_proj_scales"))?;
+    let down_bias = load_tensor_bytes(model_path, &format!("{prefix}.down_proj_bias"))?;
+
+    ensure_shape_dtype(&gate_up_blocks, "U8", &[32, 5760, 90, 16])?;
+    ensure_shape_dtype(&gate_up_scales, "U8", &[32, 5760, 90])?;
+    ensure_shape_dtype(&gate_up_bias, "BF16", &[32, 5760])?;
+    ensure_shape_dtype(&down_blocks, "U8", &[32, 2880, 90, 16])?;
+    ensure_shape_dtype(&down_scales, "U8", &[32, 2880, 90])?;
+    ensure_shape_dtype(&down_bias, "BF16", &[32, 2880])?;
+    if expert >= 32 || output_row >= 5760 {
+        return Err(LLMError::ModelError(format!(
+            "gate/up row request out of range: expert={expert}, output_row={output_row}"
+        )));
+    }
+
+    let context = CudaContext::new(0)
+        .map_err(|e| LLMError::GpuError(format!("MXFP4 row CUDA context: {e}")))?;
+    let stream = context
+        .new_stream()
+        .map_err(|e| LLMError::GpuError(format!("MXFP4 row CUDA stream: {e}")))?;
+    let loader = KernelLoader::new(
+        context.clone(),
+        stream.clone(),
+        gpt_oss_gpu::kernel_loader::default_ptx_dir(),
+    )
+    .map_err(|e| LLMError::GpuError(format!("MXFP4 row kernel loader: {e}")))?;
+    let gate_up_blocks_dev = stream
+        .clone_htod(&gate_up_blocks.bytes)
+        .map_err(|e| LLMError::GpuError(format!("MXFP4 row gate_up blocks upload: {e}")))?;
+    let gate_up_scales_dev = stream
+        .clone_htod(&gate_up_scales.bytes)
+        .map_err(|e| LLMError::GpuError(format!("MXFP4 row gate_up scales upload: {e}")))?;
+    let full_weight = dequant_expert_to_f32(
+        &stream,
+        &loader,
+        &gate_up_blocks_dev,
+        &gate_up_scales_dev,
+        expert,
+        5760,
+        2880,
+    )?;
+    let row_start = output_row * 2880;
+    let current_gpu_row = full_weight[row_start..row_start + 2880].to_vec();
+    let gate_up_bias_values = bf16_bytes_to_f32(&gate_up_bias.bytes, "gate_up_proj_bias")?;
+    let bias_value = gate_up_bias_values[expert * 5760 + output_row];
+
+    let cpu_current_row = decode_gate_up_row_cpu(
+        &gate_up_blocks.bytes,
+        &gate_up_scales.bytes,
+        expert,
+        output_row,
+        false,
+        false,
+    );
+    let cpu_swapped_nibble_row = decode_gate_up_row_cpu(
+        &gate_up_blocks.bytes,
+        &gate_up_scales.bytes,
+        expert,
+        output_row,
+        true,
+        false,
+    );
+    let cpu_exp2_scale_row = decode_gate_up_row_cpu(
+        &gate_up_blocks.bytes,
+        &gate_up_scales.bytes,
+        expert,
+        output_row,
+        false,
+        true,
+    );
+
+    Ok(Mxfp4ExpertRowValidation {
+        helper_name: "gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation",
+        decode_source: "gpt_oss_dequant_expert_f16_kernel plus row-local CPU guard variants",
+        expert,
+        output_row,
+        in_features: 2880,
+        groups: 90,
+        bytes_per_group: 16,
+        values_per_byte: 2,
+        tensor_sources: Mxfp4ValidationTensorSources {
+            gate_up_proj_blocks: gate_up_blocks.source,
+            gate_up_proj_scales: gate_up_scales.source,
+            gate_up_proj_bias: gate_up_bias.source,
+            down_proj_blocks: down_blocks.source,
+            down_proj_scales: down_scales.source,
+            down_proj_bias: down_bias.source,
+        },
+        bias_value,
+        current_gpu_row,
+        cpu_current_row,
+        cpu_swapped_nibble_row,
+        cpu_exp2_scale_row,
+    })
 }
 
 /// Load and dequantize selected layer expert weights using the runtime MXFP4
@@ -215,6 +343,69 @@ fn dequant_expert_to_f32(
         .clone_dtoh(&output)
         .map_err(|e| LLMError::GpuError(format!("MXFP4 dequant download: {e}")))?;
     Ok(values.iter().map(|value| value.to_f32()).collect())
+}
+
+fn decode_gate_up_row_cpu(
+    blocks: &[u8],
+    scales: &[u8],
+    expert: usize,
+    output_row: usize,
+    swap_nibbles: bool,
+    exp2_scale: bool,
+) -> Vec<f32> {
+    let out_features = 5760usize;
+    let in_features = 2880usize;
+    let groups = 90usize;
+    let expert_row = expert * out_features + output_row;
+    let mut row = Vec::with_capacity(in_features);
+    for in_idx in 0..in_features {
+        let group_idx = in_idx / 32;
+        let pair_idx = (in_idx % 32) / 2;
+        let block_offset = (expert_row * groups + group_idx) * 16 + pair_idx;
+        let packed = blocks[block_offset];
+        let low = packed & 0x0f;
+        let high = packed >> 4;
+        let nibble = if (in_idx & 1) == 0 {
+            if swap_nibbles {
+                high
+            } else {
+                low
+            }
+        } else if swap_nibbles {
+            low
+        } else {
+            high
+        };
+        let scale_byte = scales[expert_row * groups + group_idx];
+        let scale = if exp2_scale {
+            2.0f32.powi(scale_byte as i32 - 127)
+        } else {
+            f32::from_bits((scale_byte as u32) << 23)
+        };
+        row.push(f16::from_f32(mxfp4_value(nibble) * scale).to_f32());
+    }
+    row
+}
+
+fn mxfp4_value(idx: u8) -> f32 {
+    match idx & 0x0f {
+        0 => 0.0,
+        1 => 0.5,
+        2 => 1.0,
+        3 => 1.5,
+        4 => 2.0,
+        5 => 3.0,
+        6 => 4.0,
+        7 => 6.0,
+        8 => -0.0,
+        9 => -0.5,
+        10 => -1.0,
+        11 => -1.5,
+        12 => -2.0,
+        13 => -3.0,
+        14 => -4.0,
+        _ => -6.0,
+    }
 }
 
 fn load_tensor_bytes(model_path: &Path, tensor_name: &str) -> Result<LoadedTensor> {

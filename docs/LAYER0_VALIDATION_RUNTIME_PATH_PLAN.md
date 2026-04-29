@@ -1568,6 +1568,109 @@ against the official MLP1 oracle at lane `522`, including scale/block source,
 decoded weights for that output lane, accumulation order, and BF16/f16 output
 boundary.
 
+## Expert30 MLP1 Lane 522 MXFP4 Replay Localization
+
+This slice narrows the remaining selected-expert replay blocker to the single
+expert30 MLP1 output lane that first differs before SwiGLU. Lane `522` is an
+even fused gate/up lane, so under the official interleaved split it is gate lane
+`261`. The row maps to expert `30`, output row `522`, and input dimension
+`2880`; the MXFP4 checkpoint layout is `90` groups by `16` packed bytes, with
+two 4-bit values per byte.
+
+The focused validation mode is:
+
+```bash
+--mode expert30-mlp1-debug
+```
+
+It uses:
+
+- MLP norm input:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-mlp-norm-output-before-mlp-projections-status.json`
+- Official expert30 MLP1 oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-expert30-mlp1-output-before-swiglu-status.json`
+- Checkpoint:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+
+The mode reuses the validation MXFP4 row helper:
+
+```text
+gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation
+```
+
+and keeps the runtime dequant source as the primary row:
+
+```text
+gpt_oss_dequant_expert_f16_kernel
+```
+
+It also emits row-local CPU guard variants derived from the visible kernel
+formula:
+
+- current kernel nibble/scale formula
+- high/low nibble swap guard
+- `exp2(scale_byte - 127)` scale interpretation guard
+- BF16-rounded decoded-weight guard
+- f16-rounded decoded-weight guard
+
+It tests accumulation and output variants for lane `522` only:
+
+- sequential f32 accumulation
+- reverse f32 accumulation
+- chunked/pairwise f32 accumulation
+- MXFP4-group-aligned 32-wide blockwise accumulation
+- f64 diagnostic accumulation
+- BF16 pre-bias plus BF16 bias
+- f16 output
+
+The status JSON is written outside the repo:
+
+```text
+/tmp/layer0_validation_expert30_mlp1_lane522_status.json
+```
+
+This is still validation-only. Production runtime behavior, routing, and CUDA
+kernels remain unchanged, and no raw `/tmp` or `.live` artifacts are committed.
+
+Result:
+
+```text
+classification = expert30_mlp1_lane522_accumulation_unresolved
+
+current full replay lane 522:
+  local = 0.33398438
+  official = 0.33007812
+  diff = 0.00390625
+
+best bounded variant:
+  A_current_gpu_dequant_row
+  local = 0.33203125
+  official = 0.33007812
+  diff = 0.001953125
+```
+
+Decode finding:
+
+- The CPU mirror of the current kernel nibble/scale formula reproduces the
+  runtime dequant row result.
+- Swapping high/low nibbles is much worse (`diff = 0.45996094` at lane `522`).
+- The `exp2(scale_byte - 127)` guard is equivalent for this row.
+- BF16- and f16-rounded decoded-weight guards do not clear the lane.
+
+Accumulation/output finding:
+
+- Sequential, reverse, chunked/pairwise, MXFP4-group-aligned blockwise, and f64
+  diagnostic accumulation all land at `0.33203125` after f32 bias add and BF16
+  output.
+- The current full replay policy, which rounds the pre-bias value to BF16 before
+  adding BF16 bias, lands at `0.33398438`.
+- No bounded decode, accumulation, bias, or output variant clears the official
+  `0.33007812` value.
+
+The next bounded target is source-contribution inspection for expert30 lane
+`522`: compare per-group or per-term contributions against a PyTorch/official
+MLP1 lane computation, without changing MXFP4 layout or production execution.
+
 ## Validation Commands
 
 For the skeleton slice:

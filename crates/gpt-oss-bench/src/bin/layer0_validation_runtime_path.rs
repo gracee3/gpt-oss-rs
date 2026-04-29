@@ -11,7 +11,8 @@ use serde_json::Value;
 
 #[cfg(feature = "cuda")]
 use gpt_oss_model_runner::mxfp4_validation::{
-    load_selected_experts_mxfp4_validation, Mxfp4SelectedExpertWeights,
+    load_gate_up_row_mxfp4_validation, load_selected_experts_mxfp4_validation,
+    Mxfp4SelectedExpertWeights,
 };
 
 #[derive(Debug, Parser)]
@@ -216,6 +217,10 @@ struct Cli {
     #[arg(long, default_value_t = 74)]
     sink_position: usize,
 
+    /// Focus lane for expert30 MLP1 lane-local diagnostics.
+    #[arg(long, default_value_t = 522)]
+    lane: usize,
+
     /// JSON status output path.
     #[arg(long)]
     output: PathBuf,
@@ -239,6 +244,7 @@ enum Mode {
     SwigluDebug,
     SwigluPolicyPin,
     Expert30Mlp2Debug,
+    Expert30Mlp1Debug,
 }
 
 #[derive(Debug, Serialize)]
@@ -604,6 +610,61 @@ struct SelectedExpertMlp1VariantStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct Expert30Mlp1LaneDebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    lane_metadata: Expert30Mlp1LaneMetadata,
+    official_value: f32,
+    current_local_value: f32,
+    current_diff: f32,
+    current_pre_bias: f32,
+    bias_value: f32,
+    output_rounding_policy: &'static str,
+    decode_variant_table: Vec<Expert30Mlp1LaneVariant>,
+    accumulation_variant_table: Vec<Expert30Mlp1LaneVariant>,
+    best_variant: Expert30Mlp1LaneVariant,
+    pytorch_reference: PyTorchReferenceStatus,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert30Mlp1LaneMetadata {
+    expert_id: usize,
+    output_lane: usize,
+    gate_or_up: &'static str,
+    logical_gate_up_lane: usize,
+    block_count: usize,
+    bytes_per_block: usize,
+    values_per_byte: usize,
+    expected_input_dim: usize,
+    tensor_row_layout: &'static str,
+    dequant_helper: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert30Mlp1LaneVariant {
+    name: &'static str,
+    policy: &'static str,
+    local: f32,
+    official: f32,
+    diff: f32,
+    pre_bias: f32,
+    bias: f32,
+    row_summary: Option<FiniteSummary>,
+    full_mlp1_metric: Option<HiddenComparisonStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct PyTorchReferenceStatus {
+    run: bool,
+    result: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct SelectedExpertDequantDiagnostics {
     gate_up_weight: FiniteSummary,
     gate_up_bias: FiniteSummary,
@@ -613,7 +674,7 @@ struct SelectedExpertDequantDiagnostics {
     decoded_down_dtype_shape: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct FiniteSummary {
     len: usize,
     finite_count: usize,
@@ -1044,6 +1105,7 @@ fn main() -> Result<()> {
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
+        Mode::Expert30Mlp1Debug => run_expert30_mlp1_debug(&cli),
     }
 }
 
@@ -2862,6 +2924,86 @@ fn run_expert30_mlp2_debug(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_expert30_mlp1_debug(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let mlp1_oracle = required_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(mlp1_oracle, "expert30 MLP1 oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let (mlp_norm_status, mlp_norm_values) = load_tensor_artifact(mlp_norm, &[2880], &["values"])?;
+    let (mlp1_status, mlp1_values) = load_tensor_artifact(mlp1_oracle, &[5760], &["values"])?;
+    let lane = cli.lane;
+    let artifact_blocked = !mlp_norm_status.shape_or_count_matched
+        || !mlp1_status.shape_or_count_matched
+        || lane >= mlp1_values.len();
+
+    let status = if artifact_blocked {
+        let official = mlp1_values.get(lane).copied().unwrap_or(f32::NAN);
+        Expert30Mlp1LaneDebugStatus {
+            mode: "layer0_validation_runtime_path",
+            submode: "expert30-mlp1-debug",
+            classification: "expert30_mlp1_lane522_artifact_identity_mismatch",
+            implemented: false,
+            runtime_behavior_changed: false,
+            validation_only: true,
+            lane_metadata: expert30_mlp1_lane_metadata(lane),
+            official_value: official,
+            current_local_value: f32::NAN,
+            current_diff: f32::NAN,
+            current_pre_bias: f32::NAN,
+            bias_value: f32::NAN,
+            output_rounding_policy: "not_run_artifact_blocked",
+            decode_variant_table: Vec::new(),
+            accumulation_variant_table: Vec::new(),
+            best_variant: empty_mlp1_lane_variant("not_run", "artifact blocker", official),
+            pytorch_reference: PyTorchReferenceStatus {
+                run: false,
+                result: "not_run",
+            },
+            next_bounded_step: "resolve the MLP norm or expert30 MLP1 artifact mismatch",
+        }
+    } else {
+        match execute_expert30_mlp1_debug_mxfp4(model, &mlp_norm_values, &mlp1_values, lane) {
+            Ok(status) => status,
+            Err(_) => Expert30Mlp1LaneDebugStatus {
+                mode: "layer0_validation_runtime_path",
+                submode: "expert30-mlp1-debug",
+                classification: "expert30_mlp1_lane522_decode_semantics_unresolved",
+                implemented: false,
+                runtime_behavior_changed: false,
+                validation_only: true,
+                lane_metadata: expert30_mlp1_lane_metadata(lane),
+                official_value: mlp1_values[lane],
+                current_local_value: f32::NAN,
+                current_diff: f32::NAN,
+                current_pre_bias: f32::NAN,
+                bias_value: f32::NAN,
+                output_rounding_policy: "not_run_mxfp4_loader_failed",
+                decode_variant_table: Vec::new(),
+                accumulation_variant_table: Vec::new(),
+                best_variant: empty_mlp1_lane_variant(
+                    "not_run",
+                    "MXFP4 row helper failed",
+                    mlp1_values[lane],
+                ),
+                pytorch_reference: PyTorchReferenceStatus {
+                    run: false,
+                    result: "not_run",
+                },
+                next_bounded_step: "fix the narrow validation MXFP4 gate/up row loading path",
+            },
+        }
+    };
+
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -4100,6 +4242,105 @@ fn round_f16(value: f32) -> f32 {
     f16::from_f32(value).to_f32()
 }
 
+fn bf16_round_vec(values: &[f32]) -> Vec<f32> {
+    values.iter().map(|&value| round_bf16(value)).collect()
+}
+
+fn f16_round_vec(values: &[f32]) -> Vec<f32> {
+    values.iter().map(|&value| round_f16(value)).collect()
+}
+
+fn dot_sequential_f32(input: &[f32], weights: &[f32], f32_input: bool) -> f32 {
+    input
+        .iter()
+        .zip(weights.iter())
+        .fold(0.0f32, |acc, (&input_value, &weight)| {
+            let input_value = if f32_input {
+                input_value
+            } else {
+                round_bf16(input_value)
+            };
+            acc + input_value * weight
+        })
+}
+
+fn dot_reverse_f32(input: &[f32], weights: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(weights.iter())
+        .rev()
+        .fold(0.0f32, |acc, (&input_value, &weight)| {
+            acc + round_bf16(input_value) * weight
+        })
+}
+
+fn dot_chunked_pairwise_f32(input: &[f32], weights: &[f32]) -> f32 {
+    let mut partials = Vec::new();
+    for chunk in (0..input.len()).step_by(64) {
+        let mut partial = 0.0f32;
+        for idx in chunk..(chunk + 64).min(input.len()) {
+            partial += round_bf16(input[idx]) * weights[idx];
+        }
+        partials.push(partial);
+    }
+    partials.into_iter().sum()
+}
+
+fn dot_blockwise_f32(input: &[f32], weights: &[f32], block: usize) -> f32 {
+    let mut total = 0.0f32;
+    for chunk in (0..input.len()).step_by(block) {
+        let mut partial = 0.0f32;
+        for idx in chunk..(chunk + block).min(input.len()) {
+            partial += round_bf16(input[idx]) * weights[idx];
+        }
+        total += partial;
+    }
+    total
+}
+
+fn dot_f64_diagnostic(input: &[f32], weights: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(weights.iter())
+        .fold(0.0f64, |acc, (&input_value, &weight)| {
+            acc + round_bf16(input_value) as f64 * weight as f64
+        }) as f32
+}
+
+fn expert30_mlp1_lane_metadata(lane: usize) -> Expert30Mlp1LaneMetadata {
+    Expert30Mlp1LaneMetadata {
+        expert_id: 30,
+        output_lane: lane,
+        gate_or_up: if lane.is_multiple_of(2) { "gate" } else { "up" },
+        logical_gate_up_lane: lane / 2,
+        block_count: 90,
+        bytes_per_block: 16,
+        values_per_byte: 2,
+        expected_input_dim: 2880,
+        tensor_row_layout:
+            "[expert, output_row, group, packed_pair_byte] with 90 groups * 16 bytes * 2 values",
+        dequant_helper: "gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation",
+    }
+}
+
+fn empty_mlp1_lane_variant(
+    name: &'static str,
+    policy: &'static str,
+    official: f32,
+) -> Expert30Mlp1LaneVariant {
+    Expert30Mlp1LaneVariant {
+        name,
+        policy,
+        local: f32::NAN,
+        official,
+        diff: f32::NAN,
+        pre_bias: f32::NAN,
+        bias: f32::NAN,
+        row_summary: None,
+        full_mlp1_metric: None,
+    }
+}
+
 struct KRopeComparison {
     metrics: ComparisonMetrics,
     first_mismatch: Option<LogicalDiff>,
@@ -4992,6 +5233,207 @@ fn execute_selected_experts_pinned_swiglu_debug_mxfp4(
     ))
 }
 
+#[cfg(feature = "cuda")]
+fn execute_expert30_mlp1_debug_mxfp4(
+    model: &Path,
+    mlp_norm: &[f32],
+    mlp1_oracle: &[f32],
+    lane: usize,
+) -> Result<Expert30Mlp1LaneDebugStatus> {
+    let row = load_gate_up_row_mxfp4_validation(model, 0, 30, lane)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, &[30])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert30 = loaded
+        .experts
+        .first()
+        .context("MXFP4 validation loader did not return expert30")?;
+    let full_trace = compute_selected_expert_trace(mlp_norm, expert30, MlpReplayPolicy::Current);
+    let full_metric = compare_hidden(&full_trace.mlp1_before_swiglu, mlp1_oracle);
+
+    let official = mlp1_oracle[lane];
+    let bias = row.bias_value;
+    let row_weight_bf16 = bf16_round_vec(&row.current_gpu_row);
+    let row_weight_f16 = f16_round_vec(&row.current_gpu_row);
+    let decode_rows = [
+        (
+            "A_current_gpu_dequant_row",
+            "runtime gpt_oss_dequant_expert_f16_kernel row, sequential f32 accumulation, BF16 output",
+            row.current_gpu_row.as_slice(),
+            Some(full_metric),
+        ),
+        (
+            "B_cpu_current_kernel_formula",
+            "CPU mirror of current kernel nibble/scale formula, f16-rounded weight, sequential f32 accumulation, BF16 output",
+            row.cpu_current_row.as_slice(),
+            None,
+        ),
+        (
+            "C_swap_high_low_nibble",
+            "CPU guard with high/low nibbles swapped inside each packed byte",
+            row.cpu_swapped_nibble_row.as_slice(),
+            None,
+        ),
+        (
+            "D_exp2_scale_guard",
+            "CPU guard using exp2(scale_byte - 127) scale interpretation",
+            row.cpu_exp2_scale_row.as_slice(),
+            None,
+        ),
+        (
+            "E_bf16_round_decoded_weight",
+            "current GPU row with decoded weights BF16-rounded before dot",
+            row_weight_bf16.as_slice(),
+            None,
+        ),
+        (
+            "F_f16_decoded_weight",
+            "current GPU row with decoded weights f16-rounded before dot",
+            row_weight_f16.as_slice(),
+            None,
+        ),
+    ];
+    let decode_variant_table = decode_rows
+        .iter()
+        .map(|(name, policy, weights, full_metric)| {
+            let pre_bias = dot_sequential_f32(mlp_norm, weights, false);
+            let local = round_bf16(pre_bias + round_bf16(bias));
+            Expert30Mlp1LaneVariant {
+                name,
+                policy,
+                local,
+                official,
+                diff: (local - official).abs(),
+                pre_bias,
+                bias,
+                row_summary: Some(finite_summary(weights)),
+                full_mlp1_metric: full_metric.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let current_row = row.current_gpu_row.as_slice();
+    let accumulation_specs = [
+        (
+            "sequential_f32",
+            "sequential f32 accumulation, f32 bias add, BF16 output",
+            dot_sequential_f32(mlp_norm, current_row, false),
+            "bf16",
+        ),
+        (
+            "reverse_f32",
+            "reverse f32 accumulation, f32 bias add, BF16 output",
+            dot_reverse_f32(mlp_norm, current_row),
+            "bf16",
+        ),
+        (
+            "chunked_pairwise_f32",
+            "64-wide chunked/pairwise f32 accumulation, f32 bias add, BF16 output",
+            dot_chunked_pairwise_f32(mlp_norm, current_row),
+            "bf16",
+        ),
+        (
+            "blockwise_32_f32",
+            "MXFP4-group-aligned 32-wide blockwise f32 accumulation, f32 bias add, BF16 output",
+            dot_blockwise_f32(mlp_norm, current_row, 32),
+            "bf16",
+        ),
+        (
+            "f64_diagnostic",
+            "f64 accumulation diagnostic, f32 bias add, BF16 output",
+            dot_f64_diagnostic(mlp_norm, current_row),
+            "bf16",
+        ),
+        (
+            "bf16_prebias_bf16_bias",
+            "sequential f32 accumulation, BF16 pre-bias, BF16 bias add, BF16 output",
+            dot_sequential_f32(mlp_norm, current_row, false),
+            "bf16_prebias",
+        ),
+        (
+            "output_f16",
+            "sequential f32 accumulation, f32 bias add, f16 output",
+            dot_sequential_f32(mlp_norm, current_row, false),
+            "f16",
+        ),
+    ];
+    let accumulation_variant_table = accumulation_specs
+        .iter()
+        .map(|(name, policy, pre_bias, output)| {
+            let local = match *output {
+                "bf16_prebias" => round_bf16(round_bf16(*pre_bias) + round_bf16(bias)),
+                "f16" => round_f16(*pre_bias + round_bf16(bias)),
+                _ => round_bf16(*pre_bias + round_bf16(bias)),
+            };
+            Expert30Mlp1LaneVariant {
+                name,
+                policy,
+                local,
+                official,
+                diff: (local - official).abs(),
+                pre_bias: *pre_bias,
+                bias,
+                row_summary: None,
+                full_mlp1_metric: None,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let best_variant = decode_variant_table
+        .iter()
+        .chain(accumulation_variant_table.iter())
+        .min_by(|a, b| a.diff.total_cmp(&b.diff))
+        .cloned()
+        .unwrap_or_else(|| empty_mlp1_lane_variant("not_run", "no variants", official));
+    let current_local = full_trace
+        .mlp1_before_swiglu
+        .get(lane)
+        .copied()
+        .unwrap_or(f32::NAN);
+    let current_pre_bias = decode_variant_table
+        .first()
+        .map(|variant| variant.pre_bias)
+        .unwrap_or(f32::NAN);
+    let classification = if best_variant.diff == 0.0 {
+        if best_variant.name.contains("nibble") || best_variant.name.contains("scale") {
+            "expert30_mlp1_lane522_matches_after_decode_policy"
+        } else if best_variant.name.contains("bias") || best_variant.name.contains("output") {
+            "expert30_mlp1_lane522_bias_or_output_rounding"
+        } else {
+            "expert30_mlp1_lane522_matches_after_accumulation_policy"
+        }
+    } else if best_variant.name.contains("nibble") || best_variant.name.contains("scale") {
+        "expert30_mlp1_lane522_decode_semantics_unresolved"
+    } else {
+        "expert30_mlp1_lane522_accumulation_unresolved"
+    };
+
+    Ok(Expert30Mlp1LaneDebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "expert30-mlp1-debug",
+        classification,
+        implemented: true,
+        runtime_behavior_changed: false,
+        validation_only: true,
+        lane_metadata: expert30_mlp1_lane_metadata(lane),
+        official_value: official,
+        current_local_value: current_local,
+        current_diff: (current_local - official).abs(),
+        current_pre_bias,
+        bias_value: bias,
+        output_rounding_policy:
+            "current full replay rounds MLP1 pre-bias to BF16, then BF16 bias add/output",
+        decode_variant_table,
+        accumulation_variant_table,
+        best_variant,
+        pytorch_reference: PyTorchReferenceStatus {
+            run: false,
+            result: "not_run_no_torch_runtime_dependency",
+        },
+        next_bounded_step: "inspect expert30 lane 522 source group contributions and compare against PyTorch/official MLP1 accumulation for the single lane",
+    })
+}
+
 #[cfg(not(feature = "cuda"))]
 fn execute_selected_experts_pinned_swiglu_debug_mxfp4(
     _model: &Path,
@@ -5004,6 +5446,16 @@ fn execute_selected_experts_pinned_swiglu_debug_mxfp4(
     _mlp2_oracle: &[f32],
 ) -> Result<SelectedExpertsPinnedSwigluDebugResult> {
     anyhow::bail!("selected-experts pinned-SwiGLU debug requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert30_mlp1_debug_mxfp4(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _mlp1_oracle: &[f32],
+    _lane: usize,
+) -> Result<Expert30Mlp1LaneDebugStatus> {
+    anyhow::bail!("expert30 MLP1 lane debug requires the cuda feature")
 }
 
 #[cfg(feature = "cuda")]
