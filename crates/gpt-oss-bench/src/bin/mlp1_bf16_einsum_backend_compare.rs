@@ -10,11 +10,14 @@ use serde_json::{json, Value};
 #[cfg(feature = "cuda")]
 use gpt_oss_gpu::{cublas::CublasHandle, kernel_loader::KernelLoader, CudaContext};
 #[cfg(feature = "cuda")]
-use gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation;
+use gpt_oss_model_runner::mxfp4_validation::{
+    load_gate_up_row_mxfp4_validation, load_selected_experts_mxfp4_validation,
+};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Mode {
     Lane522,
+    ExpertMlp1,
 }
 
 #[derive(Debug, Parser)]
@@ -29,8 +32,8 @@ struct Cli {
     #[arg(long)]
     mlp_norm: PathBuf,
 
-    #[arg(long)]
-    expert30_mlp1_oracle: PathBuf,
+    #[arg(long = "expert-mlp1-oracle", visible_alias = "expert30-mlp1-oracle")]
+    expert_mlp1_oracle: PathBuf,
 
     #[arg(long)]
     model: PathBuf,
@@ -63,23 +66,52 @@ struct CandidateResult {
     metadata: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct Metric {
+    max_abs_diff: f32,
+    mean_abs_diff: f32,
+    mismatches: usize,
+    first_index: Option<usize>,
+    worst_index: Option<usize>,
+    worst_actual: Option<f32>,
+    worst_expected: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ParitySummary {
+    even_gate: Metric,
+    odd_up: Metric,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorBackendResult {
+    name: String,
+    policy: String,
+    metric: Option<Metric>,
+    lane522: Option<CandidateResult>,
+    parity_summary: Option<ParitySummary>,
+    blocker: Option<String>,
+    metadata: Value,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.mode {
         Mode::Lane522 => run_lane522(&cli),
+        Mode::ExpertMlp1 => run_expert_mlp1(&cli),
     }
 }
 
 fn run_lane522(cli: &Cli) -> Result<()> {
     validate_path(&cli.mlp_norm, "MLP norm input")?;
-    validate_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    validate_path(&cli.expert_mlp1_oracle, "expert MLP1 oracle")?;
     validate_path(&cli.model, "model")?;
     if let Some(path) = &cli.pytorch_terms {
         validate_path(path, "PyTorch terms")?;
     }
 
     let mlp_norm = load_values(&cli.mlp_norm, 2880, "MLP norm input")?;
-    let mlp1_oracle = load_values(&cli.expert30_mlp1_oracle, 5760, "expert30 MLP1 oracle")?;
+    let mlp1_oracle = load_values(&cli.expert_mlp1_oracle, 5760, "expert MLP1 oracle")?;
     anyhow::ensure!(
         cli.expert == 30,
         "Stage 1 microbench is intentionally restricted to expert30"
@@ -114,7 +146,7 @@ fn run_lane522(cli: &Cli) -> Result<()> {
             status["pytorch_reference"] = pytorch_reference;
             status["artifacts"] = json!({
                 "mlp_norm": artifact_path(&cli.mlp_norm),
-                "expert30_mlp1_oracle": artifact_path(&cli.expert30_mlp1_oracle),
+                "expert_mlp1_oracle": artifact_path(&cli.expert_mlp1_oracle),
                 "pytorch_terms": cli.pytorch_terms.as_ref().map(|path| artifact_path(path)),
             });
             status
@@ -127,6 +159,47 @@ fn run_lane522(cli: &Cli) -> Result<()> {
             "validation_only": true,
             "error": err.to_string(),
             "next_bounded_step": "fix the validation-only lane522 MXFP4 row/backend microbench"
+        }),
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_expert_mlp1(cli: &Cli) -> Result<()> {
+    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(&cli.expert_mlp1_oracle, "expert MLP1 oracle")?;
+    validate_path(&cli.model, "model")?;
+
+    let mlp_norm = load_values(&cli.mlp_norm, 2880, "MLP norm input")?;
+    let mlp1_oracle = load_values(&cli.expert_mlp1_oracle, 5760, "expert MLP1 oracle")?;
+    anyhow::ensure!(
+        cli.expert == 30,
+        "Stage 1 full expert MLP1 compare is intentionally restricted to expert30"
+    );
+
+    let status = execute_expert_mlp1_backend_compare(
+        &cli.model,
+        &mlp_norm,
+        &mlp1_oracle,
+        cli.expert,
+        cli.lane,
+    );
+    let status = match status {
+        Ok(mut status) => {
+            status["artifacts"] = json!({
+                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "expert_mlp1_oracle": artifact_path(&cli.expert_mlp1_oracle),
+            });
+            status
+        }
+        Err(err) => json!({
+            "mode": "mlp1_bf16_einsum_backend_compare",
+            "submode": "expert-mlp1",
+            "classification": "mlp1_bf16_backend_expert30_blocked_by_artifacts",
+            "runtime_behavior_changed": false,
+            "validation_only": true,
+            "error": err.to_string(),
+            "next_bounded_step": "fix the validation-only full expert30 MLP1 artifact/backend path"
         }),
     };
 
@@ -285,6 +358,163 @@ fn execute_lane522_backend_compare(
     }))
 }
 
+#[cfg(feature = "cuda")]
+fn execute_expert_mlp1_backend_compare(
+    model: &Path,
+    mlp_norm: &[f32],
+    oracle: &[f32],
+    expert: usize,
+    lane: usize,
+) -> Result<Value> {
+    let weights = load_selected_experts_mxfp4_validation(model, 0, &[expert])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert_weights = weights
+        .experts
+        .iter()
+        .find(|weights| weights.expert == expert)
+        .context("selected expert weights missing after load")?;
+
+    let scalar_output = full_scalar_baseline(
+        mlp_norm,
+        &expert_weights.gate_up_weight,
+        &expert_weights.gate_up_bias,
+        5760,
+        2880,
+    );
+    let scalar_result = vector_result_from_output(
+        "scalar_baseline",
+        "BF16 input, dequantized f16 weights widened to f32, explicit f32 product/sum, f32 bias add, BF16 output",
+        &scalar_output,
+        oracle,
+        lane,
+        None,
+        json!({ "backend": "scalar_cpu_diagnostic" }),
+    );
+
+    let tensor_op_result = run_cublas_full_expert_candidate(
+        "cublas_bf16_tensor_op",
+        "cuBLAS BF16 GEMM tensor-op default for [1,2880] x [5760,2880]^T, f32 bias add, BF16 output",
+        mlp_norm,
+        &expert_weights.gate_up_weight,
+        &expert_weights.gate_up_bias,
+        oracle,
+        lane,
+        false,
+    );
+    let pedantic_result = run_cublas_full_expert_candidate(
+        "cublas_bf16_pedantic_no_tensor_op",
+        "cuBLAS BF16 pedantic/no-tensor-op scoped call for [1,2880] x [5760,2880]^T, f32 bias add, BF16 output",
+        mlp_norm,
+        &expert_weights.gate_up_weight,
+        &expert_weights.gate_up_bias,
+        oracle,
+        lane,
+        true,
+    );
+
+    let backend_results = vec![scalar_result, tensor_op_result, pedantic_result];
+    let best_backend = backend_results
+        .iter()
+        .filter(|result| result.metric.is_some())
+        .min_by(|a, b| {
+            a.metric
+                .as_ref()
+                .map(|metric| metric.max_abs_diff)
+                .unwrap_or(f32::INFINITY)
+                .total_cmp(
+                    &b.metric
+                        .as_ref()
+                        .map(|metric| metric.max_abs_diff)
+                        .unwrap_or(f32::INFINITY),
+                )
+        })
+        .cloned();
+    let any_match = backend_results.iter().any(|result| {
+        result
+            .metric
+            .as_ref()
+            .is_some_and(|metric| metric.mismatches == 0)
+    });
+    let scalar_mismatches = backend_results
+        .iter()
+        .find(|result| result.name == "scalar_baseline")
+        .and_then(|result| result.metric.as_ref())
+        .map(|metric| metric.mismatches)
+        .unwrap_or(usize::MAX);
+    let any_improves = backend_results.iter().any(|result| {
+        result
+            .metric
+            .as_ref()
+            .is_some_and(|metric| metric.mismatches < scalar_mismatches)
+    });
+    let any_cublas_ran = backend_results
+        .iter()
+        .any(|result| result.name.starts_with("cublas_") && result.metric.is_some());
+    let classification = if any_match {
+        "mlp1_bf16_backend_expert30_matches_oracle"
+    } else if any_improves {
+        "mlp1_bf16_backend_expert30_improves_but_mismatches"
+    } else if any_cublas_ran {
+        "mlp1_bf16_backend_expert30_mismatch"
+    } else {
+        "mlp1_bf16_backend_expert30_blocked_by_cublas_api"
+    };
+
+    Ok(json!({
+        "mode": "mlp1_bf16_einsum_backend_compare",
+        "submode": "expert-mlp1",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "validation_only": true,
+        "expert": expert,
+        "source_identity": {
+            "model": model.display().to_string(),
+            "tensor_names": {
+                "blocks": "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                "scales": "model.layers.0.mlp.experts.gate_up_proj_scales",
+                "bias": "model.layers.0.mlp.experts.gate_up_proj_bias"
+            },
+            "mxfp4_loader": weights.helper_name,
+            "decode_source": weights.decode_source,
+            "tensor_sources": weights.tensor_sources,
+        },
+        "backend_results": backend_results,
+        "scalar_baseline": backend_results.iter().find(|result| result.name == "scalar_baseline"),
+        "lane522_trace": backend_results
+            .iter()
+            .map(|result| json!({
+                "backend": result.name,
+                "trace": result.lane522,
+            }))
+            .collect::<Vec<_>>(),
+        "gate_up_parity_summary": backend_results
+            .iter()
+            .map(|result| json!({
+                "backend": result.name,
+                "parity": result.parity_summary,
+            }))
+            .collect::<Vec<_>>(),
+        "best_backend": best_backend,
+        "next_bounded_step": match classification {
+            "mlp1_bf16_backend_expert30_matches_oracle" => "run selected experts [3,30,11,27] through MLP1 with the matching cuBLAS BF16 backend",
+            "mlp1_bf16_backend_expert30_improves_but_mismatches" => "localize the remaining full expert30 MLP1 mismatches before selected experts",
+            "mlp1_bf16_backend_expert30_mismatch" => "investigate why lane522 cuBLAS success does not generalize to full expert30 MLP1",
+            _ => "fix or expose the narrow cuBLAS validation backend API for full expert30 MLP1",
+        },
+    }))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert_mlp1_backend_compare(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _oracle: &[f32],
+    _expert: usize,
+    _lane: usize,
+) -> Result<Value> {
+    anyhow::bail!("full expert MLP1 backend compare requires the cuda feature")
+}
+
 #[cfg(not(feature = "cuda"))]
 fn execute_lane522_backend_compare(
     _model: &Path,
@@ -296,6 +526,195 @@ fn execute_lane522_backend_compare(
     _lane: usize,
 ) -> Result<Value> {
     anyhow::bail!("lane522 backend compare requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn run_cublas_full_expert_candidate(
+    name: &str,
+    policy: &str,
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    oracle: &[f32],
+    lane: usize,
+    pedantic: bool,
+) -> VectorBackendResult {
+    let result = (|| -> Result<(Vec<f32>, Value)> {
+        let context = CudaContext::new(0).context("CUDA context for full expert cuBLAS")?;
+        let stream = context
+            .new_stream()
+            .context("CUDA stream for full expert cuBLAS")?;
+        let blas = CublasHandle::new(stream.clone()).context("cuBLAS handle")?;
+        let input_bf16 = bf16_round_vec(input);
+        let weight_bf16 = bf16_round_vec(weight);
+        let input_dev = stream
+            .clone_htod(&input_bf16)
+            .context("upload full expert cuBLAS input")?;
+        let weight_dev = stream
+            .clone_htod(&weight_bf16)
+            .context("upload full expert cuBLAS weight")?;
+        let mut output_dev = stream
+            .alloc_zeros::<bf16>(5760)
+            .context("allocate full expert cuBLAS output")?;
+        let metadata = if pedantic {
+            let restore = blas
+                .bf16_gemm_pedantic_into(
+                    1,
+                    5760,
+                    input.len(),
+                    1.0,
+                    &input_dev,
+                    &weight_dev,
+                    0.0,
+                    &mut output_dev,
+                )
+                .context("full expert cuBLAS pedantic BF16 GEMM")?;
+            json!({
+                "math_mode": restore.math_mode,
+                "atomics_mode": restore.atomics_mode,
+                "math_mode_restored": restore.math_mode_restored,
+                "atomics_mode_restored": restore.atomics_mode_restored,
+            })
+        } else {
+            blas.bf16_gemm_into(
+                1,
+                5760,
+                input.len(),
+                1.0,
+                &input_dev,
+                &weight_dev,
+                0.0,
+                &mut output_dev,
+            )
+            .context("full expert cuBLAS BF16 GEMM")?;
+            json!({ "math_mode": "default_tensor_op", "atomics_mode": "unchanged" })
+        };
+        stream.synchronize().context("full expert cuBLAS sync")?;
+        let pre_bias = stream
+            .clone_dtoh(&output_dev)
+            .context("download full expert cuBLAS output")?;
+        let output = pre_bias
+            .iter()
+            .zip(bias)
+            .map(|(&value, &bias)| round_bf16(f32::from(value) + round_bf16(bias)))
+            .collect();
+        Ok((output, metadata))
+    })();
+    match result {
+        Ok((output, metadata)) => {
+            vector_result_from_output(name, policy, &output, oracle, lane, None, metadata)
+        }
+        Err(err) => VectorBackendResult {
+            name: name.to_string(),
+            policy: policy.to_string(),
+            metric: None,
+            lane522: None,
+            parity_summary: None,
+            blocker: Some(err.to_string()),
+            metadata: json!({}),
+        },
+    }
+}
+
+fn full_scalar_baseline(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    out_features: usize,
+    in_features: usize,
+) -> Vec<f32> {
+    weight
+        .chunks_exact(in_features)
+        .take(out_features)
+        .zip(bias)
+        .map(|(row, &bias)| round_bf16(dot_sequential_f32(input, row) + round_bf16(bias)))
+        .collect()
+}
+
+fn vector_result_from_output(
+    name: &str,
+    policy: &str,
+    output: &[f32],
+    oracle: &[f32],
+    lane: usize,
+    blocker: Option<String>,
+    metadata: Value,
+) -> VectorBackendResult {
+    let metric = compare_vectors(output, oracle);
+    let lane_output = output.get(lane).copied();
+    let lane_expected = oracle.get(lane).copied();
+    let lane522 = lane_output
+        .zip(lane_expected)
+        .map(|(actual, expected)| CandidateResult {
+            name: format!("{name}_lane{lane}"),
+            policy: policy.to_string(),
+            pre_bias: None,
+            bias: f32::NAN,
+            output: Some(actual),
+            diff_vs_official: Some((actual - expected).abs()),
+            diff_vs_pytorch: None,
+            exact_vs_official: actual == expected,
+            exact_vs_pytorch: false,
+            blocker: None,
+            metadata: json!({ "lane": lane, "expected": expected }),
+        });
+    VectorBackendResult {
+        name: name.to_string(),
+        policy: policy.to_string(),
+        metric: Some(metric),
+        lane522,
+        parity_summary: Some(parity_summary(output, oracle)),
+        blocker,
+        metadata,
+    }
+}
+
+fn compare_vectors(actual: &[f32], expected: &[f32]) -> Metric {
+    let mut max_abs_diff = 0.0f32;
+    let mut sum_abs_diff = 0.0f32;
+    let mut mismatches = 0usize;
+    let mut first_index = None;
+    let mut worst_index = None;
+    let mut worst_actual = None;
+    let mut worst_expected = None;
+    for (idx, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        let diff = (actual - expected).abs();
+        sum_abs_diff += diff;
+        if diff != 0.0 {
+            mismatches += 1;
+            first_index.get_or_insert(idx);
+        }
+        if diff > max_abs_diff {
+            max_abs_diff = diff;
+            worst_index = Some(idx);
+            worst_actual = Some(actual);
+            worst_expected = Some(expected);
+        }
+    }
+    Metric {
+        max_abs_diff,
+        mean_abs_diff: if actual.is_empty() {
+            0.0
+        } else {
+            sum_abs_diff / actual.len() as f32
+        },
+        mismatches,
+        first_index,
+        worst_index,
+        worst_actual,
+        worst_expected,
+    }
+}
+
+fn parity_summary(actual: &[f32], expected: &[f32]) -> ParitySummary {
+    let even_actual: Vec<f32> = actual.iter().step_by(2).copied().collect();
+    let even_expected: Vec<f32> = expected.iter().step_by(2).copied().collect();
+    let odd_actual: Vec<f32> = actual.iter().skip(1).step_by(2).copied().collect();
+    let odd_expected: Vec<f32> = expected.iter().skip(1).step_by(2).copied().collect();
+    ParitySummary {
+        even_gate: compare_vectors(&even_actual, &even_expected),
+        odd_up: compare_vectors(&odd_actual, &odd_expected),
+    }
 }
 
 #[cfg(feature = "cuda")]

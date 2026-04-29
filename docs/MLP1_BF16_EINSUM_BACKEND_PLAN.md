@@ -217,6 +217,93 @@ Next bounded step:
 Run full expert30 MLP1 with the matching cuBLAS BF16 backend candidate.
 ```
 
+## Stage 1 Full Expert30 MLP1 Status
+
+Status JSON:
+
+```text
+/tmp/mlp1_bf16_einsum_backend_expert30_status.json
+```
+
+Classification:
+
+```text
+mlp1_bf16_backend_expert30_matches_oracle
+```
+
+Lane `522` result recap:
+
+```text
+official lane 522 = 0.330078125
+scalar baseline lane 522 = 0.33203125
+cuBLAS BF16 tensor-op lane 522 = 0.330078125
+cuBLAS BF16 pedantic lane 522 = 0.330078125
+```
+
+Full expert30 MLP1 metrics:
+
+```text
+scalar baseline:
+  max_abs_diff = 0.0625
+  mean_abs_diff = 0.0014097106
+  mismatches = 1791
+
+cuBLAS BF16 tensor-op:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+cuBLAS BF16 pedantic/no-tensor-op:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+```
+
+Gate/up parity:
+
+```text
+scalar baseline:
+  even gate lanes:
+    max_abs_diff = 0.0625
+    mean_abs_diff = 0.0012783934
+    mismatches = 888
+  odd up lanes:
+    max_abs_diff = 0.03125
+    mean_abs_diff = 0.0015410278
+    mismatches = 903
+
+cuBLAS BF16 tensor-op:
+  even gate lanes exact
+  odd up lanes exact
+
+cuBLAS BF16 pedantic/no-tensor-op:
+  even gate lanes exact
+  odd up lanes exact
+```
+
+Best backend:
+
+```text
+cuBLAS BF16 tensor-op
+```
+
+The lane `522` cuBLAS result generalizes to the full expert30 MLP1 output
+before SwiGLU. Both normal cuBLAS BF16 tensor-op and the scoped
+pedantic/no-tensor-op variant reproduce the official `[5760]` oracle exactly.
+The scalar Rust explicit replay remains mismatched and is now a diagnostic
+contrast, not the candidate backend.
+
+Production runtime behavior did not change. The full expert30 path is still an
+isolated validation/backend microbench.
+
+Next bounded step:
+
+```text
+Run selected experts [3,30,11,27] through MLP1 with the matching cuBLAS BF16
+backend, then reuse the pinned Rust SwiGLU and existing MLP2/down projection
+validation path.
+```
+
 ## Validation Commands
 
 Start each slice with:
