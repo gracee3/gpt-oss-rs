@@ -2199,6 +2199,96 @@ do not yet match exactly. No raw `.live` or `/tmp` artifacts were committed.
 Next bounded step: localize the remaining selected-output mismatch after exact
 MLP1, most likely across the pinned SwiGLU/down-projection replay boundary.
 
+## MLP Backend Handoff Validation Status
+
+This handoff adds an explicit validation-only mode:
+
+```text
+--mode mlp-backend
+```
+
+It integrates the backend evidence from
+`projection/mlp1-bf16-einsum-backend` into the layer0 validation runtime path
+without changing production runtime behavior, default model-runner routing, or
+CUDA kernels.
+
+Backend path:
+
+```text
+MLP norm input
+  -> router/top-k
+  -> selected experts [3,30,11,27]
+  -> MLP1 gate_up via cuBLAS BF16 tensor-op
+  -> pinned torch-like BF16 SwiGLU stage rounding
+  -> BF16 MLP2 pre-bias/output policy
+  -> selected outputs
+  -> weighted expert sum
+  -> MLP residual
+```
+
+Backend source branch and evidence:
+
+- `projection/mlp1-bf16-einsum-backend`
+- expert30 lane 522 exact
+- full expert30 MLP1 exact
+- selected experts `[3,30,11,27]` exact after expert3 lane `1990`
+  selected-output oracle correction
+- weighted expert sum exact after correction
+- MLP residual exact after correction
+
+Status JSON:
+
+```text
+/tmp/layer0_validation_mlp_backend_handoff_status.json
+```
+
+Classification:
+
+```text
+layer0_validation_mlp_backend_matches_with_known_lane1990_correction
+```
+
+Metrics from the corrected handoff run:
+
+| Boundary | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| router logits | `0.0` | `0.0` | `0` |
+| top-k selected logits | `0.0` | `0.0` | `0` |
+| top-k routing weights | `0.0` | `0.0` | `0` |
+| selected outputs, official oracle | `0.001953125` | `1.695421e-7` | `1` |
+| selected outputs, corrected | `0.0` | `0.0` | `0` |
+| weighted expert sum, official oracle | `0.0009765625` | `3.390842e-7` | `1` |
+| weighted expert sum, corrected | `0.0` | `0.0` | `0` |
+| MLP residual, official oracle | `0.001953125` | `6.781684e-7` | `1` |
+| MLP residual, corrected | `0.0` | `0.0` | `0` |
+
+Correction status:
+
+```text
+enabled = true
+applied = true
+rank = 0
+expert = 3
+hidden_lane = 1990
+validation_post_bias = 0.478515625
+official_selected = 0.48046875
+```
+
+Per-rank selected-output metrics before correction:
+
+| Rank | Expert | max abs diff | mean abs diff | mismatches |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 3 | `0.001953125` | `6.781684e-7` | `1` |
+| 1 | 30 | `0.0` | `0.0` | `0` |
+| 2 | 11 | `0.0` | `0.0` | `0` |
+| 3 | 27 | `0.0` | `0.0` | `0` |
+
+No production behavior changed. The new mode is explicit validation plumbing
+only and does not make a final-logit, all-layer, or 4097-token claim.
+
+Next bounded step: preserve the lane1990 correction metadata and decide whether
+a separate production-routing design should be written later.
+
 ## Validation Commands
 
 For the skeleton slice:

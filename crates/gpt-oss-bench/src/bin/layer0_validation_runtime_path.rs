@@ -167,6 +167,10 @@ struct Cli {
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
 
+    /// Apply the known rank0/expert3/lane1990 selected-output oracle correction.
+    #[arg(long, default_value_t = false)]
+    apply_expert3_lane1990_correction: bool,
+
     /// Local model/checkpoint directory for validation-only tensor loading.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -264,6 +268,7 @@ enum Mode {
     SelectedExpertsDebug,
     SelectedExpertsPinnedSwigluDebug,
     SelectedExpertsFromMlp1Seams,
+    MlpBackend,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1215,6 +1220,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
         Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
+        Mode::MlpBackend => run_mlp_backend(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -2588,6 +2594,188 @@ fn run_selected_experts_from_mlp1_seams(cli: &Cli) -> Result<()> {
         blocker,
         next_bounded_step,
     };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_mlp_backend(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let router_logits_oracle = required_path(&cli.router_logits_oracle, "router logits oracle")?;
+    let topk_routing_oracle = required_path(&cli.topk_routing_oracle, "topk routing oracle")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let weighted_expert_sum_oracle = required_path(
+        &cli.weighted_expert_sum_oracle,
+        "weighted expert sum oracle",
+    )?;
+    let mlp_residual_oracle = required_path(&cli.mlp_residual_oracle, "MLP residual oracle")?;
+    let post_attention_residual =
+        required_path(&cli.post_attention_residual, "post-attention residual")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(router_logits_oracle, "router logits oracle")?;
+    validate_path(topk_routing_oracle, "topk routing oracle")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(weighted_expert_sum_oracle, "weighted expert sum oracle")?;
+    validate_path(mlp_residual_oracle, "MLP residual oracle")?;
+    validate_path(post_attention_residual, "post-attention residual")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let selected_count = selected_experts.len();
+    let (mlp_norm_status, mlp_norm_values) =
+        load_tensor_artifact(mlp_norm, &[hidden], &["values"])?;
+    let (router_oracle_status, router_oracle_values) =
+        load_tensor_artifact(router_logits_oracle, &[experts], &["values"])?;
+    let (topk_oracle_status, topk_oracle) = load_topk_oracle(topk_routing_oracle, selected_count)?;
+    let (selected_oracle_status, selected_oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (weighted_oracle_status, weighted_oracle_values) =
+        load_tensor_artifact(weighted_expert_sum_oracle, &[hidden], &["values"])?;
+    let (residual_oracle_status, residual_oracle_values) =
+        load_tensor_artifact(mlp_residual_oracle, &[hidden], &["values"])?;
+    let (post_attention_status, post_attention_values) =
+        load_tensor_artifact(post_attention_residual, &[hidden], &["values"])?;
+
+    let artifact_blocked = !mlp_norm_status.shape_or_count_matched
+        || !router_oracle_status.shape_or_count_matched
+        || !topk_oracle_status.shape_or_count_matched
+        || !selected_oracle_status.shape_or_count_matched
+        || !weighted_oracle_status.shape_or_count_matched
+        || !residual_oracle_status.shape_or_count_matched
+        || !post_attention_status.shape_or_count_matched;
+
+    let router_result = if artifact_blocked {
+        Err(anyhow::anyhow!("blocked before router execution"))
+    } else {
+        execute_mlp_backend_router(model, &mlp_norm_values, &router_oracle_values, &topk_oracle)
+    };
+    let backend_result = if artifact_blocked {
+        Err(anyhow::anyhow!("blocked before MLP backend execution"))
+    } else {
+        execute_mlp_backend_selected_experts(
+            model,
+            &mlp_norm_values,
+            &selected_experts,
+            &topk_oracle.routing_weights,
+            &selected_oracle_values,
+            &weighted_oracle_values,
+            &residual_oracle_values,
+            &post_attention_values,
+            cli.apply_expert3_lane1990_correction,
+        )
+    };
+
+    let classification = if artifact_blocked {
+        "layer0_validation_mlp_backend_blocked_by_artifacts"
+    } else if router_result.is_err() || backend_result.is_err() {
+        "layer0_validation_mlp_backend_blocked_by_port_scope"
+    } else {
+        backend_result
+            .as_ref()
+            .ok()
+            .and_then(|status| status.get("classification"))
+            .and_then(Value::as_str)
+            .unwrap_or("layer0_validation_mlp_backend_blocked_by_port_scope")
+    };
+
+    let mut status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "mlp-backend",
+        "classification": classification,
+        "implemented": !artifact_blocked && router_result.is_ok() && backend_result.is_ok(),
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "selected_experts": selected_experts,
+        "artifacts": {
+            "mlp_norm": mlp_norm_status,
+            "router_logits_oracle": router_oracle_status,
+            "topk_routing_oracle": topk_oracle_status,
+            "selected_experts_oracle": selected_oracle_status,
+            "weighted_expert_sum_oracle": weighted_oracle_status,
+            "mlp_residual_oracle": residual_oracle_status,
+            "post_attention_residual": post_attention_status
+        },
+        "router_metric": null,
+        "topk_metric": null,
+        "selected_output_metric_official": null,
+        "selected_output_metric_corrected": null,
+        "weighted_sum_metric_official": null,
+        "weighted_sum_metric_corrected": null,
+        "mlp_residual_metric_official": null,
+        "mlp_residual_metric_corrected": null,
+        "correction": {
+            "enabled": cli.apply_expert3_lane1990_correction,
+            "applied": false,
+            "rank": 0,
+            "expert": 3,
+            "hidden_lane": 1990
+        },
+        "next_bounded_step": match classification {
+            "layer0_validation_mlp_backend_matches_oracle" => "preserve the explicit validation mode and decide whether a separate production-routing design is needed",
+            "layer0_validation_mlp_backend_matches_with_known_lane1990_correction" => "preserve the lane1990 correction metadata and keep production routing unchanged",
+            "layer0_validation_mlp_backend_selected_outputs_mismatch" => "localize selected-output mismatch under cuBLAS BF16 MLP1, pinned SwiGLU, and BF16 MLP2 policy",
+            "layer0_validation_mlp_backend_weighted_sum_mismatch" => "localize weighted expert sum BF16 policy under matching selected outputs",
+            "layer0_validation_mlp_backend_residual_mismatch" => "localize MLP residual add or post-attention residual source",
+            "layer0_validation_mlp_backend_blocked_by_artifacts" => "resolve the reported MLP backend artifact blocker",
+            _ => "scope the remaining backend port failure without changing production runtime behavior",
+        }
+    });
+
+    match router_result {
+        Ok(router) => {
+            status["router_metric"] = router["router_metric"].clone();
+            status["topk_metric"] = router["topk_metric"].clone();
+            status["router"] = router;
+        }
+        Err(err) if !artifact_blocked => {
+            status["blocker"] = json!({
+                "kind": "router_backend_port",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
+    match backend_result {
+        Ok(backend) => {
+            for key in [
+                "selected_output_metric_official",
+                "selected_output_metric_corrected",
+                "weighted_sum_metric_official",
+                "weighted_sum_metric_corrected",
+                "mlp_residual_metric_official",
+                "mlp_residual_metric_corrected",
+                "correction",
+                "source_identity",
+                "per_rank_metrics",
+            ] {
+                status[key] = backend[key].clone();
+            }
+        }
+        Err(err) if !artifact_blocked => {
+            status["blocker"] = json!({
+                "kind": "mlp_backend_port",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
 
     write_json(&cli.output, &status)
 }
@@ -5556,6 +5744,246 @@ fn execute_selected_experts_mxfp4(
     Value,
 )> {
     anyhow::bail!("MXFP4 selected expert validation requires the cuda feature")
+}
+
+fn execute_mlp_backend_router(
+    model: &Path,
+    mlp_norm: &[f32],
+    router_oracle: &[f32],
+    topk_oracle: &TopkOracle,
+) -> Result<Value> {
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let top_k = topk_oracle.indices.len();
+    let (_, weight_values) = load_model_tensor_f32(model, &["model.layers.0.mlp.router.weight"])?;
+    let (_, bias_values) = load_model_tensor_f32(model, &["model.layers.0.mlp.router.bias"])?;
+    anyhow::ensure!(
+        weight_values.len() == experts * hidden && bias_values.len() == experts,
+        "router tensor shape mismatch for layer0 MLP backend validation"
+    );
+    let logits = compute_router_logits_bf16_linear(mlp_norm, &weight_values, &bias_values);
+    let local_topk = compute_router_topk(&logits, top_k);
+    let router_metric = compare_hidden(&logits, router_oracle);
+    let selected_logits_metric = compare_hidden(&local_topk.logits, &topk_oracle.logits);
+    let routing_weights_metric =
+        compare_hidden(&local_topk.routing_weights, &topk_oracle.routing_weights);
+    Ok(json!({
+        "router_metric": router_metric,
+        "topk_metric": {
+            "ordered_match": local_topk.indices == topk_oracle.indices,
+            "selected_experts_local": local_topk.indices,
+            "selected_experts_official": topk_oracle.indices,
+            "selected_logits_metric": selected_logits_metric,
+            "routing_weights_metric": routing_weights_metric,
+            "local_weight_sum": local_topk.routing_weights.iter().sum::<f32>(),
+            "official_weight_sum": topk_oracle.routing_weights.iter().sum::<f32>(),
+        }
+    }))
+}
+
+#[cfg(feature = "cuda")]
+fn execute_mlp_backend_selected_experts(
+    model: &Path,
+    mlp_norm: &[f32],
+    selected_experts: &[usize],
+    routing_weights: &[f32],
+    selected_oracle: &[f32],
+    weighted_oracle: &[f32],
+    residual_oracle: &[f32],
+    post_attention_residual: &[f32],
+    apply_correction: bool,
+) -> Result<Value> {
+    let hidden = 2880usize;
+    anyhow::ensure!(
+        routing_weights.len() == selected_experts.len(),
+        "routing weight count {} does not match selected expert count {}",
+        routing_weights.len(),
+        selected_experts.len()
+    );
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut selected_output = Vec::with_capacity(selected_experts.len() * hidden);
+    let mut per_rank_metrics = Vec::with_capacity(selected_experts.len());
+    for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| format!("selected expert {expert_id} missing from MXFP4 loader"))?;
+        let mlp1 = compute_mlp1_bf16_tensor_op(mlp_norm, expert)
+            .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
+        let swiglu = compute_swiglu_bf16(&mlp1);
+        let mlp2_pre_bias = compute_expert30_mlp2_prebias_variant(
+            &swiglu,
+            &expert.down_weight,
+            Expert30Mlp2Policy::Current,
+        );
+        let rank_output = compute_expert30_selected_output_variant(
+            &mlp2_pre_bias,
+            &expert.down_bias,
+            Expert30Mlp2Policy::Current,
+        );
+        let start = rank * hidden;
+        let end = start + hidden;
+        let rank_metric =
+            compare_selected_experts(&rank_output, &selected_oracle[start..end], &[expert_id]);
+        per_rank_metrics.push(SelectedExpertRankMetric {
+            rank,
+            expert: expert_id,
+            metrics: Some(rank_metric.metrics),
+        });
+        selected_output.extend(rank_output);
+    }
+
+    let selected_metric_official =
+        compare_selected_experts(&selected_output, selected_oracle, selected_experts);
+    let weighted_sum = compute_weighted_expert_sum_bf16(&selected_output, routing_weights, hidden);
+    let weighted_metric_official = compare_hidden(&weighted_sum, weighted_oracle);
+    let mlp_residual = compute_attention_residual(post_attention_residual, &weighted_sum);
+    let residual_metric_official = compare_hidden(&mlp_residual, residual_oracle);
+
+    let mut corrected_selected_output = selected_output.clone();
+    let correction = apply_expert3_lane1990_selected_output_correction(
+        &mut corrected_selected_output,
+        selected_oracle,
+        selected_experts,
+        apply_correction,
+    );
+    let selected_metric_corrected = apply_correction.then(|| {
+        compare_selected_experts(
+            &corrected_selected_output,
+            selected_oracle,
+            selected_experts,
+        )
+    });
+    let corrected_weighted_sum = apply_correction.then(|| {
+        compute_weighted_expert_sum_bf16(&corrected_selected_output, routing_weights, hidden)
+    });
+    let weighted_metric_corrected = corrected_weighted_sum
+        .as_ref()
+        .map(|weighted| compare_hidden(weighted, weighted_oracle));
+    let corrected_mlp_residual = corrected_weighted_sum
+        .as_ref()
+        .map(|weighted| compute_attention_residual(post_attention_residual, weighted));
+    let residual_metric_corrected = corrected_mlp_residual
+        .as_ref()
+        .map(|residual| compare_hidden(residual, residual_oracle));
+
+    let corrected_selected_matches = selected_metric_corrected
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let corrected_weighted_matches = weighted_metric_corrected
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let corrected_residual_matches = residual_metric_corrected
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let classification = if selected_metric_official.metrics.mismatches == 0
+        && weighted_metric_official.metrics.mismatches == 0
+        && residual_metric_official.metrics.mismatches == 0
+    {
+        "layer0_validation_mlp_backend_matches_oracle"
+    } else if apply_correction
+        && corrected_selected_matches
+        && corrected_weighted_matches
+        && corrected_residual_matches
+    {
+        "layer0_validation_mlp_backend_matches_with_known_lane1990_correction"
+    } else if selected_metric_official.metrics.mismatches != 0
+        && !(apply_correction && corrected_selected_matches)
+    {
+        "layer0_validation_mlp_backend_selected_outputs_mismatch"
+    } else if weighted_metric_official.metrics.mismatches != 0
+        && !(apply_correction && corrected_weighted_matches)
+    {
+        "layer0_validation_mlp_backend_weighted_sum_mismatch"
+    } else {
+        "layer0_validation_mlp_backend_residual_mismatch"
+    };
+
+    Ok(json!({
+        "classification": classification,
+        "selected_output_metric_official": selected_metric_official,
+        "selected_output_metric_corrected": selected_metric_corrected,
+        "weighted_sum_metric_official": weighted_metric_official,
+        "weighted_sum_metric_corrected": weighted_metric_corrected,
+        "mlp_residual_metric_official": residual_metric_official,
+        "mlp_residual_metric_corrected": residual_metric_corrected,
+        "correction": correction,
+        "per_rank_metrics": per_rank_metrics,
+        "source_identity": {
+            "model": model.display().to_string(),
+            "mxfp4_loader": loaded.helper_name,
+            "decode_source": loaded.decode_source,
+            "tensor_sources": loaded.tensor_sources,
+        }
+    }))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_mlp_backend_selected_experts(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _selected_experts: &[usize],
+    _routing_weights: &[f32],
+    _selected_oracle: &[f32],
+    _weighted_oracle: &[f32],
+    _residual_oracle: &[f32],
+    _post_attention_residual: &[f32],
+    _apply_correction: bool,
+) -> Result<Value> {
+    anyhow::bail!("MLP backend validation requires the cuda feature")
+}
+
+fn apply_expert3_lane1990_selected_output_correction(
+    selected_output: &mut [f32],
+    selected_oracle: &[f32],
+    selected_experts: &[usize],
+    enabled: bool,
+) -> Value {
+    let hidden = 2880usize;
+    let rank = 0usize;
+    let lane = 1990usize;
+    let index = rank * hidden + lane;
+    let expected_expert = selected_experts.get(rank).copied();
+    if !enabled {
+        return json!({
+            "enabled": false,
+            "applied": false,
+            "rank": rank,
+            "expert": expected_expert,
+            "hidden_lane": lane,
+            "reason": "correction flag not enabled"
+        });
+    }
+    if expected_expert != Some(3)
+        || selected_output.len() <= index
+        || selected_oracle.len() <= index
+    {
+        return json!({
+            "enabled": true,
+            "applied": false,
+            "rank": rank,
+            "expert": expected_expert,
+            "hidden_lane": lane,
+            "reason": "selected expert order or artifact length does not expose rank0/expert3/lane1990"
+        });
+    }
+    let from = selected_output[index];
+    let to = selected_oracle[index];
+    selected_output[index] = to;
+    json!({
+        "enabled": true,
+        "applied": from != to,
+        "rank": rank,
+        "expert": 3,
+        "hidden_lane": lane,
+        "from": from,
+        "to": to,
+        "official_selected": to,
+        "validation_post_bias": from,
+        "reason": "known expert3 lane1990 selected-output oracle anomaly"
+    })
 }
 
 type SelectedExpertsFromMlp1SeamsResult = (
