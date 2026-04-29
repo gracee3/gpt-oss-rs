@@ -10,6 +10,7 @@ extern crate self as gpt_oss_model_runner;
 pub mod architectures;
 pub mod attention;
 pub mod bridge;
+pub mod device_map;
 pub mod input;
 pub mod kv_cache;
 pub mod layers;
@@ -45,6 +46,7 @@ pub use attention::{
     MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
     SplitKvAttention,
 };
+pub use device_map::{DeviceId, DeviceMap, DeviceMapError};
 pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
 pub use model_loader::{detect_format, load_model_weights, ModelFormat};

@@ -285,6 +285,37 @@ The implementation should default to `single`, reject invalid split maps before
 CUDA allocation, and leave all existing runtime construction and execution
 unchanged.
 
+## Stage 2 status
+
+Implemented an inert, CUDA-free parser in
+`crates/gpt-oss-model-runner/src/device_map.rs` and exported it from
+`gpt-oss-model-runner` as `DeviceMap`, `DeviceId`, and `DeviceMapError`.
+
+Supported parser inputs:
+
+- `single`
+- `split:0-11@0,12-23@1`
+
+Behavior:
+
+- Default runtime behavior is unchanged because the parser is not consumed by
+  `GpuWorker`, `GpuModelRunner`, or serve execution yet.
+- `single` can be parsed into a map that assigns all layers, embeddings, final
+  norm, and LM head to the selected/current device.
+- `split:` can be parsed and validated as placement intent only. It assigns
+  embeddings to the device of layer 0 and final norm / LM head to the device of
+  the final layer.
+- Split maps remain non-executable in this slice. No CUDA allocation,
+  multi-context construction, tensor upload routing, activation transfer, peer
+  copy, NCCL, or runtime branching was added.
+- CLI/config wiring is deferred. This keeps the current serve path unchanged
+  and avoids introducing a split-map flag before there is a guaranteed
+  pre-allocation rejection point in the engine startup path.
+
+Primary classification:
+
+multi_gpu_layer_sharding_parser_complete_config_surface_deferred
+
 ## Primary classification
 
-multi_gpu_layer_sharding_device_map_insertion_points_identified
+multi_gpu_layer_sharding_parser_complete_config_surface_deferred
