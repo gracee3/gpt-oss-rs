@@ -246,6 +246,73 @@ Stage 1 should be a layer2-only pilot:
    confirmed.
 8. Stop after layer2. Do not generate layers 3..23 until layer2 validates.
 
+## Stage 1A Layer11 MLP Entrypoint
+
+This slice ports a focused producer-side script into this lane:
+
+- `crates/gpt-oss-bench/tools/pinned_prompt_official_capture.py`
+- Port source:
+  `/home/emmy/openai/worktrees/pinned-prompt-parity/crates/gpt-oss-bench/tools/pinned_prompt_official_capture.py`
+
+The original producer script did not exist in this lane. The port is deliberately
+small: it includes only final-token ordered MLP bundle generation, not the broad
+official capture helper, attention ordered generation, coarse ladder generation,
+readout capture, CUDA proof binaries, or runtime-forward plumbing.
+
+Available ordered MLP selectors:
+
+- Existing selector preserved through the generic path:
+  `layer1_final_token_mlp_ordered_boundary_bundle`
+- Generic selector:
+  `layerN_final_token_mlp_ordered_boundary_bundle` with `--layer-idx <N>`
+- Explicit layer alias:
+  `layer11_final_token_mlp_ordered_boundary_bundle`
+
+Producer function:
+
+- `capture_layer_final_token_mlp_ordered_boundary_bundle(...)`
+
+For `layer_idx = 11`, the expected bundle boundaries are:
+
+- `layer11_final_token_hidden_state_after_attention_residual_add_before_mlp`
+- `layer11_final_token_mlp_norm_output_before_mlp_projections`
+- `layer11_final_token_mlp_router_logits_before_routing`
+- `layer11_final_token_mlp_topk_expert_indices_and_routing_weights`
+- `layer11_final_token_selected_expert_outputs_before_routing_weighted_sum`
+- `layer11_final_token_mlp_output_after_routing_weighted_sum_before_residual`
+- `layer11_final_token_hidden_state_after_mlp_residual_add`
+
+Selected expert internals are deferred in this entrypoint. The schema records
+`selected_expert_internals_included = false`; only selected expert outputs
+before routing-weighted sum are mandatory for this slice.
+
+The script supports a cheap `--dry-run-schema` mode that emits schema and
+selector metadata without importing Torch or loading a checkpoint. A dry run was
+performed for the layer11/lane1480 selector only; no full official capture was
+run, no checkpoint was loaded, and no raw tensor artifact was committed.
+
+The direct-mode arguments are compatible with the next bounded layer11 MLP
+evidence run:
+
+```text
+--layer-index 11
+--lane 1480
+--model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration
+--layer-input /tmp/coarse_ladder_outputs/layer10_output.json
+--coarse-bundle /home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+--output-dir /tmp/layer11_ordered_mlp_lane1480_bundle
+--status-output /tmp/layer11_ordered_mlp_lane1480_bundle_status.json
+```
+
+Raw artifacts remain out of git because they are host-local evidence products,
+may contain large tensor payloads, and are not stable source or consumer runtime
+code. The next bounded step is to run the focused layer11 MLP evidence bundle
+under `/tmp`, then validate that status against the consumer's generic ordered
+MLP reader.
+
+Classification for this slice:
+`ordered_bundle_generation_layerN_mlp_entrypoint_ported`.
+
 ## Non-Goals And Caveats
 
 - No runtime production changes.
