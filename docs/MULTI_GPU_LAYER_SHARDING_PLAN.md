@@ -1115,6 +1115,84 @@ Primary classification:
 
 multi_gpu_layer_sharding_kv_cache_plan_skeleton_complete
 
+## Split allocation report status
+
+Added a CUDA-free split allocation status/report builder in
+`crates/gpt-oss-model-runner/src/shard_plan.rs`. It combines:
+
+- `ShardedModelPlan`
+- `ShardedUploadManifest`
+- `ShardedKvCachePlan`
+
+The report is pure metadata. It does not discover safetensor headers, create
+CUDA resources, call loader upload functions, allocate cache buffers, or execute
+layers.
+
+New report types:
+
+- `SplitAllocationReport`
+- `ShardAllocationReport`
+
+Report contents:
+
+- device ids, embedding device, and final device
+- per-shard absolute layers
+- per-shard embedding/final-head ownership
+- per-shard required tensor count and names
+- per-shard optional tensor count
+- per-shard host U8 tensor count and names
+- per-shard late allocation count and markers
+- per-shard KV cache entry count and absolute KV cache layers
+- global unassigned tensor count and names
+- global invalid tensor count and names
+
+Single-report behavior:
+
+- A single map produces one shard report.
+- The shard owns all absolute layers.
+- The shard owns embeddings and final head.
+- KV cache layers cover every model layer.
+- Known tensors are assigned to that shard, while unknown/invalid names still
+  surface globally.
+
+Split-report behavior:
+
+- `split:0-11@0,12-23@1` produces two shard reports.
+- GPU0 owns embeddings and layers 0..11.
+- GPU1 owns layers 12..23 and final head.
+- GPU0 KV cache layers are 0..11.
+- GPU1 KV cache layers are 12..23.
+- Required tensor counts and names come from the upload manifest.
+- GPT-OSS U8 expert tensor counts and names remain separate from required
+  tensor names.
+- Tied LM-head fallback appears in the final shard's late allocation markers
+  only when `tie_word_embeddings=true` and `lm_head.weight` is absent.
+
+Still deferred:
+
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- No safetensor header discovery helper was added.
+- No model loader upload behavior changed.
+- No f16 or U8 loader filters were added.
+- `CudaCacheEngine` runtime behavior did not change.
+- Existing KV cache allocation and indexing are unchanged.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes, or
+  runtime math branching were added.
+- Split maps remain non-executable and continue to be rejected before CUDA
+  allocation in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_split_allocation_report_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_kv_cache_plan_skeleton_complete
+multi_gpu_layer_sharding_split_allocation_report_complete

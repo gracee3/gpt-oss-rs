@@ -55,7 +55,8 @@ pub use quant::{detect_quant_method, QuantConfig, QuantMethod, QuantizedLinear, 
 pub use runner::{ModelRunner, ModelRunnerConfig};
 pub use sampling::{sample_batch, sample_batch_parallel, Sampler, SamplerOutput};
 pub use shard_plan::{
-    GpuShardPlan, LateAllocationKind, LayerKvCachePlan, ShardKvCachePlan, ShardPlanError,
-    ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan, ShardedUploadManifest,
-    TensorPlacement, TensorPlacementReason, UploadManifestOptions,
+    GpuShardPlan, LateAllocationKind, LayerKvCachePlan, ShardAllocationReport, ShardKvCachePlan,
+    ShardPlanError, ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan,
+    ShardedUploadManifest, SplitAllocationReport, TensorPlacement, TensorPlacementReason,
+    UploadManifestOptions,
 };

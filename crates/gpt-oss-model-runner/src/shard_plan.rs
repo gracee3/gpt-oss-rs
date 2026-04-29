@@ -72,6 +72,37 @@ pub struct LayerKvCachePlan {
     pub local_cache_idx: usize,
 }
 
+/// Pure status report for a future split allocation smoke.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitAllocationReport {
+    pub devices: Vec<DeviceId>,
+    pub embedding_device: DeviceId,
+    pub final_device: DeviceId,
+    pub shards: Vec<ShardAllocationReport>,
+    pub unassigned_tensor_count: usize,
+    pub invalid_tensor_count: usize,
+    pub unassigned_tensor_names: Vec<String>,
+    pub invalid_tensor_names: Vec<String>,
+}
+
+/// Pure per-shard status report combining layer, tensor, and KV plans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardAllocationReport {
+    pub device_id: DeviceId,
+    pub absolute_layers: Vec<usize>,
+    pub owns_embeddings: bool,
+    pub owns_final_head: bool,
+    pub required_tensor_count: usize,
+    pub optional_tensor_count: usize,
+    pub host_u8_tensor_count: usize,
+    pub late_allocation_count: usize,
+    pub kv_cache_entry_count: usize,
+    pub required_tensor_names: Vec<String>,
+    pub host_u8_tensor_names: Vec<String>,
+    pub late_allocations: Vec<LateAllocationKind>,
+    pub kv_cache_layers: Vec<usize>,
+}
+
 /// Late shard-local allocations that are not initial safetensor uploads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LateAllocationKind {
@@ -282,6 +313,74 @@ impl ShardedModelPlan {
                 .map(ShardKvCachePlan::from_shard_plan)
                 .collect(),
         }
+    }
+
+    /// Build a pure split-allocation status report from existing plans.
+    pub fn split_allocation_report(
+        &self,
+        upload_manifest: &ShardedUploadManifest,
+        kv_cache_plan: &ShardedKvCachePlan,
+    ) -> Result<SplitAllocationReport, ShardPlanError> {
+        let mut shards = Vec::with_capacity(self.shards.len());
+
+        for model_shard in &self.shards {
+            let upload_shard = upload_manifest
+                .shard_for_device(model_shard.device_id)
+                .ok_or_else(|| {
+                    ShardPlanError::InvalidPlan(format!(
+                        "missing upload manifest for device {}",
+                        model_shard.device_id
+                    ))
+                })?;
+            let kv_shard = kv_cache_plan
+                .shard_for_device(model_shard.device_id)
+                .ok_or_else(|| {
+                    ShardPlanError::InvalidPlan(format!(
+                        "missing KV cache plan for device {}",
+                        model_shard.device_id
+                    ))
+                })?;
+
+            shards.push(ShardAllocationReport {
+                device_id: model_shard.device_id,
+                absolute_layers: model_shard.absolute_layers.clone(),
+                owns_embeddings: model_shard.owns_embeddings,
+                owns_final_head: model_shard.owns_final_head,
+                required_tensor_count: upload_shard.required_tensor_names.len(),
+                optional_tensor_count: upload_shard.optional_tensor_names.len(),
+                host_u8_tensor_count: upload_shard.host_u8_tensor_names.len(),
+                late_allocation_count: upload_shard.deferred_or_late_gpu_allocations.len(),
+                kv_cache_entry_count: kv_shard.entries.len(),
+                required_tensor_names: upload_shard.required_tensor_names.clone(),
+                host_u8_tensor_names: upload_shard.host_u8_tensor_names.clone(),
+                late_allocations: upload_shard.deferred_or_late_gpu_allocations.clone(),
+                kv_cache_layers: kv_shard
+                    .entries
+                    .iter()
+                    .map(|entry| entry.absolute_layer_idx)
+                    .collect(),
+            });
+        }
+
+        Ok(SplitAllocationReport {
+            devices: self.device_map.devices.clone(),
+            embedding_device: self.device_map.embedding_device,
+            final_device: self.device_map.final_device,
+            shards,
+            unassigned_tensor_count: upload_manifest.unassigned_tensor_names.len(),
+            invalid_tensor_count: upload_manifest.invalid_tensor_names.len(),
+            unassigned_tensor_names: upload_manifest.unassigned_tensor_names.clone(),
+            invalid_tensor_names: upload_manifest.invalid_tensor_names.clone(),
+        })
+    }
+}
+
+impl SplitAllocationReport {
+    /// Return the allocation report shard for a device.
+    pub fn shard_for_device(&self, device_id: DeviceId) -> Option<&ShardAllocationReport> {
+        self.shards
+            .iter()
+            .find(|shard| shard.device_id == device_id)
     }
 }
 
@@ -525,6 +624,33 @@ mod tests {
     fn kv_shard(plan: &ShardedKvCachePlan, device_id: usize) -> &ShardKvCachePlan {
         plan.shard_for_device(DeviceId(device_id))
             .unwrap_or_else(|| panic!("missing KV shard for device {device_id}"))
+    }
+
+    fn allocation_report(
+        plan: &ShardedModelPlan,
+        names: Vec<&'static str>,
+        tie_word_embeddings: bool,
+    ) -> SplitAllocationReport {
+        let manifest = plan
+            .upload_manifest_for_tensor_names(
+                names,
+                UploadManifestOptions {
+                    tie_word_embeddings,
+                },
+            )
+            .unwrap();
+        let kv_plan = plan.kv_cache_plan();
+        plan.split_allocation_report(&manifest, &kv_plan).unwrap()
+    }
+
+    fn split_report() -> SplitAllocationReport {
+        allocation_report(&split_plan(), sample_tensor_names(), true)
+    }
+
+    fn report_shard(report: &SplitAllocationReport, device_id: usize) -> &ShardAllocationReport {
+        report
+            .shard_for_device(DeviceId(device_id))
+            .unwrap_or_else(|| panic!("missing report shard for device {device_id}"))
     }
 
     #[test]
@@ -1039,5 +1165,184 @@ mod tests {
         layers.sort_unstable();
 
         assert_eq!(layers, (0..24).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn split_allocation_report_single_has_one_shard_with_all_layers_and_kv_entries() {
+        let report = allocation_report(&single_plan(), sample_tensor_names(), true);
+
+        assert_eq!(report.devices, vec![DeviceId(3)]);
+        assert_eq!(report.shards.len(), 1);
+        let shard = report_shard(&report, 3);
+        assert_eq!(shard.absolute_layers, (0..24).collect::<Vec<_>>());
+        assert_eq!(shard.kv_cache_layers, (0..24).collect::<Vec<_>>());
+        assert_eq!(shard.kv_cache_entry_count, 24);
+        assert!(shard.owns_embeddings);
+        assert!(shard.owns_final_head);
+        assert!(shard
+            .required_tensor_names
+            .contains(&"model.embed_tokens.weight".to_string()));
+        assert!(shard
+            .required_tensor_names
+            .contains(&"lm_head.weight".to_string()));
+    }
+
+    #[test]
+    fn split_allocation_report_split_has_two_shards() {
+        let report = split_report();
+
+        assert_eq!(report.devices, vec![DeviceId(0), DeviceId(1)]);
+        assert_eq!(report.embedding_device, DeviceId(0));
+        assert_eq!(report.final_device, DeviceId(1));
+        assert_eq!(report.shards.len(), 2);
+    }
+
+    #[test]
+    fn split_allocation_report_gpu0_owns_embeddings_and_layers_0_through_11() {
+        let report = split_report();
+        let shard = report_shard(&report, 0);
+
+        assert!(shard.owns_embeddings);
+        assert!(!shard.owns_final_head);
+        assert_eq!(shard.absolute_layers, (0..=11).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn split_allocation_report_gpu1_owns_layers_12_through_23_and_final_head() {
+        let report = split_report();
+        let shard = report_shard(&report, 1);
+
+        assert!(!shard.owns_embeddings);
+        assert!(shard.owns_final_head);
+        assert_eq!(shard.absolute_layers, (12..=23).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn split_allocation_report_includes_kv_layers_for_each_shard() {
+        let report = split_report();
+        let gpu0 = report_shard(&report, 0);
+        let gpu1 = report_shard(&report, 1);
+
+        assert_eq!(gpu0.kv_cache_layers, (0..=11).collect::<Vec<_>>());
+        assert_eq!(gpu0.kv_cache_entry_count, 12);
+        assert_eq!(gpu1.kv_cache_layers, (12..=23).collect::<Vec<_>>());
+        assert_eq!(gpu1.kv_cache_entry_count, 12);
+    }
+
+    #[test]
+    fn split_allocation_report_places_embedding_tensor_on_gpu0() {
+        let report = split_report();
+        let shard = report_shard(&report, 0);
+
+        assert!(shard
+            .required_tensor_names
+            .contains(&"model.embed_tokens.weight".to_string()));
+    }
+
+    #[test]
+    fn split_allocation_report_places_final_tensors_on_gpu1() {
+        let report = split_report();
+        let shard = report_shard(&report, 1);
+
+        assert!(shard
+            .required_tensor_names
+            .contains(&"model.norm.weight".to_string()));
+        assert!(shard
+            .required_tensor_names
+            .contains(&"lm_head.weight".to_string()));
+    }
+
+    #[test]
+    fn split_allocation_report_places_gpt_oss_u8_tensors_on_owning_shards() {
+        let report = split_report();
+        let gpu0 = report_shard(&report, 0);
+        let gpu1 = report_shard(&report, 1);
+
+        assert!(gpu0
+            .host_u8_tensor_names
+            .contains(&"model.layers.0.mlp.experts.gate_up_proj_blocks".to_string()));
+        assert_eq!(gpu0.host_u8_tensor_count, 1);
+        assert!(gpu1
+            .host_u8_tensor_names
+            .contains(&"model.layers.23.mlp.experts.down_proj_scales".to_string()));
+        assert_eq!(gpu1.host_u8_tensor_count, 1);
+    }
+
+    #[test]
+    fn split_allocation_report_surfaces_unassigned_tensors_globally() {
+        let report = allocation_report(
+            &split_plan(),
+            vec!["model.embed_tokens.weight", "model.rotary_emb.inv_freq"],
+            false,
+        );
+
+        assert_eq!(
+            report.unassigned_tensor_names,
+            vec!["model.rotary_emb.inv_freq".to_string()]
+        );
+        assert_eq!(report.unassigned_tensor_count, 1);
+        assert!(report.shards.iter().all(|shard| !shard
+            .required_tensor_names
+            .contains(&"model.rotary_emb.inv_freq".to_string())));
+    }
+
+    #[test]
+    fn split_allocation_report_surfaces_invalid_tensors_globally() {
+        let report = allocation_report(
+            &split_plan(),
+            vec!["model.layers.24.self_attn.q_proj.weight"],
+            false,
+        );
+
+        assert_eq!(
+            report.invalid_tensor_names,
+            vec!["model.layers.24.self_attn.q_proj.weight".to_string()]
+        );
+        assert_eq!(report.invalid_tensor_count, 1);
+    }
+
+    #[test]
+    fn split_allocation_report_includes_tied_lm_head_fallback_when_needed() {
+        let report = allocation_report(
+            &split_plan(),
+            vec![
+                "model.embed_tokens.weight",
+                "model.layers.23.post_attention_layernorm.weight",
+                "model.norm.weight",
+            ],
+            true,
+        );
+        let final_shard = report_shard(&report, 1);
+
+        assert!(final_shard
+            .late_allocations
+            .contains(&LateAllocationKind::TiedLmHeadFallback));
+    }
+
+    #[test]
+    fn split_allocation_report_omits_tied_lm_head_fallback_when_lm_head_exists() {
+        let report = split_report();
+        let final_shard = report_shard(&report, 1);
+
+        assert!(!final_shard
+            .late_allocations
+            .contains(&LateAllocationKind::TiedLmHeadFallback));
+    }
+
+    #[test]
+    fn split_allocation_report_counts_required_host_u8_and_late_allocations() {
+        let report = split_report();
+        let gpu0 = report_shard(&report, 0);
+        let gpu1 = report_shard(&report, 1);
+
+        assert_eq!(gpu0.required_tensor_count, 3);
+        assert_eq!(gpu0.host_u8_tensor_count, 1);
+        assert_eq!(gpu0.optional_tensor_count, 0);
+        assert_eq!(gpu0.late_allocation_count, gpu0.late_allocations.len());
+
+        assert_eq!(gpu1.required_tensor_count, 4);
+        assert_eq!(gpu1.host_u8_tensor_count, 1);
+        assert_eq!(gpu1.optional_tensor_count, 0);
+        assert_eq!(gpu1.late_allocation_count, gpu1.late_allocations.len());
     }
 }
