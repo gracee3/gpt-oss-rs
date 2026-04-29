@@ -6095,7 +6095,33 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
     let rank0_clears = rank0_replacement["weighted_sum_metric"]["metrics"]["mismatches"].as_u64()
         == Some(0)
         && rank0_replacement["final_metric"]["metrics"]["mismatches"].as_u64() == Some(0);
-    let classification = if selected_experts_match
+    let router_topk_mismatch =
+        !selected_experts_match || routing_weights_metric.metrics.mismatches != 0;
+    let earliest_mismatching_ordered_mlp_seam = if mlp_input_metric.metrics.mismatches != 0 {
+        "mlp_input_attention_residual"
+    } else if mlp_norm_metric.metrics.mismatches != 0 {
+        "mlp_norm_output"
+    } else if router_topk_mismatch {
+        "router/top-k"
+    } else if selected_metric.metrics.mismatches != 0 {
+        "selected_expert_output"
+    } else if weighted_metric.metrics.mismatches != 0 {
+        "weighted_expert_sum"
+    } else if final_metric.metrics.mismatches != 0 {
+        "residual_add/final_output"
+    } else {
+        "none"
+    };
+    let needs_selected_expert_internals =
+        earliest_mismatching_ordered_mlp_seam == "selected_expert_output";
+    let oracle_next_request = if needs_selected_expert_internals {
+        "request expert30 internal MLP1/SwiGLU/MLP2 lane1480 boundaries to localize below selected output"
+    } else {
+        "none"
+    };
+    let classification = if router_topk_mismatch {
+        "layer11_ordered_mlp_consumer_router_topk_mismatch"
+    } else if selected_experts_match
         && routing_weights_metric.metrics.mismatches == 0
         && selected_metric.metrics.mismatches == 1
         && weighted_metric.metrics.mismatches == 1
@@ -6108,12 +6134,67 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
     {
         "layer11_ordered_mlp_consumer_selected_output_localized"
     } else if weighted_metric.metrics.mismatches != 0 && selected_metric.metrics.mismatches == 0 {
-        "layer11_ordered_mlp_consumer_weighted_sum_policy_mismatch"
+        "layer11_ordered_mlp_consumer_weighted_sum_mismatch"
     } else if final_metric.metrics.mismatches != 0 && weighted_metric.metrics.mismatches == 0 {
-        "layer11_ordered_mlp_consumer_residual_policy_mismatch"
+        "layer11_ordered_mlp_consumer_residual_add_mismatch"
+    } else if selected_metric.metrics.mismatches == 0
+        && weighted_metric.metrics.mismatches == 0
+        && final_metric.metrics.mismatches == 0
+    {
+        "layer11_ordered_mlp_consumer_available_seams_clear"
+    } else if needs_selected_expert_internals {
+        "layer11_ordered_mlp_consumer_requires_selected_expert_internals"
     } else {
-        "layer11_ordered_mlp_consumer_unresolved"
+        "layer11_ordered_mlp_consumer_execution_failed"
     };
+    let lane_comparison = |local: f32, oracle: f32| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "abs_diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+    let focus_lane_selected_outputs_by_rank = (0..selected_count)
+        .map(|rank| {
+            let index = rank * hidden + lane;
+            json!({
+                "rank": rank,
+                "expert": local_selected_experts.get(rank),
+                "local": selected_matrix[index],
+                "oracle": ordered_selected_outputs[index],
+                "abs_diff": (selected_matrix[index] - ordered_selected_outputs[index]).abs(),
+                "matched": selected_matrix[index] == ordered_selected_outputs[index],
+            })
+        })
+        .collect::<Vec<_>>();
+    let lane_window_start = lane.saturating_sub(2);
+    let lane_window_end = (lane + 2).min(hidden - 1);
+    let lane_window_comparisons = (lane_window_start..=lane_window_end)
+        .map(|window_lane| {
+            let selected_outputs_by_rank = (0..selected_count)
+                .map(|rank| {
+                    let index = rank * hidden + window_lane;
+                    json!({
+                        "rank": rank,
+                        "expert": local_selected_experts.get(rank),
+                        "local": selected_matrix[index],
+                        "oracle": ordered_selected_outputs[index],
+                        "abs_diff": (selected_matrix[index] - ordered_selected_outputs[index]).abs(),
+                        "matched": selected_matrix[index] == ordered_selected_outputs[index],
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "hidden_lane": window_lane,
+                "mlp_input": lane_comparison(attention_residual[window_lane], ordered_mlp_input[window_lane]),
+                "mlp_norm": lane_comparison(mlp_norm_values[window_lane], ordered_mlp_norm[window_lane]),
+                "selected_outputs_by_rank": selected_outputs_by_rank,
+                "weighted_sum": lane_comparison(weighted_sum[window_lane], ordered_weighted_sum[window_lane]),
+                "final_output": lane_comparison(final_output[window_lane], ordered_final_output[window_lane]),
+            })
+        })
+        .collect::<Vec<_>>();
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -6127,6 +6208,12 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
         "layer_index": layer,
         "focus_lane": lane,
         "norm_reduction_policy": cli.norm_reduction_policy,
+        "oracle_status": ordered_status_path.display().to_string(),
+        "earliest_mismatching_ordered_mlp_seam": earliest_mismatching_ordered_mlp_seam,
+        "selected_experts_local": local_selected_experts,
+        "selected_experts_oracle": ordered_selected_experts,
+        "routing_weights_local": local_routing_weights,
+        "routing_weights_oracle": ordered_routing_weights,
         "ordered_bundle": {
             "status_path": ordered_status_path.display().to_string(),
             "dir": ordered_dir.display().to_string(),
@@ -6156,6 +6243,11 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
             "metric": routing_weights_metric,
             "match": routing_weights_metric.metrics.mismatches == 0,
         },
+        "router_logits_note": {
+            "metric": router_logits_metric,
+            "topk_order_or_weight_changed": router_topk_mismatch,
+            "classification_gate": "reported as guard metric; router/top-k mismatch requires selected expert order or routing weights to differ",
+        },
         "metrics": {
             "selected_outputs": selected_metric,
             "per_rank_selected_outputs": per_rank_metrics,
@@ -6170,15 +6262,33 @@ fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
             "ordered_final": ordered_final_output[lane],
             "diff": (final_output[lane] - ordered_final_output[lane]).abs(),
         },
+        "lane_1480": {
+            "mlp_input": lane_comparison(attention_residual[lane], ordered_mlp_input[lane]),
+            "mlp_norm": lane_comparison(mlp_norm_values[lane], ordered_mlp_norm[lane]),
+            "selected_outputs_by_rank": focus_lane_selected_outputs_by_rank,
+            "weighted_sum": lane_comparison(weighted_sum[lane], ordered_weighted_sum[lane]),
+            "final_output": lane_comparison(final_output[lane], ordered_final_output[lane]),
+        },
+        "lane_window": {
+            "start": lane_window_start,
+            "end": lane_window_end,
+            "comparisons": lane_window_comparisons,
+        },
         "replacement_diagnostics": {
             "rank0_expert30_lane1480_replacement": rank0_replacement,
             "ordered_selected_output_replacement": ordered_selected_replacement,
         },
+        "needs_selected_expert_internals": needs_selected_expert_internals,
+        "oracle_next_request": oracle_next_request,
         "ordered_internals": {
             "included": ordered_status["selected_expert_internals_included"].clone(),
             "required_next": "expert30 internal MLP1/SwiGLU/MLP2 lane1480 boundaries if the selected-output producer needs localization below selected output",
         },
-        "next_bounded_step": "emit corrected layer11 output only in a separate slice after recording validation-only rank0/expert30/lane1480 correction metadata",
+        "next_bounded_step": if needs_selected_expert_internals {
+            "request expert30 internal MLP1/SwiGLU/MLP2 lane1480 boundaries before localizing below selected output"
+        } else {
+            "record ordered MLP consumer comparison and choose the next validation-runtime slice"
+        },
     });
     write_json(&cli.output, &status)
 }
