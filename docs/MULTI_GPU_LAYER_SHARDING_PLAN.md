@@ -1756,6 +1756,106 @@ Primary classification:
 
 multi_gpu_layer_sharding_manifest_to_filter_helpers_complete
 
+## Per-device CUDA resource skeleton status
+
+Added a non-executing CUDA shard resource skeleton in:
+
+`crates/gpt-oss-model-runner/src/sharded_resources.rs`
+
+Pure resource-plan types:
+
+```text
+ShardedCudaResourcePlan
+CudaShardResourcePlan
+ShardedCudaResourceStatus
+CudaShardResourceStatus
+```
+
+CUDA-gated resource-owning types:
+
+```text
+ShardedCudaResources
+CudaShardResources
+```
+
+The pure plan is built from `ShardedModelPlan` and preserves:
+
+- device id
+- absolute layer ids
+- embedding ownership
+- final-head ownership
+
+When compiled with `--features cuda`, the resource constructor can create one
+ownership island per shard:
+
+- `CudaContext`
+- `CudaStream`
+- `CublasHandle`
+- `KernelLoader`
+
+The explicit constructor is:
+
+```text
+ShardedCudaResources::create_for_plan(plan)
+ShardedCudaResources::create_for_plan_with_kernel_dir(plan, kernel_dir)
+```
+
+The first form uses an empty/nonexistent kernel directory and still binds the
+context, stream, cuBLAS handle, and loader to each shard device. The second form
+allows a later smoke to pass a real PTX directory without changing the default
+runtime path.
+
+Intentionally not created:
+
+- no model tensor uploads
+- no f32/f16/U8 loader calls
+- no `GpuModelWeights`
+- no `GpuTransformerLayer` execution path
+- no `CudaCacheEngine`
+- no RoPE tables
+- no metadata buffers
+- no f16 scratch
+- no fused weights
+- no MoE GPU weights
+- no activation-transfer buffers
+- no `GpuModelRunner`
+
+An ignored CUDA smoke test was added:
+
+```text
+ignored_two_gpu_sharded_cuda_resource_constructor_smoke
+```
+
+Manual operator command:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo test -p gpt-oss-model-runner ignored_two_gpu_sharded_cuda_resource_constructor_smoke --features cuda -- --ignored --nocapture
+```
+
+The ignored smoke checks for at least two visible CUDA devices, then constructs
+context/stream/cuBLAS/kernel-loader islands for
+`split:0-11@0,12-23@1`. It does not load a model or allocate KV cache.
+
+This differs from split execution because it only proves resource ownership can
+be represented per device. Serve/runtime still reject split maps before CUDA
+allocation, and this resource path is not called from engine startup.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_cuda_resource_skeleton_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_manifest_to_filter_helpers_complete
+multi_gpu_layer_sharding_cuda_resource_skeleton_complete

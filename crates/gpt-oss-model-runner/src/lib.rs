@@ -19,6 +19,7 @@ pub mod quant;
 pub mod runner;
 pub mod sampling;
 pub mod shard_plan;
+pub mod sharded_resources;
 #[cfg(feature = "cuda")]
 pub mod tensor_parallel;
 
@@ -62,3 +63,9 @@ pub use shard_plan::{
     ShardedUploadManifest, SplitAllocationReport, TensorPlacement, TensorPlacementReason,
     UploadManifestOptions,
 };
+pub use sharded_resources::{
+    CudaShardResourcePlan, CudaShardResourceStatus, ShardedCudaResourcePlan,
+    ShardedCudaResourceStatus,
+};
+#[cfg(feature = "cuda")]
+pub use sharded_resources::{CudaShardResources, ShardedCudaResources};

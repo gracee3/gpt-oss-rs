@@ -81,7 +81,7 @@ pub fn reshape_and_cache(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "cuda")))]
 mod tests {
     use super::*;
     use gpt_oss_gpu::prelude::{GpuAllocator, MockGpuAllocator};
