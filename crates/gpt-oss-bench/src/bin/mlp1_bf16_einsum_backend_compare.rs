@@ -856,17 +856,20 @@ fn execute_selected_experts_backend_compare(
     }
 
     let selected_metric_official = compare_vectors(&selected_output, selected_oracle);
-    let mut corrected_selected_oracle = selected_oracle.to_vec();
-    let correction = expert3_lane1990_correction(&selected_output, &mut corrected_selected_oracle);
-    let selected_metric_corrected = compare_vectors(&selected_output, &corrected_selected_oracle);
+    let mut corrected_selected_output = selected_output.clone();
+    let correction = expert3_lane1990_correction(&mut corrected_selected_output, selected_oracle);
+    let selected_metric_corrected = compare_vectors(&corrected_selected_output, selected_oracle);
 
     let weighted_sum = compute_weighted_expert_sum_bf16(&selected_output, &routing_weights, hidden);
     let weighted_metric = compare_vectors(&weighted_sum, weighted_oracle);
-    let corrected_weighted_metric = weighted_metric.clone();
+    let corrected_weighted_sum =
+        compute_weighted_expert_sum_bf16(&corrected_selected_output, &routing_weights, hidden);
+    let corrected_weighted_metric = compare_vectors(&corrected_weighted_sum, weighted_oracle);
 
     let mlp_residual = add_bf16_vectors(post_attention_residual, &weighted_sum);
     let mlp_residual_metric = compare_vectors(&mlp_residual, residual_oracle);
-    let corrected_mlp_residual_metric = mlp_residual_metric.clone();
+    let corrected_mlp_residual = add_bf16_vectors(post_attention_residual, &corrected_weighted_sum);
+    let corrected_mlp_residual_metric = compare_vectors(&corrected_mlp_residual, residual_oracle);
 
     let classification = if selected_metric_official.mismatches == 0 {
         if weighted_metric.mismatches == 0 && mlp_residual_metric.mismatches == 0 {
@@ -878,11 +881,11 @@ fn execute_selected_experts_backend_compare(
         }
     } else if selected_metric_corrected.mismatches == 0 {
         if corrected_mlp_residual_metric.mismatches == 0 {
-            "mlp1_bf16_backend_mlp_residual_matches_oracle"
+            "mlp1_bf16_backend_corrected_downstream_mlp_residual_matches"
         } else if corrected_weighted_metric.mismatches == 0 {
-            "mlp1_bf16_backend_weighted_sum_matches_oracle"
+            "mlp1_bf16_backend_corrected_downstream_weighted_sum_matches"
         } else {
-            "mlp1_bf16_backend_selected_experts_match_with_known_oracle_correction"
+            "mlp1_bf16_backend_corrected_downstream_still_mismatches"
         }
     } else {
         "mlp1_bf16_backend_selected_experts_mismatch"
@@ -895,6 +898,11 @@ fn execute_selected_experts_backend_compare(
         "runtime_behavior_changed": false,
         "validation_only": true,
         "backend": "cublas_bf16_tensor_op",
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy",
+        },
         "selected_experts": selected_experts,
         "routing_weights": routing_weights,
         "source_identity": {
@@ -903,21 +911,31 @@ fn execute_selected_experts_backend_compare(
             "decode_source": loaded.decode_source,
             "tensor_sources": loaded.tensor_sources,
         },
+        "selected_output_uncorrected_metric": selected_metric_official,
+        "selected_output_corrected_metric": selected_metric_corrected,
         "selected_output_metric_official_oracle": selected_metric_official,
         "selected_output_metric_with_expert3_lane1990_correction": selected_metric_corrected,
         "per_rank_metrics": per_rank_metrics,
+        "weighted_sum_uncorrected_metric": weighted_metric,
+        "weighted_sum_corrected_metric": corrected_weighted_metric,
         "weighted_sum_metric": {
             "official_oracle": weighted_metric,
             "with_expert3_lane1990_correction": corrected_weighted_metric,
         },
+        "mlp_residual_uncorrected_metric": mlp_residual_metric,
+        "mlp_residual_corrected_metric": corrected_mlp_residual_metric,
         "mlp_residual_metric": {
             "official_oracle": mlp_residual_metric,
             "with_expert3_lane1990_correction": corrected_mlp_residual_metric,
         },
+        "correction": correction,
         "expert3_lane1990_note": correction,
         "next_bounded_step": match classification {
             "mlp1_bf16_backend_mlp_residual_matches_oracle" => "consider a narrow validation-runtime handoff design; do not route production MLP until explicitly requested",
             "mlp1_bf16_backend_weighted_sum_matches_oracle" => "localize MLP residual add or post-attention residual source",
+            "mlp1_bf16_backend_corrected_downstream_mlp_residual_matches" => "summarize the BF16 backend branch result and prepare a narrow validation-runtime handoff proposal",
+            "mlp1_bf16_backend_corrected_downstream_weighted_sum_matches" => "localize MLP residual add under corrected selected outputs",
+            "mlp1_bf16_backend_corrected_downstream_still_mismatches" => "localize corrected weighted expert sum policy",
             "mlp1_bf16_backend_selected_experts_match_oracle" | "mlp1_bf16_backend_selected_experts_match_with_known_oracle_correction" => "localize weighted expert sum BF16 policy",
             _ => "localize remaining selected expert mismatch under cuBLAS BF16 MLP1 backend",
         },
@@ -1241,24 +1259,33 @@ fn execute_expert30_mlp2_policy_debug(
     let selected_classification = selected_status
         .and_then(|status| status.get("classification"))
         .and_then(Value::as_str);
-    let classification =
-        if selected_classification == Some("mlp1_bf16_backend_mlp_residual_matches_oracle") {
-            "mlp1_bf16_backend_mlp2_policy_fixed_mlp_residual_match"
-        } else if selected_classification == Some("mlp1_bf16_backend_weighted_sum_matches_oracle") {
-            "mlp1_bf16_backend_mlp2_policy_fixed_weighted_sum_match"
-        } else if matches!(
-            selected_classification,
-            Some("mlp1_bf16_backend_selected_experts_match_oracle")
-                | Some("mlp1_bf16_backend_selected_experts_match_with_known_oracle_correction")
-        ) {
-            "mlp1_bf16_backend_mlp2_policy_fixed_selected_experts_match"
-        } else if best_pre_bias_mismatches == 0 && best_selected_mismatches == 0 {
-            "mlp1_bf16_backend_mlp2_policy_matched_prior_exact"
-        } else if best_pre_bias_mismatches < 2880 || best_selected_mismatches < 899 {
-            "mlp1_bf16_backend_mlp2_policy_still_mismatch"
-        } else {
-            "mlp1_bf16_backend_mlp2_policy_blocked_by_layout"
-        };
+    let classification = if matches!(
+        selected_classification,
+        Some(
+            "mlp1_bf16_backend_mlp_residual_matches_oracle"
+                | "mlp1_bf16_backend_corrected_downstream_mlp_residual_matches"
+        )
+    ) {
+        "mlp1_bf16_backend_mlp2_policy_fixed_mlp_residual_match"
+    } else if matches!(
+        selected_classification,
+        Some("mlp1_bf16_backend_weighted_sum_matches_oracle")
+            | Some("mlp1_bf16_backend_corrected_downstream_weighted_sum_matches")
+    ) {
+        "mlp1_bf16_backend_mlp2_policy_fixed_weighted_sum_match"
+    } else if matches!(
+        selected_classification,
+        Some("mlp1_bf16_backend_selected_experts_match_oracle")
+            | Some("mlp1_bf16_backend_selected_experts_match_with_known_oracle_correction")
+    ) {
+        "mlp1_bf16_backend_mlp2_policy_fixed_selected_experts_match"
+    } else if best_pre_bias_mismatches == 0 && best_selected_mismatches == 0 {
+        "mlp1_bf16_backend_mlp2_policy_matched_prior_exact"
+    } else if best_pre_bias_mismatches < 2880 || best_selected_mismatches < 899 {
+        "mlp1_bf16_backend_mlp2_policy_still_mismatch"
+    } else {
+        "mlp1_bf16_backend_mlp2_policy_blocked_by_layout"
+    };
 
     Ok(json!({
         "mode": "mlp1_bf16_einsum_backend_compare",
@@ -1642,8 +1669,8 @@ fn add_bf16_vectors(left: &[f32], right: &[f32]) -> Vec<f32> {
 }
 
 fn expert3_lane1990_correction(
-    selected_output: &[f32],
-    selected_oracle: &mut [f32],
+    selected_output: &mut [f32],
+    selected_oracle: &[f32],
 ) -> Option<Value> {
     let hidden = 2880usize;
     let index = 1990usize;
@@ -1658,20 +1685,26 @@ fn expert3_lane1990_correction(
             "reason": "official selected-output oracle already matches local post-bias lane",
             "rank": 0,
             "expert": 3,
+            "lane": index,
             "hidden_lane": index,
-            "official": official,
-            "post_bias": local_post_bias,
+            "from": local_post_bias,
+            "to": official,
+            "official_selected": official,
+            "validation_post_bias": local_post_bias,
         }));
     }
-    selected_oracle[index] = local_post_bias;
+    selected_output[index] = official;
     Some(json!({
         "applied": true,
-        "reason": "known expert3 lane1990 selected-output oracle anomaly: compare downstream with post-bias value",
+        "reason": "known expert3 lane1990 selected-output oracle anomaly: replace validation post-bias with official selected-output value for downstream impact check",
         "rank": 0,
         "expert": 3,
+        "lane": index,
         "hidden_lane": index,
-        "official": official,
-        "post_bias": local_post_bias,
+        "from": local_post_bias,
+        "to": official,
+        "official_selected": official,
+        "validation_post_bias": local_post_bias,
     }))
 }
 

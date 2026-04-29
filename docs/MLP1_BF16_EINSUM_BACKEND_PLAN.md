@@ -696,6 +696,105 @@ expert3 lane 1990 selected-output replacement in this backend branch, then
 record whether the downstream weighted/residual path clears exactly.
 ```
 
+## Stage 3 Corrected Downstream Status
+
+This slice recomputed weighted expert sum and MLP residual from an actually
+corrected selected-output matrix. The correction is the previously isolated
+expert3 selected-output oracle anomaly at rank 0 / hidden lane 1990.
+
+Backend path:
+
+```text
+MLP1:
+  cuBLAS BF16 tensor-op
+
+SwiGLU:
+  pinned torch-like BF16 stage rounding
+
+MLP2:
+  BF16 pre-bias/output validation policy
+```
+
+Known correction:
+
+```text
+rank = 0
+expert = 3
+hidden lane = 1990
+from validation post-bias selected = 0.478515625
+to official selected-output oracle = 0.48046875
+```
+
+Uncorrected selected-output metric:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 1.695421e-7
+mismatches = 1
+```
+
+Corrected selected-output metric:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+```
+
+Uncorrected weighted expert sum metric:
+
+```text
+max_abs_diff = 0.0009765625
+mean_abs_diff = 3.390842e-7
+mismatches = 1
+```
+
+Corrected weighted expert sum metric:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+```
+
+Uncorrected MLP residual metric:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 6.781684e-7
+mismatches = 1
+```
+
+Corrected MLP residual metric:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+```
+
+Classification:
+
+```text
+mlp1_bf16_backend_corrected_downstream_mlp_residual_matches
+```
+
+Conclusion:
+
+The layer0 final-token MLP backend validation path now clears through MLP
+residual when using cuBLAS BF16 tensor-op for MLP1, the pinned BF16 SwiGLU
+policy, the ported BF16 MLP2/down policy, and the isolated expert3 lane 1990
+selected-output oracle correction. Production runtime behavior did not change.
+No production routing or CUDA kernel changed.
+
+Next bounded step:
+
+```text
+Summarize the BF16 backend branch result and prepare a narrow
+validation-runtime handoff proposal. Do not route production MLP until
+explicitly requested.
+```
+
 ## Validation Commands
 
 Start each slice with:
