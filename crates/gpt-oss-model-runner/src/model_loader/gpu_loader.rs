@@ -8,6 +8,30 @@
 //! - `GpuDType::F16`: f16 kept as-is, bf16 narrowed to f16, f32 narrowed to f16
 //!   Halves VRAM and enables hgemm.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilteredTensorDecision {
+    record_shape: bool,
+    upload: bool,
+}
+
+fn filtered_f16_tensor_decision(
+    dtype_str: &str,
+    tensor_name: &str,
+    should_load: &mut impl FnMut(&str) -> bool,
+) -> FilteredTensorDecision {
+    if dtype_str == "U8" {
+        return FilteredTensorDecision {
+            record_shape: true,
+            upload: false,
+        };
+    }
+
+    FilteredTensorDecision {
+        record_shape: true,
+        upload: should_load(tensor_name),
+    }
+}
+
 #[cfg(feature = "cuda")]
 mod inner {
     use std::collections::HashMap;
@@ -17,7 +41,7 @@ mod inner {
     use cudarc::driver::{CudaSlice, CudaStream};
     use gpt_oss_core::error::{LLMError, Result};
     use memmap2::Mmap;
-    use tracing::{debug, info, warn};
+    use tracing::{debug, info};
 
     /// Target dtype for GPU weight storage.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,10 +111,28 @@ mod inner {
         HashMap<String, CudaSlice<half::f16>>,
         HashMap<String, Vec<usize>>,
     )> {
+        load_weights_to_gpu_f16_with_shapes_filtered(path, stream, |_| true)
+    }
+
+    /// Load safetensors weights as f16 while allowing callers to skip uploading
+    /// tensors they know are unnecessary on the current path. Shape metadata is
+    /// still preserved for skipped tensors so future sharded allocation can
+    /// inspect the full model topology.
+    pub fn load_weights_to_gpu_f16_with_shapes_filtered<F>(
+        path: &Path,
+        stream: &Arc<CudaStream>,
+        should_load: F,
+    ) -> Result<(
+        HashMap<String, CudaSlice<half::f16>>,
+        HashMap<String, Vec<usize>>,
+    )>
+    where
+        F: FnMut(&str) -> bool,
+    {
         if path.is_dir() {
-            load_sharded_to_gpu_f16(path, stream)
+            load_sharded_to_gpu_f16(path, stream, should_load)
         } else {
-            load_single_to_gpu_f16(path, stream)
+            load_single_to_gpu_f16(path, stream, should_load)
         }
     }
 
@@ -228,6 +270,7 @@ mod inner {
     fn load_single_to_gpu_f16(
         path: &Path,
         stream: &Arc<CudaStream>,
+        mut should_load: impl FnMut(&str) -> bool,
     ) -> Result<(
         HashMap<String, CudaSlice<half::f16>>,
         HashMap<String, Vec<usize>>,
@@ -252,10 +295,27 @@ mod inner {
 
             let (dtype_str, shape, tensor_bytes) = parse_tensor_meta(meta, name, data, data_start)?;
             let numel: usize = shape.iter().product();
+            let decision =
+                super::filtered_f16_tensor_decision(dtype_str, name.as_str(), &mut should_load);
 
             if dtype_str == "U8" {
                 debug!(tensor = name.as_str(), shape = ?shape, "skipping U8 tensor on f16 GPU path");
-                shapes.insert(name.clone(), shape);
+                if decision.record_shape {
+                    shapes.insert(name.clone(), shape);
+                }
+                continue;
+            }
+
+            if !decision.upload {
+                debug!(
+                    tensor = name.as_str(),
+                    dtype = dtype_str,
+                    shape = ?shape,
+                    "skipping tensor upload on filtered f16 GPU path"
+                );
+                if decision.record_shape {
+                    shapes.insert(name.clone(), shape);
+                }
                 continue;
             }
 
@@ -293,6 +353,7 @@ mod inner {
     fn load_sharded_to_gpu_f16(
         dir: &Path,
         stream: &Arc<CudaStream>,
+        mut should_load: impl FnMut(&str) -> bool,
     ) -> Result<(
         HashMap<String, CudaSlice<half::f16>>,
         HashMap<String, Vec<usize>>,
@@ -308,7 +369,8 @@ mod inner {
         let mut all_weights: HashMap<String, CudaSlice<half::f16>> = HashMap::new();
         let mut all_shapes: HashMap<String, Vec<usize>> = HashMap::new();
         for shard_path in &shard_files {
-            let (shard_weights, shard_shapes) = load_single_to_gpu_f16(shard_path, stream)?;
+            let (shard_weights, shard_shapes) =
+                load_single_to_gpu_f16(shard_path, stream, &mut should_load)?;
             all_weights.extend(shard_weights);
             all_shapes.extend(shard_shapes);
         }
@@ -637,8 +699,8 @@ mod inner {
 #[cfg(feature = "cuda")]
 pub use inner::{
     load_u8_weights_to_host, load_weights_to_gpu, load_weights_to_gpu_f16,
-    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_with_shapes,
-    load_weights_to_gpu_with_shapes_filtered, GpuDType,
+    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_f16_with_shapes_filtered,
+    load_weights_to_gpu_with_shapes, load_weights_to_gpu_with_shapes_filtered, GpuDType,
 };
 
 #[cfg(test)]
@@ -646,5 +708,47 @@ mod tests {
     #[test]
     fn module_compiles() {
         assert!(true);
+    }
+
+    #[test]
+    fn f16_filter_uploads_selected_non_u8_tensor() {
+        let mut should_load = |name: &str| name == "model.layers.0.self_attn.q_proj.weight";
+
+        let decision = super::filtered_f16_tensor_decision(
+            "F16",
+            "model.layers.0.self_attn.q_proj.weight",
+            &mut should_load,
+        );
+
+        assert!(decision.record_shape);
+        assert!(decision.upload);
+    }
+
+    #[test]
+    fn f16_filter_preserves_shape_for_skipped_non_u8_tensor() {
+        let mut should_load = |name: &str| name == "model.layers.0.self_attn.q_proj.weight";
+
+        let decision = super::filtered_f16_tensor_decision(
+            "BF16",
+            "model.layers.1.self_attn.q_proj.weight",
+            &mut should_load,
+        );
+
+        assert!(decision.record_shape);
+        assert!(!decision.upload);
+    }
+
+    #[test]
+    fn f16_filter_preserves_shape_and_skips_u8_tensor() {
+        let mut should_load = |_name: &str| true;
+
+        let decision = super::filtered_f16_tensor_decision(
+            "U8",
+            "model.layers.0.mlp.experts.gate_up_proj_blocks",
+            &mut should_load,
+        );
+
+        assert!(decision.record_shape);
+        assert!(!decision.upload);
     }
 }

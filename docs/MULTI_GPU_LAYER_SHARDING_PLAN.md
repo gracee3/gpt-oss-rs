@@ -1544,6 +1544,79 @@ the current unfiltered f16 loader as a wrapper over the filtered helper with
 
 multi_gpu_layer_sharding_f16_u8_filtered_loader_design_complete
 
+## f16 filtered loader API status
+
+Added an additive f16 filtered loader API in:
+
+`crates/gpt-oss-model-runner/src/model_loader/gpu_loader.rs`
+
+Function added:
+
+```text
+load_weights_to_gpu_f16_with_shapes_filtered(path, stream, should_load)
+```
+
+Preserved public APIs:
+
+- `load_weights_to_gpu_f16(path, stream)`
+- `load_weights_to_gpu_f16_with_shapes(path, stream)`
+
+`load_weights_to_gpu_f16_with_shapes` now delegates to
+`load_weights_to_gpu_f16_with_shapes_filtered(path, stream, |_| true)`, so the
+existing unfiltered f16 behavior remains the default public behavior.
+`load_weights_to_gpu_f16` continues to call the shape-returning API and discard
+the shape map as before.
+
+Shape metadata behavior:
+
+- The filtered f16 path records shape metadata for every tensor encountered.
+- Skipped non-U8 tensors still appear in the returned shape map.
+- U8 tensors still appear in the returned shape map and are skipped by the f16
+  GPU loader exactly as before.
+- Filtering controls conversion/upload only.
+
+Implementation shape:
+
+- `load_weights_to_gpu_f16_with_shapes_filtered` mirrors the existing f32
+  filtered API.
+- Single-file and sharded-directory f16 helpers now accept `should_load`.
+- Sharded-directory traversal continues to use sorted `.safetensors` paths.
+- A small CUDA-free filter-decision helper is covered by unit tests so the
+  shape/filter invariant is testable without requiring GPU upload execution.
+
+Testing note:
+
+- The focused tests exercise pure f16 filter decision semantics, not GPU
+  upload execution.
+- The CUDA feature path is compile-checked with
+  `cargo check -p gpt-oss-model-runner --features cuda`.
+
+Still deferred:
+
+- U8 host filtering remains deferred.
+- No split allocation smoke was added.
+- No serve/runtime behavior changed.
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created outside existing loader API behavior.
+- No f32 loader behavior changed.
+- No `CudaCacheEngine` behavior changed.
+- Split maps remain non-executable in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_f16_filtered_loader_api_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_f16_u8_filtered_loader_design_complete
+multi_gpu_layer_sharding_f16_filtered_loader_api_complete
