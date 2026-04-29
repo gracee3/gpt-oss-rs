@@ -4,6 +4,7 @@
 //! metadata. It does not allocate CUDA resources, upload tensors, or make split
 //! maps executable.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::device_map::{DeviceId, DeviceMap};
@@ -400,6 +401,30 @@ impl ShardedUploadManifest {
 }
 
 impl ShardTensorManifest {
+    /// Deterministic set for f32/f16 GPU loader filters.
+    pub fn required_tensor_filter_set(&self) -> BTreeSet<String> {
+        self.required_tensor_names.iter().cloned().collect()
+    }
+
+    /// Deterministic set for U8 host loader filters.
+    pub fn host_u8_tensor_filter_set(&self) -> BTreeSet<String> {
+        self.host_u8_tensor_names.iter().cloned().collect()
+    }
+
+    /// Return true when a tensor should be loaded by f32/f16 GPU loaders.
+    pub fn should_load_required_tensor(&self, name: &str) -> bool {
+        self.required_tensor_names
+            .iter()
+            .any(|tensor_name| tensor_name == name)
+    }
+
+    /// Return true when a tensor should be loaded by the U8 host loader.
+    pub fn should_load_host_u8_tensor(&self, name: &str) -> bool {
+        self.host_u8_tensor_names
+            .iter()
+            .any(|tensor_name| tensor_name == name)
+    }
+
     fn from_shard_plan(shard: &GpuShardPlan) -> Self {
         let mut deferred_or_late_gpu_allocations = vec![
             LateAllocationKind::RopeTables,
@@ -598,6 +623,8 @@ mod tests {
             "model.layers.12.self_attn.k_proj.weight",
             "model.layers.23.post_attention_layernorm.weight",
             "model.layers.0.mlp.experts.gate_up_proj_blocks",
+            "model.layers.11.mlp.experts.gate_up_proj_scales",
+            "model.layers.12.mlp.experts.down_proj_blocks",
             "model.layers.23.mlp.experts.down_proj_scales",
             "model.norm.weight",
             "lm_head.weight",
@@ -886,15 +913,146 @@ mod tests {
         assert!(gpu0
             .host_u8_tensor_names
             .contains(&"model.layers.0.mlp.experts.gate_up_proj_blocks".to_string()));
+        assert!(gpu0
+            .host_u8_tensor_names
+            .contains(&"model.layers.11.mlp.experts.gate_up_proj_scales".to_string()));
+        assert!(gpu1
+            .host_u8_tensor_names
+            .contains(&"model.layers.12.mlp.experts.down_proj_blocks".to_string()));
         assert!(gpu1
             .host_u8_tensor_names
             .contains(&"model.layers.23.mlp.experts.down_proj_scales".to_string()));
         assert!(!gpu0
             .required_tensor_names
             .contains(&"model.layers.0.mlp.experts.gate_up_proj_blocks".to_string()));
+        assert!(!gpu0
+            .required_tensor_names
+            .contains(&"model.layers.11.mlp.experts.gate_up_proj_scales".to_string()));
+        assert!(!gpu1
+            .required_tensor_names
+            .contains(&"model.layers.12.mlp.experts.down_proj_blocks".to_string()));
         assert!(!gpu1
             .required_tensor_names
             .contains(&"model.layers.23.mlp.experts.down_proj_scales".to_string()));
+    }
+
+    #[test]
+    fn manifest_filter_sets_are_deterministic() {
+        let manifest = split_manifest();
+        let gpu0 = manifest_shard(&manifest, 0);
+        let gpu1 = manifest_shard(&manifest, 1);
+
+        assert_eq!(
+            gpu0.required_tensor_filter_set()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                "model.embed_tokens.weight".to_string(),
+                "model.layers.0.self_attn.q_proj.weight".to_string(),
+                "model.layers.11.mlp.down_proj.weight".to_string(),
+            ]
+        );
+        assert_eq!(
+            gpu1.host_u8_tensor_filter_set()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                "model.layers.12.mlp.experts.down_proj_blocks".to_string(),
+                "model.layers.23.mlp.experts.down_proj_scales".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn gpu0_manifest_required_filter_accepts_only_gpu0_required_tensors() {
+        let manifest = split_manifest();
+        let gpu0 = manifest_shard(&manifest, 0);
+
+        assert!(gpu0.should_load_required_tensor("model.embed_tokens.weight"));
+        assert!(gpu0.should_load_required_tensor("model.layers.0.self_attn.q_proj.weight"));
+        assert!(gpu0.should_load_required_tensor("model.layers.11.mlp.down_proj.weight"));
+
+        assert!(!gpu0.should_load_required_tensor("model.layers.12.self_attn.k_proj.weight"));
+        assert!(!gpu0.should_load_required_tensor("model.norm.weight"));
+        assert!(!gpu0.should_load_required_tensor("lm_head.weight"));
+        assert!(!gpu0.should_load_required_tensor("model.layers.0.mlp.experts.gate_up_proj_blocks"));
+        assert!(!gpu0.should_load_required_tensor("model.rotary_emb.inv_freq"));
+        assert!(!gpu0.should_load_required_tensor("model.layers.24.self_attn.q_proj.weight"));
+    }
+
+    #[test]
+    fn gpu0_manifest_host_u8_filter_accepts_only_gpu0_u8_tensors() {
+        let manifest = split_manifest();
+        let gpu0 = manifest_shard(&manifest, 0);
+
+        assert!(gpu0.should_load_host_u8_tensor("model.layers.0.mlp.experts.gate_up_proj_blocks"));
+        assert!(gpu0.should_load_host_u8_tensor("model.layers.11.mlp.experts.gate_up_proj_scales"));
+
+        assert!(!gpu0.should_load_host_u8_tensor("model.layers.12.mlp.experts.down_proj_blocks"));
+        assert!(!gpu0.should_load_host_u8_tensor("model.layers.23.mlp.experts.down_proj_scales"));
+        assert!(!gpu0.should_load_host_u8_tensor("model.embed_tokens.weight"));
+        assert!(!gpu0.should_load_host_u8_tensor("model.layers.0.self_attn.q_proj.weight"));
+        assert!(!gpu0.should_load_host_u8_tensor("model.rotary_emb.inv_freq"));
+        assert!(!gpu0.should_load_host_u8_tensor("model.layers.24.mlp.experts.down_proj_blocks"));
+    }
+
+    #[test]
+    fn gpu1_manifest_required_filter_accepts_only_gpu1_required_tensors() {
+        let manifest = split_manifest();
+        let gpu1 = manifest_shard(&manifest, 1);
+
+        assert!(gpu1.should_load_required_tensor("model.layers.12.self_attn.k_proj.weight"));
+        assert!(gpu1.should_load_required_tensor("model.layers.23.post_attention_layernorm.weight"));
+        assert!(gpu1.should_load_required_tensor("model.norm.weight"));
+        assert!(gpu1.should_load_required_tensor("lm_head.weight"));
+
+        assert!(!gpu1.should_load_required_tensor("model.embed_tokens.weight"));
+        assert!(!gpu1.should_load_required_tensor("model.layers.11.mlp.down_proj.weight"));
+        assert!(!gpu1.should_load_required_tensor("model.layers.12.mlp.experts.down_proj_blocks"));
+        assert!(!gpu1.should_load_required_tensor("model.rotary_emb.inv_freq"));
+        assert!(!gpu1.should_load_required_tensor("model.layers.24.self_attn.q_proj.weight"));
+    }
+
+    #[test]
+    fn gpu1_manifest_host_u8_filter_accepts_only_gpu1_u8_tensors() {
+        let manifest = split_manifest();
+        let gpu1 = manifest_shard(&manifest, 1);
+
+        assert!(gpu1.should_load_host_u8_tensor("model.layers.12.mlp.experts.down_proj_blocks"));
+        assert!(gpu1.should_load_host_u8_tensor("model.layers.23.mlp.experts.down_proj_scales"));
+
+        assert!(!gpu1.should_load_host_u8_tensor("model.layers.0.mlp.experts.gate_up_proj_blocks"));
+        assert!(!gpu1.should_load_host_u8_tensor("model.layers.11.mlp.experts.gate_up_proj_scales"));
+        assert!(!gpu1.should_load_host_u8_tensor("model.norm.weight"));
+        assert!(!gpu1.should_load_host_u8_tensor("lm_head.weight"));
+        assert!(!gpu1.should_load_host_u8_tensor("model.rotary_emb.inv_freq"));
+        assert!(!gpu1.should_load_host_u8_tensor("model.layers.24.mlp.experts.down_proj_blocks"));
+    }
+
+    #[test]
+    fn tied_lm_head_fallback_does_not_add_embedding_to_final_required_filter() {
+        let manifest = split_plan()
+            .upload_manifest_for_tensor_names(
+                [
+                    "model.embed_tokens.weight",
+                    "model.layers.23.post_attention_layernorm.weight",
+                    "model.norm.weight",
+                ],
+                UploadManifestOptions {
+                    tie_word_embeddings: true,
+                },
+            )
+            .unwrap();
+
+        let final_shard = manifest_shard(&manifest, 1);
+
+        assert!(final_shard
+            .deferred_or_late_gpu_allocations
+            .contains(&LateAllocationKind::TiedLmHeadFallback));
+        assert!(!final_shard.should_load_required_tensor("model.embed_tokens.weight"));
+        assert!(!final_shard
+            .required_tensor_filter_set()
+            .contains("model.embed_tokens.weight"));
     }
 
     #[test]
@@ -1261,11 +1419,17 @@ mod tests {
         assert!(gpu0
             .host_u8_tensor_names
             .contains(&"model.layers.0.mlp.experts.gate_up_proj_blocks".to_string()));
-        assert_eq!(gpu0.host_u8_tensor_count, 1);
+        assert!(gpu0
+            .host_u8_tensor_names
+            .contains(&"model.layers.11.mlp.experts.gate_up_proj_scales".to_string()));
+        assert_eq!(gpu0.host_u8_tensor_count, 2);
+        assert!(gpu1
+            .host_u8_tensor_names
+            .contains(&"model.layers.12.mlp.experts.down_proj_blocks".to_string()));
         assert!(gpu1
             .host_u8_tensor_names
             .contains(&"model.layers.23.mlp.experts.down_proj_scales".to_string()));
-        assert_eq!(gpu1.host_u8_tensor_count, 1);
+        assert_eq!(gpu1.host_u8_tensor_count, 2);
     }
 
     #[test]
@@ -1336,12 +1500,12 @@ mod tests {
         let gpu1 = report_shard(&report, 1);
 
         assert_eq!(gpu0.required_tensor_count, 3);
-        assert_eq!(gpu0.host_u8_tensor_count, 1);
+        assert_eq!(gpu0.host_u8_tensor_count, 2);
         assert_eq!(gpu0.optional_tensor_count, 0);
         assert_eq!(gpu0.late_allocation_count, gpu0.late_allocations.len());
 
         assert_eq!(gpu1.required_tensor_count, 4);
-        assert_eq!(gpu1.host_u8_tensor_count, 1);
+        assert_eq!(gpu1.host_u8_tensor_count, 2);
         assert_eq!(gpu1.optional_tensor_count, 0);
         assert_eq!(gpu1.late_allocation_count, gpu1.late_allocations.len());
     }

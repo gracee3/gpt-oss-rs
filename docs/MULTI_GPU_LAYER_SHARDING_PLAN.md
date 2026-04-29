@@ -1688,6 +1688,74 @@ Primary classification:
 
 multi_gpu_layer_sharding_u8_filtered_loader_api_complete
 
+## Manifest-to-filter helper status
+
+Added pure manifest-to-loader filter helpers in:
+
+`crates/gpt-oss-model-runner/src/shard_plan.rs`
+
+Helper methods added on `ShardTensorManifest`:
+
+```text
+required_tensor_filter_set()
+host_u8_tensor_filter_set()
+should_load_required_tensor(name)
+should_load_host_u8_tensor(name)
+```
+
+Filter derivation:
+
+- f32/f16 GPU loader filters are derived from
+  `ShardTensorManifest.required_tensor_names`.
+- U8 host loader filters are derived from
+  `ShardTensorManifest.host_u8_tensor_names`.
+- The set-returning helpers use deterministic `BTreeSet<String>` values for
+  observable/testable ordering.
+- The predicate helpers avoid closure lifetime complexity for future loader
+  call sites.
+
+Exclusion behavior:
+
+- Required tensor filters reject host U8 tensor names.
+- Host U8 filters reject required non-U8 tensor names.
+- Unknown/unassigned names are rejected by both filters.
+- Invalid or out-of-range layer tensor names are rejected by both filters unless
+  they were already present in the manifest, which the current planner avoids.
+
+Tied LM-head fallback:
+
+- `LateAllocationKind::TiedLmHeadFallback` does not add
+  `model.embed_tokens.weight` to the final shard required-tensor filter.
+- If `lm_head.weight` is absent and tied embeddings are requested, the final
+  shard still needs a later explicit fallback path; this helper only reflects
+  concrete manifest-owned tensor names.
+
+Still deferred:
+
+- No loader behavior changed.
+- No loader functions are called from a split path.
+- No split allocation smoke was added.
+- No serve/runtime behavior changed.
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- Split maps remain non-executable in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_manifest_to_filter_helpers_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_u8_filtered_loader_api_complete
+multi_gpu_layer_sharding_manifest_to_filter_helpers_complete
