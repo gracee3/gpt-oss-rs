@@ -1744,6 +1744,64 @@ policy or use a PyTorch/module-generated MLP1 seam while the exact Rust
 accumulation semantics are implemented. Production runtime behavior remains
 unchanged, and no raw `/tmp` or `.live` artifacts are committed.
 
+## MLP1 BF16 Einsum-Style Validation Policy Status
+
+This slice attempted to encode the observed PyTorch BF16 `einsum` boundary in a
+narrow Rust-side validation replay for expert30 MLP1 lane `522`. The PyTorch
+scratch artifact remains outside the repo:
+
+```text
+/tmp/layer0_validation_expert30_mlp1_lane522_pytorch_terms.json
+```
+
+Lane `522` reference:
+
+```text
+official output:
+  0.330078125
+
+PyTorch BF16 einsum:
+  pre_bias = 0.609375
+  bias = -0.279296875
+  output = 0.330078125
+```
+
+Bounded Rust policies tested:
+
+- `A_current_explicit_f32_sum`: output `0.33203125`, diff `0.001953125`.
+- `B_bf16_product_f32_sum`: output `0.33398438`, diff `0.00390625`.
+- `C_bf16_block32_partial_sum`: output `0.33789062`, diff `0.0078125`.
+- `D_bf16_running_sum_each_term`: output `0.29882812`, diff `0.03125`.
+- `F_f32_accum_bf16_prebias_f32_bias`: output `0.33398438`, diff `0.00390625`.
+- `E_chunked_pairwise_{16,32,64,128}`: output `0.33203125`, diff
+  `0.001953125`.
+
+Classification:
+
+```text
+mlp1_bf16_einsum_policy_not_encoded
+```
+
+No bounded Rust product/sum, partial-sum, running-sum, or chunked variant
+reproduced the PyTorch BF16 `einsum` lane. Because lane `522` did not clear,
+the selected-experts rerun and weighted-expert-sum rerun were intentionally not
+run in this slice:
+
+```text
+selected_experts_rerun:
+  classification = not_run_policy_did_not_clear_lane522
+
+weighted_sum_rerun:
+  classification = layer0_validation_weighted_expert_sum_not_run
+```
+
+The next bounded step is to implement or expose a validation-only BF16
+matmul/einsum backend that reproduces PyTorch BF16 dot/einsum semantics, or to
+continue layer0 MLP validation through an official/PyTorch MLP1 seam while that
+backend is developed. Production runtime behavior remains unchanged, no Torch
+runtime dependency is added, and no raw `/tmp` or `.live` artifacts are
+committed.
+
 ## Validation Commands
 
 For the skeleton slice:

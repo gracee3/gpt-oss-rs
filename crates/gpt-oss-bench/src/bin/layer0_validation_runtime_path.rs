@@ -250,6 +250,7 @@ enum Mode {
     Expert30Mlp2Debug,
     Expert30Mlp1Debug,
     Expert30Mlp1LaneDebug,
+    Mlp1Bf16Policy,
 }
 
 #[derive(Debug, Serialize)]
@@ -667,6 +668,23 @@ struct Expert30Mlp1LaneVariant {
     bias: f32,
     row_summary: Option<FiniteSummary>,
     full_mlp1_metric: Option<HiddenComparisonStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct Mlp1Bf16PolicyStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    chosen_mlp1_policy: &'static str,
+    lane522_policy_table: Vec<Expert30Mlp1LaneVariant>,
+    expert30_full_metrics: Option<HiddenComparisonStatus>,
+    selected_experts_rerun: Value,
+    weighted_sum_rerun: Value,
+    pytorch_reference: Value,
+    next_bounded_step: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1111,6 +1129,7 @@ fn main() -> Result<()> {
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
         Mode::Expert30Mlp1Debug | Mode::Expert30Mlp1LaneDebug => run_expert30_mlp1_debug(&cli),
+        Mode::Mlp1Bf16Policy => run_mlp1_bf16_policy(&cli),
     }
 }
 
@@ -3021,6 +3040,31 @@ fn run_expert30_mlp1_debug(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_mlp1_bf16_policy(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let mlp1_oracle = required_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(mlp1_oracle, "expert30 MLP1 oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+    let (_, mlp_norm_values) = load_tensor_artifact(mlp_norm, &[2880], &["values"])?;
+    let (_, mlp1_values) = load_tensor_artifact(mlp1_oracle, &[5760], &["values"])?;
+    let lane = cli.lane;
+    anyhow::ensure!(lane < mlp1_values.len(), "lane {lane} out of range");
+    let status = execute_mlp1_bf16_policy_mxfp4(
+        model,
+        &mlp_norm_values,
+        &mlp1_values,
+        lane,
+        cli.pytorch_lane_terms.as_deref(),
+    )?;
+    write_json(&cli.output, &status)
+}
+
 struct KRopeExecution {
     classification: &'static str,
     metrics: Option<ComparisonMetrics>,
@@ -4324,6 +4368,51 @@ fn dot_f64_diagnostic(input: &[f32], weights: &[f32]) -> f32 {
         }) as f32
 }
 
+fn dot_bf16_product_f32_sum(input: &[f32], weights: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(weights.iter())
+        .fold(0.0f32, |acc, (&input_value, &weight)| {
+            acc + round_bf16(round_bf16(input_value) * round_bf16(weight))
+        })
+}
+
+fn dot_bf16_running(input: &[f32], weights: &[f32], block: Option<usize>) -> f32 {
+    match block {
+        Some(block) => {
+            let mut total = 0.0f32;
+            for chunk in (0..input.len()).step_by(block) {
+                let mut partial = 0.0f32;
+                for idx in chunk..(chunk + block).min(input.len()) {
+                    partial = round_bf16(
+                        partial + round_bf16(round_bf16(input[idx]) * round_bf16(weights[idx])),
+                    );
+                }
+                total = round_bf16(total + partial);
+            }
+            total
+        }
+        None => input
+            .iter()
+            .zip(weights.iter())
+            .fold(0.0f32, |acc, (&input_value, &weight)| {
+                round_bf16(acc + round_bf16(round_bf16(input_value) * round_bf16(weight)))
+            }),
+    }
+}
+
+fn dot_chunked_pairwise_f32_chunk(input: &[f32], weights: &[f32], chunk_size: usize) -> f32 {
+    let mut partials = Vec::new();
+    for chunk in (0..input.len()).step_by(chunk_size) {
+        let mut partial = 0.0f32;
+        for idx in chunk..(chunk + chunk_size).min(input.len()) {
+            partial += round_bf16(input[idx]) * weights[idx];
+        }
+        partials.push(partial);
+    }
+    partials.into_iter().sum()
+}
+
 fn local_per_block_summary(input: &[f32], weights: &[f32]) -> Vec<Value> {
     (0..90)
         .map(|block| {
@@ -5575,6 +5664,155 @@ fn execute_expert30_mlp1_debug_mxfp4(
         best_explanation,
         next_bounded_step: "inspect expert30 lane 522 source group contributions and compare against PyTorch/official MLP1 accumulation for the single lane",
     })
+}
+
+#[cfg(feature = "cuda")]
+fn execute_mlp1_bf16_policy_mxfp4(
+    model: &Path,
+    mlp_norm: &[f32],
+    mlp1_oracle: &[f32],
+    lane: usize,
+    pytorch_lane_terms: Option<&Path>,
+) -> Result<Mlp1Bf16PolicyStatus> {
+    let row = load_gate_up_row_mxfp4_validation(model, 0, 30, lane)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let official = mlp1_oracle[lane];
+    let bias = row.bias_value;
+    let current_row = row.current_gpu_row.as_slice();
+    let mut specs = vec![
+        (
+            "A_current_explicit_f32_sum",
+            "BF16 input, dequantized f16 weight widened to f32, explicit f32 product/sum, f32 bias add, BF16 output",
+            dot_sequential_f32(mlp_norm, current_row, false),
+            "bf16",
+        ),
+        (
+            "B_bf16_product_f32_sum",
+            "BF16-rounded product per term, f32 accumulation, f32 bias add, BF16 output",
+            dot_bf16_product_f32_sum(mlp_norm, current_row),
+            "bf16",
+        ),
+        (
+            "C_bf16_block32_partial_sum",
+            "BF16 running sum within MXFP4 32-value blocks, BF16 block accumulation, f32 bias add, BF16 output",
+            dot_bf16_running(mlp_norm, current_row, Some(32)),
+            "bf16",
+        ),
+        (
+            "D_bf16_running_sum_each_term",
+            "BF16 product and BF16 running sum after every term, f32 bias add, BF16 output",
+            dot_bf16_running(mlp_norm, current_row, None),
+            "bf16",
+        ),
+        (
+            "F_f32_accum_bf16_prebias_f32_bias",
+            "explicit f32 product/sum, BF16 pre-bias, f32 bias add, BF16 output",
+            dot_sequential_f32(mlp_norm, current_row, false),
+            "bf16_prebias_f32_bias",
+        ),
+    ];
+    for chunk in [16usize, 32, 64, 128] {
+        let name = match chunk {
+            16 => "E_chunked_pairwise_16",
+            32 => "E_chunked_pairwise_32",
+            64 => "E_chunked_pairwise_64",
+            _ => "E_chunked_pairwise_128",
+        };
+        specs.push((
+            name,
+            "chunked pairwise f32 accumulation with fixed chunk size, f32 bias add, BF16 output",
+            dot_chunked_pairwise_f32_chunk(mlp_norm, current_row, chunk),
+            "bf16",
+        ));
+    }
+
+    let lane522_policy_table = specs
+        .into_iter()
+        .map(|(name, policy, pre_bias, output)| {
+            let local = match output {
+                "bf16_prebias_f32_bias" => round_bf16(round_bf16(pre_bias) + round_bf16(bias)),
+                _ => round_bf16(pre_bias + round_bf16(bias)),
+            };
+            Expert30Mlp1LaneVariant {
+                name,
+                policy,
+                local,
+                official,
+                diff: (local - official).abs(),
+                pre_bias,
+                bias,
+                row_summary: None,
+                full_mlp1_metric: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let best = lane522_policy_table
+        .iter()
+        .min_by(|a, b| a.diff.total_cmp(&b.diff))
+        .cloned()
+        .unwrap_or_else(|| empty_mlp1_lane_variant("not_run", "no policies", official));
+    let pytorch_reference = load_pytorch_lane_reference(pytorch_lane_terms);
+    let pytorch_output = pytorch_reference
+        .get("output")
+        .and_then(|output| output.get("einsum_bf16_plus_bias_bf16"))
+        .and_then(Value::as_f64)
+        .map(|value| value as f32);
+    let classification = if best.diff == 0.0 {
+        "mlp1_bf16_einsum_policy_identified"
+    } else if pytorch_output.is_some_and(|value| value == official) {
+        "mlp1_bf16_einsum_policy_not_encoded"
+    } else {
+        "mlp1_bf16_einsum_policy_unresolved"
+    };
+    let (chosen_mlp1_policy, expert30_full_metrics, selected_experts_rerun, weighted_sum_rerun) =
+        if best.diff == 0.0 {
+            (
+                best.name,
+                None,
+                json!({ "run": false, "reason": "full policy wiring deferred" }),
+                json!({ "run": false, "classification": "layer0_validation_weighted_expert_sum_not_run" }),
+            )
+        } else {
+            (
+                "none",
+                None,
+                json!({
+                    "run": false,
+                    "classification": "not_run_policy_did_not_clear_lane522"
+                }),
+                json!({
+                    "run": false,
+                    "classification": "layer0_validation_weighted_expert_sum_not_run"
+                }),
+            )
+        };
+
+    Ok(Mlp1Bf16PolicyStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "mlp1-bf16-policy",
+        classification,
+        implemented: true,
+        runtime_behavior_changed: false,
+        validation_only: true,
+        chosen_mlp1_policy,
+        lane522_policy_table,
+        expert30_full_metrics,
+        selected_experts_rerun,
+        weighted_sum_rerun,
+        pytorch_reference,
+        next_bounded_step: "implement a validation-only BF16 matmul/einsum backend for MLP1 or use official/PyTorch MLP1 seam while exact Rust BF16 einsum semantics are added",
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_mlp1_bf16_policy_mxfp4(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _mlp1_oracle: &[f32],
+    _lane: usize,
+    _pytorch_lane_terms: Option<&Path>,
+) -> Result<Mlp1Bf16PolicyStatus> {
+    anyhow::bail!("MLP1 BF16 policy debug requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]
