@@ -662,6 +662,67 @@ before any code uploads split weights.
 
 multi_gpu_layer_sharding_sharded_runner_wrapper_design_complete
 
+## Stage 4 planning skeleton status
+
+Added a CUDA-free sharded model planning skeleton in
+`crates/gpt-oss-model-runner/src/shard_plan.rs` and exported it from
+`gpt-oss-model-runner`.
+
+New pure planning types:
+
+- `ShardedModelPlan`
+- `GpuShardPlan`
+- `TensorPlacement`
+- `TensorPlacementReason`
+- `ShardPlanError`
+
+What it proves:
+
+- A parsed `DeviceMap` can be converted into stable per-device ownership
+  metadata without constructing CUDA resources.
+- Absolute layer ids are preserved in each shard plan.
+- `single` produces one shard with all layers, embeddings, final norm, and
+  LM-head ownership on the selected device.
+- `split:0-11@0,12-23@1` produces two shard plans:
+  - GPU0 owns embeddings and layers 0..11.
+  - GPU1 owns layers 12..23, final norm, and LM head.
+- The plan is metadata only. It is not wired into serve execution and does not
+  make split maps executable.
+
+Tensor ownership patterns recognized:
+
+- `model.embed_tokens.weight` maps to the embedding shard.
+- `model.layers.<N>.*` maps to the shard owning absolute layer `N`.
+- `model.norm.weight` maps to the final shard.
+- `lm_head.weight` maps to the final shard.
+- Unknown tensor names are left unassigned.
+- Out-of-range layer tensor names are rejected by the pure planner.
+- Tied LM-head fallback is represented as future final-shard ownership, but no
+  fallback upload is implemented.
+
+Still deferred:
+
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  shard-local GPU resources are created.
+- No model loader upload behavior changed.
+- No tensors are routed to multiple devices.
+- KV cache allocation and indexing are unchanged.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes, or
+  runtime math branching were added.
+- Split maps remain rejected before CUDA allocation in the current serve path
+  with `split device maps are parsed but not executable yet`.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner shard`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_shard_plan_skeleton_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_sharded_runner_wrapper_design_complete
+multi_gpu_layer_sharding_shard_plan_skeleton_complete

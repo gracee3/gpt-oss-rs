@@ -18,6 +18,7 @@ pub mod model_loader;
 pub mod quant;
 pub mod runner;
 pub mod sampling;
+pub mod shard_plan;
 #[cfg(feature = "cuda")]
 pub mod tensor_parallel;
 
@@ -53,3 +54,6 @@ pub use model_loader::{detect_format, load_model_weights, ModelFormat};
 pub use quant::{detect_quant_method, QuantConfig, QuantMethod, QuantizedLinear, QuantizedWeight};
 pub use runner::{ModelRunner, ModelRunnerConfig};
 pub use sampling::{sample_batch, sample_batch_parallel, Sampler, SamplerOutput};
+pub use shard_plan::{
+    GpuShardPlan, ShardPlanError, ShardedModelPlan, TensorPlacement, TensorPlacementReason,
+};
