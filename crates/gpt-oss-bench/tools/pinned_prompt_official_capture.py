@@ -99,6 +99,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Consumer internal compare status requesting down projection terms.",
     )
+    parser.add_argument(
+        "--source-down-terms-status",
+        type=Path,
+        help="Prior down terms oracle status used as provenance for einsum dtype probes.",
+    )
+    parser.add_argument(
+        "--source-consumer-down-terms-status",
+        type=Path,
+        help="Consumer down terms compare status requesting einsum dtype probes.",
+    )
     parser.add_argument("--output-dir", type=Path, help="Optional supporting output directory.")
     parser.add_argument("--status-output", type=Path, help="Direct-mode status output JSON.")
     parser.add_argument(
@@ -252,6 +262,26 @@ def parse_down_projection_terms_selector(boundary: str, layer_idx: int | None) -
         return selector_layer
     match = re.fullmatch(
         r"layer(\d+)_final_token_expert(\d+)_down_projection_terms_bundle", boundary
+    )
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_down_einsum_dtype_probe_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_selected_expert_down_einsum_dtype_probe":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_selected_expert_down_einsum_dtype_probe requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(
+        r"layer(\d+)_final_token_selected_expert_down_einsum_dtype_probe", boundary
     )
     if match:
         selector_layer = int(match.group(1))
@@ -956,6 +986,43 @@ def down_terms_blocked_status(
     }
 
 
+def tensor_metadata(tensor: Any) -> dict[str, Any]:
+    return {
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "shape": list(tensor.shape),
+        "stride": list(tensor.stride()),
+        "contiguous": bool(tensor.is_contiguous()),
+    }
+
+
+def scalar_tensor_result(tensor: Any) -> dict[str, Any]:
+    return {
+        "value": float(tensor.float().cpu().item()),
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "shape": list(tensor.shape),
+    }
+
+
+def vector_lane_result(tensor: Any, lane: int) -> dict[str, Any]:
+    return {
+        "lane_value": float(tensor[lane].float().cpu().item()),
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "shape": list(tensor.shape),
+    }
+
+
+def get_nested(container: dict[str, Any], path: list[str], default: Any = None) -> Any:
+    current: Any = container
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
+
+
 def capture_layer_selected_expert_internal_boundary_bundle(
     model: Any,
     input_token_ids: list[int] | None,
@@ -1563,6 +1630,320 @@ def capture_layer_selected_expert_down_projection_terms_bundle(
     }
 
 
+def capture_layer_selected_expert_down_einsum_dtype_probe(
+    model: Any,
+    input_token_ids: list[int] | None,
+    torch: Any,
+    layer_index: int,
+    selected_rank: int,
+    expert_index: int,
+    *,
+    coarse_bundle: Path | None,
+    lane: int,
+    source_down_terms_status: Path | None,
+    source_consumer_down_terms_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    source_down = load_json(source_down_terms_status) if source_down_terms_status else {}
+    source_consumer = (
+        load_json(source_consumer_down_terms_status)
+        if source_consumer_down_terms_status
+        else {}
+    )
+
+    with torch.inference_mode():
+        block = model.block[layer_index]
+        mlp = block.mlp
+
+        if coarse_bundle is not None:
+            residual_boundary = (
+                f"layer{layer_index}_final_token_hidden_state_after_attention_residual_add_before_mlp"
+            )
+            source_values, _coarse_seed_entry = extract_boundary_values(
+                coarse_bundle, residual_boundary
+            )
+            layer_after_attention = tensor_from_values(
+                source_values,
+                torch,
+                mlp.gate.weight.device,
+                model.embedding.weight.dtype,
+            )
+            final_position = 0
+        else:
+            if input_token_ids is None:
+                raise ValueError(
+                    "input_token_ids are required when --coarse-bundle is not provided"
+                )
+            layer_after_attention = compute_layer_attention_residual(
+                model, input_token_ids, layer_index, torch
+            )
+            final_position = len(input_token_ids) - 1
+
+        normed = mlp.norm(layer_after_attention)
+        final_normed = normed[final_position]
+        router_logits = mlp.gate(normed)
+        final_logits = router_logits[final_position]
+        experts = torch.topk(
+            final_logits, k=mlp.experts_per_token, dim=-1, sorted=True
+        )
+        selected_indices = [int(value) for value in experts.indices.cpu().tolist()]
+        if selected_rank < 0 or selected_rank >= len(selected_indices):
+            raise ValueError(f"selected rank {selected_rank} is outside top-k range")
+        actual_expert = selected_indices[selected_rank]
+        if actual_expert != expert_index:
+            raise ValueError(
+                f"selected rank {selected_rank} is expert {actual_expert}, expected {expert_index}"
+            )
+
+        expert_id_tensor = experts.indices[selected_rank]
+        mlp1_weight = mlp.mlp1_weight[expert_id_tensor, ...]
+        mlp1_bias = mlp.mlp1_bias[expert_id_tensor, ...]
+        mlp1_output = torch.einsum("ch,h->c", mlp1_weight, final_normed)
+        mlp1_output += mlp1_bias
+        x_glu = mlp1_output[..., ::2].clamp(min=None, max=mlp.swiglu_limit)
+        x_linear = mlp1_output[..., 1::2].clamp(
+            min=-mlp.swiglu_limit, max=mlp.swiglu_limit
+        )
+        swiglu_output = x_glu * torch.sigmoid(1.702 * x_glu) * (x_linear + 1)
+
+        mlp2_weight = mlp.mlp2_weight[expert_id_tensor, ...]
+        down_weight_lane = mlp2_weight[lane, ...]
+
+        repeated_outputs = [
+            torch.einsum("hk,k->h", mlp2_weight, swiglu_output) for _ in range(3)
+        ]
+        original_output = repeated_outputs[0]
+        isolated_lane = torch.einsum("k,k->", down_weight_lane, swiglu_output)
+        matmul_output = mlp2_weight @ swiglu_output
+        elementwise_product_sum = (down_weight_lane * swiglu_output).sum()
+
+        weight_f32 = mlp2_weight.float()
+        swiglu_f32 = swiglu_output.float()
+        lane_weight_f32 = weight_f32[lane, ...]
+        explicit_f32_einsum = torch.einsum("hk,k->h", weight_f32, swiglu_f32)
+        explicit_f32_lane_einsum = torch.einsum("k,k->", lane_weight_f32, swiglu_f32)
+        explicit_f32_product_sum = (lane_weight_f32 * swiglu_f32).sum()
+
+        weight_bf16 = mlp2_weight.to(torch.bfloat16)
+        swiglu_bf16 = swiglu_output.to(torch.bfloat16)
+        lane_weight_bf16 = weight_bf16[lane, ...]
+        explicit_bf16_einsum = torch.einsum("hk,k->h", weight_bf16, swiglu_bf16)
+        explicit_bf16_lane_einsum = torch.einsum(
+            "k,k->", lane_weight_bf16, swiglu_bf16
+        )
+        explicit_bf16_product = lane_weight_bf16 * swiglu_bf16
+        explicit_bf16_product_sum = explicit_bf16_product.sum()
+        product_cast_f32_before_sum = explicit_bf16_product.float().sum()
+        product_f32_from_original_before_sum = (
+            down_weight_lane.float() * swiglu_output.float()
+        ).sum()
+
+        cpu_f32_einsum = torch.einsum(
+            "hk,k->h", weight_f32.cpu(), swiglu_f32.cpu()
+        )
+        cpu_bf16_einsum = torch.einsum(
+            "hk,k->h", weight_bf16.cpu(), swiglu_bf16.cpu()
+        )
+
+        prior_official = get_nested(
+            source_down, ["focus_lane_values", "official_down_pre_bias"]
+        )
+        json_naive = get_nested(
+            source_down, ["focus_lane_values", "recomputed_naive_f32_sum"]
+        )
+        json_pairwise = get_nested(
+            source_down, ["focus_lane_values", "recomputed_pairwise_f32_sum"]
+        )
+        json_bf16_product = get_nested(
+            source_down,
+            ["focus_lane_values", "recomputed_bf16_product_then_f32_sum"],
+        )
+        local_sequential = get_nested(
+            source_consumer,
+            ["local_output_reconstruction", "current_sequential_f32_accum_pre_cast"],
+        )
+
+        rounding_inputs = [
+            ("bf16_midpoint_exact", -12.03125),
+            ("json_naive_f32", float(json_naive) if json_naive is not None else None),
+            ("local_sequential_f32", float(local_sequential) if local_sequential is not None else None),
+            ("explicit_f32_lane_einsum", float(explicit_f32_lane_einsum.cpu().item())),
+        ]
+        bf16_rounding_probe = {}
+        for name, value in rounding_inputs:
+            if value is None:
+                continue
+            f32_tensor = torch.tensor(float(value), dtype=torch.float32)
+            bf16_tensor = f32_tensor.to(torch.bfloat16)
+            bf16_rounding_probe[name] = {
+                "float32_input": float(f32_tensor.item()),
+                "bfloat16_output": float(bf16_tensor.float().item()),
+                "output_dtype": str(bf16_tensor.dtype),
+            }
+
+        environment = {
+            "python_executable": sys.executable,
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "device_used": str(mlp2_weight.device),
+            "gpu_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "torch_backends_cuda_matmul_allow_tf32": getattr(
+                torch.backends.cuda.matmul, "allow_tf32", None
+            ),
+            "torch_backends_cuda_matmul_allow_bf16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_bf16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_backends_cuda_matmul_allow_fp16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_fp16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision()
+            if hasattr(torch, "get_float32_matmul_precision")
+            else None,
+            "autocast_enabled": bool(torch.is_autocast_enabled())
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+            "autocast_cpu_enabled": bool(torch.is_autocast_enabled("cpu"))
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+        }
+
+    official_expression_results = {
+        "original_einsum": vector_lane_result(original_output, lane),
+        "repeated_original_einsum": [
+            vector_lane_result(output, lane) for output in repeated_outputs
+        ],
+        "isolated_lane_einsum": scalar_tensor_result(isolated_lane),
+        "matmul_mv": vector_lane_result(matmul_output, lane),
+        "elementwise_product_sum": scalar_tensor_result(elementwise_product_sum),
+    }
+    dtype_variant_results = {
+        "original_tensors_unchanged": {
+            "full_einsum": vector_lane_result(original_output, lane),
+            "isolated_lane_einsum": scalar_tensor_result(isolated_lane),
+        },
+        "both_operands_float32": {
+            "full_einsum": vector_lane_result(explicit_f32_einsum, lane),
+            "isolated_lane_einsum": scalar_tensor_result(explicit_f32_lane_einsum),
+            "product_sum": scalar_tensor_result(explicit_f32_product_sum),
+        },
+        "both_operands_bfloat16": {
+            "full_einsum": vector_lane_result(explicit_bf16_einsum, lane),
+            "isolated_lane_einsum": scalar_tensor_result(explicit_bf16_lane_einsum),
+            "product_sum_bf16": scalar_tensor_result(explicit_bf16_product_sum),
+            "product_cast_float32_before_sum": scalar_tensor_result(
+                product_cast_f32_before_sum
+            ),
+        },
+        "original_operands_product_float32_before_sum": scalar_tensor_result(
+            product_f32_from_original_before_sum
+        ),
+        "cpu_float32": vector_lane_result(cpu_f32_einsum, lane),
+        "cpu_bfloat16": vector_lane_result(cpu_bf16_einsum, lane),
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = output_dir / "einsum_dtype_probe.json"
+    original_lane_value = official_expression_results["original_einsum"]["lane_value"]
+    json_rounds_to = get_nested(
+        bf16_rounding_probe, ["json_naive_f32", "bfloat16_output"]
+    )
+    local_rounds_to = get_nested(
+        bf16_rounding_probe, ["local_sequential_f32", "bfloat16_output"]
+    )
+    interpretation = {
+        "official_output_dtype": official_expression_results["original_einsum"]["dtype"],
+        "official_einsum_matches_prior": (
+            prior_official is not None and original_lane_value == float(prior_official)
+        ),
+        "json_f32_rounds_to": json_rounds_to,
+        "local_sequential_f32_rounds_to": local_rounds_to,
+        "consistent_with_bf16_midpoint_drift": (
+            json_rounds_to == -12.0 and local_rounds_to == -12.0625
+        ),
+        "precise_precast_accumulator_available": False,
+        "next_consumer_step": (
+            "Use the live-tensor dtype probe to align the local down projection "
+            "accumulation/output cast with official BF16 einsum behavior."
+        ),
+    }
+    reconstruction_comparison = {
+        "official_original_einsum": original_lane_value,
+        "isolated_lane_einsum": official_expression_results["isolated_lane_einsum"]["value"],
+        "matmul_mv": official_expression_results["matmul_mv"]["lane_value"],
+        "elementwise_product_sum": official_expression_results["elementwise_product_sum"]["value"],
+        "explicit_f32_einsum": dtype_variant_results["both_operands_float32"]["full_einsum"]["lane_value"],
+        "explicit_f32_product_sum": dtype_variant_results["both_operands_float32"]["product_sum"]["value"],
+        "explicit_bf16_einsum": dtype_variant_results["both_operands_bfloat16"]["full_einsum"]["lane_value"],
+        "explicit_bf16_product_sum": dtype_variant_results["both_operands_bfloat16"]["product_sum_bf16"]["value"],
+        "json_value_naive_f32_from_prior_status": json_naive,
+        "json_value_pairwise_f32_from_prior_status": json_pairwise,
+        "json_value_bf16_product_then_f32_from_prior_status": json_bf16_product,
+        "local_sequential_f32_accumulator_from_consumer_status": local_sequential,
+        "bf16_rounding_probe": bf16_rounding_probe,
+    }
+    artifact = {
+        "environment": environment,
+        "original_tensor_metadata": {
+            "mlp2_weight": tensor_metadata(mlp2_weight),
+            "swiglu_output": tensor_metadata(swiglu_output),
+            "official_output": tensor_metadata(original_output),
+        },
+        "official_expression_results": official_expression_results,
+        "dtype_variant_results": dtype_variant_results,
+        "bf16_rounding_probe": bf16_rounding_probe,
+        "reconstruction_comparison": reconstruction_comparison,
+        "interpretation": interpretation,
+    }
+    write_json(artifact_path, artifact)
+
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": "layer11_expert30_down_einsum_dtype_probe_generated_without_precise_precast",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "layer_index": layer_index,
+        "focus_lane": lane,
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "model": None,
+        "source_down_terms_status": str(source_down_terms_status)
+        if source_down_terms_status
+        else None,
+        "source_consumer_down_terms_status": str(source_consumer_down_terms_status)
+        if source_consumer_down_terms_status
+        else None,
+        "artifacts": {
+            "bundle_dir": str(output_dir) + "/",
+            "einsum_dtype_probe": str(artifact_path),
+        },
+        "environment": environment,
+        "original_tensor_metadata": artifact["original_tensor_metadata"],
+        "official_expression_results": official_expression_results,
+        "dtype_variant_results": dtype_variant_results,
+        "bf16_rounding_probe": bf16_rounding_probe,
+        "reconstruction_comparison": reconstruction_comparison,
+        "interpretation": interpretation,
+        "producer_metadata": {
+            "producer_function": "capture_layer_selected_expert_down_einsum_dtype_probe",
+            "boundary_selector": "layerN_final_token_selected_expert_down_einsum_dtype_probe",
+            "selected_expert_internals_included": True,
+            "port_source": PORT_SOURCE,
+        },
+    }
+
+
 def internal_blocked_status(
     layer_index: int,
     lane: int,
@@ -1727,6 +2108,32 @@ def build_layer11_consumer_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    dtype_probe_layer = parse_down_einsum_dtype_probe_selector(boundary, layer_index)
+    if dtype_probe_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_idx": dtype_probe_layer,
+            "classification": "official_selected_expert_down_einsum_dtype_probe_schema_ready",
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "focus_lane": args.lane,
+            "selected_rank": args.selected_rank,
+            "expert_index": args.expert_index,
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_artifacts": ["einsum_dtype_probe"],
+            "producer_metadata": {
+                "producer_function": "capture_layer_selected_expert_down_einsum_dtype_probe",
+                "boundary_selector": boundary,
+                "requested_layer_index": dtype_probe_layer,
+                "selected_expert_internals_included": True,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": "run focused layer11 expert30 down einsum dtype probe under /tmp",
+        }
     down_terms_layer = parse_down_projection_terms_selector(boundary, layer_index)
     if down_terms_layer is not None:
         return {
@@ -1850,19 +2257,52 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    dtype_probe_layer_index = parse_down_einsum_dtype_probe_selector(boundary, args.layer_idx)
     down_terms_layer_index = parse_down_projection_terms_selector(boundary, args.layer_idx)
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
-    if down_terms_layer_index is None and internal_layer_index is None and layer_index is None:
+    if (
+        dtype_probe_layer_index is None
+        and down_terms_layer_index is None
+        and internal_layer_index is None
+        and layer_index is None
+    ):
         raise ValueError(f"unsupported boundary selector: {boundary}")
     if args.dry_run_schema:
         return dry_run_schema(
-            boundary, down_terms_layer_index or internal_layer_index or layer_index, args
+            boundary,
+            dtype_probe_layer_index
+            or down_terms_layer_index
+            or internal_layer_index
+            or layer_index,
+            args,
         )
     model_path = args.official_model or args.model
     if model_path is None:
         raise ValueError("--model or --official-model is required for non-dry-run capture")
     model, torch = load_model(model_path, args.official_checkout)
+    if dtype_probe_layer_index is not None:
+        if args.selected_rank is None or args.expert_index is None:
+            raise ValueError("down einsum dtype probe requires --selected-rank and --expert-index")
+        if args.lane is None:
+            raise ValueError("down einsum dtype probe requires --lane")
+        if args.output_dir is None:
+            raise ValueError("down einsum dtype probe requires --output-dir")
+        body = capture_layer_selected_expert_down_einsum_dtype_probe(
+            model,
+            None,
+            torch,
+            dtype_probe_layer_index,
+            args.selected_rank,
+            args.expert_index,
+            coarse_bundle=args.coarse_bundle,
+            lane=args.lane,
+            source_down_terms_status=args.source_down_terms_status,
+            source_consumer_down_terms_status=args.source_consumer_down_terms_status,
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     if down_terms_layer_index is not None:
         if args.selected_rank is None or args.expert_index is None:
             raise ValueError("down terms capture requires --selected-rank and --expert-index")
@@ -1936,9 +2376,16 @@ def main() -> int:
         down_terms_like = (
             args.boundary is not None and "down_projection_terms" in args.boundary
         )
+        dtype_probe_like = (
+            args.boundary is not None and "down_einsum_dtype_probe" in args.boundary
+        )
         output = {
             "classification": (
-                "layer11_expert30_down_terms_bundle_blocked_by_memory"
+                "layer11_expert30_down_einsum_dtype_probe_blocked_by_memory"
+                if dtype_probe_like and memory_like
+                else "layer11_expert30_down_einsum_dtype_probe_execution_failed"
+                if dtype_probe_like
+                else "layer11_expert30_down_terms_bundle_blocked_by_memory"
                 if down_terms_like and memory_like
                 else "layer11_expert30_down_terms_bundle_execution_failed"
                 if down_terms_like
