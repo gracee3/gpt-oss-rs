@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use half::bf16;
+use half::{bf16, f16};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -20,6 +20,7 @@ enum Mode {
     ExpertMlp1,
     SelectedExperts,
     SelectedExpertsDebug,
+    Expert30Mlp2Debug,
 }
 
 #[derive(Debug, Parser)]
@@ -32,7 +33,7 @@ struct Cli {
     mode: Mode,
 
     #[arg(long)]
-    mlp_norm: PathBuf,
+    mlp_norm: Option<PathBuf>,
 
     #[arg(long = "expert-mlp1-oracle", visible_alias = "expert30-mlp1-oracle")]
     expert_mlp1_oracle: Option<PathBuf>,
@@ -117,6 +118,17 @@ struct VectorBackendResult {
     metadata: Value,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Expert30Mlp2Policy {
+    Current,
+    WeightBf16Round,
+    WeightF16,
+    F32AccumBf16Output,
+    ChunkedPairwise,
+    Bf16PreBiasBf16Bias,
+    F32PreBiasF32Bias,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.mode {
@@ -124,11 +136,13 @@ fn main() -> Result<()> {
         Mode::ExpertMlp1 => run_expert_mlp1(&cli),
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
+        Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
     }
 }
 
 fn run_lane522(cli: &Cli) -> Result<()> {
-    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    let mlp_norm_path = required_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(mlp_norm_path, "MLP norm input")?;
     let expert_mlp1_oracle = required_path(&cli.expert_mlp1_oracle, "expert MLP1 oracle")?;
     validate_path(expert_mlp1_oracle, "expert MLP1 oracle")?;
     validate_path(&cli.model, "model")?;
@@ -136,7 +150,7 @@ fn run_lane522(cli: &Cli) -> Result<()> {
         validate_path(path, "PyTorch terms")?;
     }
 
-    let mlp_norm = load_values(&cli.mlp_norm, 2880, "MLP norm input")?;
+    let mlp_norm = load_values(mlp_norm_path, 2880, "MLP norm input")?;
     let mlp1_oracle = load_values(expert_mlp1_oracle, 5760, "expert MLP1 oracle")?;
     anyhow::ensure!(
         cli.expert == 30,
@@ -171,7 +185,7 @@ fn run_lane522(cli: &Cli) -> Result<()> {
         Ok(mut status) => {
             status["pytorch_reference"] = pytorch_reference;
             status["artifacts"] = json!({
-                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "mlp_norm": artifact_path(mlp_norm_path),
                 "expert_mlp1_oracle": artifact_path(expert_mlp1_oracle),
                 "pytorch_terms": cli.pytorch_terms.as_ref().map(|path| artifact_path(path)),
             });
@@ -192,12 +206,13 @@ fn run_lane522(cli: &Cli) -> Result<()> {
 }
 
 fn run_expert_mlp1(cli: &Cli) -> Result<()> {
-    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    let mlp_norm_path = required_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(mlp_norm_path, "MLP norm input")?;
     let expert_mlp1_oracle = required_path(&cli.expert_mlp1_oracle, "expert MLP1 oracle")?;
     validate_path(expert_mlp1_oracle, "expert MLP1 oracle")?;
     validate_path(&cli.model, "model")?;
 
-    let mlp_norm = load_values(&cli.mlp_norm, 2880, "MLP norm input")?;
+    let mlp_norm = load_values(mlp_norm_path, 2880, "MLP norm input")?;
     let mlp1_oracle = load_values(expert_mlp1_oracle, 5760, "expert MLP1 oracle")?;
     anyhow::ensure!(
         cli.expert == 30,
@@ -214,7 +229,7 @@ fn run_expert_mlp1(cli: &Cli) -> Result<()> {
     let status = match status {
         Ok(mut status) => {
             status["artifacts"] = json!({
-                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "mlp_norm": artifact_path(mlp_norm_path),
                 "expert_mlp1_oracle": artifact_path(expert_mlp1_oracle),
             });
             status
@@ -234,6 +249,7 @@ fn run_expert_mlp1(cli: &Cli) -> Result<()> {
 }
 
 fn run_selected_experts(cli: &Cli) -> Result<()> {
+    let mlp_norm_path = required_path(&cli.mlp_norm, "MLP norm input")?;
     let selected_oracle = required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
     let weighted_oracle = required_path(
         &cli.weighted_expert_sum_oracle,
@@ -242,7 +258,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
     let residual_oracle = required_path(&cli.mlp_residual_oracle, "MLP residual oracle")?;
     let post_attention_residual =
         required_path(&cli.post_attention_residual, "post-attention residual")?;
-    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(mlp_norm_path, "MLP norm input")?;
     validate_path(selected_oracle, "selected experts oracle")?;
     validate_path(weighted_oracle, "weighted expert sum oracle")?;
     validate_path(residual_oracle, "MLP residual oracle")?;
@@ -252,7 +268,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
     let selected_experts = parse_selected_experts(&cli.selected_experts)?;
     let selected_count = selected_experts.len();
     let hidden = 2880usize;
-    let mlp_norm = load_values(&cli.mlp_norm, hidden, "MLP norm input")?;
+    let mlp_norm = load_values(mlp_norm_path, hidden, "MLP norm input")?;
     let selected_oracle_values = load_values(
         selected_oracle,
         selected_count * hidden,
@@ -276,7 +292,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
     let status = match status {
         Ok(mut status) => {
             status["artifacts"] = json!({
-                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "mlp_norm": artifact_path(mlp_norm_path),
                 "selected_experts_oracle": artifact_path(selected_oracle),
                 "weighted_expert_sum_oracle": artifact_path(weighted_oracle),
                 "mlp_residual_oracle": artifact_path(residual_oracle),
@@ -299,6 +315,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
 }
 
 fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
+    let mlp_norm_path = required_path(&cli.mlp_norm, "MLP norm input")?;
     let selected_oracle = required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
     let expert30_mlp1_oracle = required_path(&cli.expert_mlp1_oracle, "expert30 MLP1 oracle")?;
     let expert30_swiglu_oracle =
@@ -307,7 +324,7 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
         &cli.expert30_mlp2_pre_bias_oracle,
         "expert30 MLP2 pre-bias oracle",
     )?;
-    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(mlp_norm_path, "MLP norm input")?;
     validate_path(selected_oracle, "selected experts oracle")?;
     validate_path(expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
     validate_path(expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
@@ -319,7 +336,7 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
 
     let selected_experts = parse_selected_experts(&cli.selected_experts)?;
     let hidden = 2880usize;
-    let mlp_norm = load_values(&cli.mlp_norm, hidden, "MLP norm input")?;
+    let mlp_norm = load_values(mlp_norm_path, hidden, "MLP norm input")?;
     let selected_oracle_values = load_values(
         selected_oracle,
         selected_experts.len() * hidden,
@@ -347,7 +364,7 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
     let status = match status {
         Ok(mut status) => {
             status["artifacts"] = json!({
-                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "mlp_norm": artifact_path(mlp_norm_path),
                 "selected_experts_oracle": artifact_path(selected_oracle),
                 "expert30_mlp1_oracle": artifact_path(expert30_mlp1_oracle),
                 "expert30_swiglu_oracle": artifact_path(expert30_swiglu_oracle),
@@ -363,6 +380,122 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
             "validation_only": true,
             "error": err.to_string(),
             "next_bounded_step": "fix the validation-only selected-experts debug artifact/backend path"
+        }),
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_expert30_mlp2_debug(cli: &Cli) -> Result<()> {
+    let expert30_swiglu_oracle =
+        required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    let expert30_mlp2_pre_bias_oracle = required_path(
+        &cli.expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    let selected_oracle = required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    validate_path(expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    validate_path(
+        expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    validate_path(selected_oracle, "selected experts oracle")?;
+    validate_path(&cli.model, "model")?;
+
+    let hidden = 2880usize;
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let expert30_rank = selected_experts
+        .iter()
+        .position(|&expert| expert == 30)
+        .context("selected experts must include expert30 for MLP2 debug")?;
+    let swiglu = load_values(expert30_swiglu_oracle, hidden, "expert30 SwiGLU oracle")?;
+    let mlp2_oracle = load_values(
+        expert30_mlp2_pre_bias_oracle,
+        hidden,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    let selected_oracle_values = load_values(
+        selected_oracle,
+        selected_experts.len() * hidden,
+        "selected experts oracle",
+    )?;
+    let selected_start = expert30_rank * hidden;
+    let selected_end = selected_start + hidden;
+    let selected_rank_oracle = &selected_oracle_values[selected_start..selected_end];
+
+    let selected_rerun_inputs = if let (
+        Some(mlp_norm_path),
+        Some(weighted_oracle),
+        Some(residual_oracle),
+        Some(post_attention_residual),
+    ) = (
+        cli.mlp_norm.as_deref(),
+        cli.weighted_expert_sum_oracle.as_deref(),
+        cli.mlp_residual_oracle.as_deref(),
+        cli.post_attention_residual.as_deref(),
+    ) {
+        validate_path(mlp_norm_path, "MLP norm input")?;
+        validate_path(weighted_oracle, "weighted expert sum oracle")?;
+        validate_path(residual_oracle, "MLP residual oracle")?;
+        validate_path(post_attention_residual, "post-attention residual")?;
+        Some((
+            load_values(mlp_norm_path, hidden, "MLP norm input")?,
+            load_values(weighted_oracle, hidden, "weighted expert sum oracle")?,
+            load_values(residual_oracle, hidden, "MLP residual oracle")?,
+            load_values(post_attention_residual, hidden, "post-attention residual")?,
+            artifact_path(mlp_norm_path),
+            artifact_path(weighted_oracle),
+            artifact_path(residual_oracle),
+            artifact_path(post_attention_residual),
+        ))
+    } else {
+        None
+    };
+
+    let status = execute_expert30_mlp2_policy_debug(
+        &cli.model,
+        &swiglu,
+        &mlp2_oracle,
+        selected_rank_oracle,
+        &selected_experts,
+        selected_rerun_inputs.as_ref().map(
+            |(mlp_norm, weighted_oracle, residual_oracle, post_attention_residual, _, _, _, _)| {
+                (
+                    mlp_norm.as_slice(),
+                    selected_oracle_values.as_slice(),
+                    weighted_oracle.as_slice(),
+                    residual_oracle.as_slice(),
+                    post_attention_residual.as_slice(),
+                )
+            },
+        ),
+    );
+    let status = match status {
+        Ok(mut status) => {
+            let mut artifacts = json!({
+                "expert30_swiglu_oracle": artifact_path(expert30_swiglu_oracle),
+                "expert30_mlp2_pre_bias_oracle": artifact_path(expert30_mlp2_pre_bias_oracle),
+                "selected_experts_oracle": artifact_path(selected_oracle),
+            });
+            if let Some((_, _, _, _, mlp_norm, weighted, residual, post_attention)) =
+                selected_rerun_inputs
+            {
+                artifacts["mlp_norm"] = mlp_norm;
+                artifacts["weighted_expert_sum_oracle"] = weighted;
+                artifacts["mlp_residual_oracle"] = residual;
+                artifacts["post_attention_residual"] = post_attention;
+            }
+            status["artifacts"] = artifacts;
+            status
+        }
+        Err(err) => json!({
+            "mode": "mlp1_bf16_einsum_backend_compare",
+            "submode": "expert30-mlp2-debug",
+            "classification": "mlp1_bf16_backend_mlp2_policy_blocked_by_layout",
+            "runtime_behavior_changed": false,
+            "validation_only": true,
+            "error": err.to_string(),
+            "next_bounded_step": "fix expert30 MLP2 policy debug artifact/backend path"
         }),
     };
 
@@ -705,8 +838,13 @@ fn execute_selected_experts_backend_compare(
         )
         .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
         let swiglu = compute_swiglu_bf16(&mlp1);
-        let mlp2_pre_bias = linear_pre_bias_f32(&swiglu, &expert.down_weight, hidden, hidden);
-        let rank_output = add_bias_bf16_output(&mlp2_pre_bias, &expert.down_bias);
+        let mlp2_pre_bias =
+            compute_mlp2_prebias_variant(&swiglu, &expert.down_weight, Expert30Mlp2Policy::Current);
+        let rank_output = compute_mlp2_selected_output_variant(
+            &mlp2_pre_bias,
+            &expert.down_bias,
+            Expert30Mlp2Policy::Current,
+        );
         let start = rank * hidden;
         let end = start + hidden;
         per_rank_metrics.push(json!({
@@ -828,35 +966,50 @@ fn execute_selected_experts_debug(
     )
     .context("cuBLAS BF16 expert30 MLP1 failed")?;
     let cublas_swiglu = compute_swiglu_bf16(&cublas_mlp1);
-    let cublas_mlp2_pre_bias =
-        linear_pre_bias_f32(&cublas_swiglu, &expert30.down_weight, hidden, hidden);
-    let cublas_selected = add_bias_bf16_output(&cublas_mlp2_pre_bias, &expert30.down_bias);
+    let cublas_mlp2_pre_bias = compute_mlp2_prebias_variant(
+        &cublas_swiglu,
+        &expert30.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let cublas_selected = compute_mlp2_selected_output_variant(
+        &cublas_mlp2_pre_bias,
+        &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
 
     let official_mlp1_swiglu = compute_swiglu_bf16(expert30_mlp1_oracle);
-    let official_mlp1_mlp2_pre_bias =
-        linear_pre_bias_f32(&official_mlp1_swiglu, &expert30.down_weight, hidden, hidden);
-    let official_mlp1_selected =
-        add_bias_bf16_output(&official_mlp1_mlp2_pre_bias, &expert30.down_bias);
+    let official_mlp1_mlp2_pre_bias = compute_mlp2_prebias_variant(
+        &official_mlp1_swiglu,
+        &expert30.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let official_mlp1_selected = compute_mlp2_selected_output_variant(
+        &official_mlp1_mlp2_pre_bias,
+        &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
 
-    let cublas_mlp1_official_swiglu_mlp2_pre_bias = linear_pre_bias_f32(
+    let cublas_mlp1_official_swiglu_mlp2_pre_bias = compute_mlp2_prebias_variant(
         expert30_swiglu_oracle,
         &expert30.down_weight,
-        hidden,
-        hidden,
+        Expert30Mlp2Policy::Current,
     );
-    let cublas_mlp1_official_swiglu_selected = add_bias_bf16_output(
+    let cublas_mlp1_official_swiglu_selected = compute_mlp2_selected_output_variant(
         &cublas_mlp1_official_swiglu_mlp2_pre_bias,
         &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
     );
 
-    let official_swiglu_mlp2_pre_bias = linear_pre_bias_f32(
+    let official_swiglu_mlp2_pre_bias = compute_mlp2_prebias_variant(
         expert30_swiglu_oracle,
         &expert30.down_weight,
-        hidden,
-        hidden,
+        Expert30Mlp2Policy::Current,
     );
-    let official_swiglu_selected =
-        add_bias_bf16_output(&official_swiglu_mlp2_pre_bias, &expert30.down_bias);
+    let official_swiglu_selected = compute_mlp2_selected_output_variant(
+        &official_swiglu_mlp2_pre_bias,
+        &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
 
     let mlp1_metric = compare_vectors(&cublas_mlp1, expert30_mlp1_oracle);
     let swiglu_metric = compare_vectors(&cublas_swiglu, expert30_swiglu_oracle);
@@ -955,6 +1108,199 @@ fn execute_selected_experts_debug(
     }))
 }
 
+#[cfg(feature = "cuda")]
+fn execute_expert30_mlp2_policy_debug(
+    model: &Path,
+    swiglu: &[f32],
+    mlp2_oracle: &[f32],
+    selected_rank_oracle: &[f32],
+    selected_experts: &[usize],
+    selected_rerun_inputs: Option<(&[f32], &[f32], &[f32], &[f32], &[f32])>,
+) -> Result<Value> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert30 = loaded
+        .experts
+        .iter()
+        .find(|weights| weights.expert == 30)
+        .context("expert30 missing from MXFP4 validation loader")?;
+    let specs = [
+        (
+            "A_current",
+            "current decoded down weight, BF16 input, f32 accumulation, BF16 pre-bias/output, BF16 bias add",
+            Expert30Mlp2Policy::Current,
+        ),
+        (
+            "B_weight_bf16_round",
+            "decoded down weight BF16-rounded before matmul, BF16 input, f32 accumulation, BF16 output",
+            Expert30Mlp2Policy::WeightBf16Round,
+        ),
+        (
+            "C_weight_f16",
+            "decoded down weight treated as f16 before matmul, BF16 input, f32 accumulation, BF16 output",
+            Expert30Mlp2Policy::WeightF16,
+        ),
+        (
+            "D_f32_accum_bf16_output",
+            "BF16 input, decoded f16 weight widened to f32, f32 accumulation, BF16 pre-bias/output",
+            Expert30Mlp2Policy::F32AccumBf16Output,
+        ),
+        (
+            "E_chunked_pairwise",
+            "BF16 input, BF16 weight, chunked pairwise f32 accumulation, f32 bias add, BF16 output",
+            Expert30Mlp2Policy::ChunkedPairwise,
+        ),
+        (
+            "F1_bf16_prebias_bf16_bias",
+            "BF16 pre-bias plus BF16 bias to BF16 selected output",
+            Expert30Mlp2Policy::Bf16PreBiasBf16Bias,
+        ),
+        (
+            "F2_f32_prebias_f32_bias",
+            "f32 pre-bias plus f32 bias to BF16 selected output",
+            Expert30Mlp2Policy::F32PreBiasF32Bias,
+        ),
+    ];
+    let mut variants = Vec::with_capacity(specs.len());
+    for (name, policy, kind) in specs {
+        let pre_bias = compute_mlp2_prebias_variant(swiglu, &expert30.down_weight, kind);
+        let selected = compute_mlp2_selected_output_variant(&pre_bias, &expert30.down_bias, kind);
+        variants.push(json!({
+            "name": name,
+            "policy": policy,
+            "mlp2_pre_bias_metric": compare_vectors(&pre_bias, mlp2_oracle),
+            "selected_output_metric": compare_vectors(&selected, selected_rank_oracle),
+        }));
+    }
+    let best = variants
+        .iter()
+        .min_by(|left, right| {
+            let left_selected = left["selected_output_metric"]["mismatches"]
+                .as_u64()
+                .unwrap_or(u64::MAX);
+            let right_selected = right["selected_output_metric"]["mismatches"]
+                .as_u64()
+                .unwrap_or(u64::MAX);
+            left_selected.cmp(&right_selected).then_with(|| {
+                let left_max = left["selected_output_metric"]["max_abs_diff"]
+                    .as_f64()
+                    .unwrap_or(f64::INFINITY);
+                let right_max = right["selected_output_metric"]["max_abs_diff"]
+                    .as_f64()
+                    .unwrap_or(f64::INFINITY);
+                left_max
+                    .partial_cmp(&right_max)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        })
+        .cloned()
+        .context("expert30 MLP2 policy debug did not produce variants")?;
+    let best_pre_bias_mismatches = best["mlp2_pre_bias_metric"]["mismatches"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let best_selected_mismatches = best["selected_output_metric"]["mismatches"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+
+    let selected_experts_rerun = if best_pre_bias_mismatches == 0 && best_selected_mismatches == 0 {
+        if let Some((
+            mlp_norm,
+            selected_oracle,
+            weighted_oracle,
+            residual_oracle,
+            post_attention_residual,
+        )) = selected_rerun_inputs
+        {
+            let rerun = execute_selected_experts_backend_compare(
+                model,
+                mlp_norm,
+                selected_experts,
+                selected_oracle,
+                weighted_oracle,
+                residual_oracle,
+                post_attention_residual,
+            )?;
+            json!({ "run": true, "status": rerun })
+        } else {
+            json!({ "run": false, "reason": "selected-experts rerun inputs not supplied" })
+        }
+    } else {
+        json!({ "run": false, "reason": "expert30 MLP2 did not clear" })
+    };
+    let selected_status = selected_experts_rerun.get("status");
+    let weighted_sum_rerun = selected_status
+        .and_then(|status| status.get("weighted_sum_metric"))
+        .cloned()
+        .map(|metric| json!({ "run": true, "metric": metric }))
+        .unwrap_or_else(|| json!({ "run": false }));
+    let mlp_residual_rerun = selected_status
+        .and_then(|status| status.get("mlp_residual_metric"))
+        .cloned()
+        .map(|metric| json!({ "run": true, "metric": metric }))
+        .unwrap_or_else(|| json!({ "run": false }));
+    let selected_classification = selected_status
+        .and_then(|status| status.get("classification"))
+        .and_then(Value::as_str);
+    let classification =
+        if selected_classification == Some("mlp1_bf16_backend_mlp_residual_matches_oracle") {
+            "mlp1_bf16_backend_mlp2_policy_fixed_mlp_residual_match"
+        } else if selected_classification == Some("mlp1_bf16_backend_weighted_sum_matches_oracle") {
+            "mlp1_bf16_backend_mlp2_policy_fixed_weighted_sum_match"
+        } else if matches!(
+            selected_classification,
+            Some("mlp1_bf16_backend_selected_experts_match_oracle")
+                | Some("mlp1_bf16_backend_selected_experts_match_with_known_oracle_correction")
+        ) {
+            "mlp1_bf16_backend_mlp2_policy_fixed_selected_experts_match"
+        } else if best_pre_bias_mismatches == 0 && best_selected_mismatches == 0 {
+            "mlp1_bf16_backend_mlp2_policy_matched_prior_exact"
+        } else if best_pre_bias_mismatches < 2880 || best_selected_mismatches < 899 {
+            "mlp1_bf16_backend_mlp2_policy_still_mismatch"
+        } else {
+            "mlp1_bf16_backend_mlp2_policy_blocked_by_layout"
+        };
+
+    Ok(json!({
+        "mode": "mlp1_bf16_einsum_backend_compare",
+        "submode": "expert30-mlp2-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "validation_only": true,
+        "prior_branch_policy_reference": {
+            "branch": "projection/layer0-validation-runtime-path",
+            "classification": "expert30_mlp2_from_official_swiglu_matches_oracle",
+            "best_variant": "A_current",
+            "guard": "F2_f32_prebias_f32_bias mismatched all lanes",
+        },
+        "down_projection_tensor_metadata": {
+            "expert": 30,
+            "down_weight_shape": [2880, 2880],
+            "down_weight_dtype": "dequantized_f16_widened_to_f32",
+            "down_bias_shape": [2880],
+            "down_bias_dtype": "BF16_widened_to_f32",
+            "layout_convention": "down_weight is [out_hidden, in_intermediate] row-major",
+        },
+        "source_identity": {
+            "model": model.display().to_string(),
+            "mxfp4_loader": loaded.helper_name,
+            "decode_source": loaded.decode_source,
+            "tensor_sources": loaded.tensor_sources,
+        },
+        "expert30_mlp2_variant_table": variants,
+        "best_variant": best,
+        "selected_experts_rerun": selected_experts_rerun,
+        "weighted_sum_rerun": weighted_sum_rerun,
+        "mlp_residual_rerun": mlp_residual_rerun,
+        "next_bounded_step": match classification {
+            "mlp1_bf16_backend_mlp2_policy_fixed_mlp_residual_match" => "promote the validation backend finding into a narrow integration proposal without changing production routing",
+            "mlp1_bf16_backend_mlp2_policy_fixed_weighted_sum_match" => "localize MLP residual add or residual source under fixed selected experts",
+            "mlp1_bf16_backend_mlp2_policy_fixed_selected_experts_match" => "localize weighted expert sum policy under fixed selected experts",
+            "mlp1_bf16_backend_mlp2_policy_matched_prior_exact" => "rerun selected experts with full rerun inputs supplied",
+            _ => "inspect down-proj decode/layout against the prior exact branch",
+        },
+    }))
+}
+
 #[cfg(not(feature = "cuda"))]
 fn execute_selected_experts_backend_compare(
     _model: &Path,
@@ -966,6 +1312,18 @@ fn execute_selected_experts_backend_compare(
     _post_attention_residual: &[f32],
 ) -> Result<Value> {
     anyhow::bail!("selected experts BF16 backend compare requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert30_mlp2_policy_debug(
+    _model: &Path,
+    _swiglu: &[f32],
+    _mlp2_oracle: &[f32],
+    _selected_rank_oracle: &[f32],
+    _selected_experts: &[usize],
+    _selected_rerun_inputs: Option<(&[f32], &[f32], &[f32], &[f32], &[f32])>,
+) -> Result<Value> {
+    anyhow::bail!("expert30 MLP2 policy debug requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -1188,29 +1546,75 @@ fn compute_swiglu_bf16(gate_up: &[f32]) -> Vec<f32> {
     out
 }
 
-fn linear_pre_bias_f32(
-    input: &[f32],
-    weight_out_in: &[f32],
-    in_features: usize,
-    out_features: usize,
+fn compute_mlp2_prebias_variant(
+    swiglu: &[f32],
+    down_weight: &[f32],
+    policy: Expert30Mlp2Policy,
 ) -> Vec<f32> {
-    let mut out = vec![0.0f32; out_features];
-    for out_idx in 0..out_features {
-        let weight_offset = out_idx * in_features;
-        let mut acc = 0.0f32;
-        for in_idx in 0..in_features {
-            acc += round_bf16(input[in_idx]) * weight_out_in[weight_offset + in_idx];
-        }
-        out[out_idx] = acc;
+    let hidden = 2880usize;
+    let mut out = vec![0.0f32; hidden];
+    for out_idx in 0..hidden {
+        let weight_base = out_idx * hidden;
+        let sum = match policy {
+            Expert30Mlp2Policy::ChunkedPairwise => {
+                let mut partials = Vec::new();
+                for chunk in (0..hidden).step_by(64) {
+                    let mut partial = 0.0f32;
+                    for in_idx in chunk..(chunk + 64).min(hidden) {
+                        partial += round_bf16(swiglu[in_idx])
+                            * round_bf16(down_weight[weight_base + in_idx]);
+                    }
+                    partials.push(partial);
+                }
+                while partials.len() > 1 {
+                    let mut next = Vec::with_capacity(partials.len().div_ceil(2));
+                    for pair in partials.chunks(2) {
+                        next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+                    }
+                    partials = next;
+                }
+                partials[0]
+            }
+            _ => {
+                let mut sum = 0.0f32;
+                for in_idx in 0..hidden {
+                    let weight = match policy {
+                        Expert30Mlp2Policy::WeightBf16Round
+                        | Expert30Mlp2Policy::ChunkedPairwise => {
+                            round_bf16(down_weight[weight_base + in_idx])
+                        }
+                        Expert30Mlp2Policy::WeightF16 => {
+                            round_f16(down_weight[weight_base + in_idx])
+                        }
+                        _ => down_weight[weight_base + in_idx],
+                    };
+                    sum += round_bf16(swiglu[in_idx]) * weight;
+                }
+                sum
+            }
+        };
+        out[out_idx] = match policy {
+            Expert30Mlp2Policy::F32PreBiasF32Bias => sum,
+            _ => round_bf16(sum),
+        };
     }
     out
 }
 
-fn add_bias_bf16_output(pre_bias: &[f32], bias: &[f32]) -> Vec<f32> {
+fn compute_mlp2_selected_output_variant(
+    pre_bias: &[f32],
+    down_bias: &[f32],
+    policy: Expert30Mlp2Policy,
+) -> Vec<f32> {
     pre_bias
         .iter()
-        .zip(bias)
-        .map(|(&value, &bias)| round_bf16(value + round_bf16(bias)))
+        .zip(down_bias.iter())
+        .map(|(&value, &bias)| match policy {
+            Expert30Mlp2Policy::F32PreBiasF32Bias | Expert30Mlp2Policy::ChunkedPairwise => {
+                round_bf16(value + bias)
+            }
+            _ => round_bf16(round_bf16(value) + round_bf16(bias)),
+        })
         .collect()
 }
 
@@ -1708,6 +2112,10 @@ fn bf16_round_vec(values: &[f32]) -> Vec<bf16> {
 
 fn round_bf16(value: f32) -> f32 {
     bf16::from_f32(value).to_f32()
+}
+
+fn round_f16(value: f32) -> f32 {
+    f16::from_f32(value).to_f32()
 }
 
 fn load_values(path: &Path, expected: usize, label: &str) -> Result<Vec<f32>> {

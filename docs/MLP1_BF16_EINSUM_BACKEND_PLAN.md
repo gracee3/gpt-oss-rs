@@ -505,6 +505,197 @@ Port or match the prior exact expert30 MLP2/down replay policy in this backend
 branch, then rerun selected experts [3,30,11,27].
 ```
 
+## Stage 2 MLP2 Policy Port Status
+
+This slice ported the prior exact expert30 MLP2/down replay policy from
+`projection/layer0-validation-runtime-path` into this backend branch. The
+current branch mismatch was the same as the prior branch's negative guard:
+MLP2 pre-bias was kept as f32 before bias/output, which mismatched all 2880
+expert30 MLP2 lanes.
+
+Prior exact branch reference:
+
+```text
+classification:
+  expert30_mlp2_from_official_swiglu_matches_oracle
+
+best variant:
+  A_current
+
+matching variants:
+  A_current
+  B_weight_bf16_round
+  C_weight_f16
+  D_f32_accum_bf16_output
+  E_chunked_pairwise
+  F1_bf16_prebias_bf16_bias
+
+negative guard:
+  F2_f32_prebias_f32_bias mismatched all lanes
+```
+
+Policy/layout difference found:
+
+```text
+old branch-local behavior:
+  f32 MLP2 pre-bias plus f32 bias/output
+
+ported validation behavior:
+  BF16 input
+  decoded down weight row-major [out_hidden, in_intermediate]
+  f32 accumulation
+  BF16-rounded pre-bias boundary
+  BF16 bias add / BF16 selected-output boundary
+```
+
+Expert30 MLP2 metrics after the port, using official expert30 SwiGLU as input:
+
+```text
+MLP2 pre-bias:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+selected output:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+```
+
+Variant table summary:
+
+```text
+A_current:
+  MLP2 pre-bias exact
+  selected output exact
+
+B_weight_bf16_round:
+  MLP2 pre-bias exact
+  selected output exact
+
+C_weight_f16:
+  MLP2 pre-bias exact
+  selected output exact
+
+D_f32_accum_bf16_output:
+  MLP2 pre-bias exact
+  selected output exact
+
+E_chunked_pairwise:
+  MLP2 pre-bias exact
+  selected output exact
+
+F1_bf16_prebias_bf16_bias:
+  MLP2 pre-bias exact
+  selected output exact
+
+F2_f32_prebias_f32_bias:
+  MLP2 pre-bias max_abs_diff = 0.10264969
+  MLP2 pre-bias mismatches = 2880
+  selected output max_abs_diff = 0.03125
+  selected output mismatches = 899
+```
+
+Selected-experts rerun with:
+
+```text
+MLP1:
+  cuBLAS BF16 tensor-op
+
+SwiGLU:
+  pinned torch-like BF16 stage rounding
+
+MLP2:
+  ported BF16 pre-bias/output validation policy
+```
+
+Selected-output metric against the official selected-output oracle:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 1.695421e-7
+mismatches = 1
+```
+
+The remaining selected-output mismatch is the known expert3 lane 1990 oracle
+anomaly:
+
+```text
+rank = 0
+expert = 3
+hidden lane = 1990
+official selected = 0.48046875
+validation post-bias selected = 0.478515625
+```
+
+With the known expert3 lane 1990 selected-output correction, selected expert
+outputs are exact:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+```
+
+Per-rank selected-output status:
+
+```text
+rank 0 / expert 3:
+  official oracle comparison has only the known lane 1990 mismatch
+
+rank 1 / expert 30:
+  exact
+
+rank 2 / expert 11:
+  exact
+
+rank 3 / expert 27:
+  exact
+```
+
+Weighted expert sum rerun:
+
+```text
+max_abs_diff = 0.0009765625
+mean_abs_diff = 3.390842e-7
+mismatches = 1
+```
+
+MLP residual rerun:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 6.781684e-7
+mismatches = 1
+```
+
+The weighted-sum and residual reruns still report the same one-lane downstream
+impact because this branch's MLP2 policy status mode records the corrected
+selected-output comparison but does not yet recompute weighted sum and residual
+from an actually replaced rank0/expert3 lane 1990 value.
+
+Classification:
+
+```text
+mlp1_bf16_backend_mlp2_policy_fixed_selected_experts_match
+```
+
+Conclusion:
+
+The selected-expert backend path now has exact cuBLAS BF16 MLP1, exact pinned
+SwiGLU, exact expert30 MLP2/down replay, and exact selected expert outputs
+modulo the previously isolated expert3 lane 1990 selected-output oracle
+anomaly. Production runtime behavior did not change. No production routing or
+CUDA kernel changed.
+
+Next bounded step:
+
+```text
+Recompute weighted expert sum and MLP residual with an actual one-lane
+expert3 lane 1990 selected-output replacement in this backend branch, then
+record whether the downstream weighted/residual path clears exactly.
+```
+
 ## Validation Commands
 
 Start each slice with:
