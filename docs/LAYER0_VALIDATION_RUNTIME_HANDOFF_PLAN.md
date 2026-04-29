@@ -447,6 +447,75 @@ Next bounded step: emit a corrected layer1 output artifact behind explicit
 validation metadata, then guard it against the layer2 input boundary. Keep the
 lane2269 replacement as validation-only metadata, not a production rule.
 
+## Layer2 Input Guard Preparation Status
+
+Corrected layer1 output emission is now available as a validation-only mode:
+
+```text
+--mode layer1-corrected-output
+```
+
+Corrected local artifact emitted during validation:
+
+```text
+/tmp/layer1_validation_corrected_output.json
+```
+
+Correction metadata:
+
+- rank: `0`
+- expert: `28`
+- hidden lane: `2269`
+- validation post-bias: `0.0235595703125`
+- official selected: `0.0234375`
+
+Corrected layer1 metrics:
+
+- selected outputs: exact, `max_abs_diff = 0`, `mismatches = 0`
+- weighted expert sum: exact, `max_abs_diff = 0`, `mismatches = 0`
+- MLP residual / corrected layer1 output: exact, `max_abs_diff = 0`,
+  `mismatches = 0`
+
+Layer2 input guard:
+
+```text
+--mode layer-input-guard --layer-index 2
+```
+
+Layer2 input oracle path:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json
+```
+
+Oracle boundary:
+
+```text
+layer1_final_token_hidden_state_after_mlp_residual_add
+```
+
+Guard result:
+
+```text
+classification = layer2_input_guard_matches_oracle
+max_abs_diff = 0
+mismatches = 0
+```
+
+Caveats:
+
+- layer1 attention was bundle-seam driven
+- all-token K/V source-complete construction remains open
+- the expert28 lane2269 correction is validation-only metadata, not a
+  production rule
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: begin layer2 attention/MLP validation using the same
+bundle-driven pattern, while keeping source-complete K/V history construction
+as a separate unresolved ladder task.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
