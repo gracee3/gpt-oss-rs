@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[cfg(feature = "cuda")]
 use gpt_oss_model_runner::mxfp4_validation::{
@@ -141,6 +141,10 @@ struct Cli {
     #[arg(long)]
     pytorch_intermediates: Option<PathBuf>,
 
+    /// Optional PyTorch/module lane terms artifact for expert30 MLP1 lane debug.
+    #[arg(long)]
+    pytorch_lane_terms: Option<PathBuf>,
+
     /// Selected expert ids in rank order.
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
@@ -245,6 +249,7 @@ enum Mode {
     SwigluPolicyPin,
     Expert30Mlp2Debug,
     Expert30Mlp1Debug,
+    Expert30Mlp1LaneDebug,
 }
 
 #[derive(Debug, Serialize)]
@@ -624,10 +629,16 @@ struct Expert30Mlp1LaneDebugStatus {
     current_pre_bias: f32,
     bias_value: f32,
     output_rounding_policy: &'static str,
+    source_identity: Value,
+    local_values: Value,
+    official_values: Value,
+    pytorch_reference: Value,
+    per_block_summary: Vec<Value>,
+    top_contributions: Vec<Value>,
     decode_variant_table: Vec<Expert30Mlp1LaneVariant>,
     accumulation_variant_table: Vec<Expert30Mlp1LaneVariant>,
     best_variant: Expert30Mlp1LaneVariant,
-    pytorch_reference: PyTorchReferenceStatus,
+    best_explanation: &'static str,
     next_bounded_step: &'static str,
 }
 
@@ -656,12 +667,6 @@ struct Expert30Mlp1LaneVariant {
     bias: f32,
     row_summary: Option<FiniteSummary>,
     full_mlp1_metric: Option<HiddenComparisonStatus>,
-}
-
-#[derive(Debug, Serialize)]
-struct PyTorchReferenceStatus {
-    run: bool,
-    result: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1105,7 +1110,7 @@ fn main() -> Result<()> {
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
-        Mode::Expert30Mlp1Debug => run_expert30_mlp1_debug(&cli),
+        Mode::Expert30Mlp1Debug | Mode::Expert30Mlp1LaneDebug => run_expert30_mlp1_debug(&cli),
     }
 }
 
@@ -2959,17 +2964,26 @@ fn run_expert30_mlp1_debug(cli: &Cli) -> Result<()> {
             current_pre_bias: f32::NAN,
             bias_value: f32::NAN,
             output_rounding_policy: "not_run_artifact_blocked",
+            source_identity: json!({}),
+            local_values: json!({}),
+            official_values: json!({ "output": official }),
+            pytorch_reference: json!({ "available": false, "result": "not_run" }),
+            per_block_summary: Vec::new(),
+            top_contributions: Vec::new(),
             decode_variant_table: Vec::new(),
             accumulation_variant_table: Vec::new(),
             best_variant: empty_mlp1_lane_variant("not_run", "artifact blocker", official),
-            pytorch_reference: PyTorchReferenceStatus {
-                run: false,
-                result: "not_run",
-            },
+            best_explanation: "artifact blocker",
             next_bounded_step: "resolve the MLP norm or expert30 MLP1 artifact mismatch",
         }
     } else {
-        match execute_expert30_mlp1_debug_mxfp4(model, &mlp_norm_values, &mlp1_values, lane) {
+        match execute_expert30_mlp1_debug_mxfp4(
+            model,
+            &mlp_norm_values,
+            &mlp1_values,
+            lane,
+            cli.pytorch_lane_terms.as_deref(),
+        ) {
             Ok(status) => status,
             Err(_) => Expert30Mlp1LaneDebugStatus {
                 mode: "layer0_validation_runtime_path",
@@ -2985,6 +2999,12 @@ fn run_expert30_mlp1_debug(cli: &Cli) -> Result<()> {
                 current_pre_bias: f32::NAN,
                 bias_value: f32::NAN,
                 output_rounding_policy: "not_run_mxfp4_loader_failed",
+                source_identity: json!({ "rust_model_path": model.display().to_string() }),
+                local_values: json!({}),
+                official_values: json!({ "output": mlp1_values[lane] }),
+                pytorch_reference: json!({ "available": false, "result": "not_run" }),
+                per_block_summary: Vec::new(),
+                top_contributions: Vec::new(),
                 decode_variant_table: Vec::new(),
                 accumulation_variant_table: Vec::new(),
                 best_variant: empty_mlp1_lane_variant(
@@ -2992,10 +3012,7 @@ fn run_expert30_mlp1_debug(cli: &Cli) -> Result<()> {
                     "MXFP4 row helper failed",
                     mlp1_values[lane],
                 ),
-                pytorch_reference: PyTorchReferenceStatus {
-                    run: false,
-                    result: "not_run",
-                },
+                best_explanation: "MXFP4 row helper failed",
                 next_bounded_step: "fix the narrow validation MXFP4 gate/up row loading path",
             },
         }
@@ -4307,6 +4324,92 @@ fn dot_f64_diagnostic(input: &[f32], weights: &[f32]) -> f32 {
         }) as f32
 }
 
+fn local_per_block_summary(input: &[f32], weights: &[f32]) -> Vec<Value> {
+    (0..90)
+        .map(|block| {
+            let start = block * 32;
+            let end = (start + 32).min(input.len()).min(weights.len());
+            let mut sum = 0.0f32;
+            let mut abs_sum = 0.0f32;
+            let mut max_abs = 0.0f32;
+            let mut max_abs_hidden = start;
+            for idx in start..end {
+                let contribution = round_bf16(input[idx]) * weights[idx];
+                let abs = contribution.abs();
+                sum += contribution;
+                abs_sum += abs;
+                if abs > max_abs {
+                    max_abs = abs;
+                    max_abs_hidden = idx;
+                }
+            }
+            json!({
+                "block": block,
+                "sum": sum,
+                "abs_sum": abs_sum,
+                "max_abs": max_abs,
+                "max_abs_hidden": max_abs_hidden,
+            })
+        })
+        .collect()
+}
+
+fn local_top_contributions(input: &[f32], weights: &[f32], count: usize) -> Vec<Value> {
+    let mut contributions = input
+        .iter()
+        .zip(weights.iter())
+        .enumerate()
+        .map(|(hidden, (&input_value, &weight))| {
+            let rounded_input = round_bf16(input_value);
+            let contribution = rounded_input * weight;
+            (hidden, rounded_input, weight, contribution)
+        })
+        .collect::<Vec<_>>();
+    contributions.sort_by(|a, b| b.3.abs().total_cmp(&a.3.abs()));
+    contributions
+        .into_iter()
+        .take(count)
+        .map(|(hidden, input, weight, contribution)| {
+            json!({
+                "hidden": hidden,
+                "input": input,
+                "weight": weight,
+                "contribution": contribution,
+                "abs_contribution": contribution.abs(),
+            })
+        })
+        .collect()
+}
+
+fn load_pytorch_lane_reference(path: Option<&Path>) -> Value {
+    let Some(path) = path else {
+        return json!({
+            "available": false,
+            "result": "not_provided",
+        });
+    };
+    match fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+    {
+        Some(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("available".to_string(), Value::Bool(true));
+                object.insert(
+                    "path".to_string(),
+                    Value::String(path.display().to_string()),
+                );
+            }
+            value
+        }
+        None => json!({
+            "available": false,
+            "path": path.display().to_string(),
+            "result": "failed_to_parse",
+        }),
+    }
+}
+
 fn expert30_mlp1_lane_metadata(lane: usize) -> Expert30Mlp1LaneMetadata {
     Expert30Mlp1LaneMetadata {
         expert_id: 30,
@@ -5239,6 +5342,7 @@ fn execute_expert30_mlp1_debug_mxfp4(
     mlp_norm: &[f32],
     mlp1_oracle: &[f32],
     lane: usize,
+    pytorch_lane_terms: Option<&Path>,
 ) -> Result<Expert30Mlp1LaneDebugStatus> {
     let row = load_gate_up_row_mxfp4_validation(model, 0, 30, lane)
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -5394,7 +5498,17 @@ fn execute_expert30_mlp1_debug_mxfp4(
         .first()
         .map(|variant| variant.pre_bias)
         .unwrap_or(f32::NAN);
-    let classification = if best_variant.diff == 0.0 {
+    let pytorch_reference = load_pytorch_lane_reference(pytorch_lane_terms);
+    let pytorch_output = pytorch_reference
+        .get("output")
+        .and_then(|output| output.get("einsum_bf16_plus_bias_bf16"))
+        .and_then(Value::as_f64)
+        .map(|value| value as f32);
+    let pytorch_matches_official =
+        pytorch_output.is_some_and(|value| (value - official).abs() == 0.0);
+    let classification = if pytorch_matches_official && best_variant.diff != 0.0 {
+        "expert30_mlp1_lane522_accumulation_policy_mismatch"
+    } else if best_variant.diff == 0.0 {
         if best_variant.name.contains("nibble") || best_variant.name.contains("scale") {
             "expert30_mlp1_lane522_matches_after_decode_policy"
         } else if best_variant.name.contains("bias") || best_variant.name.contains("output") {
@@ -5406,6 +5520,17 @@ fn execute_expert30_mlp1_debug_mxfp4(
         "expert30_mlp1_lane522_decode_semantics_unresolved"
     } else {
         "expert30_mlp1_lane522_accumulation_unresolved"
+    };
+    let per_block_summary = local_per_block_summary(mlp_norm, current_row);
+    let top_contributions = local_top_contributions(mlp_norm, current_row, 16);
+    let best_explanation = match classification {
+        "expert30_mlp1_lane522_accumulation_policy_mismatch" => {
+            "PyTorch BF16 einsum reproduces the official lane while explicit local product summation does not; the remaining difference is the MLP1 BF16 einsum/source accumulation policy, not MXFP4 nibble or scale layout"
+        }
+        "expert30_mlp1_lane522_accumulation_unresolved" => {
+            "bounded local decode and accumulation variants did not reproduce the official lane, and no exact PyTorch terms reference was available"
+        }
+        _ => "see best variant and decode/accumulation tables",
     };
 
     Ok(Expert30Mlp1LaneDebugStatus {
@@ -5423,13 +5548,31 @@ fn execute_expert30_mlp1_debug_mxfp4(
         bias_value: bias,
         output_rounding_policy:
             "current full replay rounds MLP1 pre-bias to BF16, then BF16 bias add/output",
+        source_identity: json!({
+            "rust_model_path": model.display().to_string(),
+            "rust_tensor_names": {
+                "blocks": "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                "scales": "model.layers.0.mlp.experts.gate_up_proj_scales",
+                "bias": "model.layers.0.mlp.experts.gate_up_proj_bias"
+            },
+            "expert": 30,
+            "lane": lane,
+            "pytorch_terms_path": pytorch_lane_terms.map(|path| path.display().to_string())
+        }),
+        local_values: json!({
+            "pre_bias": current_pre_bias,
+            "bias": bias,
+            "output": current_local,
+            "best_explicit_sum_output": best_variant.local
+        }),
+        official_values: json!({ "output": official }),
+        pytorch_reference,
+        per_block_summary,
+        top_contributions,
         decode_variant_table,
         accumulation_variant_table,
         best_variant,
-        pytorch_reference: PyTorchReferenceStatus {
-            run: false,
-            result: "not_run_no_torch_runtime_dependency",
-        },
+        best_explanation,
         next_bounded_step: "inspect expert30 lane 522 source group contributions and compare against PyTorch/official MLP1 accumulation for the single lane",
     })
 }
@@ -5454,6 +5597,7 @@ fn execute_expert30_mlp1_debug_mxfp4(
     _mlp_norm: &[f32],
     _mlp1_oracle: &[f32],
     _lane: usize,
+    _pytorch_lane_terms: Option<&Path>,
 ) -> Result<Expert30Mlp1LaneDebugStatus> {
     anyhow::bail!("expert30 MLP1 lane debug requires the cuda feature")
 }

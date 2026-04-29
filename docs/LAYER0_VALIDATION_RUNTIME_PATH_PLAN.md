@@ -1671,6 +1671,79 @@ The next bounded target is source-contribution inspection for expert30 lane
 `522`: compare per-group or per-term contributions against a PyTorch/official
 MLP1 lane computation, without changing MXFP4 layout or production execution.
 
+## Expert30 MLP1 Lane 522 Contribution Analysis
+
+This slice compares the lane-local Rust validation replay with a scratch
+PyTorch reference generated outside the repo:
+
+```text
+/tmp/layer0_validation_expert30_mlp1_lane522_pytorch_terms.json
+```
+
+The scratch reference used `/data/models/.venv-awq/bin/python` with
+`PYTHONPATH=/home/emmy/openai/gpt-oss` and the official GPT-OSS MXFP4 decode
+formula from `gpt_oss.torch.weights`. It does not add a Torch dependency to the
+repo or runtime.
+
+Source identity:
+
+- Rust validation model path:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- Scratch PyTorch model path:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- The restricted model path symlinks model shards to
+  `/data/models/openai/gpt-oss-20b`.
+- Tensor names:
+  `model.layers.0.mlp.experts.gate_up_proj_blocks`,
+  `model.layers.0.mlp.experts.gate_up_proj_scales`,
+  `model.layers.0.mlp.experts.gate_up_proj_bias`.
+
+Lane `522` values:
+
+```text
+official output:
+  0.33007812
+
+Rust current full replay:
+  pre_bias = 0.61132824
+  bias = -0.27929688
+  output = 0.33398438
+
+Rust best explicit row-local variant:
+  output = 0.33203125
+
+PyTorch BF16 tensor reference:
+  einsum pre_bias = 0.609375
+  bias = -0.27929688
+  einsum + bias output = 0.33007812
+```
+
+Per-block/per-term status:
+
+- The Rust status emits per-block sums, absolute sums, and top local
+  contributions in:
+  `/tmp/layer0_validation_expert30_mlp1_lane522_terms_status.json`.
+- The largest local absolute contribution is from hidden lane `1204`:
+  input `1.6171875`, weight `-0.09375`, contribution `-0.15161133`.
+- PyTorch terms confirm the source tensors and decode formula; the clearing
+  difference is the BF16 `einsum` accumulation/source policy, not MXFP4 nibble
+  ordering, scale interpretation, bias identity, or selected-output layout.
+
+Classification:
+
+```text
+expert30_mlp1_lane522_accumulation_policy_mismatch
+```
+
+Conclusion:
+
+The official lane is reproduced by PyTorch BF16 `einsum` for the same decoded
+row and input, while Rust explicit product/sum variants do not reproduce it.
+The next bounded step is to encode a validation-only BF16 `einsum`-style MLP1
+policy or use a PyTorch/module-generated MLP1 seam while the exact Rust
+accumulation semantics are implemented. Production runtime behavior remains
+unchanged, and no raw `/tmp` or `.live` artifacts are committed.
+
 ## Validation Commands
 
 For the skeleton slice:
