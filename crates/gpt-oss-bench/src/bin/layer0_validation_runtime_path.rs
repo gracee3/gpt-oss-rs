@@ -378,6 +378,8 @@ enum Mode {
     LayerLadder,
     CoarseLadderInspect,
     CoarseLayerOutputGuard,
+    CoarseLayerValidate,
+    CoarseLadderValidate,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
@@ -1346,6 +1348,8 @@ fn main() -> Result<()> {
         Mode::LayerLadder => run_layer_ladder(&cli),
         Mode::CoarseLadderInspect => run_coarse_ladder_inspect(&cli),
         Mode::CoarseLayerOutputGuard => run_coarse_layer_output_guard(&cli),
+        Mode::CoarseLayerValidate => run_coarse_layer_validate(&cli),
+        Mode::CoarseLadderValidate => run_coarse_ladder_validate(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
@@ -4733,6 +4737,552 @@ fn run_layer_bundle_validate_from_coarse(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn coarse_boundary_name(layer: usize, suffix: &str) -> String {
+    format!("layer{layer}_final_token_{suffix}")
+}
+
+#[cfg(feature = "cuda")]
+fn execute_coarse_layer_validate(
+    layer: usize,
+    layer_input: &Path,
+    coarse: &Path,
+    model: &Path,
+    emit_layer_output: Option<&Path>,
+) -> Result<(String, Value, Option<Vec<f32>>)> {
+    validate_path(layer_input, "layer input")?;
+    validate_path(coarse, "coarse bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_count = 4usize;
+    let input_boundary = coarse_boundary_name(layer, "layer_input_before_attention_norm");
+    let attention_norm_boundary = coarse_boundary_name(layer, "attention_norm_output_before_qkv");
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let mlp_norm_boundary = coarse_boundary_name(layer, "mlp_norm_output_before_mlp_projections");
+    let output_boundary = coarse_boundary_name(layer, "hidden_state_after_mlp_residual_add");
+
+    let (input_status, input_values) = load_tensor_artifact(layer_input, &[hidden], &["values"])?;
+    let (input_oracle_status, input_oracle) =
+        load_coarse_boundary_tensor(coarse, &input_boundary, &[hidden])?;
+    let (attention_norm_status, attention_norm_oracle) =
+        load_coarse_boundary_tensor(coarse, &attention_norm_boundary, &[hidden])?;
+    let (attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let (mlp_norm_status, mlp_norm_oracle) =
+        load_coarse_boundary_tensor(coarse, &mlp_norm_boundary, &[hidden])?;
+    let (output_status, output_oracle) =
+        load_coarse_boundary_tensor(coarse, &output_boundary, &[hidden])?;
+
+    let schema_blocked = !input_status.shape_or_count_matched
+        || !input_oracle_status.shape_or_count_matched
+        || !attention_norm_status.shape_or_count_matched
+        || !attention_residual_status.shape_or_count_matched
+        || !mlp_norm_status.shape_or_count_matched
+        || !output_status.shape_or_count_matched;
+
+    let input_guard_metric =
+        (!schema_blocked).then(|| compare_hidden(&input_values, &input_oracle));
+
+    let input_norm_name = format!("model.layers.{layer}.input_layernorm.weight");
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let router_weight_name = format!("model.layers.{layer}.mlp.router.weight");
+    let router_bias_name = format!("model.layers.{layer}.mlp.router.bias");
+    let input_norm_result = load_model_tensor_f32(model, &[input_norm_name.as_str()]);
+    let post_norm_result = load_model_tensor_f32(model, &[post_norm_name.as_str()]);
+    let router_weight_result = load_model_tensor_f32(model, &[router_weight_name.as_str()]);
+    let router_bias_result = load_model_tensor_f32(model, &[router_bias_name.as_str()]);
+
+    let (
+        input_norm_source,
+        input_norm_values,
+        post_norm_source,
+        post_norm_values,
+        router_weight_source,
+        router_weight_values,
+        router_bias_source,
+        router_bias_values,
+        tensor_blocker,
+    ) = match (
+        input_norm_result,
+        post_norm_result,
+        router_weight_result,
+        router_bias_result,
+    ) {
+        (
+            Ok((input_norm_source, input_norm_values)),
+            Ok((post_norm_source, post_norm_values)),
+            Ok((router_weight_source, router_weight_values)),
+            Ok((router_bias_source, router_bias_values)),
+        ) if input_norm_values.len() == hidden
+            && post_norm_values.len() == hidden
+            && router_weight_values.len() == experts * hidden
+            && router_bias_values.len() == experts =>
+        {
+            (
+                Some(input_norm_source),
+                input_norm_values,
+                Some(post_norm_source),
+                post_norm_values,
+                Some(router_weight_source),
+                router_weight_values,
+                Some(router_bias_source),
+                router_bias_values,
+                None,
+            )
+        }
+        (input_norm_result, post_norm_result, router_weight_result, router_bias_result) => {
+            let (input_norm_source, input_norm_values, input_norm_error) = match input_norm_result {
+                Ok((status, values)) => (Some(status), values, None),
+                Err(err) => (None, Vec::new(), Some(err.to_string())),
+            };
+            let (post_norm_source, post_norm_values, post_norm_error) = match post_norm_result {
+                Ok((status, values)) => (Some(status), values, None),
+                Err(err) => (None, Vec::new(), Some(err.to_string())),
+            };
+            let (router_weight_source, router_weight_values, router_weight_error) =
+                match router_weight_result {
+                    Ok((status, values)) => (Some(status), values, None),
+                    Err(err) => (None, Vec::new(), Some(err.to_string())),
+                };
+            let (router_bias_source, router_bias_values, router_bias_error) =
+                match router_bias_result {
+                    Ok((status, values)) => (Some(status), values, None),
+                    Err(err) => (None, Vec::new(), Some(err.to_string())),
+                };
+            (
+                input_norm_source,
+                input_norm_values,
+                post_norm_source,
+                post_norm_values,
+                router_weight_source,
+                router_weight_values,
+                router_bias_source,
+                router_bias_values,
+                Some(json!({
+                    "kind": "coarse_layer_validate_tensor_lookup",
+                    "detail": "required layer norm or router tensor was missing or had an unexpected shape",
+                    "input_layernorm_error": input_norm_error,
+                    "post_attention_layernorm_error": post_norm_error,
+                    "router_weight_error": router_weight_error,
+                    "router_bias_error": router_bias_error,
+                })),
+            )
+        }
+    };
+
+    let tensor_blocked = tensor_blocker.is_some();
+    let attention_norm_values = if !schema_blocked && !tensor_blocked {
+        compute_mlp_rms_norm(&input_values, &input_norm_values, 1e-5)
+    } else {
+        Vec::new()
+    };
+    let attention_norm_metric = (!schema_blocked && !tensor_blocked)
+        .then(|| compare_hidden(&attention_norm_values, &attention_norm_oracle));
+
+    let mlp_norm_values = if !schema_blocked && !tensor_blocked {
+        compute_mlp_rms_norm(&attention_residual, &post_norm_values, 1e-5)
+    } else {
+        Vec::new()
+    };
+    let mlp_norm_metric = (!schema_blocked && !tensor_blocked)
+        .then(|| compare_hidden(&mlp_norm_values, &mlp_norm_oracle));
+
+    let mut selected_experts = Vec::new();
+    let mut routing_weights = Vec::new();
+    let mut router_logits = Vec::new();
+    let mut layer_output = None;
+    let mut selected_expert_loader = Value::Null;
+    let mut execution_blocker = None;
+    let mlp_output_metric = if !schema_blocked
+        && !tensor_blocked
+        && input_guard_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+        && attention_norm_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+        && mlp_norm_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+    {
+        router_logits = compute_router_logits_bf16_linear(
+            &mlp_norm_values,
+            &router_weight_values,
+            &router_bias_values,
+        );
+        let topk = compute_router_topk(&router_logits, selected_count);
+        selected_experts = topk
+            .indices
+            .iter()
+            .map(|&expert| expert as usize)
+            .collect::<Vec<_>>();
+        routing_weights = topk.routing_weights.clone();
+
+        match load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))
+        {
+            Ok(loaded) => {
+                let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+                for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+                    let Some(expert) = loaded
+                        .experts
+                        .iter()
+                        .find(|expert| expert.expert == expert_id)
+                    else {
+                        execution_blocker = Some(json!({
+                            "kind": "coarse_layer_validate_selected_expert_missing",
+                            "detail": format!("selected expert {expert_id} missing from MXFP4 loader")
+                        }));
+                        break;
+                    };
+                    match compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert) {
+                        Ok(mlp1) => {
+                            let swiglu = compute_swiglu_bf16(&mlp1);
+                            let pre_bias = compute_expert30_mlp2_prebias_variant(
+                                &swiglu,
+                                &expert.down_weight,
+                                Expert30Mlp2Policy::Current,
+                            );
+                            let output = compute_expert30_selected_output_variant(
+                                &pre_bias,
+                                &expert.down_bias,
+                                Expert30Mlp2Policy::Current,
+                            );
+                            let start = rank * hidden;
+                            selected_matrix[start..start + hidden].copy_from_slice(&output);
+                        }
+                        Err(err) => {
+                            execution_blocker = Some(json!({
+                                "kind": "coarse_layer_validate_mlp1_execution",
+                                "detail": err.to_string(),
+                                "expert": expert_id,
+                            }));
+                            break;
+                        }
+                    }
+                }
+                selected_expert_loader = json!({
+                    "helper_name": loaded.helper_name,
+                    "decode_source": loaded.decode_source,
+                    "selected_experts": loaded.selected_experts,
+                    "dtype_outputs": loaded.dtype_outputs,
+                    "tensor_sources": loaded.tensor_sources,
+                });
+                if execution_blocker.is_none() {
+                    let weighted = compute_weighted_expert_sum_bf16(
+                        &selected_matrix,
+                        &routing_weights,
+                        hidden,
+                    );
+                    let residual = compute_attention_residual(&attention_residual, &weighted);
+                    let metric = compare_hidden(&residual, &output_oracle);
+                    if metric.metrics.mismatches == 0 {
+                        layer_output = Some(residual.clone());
+                    }
+                    Some(metric)
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                execution_blocker = Some(json!({
+                    "kind": "coarse_layer_validate_selected_expert_loader",
+                    "detail": err.to_string(),
+                }));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let classification = if schema_blocked {
+        "coarse_layer_validate_blocked_by_coarse_schema"
+    } else if tensor_blocked {
+        "coarse_layer_validate_blocked_by_tensor_lookup"
+    } else if execution_blocker.is_some() {
+        "coarse_layer_validate_execution_failed"
+    } else if input_guard_metric
+        .as_ref()
+        .is_none_or(|metric| metric.metrics.mismatches != 0)
+    {
+        "coarse_layer_validate_input_mismatch"
+    } else if attention_norm_metric
+        .as_ref()
+        .is_none_or(|metric| metric.metrics.mismatches != 0)
+    {
+        "coarse_layer_validate_attention_norm_mismatch"
+    } else if mlp_norm_metric
+        .as_ref()
+        .is_none_or(|metric| metric.metrics.mismatches != 0)
+    {
+        "coarse_layer_validate_mlp_norm_mismatch"
+    } else if mlp_output_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0)
+    {
+        "coarse_layer_validate_matches_oracle"
+    } else {
+        "coarse_layer_validate_mlp_output_mismatch"
+    }
+    .to_string();
+
+    if classification == "coarse_layer_validate_matches_oracle" {
+        if let (Some(path), Some(values)) = (emit_layer_output, layer_output.as_ref()) {
+            write_coarse_layer_output_artifact(path, layer, model, coarse, values)?;
+        }
+    }
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-layer-validate",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "layer_input_path": layer_input.display().to_string(),
+        "coarse_bundle_path": coarse.display().to_string(),
+        "selected_experts": selected_experts,
+        "routing_weights": routing_weights,
+        "router": {
+            "logits": router_logits,
+            "oracle_available": false,
+            "topk_oracle_available": false,
+        },
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "artifacts": {
+            "layer_input": input_status,
+            "coarse_layer_input": input_oracle_status,
+            "coarse_attention_norm": attention_norm_status,
+            "coarse_attention_residual": attention_residual_status,
+            "coarse_mlp_norm": mlp_norm_status,
+            "coarse_layer_output": output_status,
+        },
+        "model_tensors": {
+            "input_layernorm": input_norm_source,
+            "post_attention_layernorm": post_norm_source,
+            "router_weight": router_weight_source,
+            "router_bias": router_bias_source,
+            "selected_expert_loader": selected_expert_loader,
+        },
+        "metrics": {
+            "input_guard": input_guard_metric,
+            "attention_norm": attention_norm_metric,
+            "mlp_norm": mlp_norm_metric,
+            "mlp_output": mlp_output_metric,
+        },
+        "source_policy": {
+            "attention_source": "official_coarse_attention_residual_seam",
+            "attention_recomputed": false,
+            "ordered_attention_bundle_available": false,
+            "ordered_mlp_bundle_available": false,
+            "corrections_allowed": false,
+            "correction_applied": false,
+            "router_topk_oracle_available": false,
+            "selected_output_oracle_available": false,
+            "weighted_sum_oracle_available": false,
+        },
+        "blocker": tensor_blocker.or(execution_blocker),
+        "emitted_layer_output": emit_layer_output
+            .filter(|_| layer_output.is_some())
+            .map(|path| path.display().to_string()),
+        "next_bounded_step": match classification.as_str() {
+            "coarse_layer_validate_matches_oracle" => "feed emitted layer output into the next coarse layer validation",
+            "coarse_layer_validate_input_mismatch" => "localize prior emitted output versus this layer coarse input boundary",
+            "coarse_layer_validate_attention_norm_mismatch" => "localize layer input RMSNorm policy or tensor lookup",
+            "coarse_layer_validate_mlp_norm_mismatch" => "localize layer MLP norm policy from the coarse attention residual seam",
+            "coarse_layer_validate_mlp_output_mismatch" => "generate ordered attention/MLP bundles for this layer before applying any correction",
+            "coarse_layer_validate_blocked_by_tensor_lookup" => "resolve missing layer-indexed norm/router/expert tensors",
+            _ => "inspect coarse schema and required layer boundaries",
+        }
+    });
+    Ok((classification, status, layer_output))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_coarse_layer_validate(
+    layer: usize,
+    _layer_input: &Path,
+    coarse: &Path,
+    _model: &Path,
+    _emit_layer_output: Option<&Path>,
+) -> Result<(String, Value, Option<Vec<f32>>)> {
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-layer-validate",
+        "classification": "coarse_layer_validate_execution_failed",
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "coarse_bundle_path": coarse.display().to_string(),
+        "blocker": {
+            "kind": "coarse_layer_validate_cuda_feature",
+            "detail": "coarse MLP backend replay requires the cuda feature"
+        },
+        "next_bounded_step": "rerun with --features cuda"
+    });
+    Ok((
+        "coarse_layer_validate_execution_failed".to_string(),
+        status,
+        None,
+    ))
+}
+
+fn run_coarse_layer_validate(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let layer_input = required_path(&cli.layer_input, "layer input")?;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let (_, status, _) = execute_coarse_layer_validate(
+        layer,
+        layer_input,
+        coarse,
+        model,
+        cli.emit_layer_output.as_deref(),
+    )?;
+    write_json(&cli.output, &status)
+}
+
+fn run_coarse_ladder_validate(cli: &Cli) -> Result<()> {
+    let start_layer = cli.start_layer;
+    let end_layer = cli.end_layer;
+    anyhow::ensure!(
+        start_layer <= end_layer,
+        "start layer must be <= end layer, got {start_layer}..{end_layer}"
+    );
+    let mut current_input = required_path(&cli.layer_input, "layer input")?.to_path_buf();
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let emit_dir = required_path(&cli.emit_dir, "emit dir")?;
+    validate_path(&current_input, "initial layer input")?;
+    validate_path(coarse, "coarse bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+    fs::create_dir_all(emit_dir)
+        .with_context(|| format!("failed to create {}", emit_dir.display()))?;
+
+    let mut completed_layers = Vec::new();
+    let mut per_layer_summary = Vec::new();
+    let mut emitted_outputs = Vec::new();
+    let mut stopped_at_layer = Value::Null;
+    let mut stop_reason = "completed_requested_range".to_string();
+
+    for layer in start_layer..=end_layer {
+        let output_path = emit_dir.join(format!("layer{layer}_output.json"));
+        let (classification, status, output_values) = execute_coarse_layer_validate(
+            layer,
+            &current_input,
+            coarse,
+            model,
+            Some(&output_path),
+        )?;
+        if classification == "coarse_layer_validate_matches_oracle" && output_values.is_some() {
+            completed_layers.push(layer);
+            emitted_outputs.push(json!({
+                "layer_index": layer,
+                "path": output_path.display().to_string(),
+            }));
+            per_layer_summary.push(json!({
+                "layer_index": layer,
+                "classification": classification,
+                "selected_experts": status.get("selected_experts").cloned().unwrap_or(Value::Null),
+                "routing_weights": status.get("routing_weights").cloned().unwrap_or(Value::Null),
+                "metrics": status.get("metrics").cloned().unwrap_or(Value::Null),
+                "emitted_output": output_path.display().to_string(),
+                "source_policy": status.get("source_policy").cloned().unwrap_or(Value::Null),
+            }));
+            current_input = output_path;
+            continue;
+        }
+
+        stopped_at_layer = json!(layer);
+        stop_reason = match classification.as_str() {
+            "coarse_layer_validate_input_mismatch" => "input_mismatch",
+            "coarse_layer_validate_attention_norm_mismatch" => "attention_norm_mismatch",
+            "coarse_layer_validate_mlp_norm_mismatch" => "mlp_norm_mismatch",
+            "coarse_layer_validate_mlp_output_mismatch" => "mlp_output_mismatch",
+            "coarse_layer_validate_blocked_by_coarse_schema" => "schema_blocker",
+            _ => "execution_failure",
+        }
+        .to_string();
+        per_layer_summary.push(json!({
+            "layer_index": layer,
+            "classification": classification,
+            "status": status,
+        }));
+        break;
+    }
+
+    let requested = end_layer - start_layer + 1;
+    let classification = if completed_layers.len() == requested {
+        "coarse_ladder_validate_completed_all_requested_layers"
+    } else {
+        match stop_reason.as_str() {
+            "input_mismatch" => "coarse_ladder_validate_stopped_on_input_mismatch",
+            "attention_norm_mismatch" => {
+                "coarse_ladder_validate_stopped_on_attention_norm_mismatch"
+            }
+            "mlp_norm_mismatch" => "coarse_ladder_validate_stopped_on_mlp_norm_mismatch",
+            "mlp_output_mismatch" => "coarse_ladder_validate_stopped_on_mlp_output_mismatch",
+            "schema_blocker" => "coarse_ladder_validate_stopped_on_schema_blocker",
+            _ => "coarse_ladder_validate_stopped_on_execution_failure",
+        }
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-ladder-validate",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "start_layer": start_layer,
+        "end_layer": end_layer,
+        "completed_layers": completed_layers,
+        "stopped_at_layer": stopped_at_layer,
+        "stop_reason": stop_reason,
+        "per_layer_summary": per_layer_summary,
+        "emitted_outputs": emitted_outputs,
+        "caveats": {
+            "coarse_final_token_ladder": true,
+            "attention_residual_accepted_as_official_coarse_seam": true,
+            "attention_recomputed": false,
+            "ordered_attention_mlp_seams_validated": false,
+            "selected_output_corrections_allowed": false,
+            "k_v_source_complete": false,
+        },
+        "next_bounded_step": match classification {
+            "coarse_ladder_validate_completed_all_requested_layers" => "decide whether to proceed to final norm/logit guard from the coarse layer23 output in a separate slice",
+            "coarse_ladder_validate_stopped_on_mlp_output_mismatch" => "generate ordered attention/MLP bundles for the stopped layer before applying any correction",
+            "coarse_ladder_validate_stopped_on_attention_norm_mismatch" => "localize the stopped layer attention norm policy or input source",
+            "coarse_ladder_validate_stopped_on_mlp_norm_mismatch" => "localize the stopped layer MLP norm policy from the official coarse attention residual seam",
+            "coarse_ladder_validate_stopped_on_input_mismatch" => "localize the previous emitted layer output versus the stopped layer input boundary",
+            _ => "resolve the reported coarse ladder blocker",
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
 fn run_layer1_attn_norm(cli: &Cli) -> Result<()> {
     let layer1_input = required_path(&cli.layer1_input, "layer1 input")?;
     let layer1_attn_norm_oracle =
@@ -8000,6 +8550,51 @@ fn write_layer_output_artifact(
         "attention_bundle": attention_bundle.display().to_string(),
         "mlp_bundle": mlp_bundle.display().to_string(),
         "attention_residual": attention_residual.display().to_string(),
+        "shape": [2880],
+        "tensor_dtype": "bf16_boundary_serialized_as_f32",
+        "serialization_dtype": "f32_json",
+        "value_key": "values",
+        "finite_value_summary": finite_summary(values),
+        "sha256_f32_le_full": digest_f32_le(values),
+        "values": values,
+    });
+    write_json(output, &payload)
+}
+
+fn write_coarse_layer_output_artifact(
+    output: &Path,
+    layer: usize,
+    model: &Path,
+    coarse_bundle: &Path,
+    values: &[f32],
+) -> Result<()> {
+    anyhow::ensure!(
+        values.len() == 2880,
+        "coarse layer output artifact must have 2880 values, got {}",
+        values.len()
+    );
+    let payload = json!({
+        "case": "developer-message-user-smoke",
+        "case_id": "developer-message-user-smoke",
+        "boundary": format!("layer{layer}_final_token_hidden_after_mlp_residual_coarse_validated"),
+        "layer_index": layer,
+        "source_mode": "coarse-layer-validate",
+        "attention_source": "official_coarse_attention_residual_seam",
+        "attention_recomputed": false,
+        "ordered_attention_bundle_available": false,
+        "ordered_mlp_bundle_available": false,
+        "correction_applied": false,
+        "k_v_source_complete": false,
+        "k_pre_rope_history_validated": false,
+        "weighted_v_recomputed": false,
+        "reason": "coarse_layer_validation_advanced_from_official_attention_residual_seam",
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "model": model.display().to_string(),
+        "coarse_bundle": coarse_bundle.display().to_string(),
         "shape": [2880],
         "tensor_dtype": "bf16_boundary_serialized_as_f32",
         "serialization_dtype": "f32_json",

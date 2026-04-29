@@ -648,6 +648,79 @@ Next bounded step: generate ordered layer2 attention and MLP bundles, or add a
 deliberately narrower norm/residual-only coarse validation mode. Backend seam
 validation still requires ordered layer2 attention/MLP artifacts.
 
+## Coarse Norm/Residual Ladder Validation Status
+
+This slice added a deliberately narrower coarse ladder mode for the existing
+layer2-to-final bundle. It is not ordered seam validation. It uses the exact
+prior layer output as input, checks the layer attention norm, accepts the
+official coarse attention residual as an explicit seam, checks the MLP norm,
+then attempts the local BF16 MLP backend replay against the coarse final layer
+output.
+
+Modes added:
+
+- `--mode coarse-layer-validate`
+- `--mode coarse-ladder-validate`
+
+What the coarse bundle can validate:
+
+- layer input guard
+- attention norm output before QKV
+- MLP norm output before MLP projections
+- final hidden state after MLP residual add, if the local MLP backend reaches it
+
+What it cannot validate:
+
+- source-complete attention internals
+- Q/K/V history construction
+- raw-QK, masked logits, attention probabilities, weighted-V, or o-proj seams
+- router/top-k oracle parity
+- selected expert outputs
+- weighted expert sum
+- selected expert internals
+- selected-output one-lane corrections
+
+Layer2 coarse validation result:
+
+```text
+classification = coarse_layer_validate_attention_norm_mismatch
+input_guard = exact
+attention_norm max_abs_diff = 0.001953125
+attention_norm mismatches = 1
+attention_norm first/worst lane = 2108
+local = -0.451171875
+official = -0.453125
+mlp_norm_from_official_attention_residual_seam = exact
+mlp_output = not run
+emitted_output = null
+```
+
+Coarse ladder result:
+
+```text
+classification = coarse_ladder_validate_stopped_on_attention_norm_mismatch
+start_layer = 2
+end_layer = 23
+completed_layers = []
+stopped_at_layer = 2
+stop_reason = attention_norm_mismatch
+emitted_outputs = []
+```
+
+Caveats:
+
+- attention residual is accepted as the official coarse seam
+- attention internals are not recomputed
+- no selected-output corrections are applied in coarse mode
+- ordered bundles are still needed for true attention/MLP seam validation
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: localize the layer2 attention norm lane 2108 mismatch, or
+generate ordered layer2 attention/MLP bundles for source-complete layer2 seam
+validation before trying to promote any layer2 output.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
