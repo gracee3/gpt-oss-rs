@@ -58,6 +58,48 @@ official_selected = 0.48046875
 Next bounded step: keep this as explicit validation plumbing and preserve the
 lane1990 correction metadata; production-routing design remains separate.
 
+## Full Layer0 Validation Status
+
+- Mode: `--mode full-layer0`
+- Attention source:
+  `official_attention_residual_oracle_because_prior_mode_exact`
+- Classification:
+  `layer0_validation_full_layer0_matches_with_known_lane1990_correction`
+- Runtime behavior changed: false
+- Production/default routing changed: false
+- Status JSON:
+  `/tmp/layer0_validation_full_layer0_status.json`
+
+Backend path:
+
+```text
+MLP1 = cublas_bf16_tensor_op
+SwiGLU = pinned_torch_like_bf16_stage_rounding
+MLP2 = bf16_prebias_output_policy
+```
+
+Corrected final layer0 metric:
+
+| Boundary | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| MLP norm | `0.0` | `0.0` | `0` |
+| router/top-k | `0.0` | `0.0` | `0` |
+| selected outputs, corrected | `0.0` | `0.0` | `0` |
+| weighted expert sum, corrected | `0.0` | `0.0` | `0` |
+| final layer0 output, corrected | `0.0` | `0.0` | `0` |
+
+Caveats:
+
+- The first join mode accepts the official attention residual artifact because
+  the prior attention-residual mode already proved that boundary exact.
+- This remains layer0 final-token validation only.
+- No all-layer, final-logit, 4097-token, or production/server parity claim is
+  made.
+- No raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: preserve this full-layer0 validation status and keep any
+production-routing design separate.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

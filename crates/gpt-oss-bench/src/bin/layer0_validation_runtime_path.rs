@@ -35,6 +35,10 @@ struct Cli {
     #[arg(long)]
     official_layer0_output: Option<PathBuf>,
 
+    /// Official layer0 final-token output artifact for full-layer0 validation.
+    #[arg(long)]
+    layer0_output_oracle: Option<PathBuf>,
+
     /// Official K pre-RoPE artifact for the runtime/kernel RoPE parity guard.
     #[arg(long)]
     k_pre_rope: Option<PathBuf>,
@@ -269,6 +273,7 @@ enum Mode {
     SelectedExpertsPinnedSwigluDebug,
     SelectedExpertsFromMlp1Seams,
     MlpBackend,
+    FullLayer0,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1221,6 +1226,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
         Mode::MlpBackend => run_mlp_backend(&cli),
+        Mode::FullLayer0 => run_full_layer0(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -2771,6 +2777,254 @@ fn run_mlp_backend(cli: &Cli) -> Result<()> {
         Err(err) if !artifact_blocked => {
             status["blocker"] = json!({
                 "kind": "mlp_backend_port",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
+
+    write_json(&cli.output, &status)
+}
+
+fn run_full_layer0(cli: &Cli) -> Result<()> {
+    let attention_residual = required_path(&cli.attention_residual, "attention residual")?;
+    let mlp_norm_oracle = required_path(&cli.mlp_norm_oracle, "MLP norm oracle")?;
+    let router_logits_oracle = required_path(&cli.router_logits_oracle, "router logits oracle")?;
+    let topk_routing_oracle = required_path(&cli.topk_routing_oracle, "topk routing oracle")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let weighted_expert_sum_oracle = required_path(
+        &cli.weighted_expert_sum_oracle,
+        "weighted expert sum oracle",
+    )?;
+    let layer0_output_oracle = required_path(&cli.layer0_output_oracle, "layer0 output oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(attention_residual, "attention residual")?;
+    validate_path(mlp_norm_oracle, "MLP norm oracle")?;
+    validate_path(router_logits_oracle, "router logits oracle")?;
+    validate_path(topk_routing_oracle, "topk routing oracle")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(weighted_expert_sum_oracle, "weighted expert sum oracle")?;
+    validate_path(layer0_output_oracle, "layer0 output oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let selected_count = selected_experts.len();
+    let (attention_status, attention_values) = load_tensor_artifact(
+        attention_residual,
+        &[hidden, cli.token_count * hidden],
+        &["values", "layer0_attn_norm_input_f32"],
+    )?;
+    let (mlp_norm_status, mlp_norm_oracle_values) =
+        load_tensor_artifact(mlp_norm_oracle, &[hidden], &["values"])?;
+    let (router_oracle_status, router_oracle_values) =
+        load_tensor_artifact(router_logits_oracle, &[experts], &["values"])?;
+    let (topk_oracle_status, topk_oracle) = load_topk_oracle(topk_routing_oracle, selected_count)?;
+    let (selected_oracle_status, selected_oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (weighted_oracle_status, weighted_oracle_values) =
+        load_tensor_artifact(weighted_expert_sum_oracle, &[hidden], &["values"])?;
+    let (layer0_oracle_status, layer0_oracle_values) =
+        load_tensor_artifact(layer0_output_oracle, &[hidden], &["values"])?;
+
+    let artifact_blocked = !attention_status.shape_or_count_matched
+        || !mlp_norm_status.shape_or_count_matched
+        || !router_oracle_status.shape_or_count_matched
+        || !topk_oracle_status.shape_or_count_matched
+        || !selected_oracle_status.shape_or_count_matched
+        || !weighted_oracle_status.shape_or_count_matched
+        || !layer0_oracle_status.shape_or_count_matched;
+
+    let attention_final_token = if attention_values.len() == cli.token_count * hidden {
+        let start = cli.final_token_index * hidden;
+        attention_values[start..start + hidden].to_vec()
+    } else {
+        attention_values.clone()
+    };
+
+    let weight_result = load_model_tensor_f32(
+        model,
+        &[
+            "model.layers.0.post_attention_layernorm.weight",
+            "model.layers.0.mlp.norm.weight",
+            "block.0.mlp.norm.scale",
+            "post_attention_layernorm.weight",
+        ],
+    );
+
+    let (mlp_norm_metric, mlp_norm_values, norm_blocker) = if artifact_blocked {
+        (None, Vec::new(), None)
+    } else {
+        match weight_result {
+            Ok((_, weight_values)) if weight_values.len() == hidden => {
+                let values = compute_mlp_rms_norm(&attention_final_token, &weight_values, 1e-5);
+                let metric = compare_hidden(&values, &mlp_norm_oracle_values);
+                (Some(metric), values, None)
+            }
+            Ok(_) => (
+                None,
+                Vec::new(),
+                Some("MLP norm weight tensor had unexpected length"),
+            ),
+            Err(_) => (None, Vec::new(), Some("MLP norm weight tensor not found")),
+        }
+    };
+
+    let router_result = if artifact_blocked || norm_blocker.is_some() {
+        Err(anyhow::anyhow!("blocked before router execution"))
+    } else {
+        execute_mlp_backend_router(model, &mlp_norm_values, &router_oracle_values, &topk_oracle)
+    };
+    let backend_result = if artifact_blocked || norm_blocker.is_some() {
+        Err(anyhow::anyhow!("blocked before MLP backend execution"))
+    } else {
+        execute_mlp_backend_selected_experts(
+            model,
+            &mlp_norm_values,
+            &selected_experts,
+            &topk_oracle.routing_weights,
+            &selected_oracle_values,
+            &weighted_oracle_values,
+            &layer0_oracle_values,
+            &attention_final_token,
+            cli.apply_expert3_lane1990_correction,
+        )
+    };
+
+    let mlp_norm_matches = mlp_norm_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let classification = if artifact_blocked {
+        "layer0_validation_full_layer0_blocked_by_artifacts"
+    } else if norm_blocker.is_some() || router_result.is_err() || backend_result.is_err() {
+        "layer0_validation_full_layer0_blocked_by_scope"
+    } else {
+        let backend_classification = backend_result
+            .as_ref()
+            .ok()
+            .and_then(|status| status.get("classification"))
+            .and_then(Value::as_str);
+        match backend_classification {
+            Some("layer0_validation_mlp_backend_matches_oracle") if mlp_norm_matches => {
+                "layer0_validation_full_layer0_matches_oracle"
+            }
+            Some("layer0_validation_mlp_backend_matches_with_known_lane1990_correction")
+                if mlp_norm_matches =>
+            {
+                "layer0_validation_full_layer0_matches_with_known_lane1990_correction"
+            }
+            _ => "layer0_validation_full_layer0_mismatch",
+        }
+    };
+
+    let mut status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "full-layer0",
+        "classification": classification,
+        "implemented": !artifact_blocked && norm_blocker.is_none() && router_result.is_ok() && backend_result.is_ok(),
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "attention_source": "official_attention_residual_oracle_because_prior_mode_exact",
+        "attention_residual_source_metric": {
+            "source_is_oracle": true,
+            "metrics": {
+                "max_abs_diff": 0.0,
+                "mean_abs_diff": 0.0,
+                "mismatches": 0
+            }
+        },
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "selected_experts": selected_experts,
+        "artifacts": {
+            "attention_residual": attention_status,
+            "mlp_norm_oracle": mlp_norm_status,
+            "router_logits_oracle": router_oracle_status,
+            "topk_routing_oracle": topk_oracle_status,
+            "selected_experts_oracle": selected_oracle_status,
+            "weighted_expert_sum_oracle": weighted_oracle_status,
+            "layer0_output_oracle": layer0_oracle_status
+        },
+        "mlp_norm_metric": mlp_norm_metric,
+        "router_metric": null,
+        "topk_metric": null,
+        "selected_output_metric_official": null,
+        "selected_output_metric_corrected": null,
+        "weighted_sum_metric_official": null,
+        "weighted_sum_metric_corrected": null,
+        "final_layer0_metric_official": null,
+        "final_layer0_metric_corrected": null,
+        "correction": {
+            "enabled": cli.apply_expert3_lane1990_correction,
+            "applied": false,
+            "rank": 0,
+            "expert": 3,
+            "hidden_lane": 1990
+        },
+        "next_bounded_step": match classification {
+            "layer0_validation_full_layer0_matches_oracle" => "preserve full-layer0 validation and decide whether a separate production-routing design is needed",
+            "layer0_validation_full_layer0_matches_with_known_lane1990_correction" => "preserve full-layer0 validation with explicit lane1990 correction metadata; keep production routing separate",
+            "layer0_validation_full_layer0_mismatch" => "localize the first mismatching full-layer0 boundary under the composed validation path",
+            "layer0_validation_full_layer0_blocked_by_artifacts" => "resolve the reported full-layer0 artifact blocker",
+            _ => "scope the remaining full-layer0 composition blocker without changing production runtime behavior",
+        }
+    });
+
+    if let Some(detail) = norm_blocker {
+        status["blocker"] = json!({
+            "kind": "mlp_norm_scope",
+            "detail": detail
+        });
+    }
+    match router_result {
+        Ok(router) => {
+            status["router_metric"] = router["router_metric"].clone();
+            status["topk_metric"] = router["topk_metric"].clone();
+            status["router"] = router;
+        }
+        Err(err) if !artifact_blocked && norm_blocker.is_none() => {
+            status["blocker"] = json!({
+                "kind": "router_backend_scope",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
+    match backend_result {
+        Ok(backend) => {
+            status["selected_output_metric_official"] =
+                backend["selected_output_metric_official"].clone();
+            status["selected_output_metric_corrected"] =
+                backend["selected_output_metric_corrected"].clone();
+            status["weighted_sum_metric_official"] =
+                backend["weighted_sum_metric_official"].clone();
+            status["weighted_sum_metric_corrected"] =
+                backend["weighted_sum_metric_corrected"].clone();
+            status["final_layer0_metric_official"] =
+                backend["mlp_residual_metric_official"].clone();
+            status["final_layer0_metric_corrected"] =
+                backend["mlp_residual_metric_corrected"].clone();
+            status["correction"] = backend["correction"].clone();
+            status["source_identity"] = backend["source_identity"].clone();
+            status["per_rank_metrics"] = backend["per_rank_metrics"].clone();
+        }
+        Err(err) if !artifact_blocked && norm_blocker.is_none() => {
+            status["blocker"] = json!({
+                "kind": "mlp_backend_scope",
                 "detail": err.to_string()
             });
         }

@@ -2289,6 +2289,91 @@ only and does not make a final-logit, all-layer, or 4097-token claim.
 Next bounded step: preserve the lane1990 correction metadata and decide whether
 a separate production-routing design should be written later.
 
+## Full Layer0 Validation Status
+
+This slice adds an explicit validation-only join mode:
+
+```text
+--mode full-layer0
+```
+
+The mode composes the already-proven attention residual boundary with the
+layer0 MLP backend path:
+
+```text
+official attention residual oracle
+  -> MLP norm
+  -> router/top-k
+  -> selected experts [3,30,11,27]
+  -> cuBLAS BF16 tensor-op MLP1
+  -> pinned torch-like BF16 SwiGLU stage rounding
+  -> BF16 MLP2 pre-bias/output policy
+  -> weighted expert sum
+  -> MLP residual / layer0 final-token output
+```
+
+Attention source:
+
+```text
+official_attention_residual_oracle_because_prior_mode_exact
+```
+
+This is a deliberate first join mode: it reuses the official attention residual
+artifact because the `attention-residual` mode has already proved that boundary
+exact. It does not import the runtime-forward proof binary or debug capture
+plumbing.
+
+Status JSON:
+
+```text
+/tmp/layer0_validation_full_layer0_status.json
+```
+
+Classification:
+
+```text
+layer0_validation_full_layer0_matches_with_known_lane1990_correction
+```
+
+Metrics:
+
+| Boundary | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| attention residual source | `0.0` | `0.0` | `0` |
+| MLP norm | `0.0` | `0.0` | `0` |
+| router logits | `0.0` | `0.0` | `0` |
+| top-k selected logits | `0.0` | `0.0` | `0` |
+| top-k routing weights | `0.0` | `0.0` | `0` |
+| selected outputs, official oracle | `0.001953125` | `1.695421e-7` | `1` |
+| selected outputs, corrected | `0.0` | `0.0` | `0` |
+| weighted expert sum, official oracle | `0.0009765625` | `3.390842e-7` | `1` |
+| weighted expert sum, corrected | `0.0` | `0.0` | `0` |
+| final layer0 output, official oracle | `0.001953125` | `6.781684e-7` | `1` |
+| final layer0 output, corrected | `0.0` | `0.0` | `0` |
+
+Known correction:
+
+```text
+rank = 0
+expert = 3
+hidden_lane = 1990
+validation_post_bias = 0.478515625
+official_selected = 0.48046875
+```
+
+Caveats:
+
+- This is layer0 final-token validation only.
+- It uses the official attention residual artifact as the attention source for
+  this first join mode.
+- It does not prove all layers, final logits, 4097-token behavior, or
+  production/server parity.
+- No production runtime behavior, default model-runner routing, or CUDA kernels
+  changed.
+
+Next bounded step: preserve the full-layer0 validation mode with explicit
+lane1990 correction metadata; production-routing design remains separate.
+
 ## Validation Commands
 
 For the skeleton slice:
