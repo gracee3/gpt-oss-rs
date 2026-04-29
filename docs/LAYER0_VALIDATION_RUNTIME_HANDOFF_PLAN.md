@@ -100,6 +100,42 @@ Caveats:
 Next bounded step: preserve this full-layer0 validation status and keep any
 production-routing design separate.
 
+## Layer Ladder Preparation Status
+
+- Corrected layer0 output emission:
+  `--emit-corrected-layer0-output /tmp/layer0_validation_corrected_layer0_output.json`
+- Emission default: disabled unless the explicit argument is supplied
+- Emitted boundary:
+  `layer0_final_token_hidden_after_mlp_residual_corrected`
+- Shape/dtype: `[2880]`, BF16 boundary values serialized as f32 JSON values
+- Layer1 input guard mode: `--mode layer1-input-guard`
+
+Layer1 input oracle path used:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json
+```
+
+This official layer0 final-token hidden-after-MLP-residual boundary is the
+layer1 residual-stream input boundary for the final token.
+
+Layer1 input guard result:
+
+| Boundary | max abs diff | mean abs diff | mismatches |
+| --- | ---: | ---: | ---: |
+| emitted corrected layer0 output vs layer1 input oracle | `0.0` | `0.0` | `0` |
+
+Classification:
+
+```text
+layer1_input_guard_matches_oracle
+```
+
+No production behavior changed, no default routing changed, and no raw `.live`
+or `/tmp` artifacts are committed.
+
+Next bounded step: begin layer1 validation from this exact input boundary.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

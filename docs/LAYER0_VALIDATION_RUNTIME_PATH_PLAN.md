@@ -2374,6 +2374,55 @@ Caveats:
 Next bounded step: preserve the full-layer0 validation mode with explicit
 lane1990 correction metadata; production-routing design remains separate.
 
+## Layer Ladder Preparation Status
+
+The full-layer0 mode can now emit the corrected layer0 final-token output as a
+local reusable artifact when explicitly requested:
+
+```text
+--emit-corrected-layer0-output /tmp/layer0_validation_corrected_layer0_output.json
+```
+
+The emitted artifact is not written by default. It records:
+
+- boundary:
+  `layer0_final_token_hidden_after_mlp_residual_corrected`
+- shape: `[2880]`
+- dtype policy: BF16 boundary values serialized as f32 JSON values
+- correction metadata for the known expert3 lane1990 selected-output oracle
+  correction
+- finite value summary
+
+The layer ladder guard is explicit:
+
+```text
+--mode layer1-input-guard
+```
+
+For this slice, the available official boundary artifact is:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-hidden-state-after-mlp-residual-add-status.json
+```
+
+It is used as the layer1 residual-stream input oracle because layer0 final
+hidden after MLP residual add is the layer1 input boundary. The guard compares
+the emitted corrected layer0 output against that official boundary.
+
+Current guard result:
+
+```text
+classification = layer1_input_guard_matches_oracle
+max_abs_diff = 0.0
+mean_abs_diff = 0.0
+mismatches = 0
+```
+
+No production runtime behavior, default model-runner routing, CUDA kernels, raw
+`.live` artifacts, or `/tmp` artifacts are committed.
+
+Next bounded step: begin layer1 validation from this exact input boundary.
+
 ## Validation Commands
 
 For the skeleton slice:

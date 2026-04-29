@@ -39,6 +39,18 @@ struct Cli {
     #[arg(long)]
     layer0_output_oracle: Option<PathBuf>,
 
+    /// Optional path to emit corrected full-layer0 final-token output values.
+    #[arg(long)]
+    emit_corrected_layer0_output: Option<PathBuf>,
+
+    /// Corrected layer0 output artifact for the layer1 input guard.
+    #[arg(long)]
+    layer0_output: Option<PathBuf>,
+
+    /// Official layer1 input boundary oracle for the layer1 input guard.
+    #[arg(long)]
+    layer1_input_oracle: Option<PathBuf>,
+
     /// Official K pre-RoPE artifact for the runtime/kernel RoPE parity guard.
     #[arg(long)]
     k_pre_rope: Option<PathBuf>,
@@ -274,6 +286,7 @@ enum Mode {
     SelectedExpertsFromMlp1Seams,
     MlpBackend,
     FullLayer0,
+    Layer1InputGuard,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1227,6 +1240,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
         Mode::MlpBackend => run_mlp_backend(&cli),
         Mode::FullLayer0 => run_full_layer0(&cli),
+        Mode::Layer1InputGuard => run_layer1_input_guard(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -2968,6 +2982,8 @@ fn run_full_layer0(cli: &Cli) -> Result<()> {
         "weighted_sum_metric_corrected": null,
         "final_layer0_metric_official": null,
         "final_layer0_metric_corrected": null,
+        "corrected_layer0_output_emitted": false,
+        "corrected_layer0_output_path": null,
         "correction": {
             "enabled": cli.apply_expert3_lane1990_correction,
             "applied": false,
@@ -3021,6 +3037,28 @@ fn run_full_layer0(cli: &Cli) -> Result<()> {
             status["correction"] = backend["correction"].clone();
             status["source_identity"] = backend["source_identity"].clone();
             status["per_rank_metrics"] = backend["per_rank_metrics"].clone();
+            if let Some(emit_path) = &cli.emit_corrected_layer0_output {
+                let corrected_values = backend
+                    .get("corrected_mlp_residual_values")
+                    .and_then(Value::as_array)
+                    .context("corrected full-layer0 output values unavailable for emission")?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .map(|value| value as f32)
+                            .context("corrected full-layer0 output value must be numeric")
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                write_corrected_layer0_output_artifact(
+                    emit_path,
+                    model,
+                    &corrected_values,
+                    &status["correction"],
+                )?;
+                status["corrected_layer0_output_emitted"] = json!(true);
+                status["corrected_layer0_output_path"] = json!(emit_path.display().to_string());
+            }
         }
         Err(err) if !artifact_blocked && norm_blocker.is_none() => {
             status["blocker"] = json!({
@@ -3031,6 +3069,57 @@ fn run_full_layer0(cli: &Cli) -> Result<()> {
         Err(_) => {}
     }
 
+    write_json(&cli.output, &status)
+}
+
+fn run_layer1_input_guard(cli: &Cli) -> Result<()> {
+    let layer0_output = required_path(&cli.layer0_output, "layer0 output")?;
+    let layer1_input_oracle = required_path(&cli.layer1_input_oracle, "layer1 input oracle")?;
+    validate_path(layer0_output, "layer0 output")?;
+    validate_path(layer1_input_oracle, "layer1 input oracle")?;
+
+    let hidden = 2880usize;
+    let (layer0_status, layer0_values) =
+        load_tensor_artifact(layer0_output, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(layer1_input_oracle, &[hidden], &["values"])?;
+    let artifact_blocked =
+        !layer0_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+    let metric = (!artifact_blocked).then(|| compare_hidden(&layer0_values, &oracle_values));
+    let classification = if artifact_blocked {
+        "layer1_input_guard_blocked_by_artifacts"
+    } else if metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0)
+    {
+        "layer1_input_guard_matches_oracle"
+    } else {
+        "layer1_input_guard_mismatch"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer1-input-guard",
+        "classification": classification,
+        "implemented": !artifact_blocked,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer0_output_path": layer0_output.display().to_string(),
+        "layer1_input_oracle": layer1_input_oracle.display().to_string(),
+        "layer1_input_oracle_provenance": "official layer0 final-token hidden after MLP residual add boundary used as the layer1 residual-stream input boundary",
+        "artifacts": {
+            "layer0_output": layer0_status,
+            "layer1_input_oracle": oracle_status
+        },
+        "metric": metric,
+        "next_bounded_step": match classification {
+            "layer1_input_guard_matches_oracle" => "begin layer1 validation from this exact input boundary",
+            "layer1_input_guard_mismatch" => "localize the emitted layer0 output versus layer1 input boundary mismatch",
+            _ => "generate or locate an official layer1 input oracle with 2880 values",
+        }
+    });
     write_json(&cli.output, &status)
 }
 
@@ -4763,6 +4852,42 @@ fn write_json<T: Serialize>(output: &Path, status: &T) -> Result<()> {
     Ok(())
 }
 
+fn write_corrected_layer0_output_artifact(
+    output: &Path,
+    model: &Path,
+    values: &[f32],
+    correction: &Value,
+) -> Result<()> {
+    anyhow::ensure!(
+        values.len() == 2880,
+        "corrected layer0 output artifact must have 2880 values, got {}",
+        values.len()
+    );
+    anyhow::ensure!(
+        correction
+            .get("applied")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "corrected layer0 output emission requires the lane1990 correction to be applied"
+    );
+    let payload = json!({
+        "case": "developer-message-user-smoke",
+        "case_id": "developer-message-user-smoke",
+        "boundary": "layer0_final_token_hidden_after_mlp_residual_corrected",
+        "source_mode": "full-layer0",
+        "correction_applied": true,
+        "correction": correction,
+        "model": model.display().to_string(),
+        "shape": [2880],
+        "tensor_dtype": "bf16_boundary_serialized_as_f32",
+        "serialization_dtype": "f32_json",
+        "value_key": "values",
+        "finite_value_summary": finite_summary(values),
+        "values": values,
+    });
+    write_json(output, &payload)
+}
+
 #[derive(Debug, Deserialize)]
 struct SafetensorEntry {
     dtype: String,
@@ -6163,6 +6288,7 @@ fn execute_mlp_backend_selected_experts(
         "weighted_sum_metric_corrected": weighted_metric_corrected,
         "mlp_residual_metric_official": residual_metric_official,
         "mlp_residual_metric_corrected": residual_metric_corrected,
+        "corrected_mlp_residual_values": corrected_mlp_residual,
         "correction": correction,
         "per_rank_metrics": per_rank_metrics,
         "source_identity": {
