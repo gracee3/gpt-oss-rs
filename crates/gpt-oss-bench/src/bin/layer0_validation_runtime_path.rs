@@ -97,9 +97,17 @@ struct Cli {
     #[arg(long)]
     oracle_internal_status: Option<PathBuf>,
 
+    /// Focused selected-expert down-projection source-term oracle status.
+    #[arg(long)]
+    oracle_down_terms_status: Option<PathBuf>,
+
     /// Previous consumer ordered MLP compare status for source provenance.
     #[arg(long)]
     consumer_mlp_compare_status: Option<PathBuf>,
+
+    /// Previous consumer selected-expert internal compare status for source provenance.
+    #[arg(long)]
+    consumer_internal_status: Option<PathBuf>,
 
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
@@ -412,6 +420,7 @@ enum Mode {
     CoarseMlpOutputDebug,
     CoarseMlpOutputOrderedDebug,
     SelectedExpertInternalCompareStatus,
+    SelectedExpertDownTermsCompareStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1388,6 +1397,9 @@ fn main() -> Result<()> {
         Mode::CoarseMlpOutputOrderedDebug => run_coarse_mlp_output_ordered_debug(&cli),
         Mode::SelectedExpertInternalCompareStatus => {
             run_selected_expert_internal_compare_status(&cli)
+        }
+        Mode::SelectedExpertDownTermsCompareStatus => {
+            run_selected_expert_down_terms_compare_status(&cli)
         }
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -6754,6 +6766,550 @@ fn run_selected_expert_internal_compare_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected expert internal compare requires the cuda feature")
 }
 
+#[cfg(feature = "cuda")]
+fn run_selected_expert_down_terms_compare_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let lane = cli.lane;
+    let selected_rank = cli.rank;
+    let expert_index = cli.expert;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let ordered_status_path =
+        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
+    let oracle_internal_status_path =
+        required_path(&cli.oracle_internal_status, "oracle internal status")?;
+    let consumer_internal_status_path = required_path(
+        &cli.consumer_internal_status,
+        "consumer internal compare status",
+    )?;
+    let oracle_down_terms_status_path =
+        required_path(&cli.oracle_down_terms_status, "oracle down terms status")?;
+    validate_path(coarse, "coarse bundle")?;
+    validate_path(ordered_status_path, "ordered MLP bundle status")?;
+    validate_path(oracle_internal_status_path, "oracle internal status")?;
+    validate_path(
+        consumer_internal_status_path,
+        "consumer internal compare status",
+    )?;
+    validate_path(oracle_down_terms_status_path, "oracle down terms status")?;
+
+    let ordered_status = load_json(ordered_status_path)?;
+    let oracle_internal_status = load_json(oracle_internal_status_path)?;
+    let consumer_internal_status = load_json(consumer_internal_status_path)?;
+    let down_terms_status = load_json(oracle_down_terms_status_path)?;
+    for key in [
+        "runtime_behavior_changed",
+        "production_routing_changed",
+        "cuda_kernels_changed",
+    ] {
+        anyhow::ensure!(
+            down_terms_status.get(key).and_then(Value::as_bool) == Some(false),
+            "oracle down-terms status {key} must be false"
+        );
+    }
+    let status_layer = down_terms_status
+        .get("layer_index")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing layer_index")? as usize;
+    let status_lane = down_terms_status
+        .get("focus_lane")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing focus_lane")? as usize;
+    let status_rank = down_terms_status
+        .get("selected_rank")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing selected_rank")? as usize;
+    let status_expert = down_terms_status
+        .get("expert_index")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing expert_index")? as usize;
+    anyhow::ensure!(
+        status_layer == layer,
+        "oracle layer_index {status_layer} did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_lane == lane,
+        "oracle focus_lane {status_lane} did not match requested lane {lane}"
+    );
+    anyhow::ensure!(
+        status_rank == selected_rank,
+        "oracle selected_rank {status_rank} did not match requested rank {selected_rank}"
+    );
+    anyhow::ensure!(
+        status_expert == expert_index,
+        "oracle expert_index {status_expert} did not match requested expert {expert_index}"
+    );
+
+    let artifact_path = |key: &str| -> Result<PathBuf> {
+        down_terms_status
+            .get("artifacts")
+            .and_then(|artifacts| artifacts.get(key))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .with_context(|| format!("oracle down-terms status missing artifacts.{key}"))
+    };
+    let swiglu_source_path = artifact_path("swiglu_source")?;
+    let down_weight_lane_path = artifact_path("down_weight_lane1480")?;
+    let dot_terms_path = artifact_path("dot_terms_lane1480")?;
+    let top_terms_path = artifact_path("top_terms_lane1480")?;
+    let down_pre_bias_path = artifact_path("down_pre_bias")?;
+    for (label, path) in [
+        ("SwiGLU source", &swiglu_source_path),
+        ("down weight lane", &down_weight_lane_path),
+        ("dot terms lane", &dot_terms_path),
+        ("top terms lane", &top_terms_path),
+        ("down pre-bias", &down_pre_bias_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (_, oracle_swiglu) = load_tensor_artifact(&swiglu_source_path, &[hidden], &["values"])?;
+    let (_, oracle_down_weight_lane) =
+        load_tensor_artifact(&down_weight_lane_path, &[hidden], &["values"])?;
+    let (_, oracle_down_pre_bias) =
+        load_tensor_artifact(&down_pre_bias_path, &[hidden], &["values"])?;
+    let down_weight_json = load_json(&down_weight_lane_path)?;
+    let dot_terms_json = load_json(&dot_terms_path)?;
+    let top_terms_json = load_json(&top_terms_path)?;
+
+    let mut oracle_dot_terms = vec![0.0f32; hidden];
+    let mut oracle_term_inputs = vec![0.0f32; hidden];
+    let mut oracle_term_weights = vec![0.0f32; hidden];
+    let terms = dot_terms_json
+        .get("terms")
+        .and_then(Value::as_array)
+        .context("dot terms artifact missing terms")?;
+    anyhow::ensure!(
+        terms.len() == hidden,
+        "dot terms count {} did not match hidden size {hidden}",
+        terms.len()
+    );
+    for term in terms {
+        let input_index = term
+            .get("input_index")
+            .and_then(Value::as_u64)
+            .context("dot term missing input_index")? as usize;
+        anyhow::ensure!(
+            input_index < hidden,
+            "dot term input_index {input_index} out of range"
+        );
+        oracle_term_inputs[input_index] = term
+            .get("input")
+            .and_then(Value::as_f64)
+            .context("dot term missing input")? as f32;
+        oracle_term_weights[input_index] = term
+            .get("weight")
+            .and_then(Value::as_f64)
+            .context("dot term missing weight")? as f32;
+        oracle_dot_terms[input_index] = term
+            .get("product_f32_from_json_values")
+            .or_else(|| term.get("product"))
+            .and_then(Value::as_f64)
+            .context("dot term missing product")? as f32;
+    }
+
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let (_attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let local_expert_input = compute_mlp_rms_norm_with_policy(
+        &attention_residual,
+        &post_norm_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &[expert_index])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == expert_index)
+        .with_context(|| format!("selected expert {expert_index} missing from MXFP4 loader"))?;
+    let local_mlp1_gate_up = compute_mlp1_bf16_tensor_op(&local_expert_input, expert)
+        .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_index}"))?;
+    let local_swiglu = compute_swiglu_bf16(&local_mlp1_gate_up);
+    let local_down_pre_bias = compute_expert30_mlp2_prebias_variant(
+        &local_swiglu,
+        &expert.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let local_weight_row_start = lane * hidden;
+    let local_down_weight_lane =
+        expert.down_weight[local_weight_row_start..local_weight_row_start + hidden].to_vec();
+    let local_down_weight_transposed = (0..hidden)
+        .map(|input_index| expert.down_weight[input_index * hidden + lane])
+        .collect::<Vec<_>>();
+    let local_dot_terms = local_swiglu
+        .iter()
+        .zip(local_down_weight_lane.iter())
+        .map(|(&input, &weight)| input * weight)
+        .collect::<Vec<_>>();
+    let local_current_accum_f32 = dot_terms_sequential_f32(&local_swiglu, &local_down_weight_lane);
+    let local_current_output = round_bf16(local_current_accum_f32);
+    anyhow::ensure!(
+        local_current_output == local_down_pre_bias[lane],
+        "local current reconstruction {} did not match replay output {}",
+        local_current_output,
+        local_down_pre_bias[lane]
+    );
+
+    let swiglu_metric = compare_hidden(&local_swiglu, &oracle_swiglu);
+    let weight_metric = compare_hidden(&local_down_weight_lane, &oracle_down_weight_lane);
+    let transposed_weight_metric =
+        compare_hidden(&local_down_weight_transposed, &oracle_down_weight_lane);
+    let dot_terms_metric = compare_hidden(&local_dot_terms, &oracle_dot_terms);
+    let down_pre_bias_metric = compare_hidden(&local_down_pre_bias, &oracle_down_pre_bias);
+    let term_input_metric = compare_hidden(&local_swiglu, &oracle_term_inputs);
+    let term_weight_metric = compare_hidden(&local_down_weight_lane, &oracle_term_weights);
+
+    let local_naive_f32 = dot_terms_sum_f64(&local_dot_terms);
+    let oracle_naive_f32 = down_terms_status
+        .pointer("/focus_lane_values/recomputed_naive_f32_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| dot_terms_sum_f64(&oracle_dot_terms));
+    let local_pairwise_f32 = dot_terms_pairwise_sum_f64(&local_dot_terms);
+    let oracle_pairwise_f32 = down_terms_status
+        .pointer("/focus_lane_values/recomputed_pairwise_f32_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| dot_terms_pairwise_sum_f64(&oracle_dot_terms));
+    let local_bf16_product_then_f32 = local_dot_terms
+        .iter()
+        .map(|&value| round_bf16(value) as f64)
+        .sum::<f64>();
+    let oracle_bf16_product_then_f32 = down_terms_status
+        .pointer("/focus_lane_values/recomputed_bf16_product_then_f32_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| {
+            oracle_dot_terms
+                .iter()
+                .map(|&value| round_bf16(value) as f64)
+                .sum::<f64>()
+        });
+    let (local_positive_term_sum, local_negative_term_sum) = signed_term_sums_f64(&local_dot_terms);
+    let oracle_positive_term_sum = down_terms_status
+        .pointer("/focus_lane_values/positive_term_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| signed_term_sums_f64(&oracle_dot_terms).0);
+    let oracle_negative_term_sum = down_terms_status
+        .pointer("/focus_lane_values/negative_term_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| signed_term_sums_f64(&oracle_dot_terms).1);
+    let official_down_pre_bias = down_terms_status
+        .pointer("/focus_lane_values/official_down_pre_bias")
+        .and_then(Value::as_f64)
+        .map(|value| value as f32)
+        .unwrap_or(oracle_down_pre_bias[lane]);
+    let runtime_down_pre_bias = local_down_pre_bias[lane];
+
+    let orientation_oracle = down_terms_status
+        .pointer("/weight_orientation/orientation")
+        .and_then(Value::as_str)
+        .unwrap_or("row_output_lane_by_input_dim");
+    let local_orientation = "row_output_lane_by_input_dim";
+    let orientation_matched = weight_metric.metrics.mismatches == 0;
+    let orientation_transposed_matches = transposed_weight_metric.metrics.mismatches == 0;
+
+    let earliest_mismatching_down_terms_seam = if swiglu_metric.metrics.mismatches != 0
+        || term_input_metric.metrics.mismatches != 0
+    {
+        "swiglu_source_vector"
+    } else if !orientation_matched && orientation_transposed_matches {
+        "down_weight_orientation"
+    } else if weight_metric.metrics.mismatches != 0 || term_weight_metric.metrics.mismatches != 0 {
+        "down_weight_vector"
+    } else if dot_terms_metric.metrics.mismatches != 0 {
+        "per_term_products"
+    } else if runtime_down_pre_bias != official_down_pre_bias {
+        "reduction_or_output_cast"
+    } else {
+        "none"
+    };
+    let classification = match earliest_mismatching_down_terms_seam {
+        "swiglu_source_vector" => "layer11_expert30_down_terms_consumer_source_vector_mismatch",
+        "down_weight_orientation" => {
+            "layer11_expert30_down_terms_consumer_weight_orientation_mismatch"
+        }
+        "down_weight_vector" => "layer11_expert30_down_terms_consumer_weight_vector_mismatch",
+        "per_term_products" => "layer11_expert30_down_terms_consumer_product_terms_mismatch",
+        "reduction_or_output_cast" => {
+            "layer11_expert30_down_terms_consumer_reduction_cast_mismatch"
+        }
+        "none" => "layer11_expert30_down_terms_consumer_available_terms_clear",
+        _ => "layer11_expert30_down_terms_consumer_execution_failed",
+    };
+
+    let output_variant = |name: &str, value: f64, target: f32| {
+        let bf16_output = round_bf16(value as f32);
+        json!({
+            "name": name,
+            "pre_cast_value": value,
+            "bf16_output": bf16_output,
+            "diff_to_target": (bf16_output - target).abs(),
+            "matches_target": bf16_output == target,
+        })
+    };
+    let local_output_variants = vec![
+        output_variant(
+            "current_sequential_f32_accum_bf16_output",
+            local_current_accum_f32 as f64,
+            runtime_down_pre_bias,
+        ),
+        output_variant(
+            "naive_f64_sum_bf16_output",
+            local_naive_f32,
+            runtime_down_pre_bias,
+        ),
+        output_variant(
+            "pairwise_f64_sum_bf16_output",
+            local_pairwise_f32,
+            runtime_down_pre_bias,
+        ),
+        output_variant(
+            "bf16_product_then_f32_sum_bf16_output",
+            local_bf16_product_then_f32,
+            runtime_down_pre_bias,
+        ),
+    ];
+    let local_matched_by = local_output_variants
+        .iter()
+        .find(|entry| entry.get("matches_target").and_then(Value::as_bool) == Some(true))
+        .and_then(|entry| entry.get("name").and_then(Value::as_str))
+        .unwrap_or("none");
+    let oracle_output_reconstruction = down_terms_status
+        .get("official_output_reconstruction")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let oracle_output_variants = vec![
+        output_variant(
+            "naive_f64_sum_bf16_output",
+            oracle_naive_f32,
+            official_down_pre_bias,
+        ),
+        output_variant(
+            "pairwise_f64_sum_bf16_output",
+            oracle_pairwise_f32,
+            official_down_pre_bias,
+        ),
+        output_variant(
+            "bf16_product_then_f32_sum_bf16_output",
+            oracle_bf16_product_then_f32,
+            official_down_pre_bias,
+        ),
+    ];
+    let oracle_matched_by = oracle_output_reconstruction
+        .get("matched_by")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+
+    let mut term_differences = (0..hidden)
+        .filter_map(|input_index| {
+            let product_diff = (local_dot_terms[input_index] - oracle_dot_terms[input_index]).abs();
+            let weight_diff =
+                (local_down_weight_lane[input_index] - oracle_down_weight_lane[input_index]).abs();
+            let input_diff = (local_swiglu[input_index] - oracle_swiglu[input_index]).abs();
+            (product_diff != 0.0 || weight_diff != 0.0 || input_diff != 0.0).then(|| {
+                (
+                    product_diff.max(weight_diff).max(input_diff),
+                    json!({
+                        "input_index": input_index,
+                        "local_input": local_swiglu[input_index],
+                        "oracle_input": oracle_swiglu[input_index],
+                        "input_abs_diff": input_diff,
+                        "local_weight": local_down_weight_lane[input_index],
+                        "oracle_weight": oracle_down_weight_lane[input_index],
+                        "weight_abs_diff": weight_diff,
+                        "local_product": local_dot_terms[input_index],
+                        "oracle_product": oracle_dot_terms[input_index],
+                        "product_abs_diff": product_diff,
+                    }),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    term_differences.sort_by(|left, right| right.0.total_cmp(&left.0));
+    let top_term_differences = term_differences
+        .into_iter()
+        .take(10)
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
+
+    let down_weight_digest = json!({
+        "local": digest_f32_le(&local_down_weight_lane),
+        "oracle": digest_f32_le(&oracle_down_weight_lane),
+        "matched": weight_metric.metrics.mismatches == 0,
+        "oracle_sha256_f32_le": down_weight_json.pointer("/summary/sha256_f32_le").cloned(),
+    });
+    let dot_terms_digest = json!({
+        "local": digest_f32_le(&local_dot_terms),
+        "oracle": digest_f32_le(&oracle_dot_terms),
+        "matched": dot_terms_metric.metrics.mismatches == 0,
+        "oracle_sha256_f32_le": dot_terms_json.pointer("/summary/sha256_f32_le").cloned(),
+    });
+    let signed_sum_comparison = |local: f64, oracle: f64| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+    let scalar_comparison_f32 = |local: f32, oracle: f32| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-expert-down-terms-compare-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "oracle_down_terms_status": oracle_down_terms_status_path.display().to_string(),
+        "source_statuses": {
+            "ordered_mlp_status": {
+                "path": ordered_status_path.display().to_string(),
+                "classification": ordered_status["classification"].clone(),
+            },
+            "oracle_internal_status": {
+                "path": oracle_internal_status_path.display().to_string(),
+                "classification": oracle_internal_status["classification"].clone(),
+            },
+            "consumer_internal_status": {
+                "path": consumer_internal_status_path.display().to_string(),
+                "classification": consumer_internal_status["classification"].clone(),
+                "earliest_mismatching_internal_seam": consumer_internal_status["earliest_mismatching_internal_seam"].clone(),
+            },
+        },
+        "earliest_mismatching_down_terms_seam": earliest_mismatching_down_terms_seam,
+        "weight_orientation": {
+            "local": local_orientation,
+            "oracle": orientation_oracle,
+            "matched": orientation_matched,
+            "transposed_interpretation_matches": orientation_transposed_matches,
+            "local_tensor_layout": "expert.down_weight[row_output_lane * hidden + input_index]",
+            "oracle_tensor_path": down_terms_status.pointer("/weight_orientation/tensor_path").cloned(),
+            "official_expression": down_terms_status.pointer("/weight_orientation/official_expression").cloned(),
+        },
+        "metrics": {
+            "swiglu_source_vector": swiglu_metric,
+            "term_input_vector": term_input_metric,
+            "down_weight_vector": weight_metric,
+            "down_weight_transposed_orientation": transposed_weight_metric,
+            "term_weight_vector": term_weight_metric,
+            "dot_terms": dot_terms_metric,
+            "down_pre_bias": down_pre_bias_metric,
+        },
+        "lane_1480": {
+            "swiglu": scalar_comparison_f32(local_swiglu[lane], oracle_swiglu[lane]),
+            "down_weight_digest": down_weight_digest,
+            "dot_terms_digest": dot_terms_digest,
+            "positive_term_sum": signed_sum_comparison(local_positive_term_sum, oracle_positive_term_sum),
+            "negative_term_sum": signed_sum_comparison(local_negative_term_sum, oracle_negative_term_sum),
+            "recomputed_naive_f32": signed_sum_comparison(local_naive_f32, oracle_naive_f32),
+            "recomputed_pairwise_f32": signed_sum_comparison(local_pairwise_f32, oracle_pairwise_f32),
+            "recomputed_bf16_product_then_f32": signed_sum_comparison(
+                local_bf16_product_then_f32,
+                oracle_bf16_product_then_f32,
+            ),
+            "runtime_down_pre_bias": {
+                "local": runtime_down_pre_bias,
+                "oracle": official_down_pre_bias,
+                "diff": (runtime_down_pre_bias - official_down_pre_bias).abs(),
+                "matched": runtime_down_pre_bias == official_down_pre_bias,
+            },
+            "focus_input_index_term": {
+                "input_index": lane,
+                "local_input": local_swiglu[lane],
+                "oracle_input": oracle_swiglu[lane],
+                "local_weight": local_down_weight_lane[lane],
+                "oracle_weight": oracle_down_weight_lane[lane],
+                "local_product": local_dot_terms[lane],
+                "oracle_product": oracle_dot_terms[lane],
+            },
+        },
+        "top_term_differences": top_term_differences,
+        "top_oracle_terms": top_terms_json.get("terms").cloned().unwrap_or_else(|| json!([])),
+        "local_output_reconstruction": {
+            "matched_by": local_matched_by,
+            "runtime_down_pre_bias": runtime_down_pre_bias,
+            "current_sequential_f32_accum_pre_cast": local_current_accum_f32,
+            "variants": local_output_variants,
+            "differences": {
+                "current_sequential_f32_accum": (local_current_output - runtime_down_pre_bias).abs(),
+                "naive_f64": (round_bf16(local_naive_f32 as f32) - runtime_down_pre_bias).abs(),
+                "pairwise_f64": (round_bf16(local_pairwise_f32 as f32) - runtime_down_pre_bias).abs(),
+                "bf16_product_then_f32": (round_bf16(local_bf16_product_then_f32 as f32) - runtime_down_pre_bias).abs(),
+            },
+        },
+        "oracle_output_reconstruction": {
+            "matched_by": oracle_matched_by,
+            "official_down_pre_bias": official_down_pre_bias,
+            "producer_report": oracle_output_reconstruction,
+            "variants": oracle_output_variants,
+            "differences": {
+                "naive_f32": down_terms_status.pointer("/official_output_reconstruction/differences/naive_f32").cloned(),
+                "pairwise_f32": down_terms_status.pointer("/official_output_reconstruction/differences/pairwise_f32").cloned(),
+                "bf16_product_then_f32": down_terms_status.pointer("/official_output_reconstruction/differences/bf16_product_then_f32").cloned(),
+            },
+        },
+        "source_policy": {
+            "local_replay_surface": "validation_only",
+            "correction_metadata_applied": false,
+            "c_bf16_product_then_f32_sum_used_as_correction": false,
+            "raw_mxfp4_codes_available_in_oracle": down_weight_json.get("mxfp4_source_codes_available").cloned(),
+            "coarse_ladder_continued": false,
+        },
+        "needs_next_oracle_request": classification == "layer11_expert30_down_terms_consumer_weight_vector_mismatch"
+            || classification == "layer11_expert30_down_terms_consumer_reduction_cast_mismatch",
+        "oracle_next_request": match classification {
+            "layer11_expert30_down_terms_consumer_weight_vector_mismatch" => "request raw MXFP4 codes/scales and dequant evidence for expert30 down row lane1480 only",
+            "layer11_expert30_down_terms_consumer_reduction_cast_mismatch" => "request a narrow official torch einsum/output-cast dtype probe for expert30 down lane1480 with the same operands",
+            "layer11_expert30_down_terms_consumer_available_terms_clear" => "none",
+            "layer11_expert30_down_terms_consumer_source_vector_mismatch" => "none; revalidate local SwiGLU source only",
+            "layer11_expert30_down_terms_consumer_weight_orientation_mismatch" => "none; inspect local down-weight orientation/readout only",
+            "layer11_expert30_down_terms_consumer_product_terms_mismatch" => "none; inspect local product construction only",
+            _ => "fix the selected expert down-terms compare validation path",
+        },
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": match classification {
+            "layer11_expert30_down_terms_consumer_reduction_cast_mismatch" => "prove expert30 down-projection reduction/output-cast convention for lane1480 only; do not apply a correction",
+            "layer11_expert30_down_terms_consumer_weight_vector_mismatch" => "request raw MXFP4 codes/scales and dequant evidence for expert30 down row lane1480 only",
+            "layer11_expert30_down_terms_consumer_available_terms_clear" => "record down-terms comparison and decide the next validation-runtime slice",
+            _ => "localize the reported down-terms seam only",
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_expert_down_terms_compare_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected expert down-terms compare requires the cuda feature")
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_coarse_mlp_output_ordered_debug(_cli: &Cli) -> Result<()> {
     anyhow::bail!("ordered coarse MLP output debug requires the cuda feature")
@@ -11174,6 +11730,47 @@ fn digest_f32_le(values: &[f32]) -> String {
         }
     }
     format!("fnv1a64:{hash:016x}")
+}
+
+fn dot_terms_sequential_f32(inputs: &[f32], weights: &[f32]) -> f32 {
+    inputs
+        .iter()
+        .zip(weights.iter())
+        .fold(0.0f32, |sum, (&input, &weight)| {
+            sum + round_bf16(input) * weight
+        })
+}
+
+fn dot_terms_sum_f64(values: &[f32]) -> f64 {
+    values.iter().map(|&value| value as f64).sum()
+}
+
+fn dot_terms_pairwise_sum_f64(values: &[f32]) -> f64 {
+    let mut partials = values.iter().map(|&value| value as f64).collect::<Vec<_>>();
+    if partials.is_empty() {
+        return 0.0;
+    }
+    while partials.len() > 1 {
+        let mut next = Vec::with_capacity(partials.len().div_ceil(2));
+        for pair in partials.chunks(2) {
+            next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+        }
+        partials = next;
+    }
+    partials[0]
+}
+
+fn signed_term_sums_f64(values: &[f32]) -> (f64, f64) {
+    let mut positive = 0.0f64;
+    let mut negative = 0.0f64;
+    for &value in values {
+        if value >= 0.0 {
+            positive += value as f64;
+        } else {
+            negative += value as f64;
+        }
+    }
+    (positive, negative)
 }
 
 fn round_f16(value: f32) -> f32 {
