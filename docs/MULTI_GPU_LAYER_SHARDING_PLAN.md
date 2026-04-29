@@ -316,6 +316,47 @@ Primary classification:
 
 multi_gpu_layer_sharding_parser_complete_config_surface_deferred
 
+## Stage 3 status
+
+Threaded `DeviceMap::single` through the existing single-device CUDA runner
+construction boundary without adding split execution.
+
+What changed:
+
+- `GpuWorker::build_gpu_model_runner` constructs `DeviceMap::single` after
+  `mr_config.num_layers` is known, using the existing selected `self.device_id`.
+- `GpuModelRunner::new` receives the map, validates it with
+  `DeviceMap::validate_single_device_executable`, and stores it as inert
+  metadata on `GpuModelRunner`.
+- `GpuModelRunner::device_map()` exposes the stored metadata for future
+  inspection.
+- The validator accepts only maps where embeddings, every layer, final norm, and
+  LM head are on the same device. Split maps return
+  `split device maps are parsed but not executable yet`.
+
+Behavior:
+
+- Default runtime behavior is unchanged.
+- No CLI/config surface was added.
+- Runtime execution still uses the existing single context, stream, cuBLAS
+  handle, kernel loader, weight container, scratch buffers, RoPE tables,
+  metadata buffers, and KV cache path.
+- Split maps remain parser-only and non-executable. No multi-context allocation,
+  weight routing, KV cache change, activation transfer, peer copy, NCCL, or
+  runtime math branching was added.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo check -p gpt-oss-engine`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_single_device_map_plumbing_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_parser_complete_config_surface_deferred
+multi_gpu_layer_sharding_single_device_map_plumbing_complete

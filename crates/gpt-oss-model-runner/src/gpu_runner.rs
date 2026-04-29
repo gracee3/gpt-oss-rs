@@ -95,6 +95,7 @@ mod cuda_impl {
     use tracing::{debug, info};
 
     use crate::bridge::{LLMError, Result};
+    use crate::device_map::DeviceMap;
     use crate::rope_validation::build_runtime_rope_tables;
     use crate::runner::ModelRunnerConfig;
 
@@ -220,6 +221,10 @@ mod cuda_impl {
         blas_lt: Option<gpt_oss_gpu::cublaslt_ops::CublasLtOps>,
         loader: Arc<KernelLoader>,
         config: ModelRunnerConfig,
+        /// Inert placement metadata. Stage 3 only stores a validated
+        /// single-device map; execution continues through the existing
+        /// single-context CUDA path.
+        device_map: DeviceMap,
         device: Arc<CudaContext>,
         stream: Arc<CudaStream>,
         layers: Vec<GpuTransformerLayer>,
@@ -278,12 +283,16 @@ mod cuda_impl {
             blas: CublasHandle,
             loader: KernelLoader,
             config: ModelRunnerConfig,
+            device_map: DeviceMap,
             device: Arc<CudaContext>,
             stream: Arc<CudaStream>,
         ) -> Result<Self> {
             let loader = Arc::new(loader);
             let tp_rank = config.tensor_parallel_rank;
             let tp_size = config.tensor_parallel_size;
+            device_map
+                .validate_single_device_executable(config.num_layers)
+                .map_err(|e| LLMError::GpuError(format!("device map validation failed: {e}")))?;
             debug!(
                 num_layers = config.num_layers,
                 hidden = config.hidden_size,
@@ -372,6 +381,7 @@ mod cuda_impl {
                 blas_lt,
                 loader,
                 config,
+                device_map,
                 device,
                 stream,
                 layers,
@@ -2723,6 +2733,10 @@ mod cuda_impl {
 
         pub fn config(&self) -> &ModelRunnerConfig {
             &self.config
+        }
+
+        pub fn device_map(&self) -> &DeviceMap {
+            &self.device_map
         }
 
         pub fn cache(&self) -> &CudaCacheEngine {

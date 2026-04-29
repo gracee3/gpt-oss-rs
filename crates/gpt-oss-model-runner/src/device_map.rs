@@ -152,6 +152,44 @@ impl DeviceMap {
     pub fn is_single_device(&self) -> bool {
         self.devices.len() == 1
     }
+
+    /// Validate that this map is executable by the current runtime.
+    ///
+    /// Stage 3 only supports the existing single-device execution path. Split
+    /// maps may be parsed for placement intent, but they must not be consumed
+    /// by runner construction or execution yet.
+    pub fn validate_single_device_executable(
+        &self,
+        num_layers: usize,
+    ) -> Result<(), DeviceMapError> {
+        if self.layer_device.len() != num_layers {
+            return Err(DeviceMapError::InvalidSpec(format!(
+                "device map layer count {} does not match num_layers={num_layers}",
+                self.layer_device.len()
+            )));
+        }
+
+        if !self.is_single_device() {
+            return Err(DeviceMapError::InvalidSpec(
+                "split device maps are parsed but not executable yet".into(),
+            ));
+        }
+
+        let device = self.devices[0];
+        if self.embedding_device != device
+            || self.final_device != device
+            || self
+                .layer_device
+                .iter()
+                .any(|&layer_device| layer_device != device)
+        {
+            return Err(DeviceMapError::InvalidSpec(
+                "single executable device map must place embeddings, all layers, and final head on the same device".into(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// Device-map parse error with user-facing detail.
@@ -328,5 +366,32 @@ mod tests {
     #[test]
     fn device_map_rejects_negative_device_values() {
         assert_invalid_contains("split:0-11@-1,12-23@1", "device id must be non-negative");
+    }
+
+    #[test]
+    fn single_device_executable_validation_accepts_single_map() {
+        let map = DeviceMap::single(24, DeviceId(2)).unwrap();
+
+        assert!(map.validate_single_device_executable(24).is_ok());
+    }
+
+    #[test]
+    fn single_device_executable_validation_rejects_split_map() {
+        let map = parse("split:0-11@0,12-23@1").unwrap();
+        let err = map.validate_single_device_executable(24).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("split device maps are parsed but not executable yet"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn single_device_executable_validation_rejects_layer_count_mismatch() {
+        let map = DeviceMap::single(24, DeviceId(0)).unwrap();
+        let err = map.validate_single_device_executable(23).unwrap_err();
+
+        assert!(err.to_string().contains("does not match num_layers=23"));
     }
 }

@@ -25,7 +25,7 @@ use gpt_oss_model_runner::kv_cache::CacheEngine;
 use gpt_oss_model_runner::sampling::batch::make_rng;
 use gpt_oss_model_runner::sampling::guided::{GuidedDecodingState, VocabTable};
 use gpt_oss_model_runner::sampling::sampler::Sampler;
-use gpt_oss_model_runner::ModelRunnerConfig;
+use gpt_oss_model_runner::{DeviceId, DeviceMap, ModelRunnerConfig};
 
 use gpt_oss_core::prelude::ResponseFormat;
 
@@ -869,12 +869,15 @@ impl GpuWorker {
         .map_err(|e| LLMError::GpuError(format!("kernel loader: {e}")))?;
 
         let mr_config = self.config.model_runner_config()?;
+        let device_map = DeviceMap::single(mr_config.num_layers, DeviceId(self.device_id))
+            .map_err(|e| LLMError::GpuError(format!("device map init: {e}")))?;
         gpt_oss_model_runner::gpu_runner::GpuModelRunner::new(
             loader_weights,
             cache,
             runner_blas,
             loader,
             mr_config,
+            device_map,
             self.context.clone(),
             self.stream.clone(),
         )
