@@ -117,6 +117,10 @@ struct Cli {
     #[arg(long)]
     consumer_down_terms_status: Option<PathBuf>,
 
+    /// Previous selected-expert down-cast policy sweep status for source provenance.
+    #[arg(long)]
+    down_cast_policy_sweep_status: Option<PathBuf>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
@@ -430,6 +434,7 @@ enum Mode {
     SelectedExpertInternalCompareStatus,
     SelectedExpertDownTermsCompareStatus,
     SelectedExpertDownCastPolicySweepStatus,
+    SelectedMlpDownPolicyReplayStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1413,6 +1418,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertDownCastPolicySweepStatus => {
             run_selected_expert_down_cast_policy_sweep_status(&cli)
         }
+        Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -7642,6 +7648,474 @@ fn run_selected_expert_down_cast_policy_sweep_status(cli: &Cli) -> Result<()> {
 #[cfg(not(feature = "cuda"))]
 fn run_selected_expert_down_cast_policy_sweep_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected expert down-cast policy sweep requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let selected_count = 4usize;
+    let lane = cli.lane;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let ordered_status_path =
+        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
+    let ordered_consumer_status_path = required_path(
+        &cli.consumer_mlp_compare_status,
+        "ordered MLP consumer compare status",
+    )?;
+    let down_cast_policy_sweep_status_path = required_path(
+        &cli.down_cast_policy_sweep_status,
+        "down-cast policy sweep status",
+    )?;
+    validate_path(coarse, "coarse bundle")?;
+    validate_path(ordered_status_path, "ordered MLP bundle status")?;
+    validate_path(
+        ordered_consumer_status_path,
+        "ordered MLP consumer compare status",
+    )?;
+    validate_path(
+        down_cast_policy_sweep_status_path,
+        "down-cast policy sweep status",
+    )?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let ordered_status = load_json(ordered_status_path)?;
+    let ordered_consumer_status = load_json(ordered_consumer_status_path)?;
+    let down_cast_policy_sweep_status = load_json(down_cast_policy_sweep_status_path)?;
+    let status_layer = ordered_status
+        .get("layer_index")
+        .and_then(Value::as_u64)
+        .context("ordered status missing layer_index")? as usize;
+    let status_lane = ordered_status
+        .get("focus_lane")
+        .and_then(Value::as_u64)
+        .context("ordered status missing focus_lane")? as usize;
+    anyhow::ensure!(
+        status_layer == layer,
+        "ordered layer_index {status_layer} did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_lane == lane,
+        "ordered focus_lane {status_lane} did not match requested lane {lane}"
+    );
+    let selected_experts = ordered_status
+        .get("selected_experts")
+        .and_then(Value::as_array)
+        .context("ordered status missing selected_experts")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|value| value as usize)
+                .context("ordered selected expert must be integer")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        selected_experts.len() == selected_count,
+        "expected {selected_count} selected experts, got {}",
+        selected_experts.len()
+    );
+    let routing_weights = ordered_status
+        .get("routing_weights")
+        .and_then(Value::as_array)
+        .context("ordered status missing routing_weights")?
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|value| value as f32)
+                .context("ordered routing weight must be numeric")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        routing_weights.len() == selected_count,
+        "expected {selected_count} routing weights, got {}",
+        routing_weights.len()
+    );
+
+    let ordered_artifact_path = |key: &str| -> Result<PathBuf> {
+        ordered_status
+            .get("artifacts")
+            .and_then(|artifacts| artifacts.get(key))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .with_context(|| format!("ordered MLP status missing artifacts.{key}"))
+    };
+    let mlp_input_path = ordered_artifact_path("mlp_input")?;
+    let mlp_norm_path = ordered_artifact_path("mlp_norm")?;
+    let selected_outputs_path = ordered_artifact_path("selected_outputs")?;
+    let weighted_sum_path = ordered_artifact_path("weighted_sum")?;
+    let final_output_path = ordered_artifact_path("mlp_residual_output")?;
+    for (label, path) in [
+        ("ordered MLP input", &mlp_input_path),
+        ("ordered MLP norm", &mlp_norm_path),
+        ("ordered selected outputs", &selected_outputs_path),
+        ("ordered weighted sum", &weighted_sum_path),
+        ("ordered MLP residual output", &final_output_path),
+    ] {
+        validate_path(path, label)?;
+    }
+    let (_, ordered_mlp_input) = load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?;
+    let (_, ordered_mlp_norm) = load_tensor_artifact(&mlp_norm_path, &[hidden], &["values"])?;
+    let (_, ordered_selected_outputs) = load_tensor_artifact(
+        &selected_outputs_path,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (_, ordered_weighted_sum) =
+        load_tensor_artifact(&weighted_sum_path, &[hidden], &["values"])?;
+    let (_, ordered_final_output) =
+        load_tensor_artifact(&final_output_path, &[hidden], &["values"])?;
+    anyhow::ensure!(
+        ordered_mlp_input.len() == hidden
+            && ordered_mlp_norm.len() == hidden
+            && ordered_selected_outputs.len() == selected_count * hidden
+            && ordered_weighted_sum.len() == hidden
+            && ordered_final_output.len() == hidden,
+        "ordered MLP bundle tensor count mismatch"
+    );
+
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let (_attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let mlp_norm_values = compute_mlp_rms_norm_with_policy(
+        &attention_residual,
+        &post_norm_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let mlp_input_guard = compare_hidden(&attention_residual, &ordered_mlp_input);
+    let mlp_norm_guard = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
+
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut expert_sources = Vec::new();
+    for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| format!("selected expert {expert_id} missing from MXFP4 loader"))?;
+        let mlp1 = compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert)
+            .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
+        let swiglu = compute_swiglu_bf16(&mlp1);
+        expert_sources.push((
+            rank,
+            expert_id,
+            swiglu,
+            expert.down_weight.clone(),
+            expert.down_bias.clone(),
+        ));
+    }
+
+    let policies = [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::NaiveF64,
+        DownCastSweepPolicy::PairwiseF64,
+        DownCastSweepPolicy::PairwiseF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ];
+    let mut policy_results = Vec::new();
+    let mut best_full: Option<(usize, f32, bool, String)> = None;
+    let mut best_focus: Option<(usize, f32, bool, String)> = None;
+    let mut valid_full_cleared = false;
+    let mut selected_outputs_cleared = false;
+    let mut selected_outputs_clear_weighted_mismatch = false;
+    let mut selected_outputs_weighted_clear_final_mismatch = false;
+    let mut any_focus_cleared_with_collateral = false;
+    let mut any_focus_cleared = false;
+    let mut baseline_result = Value::Null;
+    let lane_window_start = lane.saturating_sub(2);
+    let lane_window_end = (lane + 2).min(hidden - 1);
+    let scalar_comparison = |local: f32, oracle: f32| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "abs_diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+
+    for policy in policies {
+        let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+        let mut selected_output_metrics = serde_json::Map::new();
+        let mut focus_selected_outputs_by_rank = Vec::new();
+        for (rank, expert_id, swiglu, down_weight, down_bias) in &expert_sources {
+            let pre_bias = compute_down_projection_sweep_output(swiglu, down_weight, policy);
+            let selected_output = compute_expert30_selected_output_variant(
+                &pre_bias,
+                down_bias,
+                Expert30Mlp2Policy::Current,
+            );
+            let start = rank * hidden;
+            selected_matrix[start..start + hidden].copy_from_slice(&selected_output);
+            let oracle_rank_slice = &ordered_selected_outputs[start..start + hidden];
+            let rank_metric = compare_hidden(&selected_output, oracle_rank_slice);
+            selected_output_metrics.insert(
+                format!("rank{rank}_expert{expert_id}"),
+                json!({
+                    "rank": rank,
+                    "expert": expert_id,
+                    "metric": rank_metric,
+                    "focus_lane": scalar_comparison(selected_output[lane], oracle_rank_slice[lane]),
+                }),
+            );
+            focus_selected_outputs_by_rank.push(json!({
+                "rank": rank,
+                "expert": expert_id,
+                "candidate": selected_output[lane],
+                "oracle": oracle_rank_slice[lane],
+                "abs_diff": (selected_output[lane] - oracle_rank_slice[lane]).abs(),
+                "matched": selected_output[lane] == oracle_rank_slice[lane],
+            }));
+        }
+
+        let selected_metric = compare_hidden(&selected_matrix, &ordered_selected_outputs);
+        let weighted_sum =
+            compute_weighted_expert_sum_bf16(&selected_matrix, &routing_weights, hidden);
+        let weighted_metric = compare_hidden(&weighted_sum, &ordered_weighted_sum);
+        let final_output = compute_attention_residual(&attention_residual, &weighted_sum);
+        let final_metric = compare_hidden(&final_output, &ordered_final_output);
+
+        let clears_all_selected_outputs = selected_metric.metrics.mismatches == 0;
+        let clears_weighted_sum = weighted_metric.metrics.mismatches == 0;
+        let clears_final_output = final_metric.metrics.mismatches == 0;
+        let clears_focus_lane = focus_selected_outputs_by_rank.iter().all(|entry| {
+            entry
+                .get("matched")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        }) && weighted_sum[lane] == ordered_weighted_sum[lane]
+            && final_output[lane] == ordered_final_output[lane];
+        let total_mismatches = selected_metric.metrics.mismatches
+            + weighted_metric.metrics.mismatches
+            + final_metric.metrics.mismatches;
+        let worst_max_abs_diff = selected_metric
+            .metrics
+            .max_abs_diff
+            .max(weighted_metric.metrics.max_abs_diff)
+            .max(final_metric.metrics.max_abs_diff);
+        let introduces_collateral_mismatches = clears_focus_lane && total_mismatches > 0;
+        let evidence_only = policy.evidence_only();
+        valid_full_cleared |= !evidence_only
+            && clears_all_selected_outputs
+            && clears_weighted_sum
+            && clears_final_output;
+        selected_outputs_cleared |= !evidence_only && clears_all_selected_outputs;
+        selected_outputs_clear_weighted_mismatch |=
+            !evidence_only && clears_all_selected_outputs && !clears_weighted_sum;
+        selected_outputs_weighted_clear_final_mismatch |= !evidence_only
+            && clears_all_selected_outputs
+            && clears_weighted_sum
+            && !clears_final_output;
+        any_focus_cleared |= !evidence_only && clears_focus_lane;
+        any_focus_cleared_with_collateral |= !evidence_only && introduces_collateral_mismatches;
+
+        let is_better = |candidate: (usize, f32, bool), best: &(usize, f32, bool, String)| {
+            let (candidate_mismatches, candidate_max, candidate_evidence_only) = candidate;
+            candidate_mismatches < best.0
+                || (candidate_mismatches == best.0 && candidate_max < best.1)
+                || (candidate_mismatches == best.0
+                    && candidate_max == best.1
+                    && best.2
+                    && !candidate_evidence_only)
+        };
+        if best_full
+            .as_ref()
+            .map(|best| is_better((total_mismatches, worst_max_abs_diff, evidence_only), best))
+            .unwrap_or(true)
+        {
+            best_full = Some((
+                total_mismatches,
+                worst_max_abs_diff,
+                evidence_only,
+                policy.name().to_string(),
+            ));
+        }
+        if clears_focus_lane
+            && best_focus
+                .as_ref()
+                .map(|best| is_better((total_mismatches, worst_max_abs_diff, evidence_only), best))
+                .unwrap_or(true)
+        {
+            best_focus = Some((
+                total_mismatches,
+                worst_max_abs_diff,
+                evidence_only,
+                policy.name().to_string(),
+            ));
+        }
+
+        let lane_window_comparisons = (lane_window_start..=lane_window_end)
+            .map(|window_lane| {
+                let selected_outputs_by_rank = (0..selected_count)
+                    .map(|rank| {
+                        let index = rank * hidden + window_lane;
+                        json!({
+                            "rank": rank,
+                            "expert": selected_experts[rank],
+                            "candidate": selected_matrix[index],
+                            "oracle": ordered_selected_outputs[index],
+                            "abs_diff": (selected_matrix[index] - ordered_selected_outputs[index]).abs(),
+                            "matched": selected_matrix[index] == ordered_selected_outputs[index],
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "hidden_lane": window_lane,
+                    "selected_outputs_by_rank": selected_outputs_by_rank,
+                    "weighted_sum": scalar_comparison(weighted_sum[window_lane], ordered_weighted_sum[window_lane]),
+                    "final_output": scalar_comparison(final_output[window_lane], ordered_final_output[window_lane]),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let result = json!({
+            "policy": policy.name(),
+            "reduction_order": policy.reduction_order(),
+            "evidence_only": evidence_only,
+            "selected_outputs": selected_output_metrics,
+            "selected_outputs_all_ranks": {
+                "full_vector_metrics": selected_metric.metrics.clone(),
+                "first_mismatch": selected_metric.first_mismatch.clone(),
+                "worst_mismatch": selected_metric.worst_mismatch.clone(),
+            },
+            "weighted_sum": {
+                "full_vector_metrics": weighted_metric.metrics.clone(),
+                "first_mismatch": weighted_metric.first_mismatch.clone(),
+                "worst_mismatch": weighted_metric.worst_mismatch.clone(),
+            },
+            "final_output": {
+                "full_vector_metrics": final_metric.metrics.clone(),
+                "first_mismatch": final_metric.first_mismatch.clone(),
+                "worst_mismatch": final_metric.worst_mismatch.clone(),
+            },
+            "focus_lane": {
+                "selected_outputs_by_rank": focus_selected_outputs_by_rank,
+                "weighted_sum": scalar_comparison(weighted_sum[lane], ordered_weighted_sum[lane]),
+                "final_output": scalar_comparison(final_output[lane], ordered_final_output[lane]),
+            },
+            "lane_window": {
+                "start": lane_window_start,
+                "end": lane_window_end,
+                "comparisons": lane_window_comparisons,
+            },
+            "clears_focus_lane": clears_focus_lane,
+            "clears_all_selected_outputs": clears_all_selected_outputs,
+            "clears_weighted_sum": clears_weighted_sum,
+            "clears_final_output": clears_final_output,
+            "introduces_collateral_mismatches": introduces_collateral_mismatches,
+            "total_ordered_mlp_mismatches": total_mismatches,
+        });
+        if matches!(policy, DownCastSweepPolicy::CurrentSequentialF32) {
+            baseline_result = result.clone();
+        }
+        policy_results.push(result);
+    }
+
+    let best_policy_by_ordered_mlp_full_vector = best_full
+        .as_ref()
+        .map(|(_, _, _, policy)| policy.clone())
+        .unwrap_or_else(|| "none".to_string());
+    let best_policy_by_focus_lane = best_focus
+        .as_ref()
+        .map(|(_, _, _, policy)| policy.clone())
+        .unwrap_or_else(|| "none".to_string());
+    let classification = if valid_full_cleared {
+        "layer11_selected_mlp_down_policy_replay_full_mlp_cleared"
+    } else if selected_outputs_clear_weighted_mismatch {
+        "layer11_selected_mlp_down_policy_replay_weighted_sum_mismatch"
+    } else if selected_outputs_weighted_clear_final_mismatch {
+        "layer11_selected_mlp_down_policy_replay_final_output_mismatch"
+    } else if any_focus_cleared_with_collateral {
+        "layer11_selected_mlp_down_policy_replay_collateral_mismatches"
+    } else if selected_outputs_cleared {
+        "layer11_selected_mlp_down_policy_replay_selected_outputs_cleared"
+    } else if any_focus_cleared {
+        "layer11_selected_mlp_down_policy_replay_collateral_mismatches"
+    } else {
+        "layer11_selected_mlp_down_policy_replay_no_candidate_clears"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-mlp-down-policy-replay-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "ordered_mlp_status": ordered_status_path.display().to_string(),
+        "ordered_mlp_consumer_status": ordered_consumer_status_path.display().to_string(),
+        "source_down_cast_policy_sweep_status": down_cast_policy_sweep_status_path.display().to_string(),
+        "source_statuses": {
+            "ordered_mlp_classification": ordered_status["classification"].clone(),
+            "ordered_mlp_consumer_classification": ordered_consumer_status["classification"].clone(),
+            "down_cast_policy_sweep_classification": down_cast_policy_sweep_status["classification"].clone(),
+        },
+        "selected_experts": selected_experts,
+        "selected_experts_local_from_prior": ordered_consumer_status["selected_experts_local"].clone(),
+        "routing_weights": routing_weights,
+        "routing_weights_local_from_prior": ordered_consumer_status["routing_weights_local"].clone(),
+        "guards": {
+            "mlp_input_attention_residual_vs_ordered": mlp_input_guard,
+            "mlp_norm_vs_ordered": mlp_norm_guard,
+            "prior_ordered_consumer_earliest_seam": ordered_consumer_status["earliest_mismatching_ordered_mlp_seam"].clone(),
+        },
+        "baseline": baseline_result,
+        "policy_results": policy_results,
+        "best_policy_by_ordered_mlp_full_vector": best_policy_by_ordered_mlp_full_vector,
+        "best_policy_by_focus_lane": best_policy_by_focus_lane,
+        "collateral_mismatches": {
+            "valid_focus_lane_candidate_introduced_collateral_mismatches": any_focus_cleared_with_collateral,
+            "bf16_product_policy_evidence_only": true,
+            "bf16_product_used_as_correction": false,
+        },
+        "runtime_policy_discussion_allowed": false,
+        "source_policy": {
+            "local_replay_surface": "validation_only",
+            "correction_metadata_applied": false,
+            "bf16_product_policy_treated_as_valid_correction": false,
+            "coarse_ladder_continued": false,
+        },
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": match classification {
+            "layer11_selected_mlp_down_policy_replay_full_mlp_cleared" => "record the validation-only selected MLP down-policy replay and decide separately whether scoped runtime policy design is appropriate",
+            "layer11_selected_mlp_down_policy_replay_selected_outputs_cleared" => "inspect weighted expert sum aggregation only; do not change runtime policy in this slice",
+            "layer11_selected_mlp_down_policy_replay_weighted_sum_mismatch" => "inspect weighted expert sum aggregation only after selected outputs clear",
+            "layer11_selected_mlp_down_policy_replay_final_output_mismatch" => "inspect final MLP residual add only after weighted sum clears",
+            "layer11_selected_mlp_down_policy_replay_collateral_mismatches" => "do not promote a lane-local policy; request/prove a full selected-MLP-safe official policy",
+            _ => "request narrower down-projection policy evidence for all selected experts or fix the validation replay path",
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_mlp_down_policy_replay_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected MLP down-policy replay requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]
