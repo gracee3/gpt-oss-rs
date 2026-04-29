@@ -965,6 +965,85 @@ calling CUDA or loader upload functions.
 
 multi_gpu_layer_sharding_filtered_tensor_loading_design_complete
 
+## Upload manifest helper status
+
+Added a CUDA-free upload manifest helper in
+`crates/gpt-oss-model-runner/src/shard_plan.rs`. It consumes a
+`ShardedModelPlan`, discovered safetensor tensor names, and
+`UploadManifestOptions`, then emits per-shard ownership metadata without
+loading, converting, uploading, allocating, or executing anything.
+
+New pure manifest types:
+
+- `ShardedUploadManifest`
+- `ShardTensorManifest`
+- `LateAllocationKind`
+- `UploadManifestOptions`
+
+Classified tensor patterns:
+
+- `model.embed_tokens.weight` is assigned to the embedding shard.
+- `model.layers.<N>.*` is assigned to the shard owning absolute layer `N`.
+- `model.norm.weight` is assigned to the final shard.
+- `lm_head.weight` is assigned to the final shard.
+- unknown names are recorded in `unassigned_tensor_names` and are not copied to
+  every shard.
+- malformed or out-of-range layer names are recorded in
+  `invalid_tensor_names`.
+
+GPT-OSS U8 expert tensors:
+
+- `model.layers.<N>.mlp.experts.gate_up_proj_blocks`
+- `model.layers.<N>.mlp.experts.gate_up_proj_scales`
+- `model.layers.<N>.mlp.experts.down_proj_blocks`
+- `model.layers.<N>.mlp.experts.down_proj_scales`
+
+These are assigned to the owning layer shard's `host_u8_tensor_names` rather
+than `required_tensor_names`. This represents future host-side U8 retention and
+shard-local GPU upload, but does not change the current U8 loader.
+
+Tied LM-head fallback:
+
+- Manifest construction accepts `tie_word_embeddings`.
+- If `tie_word_embeddings` is true and `lm_head.weight` is absent from the
+  discovered names, the final shard receives
+  `LateAllocationKind::TiedLmHeadFallback`.
+- If `lm_head.weight` exists, no fallback marker is added.
+- No fallback copy or upload is implemented.
+
+Late allocation markers:
+
+- Every shard records `RopeTables`, `MetadataBuffers`, and `KvCache` for its
+  absolute layers.
+- The embedding shard records `F16ConvertedEmbedding`.
+- The final shard records `F16ConvertedFinalNorm`.
+- Each owned layer records `F16FusedLayerWeights` and `GptOssMoeGpuUpload`
+  markers.
+
+Still deferred:
+
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- No existing model loader runtime behavior changed.
+- No f16 or U8 loader filters were added.
+- No tensors are uploaded or routed to multiple devices.
+- KV cache allocation and indexing are unchanged.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes, or
+  runtime math branching were added.
+- Split maps remain non-executable and continue to be rejected before CUDA
+  allocation in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_upload_manifest_helper_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_filtered_tensor_loading_design_complete
+multi_gpu_layer_sharding_upload_manifest_helper_complete
