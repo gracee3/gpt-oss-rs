@@ -1338,6 +1338,212 @@ Primary classification:
 
 multi_gpu_layer_sharding_dry_run_report_complete
 
+## f16 and U8 filtered loader design
+
+This slice is docs-only. It designs the remaining loader filter boundaries that
+a future manifest-driven split allocation smoke needs. It does not add filtered
+loader implementations or change runtime loader behavior.
+
+### Current f32 filtered loader
+
+The f32 CUDA loader already has the right shape:
+
+```text
+load_weights_to_gpu_with_shapes_filtered(path, stream, should_load)
+```
+
+`load_weights_to_gpu_with_shapes` is a wrapper over the filtered function with
+`|_| true`, preserving the existing single-device call surface. The filtered
+path dispatches to `load_single_to_gpu` for one safetensors file or
+`load_sharded_to_gpu` for a directory. Sharded directories use sorted
+`.safetensors` file paths, so traversal is deterministic.
+
+For every header tensor entry, the f32 path calls `parse_tensor_meta`, computes
+shape metadata, and inserts shape metadata even when the tensor is not uploaded.
+It also skips `U8` tensors before conversion/upload while still recording their
+shape. For non-U8 tensors, `should_load(name)` decides whether the function
+converts bytes through `convert_to_f32` and uploads with `stream.clone_htod`.
+
+This is the model for future split f32 shard uploads: a shard-local caller can
+pass a manifest-derived filter and receive only that shard's owned GPU tensors,
+while retaining visibility into the full model's shape topology.
+
+### Current f16 loader gap
+
+The f16 CUDA loader currently exposes:
+
+```text
+load_weights_to_gpu_f16_with_shapes(path, stream)
+```
+
+It dispatches to `load_single_to_gpu_f16` or `load_sharded_to_gpu_f16`. The
+single-file helper memory maps the safetensors file, parses the full header, and
+iterates every tensor entry. It skips `U8` tensors and records their shapes.
+Every other dtype is converted through `convert_to_f16`:
+
+- `F16` is reinterpreted into `half::f16`.
+- `BF16` is converted to `f16` on the host.
+- `F32` is narrowed to `f16`.
+
+The converted `Vec<half::f16>` is uploaded immediately with
+`stream.clone_htod`. Shapes are returned in a side map, but there is no
+`should_load` hook today, so a future split path would upload every non-U8
+tensor to every shard if it reused this function directly.
+
+### Proposed f16 filtered API
+
+Add an additive API in a later implementation slice:
+
+```text
+load_weights_to_gpu_f16_with_shapes_filtered(path, stream, should_load)
+```
+
+Semantics:
+
+- Preserve complete shape metadata for every tensor in the file or sharded
+  directory, including skipped tensors.
+- Skip `U8` tensors exactly as the current f16 path does.
+- Convert and upload only non-U8 tensors where `should_load(name)` returns
+  true.
+- Keep deterministic traversal for sharded directories by reusing sorted shard
+  collection.
+- Preserve the existing unfiltered function as a wrapper:
+  `load_weights_to_gpu_f16_with_shapes(path, stream)` calls the filtered helper
+  with `|_| true`.
+- Preserve `load_weights_to_gpu_f16(path, stream)` as a wrapper that discards
+  the returned shape map.
+
+The future implementation should mirror the f32 filtered structure rather than
+inventing a separate policy. That keeps the only behavioral difference in the
+conversion function and output GPU element type.
+
+### Current U8 host loader gap
+
+The current U8 path is:
+
+```text
+load_u8_weights_to_host(path)
+```
+
+It dispatches to `load_single_u8_to_host` or `load_sharded_u8_to_host`. The
+single-file helper memory maps the safetensors file, parses the header, and
+copies payload bytes into a `HashMap<String, Vec<u8>>` only when
+`dtype == "U8"`. The sharded helper collects sorted safetensors shards and
+extends one combined host map.
+
+This host map is later consumed by GPT-OSS MoE setup: U8 MXFP4 expert
+blocks/scales survive initial f32/f16 loading on the host, then
+`GpuModelRunner`/GPT-OSS layer construction uploads the selected MoE GPU
+representation later. Today the U8 host loader has no filter hook, so a future
+split allocation path would copy all U8 expert payloads into every shard setup
+unless filtering is added before real split allocation.
+
+### Proposed U8 filtered API
+
+Add an additive host-side API in a later implementation slice:
+
+```text
+load_u8_weights_to_host_filtered(path, should_load)
+```
+
+Semantics:
+
+- Copy only `U8` tensor payloads where `should_load(name)` returns true.
+- Retain only manifest-owned layer U8 tensors for the shard.
+- Preserve deterministic directory traversal by reusing sorted shard
+  collection.
+- Preserve enough validation metadata through the existing shape map path or
+  `SafetensorHeaderManifest`; this filtered U8 helper should not become the
+  sole source of shape/source metadata.
+- Preserve the current unfiltered API as a wrapper:
+  `load_u8_weights_to_host(path)` calls the filtered helper with `|_| true`.
+
+For split allocation, host filtering is preferable to upload-time filtering
+because it avoids copying every shard's U8 expert payloads into every shard
+builder before any GPU upload occurs. Upload-time filtering can still be used as
+a defensive check, but it should not be the only memory boundary.
+
+### Manifest-to-filter integration
+
+Future split allocation should derive loader filters from the existing
+`ShardTensorManifest` produced by `ShardedModelPlan`.
+
+Recommended caller logic:
+
+```text
+let required = HashSet<&str> from shard.required_tensor_names
+let host_u8 = HashSet<&str> from shard.host_u8_tensor_names
+
+f32/f16 should_load(name) = required.contains(name)
+U8 host should_load(name) = host_u8.contains(name)
+```
+
+Small helper methods such as `required_tensor_filter_set()` and
+`host_u8_tensor_filter_set()` may be added later if they keep call sites clean,
+but the loader APIs should stay generic over `FnMut(&str) -> bool`.
+
+Rules:
+
+- f32 and f16 GPU filters use `required_tensor_names`.
+- U8 host filters use `host_u8_tensor_names`.
+- `unassigned_tensor_names` and `invalid_tensor_names` are not loaded by
+  shard-local split allocation.
+- Shape visibility remains global through `SafetensorHeaderManifest` and the
+  loader shape maps; filtering GPU uploads must not hide model topology from
+  validation/status reporting.
+- Duplicate ownership remains a manifest/planner error before any split loader
+  call.
+
+### Tied LM-head fallback implications
+
+If `lm_head.weight` exists, the final shard owns and loads `lm_head.weight`
+normally through `required_tensor_names`.
+
+If `lm_head.weight` is absent and `tie_word_embeddings=true`, the final shard
+still needs an LM-head-compatible path. It must not assume that
+`model.embed_tokens.weight` is local to the final shard, because the planned
+two-GPU layout places embeddings on GPU0 and final norm/LM head on GPU1. The
+existing manifest represents this as `LateAllocationKind::TiedLmHeadFallback`.
+The actual copy/upload policy remains deferred: a later design must decide
+whether the final shard receives a copied embedding-derived head, a separately
+loaded host source, or another explicit fallback. This slice makes no claim
+that tied fallback is executable.
+
+### Future implementation order
+
+1. Add `load_weights_to_gpu_f16_with_shapes_filtered` and focused tests. Keep it
+   unused by runtime and preserve the unfiltered wrapper.
+2. Add `load_u8_weights_to_host_filtered` and focused tests. Keep it unused by
+   runtime and preserve the unfiltered wrapper.
+3. Add manifest-to-filter helper tests or simple `HashSet` caller tests that
+   prove required tensors and host U8 tensors become the intended filters.
+4. Add a non-default split allocation smoke that creates per-device resources
+   and calls filtered loaders from per-shard manifests.
+5. Keep serve/runtime split execution rejected until allocation-only smoke is
+   proven and separately reviewed.
+
+### Risks / blockers
+
+- The f16 filtered path must not accidentally skip shape metadata for filtered
+  tensors; downstream fused f16 setup still expects model topology visibility.
+- The U8 filtered path currently returns only payload maps. Validation/status
+  should rely on header manifests or shape maps, not on U8 payload loading.
+- Tied LM-head fallback is still not an allocation or execution policy.
+- The future split allocation smoke must avoid routing unknown or invalid
+  tensors into shard loaders just because they are present in safetensors.
+- Adding filtered APIs is easy to make technically additive, but accidentally
+  wiring them into default serve/runtime would violate this lane's guardrails.
+
+### Next bounded step
+
+Implement the inert f16 filtered loader API and tests, unused by runtime. Keep
+the current unfiltered f16 loader as a wrapper over the filtered helper with
+`|_| true`.
+
+### Primary classification
+
+multi_gpu_layer_sharding_f16_u8_filtered_loader_design_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_dry_run_report_complete
+multi_gpu_layer_sharding_f16_u8_filtered_loader_design_complete
