@@ -814,6 +814,90 @@ Next bounded step: localize the layer11 MLP norm lane 248 policy from the
 official coarse attention residual seam, or generate ordered layer11 bundles if
 the next step needs source-complete seam evidence.
 
+## Layer11 MLP Norm Lane248 Debug Status
+
+The coarse ladder stopped at layer11 MLP RMSNorm after completing layers
+2 through 10 under explicit diagnostic continuation. The source for this
+check is the official coarse layer11 attention residual seam; attention
+internals remain unrecomputed in coarse mode.
+
+Generic debug mode added:
+
+- `--mode coarse-norm-debug`
+- `--norm-kind attention|mlp`
+
+Focus lane:
+
+```text
+layer = 11
+norm_kind = mlp
+lane = 248
+local_current_output = 0.0308837890625
+official_output = 0.03076171875
+diff = 0.0001220703125
+input = 0.9296875
+weight = 0.88671875
+classification = coarse_norm_debug_policy_matches_with_variant
+```
+
+Variant summary:
+
+```text
+A_current = 1 mismatch at lane 248
+D_f64_reduction = exact
+F_pairwise_reduction = exact
+C_bf16_square_terms = 729 mismatches
+I_pre_scale_rounding = 731 mismatches
+```
+
+The lane window `246..250` keeps the neighboring lanes exact under the current
+policy, while the exact candidates are global reduction variants. This matches
+the layer2 attention-norm localization and is recorded as an RMSNorm reduction
+policy issue, not as lane correction metadata.
+
+Norm policy option added:
+
+- `--norm-reduction-policy current|pairwise|f64`
+
+The default remains `current`. The `pairwise` and `f64` choices are explicit
+validation-only options for coarse checks and do not change production runtime
+behavior.
+
+Layer11 pairwise continuation:
+
+```text
+classification = coarse_layer_validate_mlp_output_mismatch
+norm_reduction_policy = pairwise
+input_guard = exact
+attention_norm = exact
+mlp_norm = exact
+selected_experts = [30, 13, 4, 20]
+mlp_output max_abs_diff = 0.125
+mlp_output mismatches = 1
+mlp_output lane = 1480
+local = -18.25
+official = -18.125
+emitted_output = none
+```
+
+The pairwise coarse ladder was not rerun past layer11 because layer11 did not
+produce an exact coarse layer output. The next blocker is now the layer11 MLP
+output mismatch at lane 1480.
+
+Caveats:
+
+- attention residual remains an official coarse seam
+- attention internals are not recomputed
+- ordered bundles remain required for true attention/MLP seam validation
+- norm policy selection is validation-only unless separately promoted
+- no raw `.live` or `/tmp` artifacts are committed
+
+No production behavior changed, no default routing changed, and no CUDA kernels
+changed.
+
+Next bounded step: localize layer11 MLP output lane 1480, preferably with an
+ordered layer11 MLP bundle or a focused selected-expert replay/debug mode.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
