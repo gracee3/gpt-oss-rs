@@ -101,6 +101,10 @@ struct Cli {
     #[arg(long)]
     oracle_down_terms_status: Option<PathBuf>,
 
+    /// Focused selected-expert down-projection einsum dtype probe status.
+    #[arg(long)]
+    oracle_einsum_dtype_probe_status: Option<PathBuf>,
+
     /// Previous consumer ordered MLP compare status for source provenance.
     #[arg(long)]
     consumer_mlp_compare_status: Option<PathBuf>,
@@ -108,6 +112,10 @@ struct Cli {
     /// Previous consumer selected-expert internal compare status for source provenance.
     #[arg(long)]
     consumer_internal_status: Option<PathBuf>,
+
+    /// Previous consumer selected-expert down-terms compare status for source provenance.
+    #[arg(long)]
+    consumer_down_terms_status: Option<PathBuf>,
 
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
@@ -421,6 +429,7 @@ enum Mode {
     CoarseMlpOutputOrderedDebug,
     SelectedExpertInternalCompareStatus,
     SelectedExpertDownTermsCompareStatus,
+    SelectedExpertDownCastPolicySweepStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1400,6 +1409,9 @@ fn main() -> Result<()> {
         }
         Mode::SelectedExpertDownTermsCompareStatus => {
             run_selected_expert_down_terms_compare_status(&cli)
+        }
+        Mode::SelectedExpertDownCastPolicySweepStatus => {
+            run_selected_expert_down_cast_policy_sweep_status(&cli)
         }
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -7310,6 +7322,328 @@ fn run_selected_expert_down_terms_compare_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected expert down-terms compare requires the cuda feature")
 }
 
+#[cfg(feature = "cuda")]
+fn run_selected_expert_down_cast_policy_sweep_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let lane = cli.lane;
+    let selected_rank = cli.rank;
+    let expert_index = cli.expert;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    let oracle_down_terms_status_path =
+        required_path(&cli.oracle_down_terms_status, "oracle down terms status")?;
+    let oracle_einsum_dtype_probe_status_path = required_path(
+        &cli.oracle_einsum_dtype_probe_status,
+        "oracle einsum dtype probe status",
+    )?;
+    let consumer_down_terms_status_path = required_path(
+        &cli.consumer_down_terms_status,
+        "consumer down terms compare status",
+    )?;
+    validate_path(coarse, "coarse bundle")?;
+    validate_path(oracle_down_terms_status_path, "oracle down terms status")?;
+    validate_path(
+        oracle_einsum_dtype_probe_status_path,
+        "oracle einsum dtype probe status",
+    )?;
+    validate_path(
+        consumer_down_terms_status_path,
+        "consumer down terms compare status",
+    )?;
+
+    let down_terms_status = load_json(oracle_down_terms_status_path)?;
+    let dtype_probe_status = load_json(oracle_einsum_dtype_probe_status_path)?;
+    let consumer_down_terms_status = load_json(consumer_down_terms_status_path)?;
+    for key in [
+        "runtime_behavior_changed",
+        "production_routing_changed",
+        "cuda_kernels_changed",
+    ] {
+        anyhow::ensure!(
+            down_terms_status.get(key).and_then(Value::as_bool) == Some(false),
+            "oracle down-terms status {key} must be false"
+        );
+    }
+    let status_layer = down_terms_status
+        .get("layer_index")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing layer_index")? as usize;
+    let status_lane = down_terms_status
+        .get("focus_lane")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing focus_lane")? as usize;
+    let status_rank = down_terms_status
+        .get("selected_rank")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing selected_rank")? as usize;
+    let status_expert = down_terms_status
+        .get("expert_index")
+        .and_then(Value::as_u64)
+        .context("oracle down-terms status missing expert_index")? as usize;
+    anyhow::ensure!(
+        status_layer == layer,
+        "oracle layer_index {status_layer} did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_lane == lane,
+        "oracle focus_lane {status_lane} did not match requested lane {lane}"
+    );
+    anyhow::ensure!(
+        status_rank == selected_rank,
+        "oracle selected_rank {status_rank} did not match requested rank {selected_rank}"
+    );
+    anyhow::ensure!(
+        status_expert == expert_index,
+        "oracle expert_index {status_expert} did not match requested expert {expert_index}"
+    );
+
+    let artifact_path = |key: &str| -> Result<PathBuf> {
+        down_terms_status
+            .get("artifacts")
+            .and_then(|artifacts| artifacts.get(key))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .with_context(|| format!("oracle down-terms status missing artifacts.{key}"))
+    };
+    let swiglu_source_path = artifact_path("swiglu_source")?;
+    let down_pre_bias_path = artifact_path("down_pre_bias")?;
+    validate_path(&swiglu_source_path, "SwiGLU source")?;
+    validate_path(&down_pre_bias_path, "down pre-bias")?;
+    let (_, oracle_swiglu) = load_tensor_artifact(&swiglu_source_path, &[hidden], &["values"])?;
+    let (_, oracle_down_pre_bias) =
+        load_tensor_artifact(&down_pre_bias_path, &[hidden], &["values"])?;
+
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let (_attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let local_expert_input = compute_mlp_rms_norm_with_policy(
+        &attention_residual,
+        &post_norm_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &[expert_index])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == expert_index)
+        .with_context(|| format!("selected expert {expert_index} missing from MXFP4 loader"))?;
+    let local_mlp1_gate_up = compute_mlp1_bf16_tensor_op(&local_expert_input, expert)
+        .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_index}"))?;
+    let local_swiglu = compute_swiglu_bf16(&local_mlp1_gate_up);
+    let swiglu_guard = compare_hidden(&local_swiglu, &oracle_swiglu);
+
+    let policies = [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::NaiveF64,
+        DownCastSweepPolicy::PairwiseF64,
+        DownCastSweepPolicy::PairwiseF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ];
+    let mut policy_results = Vec::new();
+    let mut best_full: Option<(usize, f32, String)> = None;
+    let mut best_focus: Option<(usize, f32, String)> = None;
+    let mut any_full_cleared = false;
+    let mut any_focus_cleared = false;
+    let mut any_focus_cleared_with_collateral = false;
+    let mut baseline_value = json!({});
+
+    for policy in policies {
+        let output = if matches!(policy, DownCastSweepPolicy::CurrentSequentialF32) {
+            compute_expert30_mlp2_prebias_variant(
+                &local_swiglu,
+                &expert.down_weight,
+                Expert30Mlp2Policy::Current,
+            )
+        } else {
+            compute_down_projection_sweep_output(&local_swiglu, &expert.down_weight, policy)
+        };
+        let comparison = compare_hidden(&output, &oracle_down_pre_bias);
+        let mismatch_count = comparison.metrics.mismatches;
+        let max_abs_diff = comparison.metrics.max_abs_diff;
+        let focus_candidate = output[lane];
+        let focus_oracle = oracle_down_pre_bias[lane];
+        let focus_matched = focus_candidate == focus_oracle;
+        let clears_focus_lane = focus_matched;
+        let introduces_collateral_mismatches = clears_focus_lane && mismatch_count > 0;
+        any_full_cleared |= mismatch_count == 0;
+        any_focus_cleared |= clears_focus_lane;
+        any_focus_cleared_with_collateral |= introduces_collateral_mismatches;
+        if best_full
+            .as_ref()
+            .map(|(best_mismatches, best_max, _)| {
+                mismatch_count < *best_mismatches
+                    || (mismatch_count == *best_mismatches && max_abs_diff < *best_max)
+            })
+            .unwrap_or(true)
+        {
+            best_full = Some((mismatch_count, max_abs_diff, policy.name().to_string()));
+        }
+        if clears_focus_lane
+            && best_focus
+                .as_ref()
+                .map(|(best_mismatches, best_max, _)| {
+                    mismatch_count < *best_mismatches
+                        || (mismatch_count == *best_mismatches && max_abs_diff < *best_max)
+                })
+                .unwrap_or(true)
+        {
+            best_focus = Some((mismatch_count, max_abs_diff, policy.name().to_string()));
+        }
+        let result = json!({
+            "policy": policy.name(),
+            "reduction_order": policy.reduction_order(),
+            "evidence_only": policy.evidence_only(),
+            "not_applicable": false,
+            "full_vector_metrics": comparison.metrics.clone(),
+            "focus_lane": {
+                "candidate": focus_candidate,
+                "oracle": focus_oracle,
+                "abs_diff": (focus_candidate - focus_oracle).abs(),
+                "matched": focus_matched,
+            },
+            "first_mismatch": comparison.first_mismatch.clone(),
+            "worst_mismatch": comparison.worst_mismatch.clone(),
+            "clears_focus_lane": clears_focus_lane,
+            "introduces_collateral_mismatches": introduces_collateral_mismatches,
+        });
+        if matches!(policy, DownCastSweepPolicy::CurrentSequentialF32) {
+            baseline_value = result.clone();
+        }
+        policy_results.push(result);
+    }
+
+    policy_results.push(json!({
+        "policy": "torch_cpu_bf16_equivalent_proxy",
+        "not_applicable": true,
+        "reason": "not implemented in Rust validation lane because adding Torch dependency is out of scope",
+        "full_vector_metrics": null,
+        "focus_lane": null,
+        "first_mismatch": null,
+        "worst_mismatch": null,
+        "clears_focus_lane": false,
+        "introduces_collateral_mismatches": false,
+    }));
+
+    let best_policy_by_full_vector = best_full
+        .as_ref()
+        .map(|(_, _, policy)| policy.clone())
+        .unwrap_or_else(|| "none".to_string());
+    let best_policy_by_focus_lane = best_focus
+        .as_ref()
+        .map(|(_, _, policy)| policy.clone())
+        .unwrap_or_else(|| "none".to_string());
+    let classification = if any_full_cleared {
+        "layer11_expert30_down_cast_policy_sweep_full_vector_cleared"
+    } else if any_focus_cleared_with_collateral {
+        "layer11_expert30_down_cast_policy_sweep_collateral_mismatches"
+    } else if any_focus_cleared {
+        "layer11_expert30_down_cast_policy_sweep_focus_lane_cleared"
+    } else {
+        "layer11_expert30_down_cast_policy_sweep_no_candidate_clears"
+    };
+    let json_f32_rounds_to = dtype_probe_status
+        .pointer("/interpretation/json_f32_rounds_to")
+        .and_then(Value::as_f64)
+        .or_else(|| {
+            dtype_probe_status
+                .pointer("/bf16_rounding_probe/json_naive_f32/bfloat16_output")
+                .and_then(Value::as_f64)
+        })
+        .unwrap_or(-12.0);
+    let local_sequential_f32_rounds_to = dtype_probe_status
+        .pointer("/interpretation/local_sequential_f32_rounds_to")
+        .and_then(Value::as_f64)
+        .or_else(|| {
+            dtype_probe_status
+                .pointer("/bf16_rounding_probe/local_sequential_f32/bfloat16_output")
+                .and_then(Value::as_f64)
+        })
+        .unwrap_or(-12.0625);
+    let consistent_with_bf16_midpoint_drift = dtype_probe_status
+        .pointer("/interpretation/consistent_with_bf16_midpoint_drift")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-expert-down-cast-policy-sweep-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "selected_rank": selected_rank,
+        "expert_index": expert_index,
+        "focus_lane": lane,
+        "oracle_down_terms_status": oracle_down_terms_status_path.display().to_string(),
+        "oracle_einsum_dtype_probe_status": oracle_einsum_dtype_probe_status_path.display().to_string(),
+        "consumer_down_terms_status": consumer_down_terms_status_path.display().to_string(),
+        "source_statuses": {
+            "oracle_down_terms_classification": down_terms_status["classification"].clone(),
+            "oracle_einsum_dtype_probe_classification": dtype_probe_status["classification"].clone(),
+            "consumer_down_terms_classification": consumer_down_terms_status["classification"].clone(),
+        },
+        "source_guards": {
+            "swiglu_source_vector": swiglu_guard,
+        },
+        "baseline": baseline_value,
+        "policy_results": policy_results,
+        "best_policy_by_full_vector": best_policy_by_full_vector,
+        "best_policy_by_focus_lane": best_policy_by_focus_lane,
+        "collateral_mismatches": {
+            "any_focus_lane_candidate_introduced_collateral_mismatches": any_focus_cleared_with_collateral,
+            "focus_lane_cleared_by": best_focus.map(|(_, _, policy)| policy).unwrap_or_else(|| "none".to_string()),
+            "full_vector_cleared": any_full_cleared,
+        },
+        "official_midpoint_interpretation": {
+            "json_f32_rounds_to": json_f32_rounds_to,
+            "local_sequential_f32_rounds_to": local_sequential_f32_rounds_to,
+            "consistent_with_bf16_midpoint_drift": consistent_with_bf16_midpoint_drift,
+            "bf16_rounding_probe": dtype_probe_status["bf16_rounding_probe"].clone(),
+        },
+        "candidate_runtime_policy_discussion_allowed": false,
+        "source_policy": {
+            "local_replay_surface": "validation_only",
+            "correction_metadata_applied": false,
+            "c_bf16_product_then_f32_sum_used_as_correction": false,
+            "coarse_ladder_continued": false,
+        },
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": match classification {
+            "layer11_expert30_down_cast_policy_sweep_full_vector_cleared" => "record the validation-only full-vector policy candidate and decide separately whether a scoped runtime design is appropriate",
+            "layer11_expert30_down_cast_policy_sweep_collateral_mismatches" => "do not promote a lane-local policy; request or prove a full-vector-safe official BF16 einsum policy",
+            "layer11_expert30_down_cast_policy_sweep_focus_lane_cleared" => "validate collateral behavior before considering any runtime policy discussion",
+            "layer11_expert30_down_cast_policy_sweep_no_candidate_clears" => "request a narrower official BF16 einsum reduction/cast trace or raw kernel policy evidence for expert30 down lane1480",
+            _ => "fix the selected expert down-cast policy sweep validation path",
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_expert_down_cast_policy_sweep_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected expert down-cast policy sweep requires the cuda feature")
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_coarse_mlp_output_ordered_debug(_cli: &Cli) -> Result<()> {
     anyhow::bail!("ordered coarse MLP output debug requires the cuda feature")
@@ -11773,6 +12107,79 @@ fn signed_term_sums_f64(values: &[f32]) -> (f64, f64) {
     (positive, negative)
 }
 
+fn pairwise_sum_f64(mut partials: Vec<f64>) -> f64 {
+    if partials.is_empty() {
+        return 0.0;
+    }
+    while partials.len() > 1 {
+        let mut next = Vec::with_capacity(partials.len().div_ceil(2));
+        for pair in partials.chunks(2) {
+            next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+        }
+        partials = next;
+    }
+    partials[0]
+}
+
+fn compute_down_projection_sweep_output(
+    swiglu: &[f32],
+    down_weight: &[f32],
+    policy: DownCastSweepPolicy,
+) -> Vec<f32> {
+    let hidden = 2880usize;
+    let mut output = vec![0.0f32; hidden];
+    for out_idx in 0..hidden {
+        let weight_base = out_idx * hidden;
+        output[out_idx] = match policy {
+            DownCastSweepPolicy::CurrentSequentialF32 => {
+                let sum = dot_terms_sequential_f32(
+                    swiglu,
+                    &down_weight[weight_base..weight_base + hidden],
+                );
+                round_bf16(sum)
+            }
+            DownCastSweepPolicy::NaiveF64 => {
+                let sum = (0..hidden)
+                    .map(|in_idx| {
+                        (round_bf16(swiglu[in_idx]) as f64)
+                            * (down_weight[weight_base + in_idx] as f64)
+                    })
+                    .sum::<f64>();
+                round_bf16(sum as f32)
+            }
+            DownCastSweepPolicy::PairwiseF64 => {
+                let terms = (0..hidden)
+                    .map(|in_idx| {
+                        (round_bf16(swiglu[in_idx]) as f64)
+                            * (down_weight[weight_base + in_idx] as f64)
+                    })
+                    .collect::<Vec<_>>();
+                round_bf16(pairwise_sum_f64(terms) as f32)
+            }
+            DownCastSweepPolicy::PairwiseF32 => {
+                let terms = (0..hidden)
+                    .map(|in_idx| round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx])
+                    .collect::<Vec<_>>();
+                round_bf16(pairwise_sum_f32(&terms))
+            }
+            DownCastSweepPolicy::AbsAscendingF32 => {
+                let mut terms = (0..hidden)
+                    .map(|in_idx| round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx])
+                    .collect::<Vec<_>>();
+                terms.sort_by(|left, right| left.abs().total_cmp(&right.abs()));
+                round_bf16(terms.into_iter().fold(0.0f32, |sum, value| sum + value))
+            }
+            DownCastSweepPolicy::Bf16ProductThenF32 => {
+                let sum = (0..hidden).fold(0.0f32, |sum, in_idx| {
+                    sum + round_bf16(round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx])
+                });
+                round_bf16(sum)
+            }
+        };
+    }
+    output
+}
+
 fn round_f16(value: f32) -> f32 {
     f16::from_f32(value).to_f32()
 }
@@ -14415,6 +14822,58 @@ enum Expert30Mlp2Policy {
     ChunkedPairwise,
     Bf16PreBiasBf16Bias,
     F32PreBiasF32Bias,
+}
+
+#[derive(Clone, Copy)]
+enum DownCastSweepPolicy {
+    CurrentSequentialF32,
+    NaiveF64,
+    PairwiseF64,
+    PairwiseF32,
+    AbsAscendingF32,
+    Bf16ProductThenF32,
+}
+
+impl DownCastSweepPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            DownCastSweepPolicy::CurrentSequentialF32 => "current_sequential_f32_accum_bf16_output",
+            DownCastSweepPolicy::NaiveF64 => "naive_f64_sum_then_bf16_output",
+            DownCastSweepPolicy::PairwiseF64 => "pairwise_f64_sum_then_bf16_output",
+            DownCastSweepPolicy::PairwiseF32 => "pairwise_f32_sum_then_bf16_output",
+            DownCastSweepPolicy::AbsAscendingF32 => {
+                "deterministic_f32_abs_ascending_sum_then_bf16_output"
+            }
+            DownCastSweepPolicy::Bf16ProductThenF32 => "bf16_product_then_f32_sum_then_bf16_output",
+        }
+    }
+
+    fn reduction_order(self) -> &'static str {
+        match self {
+            DownCastSweepPolicy::CurrentSequentialF32 => {
+                "left-to-right input_index order, f32 accumulator"
+            }
+            DownCastSweepPolicy::NaiveF64 => {
+                "left-to-right input_index order, f64 accumulator over f32 JSON-equivalent products"
+            }
+            DownCastSweepPolicy::PairwiseF64 => {
+                "pairwise/tree reduction, f64 accumulator over f32 JSON-equivalent products"
+            }
+            DownCastSweepPolicy::PairwiseF32 => {
+                "pairwise/tree reduction, f32 accumulator over f32 products"
+            }
+            DownCastSweepPolicy::AbsAscendingF32 => {
+                "deterministic f32 reduction sorted by ascending absolute product magnitude"
+            }
+            DownCastSweepPolicy::Bf16ProductThenF32 => {
+                "left-to-right f32 reduction after each product is rounded to BF16"
+            }
+        }
+    }
+
+    fn evidence_only(self) -> bool {
+        matches!(self, DownCastSweepPolicy::Bf16ProductThenF32)
+    }
 }
 
 #[derive(Clone, Copy)]
