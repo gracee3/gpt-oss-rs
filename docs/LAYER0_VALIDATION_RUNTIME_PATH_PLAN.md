@@ -1870,6 +1870,74 @@ raw `/tmp` or `.live` artifacts are committed. The next bounded step is either
 to design the Rust-native BF16 `einsum` backend or to localize expert3 MLP2 from
 official/PyTorch MLP1/SwiGLU seam input.
 
+## Expert3 Lane 1990 Post-MLP1 Localization
+
+This slice focuses on the single remaining selected-output mismatch from the
+MLP1 seam continuation path:
+
+```text
+rank 0 / expert 3 / hidden lane 1990
+```
+
+Inputs:
+
+- MLP1 seam:
+  `/tmp/layer0_validation_selected_experts_mlp1_seams-20260428-215204/expert3_mlp1_before_swiglu.json`
+- PyTorch discriminator:
+  `/tmp/layer0_validation_expert3_lane1990_pytorch_debug.json`
+- official selected-output, weighted-sum, and MLP residual oracles from
+  `pinned-prompt-parity-official-reference-20260424`.
+
+Rust and PyTorch agree at the focused lane:
+
+```text
+SwiGLU lane:
+  rust = -0.1953125
+  pytorch = -0.1953125
+
+MLP2 pre-bias lane:
+  rust = 0.48046875
+  pytorch = 0.48046875
+
+down bias lane:
+  rust = -0.0016860962
+  pytorch = -0.0016860962
+
+selected output lane:
+  rust = 0.478515625
+  pytorch = 0.478515625
+  official = 0.48046875
+```
+
+Selected-output metric for current Rust validation replay:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 0.0000006781684
+mismatches = 1
+```
+
+Bounded bias/output variants:
+
+- Current Rust/PyTorch-style down bias add preserves the one-lane mismatch.
+- Omitting down bias clears lane `1990` only, but mismatches `2842` lanes and
+  is not a valid selected-output policy.
+- F32-bias and BF16-prebias/BF16-bias variants are equivalent to current for
+  this lane.
+
+Classification:
+
+```text
+expert3_lane1990_bias_or_output_rounding_mismatch
+```
+
+Weighted-sum and MLP-residual impact were not rerun with a replacement because
+no full expert3 selected-output variant cleared. The focused evidence points to
+expert3 selected-output oracle semantics around down bias/output at lane `1990`,
+not SwiGLU or MLP2 pre-bias. The Rust-native MLP1 BF16 `einsum` backend remains
+open separately. No production behavior changed, no Torch runtime dependency
+was added, and no raw `/tmp` or `.live` artifacts are committed.
+
 ## Validation Commands
 
 For the skeleton slice:

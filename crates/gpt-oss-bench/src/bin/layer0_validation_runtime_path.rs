@@ -125,6 +125,10 @@ struct Cli {
     #[arg(long)]
     expert30_mlp1_oracle: Option<PathBuf>,
 
+    /// Optional/generated expert3 MLP1 seam artifact before SwiGLU.
+    #[arg(long)]
+    expert3_mlp1_seam: Option<PathBuf>,
+
     /// Optional official expert30 SwiGLU output before MLP2 oracle artifact.
     #[arg(long)]
     expert30_swiglu_oracle: Option<PathBuf>,
@@ -258,6 +262,7 @@ enum Mode {
     SelectedExpertsDebug,
     SelectedExpertsPinnedSwigluDebug,
     SelectedExpertsFromMlp1Seams,
+    Expert3Lane1990Debug,
     SwigluDebug,
     SwigluPolicyPin,
     Expert30Mlp2Debug,
@@ -727,6 +732,44 @@ struct SelectedExpertsFromMlp1SeamsStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct Expert3Lane1990DebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    expert: usize,
+    rank: usize,
+    lane: usize,
+    mlp1_seam: TensorArtifactStatus,
+    selected_experts_oracle: TensorArtifactStatus,
+    weighted_expert_sum_oracle: TensorArtifactStatus,
+    mlp_residual_oracle: TensorArtifactStatus,
+    post_attention_residual: TensorArtifactStatus,
+    rust_values: Value,
+    pytorch_values: Value,
+    official_values: Value,
+    variant_table: Vec<Expert3Lane1990VariantStatus>,
+    selected_output_metric: HiddenComparisonStatus,
+    weighted_sum_impact: Option<Value>,
+    mlp_residual_impact: Option<Value>,
+    mxfp4_loader: Option<Mxfp4LoaderStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert3Lane1990VariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    selected_lane: f32,
+    official_lane: f32,
+    diff: f32,
+    selected_metric: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Serialize)]
 struct SelectedExpertDequantDiagnostics {
     gate_up_weight: FiniteSummary,
     gate_up_bias: FiniteSummary,
@@ -1165,6 +1208,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
         Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
+        Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
@@ -2523,6 +2567,143 @@ fn run_selected_experts_from_mlp1_seams(cli: &Cli) -> Result<()> {
         weighted_sum_policy: "sum BF16 selected_output * BF16 routing_weight into f32, BF16 output",
         mlp_residual_policy: "bf16_plus_bf16_to_bf16",
         rust_native_mlp1_bf16_einsum_backend_open: true,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_expert3_lane1990_debug(cli: &Cli) -> Result<()> {
+    let mlp1_seam = required_path(&cli.expert3_mlp1_seam, "expert3 MLP1 seam")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let weighted_expert_sum_oracle = required_path(
+        &cli.weighted_expert_sum_oracle,
+        "weighted expert sum oracle",
+    )?;
+    let mlp_residual_oracle = required_path(&cli.mlp_residual_oracle, "MLP residual oracle")?;
+    let post_attention_residual =
+        required_path(&cli.post_attention_residual, "post-attention residual")?;
+    let model = required_path(&cli.model, "model")?;
+    let lane = cli.lane;
+    validate_path(mlp1_seam, "expert3 MLP1 seam")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(weighted_expert_sum_oracle, "weighted expert sum oracle")?;
+    validate_path(mlp_residual_oracle, "MLP residual oracle")?;
+    validate_path(post_attention_residual, "post-attention residual")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let (mlp1_status, mlp1_values) = load_tensor_artifact(mlp1_seam, &[hidden * 2], &["values"])?;
+    let (selected_status, selected_values) =
+        load_tensor_artifact(selected_experts_oracle, &[4 * hidden], &["values"])?;
+    let (weighted_status, weighted_values) =
+        load_tensor_artifact(weighted_expert_sum_oracle, &[hidden], &["values"])?;
+    let (residual_status, residual_values) =
+        load_tensor_artifact(mlp_residual_oracle, &[hidden], &["values"])?;
+    let (post_attention_status, post_attention_values) =
+        load_tensor_artifact(post_attention_residual, &[hidden], &["values"])?;
+    anyhow::ensure!(
+        lane < hidden,
+        "lane {lane} out of range for hidden {hidden}"
+    );
+    let artifact_blocked = !mlp1_status.shape_or_count_matched
+        || !selected_status.shape_or_count_matched
+        || !weighted_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched
+        || !post_attention_status.shape_or_count_matched;
+
+    let pytorch_values = cli
+        .pytorch_lane_terms
+        .as_deref()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or_else(|| json!({ "available": false }));
+
+    let (
+        classification,
+        rust_values,
+        official_values,
+        variant_table,
+        selected_output_metric,
+        weighted_sum_impact,
+        mlp_residual_impact,
+        mxfp4_loader,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked {
+        (
+            "expert3_lane1990_unresolved",
+            json!({}),
+            json!({}),
+            Vec::new(),
+            empty_hidden_comparison(),
+            None,
+            None,
+            None,
+            Some(Blocker {
+                kind: "expert3_lane1990_artifacts",
+                detail: "expert3 MLP1 seam or downstream official artifacts were missing supported values",
+            }),
+            "resolve the reported expert3 lane1990 artifact blocker",
+        )
+    } else {
+        match execute_expert3_lane1990_debug_mxfp4(
+            model,
+            &mlp1_values,
+            &selected_values[0..hidden],
+            &weighted_values,
+            &post_attention_values,
+            &residual_values,
+            lane,
+        ) {
+            Ok(result) => result,
+            Err(_) => (
+                "expert3_lane1990_unresolved",
+                json!({}),
+                json!({ "selected": selected_values[lane] }),
+                Vec::new(),
+                empty_hidden_comparison(),
+                None,
+                None,
+                None,
+                Some(Blocker {
+                    kind: "expert3_lane1990_execution",
+                    detail: "validation MXFP4 helper failed while replaying expert3 post-MLP1 path",
+                }),
+                "fix the expert3 lane1990 validation replay path",
+            ),
+        }
+    };
+
+    let status = Expert3Lane1990DebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "expert3-lane1990-debug",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        expert: 3,
+        rank: 0,
+        lane,
+        mlp1_seam: mlp1_status,
+        selected_experts_oracle: selected_status,
+        weighted_expert_sum_oracle: weighted_status,
+        mlp_residual_oracle: residual_status,
+        post_attention_residual: post_attention_status,
+        rust_values,
+        pytorch_values,
+        official_values,
+        variant_table,
+        selected_output_metric,
+        weighted_sum_impact,
+        mlp_residual_impact,
+        mxfp4_loader,
         blocker,
         next_bounded_step,
     };
@@ -5211,6 +5392,19 @@ type SelectedExpertsFromMlp1SeamsResult = (
     &'static str,
 );
 
+type Expert3Lane1990DebugResult = (
+    &'static str,
+    Value,
+    Value,
+    Vec<Expert3Lane1990VariantStatus>,
+    HiddenComparisonStatus,
+    Option<Value>,
+    Option<Value>,
+    Option<Mxfp4LoaderStatus>,
+    Option<Blocker>,
+    &'static str,
+);
+
 #[cfg(feature = "cuda")]
 fn execute_selected_experts_from_mlp1_seams_mxfp4(
     model: &Path,
@@ -5325,6 +5519,198 @@ fn execute_selected_experts_from_mlp1_seams_mxfp4(
     _mlp_residual_oracle: &[f32],
 ) -> Result<SelectedExpertsFromMlp1SeamsResult> {
     anyhow::bail!("selected-experts-from-MLP1-seams validation requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn execute_expert3_lane1990_debug_mxfp4(
+    model: &Path,
+    mlp1_seam: &[f32],
+    selected_oracle_rank0: &[f32],
+    weighted_sum_oracle: &[f32],
+    post_attention_residual: &[f32],
+    mlp_residual_oracle: &[f32],
+    lane: usize,
+) -> Result<Expert3Lane1990DebugResult> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, &[3])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .first()
+        .context("MXFP4 validation loader did not return expert3")?;
+    let hidden = 2880usize;
+    let swiglu = compute_swiglu_bf16(mlp1_seam);
+    let current_pre_bias = compute_expert30_mlp2_prebias_variant(
+        &swiglu,
+        &expert.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let current_selected = compute_expert30_selected_output_variant(
+        &current_pre_bias,
+        &expert.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
+    let no_bias_selected = current_pre_bias
+        .iter()
+        .map(|value| round_bf16(*value))
+        .collect::<Vec<_>>();
+    let f32_bias_selected = current_pre_bias
+        .iter()
+        .zip(expert.down_bias.iter())
+        .map(|(&value, &bias)| round_bf16(value + bias))
+        .collect::<Vec<_>>();
+    let bf16_prebias_bf16_bias_selected = current_pre_bias
+        .iter()
+        .zip(expert.down_bias.iter())
+        .map(|(&value, &bias)| round_bf16(round_bf16(value) + round_bf16(bias)))
+        .collect::<Vec<_>>();
+
+    let variant_specs = [
+        (
+            "A_current",
+            "current Rust validation down projection plus BF16 down bias/output",
+            current_selected.as_slice(),
+        ),
+        (
+            "B_no_bias",
+            "current Rust validation down projection with down bias omitted, BF16 output",
+            no_bias_selected.as_slice(),
+        ),
+        (
+            "C_f32_bias",
+            "current Rust validation down projection plus f32 bias, BF16 output",
+            f32_bias_selected.as_slice(),
+        ),
+        (
+            "D_bf16_prebias_bf16_bias",
+            "BF16 pre-bias plus BF16 bias, BF16 output",
+            bf16_prebias_bf16_bias_selected.as_slice(),
+        ),
+    ];
+    let variant_table = variant_specs
+        .iter()
+        .map(|(name, policy, values)| Expert3Lane1990VariantStatus {
+            name,
+            policy,
+            selected_lane: values[lane],
+            official_lane: selected_oracle_rank0[lane],
+            diff: (values[lane] - selected_oracle_rank0[lane]).abs(),
+            selected_metric: compare_hidden(values, selected_oracle_rank0),
+        })
+        .collect::<Vec<_>>();
+    let selected_output_metric = compare_hidden(&current_selected, selected_oracle_rank0);
+
+    let best = variant_table
+        .iter()
+        .min_by(|left, right| {
+            left.diff
+                .partial_cmp(&right.diff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    left.selected_metric
+                        .metrics
+                        .mismatches
+                        .cmp(&right.selected_metric.metrics.mismatches)
+                })
+        })
+        .expect("expert3 lane variant table is non-empty");
+
+    let (weighted_sum_impact, mlp_residual_impact) =
+        if best.diff == 0.0 && best.selected_metric.metrics.mismatches == 0 {
+            let mut matrix = vec![0.0f32; 4 * hidden];
+            matrix[0..hidden].copy_from_slice(match best.name {
+                "B_no_bias" => &no_bias_selected,
+                "C_f32_bias" => &f32_bias_selected,
+                "D_bf16_prebias_bf16_bias" => &bf16_prebias_bf16_bias_selected,
+                _ => &current_selected,
+            });
+            // This impact path is intentionally conservative: only rank 0 is local.
+            // Other ranks are unavailable in this focused mode, so do not claim a
+            // full weighted-sum rerun from partial local data.
+            (
+                Some(json!({
+                    "run": false,
+                    "classification": "not_run_requires_all_rank_selected_outputs",
+                })),
+                Some(json!({
+                    "run": false,
+                    "classification": "not_run_requires_weighted_sum",
+                })),
+            )
+        } else {
+            (
+                Some(json!({
+                    "run": false,
+                    "classification": "not_run_selected_output_variant_did_not_clear_full_expert3",
+                    "weighted_sum_oracle_lane": weighted_sum_oracle[lane],
+                })),
+                Some(json!({
+                    "run": false,
+                    "classification": "not_run_selected_output_variant_did_not_clear_full_expert3",
+                    "post_attention_residual_lane": post_attention_residual[lane],
+                    "mlp_residual_oracle_lane": mlp_residual_oracle[lane],
+                })),
+            )
+        };
+
+    let classification = if best.diff == 0.0 && best.selected_metric.metrics.mismatches == 0 {
+        "expert3_lane1990_matches_after_mlp2_policy"
+    } else if best.diff == 0.0 {
+        "expert3_lane1990_bias_or_output_rounding_mismatch"
+    } else if current_selected[lane] == selected_oracle_rank0[lane] {
+        "expert3_lane1990_weighted_sum_washes_out"
+    } else {
+        "expert3_lane1990_bias_or_output_rounding_mismatch"
+    };
+    let next_bounded_step = match classification {
+        "expert3_lane1990_matches_after_mlp2_policy" => {
+            "rerun weighted expert sum with the clearing expert3 selected-output policy"
+        }
+        "expert3_lane1990_bias_or_output_rounding_mismatch" => {
+            "inspect expert3 selected-output oracle semantics around down bias/output lane 1990"
+        }
+        _ => "localize the remaining expert3 lane1990 downstream mismatch",
+    };
+    let loader = Mxfp4LoaderStatus {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        selected_experts: loaded.selected_experts,
+        dtype_outputs: loaded.dtype_outputs,
+    };
+    Ok((
+        classification,
+        json!({
+            "swiglu_lane": swiglu[lane],
+            "mlp2_pre_bias_lane": current_pre_bias[lane],
+            "down_bias_lane": expert.down_bias[lane],
+            "selected_lane": current_selected[lane],
+        }),
+        json!({
+            "selected_lane": selected_oracle_rank0[lane],
+            "weighted_sum_lane": weighted_sum_oracle[lane],
+            "post_attention_residual_lane": post_attention_residual[lane],
+            "mlp_residual_lane": mlp_residual_oracle[lane],
+        }),
+        variant_table,
+        selected_output_metric,
+        weighted_sum_impact,
+        mlp_residual_impact,
+        Some(loader),
+        None,
+        next_bounded_step,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert3_lane1990_debug_mxfp4(
+    _model: &Path,
+    _mlp1_seam: &[f32],
+    _selected_oracle_rank0: &[f32],
+    _weighted_sum_oracle: &[f32],
+    _post_attention_residual: &[f32],
+    _mlp_residual_oracle: &[f32],
+    _lane: usize,
+) -> Result<Expert3Lane1990DebugResult> {
+    anyhow::bail!("expert3 lane1990 validation requires the cuda feature")
 }
 
 type SelectedExpertsDebugResult = (
