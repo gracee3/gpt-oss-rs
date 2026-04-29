@@ -2423,6 +2423,57 @@ No production runtime behavior, default model-runner routing, CUDA kernels, raw
 
 Next bounded step: begin layer1 validation from this exact input boundary.
 
+## Layer1 Attention Norm Validation Status
+
+Layer1 validation now starts from the emitted corrected layer0 output:
+
+```text
+/tmp/layer0_validation_corrected_layer0_output.json
+```
+
+The prior `layer1-input-guard` proved this artifact exact at the layer1
+residual-stream input boundary.
+
+Mode:
+
+```text
+--mode layer1-attn-norm
+```
+
+Official oracle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-norm-output-before-qkv-status.json
+```
+
+Norm tensor source:
+
+```text
+model.layers.1.input_layernorm.weight
+```
+
+Norm policy:
+
+```text
+bf16_input_f32_reduction_bf16_output
+epsilon = 1e-5
+```
+
+Current result:
+
+```text
+classification = layer1_attention_norm_matches_oracle
+max_abs_diff = 0.0
+mean_abs_diff = 0.0
+mismatches = 0
+```
+
+No production runtime behavior, default model-runner routing, CUDA kernels, raw
+`.live` artifacts, or `/tmp` artifacts are committed.
+
+Next bounded step: validate the layer1 Q/K/V projection boundary or layer1 K
+RoPE guard.
+
 ## Validation Commands
 
 For the skeleton slice:

@@ -51,6 +51,18 @@ struct Cli {
     #[arg(long)]
     layer1_input_oracle: Option<PathBuf>,
 
+    /// Layer1 residual-stream input artifact for layer ladder validation.
+    #[arg(long)]
+    layer1_input: Option<PathBuf>,
+
+    /// Official layer1 attention norm output before Q/K/V projections.
+    #[arg(long)]
+    layer1_attn_norm_oracle: Option<PathBuf>,
+
+    /// Layer index for layer ladder validation modes.
+    #[arg(long, default_value_t = 1)]
+    layer_index: usize,
+
     /// Official K pre-RoPE artifact for the runtime/kernel RoPE parity guard.
     #[arg(long)]
     k_pre_rope: Option<PathBuf>,
@@ -287,6 +299,7 @@ enum Mode {
     MlpBackend,
     FullLayer0,
     Layer1InputGuard,
+    Layer1AttnNorm,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1241,6 +1254,7 @@ fn main() -> Result<()> {
         Mode::MlpBackend => run_mlp_backend(&cli),
         Mode::FullLayer0 => run_full_layer0(&cli),
         Mode::Layer1InputGuard => run_layer1_input_guard(&cli),
+        Mode::Layer1AttnNorm => run_layer1_attn_norm(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -3118,6 +3132,105 @@ fn run_layer1_input_guard(cli: &Cli) -> Result<()> {
             "layer1_input_guard_matches_oracle" => "begin layer1 validation from this exact input boundary",
             "layer1_input_guard_mismatch" => "localize the emitted layer0 output versus layer1 input boundary mismatch",
             _ => "generate or locate an official layer1 input oracle with 2880 values",
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_layer1_attn_norm(cli: &Cli) -> Result<()> {
+    let layer1_input = required_path(&cli.layer1_input, "layer1 input")?;
+    let layer1_attn_norm_oracle =
+        required_path(&cli.layer1_attn_norm_oracle, "layer1 attn norm oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer1_input, "layer1 input")?;
+    validate_path(layer1_attn_norm_oracle, "layer1 attn norm oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let (input_status, input_values) = load_tensor_artifact(layer1_input, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_tensor_artifact(layer1_attn_norm_oracle, &[hidden], &["values"])?;
+    let tensor_name = format!("model.layers.{}.input_layernorm.weight", cli.layer_index);
+    let weight_result = load_model_tensor_f32(model, &[tensor_name.as_str()]);
+
+    let artifact_blocked =
+        !input_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+    let (classification, metric, norm_weight_source, blocker) = if artifact_blocked {
+        (
+            "layer1_attention_norm_blocked_by_artifacts",
+            None,
+            None,
+            Some(json!({
+                "kind": "layer1_attention_norm_artifacts",
+                "detail": "layer1 input or attention norm oracle did not expose supported values or expected counts"
+            })),
+        )
+    } else {
+        match weight_result {
+            Ok((source, weight_values)) if weight_values.len() == hidden => {
+                let output = compute_mlp_rms_norm(&input_values, &weight_values, 1e-5);
+                let metric = compare_hidden(&output, &oracle_values);
+                let classification = if metric.metrics.mismatches == 0 {
+                    "layer1_attention_norm_matches_oracle"
+                } else {
+                    "layer1_attention_norm_mismatch"
+                };
+                (classification, Some(metric), Some(source), None)
+            }
+            Ok((source, weight_values)) => (
+                "layer1_attention_norm_execution_failed",
+                None,
+                Some(source),
+                Some(json!({
+                    "kind": "layer1_attention_norm_weight_shape",
+                    "detail": format!("expected {hidden} norm weights, got {}", weight_values.len())
+                })),
+            ),
+            Err(err) => (
+                "layer1_attention_norm_blocked_by_tensor_lookup",
+                None,
+                None,
+                Some(json!({
+                    "kind": "layer1_attention_norm_tensor_lookup",
+                    "detail": err.to_string(),
+                    "candidate_tensor": tensor_name
+                })),
+            ),
+        }
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer1-attn-norm",
+        "classification": classification,
+        "implemented": !artifact_blocked && norm_weight_source.is_some() && metric.is_some(),
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": cli.layer_index,
+        "input_source": layer1_input.display().to_string(),
+        "input_boundary": "corrected_layer0_output_layer1_input",
+        "layer1_attn_norm_oracle": layer1_attn_norm_oracle.display().to_string(),
+        "norm_weight_source": norm_weight_source,
+        "norm_policy": "bf16_input_f32_reduction_bf16_output",
+        "epsilon": 1e-5f32,
+        "artifacts": {
+            "layer1_input": input_status,
+            "layer1_attn_norm_oracle": oracle_status
+        },
+        "metric": metric,
+        "blocker": blocker,
+        "next_bounded_step": match classification {
+            "layer1_attention_norm_matches_oracle" => "validate the layer1 Q/K/V projection boundary or layer1 K RoPE guard",
+            "layer1_attention_norm_mismatch" => "localize layer1 attention RMSNorm dtype policy or epsilon",
+            "layer1_attention_norm_blocked_by_artifacts" => "generate or locate layer1 input and attention norm oracle artifacts with 2880 values",
+            "layer1_attention_norm_blocked_by_tensor_lookup" => "locate the layer1 attention norm weight tensor name in the model",
+            _ => "resolve the reported layer1 attention norm execution blocker",
         }
     });
     write_json(&cli.output, &status)
