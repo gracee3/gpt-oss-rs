@@ -1193,6 +1193,73 @@ Primary classification:
 
 multi_gpu_layer_sharding_split_allocation_report_complete
 
+## Safetensor header discovery status
+
+Added a CUDA-free safetensors header discovery helper in
+`crates/gpt-oss-model-runner/src/model_loader/safetensor_headers.rs`, exported
+as `SafetensorHeaderManifest` and `SafetensorTensorInfo`.
+
+Metadata discovered:
+
+- tensor name
+- safetensors dtype string
+- tensor shape
+- source `.safetensors` file path
+- tensor byte size from `data_offsets`
+
+Single-file behavior:
+
+- Reads only the first 8-byte header length and the JSON header bytes.
+- Parses tensor entries without reading tensor payloads into host vectors.
+- Returns tensor metadata in deterministic name order.
+
+Sharded-directory behavior:
+
+- Discovers `*.safetensors` files in the directory.
+- Ignores non-safetensors files.
+- Sorts shard file paths deterministically.
+- Parses only headers from each shard.
+- Merges tensor metadata and returns deterministic name order.
+- Rejects duplicate tensor names across shards with a clear model error.
+
+Planning bridge:
+
+- `SafetensorHeaderManifest::tensor_names()` returns names that can feed
+  `ShardedModelPlan::upload_manifest_for_tensor_names`.
+- `contains_tensor` and `has_lm_head_weight` expose cheap header-only checks.
+- Tests cover building a `ShardedUploadManifest` and `SplitAllocationReport`
+  from header-discovered names without CUDA.
+- Tests also cover absent `lm_head.weight` with `tie_word_embeddings=true`,
+  which still triggers the existing `TiedLmHeadFallback` marker through the
+  upload manifest path.
+
+Still deferred:
+
+- Tensor payloads are not converted, copied, or uploaded.
+- Existing model loader runtime behavior did not change.
+- No f16 or U8 loader filters were added.
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- `CudaCacheEngine` runtime behavior did not change.
+- Existing KV cache allocation and indexing are unchanged.
+- No activation transfer, peer copy, NCCL, collectives, CUDA kernel changes, or
+  runtime math branching were added.
+- Split maps remain non-executable and continue to be rejected before CUDA
+  allocation in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_header_discovery_helper_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_split_allocation_report_complete
+multi_gpu_layer_sharding_header_discovery_helper_complete

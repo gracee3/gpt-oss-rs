@@ -10,6 +10,7 @@ pub mod gpu_loader;
 #[cfg(feature = "cuda")]
 pub mod gpu_weights;
 pub mod mapper;
+pub mod safetensor_headers;
 pub mod safetensors;
 pub mod shard;
 pub mod weights;
@@ -32,6 +33,8 @@ pub enum ModelFormat {
     SafeTensors,
     GGUF,
 }
+
+pub use safetensor_headers::{SafetensorHeaderManifest, SafetensorTensorInfo};
 
 /// Detect format from a path. Checks extension of files in a directory,
 /// or the extension of a single file.
