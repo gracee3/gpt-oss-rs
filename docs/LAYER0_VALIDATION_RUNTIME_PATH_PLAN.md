@@ -3267,24 +3267,81 @@ F_residual_f32_add = 1 mismatch at lane 1480
 G_residual_bf16_add = 1 mismatch at lane 1480
 ```
 
-No valid global weighted-sum or residual policy clears the full layer11 output.
-The search for ordered layer11 MLP evidence under the pinned reference root
-found no matching ordered/router/selected-output/weighted-sum artifacts.
+No valid global weighted-sum or residual policy clears the full layer11 output
+from coarse-only evidence. The follow-up ordered-consumer slice used the
+generated ordered MLP evidence:
+
+```text
+/tmp/layer11_ordered_mlp_lane1480_bundle_status.json
+/tmp/layer11_ordered_mlp_lane1480_bundle/
+```
+
+Focused ordered consumer mode added:
+
+- `--mode coarse-mlp-output-ordered-debug`
+
+Ordered evidence result:
+
+```text
+classification = layer11_ordered_mlp_consumer_selected_output_localized
+ordered selected experts = [30, 13, 4, 20]
+ordered routing weights = [0.322265625, 0.287109375, 0.208984375, 0.1806640625]
+```
+
+Local and ordered selected experts match. Local and ordered routing weights
+match. MLP input and MLP norm match the ordered bundle exactly. Ordered selected
+expert internals are not included.
+
+Lane 1480 ordered attribution:
+
+```text
+rank0 expert30 local selected = -12.75
+rank0 expert30 ordered selected = -12.6875
+rank0 diff = 0.0625
+
+rank1 expert13 local/ordered selected = -9.875
+rank2 expert4  local/ordered selected =  1.046875
+rank3 expert20 local/ordered selected = -2.234375
+
+local_weighted_sum = -7.125
+ordered_weighted_sum = -7.09375
+local_final = -18.25
+ordered_final = -18.125
+```
+
+Replacement diagnostics:
+
+```text
+rank0/expert30/lane1480 ordered selected-output replacement:
+  selected_outputs = exact
+  weighted_sum = exact
+  final_output = exact
+
+ordered selected-output replacement:
+  weighted_sum = exact
+  final_output = exact
+```
+
+This localizes the layer11 lane1480 mismatch to rank0 / expert30 selected
+output. No correction was applied in this slice, no corrected layer11 output was
+emitted, and the coarse ladder was not continued.
 
 Caveats:
 
 - coarse bundle lacks selected-output and weighted-sum seams
 - attention residual remains an official coarse seam
-- ordered bundles remain required for true seam validation
+- the ordered lane bundle provides selected outputs, weighted sum, and final
+  output, but not expert30 internal MLP1/SwiGLU/MLP2 lane1480 boundaries
 - no correction was applied from coarse output alone
 - no raw `.live` or `/tmp` artifacts are committed
 
 No production behavior changed, no default model-runner routing changed, and no
 CUDA kernels changed.
 
-Next bounded step: generate ordered layer11 MLP evidence, especially selected
-outputs and weighted sum around lane 1480, before applying correction metadata
-or continuing the coarse ladder.
+Next bounded step: either generate expert30 internal MLP1/SwiGLU/MLP2 lane1480
+boundaries to localize below selected output, or in a separate slice record the
+validation-only rank0/expert30/lane1480 correction metadata before emitting a
+corrected layer11 output.
 
 ## Validation Commands
 

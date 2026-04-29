@@ -85,6 +85,14 @@ struct Cli {
     #[arg(long)]
     mlp_bundle: Option<PathBuf>,
 
+    /// Ordered MLP bundle status artifact for focused ordered-consumer diagnostics.
+    #[arg(long)]
+    ordered_mlp_bundle_status: Option<PathBuf>,
+
+    /// Ordered MLP bundle directory for focused ordered-consumer diagnostics.
+    #[arg(long)]
+    ordered_mlp_bundle_dir: Option<PathBuf>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
@@ -394,6 +402,7 @@ enum Mode {
     CoarseLadderValidate,
     CoarseNormDebug,
     CoarseMlpOutputDebug,
+    CoarseMlpOutputOrderedDebug,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1367,6 +1376,7 @@ fn main() -> Result<()> {
         Mode::CoarseLadderValidate => run_coarse_ladder_validate(&cli),
         Mode::CoarseNormDebug => run_coarse_norm_debug(&cli),
         Mode::CoarseMlpOutputDebug => run_coarse_mlp_output_debug(&cli),
+        Mode::CoarseMlpOutputOrderedDebug => run_coarse_mlp_output_ordered_debug(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -5871,6 +5881,311 @@ fn run_coarse_mlp_output_debug(cli: &Cli) -> Result<()> {
 #[cfg(not(feature = "cuda"))]
 fn run_coarse_mlp_output_debug(_cli: &Cli) -> Result<()> {
     anyhow::bail!("coarse MLP output debug requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn run_coarse_mlp_output_ordered_debug(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let selected_count = 4usize;
+    let lane = cli.lane;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let layer_input = required_path(&cli.layer_input, "layer input")?;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let ordered_status_path =
+        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
+    let ordered_dir = required_path(&cli.ordered_mlp_bundle_dir, "ordered MLP bundle dir")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer_input, "layer input")?;
+    validate_path(coarse, "coarse bundle")?;
+    validate_path(ordered_status_path, "ordered MLP bundle status")?;
+    anyhow::ensure!(
+        ordered_dir.is_dir(),
+        "ordered MLP bundle dir does not exist: {}",
+        ordered_dir.display()
+    );
+
+    let ordered_status: Value = serde_json::from_str(
+        &fs::read_to_string(ordered_status_path)
+            .with_context(|| format!("read {}", ordered_status_path.display()))?,
+    )?;
+    let ordered_selected_experts = ordered_status["selected_experts"]
+        .as_array()
+        .context("ordered status missing selected_experts")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|value| value as usize)
+                .context("ordered selected expert must be integer")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let ordered_routing_weights = ordered_status["routing_weights"]
+        .as_array()
+        .context("ordered status missing routing_weights")?
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|value| value as f32)
+                .context("ordered routing weight must be numeric")
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let mlp_norm_boundary = coarse_boundary_name(layer, "mlp_norm_output_before_mlp_projections");
+    let (_attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let (_mlp_norm_status, mlp_norm_oracle) =
+        load_coarse_boundary_tensor(coarse, &mlp_norm_boundary, &[hidden])?;
+
+    let (_, ordered_mlp_input) =
+        load_tensor_artifact(&ordered_dir.join("mlp_input.json"), &[hidden], &["values"])?;
+    let (_, ordered_mlp_norm) =
+        load_tensor_artifact(&ordered_dir.join("mlp_norm.json"), &[hidden], &["values"])?;
+    let (_, ordered_router_logits) =
+        load_tensor_artifact(&ordered_dir.join("router_logits.json"), &[32], &["values"])?;
+    let (_, ordered_selected_outputs) = load_tensor_artifact(
+        &ordered_dir.join("selected_outputs.json"),
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (_, ordered_weighted_sum) = load_tensor_artifact(
+        &ordered_dir.join("weighted_sum.json"),
+        &[hidden],
+        &["values"],
+    )?;
+    let (_, ordered_final_output) = load_tensor_artifact(
+        &ordered_dir.join("mlp_residual_output.json"),
+        &[hidden],
+        &["values"],
+    )?;
+
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let router_weight_name = format!("model.layers.{layer}.mlp.router.weight");
+    let router_bias_name = format!("model.layers.{layer}.mlp.router.bias");
+    let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let (_, router_weight_values) = load_model_tensor_f32(model, &[router_weight_name.as_str()])?;
+    let (_, router_bias_values) = load_model_tensor_f32(model, &[router_bias_name.as_str()])?;
+
+    let mlp_norm_values = compute_mlp_rms_norm_with_policy(
+        &attention_residual,
+        &post_norm_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let mlp_norm_metric = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
+    let coarse_mlp_norm_metric = compare_hidden(&mlp_norm_values, &mlp_norm_oracle);
+    let mlp_input_metric = compare_hidden(&attention_residual, &ordered_mlp_input);
+
+    let router_logits = compute_router_logits_bf16_linear(
+        &mlp_norm_values,
+        &router_weight_values,
+        &router_bias_values,
+    );
+    let topk = compute_router_topk(&router_logits, selected_count);
+    let local_selected_experts = topk
+        .indices
+        .iter()
+        .map(|&expert| expert as usize)
+        .collect::<Vec<_>>();
+    let local_routing_weights = topk.routing_weights.clone();
+    let selected_experts_match = local_selected_experts == ordered_selected_experts;
+    let routing_weights_metric = compare_hidden(&local_routing_weights, &ordered_routing_weights);
+    let router_logits_metric = compare_hidden(&router_logits, &ordered_router_logits);
+
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &local_selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+    let mut per_rank = Vec::new();
+    for (rank, expert_id) in local_selected_experts.iter().copied().enumerate() {
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| format!("selected expert {expert_id} missing from MXFP4 loader"))?;
+        let mlp1 = compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert)
+            .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
+        let swiglu = compute_swiglu_bf16(&mlp1);
+        let pre_bias = compute_expert30_mlp2_prebias_variant(
+            &swiglu,
+            &expert.down_weight,
+            Expert30Mlp2Policy::Current,
+        );
+        let output = compute_expert30_selected_output_variant(
+            &pre_bias,
+            &expert.down_bias,
+            Expert30Mlp2Policy::Current,
+        );
+        let start = rank * hidden;
+        selected_matrix[start..start + hidden].copy_from_slice(&output);
+        let ordered_lane = ordered_selected_outputs[start + lane];
+        per_rank.push(json!({
+            "rank": rank,
+            "expert": expert_id,
+            "local_selected_lane": output[lane],
+            "ordered_selected_lane": ordered_lane,
+            "diff": (output[lane] - ordered_lane).abs(),
+            "matches": output[lane] == ordered_lane,
+            "local_contribution": round_bf16(output[lane]) * round_bf16(local_routing_weights[rank]),
+            "ordered_contribution": round_bf16(ordered_lane) * round_bf16(ordered_routing_weights[rank]),
+        }));
+    }
+
+    let selected_metric = compare_hidden(&selected_matrix, &ordered_selected_outputs);
+    let per_rank_metrics = (0..selected_count)
+        .map(|rank| {
+            let start = rank * hidden;
+            json!({
+                "rank": rank,
+                "expert": local_selected_experts.get(rank),
+                "metric": compare_hidden(
+                    &selected_matrix[start..start + hidden],
+                    &ordered_selected_outputs[start..start + hidden],
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let weighted_sum =
+        compute_weighted_expert_sum_bf16(&selected_matrix, &local_routing_weights, hidden);
+    let weighted_metric = compare_hidden(&weighted_sum, &ordered_weighted_sum);
+    let final_output = compute_attention_residual(&attention_residual, &weighted_sum);
+    let final_metric = compare_hidden(&final_output, &ordered_final_output);
+
+    let mut rank0_replaced = selected_matrix.clone();
+    if !rank0_replaced.is_empty() {
+        rank0_replaced[lane] = ordered_selected_outputs[lane];
+    }
+    let rank0_replacement_weighted =
+        compute_weighted_expert_sum_bf16(&rank0_replaced, &local_routing_weights, hidden);
+    let rank0_replacement_final =
+        compute_attention_residual(&attention_residual, &rank0_replacement_weighted);
+    let rank0_replacement = json!({
+        "rank": 0,
+        "expert": local_selected_experts.first(),
+        "lane": lane,
+        "local_selected": selected_matrix[lane],
+        "ordered_selected": ordered_selected_outputs[lane],
+        "selected_metric": compare_hidden(&rank0_replaced, &ordered_selected_outputs),
+        "weighted_sum_metric": compare_hidden(&rank0_replacement_weighted, &ordered_weighted_sum),
+        "final_metric": compare_hidden(&rank0_replacement_final, &ordered_final_output),
+        "weighted_sum_lane": rank0_replacement_weighted[lane],
+        "final_lane": rank0_replacement_final[lane],
+    });
+
+    let ordered_replacement_weighted = compute_weighted_expert_sum_bf16(
+        &ordered_selected_outputs,
+        &ordered_routing_weights,
+        hidden,
+    );
+    let ordered_replacement_final =
+        compute_attention_residual(&attention_residual, &ordered_replacement_weighted);
+    let ordered_selected_replacement = json!({
+        "weighted_sum_metric": compare_hidden(&ordered_replacement_weighted, &ordered_weighted_sum),
+        "final_metric": compare_hidden(&ordered_replacement_final, &ordered_final_output),
+        "weighted_sum_lane": ordered_replacement_weighted[lane],
+        "final_lane": ordered_replacement_final[lane],
+    });
+
+    let rank0_clears = rank0_replacement["weighted_sum_metric"]["metrics"]["mismatches"].as_u64()
+        == Some(0)
+        && rank0_replacement["final_metric"]["metrics"]["mismatches"].as_u64() == Some(0);
+    let classification = if selected_experts_match
+        && routing_weights_metric.metrics.mismatches == 0
+        && selected_metric.metrics.mismatches == 1
+        && weighted_metric.metrics.mismatches == 1
+        && final_metric.metrics.mismatches == 1
+        && selected_metric
+            .first_mismatch
+            .as_ref()
+            .is_some_and(|mismatch| mismatch.hidden_lane == lane)
+        && rank0_clears
+    {
+        "layer11_ordered_mlp_consumer_selected_output_localized"
+    } else if weighted_metric.metrics.mismatches != 0 && selected_metric.metrics.mismatches == 0 {
+        "layer11_ordered_mlp_consumer_weighted_sum_policy_mismatch"
+    } else if final_metric.metrics.mismatches != 0 && weighted_metric.metrics.mismatches == 0 {
+        "layer11_ordered_mlp_consumer_residual_policy_mismatch"
+    } else {
+        "layer11_ordered_mlp_consumer_unresolved"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-mlp-output-ordered-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "norm_reduction_policy": cli.norm_reduction_policy,
+        "ordered_bundle": {
+            "status_path": ordered_status_path.display().to_string(),
+            "dir": ordered_dir.display().to_string(),
+            "selected_expert_internals_included": ordered_status["selected_expert_internals_included"].clone(),
+        },
+        "source_policy": {
+            "attention_residual": "official_coarse_attention_residual_seam",
+            "attention_recomputed": false,
+            "ordered_mlp_bundle_available": true,
+            "correction_applied": false,
+            "coarse_ladder_continued": false,
+        },
+        "guards": {
+            "attention_residual_vs_ordered_mlp_input": mlp_input_metric,
+            "mlp_norm_vs_ordered": mlp_norm_metric,
+            "mlp_norm_vs_coarse": coarse_mlp_norm_metric,
+            "router_logits_vs_ordered": router_logits_metric,
+        },
+        "selected_experts": {
+            "local": local_selected_experts,
+            "ordered": ordered_selected_experts,
+            "match": selected_experts_match,
+        },
+        "routing_weights": {
+            "local": local_routing_weights,
+            "ordered": ordered_routing_weights,
+            "metric": routing_weights_metric,
+            "match": routing_weights_metric.metrics.mismatches == 0,
+        },
+        "metrics": {
+            "selected_outputs": selected_metric,
+            "per_rank_selected_outputs": per_rank_metrics,
+            "weighted_sum": weighted_metric,
+            "final_output": final_metric,
+        },
+        "focus": {
+            "local_selected_outputs_by_rank": per_rank,
+            "local_weighted_sum": weighted_sum[lane],
+            "ordered_weighted_sum": ordered_weighted_sum[lane],
+            "local_final": final_output[lane],
+            "ordered_final": ordered_final_output[lane],
+            "diff": (final_output[lane] - ordered_final_output[lane]).abs(),
+        },
+        "replacement_diagnostics": {
+            "rank0_expert30_lane1480_replacement": rank0_replacement,
+            "ordered_selected_output_replacement": ordered_selected_replacement,
+        },
+        "ordered_internals": {
+            "included": ordered_status["selected_expert_internals_included"].clone(),
+            "required_next": "expert30 internal MLP1/SwiGLU/MLP2 lane1480 boundaries if the selected-output producer needs localization below selected output",
+        },
+        "next_bounded_step": "emit corrected layer11 output only in a separate slice after recording validation-only rank0/expert30/lane1480 correction metadata",
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_coarse_mlp_output_ordered_debug(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("ordered coarse MLP output debug requires the cuda feature")
 }
 
 fn run_coarse_norm_debug_with_prefix(
