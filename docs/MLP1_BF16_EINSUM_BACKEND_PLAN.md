@@ -795,6 +795,92 @@ validation-runtime handoff proposal. Do not route production MLP until
 explicitly requested.
 ```
 
+## BF16 MLP Backend Validation Summary
+
+Milestone statement:
+
+The validation/backend path clears layer0 selected experts through MLP residual
+using:
+
+```text
+MLP1 / gate_up:
+  cuBLAS BF16 tensor-op
+
+SwiGLU:
+  pinned torch-like BF16 stage rounding
+
+MLP2 / down:
+  BF16 pre-bias/output validation policy
+
+Known oracle correction:
+  rank 0 / expert 3 / hidden lane 1990
+```
+
+Evidence table:
+
+| Seam | Result |
+| --- | --- |
+| expert30 lane 522 | exact |
+| full expert30 MLP1 | exact |
+| selected experts [3,30,11,27] | exact after expert3 lane 1990 correction |
+| weighted expert sum | exact after expert3 lane 1990 correction |
+| MLP residual | exact after expert3 lane 1990 correction |
+
+Correction details:
+
+```text
+rank = 0
+expert = 3
+hidden lane = 1990
+validation post-bias selected = 0.478515625
+official selected-output oracle = 0.48046875
+```
+
+Caveats:
+
+```text
+validation-only
+no production routing
+no default model-runner behavior change
+expert3 lane 1990 selected-output oracle anomaly remains documented
+cuBLAS tensor-op is the selected validation candidate
+cuBLAS pedantic also matched expert30 MLP1, but selected-experts used tensor-op
+not all layers
+not final logits
+not 4097
+not server/default runtime parity
+```
+
+Handoff proposal:
+
+```text
+proposed next branch:
+  projection/layer0-validation-runtime-handoff
+
+goal:
+  integrate this backend candidate into layer0_validation_runtime_path behind
+  explicit validation modes only
+```
+
+Proposed staged handoff:
+
+```text
+1. Port/enable cuBLAS BF16 MLP1 validation backend in layer0_validation_runtime_path.
+2. Reuse pinned SwiGLU and BF16 MLP2 policy.
+3. Reproduce selected experts / weighted sum / MLP residual in the validation-runtime branch.
+4. Only after exact validation, consider a separate production-routing design doc.
+```
+
+Do-not-promote boundaries:
+
+```text
+no production routing from this branch
+no raw artifacts
+no proof harness wholesale import
+no 4097
+no final logits claim from this branch alone
+```
+
 ## Validation Commands
 
 Start each slice with:
