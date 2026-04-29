@@ -357,6 +357,60 @@ Primary classification:
 
 multi_gpu_layer_sharding_single_device_map_plumbing_complete
 
+## Stage 3.5 status
+
+Added a pre-CUDA config/serve boundary for device-map specs while keeping split
+maps non-executable.
+
+What changed:
+
+- `DeviceConfig` now carries an inert `device_map` string with default
+  `single`.
+- The serve CLI accepts `--device-map <SPEC>` and passes it into
+  `EngineConfig.device.device_map`.
+- `validate_device_map_spec_for_cuda_startup` lives in
+  `crates/gpt-oss-engine/src/config/device.rs`. It reuses the model-runner
+  `DeviceMap` parser instead of duplicating parser logic.
+- `GpuLLMEngine::new` calls the helper after reading HuggingFace `config.json`
+  for `num_hidden_layers` and before constructing any `GpuWorker`.
+
+Behavior:
+
+- Omitted device map: resolves to `single` and preserves current behavior.
+- `--device-map single`: resolves to a single-device map for the selected CUDA
+  device and preserves current behavior.
+- `--device-map split:0-11@0,12-23@1`: parses placement intent, then fails with
+  `split device maps are parsed but not executable yet`.
+- Invalid split specs fail with parser validation errors before runtime worker
+  construction.
+- A single-device map that does not match the selected CUDA device is rejected
+  by the helper.
+
+Pre-CUDA ordering:
+
+- Rejection happens before `GpuWorker::new`, before `CudaContext::new`, before
+  stream creation, before cuBLAS handle creation, before kernel loader creation,
+  before GPU weight upload, and before KV cache allocation.
+
+Still deferred:
+
+- Split maps remain non-executable.
+- No multiple CUDA contexts, tensor routing, KV cache changes, activation
+  transfer, peer copy, NCCL, collectives, or runtime math branching were added.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-engine device_map`
+- `cargo check -p gpt-oss-engine`
+- `cargo check -p gpt-oss-server`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_split_map_rejected_before_cuda_allocation
+
 ## Primary classification
 
-multi_gpu_layer_sharding_single_device_map_plumbing_complete
+multi_gpu_layer_sharding_split_map_rejected_before_cuda_allocation

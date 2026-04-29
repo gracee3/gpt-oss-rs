@@ -19,7 +19,7 @@ mod inner {
         SequenceId, TokenId,
     };
     use gpt_oss_engine::block_manager::prefix_cache::{self, PrefixCache};
-    use gpt_oss_engine::config::EngineConfig;
+    use gpt_oss_engine::config::{validate_device_map_spec_for_cuda_startup, EngineConfig};
     use gpt_oss_engine::sequence::{
         Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus,
     };
@@ -642,10 +642,18 @@ mod inner {
             let stage_start = Instant::now();
             let available_devices = gpt_oss_gpu::device::list_devices();
             validate_parallel_topology(&config, available_devices.len())?;
+            let device_map = validate_device_map_spec_for_cuda_startup(
+                Some(&config.device.device_map),
+                hf_config.num_hidden_layers,
+                0,
+            )
+            .map_err(LLMError::ConfigError)?;
             info!(
                 device_count = available_devices.len(),
+                device_map = %config.device.device_map,
+                executable_device = %device_map.devices[0],
                 elapsed_ms = stage_start.elapsed().as_millis(),
-                "validated CUDA topology"
+                "validated CUDA topology and device map"
             );
 
             if hf_config.architecture != "GptOssForCausalLM" {

@@ -20,7 +20,7 @@ pub mod validation;
 
 pub use cache::CacheConfigImpl;
 pub use cli::CliArgs;
-pub use device::DeviceConfig;
+pub use device::{validate_device_map_spec_for_cuda_startup, DeviceConfig};
 pub use engine::EngineConfig;
 pub use gpt_oss_runtime_plan::RuntimeMode;
 pub use model::ModelConfigImpl;
@@ -111,6 +111,7 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
 
     // Device
     config.device.device = args.device.clone();
+    config.device.device_map = args.device_map.clone();
 
     // Telemetry
     config.telemetry.enabled = !args.disable_telemetry;
@@ -146,6 +147,7 @@ mod tests {
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            device_map: "single".into(),
             disable_telemetry: false,
             prometheus_port: Some(9090),
             otlp_endpoint: None,
@@ -188,6 +190,7 @@ pipeline_parallel_size = 1
 
 [device]
 device = "cuda"
+device_map = "single"
 
 [telemetry]
 enabled = true
@@ -217,6 +220,7 @@ log_level = "warn"
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            device_map: "single".into(),
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,
@@ -253,6 +257,7 @@ log_level = "warn"
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            device_map: "single".into(),
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,

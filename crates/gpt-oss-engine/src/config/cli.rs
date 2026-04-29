@@ -92,6 +92,10 @@ pub struct CliArgs {
     #[arg(long, default_value = "cuda")]
     pub device: String,
 
+    /// Inert device map: "single" or a future split placement spec.
+    #[arg(long, default_value = "single")]
+    pub device_map: String,
+
     // -- Telemetry --
     /// Disable telemetry.
     #[arg(long, default_value_t = false)]

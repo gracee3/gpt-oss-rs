@@ -44,6 +44,8 @@ enum Commands {
         runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
         profile: ServeProfile,
+        #[arg(long, default_value = "single")]
+        device_map: String,
         #[arg(long)]
         tokenizer: Option<String>,
         #[arg(long, default_value = "info")]
@@ -168,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
             max_num_seqs,
             runtime_mode,
             profile,
+            device_map,
             tokenizer,
             log_level,
             disable_telemetry,
@@ -218,7 +221,12 @@ async fn main() -> anyhow::Result<()> {
                             .tensor_parallel_size(tensor_parallel_size)
                             .build(),
                     )
-                    .device(DeviceConfig::builder().device(device).build())
+                    .device(
+                        DeviceConfig::builder()
+                            .device(device)
+                            .device_map(device_map.clone())
+                            .build(),
+                    )
                     .telemetry(
                         TelemetryConfig::builder()
                             .enabled(!disable_telemetry)
@@ -238,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
                 max_model_len = resolved_profile.max_model_len,
                 gpu_memory_utilization = resolved_profile.gpu_memory_utilization,
                 tp_size = tensor_parallel_size,
+                device_map = %device_map,
                 "starting server"
             );
 
