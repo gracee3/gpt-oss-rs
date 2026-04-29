@@ -31,6 +31,7 @@ PORT_SOURCE = (
     "/home/emmy/openai/worktrees/pinned-prompt-parity/"
     "crates/gpt-oss-bench/tools/pinned_prompt_official_capture.py"
 )
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,6 +146,19 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
+
+
+def resolve_official_checkout(path: Path | None) -> Path:
+    if path is not None:
+        return path
+    for candidate in (
+        REPO_ROOT.parent / "gpt-oss",
+        REPO_ROOT.parents[1] / "gpt-oss",
+        REPO_ROOT.parents[2] / "gpt-oss",
+    ):
+        if (candidate / "gpt_oss").is_dir():
+            return candidate
+    raise ValueError("--official-checkout is required when no sibling gpt-oss checkout is found")
 
 
 def parse_ordered_mlp_selector(boundary: str, layer_idx: int | None) -> int | None:
@@ -606,6 +620,8 @@ def build_direct_output(
     layer_index: int,
     capture_body: dict[str, Any],
 ) -> dict[str, Any]:
+    if layer_index == 11 and args.lane is not None and args.output_dir is not None:
+        return build_layer11_consumer_status(args, boundary, layer_index, capture_body)
     return {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "backend": "official_torch",
@@ -617,6 +633,241 @@ def build_direct_output(
         "coarse_bundle": str(args.coarse_bundle) if args.coarse_bundle else None,
         "output_dir": str(args.output_dir) if args.output_dir else None,
         **capture_body,
+    }
+
+
+def boundary_by_name(capture_body: dict[str, Any], boundary: str) -> dict[str, Any]:
+    for entry in capture_body.get("boundaries", []):
+        if entry.get("boundary") == boundary:
+            return entry
+    raise ValueError(f"captured bundle is missing boundary {boundary}")
+
+
+def lane_window(values: list[float], lane: int, radius: int = 2) -> dict[str, Any]:
+    start = max(0, lane - radius)
+    end = min(len(values) - 1, lane + radius)
+    return {
+        "start": start,
+        "end": end,
+        "values": [
+            {"lane": index, "value": float(values[index])}
+            for index in range(start, end + 1)
+        ],
+    }
+
+
+def selected_outputs_lane_window(
+    values: list[float], selected_experts: list[int], hidden: int, lane: int
+) -> list[dict[str, Any]]:
+    windows = []
+    for rank, expert in enumerate(selected_experts):
+        start = rank * hidden
+        expert_values = values[start : start + hidden]
+        windows.append(
+            {
+                "rank": rank,
+                "expert": expert,
+                **lane_window(expert_values, lane),
+            }
+        )
+    return windows
+
+
+def finite_summary(values: list[float]) -> dict[str, Any]:
+    finite = [value for value in values if value == value and value not in (float("inf"), float("-inf"))]
+    return {
+        "count": len(values),
+        "finite_count": len(finite),
+        "all_finite": len(finite) == len(values),
+        "min": float(min(finite)) if finite else None,
+        "max": float(max(finite)) if finite else None,
+        "sha256_f32_le": digest_f32_values(values),
+    }
+
+
+def write_boundary_artifact(
+    output_dir: Path, name: str, entry: dict[str, Any], lane: int
+) -> str:
+    values = [float(value) for value in entry.get("values", [])]
+    artifact = {
+        "boundary": entry.get("boundary"),
+        "shape": entry.get("shape"),
+        "dtype": entry.get("dtype"),
+        "summary": finite_summary(values),
+        "focus_lane": lane,
+        "focus_lane_value": values[lane] if 0 <= lane < len(values) else None,
+        "lane_window": lane_window(values, lane) if values else None,
+        "values": values,
+    }
+    path = output_dir / f"{name}.json"
+    write_json(path, artifact)
+    return str(path)
+
+
+def write_selected_outputs_artifact(
+    output_dir: Path,
+    entry: dict[str, Any],
+    selected_experts: list[int],
+    lane: int,
+) -> str:
+    values = [float(value) for value in entry.get("values", [])]
+    shape = entry.get("shape") or []
+    hidden = int(shape[1]) if len(shape) == 2 else 2880
+    per_rank = []
+    for rank, expert in enumerate(selected_experts):
+        start = rank * hidden
+        expert_values = values[start : start + hidden]
+        per_rank.append(
+            {
+                "rank": rank,
+                "expert": expert,
+                "summary": finite_summary(expert_values),
+                "focus_lane": lane,
+                "focus_lane_value": expert_values[lane]
+                if 0 <= lane < len(expert_values)
+                else None,
+                "lane_window": lane_window(expert_values, lane)
+                if expert_values
+                else None,
+            }
+        )
+    artifact = {
+        "boundary": entry.get("boundary"),
+        "shape": shape,
+        "dtype": entry.get("dtype"),
+        "summary": finite_summary(values),
+        "selected_experts": selected_experts,
+        "per_rank": per_rank,
+        "values": values,
+    }
+    path = output_dir / "selected_outputs.json"
+    write_json(path, artifact)
+    return str(path)
+
+
+def build_layer11_consumer_status(
+    args: argparse.Namespace,
+    boundary: str,
+    layer_index: int,
+    capture_body: dict[str, Any],
+) -> dict[str, Any]:
+    lane = int(args.lane)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    names = {
+        "mlp_input": f"layer{layer_index}_final_token_hidden_state_after_attention_residual_add_before_mlp",
+        "mlp_norm": f"layer{layer_index}_final_token_mlp_norm_output_before_mlp_projections",
+        "router_logits": f"layer{layer_index}_final_token_mlp_router_logits_before_routing",
+        "topk": f"layer{layer_index}_final_token_mlp_topk_expert_indices_and_routing_weights",
+        "selected_outputs": f"layer{layer_index}_final_token_selected_expert_outputs_before_routing_weighted_sum",
+        "weighted_sum": f"layer{layer_index}_final_token_mlp_output_after_routing_weighted_sum_before_residual",
+        "mlp_residual_output": f"layer{layer_index}_final_token_hidden_state_after_mlp_residual_add",
+    }
+    entries = {key: boundary_by_name(capture_body, name) for key, name in names.items()}
+    selected_experts = [int(value) for value in capture_body.get("selected_expert_indices", [])]
+    routing_weights = [float(value) for value in capture_body.get("routing_weights", [])]
+    selected_values = [float(value) for value in entries["selected_outputs"].get("values", [])]
+    selected_shape = entries["selected_outputs"].get("shape") or [len(selected_experts), 2880]
+    hidden = int(selected_shape[1]) if len(selected_shape) == 2 else 2880
+
+    artifacts = {
+        "bundle_dir": str(output_dir) + "/",
+        "mlp_input": write_boundary_artifact(output_dir, "mlp_input", entries["mlp_input"], lane),
+        "mlp_norm": write_boundary_artifact(output_dir, "mlp_norm", entries["mlp_norm"], lane),
+        "router_logits": write_boundary_artifact(output_dir, "router_logits", entries["router_logits"], min(lane, 31)),
+        "topk": write_boundary_artifact(output_dir, "topk", entries["topk"], min(lane, len(routing_weights) - 1)),
+        "selected_outputs": write_selected_outputs_artifact(
+            output_dir, entries["selected_outputs"], selected_experts, lane
+        ),
+        "weighted_sum": write_boundary_artifact(output_dir, "weighted_sum", entries["weighted_sum"], lane),
+        "mlp_residual_output": write_boundary_artifact(
+            output_dir, "mlp_residual_output", entries["mlp_residual_output"], lane
+        ),
+    }
+
+    bundle_path = output_dir / "ordered_mlp_bundle.json"
+    write_json(bundle_path, capture_body)
+    artifacts["ordered_mlp_bundle"] = str(bundle_path)
+
+    focus_selected = []
+    for rank, expert in enumerate(selected_experts):
+        index = rank * hidden + lane
+        focus_selected.append(
+            {
+                "rank": rank,
+                "expert": expert,
+                "value": selected_values[index] if 0 <= index < len(selected_values) else None,
+            }
+        )
+
+    value_entries = {
+        key: [float(value) for value in entry.get("values", [])]
+        for key, entry in entries.items()
+    }
+    digests = {
+        key: finite_summary(values)["sha256_f32_le"]
+        for key, values in value_entries.items()
+    }
+    selected_per_rank_digests = []
+    for rank, expert in enumerate(selected_experts):
+        start = rank * hidden
+        expert_values = selected_values[start : start + hidden]
+        selected_per_rank_digests.append(
+            {
+                "rank": rank,
+                "expert": expert,
+                "summary": finite_summary(expert_values),
+            }
+        )
+
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": "layer11_ordered_mlp_bundle_generated_without_internals",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "boundary": boundary,
+        "layer_index": layer_index,
+        "layer_idx": layer_index,
+        "focus_lane": lane,
+        "model": str(args.official_model or args.model),
+        "case": "developer-message-user-smoke",
+        "selected_expert_internals_included": False,
+        "selected_experts": selected_experts,
+        "routing_weights": routing_weights,
+        "artifacts": artifacts,
+        "focus_lane_values": {
+            "mlp_input": value_entries["mlp_input"][lane],
+            "mlp_norm": value_entries["mlp_norm"][lane],
+            "selected_outputs_by_rank": focus_selected,
+            "weighted_sum": value_entries["weighted_sum"][lane],
+            "final_output": value_entries["mlp_residual_output"][lane],
+        },
+        "lane_window": {
+            "start": max(0, lane - 2),
+            "end": min(len(value_entries["mlp_residual_output"]) - 1, lane + 2),
+            "values": {
+                "mlp_input": lane_window(value_entries["mlp_input"], lane)["values"],
+                "mlp_norm": lane_window(value_entries["mlp_norm"], lane)["values"],
+                "selected_outputs_by_rank": selected_outputs_lane_window(
+                    selected_values, selected_experts, hidden, lane
+                ),
+                "weighted_sum": lane_window(value_entries["weighted_sum"], lane)["values"],
+                "final_output": lane_window(value_entries["mlp_residual_output"], lane)["values"],
+            },
+        },
+        "digests": {
+            **digests,
+            "selected_outputs_by_rank": selected_per_rank_digests,
+        },
+        "consumer_expected_norm_policy": "pairwise",
+        "producer_metadata": capture_body.get("producer_metadata", {}),
+        "consumer_next_command_hint": (
+            "Use this status/bundle as the ordered layer11 MLP oracle evidence "
+            "for the coarse_mlp_output_debug_requires_ordered_mlp_bundle blocker."
+        ),
     }
 
 
@@ -645,8 +896,8 @@ def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) ->
     }
 
 
-def load_model(checkpoint_path: Path, official_checkout: Path):
-    sys.path.insert(0, str(official_checkout))
+def load_model(checkpoint_path: Path, official_checkout: Path | None):
+    sys.path.insert(0, str(resolve_official_checkout(official_checkout)))
     import torch  # noqa: WPS433
     from gpt_oss.torch.model import Transformer  # noqa: WPS433
 
@@ -666,8 +917,6 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(f"unsupported intermediate boundary: {boundary}")
         if args.dry_run_schema:
             return dry_run_schema(boundary, layer_index, args)
-        if args.official_checkout is None:
-            raise ValueError("--official-checkout is required for non-dry-run capture")
         model_path = Path(capture_input["official_model"])
         model, torch = load_model(model_path, args.official_checkout)
         body = capture_layer_final_token_mlp_ordered_boundary_bundle(
@@ -689,8 +938,6 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     model_path = args.official_model or args.model
     if model_path is None:
         raise ValueError("--model or --official-model is required for non-dry-run capture")
-    if args.official_checkout is None:
-        raise ValueError("--official-checkout is required for non-dry-run capture")
     model, torch = load_model(model_path, args.official_checkout)
     body = capture_layer_final_token_mlp_ordered_boundary_bundle(
         model,
@@ -705,12 +952,43 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
-    if args.execution == "distributed-gpu" and not args.dry_run_schema:
-        raise ValueError(
-            "distributed-gpu execution is intentionally not ported in this focused helper"
-        )
-    output = run_capture(args)
     output_path = args.status_output or args.output
+    try:
+        if args.execution == "distributed-gpu" and not args.dry_run_schema:
+            raise ValueError(
+                "distributed-gpu execution is intentionally not ported in this focused helper"
+            )
+        output = run_capture(args)
+    except Exception as exc:
+        message = str(exc)
+        memory_like = any(
+            needle in message.lower()
+            for needle in ("out of memory", "oom", "cannot allocate", "cuda error")
+        )
+        output = {
+            "classification": "layer11_ordered_mlp_bundle_blocked_by_memory"
+            if memory_like
+            else "layer11_ordered_mlp_bundle_execution_failed",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "layer_index": args.layer_idx,
+            "focus_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "case": "developer-message-user-smoke",
+            "selected_expert_internals_included": False,
+            "error": message,
+            "artifacts": {
+                "bundle_dir": str(args.output_dir) + "/" if args.output_dir else None,
+            },
+        }
+        if output_path is None:
+            raise
+        write_json(output_path, output)
+        print(json.dumps(output, indent=2))
+        return 1
     if output_path is None:
         print(json.dumps(output, indent=2))
         return 0
