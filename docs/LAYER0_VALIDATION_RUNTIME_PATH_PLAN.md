@@ -3201,6 +3201,91 @@ CUDA kernels changed.
 Next bounded step: localize layer11 MLP output lane 1480 with ordered layer11
 MLP evidence or focused selected-expert replay/debug.
 
+## Layer11 MLP Output Lane1480 Debug Status
+
+Layer11 MLP norm is exact under the explicit pairwise RMSNorm reduction policy,
+but the coarse layer output still has one lane mismatch. This slice added a
+focused coarse replay/debug mode:
+
+- `--mode coarse-mlp-output-debug`
+
+Focus:
+
+```text
+layer = 11
+lane = 1480
+local_final = -18.25
+official_final = -18.125
+diff = 0.125
+classification = coarse_mlp_output_debug_requires_ordered_mlp_bundle
+```
+
+The mode recomputes router/top-k locally from the pairwise MLP norm and records
+that no router/top-k oracle is available in the coarse bundle.
+
+Selected experts and routing:
+
+```text
+selected_experts = [30, 13, 4, 20]
+routing_weights = [0.322265625, 0.287109375, 0.208984375, 0.1806640625]
+weight_sum = 0.9990234375
+```
+
+Lane 1480 attribution:
+
+```text
+rank0 expert30 selected = -12.75, contribution = -4.10888671875
+rank1 expert13 selected = -9.875, contribution = -2.835205078125
+rank2 expert4  selected =  1.046875, contribution =  0.218780517578125
+rank3 expert20 selected = -2.234375, contribution = -0.4036712646484375
+
+local_weighted_sum = -7.125
+attention_residual = -11.0625
+local_final = -18.25
+official_final = -18.125
+```
+
+Required weighted-sum diagnostic:
+
+```text
+weighted_sum candidates that would produce official final:
+  -7.09375
+  -7.0625
+  -7.03125
+local_weighted_sum = -7.125
+```
+
+Weighted-sum and residual policy variants:
+
+```text
+A_current = 1 mismatch at lane 1480
+B_f32_weighted_sum_then_bf16 = 1 mismatch at lane 1480
+C_bf16_product_then_f32_sum = lane 1480 exact, but 392 full-output mismatches
+D_pairwise_rank_sum = 1 mismatch at lane 1480
+E_sequential_bf16_rank_accum = 574 full-output mismatches
+F_residual_f32_add = 1 mismatch at lane 1480
+G_residual_bf16_add = 1 mismatch at lane 1480
+```
+
+No valid global weighted-sum or residual policy clears the full layer11 output.
+The search for ordered layer11 MLP evidence under the pinned reference root
+found no matching ordered/router/selected-output/weighted-sum artifacts.
+
+Caveats:
+
+- coarse bundle lacks selected-output and weighted-sum seams
+- attention residual remains an official coarse seam
+- ordered bundles remain required for true seam validation
+- no correction was applied from coarse output alone
+- no raw `.live` or `/tmp` artifacts are committed
+
+No production behavior changed, no default model-runner routing changed, and no
+CUDA kernels changed.
+
+Next bounded step: generate ordered layer11 MLP evidence, especially selected
+outputs and weighted sum around lane 1480, before applying correction metadata
+or continuing the coarse ladder.
+
 ## Validation Commands
 
 For the skeleton slice:

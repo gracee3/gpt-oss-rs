@@ -393,6 +393,7 @@ enum Mode {
     CoarseLayerValidate,
     CoarseLadderValidate,
     CoarseNormDebug,
+    CoarseMlpOutputDebug,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1365,6 +1366,7 @@ fn main() -> Result<()> {
         Mode::CoarseLayerValidate => run_coarse_layer_validate(&cli),
         Mode::CoarseLadderValidate => run_coarse_ladder_validate(&cli),
         Mode::CoarseNormDebug => run_coarse_norm_debug(&cli),
+        Mode::CoarseMlpOutputDebug => run_coarse_mlp_output_debug(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -5489,6 +5491,386 @@ fn run_layer2_attn_norm_debug(cli: &Cli) -> Result<()> {
 
 fn run_coarse_norm_debug(cli: &Cli) -> Result<()> {
     run_coarse_norm_debug_with_prefix(cli, "coarse_norm_debug", "coarse-norm-debug")
+}
+
+#[cfg(feature = "cuda")]
+fn run_coarse_mlp_output_debug(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_count = 4usize;
+    let lane = cli.lane;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+
+    let layer_input = required_path(&cli.layer_input, "layer input")?;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer_input, "layer input")?;
+    validate_path(coarse, "coarse bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let input_boundary = coarse_boundary_name(layer, "layer_input_before_attention_norm");
+    let attention_residual_boundary = coarse_boundary_name(
+        layer,
+        "hidden_state_after_attention_residual_add_before_mlp",
+    );
+    let mlp_norm_boundary = coarse_boundary_name(layer, "mlp_norm_output_before_mlp_projections");
+    let output_boundary = coarse_boundary_name(layer, "hidden_state_after_mlp_residual_add");
+
+    let (input_status, input_values) = load_tensor_artifact(layer_input, &[hidden], &["values"])?;
+    let (input_oracle_status, input_oracle) =
+        load_coarse_boundary_tensor(coarse, &input_boundary, &[hidden])?;
+    let (attention_residual_status, attention_residual) =
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let (mlp_norm_status, mlp_norm_oracle) =
+        load_coarse_boundary_tensor(coarse, &mlp_norm_boundary, &[hidden])?;
+    let (output_status, output_oracle) =
+        load_coarse_boundary_tensor(coarse, &output_boundary, &[hidden])?;
+
+    let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let router_weight_name = format!("model.layers.{layer}.mlp.router.weight");
+    let router_bias_name = format!("model.layers.{layer}.mlp.router.bias");
+    let (post_norm_source, post_norm_values) =
+        load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
+    let (router_weight_source, router_weight_values) =
+        load_model_tensor_f32(model, &[router_weight_name.as_str()])?;
+    let (router_bias_source, router_bias_values) =
+        load_model_tensor_f32(model, &[router_bias_name.as_str()])?;
+
+    let ordered_evidence =
+        find_ordered_layer_mlp_evidence(coarse.parent().unwrap_or(coarse), layer)?;
+    let ordered_available = !ordered_evidence.is_empty();
+    let schema_blocked = !input_status.shape_or_count_matched
+        || !input_oracle_status.shape_or_count_matched
+        || !attention_residual_status.shape_or_count_matched
+        || !mlp_norm_status.shape_or_count_matched
+        || !output_status.shape_or_count_matched
+        || post_norm_values.len() != hidden
+        || router_weight_values.len() != experts * hidden
+        || router_bias_values.len() != experts;
+
+    let input_guard_metric =
+        (!schema_blocked).then(|| compare_hidden(&input_values, &input_oracle));
+    let mlp_norm_values = if !schema_blocked {
+        compute_mlp_rms_norm_with_policy(
+            &attention_residual,
+            &post_norm_values,
+            1e-5,
+            &cli.norm_reduction_policy,
+        )?
+    } else {
+        Vec::new()
+    };
+    let mlp_norm_metric =
+        (!schema_blocked).then(|| compare_hidden(&mlp_norm_values, &mlp_norm_oracle));
+
+    let mut selected_experts = Vec::new();
+    let mut selected_logits = Vec::new();
+    let mut routing_weights = Vec::new();
+    let mut router_logits = Vec::new();
+    let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+    let mut prebias_matrix = vec![0.0f32; selected_count * hidden];
+    let mut down_bias_matrix = vec![0.0f32; selected_count * hidden];
+    let mut expert_traces = Vec::new();
+    let mut selected_expert_loader = Value::Null;
+    let mut execution_error = None;
+
+    if !schema_blocked
+        && input_guard_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+        && mlp_norm_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+    {
+        router_logits = compute_router_logits_bf16_linear(
+            &mlp_norm_values,
+            &router_weight_values,
+            &router_bias_values,
+        );
+        let topk = compute_router_topk(&router_logits, selected_count);
+        selected_experts = topk
+            .indices
+            .iter()
+            .map(|&expert| expert as usize)
+            .collect::<Vec<_>>();
+        selected_logits = topk.logits.clone();
+        routing_weights = topk.routing_weights.clone();
+
+        match load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))
+        {
+            Ok(loaded) => {
+                selected_expert_loader = json!({
+                    "helper_name": loaded.helper_name,
+                    "decode_source": loaded.decode_source,
+                    "selected_experts": loaded.selected_experts,
+                    "dtype_outputs": loaded.dtype_outputs,
+                    "tensor_sources": loaded.tensor_sources,
+                });
+                for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+                    let Some(expert) = loaded
+                        .experts
+                        .iter()
+                        .find(|expert| expert.expert == expert_id)
+                    else {
+                        execution_error = Some(format!(
+                            "selected expert {expert_id} missing from MXFP4 loader"
+                        ));
+                        break;
+                    };
+                    match compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert) {
+                        Ok(mlp1) => {
+                            let swiglu = compute_swiglu_bf16(&mlp1);
+                            let pre_bias = compute_expert30_mlp2_prebias_variant(
+                                &swiglu,
+                                &expert.down_weight,
+                                Expert30Mlp2Policy::Current,
+                            );
+                            let output = compute_expert30_selected_output_variant(
+                                &pre_bias,
+                                &expert.down_bias,
+                                Expert30Mlp2Policy::Current,
+                            );
+                            let start = rank * hidden;
+                            selected_matrix[start..start + hidden].copy_from_slice(&output);
+                            prebias_matrix[start..start + hidden].copy_from_slice(&pre_bias);
+                            down_bias_matrix[start..start + hidden]
+                                .copy_from_slice(&expert.down_bias[..hidden]);
+                            expert_traces.push(json!({
+                                "rank": rank,
+                                "expert": expert_id,
+                                "mlp1_summary": finite_summary(&mlp1),
+                                "swiglu_summary": finite_summary(&swiglu),
+                                "mlp2_pre_bias_lane": pre_bias[lane],
+                                "down_bias_lane": expert.down_bias[lane],
+                                "selected_output_lane": output[lane],
+                            }));
+                        }
+                        Err(err) => {
+                            execution_error = Some(format!(
+                                "cuBLAS BF16 MLP1 failed for expert {expert_id}: {err}"
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                execution_error = Some(err.to_string());
+            }
+        }
+    }
+
+    let can_compare_output = !schema_blocked
+        && execution_error.is_none()
+        && !routing_weights.is_empty()
+        && selected_matrix.iter().any(|value| *value != 0.0);
+    let current_weighted = if can_compare_output {
+        compute_weighted_expert_sum_bf16(&selected_matrix, &routing_weights, hidden)
+    } else {
+        Vec::new()
+    };
+    let current_final = if can_compare_output {
+        compute_attention_residual(&attention_residual, &current_weighted)
+    } else {
+        Vec::new()
+    };
+    let final_output_initial_metric =
+        can_compare_output.then(|| compare_hidden(&current_final, &output_oracle));
+
+    let variant_table = if can_compare_output {
+        compute_mlp_output_policy_variant_table(
+            &selected_matrix,
+            &routing_weights,
+            &attention_residual,
+            &output_oracle,
+            hidden,
+            lane,
+        )
+    } else {
+        Vec::new()
+    };
+    let best_policy_variant = variant_table
+        .iter()
+        .find(|entry| {
+            entry["metric"]["metrics"]["mismatches"]
+                .as_u64()
+                .is_some_and(|mismatches| mismatches == 0)
+        })
+        .and_then(|entry| entry["variant"].as_str())
+        .map(str::to_string);
+
+    let lane_attribution = if can_compare_output {
+        let per_rank = selected_experts
+            .iter()
+            .enumerate()
+            .map(|(rank, expert)| {
+                let selected = selected_matrix[rank * hidden + lane];
+                let weight = routing_weights[rank];
+                let raw_contribution = selected * weight;
+                let current_contribution = round_bf16(selected) * round_bf16(weight);
+                json!({
+                    "rank": rank,
+                    "expert": expert,
+                    "selected_output": selected,
+                    "routing_weight": weight,
+                    "contribution_before_rounding": raw_contribution,
+                    "bf16_rounded_contribution": current_contribution,
+                    "mlp2_pre_bias": prebias_matrix[rank * hidden + lane],
+                    "down_bias": down_bias_matrix[rank * hidden + lane],
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "per_rank_selected_outputs": per_rank,
+            "local_weighted_sum": current_weighted[lane],
+            "attention_residual": attention_residual[lane],
+            "local_final_output": current_final[lane],
+            "official_final_output": output_oracle[lane],
+            "required_weighted_sum_diagnostic": required_weighted_sum_diagnostic(
+                attention_residual[lane],
+                current_weighted[lane],
+                output_oracle[lane],
+            ),
+        })
+    } else {
+        Value::Null
+    };
+
+    let lane_window = if can_compare_output {
+        lane_window_range(lane, hidden, 2)
+            .map(|window_lane| {
+                let per_rank_selected = selected_experts
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, expert)| {
+                        json!({
+                            "rank": rank,
+                            "expert": expert,
+                            "selected_output": selected_matrix[rank * hidden + window_lane],
+                            "routing_weight": routing_weights[rank],
+                            "contribution": round_bf16(selected_matrix[rank * hidden + window_lane]) * round_bf16(routing_weights[rank]),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "lane": window_lane,
+                    "per_rank_selected_outputs": per_rank_selected,
+                    "local_weighted_sum": current_weighted[window_lane],
+                    "attention_residual": attention_residual[window_lane],
+                    "local_final_output": current_final[window_lane],
+                    "official_final_output": output_oracle[window_lane],
+                    "diff": (current_final[window_lane] - output_oracle[window_lane]).abs(),
+                    "matches": current_final[window_lane] == output_oracle[window_lane],
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let classification = if schema_blocked {
+        "coarse_mlp_output_debug_blocked_by_schema"
+    } else if execution_error.is_some() {
+        "coarse_mlp_output_debug_execution_failed"
+    } else if best_policy_variant.is_some() {
+        "coarse_mlp_output_debug_policy_matches_with_variant"
+    } else if final_output_initial_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches > 0 && !ordered_available)
+    {
+        "coarse_mlp_output_debug_requires_ordered_mlp_bundle"
+    } else if final_output_initial_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches > 0)
+    {
+        "coarse_mlp_output_debug_selected_expert_contribution_suspect"
+    } else {
+        "coarse_mlp_output_debug_unresolved"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "coarse-mlp-output-debug",
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "classification": classification,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "norm_reduction_policy": cli.norm_reduction_policy,
+        "source_policy": {
+            "attention_residual": "official_coarse_attention_residual_seam",
+            "attention_recomputed": false,
+            "ordered_mlp_bundle_available": ordered_available,
+            "coarse_only": true,
+            "corrections_allowed": false,
+            "correction_applied": false,
+        },
+        "artifacts": {
+            "layer_input": input_status,
+            "coarse_layer_input": input_oracle_status,
+            "coarse_attention_residual": attention_residual_status,
+            "coarse_mlp_norm": mlp_norm_status,
+            "coarse_layer_output": output_status,
+        },
+        "guards": {
+            "input_guard": input_guard_metric,
+            "mlp_norm": mlp_norm_metric,
+            "final_output_initial_metric": final_output_initial_metric,
+        },
+        "model_tensors": {
+            "post_attention_layernorm": post_norm_source,
+            "router_weight": router_weight_source,
+            "router_bias": router_bias_source,
+            "selected_expert_loader": selected_expert_loader,
+        },
+        "router": {
+            "router_topk_oracle_available": false,
+            "logits_summary": finite_summary(&router_logits),
+            "selected_experts": selected_experts,
+            "selected_logits": selected_logits,
+            "routing_weights": routing_weights,
+            "routing_weight_sum": routing_weights.iter().sum::<f32>(),
+            "finite_summary": finite_summary(&router_logits),
+        },
+        "lane_attribution": lane_attribution,
+        "lane_window": lane_window,
+        "internal_selected_expert_trace": expert_traces,
+        "variant_table": variant_table,
+        "best_policy_variant": best_policy_variant,
+        "ordered_layer11_mlp_evidence": if ordered_available {
+            json!({ "status": "found", "paths": ordered_evidence })
+        } else {
+            json!({ "status": "missing", "paths": [] })
+        },
+        "execution_error": execution_error,
+        "recommendation": if classification == "coarse_mlp_output_debug_requires_ordered_mlp_bundle" {
+            "generate ordered layer11 MLP bundle or focused selected-output/weighted-sum seams before applying any correction"
+        } else if classification == "coarse_mlp_output_debug_policy_matches_with_variant" {
+            "add an explicit validation-only policy only after reviewing the full-output exact variant"
+        } else {
+            "inspect reported blocker or mismatch before continuing coarse ladder"
+        },
+        "next_bounded_step": if classification == "coarse_mlp_output_debug_requires_ordered_mlp_bundle" {
+            "generate ordered layer11 MLP evidence for selected outputs and weighted sum"
+        } else {
+            "review focused layer11 MLP output debug status"
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_coarse_mlp_output_debug(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("coarse MLP output debug requires the cuda feature")
 }
 
 fn run_coarse_norm_debug_with_prefix(
@@ -10440,6 +10822,172 @@ fn compute_weighted_expert_sum_bf16(
         output[lane] = round_bf16(sum);
     }
     output
+}
+
+fn compute_weighted_expert_sum_variant(
+    selected_output: &[f32],
+    routing_weights: &[f32],
+    hidden: usize,
+    variant: &str,
+) -> Vec<f32> {
+    let mut output = vec![0.0f32; hidden];
+    for lane in 0..hidden {
+        let contributions = routing_weights
+            .iter()
+            .enumerate()
+            .map(|(rank, &weight)| {
+                let selected = selected_output[rank * hidden + lane];
+                match variant {
+                    "B_f32_weighted_sum_then_bf16" | "D_pairwise_rank_sum" => selected * weight,
+                    "C_bf16_product_then_f32_sum" => round_bf16(selected * weight),
+                    "E_sequential_bf16_rank_accum" => {
+                        round_bf16(round_bf16(selected) * round_bf16(weight))
+                    }
+                    _ => round_bf16(selected) * round_bf16(weight),
+                }
+            })
+            .collect::<Vec<_>>();
+        output[lane] = match variant {
+            "D_pairwise_rank_sum" => round_bf16(pairwise_sum_f32(&contributions)),
+            "E_sequential_bf16_rank_accum" => {
+                let mut sum = 0.0f32;
+                for contribution in contributions {
+                    sum = round_bf16(sum + contribution);
+                }
+                round_bf16(sum)
+            }
+            _ => round_bf16(contributions.iter().sum::<f32>()),
+        };
+    }
+    output
+}
+
+fn compute_residual_variant(residual_input: &[f32], weighted: &[f32], variant: &str) -> Vec<f32> {
+    residual_input
+        .iter()
+        .zip(weighted.iter())
+        .map(|(residual, weighted)| match variant {
+            "F_residual_f32_add" => round_bf16(*residual + *weighted),
+            _ => round_bf16(round_bf16(*residual) + round_bf16(*weighted)),
+        })
+        .collect()
+}
+
+fn compute_mlp_output_policy_variant_table(
+    selected_output: &[f32],
+    routing_weights: &[f32],
+    residual_input: &[f32],
+    oracle: &[f32],
+    hidden: usize,
+    lane: usize,
+) -> Vec<Value> {
+    let variants = [
+        "A_current",
+        "B_f32_weighted_sum_then_bf16",
+        "C_bf16_product_then_f32_sum",
+        "D_pairwise_rank_sum",
+        "E_sequential_bf16_rank_accum",
+        "F_residual_f32_add",
+        "G_residual_bf16_add",
+    ];
+    variants
+        .iter()
+        .map(|variant| {
+            let weighted_variant = match *variant {
+                "A_current" | "F_residual_f32_add" | "G_residual_bf16_add" => "A_current",
+                other => other,
+            };
+            let weighted = compute_weighted_expert_sum_variant(
+                selected_output,
+                routing_weights,
+                hidden,
+                weighted_variant,
+            );
+            let residual = compute_residual_variant(residual_input, &weighted, variant);
+            let metric = compare_hidden(&residual, oracle);
+            json!({
+                "variant": variant,
+                "weighted_sum_lane": weighted[lane],
+                "final_lane": residual[lane],
+                "official_final_lane": oracle[lane],
+                "lane_diff": (residual[lane] - oracle[lane]).abs(),
+                "metric": metric,
+            })
+        })
+        .collect()
+}
+
+fn lane_window_range(lane: usize, hidden: usize, radius: usize) -> std::ops::RangeInclusive<usize> {
+    let start = lane.saturating_sub(radius);
+    let end = (lane + radius).min(hidden.saturating_sub(1));
+    start..=end
+}
+
+fn required_weighted_sum_diagnostic(
+    residual_lane: f32,
+    local_weighted_lane: f32,
+    official_final_lane: f32,
+) -> Value {
+    let residual_bf16 = round_bf16(residual_lane);
+    let local_weighted_bf16 = round_bf16(local_weighted_lane);
+    let center = bf16::from_f32(local_weighted_bf16).to_bits();
+    let mut candidates = Vec::new();
+    for delta in -16i32..=16 {
+        let bits = (i32::from(center) + delta).clamp(0, i32::from(u16::MAX)) as u16;
+        let candidate = bf16::from_bits(bits).to_f32();
+        let final_value = round_bf16(residual_bf16 + candidate);
+        if final_value == official_final_lane {
+            candidates.push(json!({
+                "weighted_sum_candidate": candidate,
+                "delta_bf16_bits_from_local": delta,
+                "final_output": final_value,
+                "difference_from_local_weighted_sum": candidate - local_weighted_bf16,
+            }));
+        }
+    }
+    json!({
+        "official_final_output": official_final_lane,
+        "residual_bf16": residual_bf16,
+        "local_weighted_sum": local_weighted_lane,
+        "local_weighted_sum_bf16": local_weighted_bf16,
+        "local_final_output": round_bf16(residual_bf16 + local_weighted_bf16),
+        "candidate_weighted_sums_that_produce_official": candidates,
+    })
+}
+
+fn find_ordered_layer_mlp_evidence(root: &Path, layer: usize) -> Result<Vec<String>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut found = Vec::new();
+    let layer_tag = format!("layer{layer}");
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                pending.push(entry_path);
+                continue;
+            }
+            let Some(name) = entry_path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            let matches_layer = lower.contains(&layer_tag);
+            let matches_kind = lower.contains("mlp") && lower.contains("ordered")
+                || lower.contains("selected") && lower.contains("expert")
+                || lower.contains("weighted") && lower.contains("sum")
+                || lower.contains("router")
+                || lower.contains("expert") && lower.contains("mlp1")
+                || lower.contains("swiglu")
+                || lower.contains("mlp2");
+            if matches_layer && matches_kind && lower.ends_with(".json") {
+                found.push(entry_path.display().to_string());
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn compute_mlp_rms_norm(input: &[f32], weight: &[f32], epsilon: f32) -> Vec<f32> {

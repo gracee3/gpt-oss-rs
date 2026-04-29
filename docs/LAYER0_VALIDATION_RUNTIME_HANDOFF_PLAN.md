@@ -898,6 +898,85 @@ changed.
 Next bounded step: localize layer11 MLP output lane 1480, preferably with an
 ordered layer11 MLP bundle or a focused selected-expert replay/debug mode.
 
+## Layer11 MLP Output Lane1480 Debug Status
+
+After the pairwise RMSNorm policy cleared layer11 input, attention norm, and
+MLP norm, coarse validation exposed one final layer-output mismatch:
+
+```text
+layer = 11
+lane = 1480
+local_final = -18.25
+official_final = -18.125
+diff = 0.125
+classification = coarse_mlp_output_debug_requires_ordered_mlp_bundle
+```
+
+Focused debug mode added:
+
+- `--mode coarse-mlp-output-debug`
+
+The mode starts from the official coarse attention residual seam, recomputes
+layer11 MLP norm with `--norm-reduction-policy pairwise`, computes router/top-k
+locally, replays the selected experts, and attributes the focus lane without
+applying corrections.
+
+Layer11 selected experts:
+
+```text
+selected_experts = [30, 13, 4, 20]
+routing_weights = [0.322265625, 0.287109375, 0.208984375, 0.1806640625]
+```
+
+Lane 1480 per-rank contribution summary:
+
+```text
+rank0 expert30 selected = -12.75, contribution = -4.10888671875
+rank1 expert13 selected = -9.875, contribution = -2.835205078125
+rank2 expert4  selected =  1.046875, contribution =  0.218780517578125
+rank3 expert20 selected = -2.234375, contribution = -0.4036712646484375
+
+local_weighted_sum = -7.125
+attention_residual = -11.0625
+local_final = -18.25
+official_final = -18.125
+```
+
+The required weighted-sum diagnostic shows that a BF16 weighted sum of
+`-7.09375`, `-7.0625`, or `-7.03125` would produce the official final output
+after BF16 residual add, compared with the local weighted sum `-7.125`.
+
+Policy variant summary:
+
+```text
+A_current = 1 mismatch at lane 1480
+B_f32_weighted_sum_then_bf16 = 1 mismatch at lane 1480
+C_bf16_product_then_f32_sum = clears lane 1480 but causes 392 full-output mismatches
+D_pairwise_rank_sum = 1 mismatch at lane 1480
+E_sequential_bf16_rank_accum = 574 full-output mismatches
+F_residual_f32_add = 1 mismatch at lane 1480
+G_residual_bf16_add = 1 mismatch at lane 1480
+```
+
+No valid global weighted-sum or residual policy variant clears the full layer11
+output. The coarse bundle has no ordered layer11 MLP seams, and a search under
+the pinned reference root found no ordered layer11 MLP evidence.
+
+Caveats:
+
+- the coarse bundle lacks selected-output and weighted-sum seams
+- attention residual remains an official coarse seam
+- ordered bundles remain required for true seam validation
+- no correction was applied from coarse final-output evidence alone
+- no raw `.live` or `/tmp` artifacts are committed
+
+No production behavior changed, no default routing changed, and no CUDA kernels
+changed.
+
+Next bounded step: generate an ordered layer11 MLP bundle, or at minimum
+selected-output and weighted-sum seams for layer11 lane 1480, before applying
+any lane correction or continuing the coarse ladder.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
