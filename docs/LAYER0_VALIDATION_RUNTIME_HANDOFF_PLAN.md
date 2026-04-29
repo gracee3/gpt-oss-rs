@@ -516,6 +516,73 @@ Next bounded step: begin layer2 attention/MLP validation using the same
 bundle-driven pattern, while keeping source-complete K/V history construction
 as a separate unresolved ladder task.
 
+## Bundle-Driven Layer Ladder Status
+
+Generic bundle-driven ladder scaffolding has been added so remaining layers can
+use one validation shape instead of hand-coded layer-specific breakpoints.
+
+Modes added:
+
+- `--mode layer-bundle-discover`
+- `--mode layer-bundle-validate`
+- `--mode layer-ladder`
+
+Current exact input seed:
+
+```text
+/tmp/layer1_validation_corrected_output.json
+```
+
+Attempted ladder range:
+
+```text
+start_layer = 2
+end_layer = 23
+```
+
+Layer2 discovery result:
+
+```text
+classification = layer_bundle_discovery_missing_attention_bundle
+attention_bundle_path = null
+mlp_bundle_path = null
+```
+
+The pinned artifact root currently contains this layer2 coarse bundle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+```
+
+It does not satisfy the ordered-boundary contract expected by the scaffold:
+
+- `*layer<N>*attention*ordered*boundary*bundle*status.json`
+- `*layer<N>*mlp*ordered*boundary*bundle*status.json`
+
+Ladder run result:
+
+```text
+classification = layer_ladder_stopped_on_missing_bundle
+completed_layers = []
+stopped_at_layer = 2
+stop_reason = missing_attention_bundle
+corrections = []
+emitted_outputs = []
+```
+
+Source-complete caveats remain unchanged:
+
+- attention validation is bundle-seam driven
+- all-token K/V source-complete construction remains open
+- selected-output lane corrections are validation-only metadata
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: either produce ordered layer2 attention/MLP boundary bundles
+or add a scoped adapter for the existing coarse layer2-to-final ladder bundle,
+then rerun `layer-bundle-validate` for layer2 and the ladder.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

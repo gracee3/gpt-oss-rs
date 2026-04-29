@@ -2831,6 +2831,71 @@ No production runtime behavior, default model-runner routing, CUDA kernels, raw
 Next bounded step: begin layer2 attention/MLP validation using the same
 bundle-driven pattern.
 
+## Bundle-Driven Layer Ladder Status
+
+The validation binary now has generic layer-indexed ladder scaffolding for
+bundle-driven validation across the remaining layers.
+
+Modes added:
+
+- `--mode layer-bundle-discover`
+- `--mode layer-bundle-validate`
+- `--mode layer-ladder`
+
+Current exact input seed:
+
+```text
+/tmp/layer1_validation_corrected_output.json
+```
+
+Attempted ladder range:
+
+```text
+start_layer = 2
+end_layer = 23
+```
+
+Layer2 discovery result:
+
+```text
+classification = layer_bundle_discovery_missing_attention_bundle
+attention_bundle_path = null
+mlp_bundle_path = null
+```
+
+The pinned artifact root currently exposes this layer2 artifact:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer2-to-final-final-token-coarse-layer-ladder-bundle-status.json
+```
+
+That coarse bundle is not an ordered attention/MLP boundary bundle, so the
+generic ladder correctly stops before validating layer2.
+
+Ladder run result:
+
+```text
+classification = layer_ladder_stopped_on_missing_bundle
+completed_layers = []
+stopped_at_layer = 2
+stop_reason = missing_attention_bundle
+corrections = []
+emitted_outputs = []
+```
+
+Source-complete caveats:
+
+- attention validation remains bundle-seam driven
+- all-token K/V source-complete construction remains open
+- selected-output lane corrections remain validation-only metadata
+
+No production behavior changed, no default model-runner routing changed, no
+CUDA kernels changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: create ordered layer2 attention/MLP bundles, or add a scoped
+adapter for the existing layer2-to-final coarse ladder bundle, then rerun
+`layer-bundle-validate` for layer2.
+
 ## Validation Commands
 
 For the skeleton slice:
