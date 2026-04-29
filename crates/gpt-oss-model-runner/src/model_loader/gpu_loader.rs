@@ -8,6 +8,12 @@
 //! - `GpuDType::F16`: f16 kept as-is, bf16 narrowed to f16, f32 narrowed to f16
 //!   Halves VRAM and enables hgemm.
 
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use gpt_oss_core::error::{LLMError, Result};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FilteredTensorDecision {
     record_shape: bool,
@@ -30,6 +36,190 @@ fn filtered_f16_tensor_decision(
         record_shape: true,
         upload: should_load(tensor_name),
     }
+}
+
+/// Load all raw `U8` tensors from safetensors files into host memory.
+///
+/// GPT-OSS stores MXFP4 expert blocks/scales as `U8`, so these tensors must
+/// survive loader setup even though they are not uploaded through the normal
+/// f32/f16 weight maps.
+pub fn load_u8_weights_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
+    load_u8_weights_to_host_filtered(path, |_| true)
+}
+
+/// Load raw `U8` tensors from safetensors files into host memory while allowing
+/// callers to skip U8 payloads that are unnecessary for the current shard.
+pub fn load_u8_weights_to_host_filtered<F>(
+    path: &Path,
+    should_load: F,
+) -> Result<HashMap<String, Vec<u8>>>
+where
+    F: FnMut(&str) -> bool,
+{
+    if path.is_dir() {
+        load_sharded_u8_to_host_filtered(path, should_load)
+    } else {
+        load_single_u8_to_host_filtered(path, should_load)
+    }
+}
+
+fn load_single_u8_to_host_filtered<F>(
+    path: &Path,
+    mut should_load: F,
+) -> Result<HashMap<String, Vec<u8>>>
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut file = std::fs::File::open(path)?;
+    let (header, data_start, file_len) = parse_safetensors_header_from_file(&mut file, path)?;
+    let mut weights = HashMap::new();
+
+    for (name, meta) in &header {
+        if name == "__metadata__" {
+            continue;
+        }
+
+        let Some((dtype_str, start, end)) = parse_u8_tensor_meta(meta, name, data_start, file_len)?
+        else {
+            continue;
+        };
+
+        if dtype_str == "U8" && should_load(name.as_str()) {
+            let mut tensor_bytes = vec![0u8; end - start];
+            file.seek(SeekFrom::Start(start as u64))?;
+            file.read_exact(&mut tensor_bytes)?;
+            weights.insert(name.clone(), tensor_bytes);
+        }
+    }
+
+    Ok(weights)
+}
+
+fn load_sharded_u8_to_host_filtered<F>(
+    dir: &Path,
+    mut should_load: F,
+) -> Result<HashMap<String, Vec<u8>>>
+where
+    F: FnMut(&str) -> bool,
+{
+    let shard_files = collect_safetensor_shards(dir)?;
+    let mut all_weights = HashMap::new();
+
+    for shard_path in &shard_files {
+        all_weights.extend(load_single_u8_to_host_filtered(
+            shard_path,
+            &mut should_load,
+        )?);
+    }
+
+    Ok(all_weights)
+}
+
+fn collect_safetensor_shards(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut shard_files: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "safetensors")
+                .unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+    shard_files.sort();
+
+    if shard_files.is_empty() {
+        return Err(LLMError::ModelError(format!(
+            "no .safetensors files found in {}",
+            dir.display()
+        )));
+    }
+
+    Ok(shard_files)
+}
+
+fn parse_safetensors_header_from_file(
+    file: &mut std::fs::File,
+    path: &Path,
+) -> Result<(HashMap<String, serde_json::Value>, usize, usize)> {
+    let mut header_len_bytes = [0u8; 8];
+    file.read_exact(&mut header_len_bytes).map_err(|e| {
+        LLMError::ModelError(format!(
+            "failed to read safetensors header length from {}: {e}",
+            path.display()
+        ))
+    })?;
+
+    let header_size = u64::from_le_bytes(header_len_bytes) as usize;
+    let file_len = file.metadata()?.len() as usize;
+    if 8 + header_size > file_len {
+        return Err(LLMError::ModelError(format!(
+            "header size exceeds file length in {}",
+            path.display()
+        )));
+    }
+
+    let mut header_bytes = vec![0u8; header_size];
+    file.seek(SeekFrom::Start(8))?;
+    file.read_exact(&mut header_bytes)?;
+
+    let header_str = std::str::from_utf8(&header_bytes)
+        .map_err(|e| LLMError::ModelError(format!("invalid header utf8: {e}")))?;
+    let header: HashMap<String, serde_json::Value> = serde_json::from_str(header_str)
+        .map_err(|e| LLMError::SerializationError(format!("header json: {e}")))?;
+
+    Ok((header, 8 + header_size, file_len))
+}
+
+fn parse_u8_tensor_meta<'a>(
+    meta: &'a serde_json::Value,
+    name: &str,
+    data_start: usize,
+    file_len: usize,
+) -> Result<Option<(&'a str, usize, usize)>> {
+    let obj = meta
+        .as_object()
+        .ok_or_else(|| LLMError::ModelError(format!("tensor {} has non-object meta", name)))?;
+
+    let dtype_str = obj
+        .get("dtype")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| LLMError::ModelError(format!("tensor {} missing dtype", name)))?;
+    if dtype_str != "U8" {
+        return Ok(None);
+    }
+
+    let offsets = obj
+        .get("data_offsets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| LLMError::ModelError(format!("tensor {} missing data_offsets", name)))?;
+    if offsets.len() != 2 {
+        return Err(LLMError::ModelError(format!(
+            "tensor {} has {} offsets, expected 2",
+            name,
+            offsets.len()
+        )));
+    }
+
+    let start = offsets[0].as_u64().unwrap_or(0) as usize;
+    let end = offsets[1].as_u64().unwrap_or(0) as usize;
+    if end < start {
+        return Err(LLMError::ModelError(format!(
+            "tensor {} has reversed data offsets",
+            name
+        )));
+    }
+
+    let abs_start = data_start + start;
+    let abs_end = data_start + end;
+    if abs_end > file_len {
+        return Err(LLMError::ModelError(format!(
+            "tensor {} data range [{}, {}) exceeds file size {}",
+            name, abs_start, abs_end, file_len
+        )));
+    }
+
+    Ok(Some((dtype_str, abs_start, abs_end)))
 }
 
 #[cfg(feature = "cuda")]
@@ -133,19 +323,6 @@ mod inner {
             load_sharded_to_gpu_f16(path, stream, should_load)
         } else {
             load_single_to_gpu_f16(path, stream, should_load)
-        }
-    }
-
-    /// Load all raw `U8` tensors from safetensors files into host memory.
-    ///
-    /// GPT-OSS stores MXFP4 expert blocks/scales as `U8`, so these tensors
-    /// must survive loader setup even though they are not uploaded through the
-    /// normal f32/f16 weight maps.
-    pub fn load_u8_weights_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
-        if path.is_dir() {
-            load_sharded_u8_to_host(path)
-        } else {
-            load_single_u8_to_host(path)
         }
     }
 
@@ -501,45 +678,6 @@ mod inner {
         Ok(shard_files)
     }
 
-    fn load_single_u8_to_host(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
-        info!(
-            "gpu_loader: memory-mapping {} (host U8 path)",
-            path.display()
-        );
-
-        let file = std::fs::File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
-            LLMError::ModelError(format!("mmap failed for {}: {}", path.display(), e))
-        })?;
-        let data: &[u8] = &mmap;
-
-        let (header, data_start) = parse_safetensors_header(data, path)?;
-        let mut weights = HashMap::new();
-
-        for (name, meta) in &header {
-            if name == "__metadata__" {
-                continue;
-            }
-
-            let (dtype_str, _shape, tensor_bytes) =
-                parse_tensor_meta(meta, name, data, data_start)?;
-            if dtype_str == "U8" {
-                weights.insert(name.clone(), tensor_bytes.to_vec());
-            }
-        }
-
-        Ok(weights)
-    }
-
-    fn load_sharded_u8_to_host(dir: &Path) -> Result<HashMap<String, Vec<u8>>> {
-        let shard_files = collect_shards(dir)?;
-        let mut all_weights = HashMap::new();
-        for shard_path in &shard_files {
-            all_weights.extend(load_single_u8_to_host(shard_path)?);
-        }
-        Ok(all_weights)
-    }
-
     // -----------------------------------------------------------------------
     // Dtype conversion
     // -----------------------------------------------------------------------
@@ -698,13 +836,55 @@ mod inner {
 
 #[cfg(feature = "cuda")]
 pub use inner::{
-    load_u8_weights_to_host, load_weights_to_gpu, load_weights_to_gpu_f16,
-    load_weights_to_gpu_f16_with_shapes, load_weights_to_gpu_f16_with_shapes_filtered,
-    load_weights_to_gpu_with_shapes, load_weights_to_gpu_with_shapes_filtered, GpuDType,
+    load_weights_to_gpu, load_weights_to_gpu_f16, load_weights_to_gpu_f16_with_shapes,
+    load_weights_to_gpu_f16_with_shapes_filtered, load_weights_to_gpu_with_shapes,
+    load_weights_to_gpu_with_shapes_filtered, GpuDType,
 };
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
+    fn write_safetensors(path: &Path, tensors: &[(&str, &str, &[usize], &[u8])]) {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+
+        for (name, dtype, shape, bytes) in tensors {
+            let start = data.len();
+            data.extend_from_slice(bytes);
+            let end = data.len();
+
+            header.insert(
+                (*name).to_string(),
+                serde_json::json!({
+                    "dtype": dtype,
+                    "shape": shape,
+                    "data_offsets": [start, end],
+                }),
+            );
+        }
+
+        let header_json = serde_json::to_vec(&serde_json::Value::Object(header)).unwrap();
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header_json.len() as u64).to_le_bytes());
+        out.extend_from_slice(&header_json);
+        out.extend_from_slice(&data);
+        std::fs::write(path, out).unwrap();
+    }
+
+    fn unique_temp_dir(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpt_oss_u8_filtered_loader_{test_name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn module_compiles() {
         assert!(true);
@@ -750,5 +930,170 @@ mod tests {
 
         assert!(decision.record_shape);
         assert!(!decision.upload);
+    }
+
+    #[test]
+    fn u8_filtered_loader_selects_one_u8_tensor_from_single_file() {
+        let dir = unique_temp_dir("single_select");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            &[
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[3],
+                    &[1, 2, 3],
+                ),
+                (
+                    "model.layers.1.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[2],
+                    &[4, 5],
+                ),
+            ],
+        );
+
+        let weights = super::load_u8_weights_to_host_filtered(&path, |name| {
+            name == "model.layers.1.mlp.experts.gate_up_proj_blocks"
+        })
+        .unwrap();
+
+        assert_eq!(weights.len(), 1);
+        assert_eq!(
+            weights["model.layers.1.mlp.experts.gate_up_proj_blocks"],
+            vec![4, 5]
+        );
+    }
+
+    #[test]
+    fn u8_filtered_loader_ignores_non_u8_even_when_selected() {
+        let dir = unique_temp_dir("ignore_non_u8");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            &[
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "F16",
+                    &[2],
+                    &[0, 0, 0, 0],
+                ),
+                (
+                    "model.layers.0.mlp.experts.down_proj_scales",
+                    "U8",
+                    &[1],
+                    &[7],
+                ),
+            ],
+        );
+
+        let weights = super::load_u8_weights_to_host_filtered(&path, |_| true).unwrap();
+
+        assert_eq!(weights.len(), 1);
+        assert!(weights.contains_key("model.layers.0.mlp.experts.down_proj_scales"));
+        assert!(!weights.contains_key("model.layers.0.self_attn.q_proj.weight"));
+    }
+
+    #[test]
+    fn u8_filtered_loader_returns_empty_when_filter_rejects_all() {
+        let dir = unique_temp_dir("reject_all");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            &[(
+                "model.layers.0.mlp.experts.down_proj_blocks",
+                "U8",
+                &[2],
+                &[9, 8],
+            )],
+        );
+
+        let weights = super::load_u8_weights_to_host_filtered(&path, |_| false).unwrap();
+
+        assert!(weights.is_empty());
+    }
+
+    #[test]
+    fn u8_unfiltered_wrapper_loads_all_u8_tensors() {
+        let dir = unique_temp_dir("wrapper");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            &[
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[1],
+                    &[1],
+                ),
+                (
+                    "model.layers.1.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[1],
+                    &[2],
+                ),
+                (
+                    "model.layers.2.self_attn.q_proj.weight",
+                    "F32",
+                    &[1],
+                    &[0, 0, 0, 0],
+                ),
+            ],
+        );
+
+        let unfiltered = super::load_u8_weights_to_host(&path).unwrap();
+        let filtered_all = super::load_u8_weights_to_host_filtered(&path, |_| true).unwrap();
+
+        assert_eq!(unfiltered, filtered_all);
+        assert_eq!(unfiltered.len(), 2);
+    }
+
+    #[test]
+    fn u8_filtered_loader_selects_across_sharded_directory() {
+        let dir = unique_temp_dir("sharded");
+        std::fs::write(dir.join("README.md"), "ignored").unwrap();
+        write_safetensors(
+            &dir.join("model-00002-of-00002.safetensors"),
+            &[(
+                "model.layers.12.mlp.experts.down_proj_scales",
+                "U8",
+                &[1],
+                &[12],
+            )],
+        );
+        write_safetensors(
+            &dir.join("model-00001-of-00002.safetensors"),
+            &[(
+                "model.layers.0.mlp.experts.down_proj_scales",
+                "U8",
+                &[1],
+                &[0],
+            )],
+        );
+
+        let weights = super::load_u8_weights_to_host_filtered(&dir, |name| {
+            name == "model.layers.0.mlp.experts.down_proj_scales"
+                || name == "model.layers.12.mlp.experts.down_proj_scales"
+        })
+        .unwrap();
+
+        let mut names = weights.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "model.layers.0.mlp.experts.down_proj_scales".to_string(),
+                "model.layers.12.mlp.experts.down_proj_scales".to_string()
+            ]
+        );
+        assert_eq!(
+            weights["model.layers.0.mlp.experts.down_proj_scales"],
+            vec![0]
+        );
+        assert_eq!(
+            weights["model.layers.12.mlp.experts.down_proj_scales"],
+            vec![12]
+        );
     }
 }

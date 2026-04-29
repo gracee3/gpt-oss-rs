@@ -1617,6 +1617,77 @@ Primary classification:
 
 multi_gpu_layer_sharding_f16_filtered_loader_api_complete
 
+## U8 host filtered loader API status
+
+Added an additive U8 host filtered loader API in:
+
+`crates/gpt-oss-model-runner/src/model_loader/gpu_loader.rs`
+
+Function added:
+
+```text
+load_u8_weights_to_host_filtered(path, should_load)
+```
+
+Preserved public API:
+
+```text
+load_u8_weights_to_host(path)
+```
+
+`load_u8_weights_to_host` now delegates to
+`load_u8_weights_to_host_filtered(path, |_| true)`, so the existing unfiltered
+U8 host behavior remains the default public behavior.
+
+U8-only behavior:
+
+- The filtered loader reads safetensors headers and copies payload bytes only
+  for tensors with `dtype == "U8"`.
+- Non-U8 tensors are ignored even when `should_load(name)` returns true.
+- The filter is applied after dtype classification, so it controls which U8
+  payloads are retained in the returned host map.
+
+Sharded-directory behavior:
+
+- Directory traversal continues to use sorted `.safetensors` file paths.
+- Non-safetensors files in a directory are ignored.
+- Merge behavior remains the existing map-extension behavior; duplicate names
+  are not made stricter in this slice.
+
+Metadata responsibility:
+
+- The U8 host loader still returns payload maps only.
+- Shape, source-file, dtype, and byte-size metadata remain the responsibility of
+  `SafetensorHeaderManifest` and the existing loader shape maps.
+- The U8 filter API is intentionally not a metadata discovery API.
+
+Still deferred:
+
+- No GPU upload behavior changed.
+- No split allocation smoke was added.
+- No serve/runtime behavior changed.
+- No f32 or f16 loader behavior changed in this slice.
+- No CUDA contexts, streams, cuBLAS handles, kernel loaders, cache engines, or
+  GPU buffers are created.
+- No `CudaCacheEngine` behavior changed.
+- Split maps remain non-executable in serve/runtime.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_u8_filtered_loader_api_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_f16_filtered_loader_api_complete
+multi_gpu_layer_sharding_u8_filtered_loader_api_complete
