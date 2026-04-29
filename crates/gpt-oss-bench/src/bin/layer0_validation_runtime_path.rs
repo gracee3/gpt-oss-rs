@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -135,6 +136,10 @@ struct Cli {
     #[arg(long)]
     weighted_expert_sum_oracle: Option<PathBuf>,
 
+    /// Optional PyTorch BF16 SwiGLU intermediate discriminator artifact.
+    #[arg(long)]
+    pytorch_intermediates: Option<PathBuf>,
+
     /// Selected expert ids in rank order.
     #[arg(long, default_value = "3,30,11,27")]
     selected_experts: String,
@@ -231,6 +236,7 @@ enum Mode {
     SelectedExperts,
     SelectedExpertsDebug,
     SwigluDebug,
+    SwigluPolicyPin,
     Expert30Mlp2Debug,
 }
 
@@ -632,6 +638,51 @@ struct SwigluVariantStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct SwigluPolicyPinStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    official_summary: OfficialSwigluSummary,
+    mlp1_oracle: TensorArtifactStatus,
+    swiglu_oracle: TensorArtifactStatus,
+    pytorch_intermediate_status: PytorchIntermediateStatus,
+    first_divergent_stage: Option<&'static str>,
+    best_variant: SwigluPolicyPinVariantStatus,
+    best_variant_metric: HiddenComparisonStatus,
+    stage_metrics: Vec<SwigluStageMetricStatus>,
+    variant_table: Vec<SwigluPolicyPinVariantStatus>,
+    selected_experts_rerun: Option<Value>,
+    weighted_sum_rerun: Option<Value>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PytorchIntermediateStatus {
+    available: bool,
+    path: Option<String>,
+    swiglu_output_metric: Option<HiddenComparisonStatus>,
+    note: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SwigluStageMetricStatus {
+    stage: &'static str,
+    metric: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SwigluPolicyPinVariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    output_metric: HiddenComparisonStatus,
+    stage_metrics: Vec<SwigluStageMetricStatus>,
+}
+
+#[derive(Debug, Serialize)]
 struct Expert30Mlp2DebugStatus {
     mode: &'static str,
     submode: &'static str,
@@ -951,6 +1002,7 @@ fn main() -> Result<()> {
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
+        Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
     }
 }
@@ -2376,6 +2428,161 @@ fn run_swiglu_debug(cli: &Cli) -> Result<()> {
         swiglu_oracle: swiglu_status,
         variant_results,
         best_variant,
+        selected_experts_rerun: None,
+        weighted_sum_rerun: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_swiglu_policy_pin(cli: &Cli) -> Result<()> {
+    let mlp1_oracle = required_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let swiglu_oracle = required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    validate_path(mlp1_oracle, "expert30 MLP1 oracle")?;
+    validate_path(swiglu_oracle, "expert30 SwiGLU oracle")?;
+
+    let (mlp1_status, mlp1_values) = load_tensor_artifact(mlp1_oracle, &[5760], &["values"])?;
+    let (swiglu_status, swiglu_values) = load_tensor_artifact(swiglu_oracle, &[2880], &["values"])?;
+    let pytorch = match cli.pytorch_intermediates.as_deref() {
+        Some(path) => {
+            validate_path(path, "PyTorch BF16 SwiGLU intermediates")?;
+            Some(load_pytorch_swiglu_intermediates(path)?)
+        }
+        None => None,
+    };
+
+    let artifact_blocked =
+        !mlp1_status.shape_or_count_matched || !swiglu_status.shape_or_count_matched;
+    let (
+        classification,
+        pytorch_status,
+        first_divergent_stage,
+        best_variant,
+        stage_metrics,
+        variants,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked {
+        let empty = empty_swiglu_policy_pin_variant();
+        (
+                "swiglu_policy_unresolved",
+                PytorchIntermediateStatus {
+                    available: pytorch.is_some(),
+                    path: cli.pytorch_intermediates.as_ref().map(|path| path.display().to_string()),
+                    swiglu_output_metric: None,
+                    note: "expert30 MLP1 or SwiGLU oracle did not expose supported values or expected counts",
+                },
+                None,
+                empty.clone(),
+                Vec::new(),
+                Vec::new(),
+                Some(Blocker {
+                    kind: "swiglu_policy_pin_artifacts",
+                    detail: "expert30 MLP1 or SwiGLU oracle did not expose supported values or expected counts",
+                }),
+                "resolve the reported SwiGLU policy-pin artifact blocker",
+            )
+    } else {
+        let pytorch_status = PytorchIntermediateStatus {
+            available: pytorch.is_some(),
+            path: cli
+                .pytorch_intermediates
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            swiglu_output_metric: pytorch
+                .as_ref()
+                .and_then(|artifact| artifact.get("swiglu_output"))
+                .map(|values| compare_hidden(values, &swiglu_values)),
+            note: if pytorch.is_some() {
+                "loaded PyTorch BF16 tensor-expression intermediates generated outside the repo"
+            } else {
+                "no PyTorch intermediate artifact supplied; only Rust variant output metrics were computed"
+            },
+        };
+        let variants =
+            compute_swiglu_policy_pin_variants(&mlp1_values, &swiglu_values, pytorch.as_ref());
+        let best = variants
+            .iter()
+            .min_by(|left, right| {
+                left.output_metric
+                    .metrics
+                    .mismatches
+                    .cmp(&right.output_metric.metrics.mismatches)
+                    .then_with(|| {
+                        left.output_metric
+                            .metrics
+                            .max_abs_diff
+                            .partial_cmp(&right.output_metric.metrics.max_abs_diff)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            })
+            .cloned()
+            .expect("SwiGLU policy pin must include variants");
+        let stage_metrics = best.stage_metrics.clone();
+        let first_divergent_stage = stage_metrics
+            .iter()
+            .find(|stage| stage.metric.metrics.mismatches != 0)
+            .map(|stage| stage.stage);
+        let classification = if best.output_metric.metrics.mismatches == 0 {
+            "swiglu_policy_matches_oracle"
+        } else if pytorch_status
+            .swiglu_output_metric
+            .as_ref()
+            .is_some_and(|metric| metric.metrics.mismatches == 0)
+        {
+            "swiglu_policy_pytorch_bf16_semantics_not_encoded"
+        } else {
+            "swiglu_policy_unresolved"
+        };
+        let next_bounded_step = match classification {
+                "swiglu_policy_matches_oracle" => {
+                    "encode this exact SwiGLU policy in selected-experts replay and rerun selected-experts"
+                }
+                "swiglu_policy_pytorch_bf16_semantics_not_encoded" => {
+                    "implement a dedicated validation SwiGLU helper matching PyTorch BF16 sigmoid/operator semantics, or use official SwiGLU as a temporary seam input"
+                }
+                _ => "regenerate PyTorch BF16 intermediates and inspect the first divergent stage",
+            };
+        (
+            classification,
+            pytorch_status,
+            first_divergent_stage,
+            best,
+            stage_metrics,
+            variants,
+            None,
+            next_bounded_step,
+        )
+    };
+
+    let status = SwigluPolicyPinStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "swiglu-policy-pin",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        official_summary: OfficialSwigluSummary {
+            gate_up_split: "x_glu = x[..., ::2], x_linear = x[..., 1::2]",
+            gate_clamp: "x_glu.clamp(min=None, max=7.0)",
+            up_clamp: "x_linear.clamp(min=-7.0, max=7.0)",
+            sigmoid_scale: 1.702,
+            multiply_order:
+                "out_glu = x_glu * sigmoid(1.702 * x_glu); out = out_glu * (x_linear + 1)",
+            dtype_cast_behavior:
+                "PyTorch tensor expression keeps intermediates at torch.bfloat16 for this boundary",
+            output_dtype: "BF16 official boundary",
+        },
+        mlp1_oracle: mlp1_status,
+        swiglu_oracle: swiglu_status,
+        pytorch_intermediate_status: pytorch_status,
+        first_divergent_stage,
+        best_variant_metric: best_variant.output_metric.clone(),
+        best_variant,
+        stage_metrics,
+        variant_table: variants,
         selected_experts_rerun: None,
         weighted_sum_rerun: None,
         blocker,
@@ -4598,6 +4805,19 @@ enum SwigluRound {
     Bf16UpPlusOne,
 }
 
+#[derive(Clone, Copy)]
+enum SwigluPinPolicy {
+    CurrentBest,
+    F64Exp,
+    SigmoidOneOverF32,
+    SigmoidExpBranch,
+    Bf16SigmoidArg,
+    Bf16SigmoidOutput,
+    Bf16OutGlu,
+    Bf16UpPlusOne,
+    TorchLikeStageRounding,
+}
+
 struct SwigluVariantSpec {
     name: &'static str,
     policy: &'static str,
@@ -4840,7 +5060,9 @@ fn linear_out_in_bf16_output(
 }
 
 fn compute_swiglu_bf16(gate_up: &[f32]) -> Vec<f32> {
-    compute_swiglu_with_policy(gate_up, SwigluReplayPolicy::Current)
+    compute_swiglu_pin_stages(gate_up, SwigluPinPolicy::TorchLikeStageRounding)
+        .remove("swiglu_output")
+        .expect("SwiGLU validation stages must include swiglu_output")
 }
 
 fn compute_swiglu_with_policy(gate_up: &[f32], policy: SwigluReplayPolicy) -> Vec<f32> {
@@ -4951,6 +5173,220 @@ fn compute_swiglu_policy_variants(mlp1: &[f32], oracle: &[f32]) -> Vec<SwigluVar
             }
         })
         .collect()
+}
+
+fn empty_swiglu_policy_pin_variant() -> SwigluPolicyPinVariantStatus {
+    SwigluPolicyPinVariantStatus {
+        name: "not_run",
+        policy: "artifact blocker",
+        output_metric: empty_hidden_comparison(),
+        stage_metrics: Vec::new(),
+    }
+}
+
+fn load_pytorch_swiglu_intermediates(path: &Path) -> Result<BTreeMap<String, Vec<f32>>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let tensors = value
+        .get("tensors")
+        .and_then(Value::as_object)
+        .with_context(|| format!("{} does not contain a tensors object", path.display()))?;
+    let mut out = BTreeMap::new();
+    for (name, tensor) in tensors {
+        if let Some(values) = tensor.get("values").and_then(Value::as_array) {
+            out.insert(name.clone(), json_values_to_f32(values));
+        }
+    }
+    Ok(out)
+}
+
+fn compute_swiglu_policy_pin_variants(
+    mlp1: &[f32],
+    oracle: &[f32],
+    pytorch: Option<&BTreeMap<String, Vec<f32>>>,
+) -> Vec<SwigluPolicyPinVariantStatus> {
+    let specs = [
+        (
+            "A_current_best",
+            "interleaved official split/clamp, BF16 input, BF16 alpha argument, f32 sigmoid/multiply, BF16 output",
+            SwigluPinPolicy::CurrentBest,
+        ),
+        (
+            "B_f64_exp",
+            "interleaved official split/clamp, BF16 alpha argument, f64 exp sigmoid, BF16 output",
+            SwigluPinPolicy::F64Exp,
+        ),
+        (
+            "C_sigmoid_one_over_f32",
+            "sigmoid as 1/(1+exp(-x)) with f32 exp and BF16 output",
+            SwigluPinPolicy::SigmoidOneOverF32,
+        ),
+        (
+            "D_sigmoid_exp_branch",
+            "sigmoid uses exp(x)/(1+exp(x)) for negative x and 1/(1+exp(-x)) otherwise",
+            SwigluPinPolicy::SigmoidExpBranch,
+        ),
+        (
+            "E_round_alpha_gate_bf16",
+            "BF16-round alpha*gate before sigmoid",
+            SwigluPinPolicy::Bf16SigmoidArg,
+        ),
+        (
+            "F_round_sigmoid_bf16",
+            "BF16-round sigmoid output before out_glu multiply",
+            SwigluPinPolicy::Bf16SigmoidOutput,
+        ),
+        (
+            "G_round_out_glu_bf16",
+            "BF16-round gate*sigmoid before final multiply",
+            SwigluPinPolicy::Bf16OutGlu,
+        ),
+        (
+            "H_round_up_plus_one_bf16",
+            "BF16-round up+1 before final multiply",
+            SwigluPinPolicy::Bf16UpPlusOne,
+        ),
+        (
+            "I_torch_like_stage_rounding",
+            "BF16-round alpha, sigmoid, out_glu, up_plus_one, and final output; sigmoid still uses Rust exp",
+            SwigluPinPolicy::TorchLikeStageRounding,
+        ),
+    ];
+
+    specs
+        .iter()
+        .map(|(name, policy, kind)| {
+            let stages = compute_swiglu_pin_stages(mlp1, *kind);
+            let output = stages
+                .get("swiglu_output")
+                .expect("SwiGLU pin stages must include output");
+            let stage_metrics = pytorch
+                .map(|expected| compare_swiglu_stages(&stages, expected))
+                .unwrap_or_default();
+            SwigluPolicyPinVariantStatus {
+                name,
+                policy,
+                output_metric: compare_hidden(output, oracle),
+                stage_metrics,
+            }
+        })
+        .collect()
+}
+
+fn compare_swiglu_stages(
+    actual: &BTreeMap<&'static str, Vec<f32>>,
+    expected: &BTreeMap<String, Vec<f32>>,
+) -> Vec<SwigluStageMetricStatus> {
+    [
+        "gate_raw",
+        "up_raw",
+        "gate_clamped",
+        "up_clamped",
+        "alpha_gate",
+        "sigmoid_alpha_gate",
+        "out_glu",
+        "up_plus_one",
+        "swiglu_output",
+    ]
+    .iter()
+    .filter_map(|stage| {
+        let actual_values = actual.get(stage)?;
+        let expected_values = expected.get(*stage)?;
+        Some(SwigluStageMetricStatus {
+            stage,
+            metric: compare_hidden(actual_values, expected_values),
+        })
+    })
+    .collect()
+}
+
+fn compute_swiglu_pin_stages(
+    mlp1: &[f32],
+    policy: SwigluPinPolicy,
+) -> BTreeMap<&'static str, Vec<f32>> {
+    let intermediate = mlp1.len() / 2;
+    let mut gate_raw = vec![0.0f32; intermediate];
+    let mut up_raw = vec![0.0f32; intermediate];
+    let mut gate_clamped = vec![0.0f32; intermediate];
+    let mut up_clamped = vec![0.0f32; intermediate];
+    let mut alpha_gate = vec![0.0f32; intermediate];
+    let mut sigmoid_alpha_gate = vec![0.0f32; intermediate];
+    let mut out_glu = vec![0.0f32; intermediate];
+    let mut up_plus_one = vec![0.0f32; intermediate];
+    let mut swiglu_output = vec![0.0f32; intermediate];
+
+    for idx in 0..intermediate {
+        let gate = round_bf16(mlp1[2 * idx]);
+        let up = round_bf16(mlp1[2 * idx + 1]);
+        let gate_after_clamp = round_bf16(gate.min(7.0));
+        let up_after_clamp = round_bf16(up.clamp(-7.0, 7.0));
+        let mut alpha = 1.702 * gate_after_clamp;
+        if matches!(
+            policy,
+            SwigluPinPolicy::CurrentBest
+                | SwigluPinPolicy::F64Exp
+                | SwigluPinPolicy::Bf16SigmoidArg
+                | SwigluPinPolicy::TorchLikeStageRounding
+        ) {
+            alpha = round_bf16(alpha);
+        }
+        let mut sigmoid = match policy {
+            SwigluPinPolicy::F64Exp => (1.0f64 / (1.0f64 + (-(alpha as f64)).exp())) as f32,
+            SwigluPinPolicy::SigmoidExpBranch => {
+                if alpha < 0.0 {
+                    let exp = alpha.exp();
+                    exp / (1.0 + exp)
+                } else {
+                    1.0 / (1.0 + (-alpha).exp())
+                }
+            }
+            _ => 1.0 / (1.0 + (-alpha).exp()),
+        };
+        if matches!(
+            policy,
+            SwigluPinPolicy::Bf16SigmoidOutput | SwigluPinPolicy::TorchLikeStageRounding
+        ) {
+            sigmoid = round_bf16(sigmoid);
+        }
+        let mut glu = gate_after_clamp * sigmoid;
+        if matches!(
+            policy,
+            SwigluPinPolicy::Bf16OutGlu | SwigluPinPolicy::TorchLikeStageRounding
+        ) {
+            glu = round_bf16(glu);
+        }
+        let mut up_one = up_after_clamp + 1.0;
+        if matches!(
+            policy,
+            SwigluPinPolicy::Bf16UpPlusOne | SwigluPinPolicy::TorchLikeStageRounding
+        ) {
+            up_one = round_bf16(up_one);
+        }
+
+        gate_raw[idx] = gate;
+        up_raw[idx] = up;
+        gate_clamped[idx] = gate_after_clamp;
+        up_clamped[idx] = up_after_clamp;
+        alpha_gate[idx] = alpha;
+        sigmoid_alpha_gate[idx] = sigmoid;
+        out_glu[idx] = glu;
+        up_plus_one[idx] = up_one;
+        swiglu_output[idx] = round_bf16(glu * up_one);
+    }
+
+    BTreeMap::from([
+        ("gate_raw", gate_raw),
+        ("up_raw", up_raw),
+        ("gate_clamped", gate_clamped),
+        ("up_clamped", up_clamped),
+        ("alpha_gate", alpha_gate),
+        ("sigmoid_alpha_gate", sigmoid_alpha_gate),
+        ("out_glu", out_glu),
+        ("up_plus_one", up_plus_one),
+        ("swiglu_output", swiglu_output),
+    ])
 }
 
 fn compute_swiglu_variant(mlp1: &[f32], spec: &SwigluVariantSpec) -> Vec<f32> {

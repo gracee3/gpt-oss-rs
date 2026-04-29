@@ -1360,6 +1360,129 @@ expert30 selected output produced from official SwiGLU through the validation
 MLP2 path, or add a validation-only SwiGLU helper that reproduces PyTorch BF16
 elementwise semantics exactly.
 
+## SwiGLU BF16 Policy Pinning Status
+
+Focused mode added:
+
+```text
+--mode swiglu-policy-pin
+```
+
+Why this slice was needed:
+
+- `selected-experts-debug` showed expert30 MLP1 before SwiGLU was nearly pinned
+  (`max_abs_diff = 0.00390625`, `mismatches = 1`), while the broad mismatch
+  appeared at the SwiGLU boundary.
+- `expert30-mlp2-debug` then showed MLP2/down projection and bias replay match
+  exactly when the input is the official expert30 SwiGLU boundary.
+- This left the BF16 elementwise SwiGLU policy as the active operator semantic
+  to pin before changing MXFP4 dequant/layout assumptions.
+
+PyTorch BF16 intermediate artifact:
+
+```text
+/tmp/layer0_validation_swiglu_pytorch_intermediates.json
+```
+
+The scratch artifact was generated outside the repo with
+`/data/models/.venv-awq/bin/python` and is not committed. It uses the official
+expert30 MLP1-before-SwiGLU oracle as input and runs the PyTorch BF16 tensor
+expression:
+
+```text
+x_glu, x_linear = x[..., ::2], x[..., 1::2]
+x_glu = x_glu.clamp(min=None, max=7.0)
+x_linear = x_linear.clamp(min=-7.0, max=7.0)
+out_glu = x_glu * torch.sigmoid(1.702 * x_glu)
+out = out_glu * (x_linear + 1)
+```
+
+PyTorch BF16 discriminator:
+
+| comparison | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| PyTorch BF16 `swiglu_output` vs official SwiGLU | `0` | `0` | `0` |
+
+Pinned Rust validation policy:
+
+```text
+I_torch_like_stage_rounding
+```
+
+Policy:
+
+- Interleaved split: `x[..., ::2]` / `x[..., 1::2]`
+- BF16-round input slices.
+- Clamp gate to max `7.0`; clamp up/value to `[-7.0, 7.0]`.
+- BF16-round `1.702 * gate`.
+- Compute sigmoid with Rust `exp`, then BF16-round sigmoid output.
+- BF16-round `gate * sigmoid`.
+- BF16-round `up + 1`.
+- BF16-round final multiply.
+
+Stage-by-stage localization for the pinned Rust policy:
+
+| stage | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| gate raw | `0` | `0` | `0` |
+| up raw | `0` | `0` | `0` |
+| gate clamped | `0` | `0` | `0` |
+| up clamped | `0` | `0` | `0` |
+| alpha gate | `0` | `0` | `0` |
+| sigmoid alpha gate | `0` | `0` | `0` |
+| out_glu | `0` | `0` | `0` |
+| up_plus_one | `0` | `0` | `0` |
+| SwiGLU output | `0` | `0` | `0` |
+
+Classification:
+
+```text
+swiglu_policy_matches_oracle
+```
+
+Selected-experts rerun after encoding the pinned policy:
+
+```text
+layer0_validation_selected_experts_mismatch_large
+```
+
+| metric | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| selected expert outputs overall | `0.28125` | `0.002888643` | `8339` |
+
+Per-rank selected-output metrics:
+
+| rank / expert | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| rank 0 / expert 3 | `0.28125` | `0.0033855785` | `2091` |
+| rank 1 / expert 30 | `0.125` | `0.0026705414` | `2154` |
+| rank 2 / expert 11 | `0.125` | `0.0029463163` | `2096` |
+| rank 3 / expert 27 | `0.1875` | `0.0025521358` | `1998` |
+
+Weighted-sum rerun:
+
+- Not run. Selected experts did not clear end-to-end after encoding the pinned
+  SwiGLU policy, so weighted sum remains deferred.
+
+Conclusion:
+
+- The PyTorch BF16 SwiGLU elementwise boundary is now encoded in the validation
+  path and matches the official expert30 SwiGLU oracle exactly.
+- Because selected-experts still mismatches broadly after the exact SwiGLU
+  policy is encoded, the remaining end-to-end selected-expert blocker is no
+  longer the standalone SwiGLU operator. The next localization should revisit
+  MLP1/MXFP4 replay across all selected experts under the pinned SwiGLU policy,
+  with expert30's one-lane MLP1 delta as the first concrete guardrail.
+- Production runtime behavior remains unchanged, and no raw artifacts are
+  committed.
+
+Recommended next bounded step:
+
+Rerun `selected-experts-debug` with the pinned SwiGLU policy and official
+expert30 internal boundaries to localize the residual selected-expert mismatch
+under the corrected SwiGLU semantics, then decide whether the blocker is MLP1
+replay, MXFP4 dequant precision/layout, or selected-output artifact/readout.
+
 ## Validation Commands
 
 For the skeleton slice:
