@@ -2047,6 +2047,86 @@ the Rust-native MLP1 BF16 `einsum` backend gap and this isolated selected-output
 oracle anomaly, then decide whether to pursue a validation BF16 `einsum`
 backend or use official MLP1 seams for final layer0 seam reporting.
 
+## Layer0 Seam-Mode Validation Summary
+
+A concise milestone summary is preserved in:
+
+```text
+docs/LAYER0_SEAM_MODE_VALIDATION_SUMMARY.md
+```
+
+This is a validation/seam-mode summary only. It does not promote production
+runtime routing, default model-runner behavior, all-layer parity, final logits,
+or 4097-token claims.
+
+Exact seams already validated in the Rust validation path:
+
+- K RoPE BF16-boundary: exact
+- raw QK: exact
+- masked logits: exact
+- attention probabilities: exact
+- weighted V BF16 boundary: exact
+- attention o_proj with chunked pairwise BF16 linear policy: exact
+- attention residual: exact
+- MLP norm: exact
+- router logits: exact
+- top-k/routing: exact
+- selected experts from official/PyTorch MLP1 seams: exact except isolated
+  expert3 lane `1990` selected-output oracle anomaly
+- weighted expert sum: exact after one-lane correction
+- MLP residual / layer0 final-token output: exact after one-lane correction
+
+Remaining caveats:
+
+1. Rust-native MLP1 BF16 `einsum` backend remains open.
+
+   Expert30 lane `522` shows that PyTorch BF16 `einsum` reproduces the official
+   MLP1 lane, while bounded Rust product/sum policies do not. The next backend
+   design should use that lane as a microbench and compare PyTorch BF16
+   `einsum` against cuBLAS BF16, CUTLASS/custom CUDA, or another validation-only
+   BF16 matmul backend. Production MLP routing should not change until selected
+   experts clear through that backend.
+
+2. Expert3 lane `1990` selected-output oracle anomaly remains isolated.
+
+   The official selected-output artifact equals pre-bias for exactly lane
+   `1990`, while neighboring lanes match post-bias. Rust and PyTorch agree on
+   the post-bias value. Replacing that one lane with the official selected
+   value clears weighted expert sum and MLP residual exactly. Source identity is
+   recorded but not overclaimed: selected-output oracle metadata points to
+   `/data/models/openai/gpt-oss-20b`, while the generated MLP1 seam pack used
+   `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`.
+
+What this proves:
+
+```text
+The validation-runtime path can reproduce layer0 final-token downstream seams
+through the full layer0 output when supplied with official/PyTorch MLP1 seams
+and with the isolated expert3 lane 1990 anomaly corrected.
+```
+
+What this does not prove:
+
+- production runtime routing
+- Rust-native MLP1 solved
+- all layers
+- all prompts
+- final logits
+- 4097-token behavior
+- server/default runtime parity
+- permission to import raw `.live` artifacts or proof harness code wholesale
+
+Recommended next branches:
+
+- Track 1: Rust-native BF16 MLP1 backend design.
+  Scope: expert30 lane `522` microbench/repro, compare PyTorch BF16 `einsum`
+  vs cuBLAS BF16 vs CUTLASS/custom CUDA, and keep production routing unchanged
+  until selected experts clear.
+- Track 2: Layer0 seam-mode milestone preservation.
+  Scope: optional small JSON summary artifact with no raw tensor values,
+  preserving exact seams and caveats while keeping layer ladder, final logits,
+  and 4097-token work deferred.
+
 ## Validation Commands
 
 For the skeleton slice:
