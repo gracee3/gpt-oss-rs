@@ -263,6 +263,7 @@ enum Mode {
     SelectedExpertsPinnedSwigluDebug,
     SelectedExpertsFromMlp1Seams,
     Expert3Lane1990Debug,
+    Expert3Lane1990OracleSemantics,
     SwigluDebug,
     SwigluPolicyPin,
     Expert30Mlp2Debug,
@@ -1209,6 +1210,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
+        Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
@@ -2711,6 +2713,104 @@ fn run_expert3_lane1990_debug(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_expert3_lane1990_oracle_semantics(cli: &Cli) -> Result<()> {
+    let mlp1_seam = required_path(&cli.expert3_mlp1_seam, "expert3 MLP1 seam")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let weighted_expert_sum_oracle = required_path(
+        &cli.weighted_expert_sum_oracle,
+        "weighted expert sum oracle",
+    )?;
+    let mlp_residual_oracle = required_path(&cli.mlp_residual_oracle, "MLP residual oracle")?;
+    let post_attention_residual =
+        required_path(&cli.post_attention_residual, "post-attention residual")?;
+    let model = required_path(&cli.model, "model")?;
+    let lane = cli.lane;
+    validate_path(mlp1_seam, "expert3 MLP1 seam")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(weighted_expert_sum_oracle, "weighted expert sum oracle")?;
+    validate_path(mlp_residual_oracle, "MLP residual oracle")?;
+    validate_path(post_attention_residual, "post-attention residual")?;
+
+    let hidden = 2880usize;
+    anyhow::ensure!(
+        lane < hidden,
+        "lane {lane} out of range for hidden {hidden}"
+    );
+    let (mlp1_status, mlp1_values) = load_tensor_artifact(mlp1_seam, &[hidden * 2], &["values"])?;
+    let (selected_status, selected_values) =
+        load_tensor_artifact(selected_experts_oracle, &[4 * hidden], &["values"])?;
+    let (weighted_status, weighted_values) =
+        load_tensor_artifact(weighted_expert_sum_oracle, &[hidden], &["values"])?;
+    let (residual_status, residual_values) =
+        load_tensor_artifact(mlp_residual_oracle, &[hidden], &["values"])?;
+    let (post_attention_status, post_attention_values) =
+        load_tensor_artifact(post_attention_residual, &[hidden], &["values"])?;
+    let routing_weights = load_selected_routing_weights(selected_experts_oracle, 4)?;
+    let pytorch_values = cli
+        .pytorch_lane_terms
+        .as_deref()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or_else(|| json!({ "available": false }));
+    let source_identity = selected_oracle_source_identity(selected_experts_oracle, mlp1_seam)?;
+
+    let artifact_blocked = !mlp1_status.shape_or_count_matched
+        || !selected_status.shape_or_count_matched
+        || !weighted_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched
+        || !post_attention_status.shape_or_count_matched;
+
+    let status = if artifact_blocked {
+        json!({
+            "mode": "layer0_validation_runtime_path",
+            "submode": "expert3-lane1990-oracle-semantics",
+            "classification": "expert3_lane1990_unresolved_oracle_semantics",
+            "runtime_behavior_changed": false,
+            "source_identity": source_identity,
+            "blocker": {
+                "kind": "expert3_lane1990_oracle_semantics_artifacts",
+                "detail": "required seam or oracle artifacts had unsupported shapes or values"
+            },
+            "next_bounded_step": "resolve the reported artifact blocker"
+        })
+    } else {
+        match execute_expert3_lane1990_oracle_semantics_mxfp4(
+            model,
+            &mlp1_values,
+            &selected_values,
+            &routing_weights,
+            &weighted_values,
+            &post_attention_values,
+            &residual_values,
+            lane,
+        ) {
+            Ok(mut status) => {
+                status["source_identity"] = source_identity;
+                status["pytorch_values"] = pytorch_values;
+                status["artifacts"] = json!({
+                    "mlp1_seam": mlp1_status,
+                    "selected_experts_oracle": selected_status,
+                    "weighted_expert_sum_oracle": weighted_status,
+                    "mlp_residual_oracle": residual_status,
+                    "post_attention_residual": post_attention_status,
+                });
+                status
+            }
+            Err(err) => json!({
+                "mode": "layer0_validation_runtime_path",
+                "submode": "expert3-lane1990-oracle-semantics",
+                "classification": "expert3_lane1990_unresolved_oracle_semantics",
+                "runtime_behavior_changed": false,
+                "source_identity": source_identity,
+                "error": err.to_string(),
+                "next_bounded_step": "fix the expert3 lane1990 oracle-semantics validation path"
+            }),
+        }
+    };
+    write_json(&cli.output, &status)
+}
+
 fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
     let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
     let selected_experts_oracle =
@@ -4146,6 +4246,44 @@ fn load_selected_routing_weights(path: &Path, expected_count: usize) -> Result<V
         weights.len()
     );
     Ok(weights)
+}
+
+fn selected_oracle_source_identity(selected_oracle: &Path, mlp1_seam: &Path) -> Result<Value> {
+    let selected: Value = serde_json::from_slice(
+        &fs::read(selected_oracle)
+            .with_context(|| format!("failed to read {}", selected_oracle.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", selected_oracle.display()))?;
+    let seam: Value = serde_json::from_slice(
+        &fs::read(mlp1_seam).with_context(|| format!("failed to read {}", mlp1_seam.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", mlp1_seam.display()))?;
+    Ok(json!({
+        "selected_output_oracle": {
+            "path": selected_oracle.display().to_string(),
+            "case_id": selected.get("case_id"),
+            "suite_id": selected.get("suite_id"),
+            "schema_version": selected.get("schema_version"),
+            "boundary": selected.get("boundary"),
+            "official_model": selected.get("official_model"),
+            "selected_expert_indices": selected.get("selected_expert_indices"),
+            "selected_routing_weights": selected.get("selected_routing_weights"),
+            "serialization_dtype": selected.get("serialization_dtype"),
+            "tensor_dtype": selected.get("tensor_dtype"),
+            "value_key": "values",
+        },
+        "mlp1_seam": {
+            "path": mlp1_seam.display().to_string(),
+            "model_path": seam.get("model_path"),
+            "mlp_norm_input": seam.get("mlp_norm_input"),
+            "expert": seam.get("expert"),
+            "boundary": seam.get("boundary"),
+            "operation": seam.get("operation"),
+            "dtype": seam.get("dtype"),
+            "sha256_f32_le_full": seam.get("sha256_f32_le_full"),
+        },
+        "model_path_note": "restricted integration model path may symlink shards to /data/models/openai/gpt-oss-20b; source identity is recorded, not assumed",
+    }))
 }
 
 fn artifact_path(path: &Path) -> ArtifactPath {
@@ -5711,6 +5849,160 @@ fn execute_expert3_lane1990_debug_mxfp4(
     _lane: usize,
 ) -> Result<Expert3Lane1990DebugResult> {
     anyhow::bail!("expert3 lane1990 validation requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn execute_expert3_lane1990_oracle_semantics_mxfp4(
+    model: &Path,
+    mlp1_seam: &[f32],
+    selected_oracle: &[f32],
+    routing_weights: &[f32],
+    weighted_sum_oracle: &[f32],
+    post_attention_residual: &[f32],
+    mlp_residual_oracle: &[f32],
+    lane: usize,
+) -> Result<Value> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, &[3])
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert = loaded
+        .experts
+        .first()
+        .context("MXFP4 validation loader did not return expert3")?;
+    let hidden = 2880usize;
+    let swiglu = compute_swiglu_bf16(mlp1_seam);
+    let pre_bias = compute_expert30_mlp2_prebias_variant(
+        &swiglu,
+        &expert.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let post_bias = compute_expert30_selected_output_variant(
+        &pre_bias,
+        &expert.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
+    let official_rank0 = &selected_oracle[0..hidden];
+    let lane_start = lane.saturating_sub(2);
+    let lane_end = (lane + 2).min(hidden - 1);
+    let lane_window_table = (lane_start..=lane_end)
+        .map(|idx| {
+            let official = official_rank0[idx];
+            let pre = pre_bias[idx];
+            let bias = expert.down_bias[idx];
+            let post = post_bias[idx];
+            json!({
+                "lane": idx,
+                "official_selected": official,
+                "pre_bias": pre,
+                "bias": bias,
+                "post_bias": post,
+                "diff_post_vs_official": (post - official).abs(),
+                "official_equals_pre_bias": official == pre,
+                "official_equals_post_bias": official == post,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let selected_metric = compare_hidden(&post_bias, official_rank0);
+    let mut original_matrix = selected_oracle.to_vec();
+    original_matrix[0..hidden].copy_from_slice(&post_bias);
+    let original_weighted =
+        compute_weighted_expert_sum_bf16(&original_matrix, routing_weights, hidden);
+    let original_weighted_metric = compare_hidden(&original_weighted, weighted_sum_oracle);
+    let original_residual = compute_attention_residual(post_attention_residual, &original_weighted);
+    let original_residual_metric = compare_hidden(&original_residual, mlp_residual_oracle);
+
+    let mut corrected_matrix = original_matrix.clone();
+    corrected_matrix[lane] = official_rank0[lane];
+    let corrected_weighted =
+        compute_weighted_expert_sum_bf16(&corrected_matrix, routing_weights, hidden);
+    let corrected_weighted_metric = compare_hidden(&corrected_weighted, weighted_sum_oracle);
+    let corrected_residual =
+        compute_attention_residual(post_attention_residual, &corrected_weighted);
+    let corrected_residual_metric = compare_hidden(&corrected_residual, mlp_residual_oracle);
+
+    let lane1990_is_isolated = selected_metric.metrics.mismatches == 1
+        && selected_metric
+            .first_mismatch
+            .as_ref()
+            .is_some_and(|diff| diff.hidden_lane == lane);
+    let one_lane_correction_clears = corrected_weighted_metric.metrics.mismatches == 0
+        && corrected_residual_metric.metrics.mismatches == 0;
+    let classification = if lane1990_is_isolated
+        && pre_bias[lane] == official_rank0[lane]
+        && post_bias[lane] != official_rank0[lane]
+        && one_lane_correction_clears
+    {
+        "expert3_lane1990_official_selected_output_anomaly"
+    } else if lane1990_is_isolated && one_lane_correction_clears {
+        "expert3_lane1990_selected_output_serialization_mismatch"
+    } else {
+        "expert3_lane1990_unresolved_oracle_semantics"
+    };
+    let best_explanation = match classification {
+        "expert3_lane1990_official_selected_output_anomaly" => {
+            "official selected-output oracle is isolated to one lane where the value equals pre-bias rather than post-bias, and replacing that lane clears weighted sum and MLP residual"
+        }
+        "expert3_lane1990_selected_output_serialization_mismatch" => {
+            "one-lane correction clears downstream metrics, but pre/post-bias equality pattern is not definitive"
+        }
+        _ => "source semantics remain unresolved after lane-window and one-lane correction checks",
+    };
+    Ok(json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "expert3-lane1990-oracle-semantics",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "expert": 3,
+        "rank": 0,
+        "lane": lane,
+        "lane_window_table": lane_window_table,
+        "official_vs_prebias_postbias_analysis": {
+            "lane": lane,
+            "official_selected": official_rank0[lane],
+            "pre_bias": pre_bias[lane],
+            "bias": expert.down_bias[lane],
+            "post_bias": post_bias[lane],
+            "official_equals_pre_bias": official_rank0[lane] == pre_bias[lane],
+            "official_equals_post_bias": official_rank0[lane] == post_bias[lane],
+            "selected_output_metric": selected_metric,
+        },
+        "weighted_sum_impact": {
+            "original_metric": original_weighted_metric,
+            "one_lane_corrected_metric": corrected_weighted_metric,
+            "original_lane": original_weighted[lane],
+            "corrected_lane": corrected_weighted[lane],
+            "official_lane": weighted_sum_oracle[lane],
+        },
+        "mlp_residual_impact": {
+            "original_metric": original_residual_metric,
+            "one_lane_corrected_metric": corrected_residual_metric,
+            "original_lane": original_residual[lane],
+            "corrected_lane": corrected_residual[lane],
+            "official_lane": mlp_residual_oracle[lane],
+        },
+        "mxfp4_loader": {
+            "helper_name": loaded.helper_name,
+            "decode_source": loaded.decode_source,
+            "selected_experts": loaded.selected_experts,
+            "dtype_outputs": loaded.dtype_outputs,
+        },
+        "best_explanation": best_explanation,
+        "next_bounded_step": "summarize layer0 seam-mode path exact modulo Rust-native MLP1 BF16 einsum backend and expert3 lane1990 selected-output oracle anomaly",
+    }))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_expert3_lane1990_oracle_semantics_mxfp4(
+    _model: &Path,
+    _mlp1_seam: &[f32],
+    _selected_oracle: &[f32],
+    _routing_weights: &[f32],
+    _weighted_sum_oracle: &[f32],
+    _post_attention_residual: &[f32],
+    _mlp_residual_oracle: &[f32],
+    _lane: usize,
+) -> Result<Value> {
+    anyhow::bail!("expert3 lane1990 oracle-semantics validation requires the cuda feature")
 }
 
 type SelectedExpertsDebugResult = (

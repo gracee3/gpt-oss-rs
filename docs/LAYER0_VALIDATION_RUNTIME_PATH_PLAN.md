@@ -1938,6 +1938,115 @@ not SwiGLU or MLP2 pre-bias. The Rust-native MLP1 BF16 `einsum` backend remains
 open separately. No production behavior changed, no Torch runtime dependency
 was added, and no raw `/tmp` or `.live` artifacts are committed.
 
+## Expert3 Lane 1990 Selected-Output Oracle Semantics
+
+This slice checks whether the isolated rank `0` / expert `3` / hidden lane
+`1990` mismatch is a real down-bias policy issue or an oracle/readout anomaly.
+No official expert3 internal MLP2 artifacts were found, so the check uses the
+generated expert3 MLP1 seam plus the scratch PyTorch post-MLP1 discriminator as
+source context.
+
+Source identity:
+
+- selected-output oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer0-final-token-selected-expert-outputs-before-routing-weighted-sum-status.json`
+- selected-output oracle model metadata:
+  `/data/models/openai/gpt-oss-20b`
+- MLP1 seam:
+  `/tmp/layer0_validation_selected_experts_mlp1_seams-20260428-215204/expert3_mlp1_before_swiglu.json`
+- MLP1 seam model:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+
+Lane window `1988..1992`:
+
+```text
+lane 1988:
+  official selected = 0.10400390625
+  pre_bias = 0.11767578125
+  bias = -0.013671875
+  post_bias = 0.10400390625
+  official equals post-bias
+
+lane 1989:
+  official selected = 0.43359375
+  pre_bias = 0.37109375
+  bias = 0.0615234375
+  post_bias = 0.43359375
+  official equals post-bias
+
+lane 1990:
+  official selected = 0.48046875
+  pre_bias = 0.48046875
+  bias = -0.0016860962
+  post_bias = 0.478515625
+  official equals pre-bias, not post-bias
+
+lane 1991:
+  official selected = -0.4609375
+  pre_bias = -0.453125
+  bias = -0.007873535
+  post_bias = -0.4609375
+  official equals post-bias
+
+lane 1992:
+  official selected = -0.8203125
+  pre_bias = -0.90625
+  bias = 0.087890625
+  post_bias = -0.8203125
+  official equals post-bias
+```
+
+Selected-output metric for rank `0` / expert `3` remains isolated:
+
+```text
+max_abs_diff = 0.001953125
+mean_abs_diff = 0.0000006781684
+mismatches = 1
+```
+
+Downstream impact:
+
+```text
+weighted expert sum, original:
+  max_abs_diff = 0.0009765625
+  mean_abs_diff = 0.0000003390842
+  mismatches = 1
+
+weighted expert sum, one-lane corrected:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+MLP residual, original:
+  max_abs_diff = 0.001953125
+  mean_abs_diff = 0.0000006781684
+  mismatches = 1
+
+MLP residual, one-lane corrected:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+```
+
+Classification:
+
+```text
+expert3_lane1990_official_selected_output_anomaly
+```
+
+The best explanation is an isolated selected-output oracle/readout anomaly:
+neighboring lanes match post-bias, lane `1990` alone equals pre-bias, and
+replacing only that lane with the official selected-output value clears both
+weighted expert sum and MLP residual. This is separate from the Rust-native
+MLP1 BF16 `einsum` backend, which remains open. Production behavior is
+unchanged, no Torch runtime dependency was added, and no raw `/tmp` or `.live`
+artifacts are committed.
+
+The next bounded step is to summarize the layer0 seam-mode path as exact modulo
+the Rust-native MLP1 BF16 `einsum` backend gap and this isolated selected-output
+oracle anomaly, then decide whether to pursue a validation BF16 `einsum`
+backend or use official MLP1 seams for final layer0 seam reporting.
+
 ## Validation Commands
 
 For the skeleton slice:
