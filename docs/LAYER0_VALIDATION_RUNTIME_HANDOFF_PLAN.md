@@ -315,6 +315,78 @@ Next bounded step: validate layer1 MLP from the emitted attention residual.
 Separately keep all-token K pre-RoPE generation as the unresolved
 source-complete ladder task.
 
+## Layer1 MLP Backend Validation Status
+
+Layer1 MLP validation now starts from the attention residual emitted by the
+bundle-driven layer1 attention seam:
+
+```text
+/tmp/layer1_attention_residual_from_bundle.json
+```
+
+Mode:
+
+```text
+--mode layer1-mlp-backend
+```
+
+MLP bundle source:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json
+```
+
+Backend path:
+
+- MLP norm: BF16 input, f32 RMS reduction, BF16 output
+- router/top-k: layer-indexed BF16 router tensors
+- MLP1: cuBLAS BF16 tensor-op
+- SwiGLU: pinned torch-like BF16 stage rounding
+- MLP2: BF16 pre-bias/output policy
+- residual: BF16 plus BF16 to BF16
+
+Selected experts:
+
+```text
+[28,6,1,18]
+```
+
+Current result:
+
+```text
+classification = layer1_mlp_backend_selected_outputs_mismatch
+```
+
+Metrics:
+
+- MLP norm: exact, `max_abs_diff = 0`, `mismatches = 0`
+- router logits/top-k/routing weights: exact, `max_abs_diff = 0`,
+  `mismatches = 0`, ordered experts match
+- selected outputs: one mismatch at rank 0 / expert 28 / hidden lane 2269,
+  `max_abs_diff = 0.0001220703125`
+- weighted expert sum: one mismatch at hidden lane 2269,
+  `max_abs_diff = 0.0000457763671875`
+- MLP residual / layer1 output: one mismatch at hidden lane 2269,
+  `max_abs_diff = 0.0009765625`
+
+The validation run emitted
+`/tmp/layer1_validation_output_from_mlp_backend.json` as a local artifact from
+the current backend replay. It is not committed and is not yet an exact
+layer2-input guard artifact because the selected-output mismatch remains open.
+
+Correction policy: none. The layer0 expert3 lane1990 correction is not applied
+to layer1.
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Caveat: layer1 attention was advanced from an official bundle seam; K/V
+source-complete construction remains open separately.
+
+Next bounded step: localize the rank 0 / expert 28 / hidden lane 2269 selected
+output mismatch under the layer1 MLP backend path before using the emitted
+layer1 output as a layer2 input guard.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

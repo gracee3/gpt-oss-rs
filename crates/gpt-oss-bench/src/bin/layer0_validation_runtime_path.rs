@@ -75,9 +75,17 @@ struct Cli {
     #[arg(long)]
     attention_bundle: Option<PathBuf>,
 
+    /// Official layer MLP ordered boundary bundle for backend seam validation.
+    #[arg(long)]
+    mlp_bundle: Option<PathBuf>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
+
+    /// Optional path to emit a validated layer output artifact.
+    #[arg(long)]
+    emit_layer_output: Option<PathBuf>,
 
     /// Layer index for layer ladder validation modes.
     #[arg(long, default_value_t = 1)]
@@ -323,6 +331,7 @@ enum Mode {
     Layer1AttnNorm,
     Layer1KRope,
     Layer1AttentionBundle,
+    Layer1MlpBackend,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1281,6 +1290,7 @@ fn main() -> Result<()> {
         Mode::Layer1AttnNorm => run_layer1_attn_norm(&cli),
         Mode::Layer1KRope => run_layer1_k_rope(&cli),
         Mode::Layer1AttentionBundle => run_layer1_attention_bundle(&cli),
+        Mode::Layer1MlpBackend => run_layer1_mlp_backend(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -2717,13 +2727,20 @@ fn run_mlp_backend(cli: &Cli) -> Result<()> {
     let router_result = if artifact_blocked {
         Err(anyhow::anyhow!("blocked before router execution"))
     } else {
-        execute_mlp_backend_router(model, &mlp_norm_values, &router_oracle_values, &topk_oracle)
+        execute_mlp_backend_router(
+            model,
+            0,
+            &mlp_norm_values,
+            &router_oracle_values,
+            &topk_oracle,
+        )
     };
     let backend_result = if artifact_blocked {
         Err(anyhow::anyhow!("blocked before MLP backend execution"))
     } else {
         execute_mlp_backend_selected_experts(
             model,
+            0,
             &mlp_norm_values,
             &selected_experts,
             &topk_oracle.routing_weights,
@@ -2936,13 +2953,20 @@ fn run_full_layer0(cli: &Cli) -> Result<()> {
     let router_result = if artifact_blocked || norm_blocker.is_some() {
         Err(anyhow::anyhow!("blocked before router execution"))
     } else {
-        execute_mlp_backend_router(model, &mlp_norm_values, &router_oracle_values, &topk_oracle)
+        execute_mlp_backend_router(
+            model,
+            0,
+            &mlp_norm_values,
+            &router_oracle_values,
+            &topk_oracle,
+        )
     };
     let backend_result = if artifact_blocked || norm_blocker.is_some() {
         Err(anyhow::anyhow!("blocked before MLP backend execution"))
     } else {
         execute_mlp_backend_selected_experts(
             model,
+            0,
             &mlp_norm_values,
             &selected_experts,
             &topk_oracle.routing_weights,
@@ -3771,6 +3795,281 @@ fn run_layer1_attention_bundle(cli: &Cli) -> Result<()> {
             _ => "localize the first mismatching or missing layer1 attention bundle seam"
         }
     });
+    write_json(&cli.output, &status)
+}
+
+fn run_layer1_mlp_backend(cli: &Cli) -> Result<()> {
+    let attention_residual = required_path(&cli.attention_residual, "attention residual")?;
+    let mlp_bundle = required_path(&cli.mlp_bundle, "MLP bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(attention_residual, "attention residual")?;
+    validate_path(mlp_bundle, "MLP bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_count = 4usize;
+    let mlp_norm_boundary =
+        format!("layer{layer}_final_token_mlp_norm_output_before_mlp_projections");
+    let router_boundary = format!("layer{layer}_final_token_mlp_router_logits_before_routing");
+    let topk_boundary =
+        format!("layer{layer}_final_token_mlp_topk_expert_indices_and_routing_weights");
+    let selected_boundary =
+        format!("layer{layer}_final_token_selected_expert_outputs_before_routing_weighted_sum");
+    let weighted_boundary =
+        format!("layer{layer}_final_token_mlp_output_after_routing_weighted_sum_before_residual");
+    let residual_boundary = format!("layer{layer}_final_token_hidden_state_after_mlp_residual_add");
+
+    let available_boundaries = list_boundary_names(mlp_bundle)?;
+    let (attention_status, attention_values) =
+        load_tensor_artifact(attention_residual, &[hidden], &["values"])?;
+    let (mlp_norm_status, mlp_norm_oracle) =
+        load_boundary_tensor_artifact(mlp_bundle, &mlp_norm_boundary, &[hidden])?;
+    let (router_status, router_oracle) =
+        load_boundary_tensor_artifact(mlp_bundle, &router_boundary, &[experts])?;
+    let (topk_status, topk_oracle) =
+        load_boundary_topk_oracle(mlp_bundle, &topk_boundary, selected_count)?;
+    let selected_experts = topk_oracle
+        .indices
+        .iter()
+        .map(|&expert| {
+            usize::try_from(expert).with_context(|| format!("invalid selected expert id {expert}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let (selected_status, selected_oracle) =
+        load_boundary_tensor_artifact(mlp_bundle, &selected_boundary, &[selected_count * hidden])?;
+    let (weighted_status, weighted_oracle) =
+        load_boundary_tensor_artifact(mlp_bundle, &weighted_boundary, &[hidden])?;
+    let (residual_status, residual_oracle) =
+        load_boundary_tensor_artifact(mlp_bundle, &residual_boundary, &[hidden])?;
+
+    let artifact_blocked = !attention_status.shape_or_count_matched
+        || !mlp_norm_status.shape_or_count_matched
+        || !router_status.shape_or_count_matched
+        || !topk_status.shape_or_count_matched
+        || !selected_status.shape_or_count_matched
+        || !weighted_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched;
+
+    let norm_weight_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let norm_weight_result = load_model_tensor_f32(model, &[norm_weight_name.as_str()]);
+    let (mlp_norm_metric, mlp_norm_values, norm_weight_source, norm_blocker) = if artifact_blocked {
+        (None, Vec::new(), None, None)
+    } else {
+        match norm_weight_result {
+            Ok((source, weight_values)) if weight_values.len() == hidden => {
+                let values = compute_mlp_rms_norm(&attention_values, &weight_values, 1e-5);
+                let metric = compare_hidden(&values, &mlp_norm_oracle);
+                (Some(metric), values, Some(source), None)
+            }
+            Ok((source, weight_values)) => (
+                None,
+                Vec::new(),
+                Some(source),
+                Some(format!(
+                    "expected {hidden} layer{layer} MLP norm weights, got {}",
+                    weight_values.len()
+                )),
+            ),
+            Err(err) => (None, Vec::new(), None, Some(err.to_string())),
+        }
+    };
+
+    let router_result = if artifact_blocked || norm_blocker.is_some() {
+        Err(anyhow::anyhow!("blocked before layer1 router execution"))
+    } else {
+        execute_mlp_backend_router(model, layer, &mlp_norm_values, &router_oracle, &topk_oracle)
+    };
+    let backend_result = if artifact_blocked || norm_blocker.is_some() {
+        Err(anyhow::anyhow!(
+            "blocked before layer1 MLP backend execution"
+        ))
+    } else {
+        execute_mlp_backend_selected_experts(
+            model,
+            layer,
+            &mlp_norm_values,
+            &selected_experts,
+            &topk_oracle.routing_weights,
+            &selected_oracle,
+            &weighted_oracle,
+            &residual_oracle,
+            &attention_values,
+            false,
+        )
+    };
+
+    let metric_mismatches = |value: &Value| -> Option<usize> {
+        value
+            .pointer("/metrics/mismatches")
+            .and_then(Value::as_u64)
+            .map(|count| count as usize)
+    };
+    let hidden_status_mismatches = |value: &Value| -> Option<usize> {
+        value
+            .pointer("/metrics/mismatches")
+            .and_then(Value::as_u64)
+            .map(|count| count as usize)
+    };
+    let router_matches = router_result.as_ref().ok().is_some_and(|router| {
+        hidden_status_mismatches(&router["router_metric"]) == Some(0)
+            && router
+                .pointer("/topk_metric/ordered_match")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            && hidden_status_mismatches(&router["topk_metric"]["selected_logits_metric"]) == Some(0)
+            && hidden_status_mismatches(&router["topk_metric"]["routing_weights_metric"]) == Some(0)
+    });
+    let selected_matches = backend_result.as_ref().ok().is_some_and(|backend| {
+        metric_mismatches(&backend["selected_output_metric_official"]) == Some(0)
+    });
+    let weighted_matches = backend_result.as_ref().ok().is_some_and(|backend| {
+        hidden_status_mismatches(&backend["weighted_sum_metric_official"]) == Some(0)
+    });
+    let residual_matches = backend_result.as_ref().ok().is_some_and(|backend| {
+        hidden_status_mismatches(&backend["mlp_residual_metric_official"]) == Some(0)
+    });
+    let mlp_norm_matches = mlp_norm_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+
+    let classification = if artifact_blocked {
+        "layer1_mlp_backend_blocked_by_artifacts"
+    } else if norm_blocker.is_some() || router_result.is_err() || backend_result.is_err() {
+        "layer1_mlp_backend_execution_failed"
+    } else if !mlp_norm_matches {
+        "layer1_mlp_backend_mlp_norm_mismatch"
+    } else if !router_matches {
+        "layer1_mlp_backend_router_mismatch"
+    } else if !selected_matches {
+        "layer1_mlp_backend_selected_outputs_mismatch"
+    } else if !weighted_matches {
+        "layer1_mlp_backend_weighted_sum_mismatch"
+    } else if !residual_matches {
+        "layer1_mlp_backend_residual_mismatch"
+    } else {
+        "layer1_mlp_backend_matches_oracle"
+    };
+
+    let mut emitted_layer_output = Value::Null;
+    if let (Some(emit_path), Ok(backend)) = (&cli.emit_layer_output, backend_result.as_ref()) {
+        if let Some(values) = backend.get("mlp_residual_values").and_then(Value::as_array) {
+            let residual_values = values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_f64()
+                        .map(|value| value as f32)
+                        .context("layer1 residual output value must be numeric")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            write_layer1_mlp_output_artifact(
+                emit_path,
+                model,
+                mlp_bundle,
+                attention_residual,
+                &residual_values,
+            )?;
+            emitted_layer_output = json!(emit_path.display().to_string());
+        }
+    }
+
+    let mut status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer1-mlp-backend",
+        "classification": classification,
+        "implemented": !artifact_blocked && norm_blocker.is_none() && router_result.is_ok() && backend_result.is_ok(),
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "attention_residual_source": attention_residual.display().to_string(),
+        "mlp_bundle": mlp_bundle.display().to_string(),
+        "available_boundaries": available_boundaries,
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "correction_policy": "none",
+        "selected_experts": selected_experts,
+        "artifacts": {
+            "attention_residual": attention_status,
+            "mlp_norm_oracle": mlp_norm_status,
+            "router_logits_oracle": router_status,
+            "topk_routing_oracle": topk_status,
+            "selected_experts_oracle": selected_status,
+            "weighted_expert_sum_oracle": weighted_status,
+            "mlp_residual_oracle": residual_status
+        },
+        "model_tensors": {
+            "mlp_norm_weight": norm_weight_source
+        },
+        "metrics": {
+            "mlp_norm": mlp_norm_metric,
+            "router_logits": null,
+            "topk": null,
+            "selected_outputs": null,
+            "weighted_sum": null,
+            "mlp_residual": null
+        },
+        "emitted_layer_output": emitted_layer_output,
+        "blocker": norm_blocker.as_ref().map(|detail| json!({
+            "kind": "layer1_mlp_backend_norm_weight",
+            "detail": detail
+        })),
+        "next_bounded_step": match classification {
+            "layer1_mlp_backend_matches_oracle" => "guard emitted layer1 output as layer2 input or repeat the bundle-driven ladder pattern for layer2",
+            "layer1_mlp_backend_mlp_norm_mismatch" => "localize layer1 MLP norm policy from the emitted attention residual",
+            "layer1_mlp_backend_router_mismatch" => "localize layer1 router/top-k policy from exact MLP norm",
+            "layer1_mlp_backend_selected_outputs_mismatch" => "localize layer1 selected expert replay under cuBLAS BF16 MLP1, pinned SwiGLU, and BF16 MLP2 policy",
+            "layer1_mlp_backend_weighted_sum_mismatch" => "localize layer1 weighted expert sum BF16 policy",
+            "layer1_mlp_backend_residual_mismatch" => "localize layer1 MLP residual add or attention residual source",
+            "layer1_mlp_backend_blocked_by_artifacts" => "resolve the reported layer1 MLP bundle artifact blocker",
+            _ => "fix the reported layer1 MLP backend execution blocker",
+        }
+    });
+
+    match router_result {
+        Ok(router) => {
+            status["metrics"]["router_logits"] = router["router_metric"].clone();
+            status["metrics"]["topk"] = router["topk_metric"].clone();
+            status["model_tensors"]["router_weight"] =
+                router["model_tensors"]["router_weight"].clone();
+            status["model_tensors"]["router_bias"] = router["model_tensors"]["router_bias"].clone();
+        }
+        Err(err) if !artifact_blocked && norm_blocker.is_none() => {
+            status["blocker"] = json!({
+                "kind": "layer1_mlp_backend_router",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
+    match backend_result {
+        Ok(backend) => {
+            status["metrics"]["selected_outputs"] =
+                backend["selected_output_metric_official"].clone();
+            status["metrics"]["weighted_sum"] = backend["weighted_sum_metric_official"].clone();
+            status["metrics"]["mlp_residual"] = backend["mlp_residual_metric_official"].clone();
+            status["source_identity"] = backend["source_identity"].clone();
+            status["per_rank_metrics"] = backend["per_rank_metrics"].clone();
+        }
+        Err(err) if !artifact_blocked && norm_blocker.is_none() => {
+            status["blocker"] = json!({
+                "kind": "layer1_mlp_backend_selected_experts",
+                "detail": err.to_string()
+            });
+        }
+        Err(_) => {}
+    }
+
     write_json(&cli.output, &status)
 }
 
@@ -5573,6 +5872,42 @@ fn write_layer1_attention_residual_artifact(
     write_json(output, &payload)
 }
 
+fn write_layer1_mlp_output_artifact(
+    output: &Path,
+    model: &Path,
+    mlp_bundle: &Path,
+    attention_residual: &Path,
+    values: &[f32],
+) -> Result<()> {
+    anyhow::ensure!(
+        values.len() == 2880,
+        "layer1 output artifact must have 2880 values, got {}",
+        values.len()
+    );
+    let payload = json!({
+        "case": "developer-message-user-smoke",
+        "case_id": "developer-message-user-smoke",
+        "boundary": "layer1_final_token_hidden_state_after_mlp_residual_add",
+        "source_mode": "layer1-mlp-backend",
+        "backend_path": {
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy"
+        },
+        "correction_policy": "none",
+        "model": model.display().to_string(),
+        "mlp_bundle": mlp_bundle.display().to_string(),
+        "attention_residual": attention_residual.display().to_string(),
+        "shape": [2880],
+        "tensor_dtype": "bf16_boundary_serialized_as_f32",
+        "serialization_dtype": "f32_json",
+        "value_key": "values",
+        "finite_value_summary": finite_summary(values),
+        "values": values,
+    });
+    write_json(output, &payload)
+}
+
 fn classify_layer1_attention_bundle(
     raw_qk_metric: &Option<RawQkComparison>,
     masked_metric: &Option<MatrixComparisonStatus>,
@@ -6046,6 +6381,84 @@ fn load_topk_oracle(path: &Path, top_k: usize) -> Result<(TensorArtifactStatus, 
                 "selected_expert_indices.values,selected_expert_logits.values,routing_weights.values"
                     .to_string(),
             ),
+        },
+        TopkOracle {
+            indices,
+            logits,
+            routing_weights,
+        },
+    ))
+}
+
+fn load_boundary_topk_oracle(
+    path: &Path,
+    boundary: &str,
+    top_k: usize,
+) -> Result<(TensorArtifactStatus, TopkOracle)> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let boundary_value = value
+        .get("boundaries")
+        .and_then(Value::as_array)
+        .and_then(|boundaries| {
+            boundaries.iter().find(|entry| {
+                entry
+                    .get("boundary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == boundary)
+            })
+        })
+        .unwrap_or(&value);
+    let indices: Vec<i64> = boundary_value
+        .get("selected_expert_indices")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_i64(values))
+        .or_else(|| {
+            value
+                .get("selected_expert_indices")
+                .and_then(Value::as_array)
+                .map(|values| json_values_to_i64(values))
+        })
+        .unwrap_or_default();
+    let logits: Vec<f32> = boundary_value
+        .get("selected_expert_logits")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_f32(values))
+        .unwrap_or_default();
+    let routing_weights: Vec<f32> = boundary_value
+        .get("routing_weights")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_f32(values))
+        .or_else(|| {
+            boundary_value
+                .get("values")
+                .and_then(Value::as_array)
+                .map(|values| json_values_to_f32(values))
+        })
+        .or_else(|| {
+            value
+                .get("routing_weights")
+                .and_then(Value::as_array)
+                .map(|values| json_values_to_f32(values))
+        })
+        .unwrap_or_default();
+    let matched = indices.len() == top_k && logits.len() == top_k && routing_weights.len() == top_k;
+    Ok((
+        TensorArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape: extract_shape(boundary_value).or_else(|| Some(vec![top_k])),
+            value_count: Some(routing_weights.len()),
+            expected_value_counts: vec![top_k],
+            shape_or_count_matched: matched,
+            value_key: Some(format!(
+                "boundaries[{boundary}].selected_expert_indices/selected_expert_logits/routing_weights"
+            )),
         },
         TopkOracle {
             indices,
@@ -6963,6 +7376,7 @@ fn execute_selected_experts_mxfp4(
 
 fn execute_mlp_backend_router(
     model: &Path,
+    layer_index: usize,
     mlp_norm: &[f32],
     router_oracle: &[f32],
     topk_oracle: &TopkOracle,
@@ -6970,11 +7384,13 @@ fn execute_mlp_backend_router(
     let hidden = 2880usize;
     let experts = 32usize;
     let top_k = topk_oracle.indices.len();
-    let (_, weight_values) = load_model_tensor_f32(model, &["model.layers.0.mlp.router.weight"])?;
-    let (_, bias_values) = load_model_tensor_f32(model, &["model.layers.0.mlp.router.bias"])?;
+    let weight_name = format!("model.layers.{layer_index}.mlp.router.weight");
+    let bias_name = format!("model.layers.{layer_index}.mlp.router.bias");
+    let (weight_source, weight_values) = load_model_tensor_f32(model, &[weight_name.as_str()])?;
+    let (bias_source, bias_values) = load_model_tensor_f32(model, &[bias_name.as_str()])?;
     anyhow::ensure!(
         weight_values.len() == experts * hidden && bias_values.len() == experts,
-        "router tensor shape mismatch for layer0 MLP backend validation"
+        "router tensor shape mismatch for layer{layer_index} MLP backend validation"
     );
     let logits = compute_router_logits_bf16_linear(mlp_norm, &weight_values, &bias_values);
     let local_topk = compute_router_topk(&logits, top_k);
@@ -6992,6 +7408,10 @@ fn execute_mlp_backend_router(
             "routing_weights_metric": routing_weights_metric,
             "local_weight_sum": local_topk.routing_weights.iter().sum::<f32>(),
             "official_weight_sum": topk_oracle.routing_weights.iter().sum::<f32>(),
+        },
+        "model_tensors": {
+            "router_weight": weight_source,
+            "router_bias": bias_source,
         }
     }))
 }
@@ -6999,6 +7419,7 @@ fn execute_mlp_backend_router(
 #[cfg(feature = "cuda")]
 fn execute_mlp_backend_selected_experts(
     model: &Path,
+    layer_index: usize,
     mlp_norm: &[f32],
     selected_experts: &[usize],
     routing_weights: &[f32],
@@ -7015,7 +7436,7 @@ fn execute_mlp_backend_selected_experts(
         routing_weights.len(),
         selected_experts.len()
     );
-    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+    let loaded = load_selected_experts_mxfp4_validation(model, layer_index, selected_experts)
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let mut selected_output = Vec::with_capacity(selected_experts.len() * hidden);
     let mut per_rank_metrics = Vec::with_capacity(selected_experts.len());
@@ -7124,6 +7545,7 @@ fn execute_mlp_backend_selected_experts(
         "weighted_sum_metric_corrected": weighted_metric_corrected,
         "mlp_residual_metric_official": residual_metric_official,
         "mlp_residual_metric_corrected": residual_metric_corrected,
+        "mlp_residual_values": mlp_residual,
         "corrected_mlp_residual_values": corrected_mlp_residual,
         "correction": correction,
         "per_rank_metrics": per_rank_metrics,
@@ -7139,6 +7561,7 @@ fn execute_mlp_backend_selected_experts(
 #[cfg(not(feature = "cuda"))]
 fn execute_mlp_backend_selected_experts(
     _model: &Path,
+    _layer_index: usize,
     _mlp_norm: &[f32],
     _selected_experts: &[usize],
     _routing_weights: &[f32],
