@@ -1483,6 +1483,91 @@ expert30 internal boundaries to localize the residual selected-expert mismatch
 under the corrected SwiGLU semantics, then decide whether the blocker is MLP1
 replay, MXFP4 dequant precision/layout, or selected-output artifact/readout.
 
+## Selected Experts With Pinned SwiGLU Debug Status
+
+Focused mode added:
+
+```text
+--mode selected-experts-pinned-swiglu-debug
+```
+
+Why this rerun was needed:
+
+- `swiglu-policy-pin` proved the standalone PyTorch BF16 SwiGLU semantics can
+  be reproduced exactly in Rust validation replay.
+- Normal `selected-experts` still mismatched broadly after that pinned policy was
+  encoded.
+- This mode verifies the pinned policy is actually used by selected-experts
+  replay and then localizes the first expert30 boundary that still mismatches.
+
+Pinned policy usage:
+
+| path | uses pinned `I_torch_like_stage_rounding` policy |
+| --- | --- |
+| normal `selected-experts` replay | `true` |
+| `selected-experts-debug` replay | `true` |
+
+Per-rank selected-output metrics:
+
+| rank / expert | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| rank 0 / expert 3 | `0.28125` | `0.0033855785` | `2091` |
+| rank 1 / expert 30 | `0.125` | `0.0026705414` | `2154` |
+| rank 2 / expert 11 | `0.125` | `0.0029463163` | `2096` |
+| rank 3 / expert 27 | `0.1875` | `0.0025521358` | `1998` |
+
+Expert30 focused variants:
+
+| variant | MLP1 max/mismatches | SwiGLU max/mismatches | MLP2 pre-bias max/mismatches | selected output max/mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| local MLP1 -> pinned SwiGLU -> local MLP2 | `0.00390625 / 1` | `0.0048828125 / 1` | `0.015625 / 262` | `0.015625 / 151` |
+| official MLP1 -> pinned SwiGLU -> local MLP2 | `0 / 0` | `0 / 0` | `0 / 0` | `0 / 0` |
+| local MLP1 -> official SwiGLU -> local MLP2 | `0.00390625 / 1` | `0 / 0` | `0 / 0` | `0 / 0` |
+| official SwiGLU -> local MLP2 | n/a | `0 / 0` | `0 / 0` | `0 / 0` |
+
+MLP1 replay variants for expert30:
+
+| variant | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| current | `0.00390625` | `6.781684e-7` | `1` |
+| weight BF16-rounded | `0.00390625` | `6.781684e-7` | `1` |
+| f32 input | `0.00390625` | `6.781684e-7` | `1` |
+| output f16 | `0.03125` | `0.0020467665` | `4869` |
+
+First mismatching boundary:
+
+```text
+expert30_mlp1_before_swiglu
+```
+
+Classification:
+
+```text
+selected_expert_mismatch_starts_at_mlp1_mxfp4_replay
+```
+
+Conclusion:
+
+- The selected-experts replay is using the pinned SwiGLU policy.
+- The standalone pinned policy is not the remaining blocker.
+- Expert30 local replay first differs at MLP1 by one BF16 lane:
+  lane `522`, local `0.33398438`, official `0.33007812`.
+- Feeding official MLP1 through the pinned Rust SwiGLU and local MLP2 clears
+  expert30 exactly, and feeding official SwiGLU through local MLP2 also clears.
+- The next boundary to localize is expert30 MLP1/MXFP4 replay precision,
+  accumulation, or dequant semantics. Non-expert30 ranks still have only
+  selected-output metrics in this path, so their internal first mismatch is not
+  yet localized.
+- Production runtime behavior remains unchanged, and no raw artifacts are
+  committed.
+
+Recommended next bounded step:
+
+Localize expert30 MLP1 by comparing the validation MXFP4 dequant + GEMM replay
+against the official MLP1 oracle at lane `522`, including scale/block source,
+decoded weights for that output lane, accumulation order, and BF16/f16 output
+boundary.
+
 ## Validation Commands
 
 For the skeleton slice:

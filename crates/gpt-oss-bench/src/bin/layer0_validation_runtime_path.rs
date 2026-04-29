@@ -235,6 +235,7 @@ enum Mode {
     Router,
     SelectedExperts,
     SelectedExpertsDebug,
+    SelectedExpertsPinnedSwigluDebug,
     SwigluDebug,
     SwigluPolicyPin,
     Expert30Mlp2Debug,
@@ -562,6 +563,44 @@ struct SelectedExpertsDebugStatus {
     weighted_sum_replacement: Option<Value>,
     blocker: Option<Blocker>,
     next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectedExpertsPinnedSwigluDebugStatus {
+    mode: &'static str,
+    submode: &'static str,
+    classification: &'static str,
+    implemented: bool,
+    runtime_behavior_changed: bool,
+    validation_only: bool,
+    selected_experts: Vec<usize>,
+    pinned_swiglu_policy: &'static str,
+    selected_experts_mode_uses_pinned_policy: bool,
+    selected_experts_debug_uses_pinned_policy: bool,
+    per_rank_selected_output_metrics: Vec<SelectedExpertRankMetric>,
+    expert30_variant_table: Vec<Expert30PinnedSwigluVariantStatus>,
+    mlp1_variant_table: Vec<SelectedExpertMlp1VariantStatus>,
+    first_mismatching_boundary: &'static str,
+    mxfp4_loader: Option<Mxfp4LoaderStatus>,
+    blocker: Option<Blocker>,
+    next_bounded_step: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Expert30PinnedSwigluVariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    mlp1_metric: Option<HiddenComparisonStatus>,
+    swiglu_metric: Option<HiddenComparisonStatus>,
+    mlp2_pre_bias_metric: Option<HiddenComparisonStatus>,
+    selected_output_metric: HiddenComparisonStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SelectedExpertMlp1VariantStatus {
+    name: &'static str,
+    policy: &'static str,
+    mlp1_metric: HiddenComparisonStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1001,6 +1040,7 @@ fn main() -> Result<()> {
         Mode::Router => run_router(&cli),
         Mode::SelectedExperts => run_selected_experts(&cli),
         Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
+        Mode::SelectedExpertsPinnedSwigluDebug => run_selected_experts_pinned_swiglu_debug(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
         Mode::SwigluPolicyPin => run_swiglu_policy_pin(&cli),
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
@@ -2336,6 +2376,119 @@ fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
         variant_results,
         root_cause_summary,
         weighted_sum_replacement: None,
+        blocker,
+        next_bounded_step,
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_selected_experts_pinned_swiglu_debug(cli: &Cli) -> Result<()> {
+    let mlp_norm = required_path(&cli.mlp_norm, "MLP norm")?;
+    let selected_experts_oracle =
+        required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    let mlp1_oracle_path = required_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let swiglu_oracle_path = required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    let mlp2_oracle_path = required_path(
+        &cli.expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    validate_path(mlp_norm, "MLP norm")?;
+    validate_path(selected_experts_oracle, "selected experts oracle")?;
+    validate_path(mlp1_oracle_path, "expert30 MLP1 oracle")?;
+    validate_path(swiglu_oracle_path, "expert30 SwiGLU oracle")?;
+    validate_path(mlp2_oracle_path, "expert30 MLP2 pre-bias oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let expert30_rank = selected_experts
+        .iter()
+        .position(|&expert| expert == 30)
+        .context("selected expert list must include expert30")?;
+    let (mlp_norm_status, mlp_norm_values) = load_tensor_artifact(mlp_norm, &[2880], &["values"])?;
+    let (oracle_status, oracle_values) = load_tensor_artifact(
+        selected_experts_oracle,
+        &[selected_experts.len() * 2880],
+        &["values"],
+    )?;
+    let (_, mlp1_oracle) = load_tensor_artifact(mlp1_oracle_path, &[5760], &["values"])?;
+    let (_, swiglu_oracle) = load_tensor_artifact(swiglu_oracle_path, &[2880], &["values"])?;
+    let (_, mlp2_oracle) = load_tensor_artifact(mlp2_oracle_path, &[2880], &["values"])?;
+
+    let artifact_blocked =
+        !mlp_norm_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+    let (
+        classification,
+        per_rank_selected_output_metrics,
+        expert30_variant_table,
+        mlp1_variant_table,
+        first_mismatching_boundary,
+        loader,
+        blocker,
+        next_bounded_step,
+    ) = if artifact_blocked {
+        (
+            "selected_expert_mismatch_unresolved",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "artifact_load",
+            None,
+            Some(Blocker {
+                kind: "selected_experts_pinned_swiglu_artifacts",
+                detail: "MLP norm input or selected expert oracle did not expose supported values or expected counts",
+            }),
+            "resolve the reported selected-experts pinned-SwiGLU artifact blocker",
+        )
+    } else {
+        match execute_selected_experts_pinned_swiglu_debug_mxfp4(
+            model,
+            &selected_experts,
+            &mlp_norm_values,
+            &oracle_values,
+            expert30_rank,
+            &mlp1_oracle,
+            &swiglu_oracle,
+            &mlp2_oracle,
+        ) {
+            Ok(debug) => debug,
+            Err(_) => (
+                "selected_expert_mismatch_unresolved",
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                "mxfp4_loader",
+                None,
+                Some(Blocker {
+                    kind: "selected_experts_pinned_swiglu_mxfp4",
+                    detail: "validation MXFP4 helper failed before pinned-SwiGLU debug comparison",
+                }),
+                "fix the narrow validation MXFP4 selected-expert helper",
+            ),
+        }
+    };
+
+    let status = SelectedExpertsPinnedSwigluDebugStatus {
+        mode: "layer0_validation_runtime_path",
+        submode: "selected-experts-pinned-swiglu-debug",
+        classification,
+        implemented: blocker.is_none(),
+        runtime_behavior_changed: false,
+        validation_only: true,
+        selected_experts,
+        pinned_swiglu_policy: "I_torch_like_stage_rounding",
+        selected_experts_mode_uses_pinned_policy: true,
+        selected_experts_debug_uses_pinned_policy: true,
+        per_rank_selected_output_metrics,
+        expert30_variant_table,
+        mlp1_variant_table,
+        first_mismatching_boundary,
+        mxfp4_loader: loader,
         blocker,
         next_bounded_step,
     };
@@ -4396,6 +4549,17 @@ type Expert30Mlp2DebugResult = (
     &'static str,
 );
 
+type SelectedExpertsPinnedSwigluDebugResult = (
+    &'static str,
+    Vec<SelectedExpertRankMetric>,
+    Vec<Expert30PinnedSwigluVariantStatus>,
+    Vec<SelectedExpertMlp1VariantStatus>,
+    &'static str,
+    Option<Mxfp4LoaderStatus>,
+    Option<Blocker>,
+    &'static str,
+);
+
 #[cfg(feature = "cuda")]
 fn execute_selected_experts_debug_mxfp4(
     model: &Path,
@@ -4600,6 +4764,246 @@ fn execute_selected_experts_debug_mxfp4(
         None,
         next_bounded_step,
     ))
+}
+
+#[cfg(feature = "cuda")]
+fn execute_selected_experts_pinned_swiglu_debug_mxfp4(
+    model: &Path,
+    selected_experts: &[usize],
+    mlp_norm: &[f32],
+    selected_oracle: &[f32],
+    expert30_rank: usize,
+    mlp1_oracle: &[f32],
+    swiglu_oracle: &[f32],
+    mlp2_oracle: &[f32],
+) -> Result<SelectedExpertsPinnedSwigluDebugResult> {
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut output = Vec::with_capacity(selected_experts.len() * 2880);
+    for expert in &loaded.experts {
+        output.extend(compute_selected_expert_output(mlp_norm, expert));
+    }
+    let per_rank_selected_output_metrics = selected_experts
+        .iter()
+        .enumerate()
+        .map(|(rank, &expert)| {
+            let start = rank * 2880;
+            let end = start + 2880;
+            let comparison = compare_selected_experts(
+                &output[start..end],
+                &selected_oracle[start..end],
+                &[expert],
+            );
+            SelectedExpertRankMetric {
+                rank,
+                expert,
+                metrics: Some(comparison.metrics),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let expert30 = loaded
+        .experts
+        .iter()
+        .find(|expert| expert.expert == 30)
+        .context("MXFP4 validation loader did not return expert30")?;
+    let selected_start = expert30_rank * 2880;
+    let selected_end = selected_start + 2880;
+    let expert30_selected_oracle = &selected_oracle[selected_start..selected_end];
+
+    let local_trace = compute_selected_expert_trace(mlp_norm, expert30, MlpReplayPolicy::Current);
+    let official_mlp1_swiglu = compute_swiglu_bf16(mlp1_oracle);
+    let official_mlp1_mlp2 = compute_expert30_mlp2_prebias_variant(
+        &official_mlp1_swiglu,
+        &expert30.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let official_mlp1_selected = compute_expert30_selected_output_variant(
+        &official_mlp1_mlp2,
+        &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
+    let official_swiglu_mlp2 = compute_expert30_mlp2_prebias_variant(
+        swiglu_oracle,
+        &expert30.down_weight,
+        Expert30Mlp2Policy::Current,
+    );
+    let official_swiglu_selected = compute_expert30_selected_output_variant(
+        &official_swiglu_mlp2,
+        &expert30.down_bias,
+        Expert30Mlp2Policy::Current,
+    );
+
+    let expert30_variant_table = vec![
+        Expert30PinnedSwigluVariantStatus {
+            name: "A_local_mlp1_pinned_swiglu_local_mlp2",
+            policy: "local MLP1 -> pinned Rust SwiGLU -> local MLP2/down -> selected output",
+            mlp1_metric: Some(compare_hidden(&local_trace.mlp1_before_swiglu, mlp1_oracle)),
+            swiglu_metric: Some(compare_hidden(&local_trace.swiglu_before_mlp2, swiglu_oracle)),
+            mlp2_pre_bias_metric: Some(compare_hidden(&local_trace.mlp2_before_bias, mlp2_oracle)),
+            selected_output_metric: compare_hidden(
+                &local_trace.selected_output,
+                expert30_selected_oracle,
+            ),
+        },
+        Expert30PinnedSwigluVariantStatus {
+            name: "B_official_mlp1_pinned_swiglu_local_mlp2",
+            policy: "official MLP1 -> pinned Rust SwiGLU -> local MLP2/down -> selected output",
+            mlp1_metric: Some(compare_hidden(mlp1_oracle, mlp1_oracle)),
+            swiglu_metric: Some(compare_hidden(&official_mlp1_swiglu, swiglu_oracle)),
+            mlp2_pre_bias_metric: Some(compare_hidden(&official_mlp1_mlp2, mlp2_oracle)),
+            selected_output_metric: compare_hidden(
+                &official_mlp1_selected,
+                expert30_selected_oracle,
+            ),
+        },
+        Expert30PinnedSwigluVariantStatus {
+            name: "C_local_mlp1_official_swiglu_local_mlp2",
+            policy: "local MLP1 replay bypassed at SwiGLU seam -> official SwiGLU -> local MLP2/down -> selected output",
+            mlp1_metric: Some(compare_hidden(&local_trace.mlp1_before_swiglu, mlp1_oracle)),
+            swiglu_metric: Some(compare_hidden(swiglu_oracle, swiglu_oracle)),
+            mlp2_pre_bias_metric: Some(compare_hidden(&official_swiglu_mlp2, mlp2_oracle)),
+            selected_output_metric: compare_hidden(
+                &official_swiglu_selected,
+                expert30_selected_oracle,
+            ),
+        },
+        Expert30PinnedSwigluVariantStatus {
+            name: "D_official_swiglu_local_mlp2",
+            policy: "official SwiGLU -> local MLP2/down -> selected output",
+            mlp1_metric: None,
+            swiglu_metric: Some(compare_hidden(swiglu_oracle, swiglu_oracle)),
+            mlp2_pre_bias_metric: Some(compare_hidden(&official_swiglu_mlp2, mlp2_oracle)),
+            selected_output_metric: compare_hidden(
+                &official_swiglu_selected,
+                expert30_selected_oracle,
+            ),
+        },
+    ];
+
+    let mlp1_variant_specs = [
+        (
+            "current",
+            "BF16 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::Current,
+        ),
+        (
+            "weight_bf16",
+            "BF16 input, BF16-rounded dequant weight, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::WeightBf16,
+        ),
+        (
+            "f32_input",
+            "f32 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, BF16 output",
+            MlpReplayPolicy::F32Input,
+        ),
+        (
+            "output_f16",
+            "BF16 input, f16-dequant weight widened to f32, f32 accumulation, BF16 bias add, f16 output",
+            MlpReplayPolicy::OutputF16,
+        ),
+    ];
+    let mlp1_variant_table = mlp1_variant_specs
+        .into_iter()
+        .map(|(name, policy, replay_policy)| {
+            let trace = compute_selected_expert_trace(mlp_norm, expert30, replay_policy);
+            SelectedExpertMlp1VariantStatus {
+                name,
+                policy,
+                mlp1_metric: compare_hidden(&trace.mlp1_before_swiglu, mlp1_oracle),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let first_mismatching_boundary = if expert30_variant_table[0]
+        .mlp1_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches != 0)
+    {
+        "expert30_mlp1_before_swiglu"
+    } else if expert30_variant_table[0]
+        .swiglu_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches != 0)
+    {
+        "expert30_swiglu_before_mlp2"
+    } else if expert30_variant_table[0]
+        .mlp2_pre_bias_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches != 0)
+    {
+        "expert30_mlp2_before_bias"
+    } else if expert30_variant_table[0]
+        .selected_output_metric
+        .metrics
+        .mismatches
+        != 0
+    {
+        "expert30_selected_output_layout_or_bias"
+    } else if per_rank_selected_output_metrics.iter().any(|metric| {
+        metric.expert != 30
+            && metric
+                .metrics
+                .as_ref()
+                .is_some_and(|metrics| metrics.mismatches != 0)
+    }) {
+        "non_expert30_selected_output"
+    } else {
+        "none"
+    };
+
+    let classification = match first_mismatching_boundary {
+        "none" => "selected_experts_pinned_swiglu_match_oracle",
+        "expert30_mlp1_before_swiglu" => "selected_expert_mismatch_starts_at_mlp1_mxfp4_replay",
+        "expert30_mlp2_before_bias" => "selected_expert_mismatch_starts_at_mlp2_after_local_swiglu",
+        "expert30_selected_output_layout_or_bias" => {
+            "selected_expert_mismatch_selected_output_layout"
+        }
+        "non_expert30_selected_output" => "selected_expert_mismatch_non_expert30",
+        _ => "selected_expert_mismatch_unresolved",
+    };
+    let next_bounded_step = match classification {
+        "selected_expert_mismatch_starts_at_mlp1_mxfp4_replay" => {
+            "localize expert30 MLP1 MXFP4 replay/dequant precision and accumulation policy"
+        }
+        "selected_expert_mismatch_non_expert30" => {
+            "add internal oracles for experts 3, 11, and 27 or compare their MLP1 boundaries"
+        }
+        "selected_experts_pinned_swiglu_match_oracle" => {
+            "run weighted expert sum using validation selected outputs"
+        }
+        _ => "inspect the first mismatching selected-expert boundary reported in this status",
+    };
+    let loader = Mxfp4LoaderStatus {
+        helper_name: loaded.helper_name,
+        decode_source: loaded.decode_source,
+        selected_experts: loaded.selected_experts,
+        dtype_outputs: loaded.dtype_outputs,
+    };
+    Ok((
+        classification,
+        per_rank_selected_output_metrics,
+        expert30_variant_table,
+        mlp1_variant_table,
+        first_mismatching_boundary,
+        Some(loader),
+        None,
+        next_bounded_step,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_selected_experts_pinned_swiglu_debug_mxfp4(
+    _model: &Path,
+    _selected_experts: &[usize],
+    _mlp_norm: &[f32],
+    _selected_oracle: &[f32],
+    _expert30_rank: usize,
+    _mlp1_oracle: &[f32],
+    _swiglu_oracle: &[f32],
+    _mlp2_oracle: &[f32],
+) -> Result<SelectedExpertsPinnedSwigluDebugResult> {
+    anyhow::bail!("selected-experts pinned-SwiGLU debug requires the cuda feature")
 }
 
 #[cfg(feature = "cuda")]
