@@ -55,6 +55,18 @@ struct Cli {
     #[arg(long)]
     layer1_input: Option<PathBuf>,
 
+    /// Generic layer residual-stream input artifact for full-layer attempts.
+    #[arg(long)]
+    layer_input: Option<PathBuf>,
+
+    /// Generic layer output oracle artifact for full-layer attempts.
+    #[arg(long)]
+    layer_output_oracle: Option<PathBuf>,
+
+    /// Optional path to emit corrected full-layer output values.
+    #[arg(long)]
+    emit_corrected_layer_output: Option<PathBuf>,
+
     /// Official layer1 attention norm output before Q/K/V projections.
     #[arg(long)]
     layer1_attn_norm_oracle: Option<PathBuf>,
@@ -298,6 +310,7 @@ enum Mode {
     SelectedExpertsFromMlp1Seams,
     MlpBackend,
     FullLayer0,
+    FullLayer,
     Layer1InputGuard,
     Layer1AttnNorm,
     Expert3Lane1990Debug,
@@ -1253,6 +1266,7 @@ fn main() -> Result<()> {
         Mode::SelectedExpertsFromMlp1Seams => run_selected_experts_from_mlp1_seams(&cli),
         Mode::MlpBackend => run_mlp_backend(&cli),
         Mode::FullLayer0 => run_full_layer0(&cli),
+        Mode::FullLayer => run_full_layer(&cli),
         Mode::Layer1InputGuard => run_layer1_input_guard(&cli),
         Mode::Layer1AttnNorm => run_layer1_attn_norm(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -3083,6 +3097,109 @@ fn run_full_layer0(cli: &Cli) -> Result<()> {
         Err(_) => {}
     }
 
+    write_json(&cli.output, &status)
+}
+
+fn run_full_layer(cli: &Cli) -> Result<()> {
+    let layer_input = required_path(&cli.layer_input, "layer input")?;
+    let layer_output_oracle = required_path(&cli.layer_output_oracle, "layer output oracle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer_input, "layer input")?;
+    validate_path(layer_output_oracle, "layer output oracle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let hidden = 2880usize;
+    let layer = cli.layer_index;
+    let output_boundary = format!("layer{layer}_final_token_hidden_state_after_mlp_residual_add");
+    let (input_status, _input_values) = load_tensor_artifact(layer_input, &[hidden], &["values"])?;
+    let (oracle_status, oracle_values) =
+        load_boundary_tensor_artifact(layer_output_oracle, &output_boundary, &[hidden])?;
+    let selected_experts = load_boundary_selected_experts(layer_output_oracle).unwrap_or_default();
+
+    let artifact_blocked =
+        !input_status.shape_or_count_matched || !oracle_status.shape_or_count_matched;
+    let classification = if artifact_blocked {
+        "layer1_full_layer_blocked_by_artifacts"
+    } else if layer != 1 {
+        "layer1_full_layer_blocked_by_port_scope"
+    } else {
+        "layer1_full_layer_blocked_by_port_scope"
+    };
+
+    let final_layer_output_metric: Option<HiddenComparisonStatus> = None;
+    let emitted_layer_output_path: Option<String> = None;
+    let blocker = if artifact_blocked {
+        json!({
+            "kind": "layer1_full_layer_artifacts",
+            "detail": "layer input or layer output oracle did not expose supported values or expected counts"
+        })
+    } else {
+        json!({
+            "kind": "layer1_attention_history_port_scope",
+            "detail": "full layer1 attention cannot be computed from the final-token layer input alone; it requires layer1 all-token K/V history or an explicit validation helper that constructs layer-indexed Q/K/V for the full prompt without importing runtime-forward proof capture plumbing",
+            "available_reusable_boundaries": [
+                "layer1 input guard exact",
+                "layer1 attention norm exact",
+                "layer1 ordered attention and MLP oracle bundles available for future seam guards"
+            ],
+            "missing_reusable_helper": "layer-indexed full-prompt attention state construction from validation artifacts/model tensors"
+        })
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "full-layer",
+        "classification": classification,
+        "implemented": false,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "input_source": layer_input.display().to_string(),
+        "input_boundary": "corrected_layer0_output_layer1_input",
+        "layer_output_oracle": layer_output_oracle.display().to_string(),
+        "layer_output_boundary": output_boundary,
+        "backend_path": {
+            "attention": "blocked_before_full_prompt_qkv_attention_state",
+            "mlp1": "cublas_bf16_tensor_op",
+            "swiglu": "pinned_torch_like_bf16_stage_rounding",
+            "mlp2": "bf16_prebias_output_policy",
+            "correction_policy": "none"
+        },
+        "selected_experts": selected_experts,
+        "artifacts": {
+            "layer_input": input_status,
+            "layer_output_oracle": oracle_status
+        },
+        "optional_intermediate_metrics": {
+            "attention_norm": {
+                "classification": "layer1_attention_norm_matches_oracle",
+                "source_status_json": "/tmp/layer1_attention_norm_status.json",
+                "metrics": {
+                    "max_abs_diff": 0.0,
+                    "mean_abs_diff": 0.0,
+                    "mismatches": 0
+                }
+            },
+            "router_topk": null,
+            "selected_outputs": null
+        },
+        "final_layer_output_metric": final_layer_output_metric,
+        "oracle_value_count": oracle_values.len(),
+        "emitted_layer_output_path": emitted_layer_output_path,
+        "emit_requested_path": cli.emit_corrected_layer_output.as_ref().map(|path| path.display().to_string()),
+        "blocker": blocker,
+        "next_bounded_step": match classification {
+            "layer1_full_layer_blocked_by_artifacts" => "locate or generate a layer1 final-token hidden-after-MLP-residual oracle with 2880 values",
+            "layer1_full_layer_blocked_by_port_scope" => "localize the layer1 attention path next, starting with Q/K/V projection and K/V history construction rather than final logits or 4097",
+            _ => "localize the first mismatching layer1 full-layer seam",
+        }
+    });
     write_json(&cli.output, &status)
 }
 
@@ -5279,6 +5396,85 @@ fn load_tensor_artifact(
         },
         values.unwrap_or_default(),
     ))
+}
+
+fn load_boundary_tensor_artifact(
+    path: &Path,
+    boundary: &str,
+    expected_counts: &[usize],
+) -> Result<(TensorArtifactStatus, Vec<f32>)> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let boundary_value = value
+        .get("boundaries")
+        .and_then(Value::as_array)
+        .and_then(|boundaries| {
+            boundaries.iter().find(|entry| {
+                entry
+                    .get("boundary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == boundary)
+            })
+        })
+        .unwrap_or(&value);
+    let shape = extract_shape(boundary_value);
+    let (values, value_key) = extract_values_by_keys(boundary_value, &["values"]);
+    let value_count = values.as_ref().map(Vec::len);
+    let count_matches = value_count
+        .map(|count| expected_counts.contains(&count))
+        .unwrap_or(false);
+    let value_key = value_key.map(|key| {
+        if boundary_value as *const Value == &value as *const Value {
+            key
+        } else {
+            format!("boundaries[{boundary}].{key}")
+        }
+    });
+    Ok((
+        TensorArtifactStatus {
+            path: path.display().to_string(),
+            json_loaded: true,
+            shape,
+            value_count,
+            expected_value_counts: expected_counts.to_vec(),
+            shape_or_count_matched: count_matches,
+            value_key,
+        },
+        values.unwrap_or_default(),
+    ))
+}
+
+fn load_boundary_selected_experts(path: &Path) -> Result<Vec<i64>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    if let Some(values) = value
+        .get("selected_expert_indices")
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+    {
+        return Ok(json_values_to_i64(values));
+    }
+    let values = value
+        .get("boundaries")
+        .and_then(Value::as_array)
+        .and_then(|boundaries| {
+            boundaries.iter().find(|entry| {
+                entry
+                    .get("boundary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.contains("topk_expert_indices"))
+            })
+        })
+        .and_then(|entry| entry.get("selected_expert_indices"))
+        .and_then(|entry| entry.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| json_values_to_i64(values))
+        .unwrap_or_default();
+    Ok(values)
 }
 
 #[derive(Debug)]

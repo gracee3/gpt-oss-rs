@@ -170,6 +170,46 @@ changed, and no raw `.live` or `/tmp` artifacts are committed.
 Next bounded step: validate the layer1 Q/K/V projection boundary or layer1 K
 RoPE guard.
 
+## Layer1 Full-Layer Validation Status
+
+- Mode: `--mode full-layer --layer-index 1`
+- Input source:
+  `/tmp/layer0_validation_corrected_layer0_output.json`
+- Layer1 input guard: exact
+- Layer1 attention norm: exact
+- Layer1 output oracle:
+  `/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json`
+- Oracle boundary:
+  `layer1_final_token_hidden_state_after_mlp_residual_add`
+- Correction policy: none
+
+Backend path:
+
+```text
+attention = blocked_before_full_prompt_qkv_attention_state
+MLP1 = cublas_bf16_tensor_op
+SwiGLU = pinned_torch_like_bf16_stage_rounding
+MLP2 = bf16_prebias_output_policy
+```
+
+Classification:
+
+```text
+layer1_full_layer_blocked_by_port_scope
+```
+
+The blocker is deliberate: the exact corrected layer0 output is only the final
+token layer1 input. Full layer1 attention also needs all-token layer1 K/V
+history, or a validation helper that constructs layer-indexed Q/K/V for the
+full prompt without importing runtime-forward proof binaries or debug capture
+plumbing.
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: localize the layer1 attention path next, starting with Q/K/V
+projection and K/V history construction.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
