@@ -1977,6 +1977,171 @@ Primary classification:
 
 multi_gpu_layer_sharding_cuda_resource_smoke_command_complete
 
+## Manifest-driven split allocation smoke status
+
+Added a bench-only manifest-driven allocation smoke command:
+
+```text
+multi_gpu_layer_sharding_split_allocation_smoke
+```
+
+Binary path:
+
+`crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_split_allocation_smoke.rs`
+
+Accepted flags:
+
+```text
+--model <PATH>
+--device-map <SPEC>
+--selected-device <ID>
+--kernel-dir <PATH>
+--dtype <f32|f16|both>
+--tie-word-embeddings <true|false>
+--output <PATH>
+```
+
+The command reads:
+
+- `config.json` from `--model` for `num_hidden_layers` and, unless overridden,
+  `tie_word_embeddings`
+- safetensors headers through `SafetensorHeaderManifest`
+- tensor payloads only for manifest-owned tensors selected by the smoke
+
+The command builds:
+
+- `DeviceMap`
+- `ShardedModelPlan`
+- `ShardedUploadManifest`
+- `ShardedKvCachePlan`
+- `SplitAllocationReport`
+- `ShardedCudaResources` when run with `--features cuda`
+
+CUDA resources created:
+
+- per-shard `CudaContext`
+- per-shard `CudaStream`
+- per-shard `CublasHandle`
+- per-shard `KernelLoader`
+
+Filtered loader calls:
+
+- `load_weights_to_gpu_with_shapes_filtered` for `--dtype f32` or `both`
+- `load_weights_to_gpu_f16_with_shapes_filtered` for `--dtype f16` or `both`
+- `load_u8_weights_to_host_filtered` for shard-owned GPT-OSS U8 tensors
+
+The f32/f16 filters use `ShardTensorManifest.required_tensor_names`. The U8
+host filter uses `ShardTensorManifest.host_u8_tensor_names`. Unknown,
+unassigned, malformed, and out-of-range tensor names are surfaced in status and
+are not selected for upload.
+
+The smoke records counts, tensor names, shape counts, element/byte totals, U8
+host byte totals, late allocation markers, and per-shard resource status, then
+drops the uploaded maps. It does not build runner state from them.
+
+Intentionally not created:
+
+- `GpuModelRunner`
+- `GpuTransformerLayer`
+- `CudaCacheEngine`
+- KV cache buffers
+- RoPE tables
+- metadata buffers
+- graph output buffers
+- f16 scratch
+- fused QKV or gate-up weights
+- converted final norm/embed tensors beyond initial loader ownership
+- MoE GPU expert uploads
+- activation-transfer buffers
+- final norm, LM head, sampling, logits, or graph capture
+
+Status JSON includes:
+
+- `classification`
+- `model_path`
+- `device_map_spec`
+- `selected_device`
+- `num_layers`
+- `dtype_mode`
+- `has_lm_head_weight`
+- `tie_word_embeddings`
+- `tensor_count_from_headers`
+- `total_header_tensor_bytes`
+- `resource_construction_succeeded`
+- `allocation_smoke_succeeded`
+- `omitted_allocations`
+- per-shard layer ownership, required tensors, uploaded f32/f16 counts, U8 host
+  counts, shape counts, element/byte totals, late allocations, and resource
+  status
+- `unassigned_tensor_names`
+- `invalid_tensor_names`
+- `error`
+
+Success classification:
+
+```text
+multi_gpu_layer_sharding_split_allocation_smoke_complete
+```
+
+Error classifications:
+
+```text
+multi_gpu_layer_sharding_split_allocation_smoke_invalid_device_map
+multi_gpu_layer_sharding_split_allocation_smoke_config_error
+multi_gpu_layer_sharding_split_allocation_smoke_header_error
+multi_gpu_layer_sharding_split_allocation_smoke_resource_error
+multi_gpu_layer_sharding_split_allocation_smoke_loader_error
+```
+
+Tied LM-head fallback:
+
+- If `lm_head.weight` exists, the final shard loads it normally through
+  `required_tensor_names`.
+- If `lm_head.weight` is absent and `tie_word_embeddings=true`, the final shard
+  reports `tied_lm_head_fallback` as deferred.
+- The smoke does not copy `model.embed_tokens.weight` to the final shard and
+  does not claim tied fallback is executable.
+
+Manual operator command for the 2x RTX 3090 host:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16
+```
+
+This command may accept split maps because it is a non-executing bench-only
+allocation smoke. Serve/runtime split maps remain rejected before CUDA
+allocation with `split device maps are parsed but not executable yet`.
+
+Still unchanged:
+
+- no serve/runtime behavior changed
+- no split execution path was added
+- no KV cache allocation/indexing changed
+- no final-token, logit, or parity claims are made
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_split_allocation_smoke_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_cuda_resource_smoke_command_complete
+multi_gpu_layer_sharding_split_allocation_smoke_complete
