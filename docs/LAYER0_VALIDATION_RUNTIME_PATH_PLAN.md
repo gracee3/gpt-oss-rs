@@ -2528,6 +2528,50 @@ No production runtime behavior, default model-runner routing, CUDA kernels, raw
 Next bounded step: localize the layer1 attention path next, starting with Q/K/V
 projection and K/V history construction.
 
+## Layer1 QKV History Validation Status
+
+Full-layer1 remains blocked because the exact final-token layer1 input is not
+enough to compute attention. Layer1 attention needs all-token K/V history.
+
+Artifact search found the pinned layer1 attention ordered bundle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json
+```
+
+Available boundaries in that bundle include:
+
+- final-token Q pre-RoPE `[4096]`
+- final-token K pre-RoPE `[512]`
+- final-token V `[512]`
+- final-token Q post-RoPE `[4096]`
+- grouped K post-RoPE history `[74,8,64]`
+- raw QK, masked logits, attention probabilities, weighted V, o-proj, and
+  attention residual seams
+
+Mode added:
+
+```text
+--mode layer1-k-rope
+```
+
+Current result:
+
+```text
+classification = layer1_k_rope_blocked_by_artifacts
+```
+
+The blocker is the missing all-token layer1 K pre-RoPE history boundary. The
+bundle has only final-token K pre-RoPE plus all-token grouped K post-RoPE, so
+the BF16-boundary RoPE helper cannot reconstruct the K/V history yet.
+
+No production runtime behavior, default model-runner routing, CUDA kernels, raw
+`.live` artifacts, or `/tmp` artifacts are committed.
+
+Next bounded step: generate or locate all-token layer1 residual/norm/QKV
+artifacts, then rerun `layer1-k-rope`; if K RoPE clears, build raw-QK and
+attention-probability guards.
+
 ## Validation Commands
 
 For the skeleton slice:

@@ -313,6 +313,7 @@ enum Mode {
     FullLayer,
     Layer1InputGuard,
     Layer1AttnNorm,
+    Layer1KRope,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1269,6 +1270,7 @@ fn main() -> Result<()> {
         Mode::FullLayer => run_full_layer(&cli),
         Mode::Layer1InputGuard => run_layer1_input_guard(&cli),
         Mode::Layer1AttnNorm => run_layer1_attn_norm(&cli),
+        Mode::Layer1KRope => run_layer1_k_rope(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -3348,6 +3350,106 @@ fn run_layer1_attn_norm(cli: &Cli) -> Result<()> {
             "layer1_attention_norm_blocked_by_artifacts" => "generate or locate layer1 input and attention norm oracle artifacts with 2880 values",
             "layer1_attention_norm_blocked_by_tensor_lookup" => "locate the layer1 attention norm weight tensor name in the model",
             _ => "resolve the reported layer1 attention norm execution blocker",
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_layer1_k_rope(cli: &Cli) -> Result<()> {
+    let k_pre_rope = required_path(&cli.k_pre_rope, "K pre-RoPE")?;
+    let k_post_rope_oracle = required_path(&cli.k_post_rope_oracle, "K post-RoPE oracle")?;
+    validate_path(k_pre_rope, "K pre-RoPE")?;
+    validate_path(k_post_rope_oracle, "K post-RoPE oracle")?;
+
+    let expected_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let layer = cli.layer_index;
+    let k_pre_boundary = format!("layer{layer}_grouped_k_projection_output_before_rope");
+    let k_post_boundary = format!("layer{layer}_grouped_k_post_rope_before_attention");
+    let (pre_status, pre_values) =
+        load_boundary_tensor_artifact(k_pre_rope, &k_pre_boundary, &[expected_count])?;
+    let (post_status, oracle_values) =
+        load_boundary_tensor_artifact(k_post_rope_oracle, &k_post_boundary, &[expected_count])?;
+
+    let artifact_blocked =
+        !pre_status.shape_or_count_matched || !post_status.shape_or_count_matched;
+    let execution = if artifact_blocked {
+        None
+    } else {
+        Some(execute_k_rope(&pre_values, &oracle_values, cli))
+    };
+    let classification = if artifact_blocked {
+        "layer1_k_rope_blocked_by_artifacts"
+    } else {
+        match execution.as_ref().map(|execution| execution.classification) {
+            Some("layer0_validation_k_rope_matches_oracle")
+            | Some("layer0_validation_k_rope_bf16_boundary_matches_oracle") => {
+                "layer1_k_rope_matches_oracle"
+            }
+            Some("layer0_validation_k_rope_mismatch")
+            | Some("layer0_validation_k_rope_bf16_boundary_mismatch")
+            | Some("layer0_validation_k_rope_dtype_policy_unresolved") => "layer1_k_rope_mismatch",
+            _ => "layer1_k_rope_blocked_by_artifacts",
+        }
+    };
+    let metrics = execution.as_ref().and_then(|execution| {
+        execution
+            .metrics
+            .clone()
+            .or_else(|| execution.f16_kernel_metrics.clone())
+    });
+    let first_mismatch = execution.as_ref().and_then(|execution| {
+        execution
+            .first_mismatch
+            .clone()
+            .or_else(|| execution.f16_kernel_first_mismatch.clone())
+    });
+    let worst_mismatch = execution.as_ref().and_then(|execution| {
+        execution
+            .worst_mismatch
+            .clone()
+            .or_else(|| execution.f16_kernel_worst_mismatch.clone())
+    });
+    let blocker = if artifact_blocked {
+        Some(json!({
+            "kind": "layer1_k_rope_artifacts",
+            "detail": "layer1 K RoPE requires all-token K pre-RoPE [74,8,64]/[74,512] and K post-RoPE [74,8,64]; available pinned attention bundle exposes only final-token K pre-RoPE plus all-token grouped K post-RoPE",
+            "missing_boundary": k_pre_boundary
+        }))
+    } else {
+        execution
+            .as_ref()
+            .and_then(|execution| execution.blocker.as_ref())
+            .map(|blocker| json!(blocker))
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer1-k-rope",
+        "classification": classification,
+        "implemented": !artifact_blocked && execution.is_some(),
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "api_used": "gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation",
+        "rope_application_policy": execution
+            .as_ref()
+            .map(|execution| execution.rope_application_policy)
+            .unwrap_or("blocked_before_rope_execution"),
+        "artifacts": {
+            "k_pre_rope": pre_status,
+            "k_post_rope_oracle": post_status
+        },
+        "expected_value_count": expected_count,
+        "metrics": metrics,
+        "first_mismatch": first_mismatch,
+        "worst_mismatch": worst_mismatch,
+        "blocker": blocker,
+        "next_bounded_step": match classification {
+            "layer1_k_rope_matches_oracle" => "build raw-QK and attention-probability guards from the layer1 K/V history",
+            "layer1_k_rope_mismatch" => "localize layer1 K RoPE dtype policy against the grouped K post-RoPE oracle",
+            _ => "generate or locate all-token layer1 K pre-RoPE history before K RoPE validation",
         }
     });
     write_json(&cli.output, &status)

@@ -210,6 +210,51 @@ changed, and no raw `.live` or `/tmp` artifacts are committed.
 Next bounded step: localize the layer1 attention path next, starting with Q/K/V
 projection and K/V history construction.
 
+## Layer1 QKV History Validation Status
+
+Full-layer1 is blocked before full-prompt Q/K/V attention state construction:
+the exact final-token layer1 input does not contain all-token K/V history.
+
+Artifact search found:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-attention-ordered-boundary-bundle-status.json
+```
+
+Useful boundaries in the bundle:
+
+- `layer1_final_token_q_projection_output_before_rope`
+- `layer1_final_token_k_projection_output_before_rope`
+- `layer1_final_token_v_projection_output_before_attention`
+- `layer1_final_token_q_post_rope_before_attention`
+- `layer1_grouped_k_post_rope_before_attention`
+- raw QK, masked logits, attention probabilities, weighted V, o-proj, and
+  attention residual seams
+
+Mode added:
+
+```text
+--mode layer1-k-rope
+```
+
+Classification:
+
+```text
+layer1_k_rope_blocked_by_artifacts
+```
+
+The missing artifact is all-token layer1 K pre-RoPE history
+`[74,8,64]`/`[74,512]`. The available bundle exposes final-token K pre-RoPE and
+all-token grouped K post-RoPE, which is not sufficient to validate K RoPE
+history construction.
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: generate or locate all-token layer1 residual/norm/QKV
+artifacts. If K RoPE clears afterward, build raw-QK and attention-probability
+guards.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
