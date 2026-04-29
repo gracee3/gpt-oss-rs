@@ -723,6 +723,248 @@ Primary classification:
 
 multi_gpu_layer_sharding_shard_plan_skeleton_complete
 
+## Filtered whole-tensor loading design
+
+### Current loader behavior
+
+The current CUDA loader in
+`crates/gpt-oss-model-runner/src/model_loader/gpu_loader.rs` is a
+stream/context-local uploader. Device placement is implicit in the
+`Arc<CudaStream>` passed to the loader.
+
+Tensor discovery:
+
+- `load_weights_to_gpu_with_shapes` delegates to
+  `load_weights_to_gpu_with_shapes_filtered(path, stream, |_| true)`.
+- `load_weights_to_gpu_with_shapes_filtered` dispatches to
+  `load_single_to_gpu` for one safetensors file or `load_sharded_to_gpu` for a
+  directory.
+- `load_single_to_gpu` memory maps the file, parses the safetensors header with
+  `parse_safetensors_header`, and enumerates tensor names from that header.
+- `load_sharded_to_gpu` calls `collect_shards`, sorts `*.safetensors` files,
+  and merges per-file weight and shape maps.
+
+Conversion and upload:
+
+- The f32 path skips `U8` tensors, converts `F32`/`F16`/`BF16` data to host
+  `Vec<f32>` via `convert_to_f32`, then uploads with `stream.clone_htod`.
+- The f16 path uses `load_weights_to_gpu_f16_with_shapes`, converts
+  `F16`/`BF16`/`F32` data to host `Vec<f16>` via `convert_to_f16`, then uploads
+  with `stream.clone_htod`.
+- `load_u8_weights_to_host` separately loads raw `U8` GPT-OSS expert
+  block/scale tensors into host memory. Those are not uploaded by the f32/f16
+  loader loops.
+
+Shape metadata:
+
+- Both f32 and f16 loader paths return `HashMap<String, Vec<usize>>` shape
+  metadata.
+- The f32 filtered path preserves shape metadata even when a tensor upload is
+  skipped.
+- Shape metadata is currently merged across safetensor shards and later
+  inserted into `GpuModelWeights`.
+
+Existing filtering hooks:
+
+- The f32 path already has a `should_load: FnMut(&str) -> bool` hook through
+  `load_weights_to_gpu_with_shapes_filtered`.
+- The f16 path currently has no equivalent filter and uploads every non-`U8`
+  tensor it sees.
+- The U8 host path currently has no filter and returns all raw `U8` tensors.
+
+Late allocations outside initial safetensor upload:
+
+- `GpuModelRunner::new` uploads RoPE tables and creates per-runner metadata
+  buffers.
+- `CudaCacheEngine::new` allocates KV cache buffers from `num_layers`.
+- `GpuModelRunner::build_gpt_oss_moe_layers` reads layer-owned U8 tensors and
+  uploads GPT-OSS MoE bias chunks through the runner stream.
+- `prepare_gpt_oss_graph_decode` can upload GPT-OSS expert blocks/scales later
+  from host U8 storage.
+- `GpuModelRunner::fuse_weights` creates fused QKV, fused gate/up, converted
+  f16 layernorm/bias/final norm/embed tensors, and f16 scratch on the runner
+  stream.
+
+### Upload manifest concept
+
+Future split allocation should derive a pure upload manifest before creating
+CUDA resources. The manifest should be built from:
+
+- model config, including `num_layers`, architecture, dtype, and
+  `tie_word_embeddings`
+- parsed `DeviceMap`
+- `ShardedModelPlan`
+- safetensor header names, dtypes, and shapes
+
+Design sketch:
+
+```text
+ShardedUploadManifest {
+  model_num_layers: usize,
+  shards: Vec<ShardTensorManifest>,
+  unassigned_tensor_names: Vec<String>,
+  invalid_tensor_names: Vec<String>,
+}
+
+ShardTensorManifest {
+  device_id: DeviceId,
+  absolute_layers: Vec<usize>,
+  required_tensor_names: Vec<String>,
+  optional_tensor_names: Vec<String>,
+  host_u8_tensor_names: Vec<String>,
+  deferred_or_late_gpu_allocations: Vec<LateAllocationKind>,
+}
+
+LateAllocationKind {
+  RopeTables,
+  MetadataBuffers,
+  F16FusedLayerWeights { layer_idx: usize },
+  F16ConvertedEmbedding,
+  F16ConvertedFinalNorm,
+  GptOssMoeGpuUpload { layer_idx: usize },
+  KvCache { absolute_layers: Vec<usize> },
+  TiedLmHeadFallback,
+}
+```
+
+The manifest is not an upload API. It is a preflight product that says what a
+future shard-local loader should upload once a shard's stream exists.
+
+### Tensor ownership rules
+
+Whole-tensor ownership should follow the existing `ShardedModelPlan` placement
+rules:
+
+- `model.embed_tokens.weight`: first shard, using `DeviceMap.embedding_device`.
+- `model.layers.<N>.*`: shard owning absolute layer `N`.
+- `model.norm.weight`: final shard, using `DeviceMap.final_device`.
+- `lm_head.weight`: final shard, using `DeviceMap.final_device`.
+- tied LM-head fallback: if `lm_head.weight` is absent and the model uses tied
+  embeddings, the final shard needs an LM-head-compatible path or copy even
+  when embeddings live on GPU0.
+- GPT-OSS MoE U8 expert block/scale tensors:
+  `model.layers.<N>.mlp.experts.*` are layer-owned and should be retained or
+  uploaded only for the shard that owns layer `N`.
+- dense layer biases, router weights/biases, sink tensors, norm weights, and
+  projection weights under `model.layers.<N>.*` remain whole-layer tensors and
+  follow layer `N`.
+- RoPE tables, metadata buffers, scratch buffers, and KV cache are not loaded
+  from safetensors. They are shard-local late allocations.
+
+Unknown tensor names should not be silently uploaded to every shard. The
+manifest should classify them as unassigned unless a later model-specific rule
+claims them.
+
+### Late allocations and fused tensors
+
+Late GPU allocations must be derived from the same ownership plan:
+
+- Fused QKV and fused gate/up tensors are created only on the shard that owns
+  the source layer.
+- F16 layernorm and bias conversions are created only on the shard that owns
+  the source layer.
+- Final norm conversion is created only on the final shard.
+- Embedding conversion is created only on the embedding shard, except for an
+  explicit tied LM-head fallback plan on the final shard.
+- GPT-OSS MoE GPU uploads are layer-owned. Host U8 data can remain global
+  until upload, but the future upload should filter by shard-owned layer ids.
+- RoPE tables should be allocated per shard because layer execution on that
+  shard needs local device pointers.
+- Metadata and scratch buffers should be allocated per shard because launch
+  inputs and reusable workspaces are stream/context-local.
+- KV cache should be allocated per shard in a later cache slice, keyed by
+  absolute layer ids or protected by an absolute-to-local map.
+
+The manifest should keep these late allocations separate from
+`required_tensor_names` so the initial safetensor upload path stays
+whole-tensor-only.
+
+### Error handling / validation
+
+Future manifest construction should validate before CUDA allocation:
+
+- Missing required tensors should produce a manifest error that names the tensor
+  and owning shard.
+- Optional tensors, such as architecture-specific biases or dense MLP tensors
+  absent in GPT-OSS MoE layers, should be recorded separately from required
+  tensors.
+- Unknown tensor names should be reported as unassigned and should not be
+  uploaded by default.
+- Out-of-range `model.layers.<N>.*` names should be invalid because they imply
+  a model/config mismatch.
+- Tensors that match no shard should be rejected for split allocation unless
+  explicitly marked optional/ignored by a model-specific rule.
+- Duplicate ownership should be a bug in manifest construction. A safetensor
+  entry should have at most one owning shard.
+- Shape metadata should remain global and complete across shards. Skipped
+  uploads must still preserve shapes so later validation, tensor-parallel
+  checks, and tied-head decisions can inspect the full model topology.
+- Tied LM-head fallback should be explicit: if `lm_head.weight` is absent and
+  `tie_word_embeddings` is true, the manifest should record
+  `LateAllocationKind::TiedLmHeadFallback` for the final shard rather than
+  pretending `model.embed_tokens.weight` is automatically local there.
+
+### Future Stage 4 split allocation smoke
+
+The split allocation smoke should become manifest-driven:
+
+1. Read model config and safetensor headers.
+2. Parse `split:0-11@0,12-23@1`.
+3. Build `ShardedModelPlan`.
+4. Derive `ShardTensorManifest` for GPU0 and GPU1.
+5. Create CUDA resources for each shard.
+6. For each shard, call loader primitives with a manifest-owned tensor filter.
+7. Upload only whole tensors listed in that shard's manifest.
+8. Perform only that shard's late allocations.
+9. Emit a small status JSON or structured log with device id, layer range,
+   required/optional/U8 tensor counts, skipped/unassigned count, and byte totals.
+10. Do not run layer forward, final norm, LM head, sampling, or graph capture.
+11. Do not compare logits or claim parity.
+
+The first implementation should prefer observability over cleverness: the
+status should make it obvious which shard owns every uploaded tensor and which
+late allocations are still deferred.
+
+### Preserving the current single-device path
+
+The existing `GpuWorker::load_weights` and `GpuModelRunner` construction path
+should remain unchanged for `single`. Future split loading should be separate
+or explicitly gated behind a non-default split-allocation smoke path.
+
+The current single-device f32 loader can keep using
+`load_weights_to_gpu_with_shapes_filtered` for its existing GPT-OSS filtered
+startup behavior. Split-specific filtering should not broaden that hook into
+runtime behavior until the smoke path is isolated and tested.
+
+The f16 and U8 loader paths need split-aware filters eventually, but this design
+does not add them and does not change upload behavior today.
+
+### Risks / blockers
+
+- The f16 loader lacks a filter hook, so a real split smoke needs either a
+  filtered f16 loader variant or a separate manifest-driven f16 upload path.
+- The U8 host loader lacks a filter hook and currently returns all GPT-OSS U8
+  tensors. That is acceptable for planning, but split upload should filter
+  layer-owned U8 tensors before device upload.
+- Required-vs-optional tensor rules are architecture-specific. GPT-OSS MoE and
+  dense MLP models should not share one naive required list.
+- Tied LM-head fallback can require a final-shard copy/path even when the
+  embedding shard is GPU0.
+- `GpuModelWeights` does not encode device ownership, so the future split path
+  needs shard-local containers or clear wrapper ownership.
+- Late allocations currently assume `0..num_layers` local indexing. Split
+  allocation must preserve absolute layer ids before running anything.
+
+### Next bounded step
+
+Add a pure upload-manifest helper that consumes safetensor names plus a
+`ShardedModelPlan` and emits per-shard `ShardTensorManifest` metadata without
+calling CUDA or loader upload functions.
+
+### Primary classification
+
+multi_gpu_layer_sharding_filtered_tensor_loading_design_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_shard_plan_skeleton_complete
+multi_gpu_layer_sharding_filtered_tensor_loading_design_complete
