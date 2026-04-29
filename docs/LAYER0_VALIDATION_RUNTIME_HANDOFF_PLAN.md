@@ -267,6 +267,54 @@ pack with K pre-RoPE `[74,512]` or `[74,8,64]`, then rerun `layer1-k-rope`. If
 K RoPE clears afterward, validate final-token raw-QK using final-token Q
 post-RoPE and grouped K post-RoPE.
 
+## Layer1 Attention Bundle Validation Status
+
+This mode exists to move downstream layer1 attention validation forward while
+the source-complete K/V history task remains open. It starts from explicit seam
+inputs already present in the official layer1 attention ordered bundle instead
+of claiming K RoPE construction has been validated.
+
+Mode:
+
+```text
+--mode layer1-attention-bundle
+```
+
+Source policy:
+
+- grouped K post-RoPE source: official attention bundle
+- Q post-RoPE source: official attention bundle
+- K pre-RoPE history: still missing
+- K RoPE construction validated: false
+- weighted V source:
+  `official_weighted_v_oracle_because_all_token_v_history_missing`
+
+Result:
+
+```text
+classification = layer1_attention_bundle_attention_residual_matches_oracle
+```
+
+Metrics:
+
+- raw QK: exact, `max_abs_diff = 0`, `mismatches = 0`
+- masked logits: exact, `max_abs_diff = 0`, `mismatches = 0`
+- attention probabilities: exact, `max_abs_diff = 0`, `mismatches = 0`
+- weighted V: not recomputed; official weighted-V seam used because all-token V
+  history is absent
+- o-proj: exact, `max_abs_diff = 0`, `mismatches = 0`
+- attention residual: exact, `max_abs_diff = 0`, `mismatches = 0`
+
+The emitted local residual artifact path used for the validation run is
+`/tmp/layer1_attention_residual_from_bundle.json`; it is not committed.
+
+No production behavior changed, no default routing changed, no CUDA kernels
+changed, and no raw `.live` or `/tmp` artifacts are committed.
+
+Next bounded step: validate layer1 MLP from the emitted attention residual.
+Separately keep all-token K pre-RoPE generation as the unresolved
+source-complete ladder task.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

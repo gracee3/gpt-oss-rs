@@ -71,6 +71,14 @@ struct Cli {
     #[arg(long)]
     layer1_attn_norm_oracle: Option<PathBuf>,
 
+    /// Official layer1 attention ordered boundary bundle for downstream seam validation.
+    #[arg(long)]
+    attention_bundle: Option<PathBuf>,
+
+    /// Optional path to emit the layer1 attention residual computed from bundle seams.
+    #[arg(long)]
+    emit_layer1_attention_residual: Option<PathBuf>,
+
     /// Layer index for layer ladder validation modes.
     #[arg(long, default_value_t = 1)]
     layer_index: usize,
@@ -314,6 +322,7 @@ enum Mode {
     Layer1InputGuard,
     Layer1AttnNorm,
     Layer1KRope,
+    Layer1AttentionBundle,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
     SwigluDebug,
@@ -1271,6 +1280,7 @@ fn main() -> Result<()> {
         Mode::Layer1InputGuard => run_layer1_input_guard(&cli),
         Mode::Layer1AttnNorm => run_layer1_attn_norm(&cli),
         Mode::Layer1KRope => run_layer1_k_rope(&cli),
+        Mode::Layer1AttentionBundle => run_layer1_attention_bundle(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
         Mode::SwigluDebug => run_swiglu_debug(&cli),
@@ -3516,6 +3526,254 @@ fn run_layer1_k_rope(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_layer1_attention_bundle(cli: &Cli) -> Result<()> {
+    let layer1_input = required_path(&cli.layer1_input, "layer1 input")?;
+    let bundle = required_path(&cli.attention_bundle, "attention bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer1_input, "layer1 input")?;
+    validate_path(bundle, "attention bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let k_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let raw_qk_count = cli.query_heads * cli.token_count;
+    let masked_count = cli.query_heads * (cli.token_count + 1);
+
+    let q_post_boundary = format!("layer{layer}_final_token_q_post_rope_before_attention");
+    let k_post_boundary = format!("layer{layer}_grouped_k_post_rope_before_attention");
+    let raw_qk_boundary = format!("layer{layer}_final_token_raw_scaled_qk_logits_pre_mask");
+    let masked_boundary = format!("layer{layer}_final_token_masked_scaled_qk_logits_pre_softmax");
+    let probs_boundary = format!("layer{layer}_final_token_attention_probs_post_softmax");
+    let weighted_v_boundary =
+        format!("layer{layer}_final_token_attention_weighted_value_sum_before_output_projection");
+    let oproj_boundary =
+        format!("layer{layer}_final_token_attention_output_after_o_proj_before_residual");
+    let residual_boundary =
+        format!("layer{layer}_final_token_hidden_state_after_attention_residual_add_before_mlp");
+
+    let available_boundaries = list_boundary_names(bundle)?;
+    let (q_status, q_post) = load_boundary_tensor_artifact(bundle, &q_post_boundary, &[q_dim])?;
+    let (k_status, k_post) = load_boundary_tensor_artifact(bundle, &k_post_boundary, &[k_count])?;
+    let (raw_status, raw_oracle) =
+        load_boundary_tensor_artifact(bundle, &raw_qk_boundary, &[raw_qk_count])?;
+    let (masked_status, masked_oracle) =
+        load_boundary_tensor_artifact(bundle, &masked_boundary, &[masked_count])?;
+    let (probs_status, probs_oracle) =
+        load_boundary_tensor_artifact(bundle, &probs_boundary, &[masked_count])?;
+    let (weighted_status, weighted_v) =
+        load_boundary_tensor_artifact(bundle, &weighted_v_boundary, &[q_dim])?;
+    let (oproj_status, oproj_oracle) =
+        load_boundary_tensor_artifact(bundle, &oproj_boundary, &[hidden])?;
+    let (residual_oracle_status, residual_oracle) =
+        load_boundary_tensor_artifact(bundle, &residual_boundary, &[hidden])?;
+    let (input_status, layer1_input_values) =
+        load_tensor_artifact(layer1_input, &[hidden], &["values"])?;
+
+    let raw_inputs_ready = q_status.shape_or_count_matched
+        && k_status.shape_or_count_matched
+        && raw_status.shape_or_count_matched;
+    let (raw_values, raw_qk_metric) = if raw_inputs_ready {
+        let raw_values = compute_raw_qk(&q_post, &k_post, cli);
+        let metric = compare_raw_qk(&raw_values, &raw_oracle, cli);
+        (Some(raw_values), Some(metric))
+    } else {
+        (None, None)
+    };
+
+    let attention_ready = raw_values.is_some()
+        && masked_status.shape_or_count_matched
+        && probs_status.shape_or_count_matched;
+    let (masked_metric, probs_metric, probs_values) = if let Some(raw_values) = raw_values.as_ref()
+    {
+        if attention_ready {
+            let masked_logits = build_masked_logits_from_raw_qk(
+                raw_values,
+                &masked_oracle,
+                cli.query_heads,
+                cli.token_count,
+            );
+            let masked_metric = compare_matrix(
+                &masked_logits,
+                &masked_oracle,
+                cli.query_heads,
+                cli.token_count + 1,
+                MatrixSelection::All,
+            );
+            let probs =
+                softmax_rows_bf16_output(&masked_logits, cli.query_heads, cli.token_count + 1);
+            let probs_metric = compare_matrix(
+                &probs,
+                &probs_oracle,
+                cli.query_heads,
+                cli.token_count + 1,
+                MatrixSelection::All,
+            );
+            (Some(masked_metric), Some(probs_metric), Some(probs))
+        } else {
+            (None, None, None)
+        }
+    } else {
+        (None, None, None)
+    };
+
+    let weighted_v_note = json!({
+        "source": "official_weighted_v_oracle_because_all_token_v_history_missing",
+        "metric": serde_json::Value::Null,
+        "all_token_v_history_present": false,
+        "official_weighted_v_artifact": weighted_status,
+    });
+
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let oproj_weight_result = load_model_tensor_f32(model, &[oproj_weight_name.as_str()]);
+    let oproj_bias_result = load_model_tensor_f32(model, &[oproj_bias_name.as_str()]);
+
+    let (oproj_metric, oproj_output, model_tensors, oproj_blocker) = match (
+        oproj_weight_result,
+        oproj_bias_result,
+    ) {
+        (Ok((weight_status, weight_values)), Ok((bias_status, bias_values)))
+            if weighted_status.shape_or_count_matched && oproj_status.shape_or_count_matched =>
+        {
+            let output = compute_attention_oproj_variant(
+                &weighted_v,
+                &weight_values,
+                &bias_values,
+                OprojPolicy::ChunkedPairwise,
+            );
+            let metric = compare_hidden(&output, &oproj_oracle);
+            (
+                Some(metric),
+                Some(output),
+                json!({
+                    "oproj_weight": weight_status,
+                    "oproj_bias": bias_status,
+                }),
+                None,
+            )
+        }
+        (weight_result, bias_result) => {
+            let weight_error = weight_result.err().map(|err| err.to_string());
+            let bias_error = bias_result.err().map(|err| err.to_string());
+            (
+                None,
+                None,
+                json!({
+                    "oproj_weight_error": weight_error,
+                    "oproj_bias_error": bias_error,
+                }),
+                Some(json!({
+                    "kind": "layer1_attention_bundle_oproj_artifacts",
+                    "detail": "weighted V, o_proj oracle, or model o_proj weight/bias was unavailable"
+                })),
+            )
+        }
+    };
+
+    let residual_ready = oproj_output.is_some()
+        && input_status.shape_or_count_matched
+        && residual_oracle_status.shape_or_count_matched;
+    let (residual_metric, residual_output) = if residual_ready {
+        let output = compute_attention_residual(
+            &layer1_input_values,
+            oproj_output.as_ref().expect("checked above"),
+        );
+        let metric = compare_hidden(&output, &residual_oracle);
+        (Some(metric), Some(output))
+    } else {
+        (None, None)
+    };
+
+    if let (Some(emit_path), Some(residual_output)) = (
+        &cli.emit_layer1_attention_residual,
+        residual_output.as_ref(),
+    ) {
+        write_layer1_attention_residual_artifact(emit_path, model, bundle, residual_output)?;
+    }
+
+    let classification = classify_layer1_attention_bundle(
+        &raw_qk_metric,
+        &masked_metric,
+        &probs_metric,
+        &oproj_metric,
+        &residual_metric,
+        raw_inputs_ready,
+        masked_status.shape_or_count_matched,
+        probs_status.shape_or_count_matched,
+        weighted_status.shape_or_count_matched,
+    );
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer1-attention-bundle",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "bundle_path": bundle.display().to_string(),
+        "layer1_input_source": layer1_input.display().to_string(),
+        "available_boundaries": available_boundaries,
+        "source_policy": {
+            "k_post_rope_source": "official_attention_bundle",
+            "k_pre_rope_history": "missing",
+            "k_rope_construction_validated": false,
+            "q_post_rope_source": "official_attention_bundle",
+            "weighted_v_source": "official_weighted_v_oracle_because_all_token_v_history_missing"
+        },
+        "artifacts": {
+            "q_post_rope": q_status,
+            "k_post_rope": k_status,
+            "raw_qk_oracle": raw_status,
+            "masked_logits_oracle": masked_status,
+            "attention_probs_oracle": probs_status,
+            "weighted_v_oracle": weighted_status,
+            "oproj_oracle": oproj_status,
+            "attention_residual_oracle": residual_oracle_status,
+            "layer1_input": input_status
+        },
+        "model_tensors": model_tensors,
+        "metrics": {
+            "raw_qk": raw_qk_metric,
+            "masked_logits": masked_metric,
+            "attention_probs": probs_metric,
+            "weighted_v": weighted_v_note,
+            "o_proj": oproj_metric,
+            "attention_residual": residual_metric
+        },
+        "computed_attention_probs_present": probs_values.is_some(),
+        "blocker": oproj_blocker,
+        "emitted_layer1_attention_residual": cli
+            .emit_layer1_attention_residual
+            .as_ref()
+            .filter(|_| residual_output.is_some())
+            .map(|path| path.display().to_string()),
+        "next_bounded_step": match classification {
+            "layer1_attention_bundle_attention_residual_matches_oracle" => {
+                "validate layer1 MLP from the emitted attention residual; keep all-token K pre-RoPE generation as a separate source-complete ladder task"
+            }
+            "layer1_attention_bundle_oproj_matches_oracle" => {
+                "localize residual-add input/policy or emit the o_proj seam before layer1 MLP"
+            }
+            "layer1_attention_bundle_attention_probs_matches_oracle" => {
+                "validate o_proj policy from official weighted-V seam"
+            }
+            "layer1_attention_bundle_raw_qk_matches_oracle" => {
+                "validate masked logits and attention probabilities from the bundle seam"
+            }
+            _ => "localize the first mismatching or missing layer1 attention bundle seam"
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
 fn run_expert3_lane1990_debug(cli: &Cli) -> Result<()> {
     let mlp1_seam = required_path(&cli.expert3_mlp1_seam, "expert3 MLP1 seam")?;
     let selected_experts_oracle =
@@ -5281,6 +5539,111 @@ fn write_corrected_layer0_output_artifact(
     write_json(output, &payload)
 }
 
+fn write_layer1_attention_residual_artifact(
+    output: &Path,
+    model: &Path,
+    bundle: &Path,
+    values: &[f32],
+) -> Result<()> {
+    anyhow::ensure!(
+        values.len() == 2880,
+        "layer1 attention residual artifact must have 2880 values, got {}",
+        values.len()
+    );
+    let payload = json!({
+        "case": "developer-message-user-smoke",
+        "case_id": "developer-message-user-smoke",
+        "boundary": "layer1_final_token_hidden_state_after_attention_residual_add_before_mlp",
+        "source_mode": "layer1-attention-bundle",
+        "source_policy": {
+            "q_post_rope_source": "official_attention_bundle",
+            "k_post_rope_source": "official_attention_bundle",
+            "k_rope_construction_validated": false,
+            "weighted_v_source": "official_weighted_v_oracle_because_all_token_v_history_missing"
+        },
+        "model": model.display().to_string(),
+        "attention_bundle": bundle.display().to_string(),
+        "shape": [2880],
+        "tensor_dtype": "bf16_boundary_serialized_as_f32",
+        "serialization_dtype": "f32_json",
+        "value_key": "values",
+        "finite_value_summary": finite_summary(values),
+        "values": values,
+    });
+    write_json(output, &payload)
+}
+
+fn classify_layer1_attention_bundle(
+    raw_qk_metric: &Option<RawQkComparison>,
+    masked_metric: &Option<MatrixComparisonStatus>,
+    probs_metric: &Option<MatrixComparisonStatus>,
+    oproj_metric: &Option<HiddenComparisonStatus>,
+    residual_metric: &Option<HiddenComparisonStatus>,
+    raw_inputs_ready: bool,
+    masked_present: bool,
+    probs_present: bool,
+    weighted_v_present: bool,
+) -> &'static str {
+    if !raw_inputs_ready {
+        return "layer1_attention_bundle_blocked_by_missing_values";
+    }
+    if raw_qk_metric
+        .as_ref()
+        .is_none_or(|metric| metric.metrics.mismatches != 0)
+    {
+        return "layer1_attention_bundle_mismatch";
+    }
+    if !masked_present || !probs_present {
+        return "layer1_attention_bundle_raw_qk_matches_oracle";
+    }
+    if masked_metric
+        .as_ref()
+        .is_none_or(|metric| metric.metrics.mismatches != 0)
+        || probs_metric
+            .as_ref()
+            .is_none_or(|metric| metric.metrics.mismatches != 0)
+    {
+        return "layer1_attention_bundle_mismatch";
+    }
+    if !weighted_v_present {
+        return "layer1_attention_bundle_attention_probs_matches_oracle";
+    }
+    if let Some(metric) = residual_metric {
+        if metric.metrics.mismatches == 0 {
+            return "layer1_attention_bundle_attention_residual_matches_oracle";
+        }
+        return "layer1_attention_bundle_mismatch";
+    }
+    if let Some(metric) = oproj_metric {
+        if metric.metrics.mismatches == 0 {
+            return "layer1_attention_bundle_oproj_matches_oracle";
+        }
+        return "layer1_attention_bundle_mismatch";
+    }
+    "layer1_attention_bundle_attention_probs_matches_oracle"
+}
+
+fn list_boundary_names(path: &Path) -> Result<Vec<String>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let mut names = value
+        .get("boundaries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .get("boundary")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
+}
+
 #[derive(Debug, Deserialize)]
 struct SafetensorEntry {
     dtype: String,
@@ -6148,6 +6511,7 @@ struct KRopeComparison {
     worst_mismatch: Option<LogicalDiff>,
 }
 
+#[derive(Debug, Clone, Serialize)]
 struct RawQkComparison {
     metrics: RawQkMetrics,
     first_mismatch: Option<RawQkDiff>,
