@@ -2142,6 +2142,83 @@ Primary classification:
 
 multi_gpu_layer_sharding_split_allocation_smoke_complete
 
+## Real-model split allocation smoke status
+
+Operator validation run date: 2026-04-29.
+
+Command run:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_status.json
+```
+
+The status JSON and logs were written under `/tmp/multi_gpu_layer_sharding` and
+are not committed.
+
+Preflight result:
+
+- two visible CUDA devices: RTX 3090 device 0 and RTX 3090 device 1
+- model path exists
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+  passed with existing warnings
+
+Smoke result:
+
+- primary result classification:
+  `multi_gpu_layer_sharding_real_model_split_allocation_f16_blocked`
+- command status classification:
+  `multi_gpu_layer_sharding_split_allocation_smoke_header_error`
+- `resource_construction_succeeded`: `false`
+- `allocation_smoke_succeeded`: `false`
+- shard summary: not produced because header discovery failed before building the
+  split allocation report
+- unassigned tensor count: not reached
+- invalid tensor count: not reached
+- stderr contained compile warnings and the command invocation; no CUDA resource,
+  loader, OOM, or execution error was reached
+
+Failure boundary:
+
+Header discovery rejected duplicate safetensor tensor names before CUDA resource
+construction. The first reported duplicate was:
+
+```text
+model.layers.0.self_attn.sinks
+```
+
+The restricted model view contains 24 duplicate `model.layers.*.self_attn.sinks`
+headers across the base model shards and `zzzz-sinks-override.safetensors`.
+This is a header-merge/override-policy blocker for real-model dry allocation,
+not a split CUDA resource, f16 loader, U8 host loader, or memory-pressure result.
+
+Interpretation:
+
+- no CUDA resource islands were created by the smoke
+- no f16 tensors or U8 host payloads were loaded by the smoke
+- no KV cache, RoPE, metadata, scratch, fused weights, MoE GPU uploads,
+  activation-transfer buffers, runner, layers, logits, or forward pass were
+  created
+- no execution or parity claim is made
+- serve/runtime split maps remain non-executable and rejected before CUDA
+  allocation
+
+Next bounded step:
+
+Design and implement a narrow safetensor header discovery policy for restricted
+model override shards, preserving the current duplicate rejection by default.
+The likely repair is an explicit, opt-in override or index-aware merge mode that
+can account for `zzzz-sinks-override.safetensors` without silently accepting
+arbitrary duplicate tensor names.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_split_allocation_f16_blocked
+
 ## Primary classification
 
-multi_gpu_layer_sharding_split_allocation_smoke_complete
+multi_gpu_layer_sharding_real_model_split_allocation_f16_blocked
