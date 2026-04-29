@@ -3026,6 +3026,100 @@ Next bounded step: localize the layer2 attention norm lane 2108 mismatch, or
 generate ordered layer2 attention/MLP bundles for source-complete layer2
 validation.
 
+## Layer2 Attention Norm Lane2108 Debug Status
+
+The coarse ladder stopped at layer2 because the first local recomputation check,
+the layer2 attention RMSNorm, had one BF16-lane mismatch. The layer input guard
+was exact, and the MLP norm from the official coarse attention residual seam was
+already exact.
+
+Debug mode added:
+
+- `--mode layer2-attn-norm-debug`
+
+Layer2 focus lane:
+
+```text
+lane = 2108
+local_current_output = -0.451171875
+official_output = -0.453125
+diff = 0.001953125
+input = -1.0078125
+weight = 2.109375
+classification = layer2_attn_norm_debug_policy_matches_with_variant
+```
+
+RMSNorm variant result:
+
+```text
+A_current = 1 mismatch at lane 2108
+D_f64_reduction = exact
+F_pairwise_reduction = exact
+C_bf16_square_terms = 188 mismatches
+I_pre_scale_rounding = 747 mismatches
+```
+
+The lane window `2106..2110` supports that the current-policy mismatch is
+localized to lane 2108, while the exact global variants are reduction-order
+variants rather than a one-lane replacement rule.
+
+Coarse continuation flag added:
+
+- `--continue-after-attn-norm-diagnostic`
+
+With that flag, `coarse-layer-validate` records the attention norm mismatch as
+a diagnostic caveat and continues only from the official coarse attention
+residual seam. It does not claim attention norm parity and still emits the layer
+output only when the final coarse layer output is exact.
+
+Layer2 continuation result:
+
+```text
+classification = coarse_layer_validate_mlp_output_matches_with_attn_norm_diagnostic
+input_guard = exact
+attention_norm = diagnostic mismatch at lane 2108
+mlp_norm = exact
+mlp_output = exact
+selected_experts = [21, 26, 29, 4]
+emitted_output = /tmp/coarse_ladder_outputs/layer2_output.json
+```
+
+Coarse ladder continuation result:
+
+```text
+classification = coarse_ladder_validate_stopped_on_mlp_norm_mismatch
+completed_layers = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+stopped_at_layer = 11
+stop_reason = mlp_norm_mismatch
+emitted_outputs = /tmp/coarse_ladder_outputs/layer2_output.json through layer10_output.json
+```
+
+The stopped layer11 MLP norm mismatch is:
+
+```text
+layer = 11
+lane = 248
+local = 0.0308837890625
+official = 0.03076171875
+max_abs_diff = 0.0001220703125
+mismatches = 1
+```
+
+Caveats:
+
+- attention residual remains an official coarse seam
+- attention internals are not recomputed
+- ordered attention/MLP bundles remain required for true seam validation
+- the attention norm diagnostic is validation-only metadata
+- no raw `.live` or `/tmp` artifacts are committed
+
+No production behavior changed, no default model-runner routing changed, and no
+CUDA kernels changed.
+
+Next bounded step: localize the layer11 MLP norm lane 248 policy from the
+official coarse attention residual seam, or generate ordered layer11 bundles if
+source-complete seam evidence is needed.
+
 ## Validation Commands
 
 For the skeleton slice:

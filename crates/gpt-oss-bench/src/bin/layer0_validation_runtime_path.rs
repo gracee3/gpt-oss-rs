@@ -121,6 +121,10 @@ struct Cli {
     #[arg(long)]
     layer_output: Option<PathBuf>,
 
+    /// Continue coarse MLP-side validation after recording an attention norm diagnostic mismatch.
+    #[arg(long, default_value_t = false)]
+    continue_after_attn_norm_diagnostic: bool,
+
     /// Official K pre-RoPE artifact for the runtime/kernel RoPE parity guard.
     #[arg(long)]
     k_pre_rope: Option<PathBuf>,
@@ -380,6 +384,7 @@ enum Mode {
     CoarseLayerOutputGuard,
     CoarseLayerValidate,
     CoarseLadderValidate,
+    Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
     Expert3Lane1990OracleSemantics,
@@ -1350,6 +1355,7 @@ fn main() -> Result<()> {
         Mode::CoarseLayerOutputGuard => run_coarse_layer_output_guard(&cli),
         Mode::CoarseLayerValidate => run_coarse_layer_validate(&cli),
         Mode::CoarseLadderValidate => run_coarse_ladder_validate(&cli),
+        Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
         Mode::Expert3Lane1990OracleSemantics => run_expert3_lane1990_oracle_semantics(&cli),
@@ -4748,6 +4754,7 @@ fn execute_coarse_layer_validate(
     coarse: &Path,
     model: &Path,
     emit_layer_output: Option<&Path>,
+    continue_after_attn_norm_diagnostic: bool,
 ) -> Result<(String, Value, Option<Vec<f32>>)> {
     validate_path(layer_input, "layer input")?;
     validate_path(coarse, "coarse bundle")?;
@@ -4886,6 +4893,10 @@ fn execute_coarse_layer_validate(
     };
     let attention_norm_metric = (!schema_blocked && !tensor_blocked)
         .then(|| compare_hidden(&attention_norm_values, &attention_norm_oracle));
+    let attention_norm_matches = attention_norm_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let attention_norm_diagnostic = !attention_norm_matches && continue_after_attn_norm_diagnostic;
 
     let mlp_norm_values = if !schema_blocked && !tensor_blocked {
         compute_mlp_rms_norm(&attention_residual, &post_norm_values, 1e-5)
@@ -4906,9 +4917,7 @@ fn execute_coarse_layer_validate(
         && input_guard_metric
             .as_ref()
             .is_some_and(|metric| metric.metrics.mismatches == 0)
-        && attention_norm_metric
-            .as_ref()
-            .is_some_and(|metric| metric.metrics.mismatches == 0)
+        && (attention_norm_matches || attention_norm_diagnostic)
         && mlp_norm_metric
             .as_ref()
             .is_some_and(|metric| metric.metrics.mismatches == 0)
@@ -5015,10 +5024,7 @@ fn execute_coarse_layer_validate(
         .is_none_or(|metric| metric.metrics.mismatches != 0)
     {
         "coarse_layer_validate_input_mismatch"
-    } else if attention_norm_metric
-        .as_ref()
-        .is_none_or(|metric| metric.metrics.mismatches != 0)
-    {
+    } else if !attention_norm_matches && !continue_after_attn_norm_diagnostic {
         "coarse_layer_validate_attention_norm_mismatch"
     } else if mlp_norm_metric
         .as_ref()
@@ -5029,13 +5035,21 @@ fn execute_coarse_layer_validate(
         .as_ref()
         .is_some_and(|metric| metric.metrics.mismatches == 0)
     {
-        "coarse_layer_validate_matches_oracle"
+        if attention_norm_diagnostic {
+            "coarse_layer_validate_mlp_output_matches_with_attn_norm_diagnostic"
+        } else {
+            "coarse_layer_validate_matches_oracle"
+        }
+    } else if attention_norm_diagnostic {
+        "coarse_layer_validate_mlp_output_mismatch_after_attn_norm_diagnostic"
     } else {
         "coarse_layer_validate_mlp_output_mismatch"
     }
     .to_string();
 
-    if classification == "coarse_layer_validate_matches_oracle" {
+    if classification == "coarse_layer_validate_matches_oracle"
+        || classification == "coarse_layer_validate_mlp_output_matches_with_attn_norm_diagnostic"
+    {
         if let (Some(path), Some(values)) = (emit_layer_output, layer_output.as_ref()) {
             write_coarse_layer_output_artifact(path, layer, model, coarse, values)?;
         }
@@ -5092,6 +5106,13 @@ fn execute_coarse_layer_validate(
             "ordered_mlp_bundle_available": false,
             "corrections_allowed": false,
             "correction_applied": false,
+            "attention_norm_status": if attention_norm_diagnostic {
+                "diagnostic_mismatch"
+            } else if attention_norm_matches {
+                "exact"
+            } else {
+                "mismatch"
+            },
             "router_topk_oracle_available": false,
             "selected_output_oracle_available": false,
             "weighted_sum_oracle_available": false,
@@ -5102,9 +5123,11 @@ fn execute_coarse_layer_validate(
             .map(|path| path.display().to_string()),
         "next_bounded_step": match classification.as_str() {
             "coarse_layer_validate_matches_oracle" => "feed emitted layer output into the next coarse layer validation",
+            "coarse_layer_validate_mlp_output_matches_with_attn_norm_diagnostic" => "feed emitted layer output into the next coarse layer validation while preserving the attention norm diagnostic caveat",
             "coarse_layer_validate_input_mismatch" => "localize prior emitted output versus this layer coarse input boundary",
             "coarse_layer_validate_attention_norm_mismatch" => "localize layer input RMSNorm policy or tensor lookup",
             "coarse_layer_validate_mlp_norm_mismatch" => "localize layer MLP norm policy from the coarse attention residual seam",
+            "coarse_layer_validate_mlp_output_mismatch_after_attn_norm_diagnostic" => "generate ordered attention/MLP bundles for this layer; coarse MLP output did not clear after diagnostic continuation",
             "coarse_layer_validate_mlp_output_mismatch" => "generate ordered attention/MLP bundles for this layer before applying any correction",
             "coarse_layer_validate_blocked_by_tensor_lookup" => "resolve missing layer-indexed norm/router/expert tensors",
             _ => "inspect coarse schema and required layer boundaries",
@@ -5120,6 +5143,7 @@ fn execute_coarse_layer_validate(
     coarse: &Path,
     _model: &Path,
     _emit_layer_output: Option<&Path>,
+    _continue_after_attn_norm_diagnostic: bool,
 ) -> Result<(String, Value, Option<Vec<f32>>)> {
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -5155,6 +5179,7 @@ fn run_coarse_layer_validate(cli: &Cli) -> Result<()> {
         coarse,
         model,
         cli.emit_layer_output.as_deref(),
+        cli.continue_after_attn_norm_diagnostic,
     )?;
     write_json(&cli.output, &status)
 }
@@ -5194,8 +5219,13 @@ fn run_coarse_ladder_validate(cli: &Cli) -> Result<()> {
             coarse,
             model,
             Some(&output_path),
+            cli.continue_after_attn_norm_diagnostic,
         )?;
-        if classification == "coarse_layer_validate_matches_oracle" && output_values.is_some() {
+        if (classification == "coarse_layer_validate_matches_oracle"
+            || classification
+                == "coarse_layer_validate_mlp_output_matches_with_attn_norm_diagnostic")
+            && output_values.is_some()
+        {
             completed_layers.push(layer);
             emitted_outputs.push(json!({
                 "layer_index": layer,
@@ -5219,7 +5249,10 @@ fn run_coarse_ladder_validate(cli: &Cli) -> Result<()> {
             "coarse_layer_validate_input_mismatch" => "input_mismatch",
             "coarse_layer_validate_attention_norm_mismatch" => "attention_norm_mismatch",
             "coarse_layer_validate_mlp_norm_mismatch" => "mlp_norm_mismatch",
-            "coarse_layer_validate_mlp_output_mismatch" => "mlp_output_mismatch",
+            "coarse_layer_validate_mlp_output_mismatch"
+            | "coarse_layer_validate_mlp_output_mismatch_after_attn_norm_diagnostic" => {
+                "mlp_output_mismatch"
+            }
             "coarse_layer_validate_blocked_by_coarse_schema" => "schema_blocker",
             _ => "execution_failure",
         }
@@ -5279,6 +5312,275 @@ fn run_coarse_ladder_validate(cli: &Cli) -> Result<()> {
             "coarse_ladder_validate_stopped_on_input_mismatch" => "localize the previous emitted layer output versus the stopped layer input boundary",
             _ => "resolve the reported coarse ladder blocker",
         }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn pairwise_sum_f32(values: &[f32]) -> f32 {
+    if values.len() <= 32 {
+        values.iter().sum()
+    } else {
+        let mid = values.len() / 2;
+        pairwise_sum_f32(&values[..mid]) + pairwise_sum_f32(&values[mid..])
+    }
+}
+
+fn compute_rms_norm_debug_variant(
+    name: &str,
+    input: &[f32],
+    weight: &[f32],
+    epsilon: f32,
+) -> (Vec<f32>, Value) {
+    let hidden = input.len().max(1);
+    let input_bf16 = input
+        .iter()
+        .map(|&value| round_bf16(value))
+        .collect::<Vec<_>>();
+    let sumsq_f32 = input_bf16.iter().map(|x| x * x).sum::<f32>();
+    let (sumsq, inv_rms) = match name {
+        "B_f32_input" | "H_weight_f32" => {
+            let sumsq = input.iter().map(|x| x * x).sum::<f32>();
+            let mean = sumsq / hidden as f32;
+            (sumsq, 1.0f32 / (mean + epsilon).sqrt())
+        }
+        "C_bf16_square_terms" => {
+            let sumsq = input_bf16.iter().map(|x| round_bf16(x * x)).sum::<f32>();
+            let mean = sumsq / hidden as f32;
+            (sumsq, 1.0f32 / (mean + epsilon).sqrt())
+        }
+        "D_f64_reduction" => {
+            let sumsq64 = input_bf16
+                .iter()
+                .map(|x| (*x as f64) * (*x as f64))
+                .sum::<f64>();
+            let mean64 = sumsq64 / hidden as f64;
+            (
+                sumsq64 as f32,
+                (1.0f64 / (mean64 + epsilon as f64).sqrt()) as f32,
+            )
+        }
+        "E_reverse_reduction" => {
+            let sumsq = input_bf16.iter().rev().map(|x| x * x).sum::<f32>();
+            let mean = sumsq / hidden as f32;
+            (sumsq, 1.0f32 / (mean + epsilon).sqrt())
+        }
+        "F_pairwise_reduction" => {
+            let terms = input_bf16.iter().map(|x| x * x).collect::<Vec<_>>();
+            let sumsq = pairwise_sum_f32(&terms);
+            let mean = sumsq / hidden as f32;
+            (sumsq, 1.0f32 / (mean + epsilon).sqrt())
+        }
+        _ => {
+            let mean = sumsq_f32 / hidden as f32;
+            (sumsq_f32, 1.0f32 / (mean + epsilon).sqrt())
+        }
+    };
+
+    let values = input
+        .iter()
+        .zip(weight.iter())
+        .map(|(&x, &scale)| match name {
+            "B_f32_input" | "H_weight_f32" => round_bf16(x * inv_rms * scale),
+            "G_scale_first" => round_bf16(round_bf16(x) * scale * inv_rms),
+            "I_pre_scale_rounding" => round_bf16(round_bf16(round_bf16(x) * inv_rms) * scale),
+            _ => round_bf16(round_bf16(x) * inv_rms * scale),
+        })
+        .collect::<Vec<_>>();
+    let mean_square = sumsq / hidden as f32;
+    (
+        values,
+        json!({
+            "sumsq": sumsq,
+            "mean_square": mean_square,
+            "epsilon": epsilon,
+            "inv_rms": inv_rms,
+        }),
+    )
+}
+
+fn run_layer2_attn_norm_debug(cli: &Cli) -> Result<()> {
+    let layer = if cli.layer_index == 1 {
+        2
+    } else {
+        cli.layer_index
+    };
+    let lane = if cli.lane == 522 { 2108 } else { cli.lane };
+    let hidden = 2880usize;
+    anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+    let layer_input = required_path(&cli.layer_input, "layer input")?;
+    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
+    let model = required_path(&cli.model, "model")?;
+    validate_path(layer_input, "layer input")?;
+    validate_path(coarse, "coarse bundle")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let input_boundary = coarse_boundary_name(layer, "layer_input_before_attention_norm");
+    let attention_norm_boundary = coarse_boundary_name(layer, "attention_norm_output_before_qkv");
+    let (input_status, input_values) = load_tensor_artifact(layer_input, &[hidden], &["values"])?;
+    let (input_oracle_status, input_oracle) =
+        load_coarse_boundary_tensor(coarse, &input_boundary, &[hidden])?;
+    let (oracle_status, oracle_values) =
+        load_coarse_boundary_tensor(coarse, &attention_norm_boundary, &[hidden])?;
+    let tensor_name = format!("model.layers.{layer}.input_layernorm.weight");
+    let (weight_source, weight_values) = load_model_tensor_f32(model, &[tensor_name.as_str()])?;
+    let schema_blocked = !input_status.shape_or_count_matched
+        || !input_oracle_status.shape_or_count_matched
+        || !oracle_status.shape_or_count_matched
+        || weight_values.len() != hidden;
+    let input_guard_metric =
+        (!schema_blocked).then(|| compare_hidden(&input_values, &input_oracle));
+
+    let variant_names = [
+        "A_current",
+        "B_f32_input",
+        "C_bf16_square_terms",
+        "D_f64_reduction",
+        "E_reverse_reduction",
+        "F_pairwise_reduction",
+        "G_scale_first",
+        "H_weight_f32",
+        "I_pre_scale_rounding",
+    ];
+    let mut variant_table = Vec::new();
+    let mut variant_outputs = BTreeMap::new();
+    let mut inv_rms_trace = BTreeMap::new();
+    for name in variant_names {
+        let (values, trace) = if schema_blocked {
+            (Vec::new(), Value::Null)
+        } else {
+            compute_rms_norm_debug_variant(name, &input_values, &weight_values, 1e-5)
+        };
+        let metric = (!schema_blocked).then(|| compare_hidden(&values, &oracle_values));
+        let lane_value = values.get(lane).copied();
+        variant_table.push(json!({
+            "variant": name,
+            "metric": metric,
+            "focus_lane_value": lane_value,
+            "focus_lane_diff": lane_value.map(|value| value - oracle_values[lane]),
+            "trace": trace,
+        }));
+        inv_rms_trace.insert(name.to_string(), trace);
+        variant_outputs.insert(name.to_string(), values);
+    }
+
+    let current_values = variant_outputs
+        .get("A_current")
+        .cloned()
+        .unwrap_or_default();
+    let current_metric = (!schema_blocked).then(|| compare_hidden(&current_values, &oracle_values));
+    let window_start = lane.saturating_sub(2);
+    let window_end = (lane + 2).min(hidden - 1);
+    let lane_window = if schema_blocked {
+        Vec::new()
+    } else {
+        (window_start..=window_end)
+            .map(|window_lane| {
+                let current = current_values[window_lane];
+                let official = oracle_values[window_lane];
+                json!({
+                    "lane": window_lane,
+                    "input": input_values[window_lane],
+                    "weight": weight_values[window_lane],
+                    "current_local": current,
+                    "official": official,
+                    "diff": current - official,
+                    "matches": current == official,
+                    "variant_values": variant_names
+                        .iter()
+                        .map(|name| {
+                            json!({
+                                "variant": name,
+                                "value": variant_outputs[*name][window_lane],
+                                "matches": variant_outputs[*name][window_lane] == official,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let any_variant_exact = variant_table.iter().any(|entry| {
+        entry
+            .pointer("/metric/metrics/mismatches")
+            .and_then(Value::as_u64)
+            == Some(0)
+    });
+    let input_exact = input_guard_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 0);
+    let current_single_lane = current_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches == 1)
+        && current_metric
+            .as_ref()
+            .and_then(|metric| metric.first_mismatch.as_ref())
+            .is_some_and(|mismatch| mismatch.hidden_lane == lane);
+    let neighbors_match = lane_window.iter().all(|entry| {
+        entry.get("lane").and_then(Value::as_u64) == Some(lane as u64)
+            || entry
+                .get("matches")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
+    let classification = if schema_blocked {
+        "layer2_attn_norm_debug_blocked_by_schema"
+    } else if !input_exact {
+        "layer2_attn_norm_debug_weight_or_input_source_mismatch"
+    } else if any_variant_exact {
+        "layer2_attn_norm_debug_policy_matches_with_variant"
+    } else if current_single_lane && neighbors_match {
+        "layer2_attn_norm_debug_single_lane_oracle_anomaly"
+    } else if current_metric
+        .as_ref()
+        .is_some_and(|metric| metric.metrics.mismatches != 0)
+    {
+        "layer2_attn_norm_debug_rounding_policy_mismatch"
+    } else {
+        "layer2_attn_norm_debug_unresolved"
+    };
+    let local = current_values.get(lane).copied();
+    let official = oracle_values.get(lane).copied();
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer2-attn-norm-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "layer_input_path": layer_input.display().to_string(),
+        "coarse_bundle_path": coarse.display().to_string(),
+        "input_boundary": input_boundary,
+        "attention_norm_boundary": attention_norm_boundary,
+        "input_guard_metric": input_guard_metric,
+        "tensor_source": weight_source,
+        "epsilon": 1e-5f32,
+        "hidden_size": hidden,
+        "current_metric": current_metric,
+        "variant_table": variant_table,
+        "lane_trace": {
+            "lane": lane,
+            "input": input_values.get(lane).copied(),
+            "weight": weight_values.get(lane).copied(),
+            "local_current_output": local,
+            "official_output": official,
+            "diff": local.zip(official).map(|(local, official)| local - official),
+        },
+        "lane_window": lane_window,
+        "inv_rms_trace": inv_rms_trace,
+        "recommendation": match classification {
+            "layer2_attn_norm_debug_policy_matches_with_variant" => "consider whether the exact variant should become the local validation policy before continuing coarse validation",
+            "layer2_attn_norm_debug_single_lane_oracle_anomaly" => "continue coarse MLP-side validation only behind --continue-after-attn-norm-diagnostic and keep this lane as validation-only metadata",
+            "layer2_attn_norm_debug_rounding_policy_mismatch" => "localize RMSNorm reduction/output policy before using coarse continuation",
+            "layer2_attn_norm_debug_weight_or_input_source_mismatch" => "resolve layer input or norm weight source mismatch",
+            _ => "inspect coarse schema and RMSNorm debug values",
+        },
     });
     write_json(&cli.output, &status)
 }
