@@ -1,0 +1,710 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use clap::{Parser, ValueEnum};
+use half::bf16;
+use serde::Serialize;
+use serde_json::{json, Value};
+
+#[cfg(feature = "cuda")]
+use gpt_oss_gpu::{cublas::CublasHandle, kernel_loader::KernelLoader, CudaContext};
+#[cfg(feature = "cuda")]
+use gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Mode {
+    Lane522,
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "mlp1_bf16_einsum_backend_compare",
+    about = "Validation-only MLP1 BF16 einsum backend microbench"
+)]
+struct Cli {
+    #[arg(long, value_enum, default_value_t = Mode::Lane522)]
+    mode: Mode,
+
+    #[arg(long)]
+    mlp_norm: PathBuf,
+
+    #[arg(long)]
+    expert30_mlp1_oracle: PathBuf,
+
+    #[arg(long)]
+    model: PathBuf,
+
+    #[arg(long, default_value_t = 522)]
+    lane: usize,
+
+    #[arg(long, default_value_t = 30)]
+    expert: usize,
+
+    #[arg(long)]
+    pytorch_terms: Option<PathBuf>,
+
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CandidateResult {
+    name: String,
+    policy: String,
+    pre_bias: Option<f32>,
+    bias: f32,
+    output: Option<f32>,
+    diff_vs_official: Option<f32>,
+    diff_vs_pytorch: Option<f32>,
+    exact_vs_official: bool,
+    exact_vs_pytorch: bool,
+    blocker: Option<String>,
+    metadata: Value,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.mode {
+        Mode::Lane522 => run_lane522(&cli),
+    }
+}
+
+fn run_lane522(cli: &Cli) -> Result<()> {
+    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(&cli.expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    validate_path(&cli.model, "model")?;
+    if let Some(path) = &cli.pytorch_terms {
+        validate_path(path, "PyTorch terms")?;
+    }
+
+    let mlp_norm = load_values(&cli.mlp_norm, 2880, "MLP norm input")?;
+    let mlp1_oracle = load_values(&cli.expert30_mlp1_oracle, 5760, "expert30 MLP1 oracle")?;
+    anyhow::ensure!(
+        cli.expert == 30,
+        "Stage 1 microbench is intentionally restricted to expert30"
+    );
+    anyhow::ensure!(
+        cli.lane < mlp1_oracle.len(),
+        "lane {} out of range for oracle length {}",
+        cli.lane,
+        mlp1_oracle.len()
+    );
+
+    let pytorch_reference = load_pytorch_reference(cli.pytorch_terms.as_deref());
+    let official_value = mlp1_oracle[cli.lane];
+    let pytorch_pre_bias = json_f32_path(&pytorch_reference, &["pre_bias"]);
+    let pytorch_output = json_f32_path(
+        &pytorch_reference,
+        &["output", "einsum_bf16_plus_bias_bf16"],
+    )
+    .or_else(|| json_f32_path(&pytorch_reference, &["output"]));
+
+    let status = execute_lane522_backend_compare(
+        &cli.model,
+        &mlp_norm,
+        official_value,
+        pytorch_pre_bias,
+        pytorch_output,
+        cli.expert,
+        cli.lane,
+    );
+    let status = match status {
+        Ok(mut status) => {
+            status["pytorch_reference"] = pytorch_reference;
+            status["artifacts"] = json!({
+                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "expert30_mlp1_oracle": artifact_path(&cli.expert30_mlp1_oracle),
+                "pytorch_terms": cli.pytorch_terms.as_ref().map(|path| artifact_path(path)),
+            });
+            status
+        }
+        Err(err) => json!({
+            "mode": "mlp1_bf16_einsum_backend_compare",
+            "submode": "lane522",
+            "classification": "mlp1_bf16_backend_blocked_by_mxfp4_loader",
+            "runtime_behavior_changed": false,
+            "validation_only": true,
+            "error": err.to_string(),
+            "next_bounded_step": "fix the validation-only lane522 MXFP4 row/backend microbench"
+        }),
+    };
+
+    write_json(&cli.output, &status)
+}
+
+#[cfg(feature = "cuda")]
+fn execute_lane522_backend_compare(
+    model: &Path,
+    mlp_norm: &[f32],
+    official_value: f32,
+    pytorch_pre_bias: Option<f32>,
+    pytorch_output: Option<f32>,
+    expert: usize,
+    lane: usize,
+) -> Result<Value> {
+    let row = load_gate_up_row_mxfp4_validation(model, 0, expert, lane)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let bias = round_bf16(row.bias_value);
+    let scalar_baselines = scalar_baselines(
+        mlp_norm,
+        &row.current_gpu_row,
+        bias,
+        official_value,
+        pytorch_output,
+    );
+    let scalar_best_diff = scalar_baselines
+        .iter()
+        .filter_map(|candidate| candidate.diff_vs_official)
+        .fold(f32::INFINITY, f32::min);
+
+    let mut backend_candidates = Vec::new();
+    backend_candidates.push(run_cublas_candidate(
+        "cublas_bf16_tensor_op",
+        "cuBLAS BF16 GEMM tensor-op default, BF16 input/weight/output",
+        model,
+        mlp_norm,
+        &row.current_gpu_row,
+        bias,
+        official_value,
+        pytorch_output,
+        false,
+    ));
+    backend_candidates.push(run_cublas_candidate(
+        "cublas_bf16_pedantic_no_tensor_op",
+        "cuBLAS BF16 pedantic/no-tensor-op scoped call, BF16 input/weight/output",
+        model,
+        mlp_norm,
+        &row.current_gpu_row,
+        bias,
+        official_value,
+        pytorch_output,
+        true,
+    ));
+    backend_candidates.push(run_custom_kernel_candidate(
+        "bf16_linear_bias_validation_mode0",
+        "existing validation BF16 linear kernel, f32 accumulation, f32 bias add, BF16 output",
+        model,
+        mlp_norm,
+        &row.current_gpu_row,
+        bias,
+        official_value,
+        pytorch_output,
+        0,
+    ));
+    backend_candidates.push(run_custom_kernel_candidate(
+        "bf16_linear_bias_validation_mode1",
+        "existing validation BF16 linear kernel, BF16 pre-bias, f32 bias add, BF16 output",
+        model,
+        mlp_norm,
+        &row.current_gpu_row,
+        bias,
+        official_value,
+        pytorch_output,
+        1,
+    ));
+    backend_candidates.push(CandidateResult {
+        name: "cutlass_custom_cuda_feasibility".to_string(),
+        policy: "CUTLASS/custom CUDA not imported in this slice; feasibility documented only"
+            .to_string(),
+        pre_bias: None,
+        bias,
+        output: None,
+        diff_vs_official: None,
+        diff_vs_pytorch: None,
+        exact_vs_official: false,
+        exact_vs_pytorch: false,
+        blocker: Some("not_attempted_no_cutlass_import_in_stage1_lane_microbench".to_string()),
+        metadata: json!({ "validation_only": true }),
+    });
+
+    let best_candidate = backend_candidates
+        .iter()
+        .filter(|candidate| candidate.output.is_some())
+        .min_by(|a, b| {
+            a.diff_vs_pytorch
+                .unwrap_or(f32::INFINITY)
+                .total_cmp(&b.diff_vs_pytorch.unwrap_or(f32::INFINITY))
+        })
+        .cloned();
+    let any_backend_ran = backend_candidates
+        .iter()
+        .any(|candidate| candidate.output.is_some());
+    let any_backend_matches = backend_candidates
+        .iter()
+        .any(|candidate| candidate.exact_vs_pytorch && candidate.exact_vs_official);
+    let any_backend_improves = backend_candidates.iter().any(|candidate| {
+        candidate
+            .diff_vs_official
+            .is_some_and(|diff| diff < scalar_best_diff)
+    });
+    let classification = if any_backend_matches {
+        "mlp1_bf16_backend_candidate_matches_pytorch_lane522"
+    } else if any_backend_improves {
+        "mlp1_bf16_backend_candidate_improves_lane522"
+    } else if any_backend_ran {
+        "mlp1_bf16_backend_candidates_mismatch_lane522"
+    } else {
+        "mlp1_bf16_backend_blocked_by_cublas_api"
+    };
+
+    Ok(json!({
+        "mode": "mlp1_bf16_einsum_backend_compare",
+        "submode": "lane522",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "validation_only": true,
+        "source_identity": {
+            "model": model.display().to_string(),
+            "expert": expert,
+            "lane": lane,
+            "tensor_names": {
+                "blocks": "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                "scales": "model.layers.0.mlp.experts.gate_up_proj_scales",
+                "bias": "model.layers.0.mlp.experts.gate_up_proj_bias"
+            },
+            "mxfp4_row_loader": row.helper_name,
+            "decode_source": row.decode_source,
+            "tensor_sources": row.tensor_sources,
+        },
+        "official_value": official_value,
+        "pytorch_reference_values": {
+            "pre_bias": pytorch_pre_bias,
+            "bias": bias,
+            "output": pytorch_output,
+        },
+        "scalar_baselines": scalar_baselines,
+        "backend_candidates": backend_candidates,
+        "best_candidate": best_candidate,
+        "next_bounded_step": match classification {
+            "mlp1_bf16_backend_candidate_matches_pytorch_lane522" => "run full expert30 MLP1 with the matching backend candidate",
+            "mlp1_bf16_backend_candidate_improves_lane522" => "expand the improving backend candidate to full expert30 MLP1 before considering selected experts",
+            "mlp1_bf16_backend_candidates_mismatch_lane522" => "design a narrower BF16 einsum/matmul backend that reproduces PyTorch lane522 semantics",
+            _ => "expose or fix the narrow cuBLAS/custom validation backend APIs needed for lane522",
+        },
+    }))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_lane522_backend_compare(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _official_value: f32,
+    _pytorch_pre_bias: Option<f32>,
+    _pytorch_output: Option<f32>,
+    _expert: usize,
+    _lane: usize,
+) -> Result<Value> {
+    anyhow::bail!("lane522 backend compare requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn run_cublas_candidate(
+    name: &str,
+    policy: &str,
+    _model: &Path,
+    input: &[f32],
+    weight: &[f32],
+    bias: f32,
+    official: f32,
+    pytorch_output: Option<f32>,
+    pedantic: bool,
+) -> CandidateResult {
+    let result = (|| -> Result<(f32, Value)> {
+        let context = CudaContext::new(0).context("CUDA context for cuBLAS candidate")?;
+        let stream = context
+            .new_stream()
+            .context("CUDA stream for cuBLAS candidate")?;
+        let blas = CublasHandle::new(stream.clone()).context("cuBLAS handle")?;
+        let input_bf16 = bf16_round_vec(input);
+        let weight_bf16 = bf16_round_vec(weight);
+        let input_dev = stream
+            .clone_htod(&input_bf16)
+            .context("upload cuBLAS input")?;
+        let weight_dev = stream
+            .clone_htod(&weight_bf16)
+            .context("upload cuBLAS weight")?;
+        let mut output_dev = stream
+            .alloc_zeros::<bf16>(1)
+            .context("allocate cuBLAS output")?;
+        let metadata = if pedantic {
+            let restore = blas
+                .bf16_gemm_pedantic_into(
+                    1,
+                    1,
+                    input.len(),
+                    1.0,
+                    &input_dev,
+                    &weight_dev,
+                    0.0,
+                    &mut output_dev,
+                )
+                .context("cuBLAS pedantic BF16 GEMM")?;
+            json!({
+                "math_mode": restore.math_mode,
+                "atomics_mode": restore.atomics_mode,
+                "math_mode_restored": restore.math_mode_restored,
+                "atomics_mode_restored": restore.atomics_mode_restored,
+            })
+        } else {
+            blas.bf16_gemm_into(
+                1,
+                1,
+                input.len(),
+                1.0,
+                &input_dev,
+                &weight_dev,
+                0.0,
+                &mut output_dev,
+            )
+            .context("cuBLAS BF16 GEMM")?;
+            json!({ "math_mode": "default_tensor_op", "atomics_mode": "unchanged" })
+        };
+        stream.synchronize().context("cuBLAS candidate sync")?;
+        let output = stream
+            .clone_dtoh(&output_dev)
+            .context("download cuBLAS output")?;
+        let pre_bias = output
+            .first()
+            .copied()
+            .map(f32::from)
+            .context("cuBLAS output was empty")?;
+        Ok((pre_bias, metadata))
+    })();
+    candidate_from_result(name, policy, bias, official, pytorch_output, result)
+}
+
+#[cfg(feature = "cuda")]
+fn run_custom_kernel_candidate(
+    name: &str,
+    policy: &str,
+    _model: &Path,
+    input: &[f32],
+    weight: &[f32],
+    bias: f32,
+    official: f32,
+    pytorch_output: Option<f32>,
+    mode: i32,
+) -> CandidateResult {
+    let result = (|| -> Result<(f32, Value)> {
+        let context = CudaContext::new(0).context("CUDA context for custom BF16 candidate")?;
+        let stream = context
+            .new_stream()
+            .context("CUDA stream for custom BF16 candidate")?;
+        let loader = KernelLoader::new(
+            context.clone(),
+            stream.clone(),
+            gpt_oss_gpu::kernel_loader::default_ptx_dir(),
+        )
+        .context("validation kernel loader")?;
+        let input_bf16 = bf16_round_vec(input);
+        let weight_bf16 = bf16_round_vec(weight);
+        let bias_bf16 = vec![bf16::from_f32(bias)];
+        let input_dev = stream
+            .clone_htod(&input_bf16)
+            .context("upload custom input")?;
+        let weight_dev = stream
+            .clone_htod(&weight_bf16)
+            .context("upload custom weight")?;
+        let bias_dev = stream
+            .clone_htod(&bias_bf16)
+            .context("upload custom bias")?;
+        let mut output_dev = stream
+            .alloc_zeros::<bf16>(1)
+            .context("allocate custom output")?;
+        loader
+            .launch_bf16_linear_bias_validation(
+                &input_dev,
+                &weight_dev,
+                &bias_dev,
+                &mut output_dev,
+                1,
+                1,
+                input.len(),
+                mode,
+            )
+            .context("launch custom BF16 validation linear")?;
+        stream.synchronize().context("custom candidate sync")?;
+        let output = stream
+            .clone_dtoh(&output_dev)
+            .context("download custom output")?;
+        let selected = output
+            .first()
+            .copied()
+            .map(f32::from)
+            .context("custom output was empty")?;
+        let pre_bias = f32::NAN;
+        Ok((
+            pre_bias,
+            json!({ "kernel": "bf16_linear_bias_validation_kernel", "mode": mode, "output_includes_bias": true, "selected_output": selected }),
+        ))
+    })();
+    match result {
+        Ok((pre_bias, metadata)) => {
+            let output = metadata
+                .get("selected_output")
+                .and_then(Value::as_f64)
+                .map(|value| value as f32)
+                .unwrap_or_else(|| round_bf16(pre_bias + bias));
+            CandidateResult {
+                name: name.to_string(),
+                policy: policy.to_string(),
+                pre_bias: if pre_bias.is_nan() {
+                    None
+                } else {
+                    Some(pre_bias)
+                },
+                bias,
+                output: Some(output),
+                diff_vs_official: Some((output - official).abs()),
+                diff_vs_pytorch: pytorch_output.map(|reference| (output - reference).abs()),
+                exact_vs_official: output == official,
+                exact_vs_pytorch: pytorch_output.is_some_and(|reference| output == reference),
+                blocker: None,
+                metadata,
+            }
+        }
+        Err(err) => CandidateResult {
+            name: name.to_string(),
+            policy: policy.to_string(),
+            pre_bias: None,
+            bias,
+            output: None,
+            diff_vs_official: None,
+            diff_vs_pytorch: None,
+            exact_vs_official: false,
+            exact_vs_pytorch: false,
+            blocker: Some(err.to_string()),
+            metadata: json!({ "kernel": "bf16_linear_bias_validation_kernel", "mode": mode }),
+        },
+    }
+}
+
+fn candidate_from_result(
+    name: &str,
+    policy: &str,
+    bias: f32,
+    official: f32,
+    pytorch_output: Option<f32>,
+    result: Result<(f32, Value)>,
+) -> CandidateResult {
+    match result {
+        Ok((pre_bias, metadata)) => {
+            let output = round_bf16(pre_bias + bias);
+            CandidateResult {
+                name: name.to_string(),
+                policy: policy.to_string(),
+                pre_bias: Some(pre_bias),
+                bias,
+                output: Some(output),
+                diff_vs_official: Some((output - official).abs()),
+                diff_vs_pytorch: pytorch_output.map(|reference| (output - reference).abs()),
+                exact_vs_official: output == official,
+                exact_vs_pytorch: pytorch_output.is_some_and(|reference| output == reference),
+                blocker: None,
+                metadata,
+            }
+        }
+        Err(err) => CandidateResult {
+            name: name.to_string(),
+            policy: policy.to_string(),
+            pre_bias: None,
+            bias,
+            output: None,
+            diff_vs_official: None,
+            diff_vs_pytorch: None,
+            exact_vs_official: false,
+            exact_vs_pytorch: false,
+            blocker: Some(err.to_string()),
+            metadata: json!({}),
+        },
+    }
+}
+
+fn scalar_baselines(
+    input: &[f32],
+    weight: &[f32],
+    bias: f32,
+    official: f32,
+    pytorch_output: Option<f32>,
+) -> Vec<CandidateResult> {
+    let mut specs = vec![
+        (
+            "A_current_explicit_f32_sum",
+            "BF16 input, dequantized f16 weight widened to f32, explicit f32 product/sum, f32 bias add, BF16 output",
+            dot_sequential_f32(input, weight),
+            "bf16",
+        ),
+        (
+            "B_bf16_product_f32_sum",
+            "BF16-rounded product per term, f32 accumulation, f32 bias add, BF16 output",
+            dot_bf16_product_f32_sum(input, weight),
+            "bf16",
+        ),
+        (
+            "C_bf16_block32_partial_sum",
+            "BF16 running sum within MXFP4 32-value blocks, BF16 block accumulation, f32 bias add, BF16 output",
+            dot_bf16_running(input, weight, Some(32)),
+            "bf16",
+        ),
+        (
+            "D_bf16_running_sum_each_term",
+            "BF16 product and BF16 running sum after every term, f32 bias add, BF16 output",
+            dot_bf16_running(input, weight, None),
+            "bf16",
+        ),
+        (
+            "F_f32_accum_bf16_prebias_f32_bias",
+            "explicit f32 product/sum, BF16 pre-bias, f32 bias add, BF16 output",
+            dot_sequential_f32(input, weight),
+            "bf16_prebias",
+        ),
+    ];
+    for chunk in [16usize, 32, 64, 128] {
+        let name = match chunk {
+            16 => "E_chunked_pairwise_16",
+            32 => "E_chunked_pairwise_32",
+            64 => "E_chunked_pairwise_64",
+            _ => "E_chunked_pairwise_128",
+        };
+        specs.push((
+            name,
+            "chunked pairwise f32 accumulation with fixed chunk size, f32 bias add, BF16 output",
+            dot_chunked_pairwise_f32(input, weight, chunk),
+            "bf16",
+        ));
+    }
+    specs
+        .into_iter()
+        .map(|(name, policy, pre_bias, output_policy)| {
+            let output = match output_policy {
+                "bf16_prebias" => round_bf16(round_bf16(pre_bias) + bias),
+                _ => round_bf16(pre_bias + bias),
+            };
+            CandidateResult {
+                name: name.to_string(),
+                policy: policy.to_string(),
+                pre_bias: Some(pre_bias),
+                bias,
+                output: Some(output),
+                diff_vs_official: Some((output - official).abs()),
+                diff_vs_pytorch: pytorch_output.map(|reference| (output - reference).abs()),
+                exact_vs_official: output == official,
+                exact_vs_pytorch: pytorch_output.is_some_and(|reference| output == reference),
+                blocker: None,
+                metadata: json!({ "backend": "scalar_cpu_diagnostic" }),
+            }
+        })
+        .collect()
+}
+
+fn dot_sequential_f32(input: &[f32], weight: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(weight)
+        .fold(0.0f32, |acc, (&x, &w)| acc + round_bf16(x) * w)
+}
+
+fn dot_bf16_product_f32_sum(input: &[f32], weight: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(weight)
+        .fold(0.0f32, |acc, (&x, &w)| acc + round_bf16(round_bf16(x) * w))
+}
+
+fn dot_bf16_running(input: &[f32], weight: &[f32], block: Option<usize>) -> f32 {
+    match block {
+        Some(block) => {
+            input
+                .chunks(block)
+                .zip(weight.chunks(block))
+                .fold(0.0f32, |outer, (xs, ws)| {
+                    let block_sum = xs.iter().zip(ws).fold(0.0f32, |inner, (&x, &w)| {
+                        round_bf16(inner + round_bf16(round_bf16(x) * w))
+                    });
+                    round_bf16(outer + block_sum)
+                })
+        }
+        None => input.iter().zip(weight).fold(0.0f32, |acc, (&x, &w)| {
+            round_bf16(acc + round_bf16(round_bf16(x) * w))
+        }),
+    }
+}
+
+fn dot_chunked_pairwise_f32(input: &[f32], weight: &[f32], chunk: usize) -> f32 {
+    input
+        .chunks(chunk)
+        .zip(weight.chunks(chunk))
+        .map(|(xs, ws)| {
+            xs.iter()
+                .zip(ws)
+                .fold(0.0f32, |acc, (&x, &w)| acc + round_bf16(x) * w)
+        })
+        .sum()
+}
+
+fn bf16_round_vec(values: &[f32]) -> Vec<bf16> {
+    values.iter().map(|&value| bf16::from_f32(value)).collect()
+}
+
+fn round_bf16(value: f32) -> f32 {
+    bf16::from_f32(value).to_f32()
+}
+
+fn load_values(path: &Path, expected: usize, label: &str) -> Result<Vec<f32>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let values = value
+        .get("values")
+        .and_then(Value::as_array)
+        .with_context(|| format!("{label} did not contain a values array"))?;
+    anyhow::ensure!(
+        values.len() == expected,
+        "{label} value count mismatch: got {}, expected {expected}",
+        values.len()
+    );
+    values
+        .iter()
+        .map(|item| {
+            item.as_f64()
+                .map(|value| value as f32)
+                .with_context(|| format!("{label} contained a non-numeric value"))
+        })
+        .collect()
+}
+
+fn load_pytorch_reference(path: Option<&Path>) -> Value {
+    path.and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or_else(|| json!({ "available": false }))
+}
+
+fn json_f32_path(value: &Value, path: &[&str]) -> Option<f32> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor.as_f64().map(|value| value as f32)
+}
+
+fn validate_path(path: &Path, label: &str) -> Result<()> {
+    anyhow::ensure!(path.exists(), "{label} does not exist: {}", path.display());
+    Ok(())
+}
+
+fn artifact_path(path: &Path) -> Value {
+    json!({ "path": path.display().to_string(), "exists": path.exists() })
+}
+
+fn write_json(path: &Path, value: &Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(value)?;
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}

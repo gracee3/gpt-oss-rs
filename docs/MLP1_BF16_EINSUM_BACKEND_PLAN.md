@@ -108,6 +108,115 @@ Prior conclusion:
 - Runtime routing changes are out of scope for this branch until explicitly
   requested.
 
+## Stage 1 Lane 522 Microbench Status
+
+Status JSON:
+
+```text
+/tmp/mlp1_bf16_einsum_backend_lane522_status.json
+```
+
+Classification:
+
+```text
+mlp1_bf16_backend_candidate_matches_pytorch_lane522
+```
+
+Source identity:
+
+- Model: `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- Tensor names:
+  - `model.layers.0.mlp.experts.gate_up_proj_blocks`
+  - `model.layers.0.mlp.experts.gate_up_proj_scales`
+  - `model.layers.0.mlp.experts.gate_up_proj_bias`
+- Row loader:
+  `gpt_oss_model_runner::mxfp4_validation::load_gate_up_row_mxfp4_validation`
+- Decode source:
+  `gpt_oss_dequant_expert_f16_kernel` plus row-local CPU guard variants
+
+Official/PyTorch reference:
+
+```text
+official output = 0.330078125
+PyTorch BF16 einsum pre_bias = 0.609375
+bias = -0.279296875
+PyTorch BF16 einsum output = 0.330078125
+```
+
+Scalar baseline summary:
+
+```text
+A_current_explicit_f32_sum:
+  output = 0.33203125
+  diff = 0.001953125
+
+B_bf16_product_f32_sum:
+  output = 0.333984375
+  diff = 0.00390625
+
+C_bf16_block32_partial_sum:
+  output = 0.337890625
+  diff = 0.0078125
+
+D_bf16_running_sum_each_term:
+  output = 0.298828125
+  diff = 0.03125
+
+E_chunked_pairwise_16/32/64/128:
+  output = 0.33203125
+  diff = 0.001953125
+
+F_f32_accum_bf16_prebias_f32_bias:
+  output = 0.333984375
+  diff = 0.00390625
+```
+
+Backend candidate summary:
+
+```text
+cuBLAS BF16 tensor-op:
+  pre_bias = 0.609375
+  output = 0.330078125
+  diff = 0
+
+cuBLAS BF16 pedantic/no-tensor-op:
+  pre_bias = 0.609375
+  output = 0.330078125
+  diff = 0
+
+existing bf16_linear_bias_validation mode 0:
+  output = 0.33203125
+  diff = 0.001953125
+
+existing bf16_linear_bias_validation mode 1:
+  output = 0.333984375
+  diff = 0.00390625
+
+CUTLASS/custom CUDA:
+  not imported in this slice
+```
+
+Best candidate:
+
+```text
+cuBLAS BF16 tensor-op
+```
+
+The cuBLAS BF16 tensor-op path and the scoped cuBLAS BF16
+pedantic/no-tensor-op path both reproduce the PyTorch BF16 `einsum` and
+official expert30 lane `522` value exactly. The scalar explicit product/sum
+baselines and the existing validation BF16 linear kernel retain the known lane
+gap.
+
+Production runtime behavior did not change. This microbench is a new isolated
+validation binary only.
+
+Next bounded step:
+
+```text
+Run full expert30 MLP1 with the matching cuBLAS BF16 backend candidate.
+```
+
 ## Validation Commands
 
 Start each slice with:
