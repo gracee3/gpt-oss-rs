@@ -2078,14 +2078,13 @@ Exact seams already validated in the Rust validation path:
 
 Remaining caveats:
 
-1. Rust-native MLP1 BF16 `einsum` backend remains open.
+1. Rust-native MLP1 BF16 `einsum` backend is resolved for the bounded layer0
+   selected-expert target.
 
-   Expert30 lane `522` shows that PyTorch BF16 `einsum` reproduces the official
-   MLP1 lane, while bounded Rust product/sum policies do not. The next backend
-   design should use that lane as a microbench and compare PyTorch BF16
-   `einsum` against cuBLAS BF16, CUTLASS/custom CUDA, or another validation-only
-   BF16 matmul backend. Production MLP routing should not change until selected
-   experts clear through that backend.
+   The canonical backend lane proved cuBLAS BF16 tensor-op exact for expert30
+   lane `522`, full expert30 MLP1 `[5760]`, and selected experts
+   `[3,30,11,27]` MLP1 `[4,5760]`. Production MLP routing still must not change
+   from this validation-only result.
 
 2. Expert3 lane `1990` selected-output oracle anomaly remains isolated.
 
@@ -2118,14 +2117,87 @@ What this does not prove:
 
 Recommended next branches:
 
-- Track 1: Rust-native BF16 MLP1 backend design.
-  Scope: expert30 lane `522` microbench/repro, compare PyTorch BF16 `einsum`
-  vs cuBLAS BF16 vs CUTLASS/custom CUDA, and keep production routing unchanged
-  until selected experts clear.
+- Track 1: selected-expert replay after exact MLP1.
+  Scope: use the validated cuBLAS BF16 tensor-op MLP1 policy and localize the
+  remaining selected-output mismatch to the pinned SwiGLU/down-projection
+  boundary without changing production routing.
 - Track 2: Layer0 seam-mode milestone preservation.
   Scope: optional small JSON summary artifact with no raw tensor values,
   preserving exact seams and caveats while keeping layer ladder, final logits,
   and 4097-token work deferred.
+
+## Selected Experts With cuBLAS BF16 MLP1 Backend Status
+
+Backend source branch/commit:
+
+```text
+backend/mlp1-bf16-einsum-validation @ da4d655
+```
+
+The backend lane proved selected experts `[3,30,11,27]` MLP1 `[4,5760]` exact
+with the cuBLAS BF16 tensor-op validation policy:
+
+```text
+max_abs_diff = 0
+mean_abs_diff = 0
+mismatches = 0
+mismatching_ranks = 0
+classification = mlp1_bf16_selected_experts_tensor_op_matches_oracle
+```
+
+The layer0 selected-experts replay now uses that validation-only MLP1 policy:
+
+```text
+mlp1_policy = cublas_bf16_tensor_op
+mlp1_backend_source = backend/mlp1-bf16-einsum-validation@da4d655
+runtime_behavior_changed = false
+production_routing_changed = false
+```
+
+Selected-output comparison against the official selected expert output oracle
+still mismatches after the MLP1 handoff:
+
+| scope | max_abs_diff | mean_abs_diff | mismatches |
+| --- | ---: | ---: | ---: |
+| overall | 0.0625 | 0.00071020395 | 3295 |
+| rank0 expert3 | 0.0625 | 0.00075478986 | 790 |
+| rank1 expert30 | 0.03125 | 0.00060357933 | 899 |
+| rank2 expert11 | 0.0625 | 0.00071058766 | 779 |
+| rank3 expert27 | 0.0625 | 0.00077185896 | 827 |
+
+First mismatch:
+
+```text
+rank = 0
+expert = 3
+hidden_lane = 2
+actual = 0.15429688
+expected = 0.15527344
+abs_diff = 0.0009765625
+```
+
+Worst mismatch:
+
+```text
+rank = 0
+expert = 3
+hidden_lane = 1799
+actual = 13.5
+expected = 13.4375
+abs_diff = 0.0625
+```
+
+Classification:
+
+```text
+layer0_validation_selected_experts_mismatch_large
+```
+
+Weighted expert sum was not rerun in this slice because selected expert outputs
+do not yet match exactly. No raw `.live` or `/tmp` artifacts were committed.
+
+Next bounded step: localize the remaining selected-output mismatch after exact
+MLP1, most likely across the pinned SwiGLU/down-projection replay boundary.
 
 ## Validation Commands
 

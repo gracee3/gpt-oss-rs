@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[cfg(feature = "cuda")]
+use gpt_oss_gpu::{cublas::CublasHandle, CudaContext};
+#[cfg(feature = "cuda")]
 use gpt_oss_model_runner::mxfp4_validation::{
     load_gate_up_row_mxfp4_validation, load_selected_experts_mxfp4_validation,
     Mxfp4SelectedExpertWeights,
@@ -558,14 +560,18 @@ struct SelectedExpertsStatus {
     classification: &'static str,
     implemented: bool,
     runtime_behavior_changed: bool,
+    production_routing_changed: bool,
     validation_only: bool,
     selected_experts: Vec<usize>,
+    mlp1_policy: &'static str,
+    mlp1_backend_source: &'static str,
     input_source: &'static str,
     mlp_norm: TensorArtifactStatus,
     selected_experts_oracle: TensorArtifactStatus,
     tensor_sources: SelectedExpertTensorSources,
     mxfp4_loader: Option<Mxfp4LoaderStatus>,
     expert_formula: ExpertFormulaStatus,
+    mlp1_metric: Option<Value>,
     overall_metric: Option<SelectedExpertsComparisonStatus>,
     per_rank_metrics: Vec<SelectedExpertRankMetric>,
     expert30_internal_guard: Option<Value>,
@@ -2304,10 +2310,11 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
         blocker,
         loader_status,
         mxfp4_loader,
+        mlp1_metric,
         next_bounded_step,
     ) = if artifact_blocked {
         (
-            "layer0_validation_selected_experts_blocked_by_artifacts",
+            "layer0_validation_selected_experts_execution_failed",
             None,
             Vec::new(),
             Some(Blocker {
@@ -2316,11 +2323,12 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             }),
             "not_reached",
             None,
+            None,
             "resolve the reported selected expert artifact blocker",
         )
     } else if missing_required_sources {
         (
-            "layer0_validation_selected_experts_blocked_by_artifacts",
+            "layer0_validation_selected_experts_execution_failed",
             None,
             Vec::new(),
             Some(Blocker {
@@ -2329,11 +2337,12 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             }),
             "missing_required_tensors",
             None,
+            None,
             "resolve the reported selected expert tensor source blocker",
         )
     } else if mx_fp4_sources {
         match execute_selected_experts_mxfp4(model, &selected_experts, &mlp_norm_values, &oracle_values) {
-            Ok((overall_metric, per_rank_metrics, mxfp4_loader)) => {
+            Ok((overall_metric, per_rank_metrics, mxfp4_loader, mlp1_metric)) => {
                 let classification = if overall_metric.metrics.mismatches == 0 {
                     "layer0_validation_selected_experts_match_oracle"
                 } else if per_rank_metrics
@@ -2363,25 +2372,27 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
                     None,
                     "mxfp4_validation_loader_used",
                     Some(mxfp4_loader),
+                    Some(mlp1_metric),
                     next_bounded_step,
                 )
             }
             Err(_) => (
-                "layer0_validation_selected_experts_blocked_by_mxfp4_loader_api",
+                "layer0_validation_selected_experts_blocked_by_mlp1_backend_port",
                 None,
                 Vec::new(),
                 Some(Blocker {
-                    kind: "mxfp4_loader_api",
-                    detail: "validation MXFP4 selected-expert loader/replay helper failed before comparison",
+                    kind: "mlp1_backend_port",
+                    detail: "validation MXFP4 selected-expert loader or cuBLAS BF16 MLP1 backend failed before comparison",
                 }),
                 "mxfp4_validation_loader_failed",
                 None,
-                "fix the narrow validation MXFP4 selected-expert loader/replay helper",
+                None,
+                "fix the narrow validation MXFP4 selected-expert loader or BF16 GEMM MLP1 backend",
             ),
         }
     } else {
         (
-            "layer0_validation_selected_experts_blocked_by_artifacts",
+            "layer0_validation_selected_experts_execution_failed",
             None,
             Vec::new(),
             Some(Blocker {
@@ -2389,6 +2400,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
                 detail: "expert tensor metadata did not match the current MXFP4 blocker path, but dense selected-expert replay is not implemented in this slice",
             }),
             "unsupported_dense_replay",
+            None,
             None,
             "add a bounded selected-expert replay implementation for the detected expert tensor layout",
         )
@@ -2400,8 +2412,11 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
         classification,
         implemented: blocker.is_none(),
         runtime_behavior_changed: false,
+        production_routing_changed: false,
         validation_only: true,
         selected_experts,
+        mlp1_policy: "cublas_bf16_tensor_op",
+        mlp1_backend_source: "backend/mlp1-bf16-einsum-validation@da4d655",
         input_source: router_input_source(mlp_norm),
         mlp_norm: mlp_norm_status,
         selected_experts_oracle: oracle_status,
@@ -2426,6 +2441,7 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             swiglu: "gate * sigmoid(1.702 * gate) * (up + 1)",
             output_dtype: "BF16",
         },
+        mlp1_metric,
         overall_metric,
         per_rank_metrics,
         expert30_internal_guard: None,
@@ -4842,6 +4858,17 @@ fn round_bf16(value: f32) -> f32 {
     bf16::from_f32(value).to_f32()
 }
 
+fn digest_f32_le(values: &[f32]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for value in values {
+        for byte in value.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
 fn round_f16(value: f32) -> f32 {
     f16::from_f32(value).to_f32()
 }
@@ -5473,12 +5500,16 @@ fn execute_selected_experts_mxfp4(
     SelectedExpertsComparisonStatus,
     Vec<SelectedExpertRankMetric>,
     Mxfp4LoaderStatus,
+    Value,
 )> {
     let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let mut output = Vec::with_capacity(selected_experts.len() * 2880);
+    let mut mlp1_outputs = Vec::with_capacity(selected_experts.len() * 5760);
     for expert in &loaded.experts {
-        output.extend(compute_selected_expert_output(mlp_norm, expert));
+        let gate_up = compute_mlp1_bf16_tensor_op(mlp_norm, expert)?;
+        mlp1_outputs.extend_from_slice(&gate_up);
+        output.extend(compute_selected_expert_output_from_mlp1(&gate_up, expert));
     }
     let overall = compare_selected_experts(&output, oracle, selected_experts);
     let per_rank_metrics = selected_experts
@@ -5502,7 +5533,14 @@ fn execute_selected_experts_mxfp4(
         selected_experts: loaded.selected_experts,
         dtype_outputs: loaded.dtype_outputs,
     };
-    Ok((overall, per_rank_metrics, loader))
+    let mlp1_metric = json!({
+        "available": false,
+        "reason": "selected-experts mode compares against selected expert output oracle; canonical MLP1 [4,5760] proof is recorded in backend/mlp1-bf16-einsum-validation@da4d655",
+        "policy": "cublas_bf16_tensor_op",
+        "shape": [selected_experts.len(), 5760],
+        "value_digest": digest_f32_le(&mlp1_outputs),
+    });
+    Ok((overall, per_rank_metrics, loader, mlp1_metric))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -5515,6 +5553,7 @@ fn execute_selected_experts_mxfp4(
     SelectedExpertsComparisonStatus,
     Vec<SelectedExpertRankMetric>,
     Mxfp4LoaderStatus,
+    Value,
 )> {
     anyhow::bail!("MXFP4 selected expert validation requires the cuda feature")
 }
@@ -7319,8 +7358,80 @@ fn compute_selected_expert_output(
         2880,
         5760,
     );
+    compute_selected_expert_output_from_mlp1(&gate_up, expert)
+}
+
+#[cfg(feature = "cuda")]
+fn compute_mlp1_bf16_tensor_op(
+    mlp_norm: &[f32],
+    expert: &Mxfp4SelectedExpertWeights,
+) -> Result<Vec<f32>> {
+    let context =
+        CudaContext::new(0).map_err(|err| anyhow::anyhow!("CUDA context init failed: {err}"))?;
+    let stream = context
+        .new_stream()
+        .map_err(|err| anyhow::anyhow!("CUDA stream init failed: {err}"))?;
+    let blas = CublasHandle::new(stream.clone())
+        .map_err(|err| anyhow::anyhow!("cuBLAS handle init failed: {err}"))?;
+    let input_bf16 = mlp_norm
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let weight_bf16 = expert
+        .gate_up_weight
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let input_gpu = stream
+        .clone_htod(&input_bf16)
+        .map_err(|err| anyhow::anyhow!("BF16 MLP1 input upload failed: {err}"))?;
+    let weight_gpu = stream
+        .clone_htod(&weight_bf16)
+        .map_err(|err| anyhow::anyhow!("BF16 MLP1 weight upload failed: {err}"))?;
+    let mut output_gpu = stream
+        .alloc_zeros::<bf16>(5760)
+        .map_err(|err| anyhow::anyhow!("BF16 MLP1 output allocation failed: {err}"))?;
+    blas.bf16_gemm_into(
+        1,
+        5760,
+        2880,
+        1.0,
+        &input_gpu,
+        &weight_gpu,
+        0.0,
+        &mut output_gpu,
+    )
+    .map_err(|err| anyhow::anyhow!("BF16 MLP1 cuBLAS tensor-op GEMM failed: {err}"))?;
+    stream
+        .synchronize()
+        .map_err(|err| anyhow::anyhow!("BF16 MLP1 cuBLAS sync failed: {err}"))?;
+    let pre_bias = stream
+        .clone_dtoh(&output_gpu)
+        .map_err(|err| anyhow::anyhow!("BF16 MLP1 output download failed: {err}"))?
+        .iter()
+        .map(|value| value.to_f32())
+        .collect::<Vec<_>>();
+    Ok(add_bf16_bias_to_bf16_output(
+        &pre_bias,
+        &expert.gate_up_bias,
+    ))
+}
+
+#[cfg(feature = "cuda")]
+fn compute_selected_expert_output_from_mlp1(
+    gate_up: &[f32],
+    expert: &Mxfp4SelectedExpertWeights,
+) -> Vec<f32> {
     let swiglu = compute_swiglu_bf16(&gate_up);
     linear_out_in_bf16_output(&swiglu, &expert.down_weight, &expert.down_bias, 2880, 2880)
+}
+
+fn add_bf16_bias_to_bf16_output(pre_bias: &[f32], bias: &[f32]) -> Vec<f32> {
+    pre_bias
+        .iter()
+        .zip(bias)
+        .map(|(&pre_bias, &bias)| round_bf16(pre_bias + round_bf16(bias)))
+        .collect()
 }
 
 fn linear_out_in_bf16_output(
