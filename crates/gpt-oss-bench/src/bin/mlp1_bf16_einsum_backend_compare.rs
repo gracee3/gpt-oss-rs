@@ -19,6 +19,7 @@ enum Mode {
     Lane522,
     ExpertMlp1,
     SelectedExperts,
+    SelectedExpertsDebug,
 }
 
 #[derive(Debug, Parser)]
@@ -35,6 +36,12 @@ struct Cli {
 
     #[arg(long = "expert-mlp1-oracle", visible_alias = "expert30-mlp1-oracle")]
     expert_mlp1_oracle: Option<PathBuf>,
+
+    #[arg(long)]
+    expert30_swiglu_oracle: Option<PathBuf>,
+
+    #[arg(long)]
+    expert30_mlp2_pre_bias_oracle: Option<PathBuf>,
 
     #[arg(long)]
     selected_experts_oracle: Option<PathBuf>,
@@ -116,6 +123,7 @@ fn main() -> Result<()> {
         Mode::Lane522 => run_lane522(&cli),
         Mode::ExpertMlp1 => run_expert_mlp1(&cli),
         Mode::SelectedExperts => run_selected_experts(&cli),
+        Mode::SelectedExpertsDebug => run_selected_experts_debug(&cli),
     }
 }
 
@@ -284,6 +292,77 @@ fn run_selected_experts(cli: &Cli) -> Result<()> {
             "validation_only": true,
             "error": err.to_string(),
             "next_bounded_step": "fix the validation-only selected-experts BF16 backend artifact/backend path"
+        }),
+    };
+
+    write_json(&cli.output, &status)
+}
+
+fn run_selected_experts_debug(cli: &Cli) -> Result<()> {
+    let selected_oracle = required_path(&cli.selected_experts_oracle, "selected experts oracle")?;
+    let expert30_mlp1_oracle = required_path(&cli.expert_mlp1_oracle, "expert30 MLP1 oracle")?;
+    let expert30_swiglu_oracle =
+        required_path(&cli.expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    let expert30_mlp2_pre_bias_oracle = required_path(
+        &cli.expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    validate_path(&cli.mlp_norm, "MLP norm input")?;
+    validate_path(selected_oracle, "selected experts oracle")?;
+    validate_path(expert30_mlp1_oracle, "expert30 MLP1 oracle")?;
+    validate_path(expert30_swiglu_oracle, "expert30 SwiGLU oracle")?;
+    validate_path(
+        expert30_mlp2_pre_bias_oracle,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+    validate_path(&cli.model, "model")?;
+
+    let selected_experts = parse_selected_experts(&cli.selected_experts)?;
+    let hidden = 2880usize;
+    let mlp_norm = load_values(&cli.mlp_norm, hidden, "MLP norm input")?;
+    let selected_oracle_values = load_values(
+        selected_oracle,
+        selected_experts.len() * hidden,
+        "selected experts oracle",
+    )?;
+    let expert30_mlp1_oracle_values =
+        load_values(expert30_mlp1_oracle, 5760, "expert30 MLP1 oracle")?;
+    let expert30_swiglu_oracle_values =
+        load_values(expert30_swiglu_oracle, hidden, "expert30 SwiGLU oracle")?;
+    let expert30_mlp2_pre_bias_oracle_values = load_values(
+        expert30_mlp2_pre_bias_oracle,
+        hidden,
+        "expert30 MLP2 pre-bias oracle",
+    )?;
+
+    let status = execute_selected_experts_debug(
+        &cli.model,
+        &mlp_norm,
+        &selected_experts,
+        &selected_oracle_values,
+        &expert30_mlp1_oracle_values,
+        &expert30_swiglu_oracle_values,
+        &expert30_mlp2_pre_bias_oracle_values,
+    );
+    let status = match status {
+        Ok(mut status) => {
+            status["artifacts"] = json!({
+                "mlp_norm": artifact_path(&cli.mlp_norm),
+                "selected_experts_oracle": artifact_path(selected_oracle),
+                "expert30_mlp1_oracle": artifact_path(expert30_mlp1_oracle),
+                "expert30_swiglu_oracle": artifact_path(expert30_swiglu_oracle),
+                "expert30_mlp2_pre_bias_oracle": artifact_path(expert30_mlp2_pre_bias_oracle),
+            });
+            status
+        }
+        Err(err) => json!({
+            "mode": "mlp1_bf16_einsum_backend_compare",
+            "submode": "selected-experts-debug",
+            "classification": "mlp1_bf16_backend_selected_experts_debug_unresolved",
+            "runtime_behavior_changed": false,
+            "validation_only": true,
+            "error": err.to_string(),
+            "next_bounded_step": "fix the validation-only selected-experts debug artifact/backend path"
         }),
     };
 
@@ -707,6 +786,175 @@ fn execute_selected_experts_backend_compare(
     }))
 }
 
+#[cfg(feature = "cuda")]
+fn execute_selected_experts_debug(
+    model: &Path,
+    mlp_norm: &[f32],
+    selected_experts: &[usize],
+    selected_oracle: &[f32],
+    expert30_mlp1_oracle: &[f32],
+    expert30_swiglu_oracle: &[f32],
+    expert30_mlp2_pre_bias_oracle: &[f32],
+) -> Result<Value> {
+    let hidden = 2880usize;
+    let intermediate_twice = 5760usize;
+    let expert30_rank = selected_experts
+        .iter()
+        .position(|&expert| expert == 30)
+        .context("selected experts must include expert30 for debug mode")?;
+    let selected_start = expert30_rank * hidden;
+    let selected_end = selected_start + hidden;
+    anyhow::ensure!(
+        selected_oracle.len() >= selected_end,
+        "selected expert oracle too short for rank {expert30_rank}"
+    );
+    let expert30_selected_oracle = &selected_oracle[selected_start..selected_end];
+
+    let loaded = load_selected_experts_mxfp4_validation(model, 0, selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let expert30 = loaded
+        .experts
+        .iter()
+        .find(|weights| weights.expert == 30)
+        .context("expert30 missing from MXFP4 validation loader")?;
+
+    let cublas_mlp1 = cublas_full_expert_output(
+        mlp_norm,
+        &expert30.gate_up_weight,
+        &expert30.gate_up_bias,
+        intermediate_twice,
+        hidden,
+        false,
+    )
+    .context("cuBLAS BF16 expert30 MLP1 failed")?;
+    let cublas_swiglu = compute_swiglu_bf16(&cublas_mlp1);
+    let cublas_mlp2_pre_bias =
+        linear_pre_bias_f32(&cublas_swiglu, &expert30.down_weight, hidden, hidden);
+    let cublas_selected = add_bias_bf16_output(&cublas_mlp2_pre_bias, &expert30.down_bias);
+
+    let official_mlp1_swiglu = compute_swiglu_bf16(expert30_mlp1_oracle);
+    let official_mlp1_mlp2_pre_bias =
+        linear_pre_bias_f32(&official_mlp1_swiglu, &expert30.down_weight, hidden, hidden);
+    let official_mlp1_selected =
+        add_bias_bf16_output(&official_mlp1_mlp2_pre_bias, &expert30.down_bias);
+
+    let cublas_mlp1_official_swiglu_mlp2_pre_bias = linear_pre_bias_f32(
+        expert30_swiglu_oracle,
+        &expert30.down_weight,
+        hidden,
+        hidden,
+    );
+    let cublas_mlp1_official_swiglu_selected = add_bias_bf16_output(
+        &cublas_mlp1_official_swiglu_mlp2_pre_bias,
+        &expert30.down_bias,
+    );
+
+    let official_swiglu_mlp2_pre_bias = linear_pre_bias_f32(
+        expert30_swiglu_oracle,
+        &expert30.down_weight,
+        hidden,
+        hidden,
+    );
+    let official_swiglu_selected =
+        add_bias_bf16_output(&official_swiglu_mlp2_pre_bias, &expert30.down_bias);
+
+    let mlp1_metric = compare_vectors(&cublas_mlp1, expert30_mlp1_oracle);
+    let swiglu_metric = compare_vectors(&cublas_swiglu, expert30_swiglu_oracle);
+    let mlp2_pre_bias_metric =
+        compare_vectors(&cublas_mlp2_pre_bias, expert30_mlp2_pre_bias_oracle);
+    let selected_metric = compare_vectors(&cublas_selected, expert30_selected_oracle);
+
+    let boundary_metrics = json!({
+        "mlp1": mlp1_metric,
+        "swiglu": swiglu_metric,
+        "mlp2_pre_bias": mlp2_pre_bias_metric,
+        "selected_output": selected_metric,
+    });
+    let variant_table = vec![
+        json!({
+            "name": "A_cublas_mlp1_pinned_swiglu_local_mlp2",
+            "mlp1_metric": compare_vectors(&cublas_mlp1, expert30_mlp1_oracle),
+            "swiglu_metric": compare_vectors(&cublas_swiglu, expert30_swiglu_oracle),
+            "mlp2_pre_bias_metric": compare_vectors(&cublas_mlp2_pre_bias, expert30_mlp2_pre_bias_oracle),
+            "selected_output_metric": compare_vectors(&cublas_selected, expert30_selected_oracle),
+        }),
+        json!({
+            "name": "B_official_mlp1_pinned_swiglu_local_mlp2",
+            "swiglu_metric": compare_vectors(&official_mlp1_swiglu, expert30_swiglu_oracle),
+            "mlp2_pre_bias_metric": compare_vectors(&official_mlp1_mlp2_pre_bias, expert30_mlp2_pre_bias_oracle),
+            "selected_output_metric": compare_vectors(&official_mlp1_selected, expert30_selected_oracle),
+        }),
+        json!({
+            "name": "C_cublas_mlp1_official_swiglu_local_mlp2",
+            "mlp1_metric": compare_vectors(&cublas_mlp1, expert30_mlp1_oracle),
+            "mlp2_pre_bias_metric": compare_vectors(&cublas_mlp1_official_swiglu_mlp2_pre_bias, expert30_mlp2_pre_bias_oracle),
+            "selected_output_metric": compare_vectors(&cublas_mlp1_official_swiglu_selected, expert30_selected_oracle),
+        }),
+        json!({
+            "name": "D_official_swiglu_local_mlp2",
+            "mlp2_pre_bias_metric": compare_vectors(&official_swiglu_mlp2_pre_bias, expert30_mlp2_pre_bias_oracle),
+            "selected_output_metric": compare_vectors(&official_swiglu_selected, expert30_selected_oracle),
+        }),
+    ];
+
+    let first_mismatching_boundary = if mlp1_metric.mismatches > 0 {
+        "expert30_mlp1"
+    } else if swiglu_metric.mismatches > 0 {
+        "expert30_swiglu"
+    } else if mlp2_pre_bias_metric.mismatches > 0 {
+        "expert30_mlp2_pre_bias"
+    } else if selected_metric.mismatches > 0 {
+        "expert30_selected_output"
+    } else {
+        "none"
+    };
+    let classification = if first_mismatching_boundary == "none" {
+        "mlp1_bf16_backend_selected_experts_debug_expert30_matches_oracle"
+    } else if first_mismatching_boundary == "expert30_swiglu" {
+        "mlp1_bf16_backend_selected_experts_debug_swiglu_mismatch"
+    } else if first_mismatching_boundary == "expert30_mlp2_pre_bias" {
+        "mlp1_bf16_backend_selected_experts_debug_mlp2_mismatch"
+    } else if first_mismatching_boundary == "expert30_selected_output" {
+        "mlp1_bf16_backend_selected_experts_debug_selected_output_layout_mismatch"
+    } else {
+        "mlp1_bf16_backend_selected_experts_debug_unresolved"
+    };
+
+    Ok(json!({
+        "mode": "mlp1_bf16_einsum_backend_compare",
+        "submode": "selected-experts-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "validation_only": true,
+        "backend": "cublas_bf16_tensor_op",
+        "selected_experts": selected_experts,
+        "expert30_rank": expert30_rank,
+        "source_identity": {
+            "model": model.display().to_string(),
+            "mxfp4_loader": loaded.helper_name,
+            "decode_source": loaded.decode_source,
+            "tensor_sources": loaded.tensor_sources,
+        },
+        "expert30_boundary_metrics": boundary_metrics,
+        "expert30_variant_table": variant_table,
+        "selected_expert_order_check": {
+            "expected_order": [3, 30, 11, 27],
+            "actual_order": selected_experts,
+            "expert30_rank": expert30_rank,
+            "selected_output_layout": "[rank, hidden]",
+            "rank1_maps_to_expert30": selected_experts.get(1).copied() == Some(30),
+        },
+        "first_mismatching_boundary": first_mismatching_boundary,
+        "next_bounded_step": match classification {
+            "mlp1_bf16_backend_selected_experts_debug_expert30_matches_oracle" => "localize non-expert30 selected expert boundaries under cuBLAS MLP1",
+            "mlp1_bf16_backend_selected_experts_debug_swiglu_mismatch" => "compare pinned SwiGLU stage-by-stage under cuBLAS MLP1",
+            "mlp1_bf16_backend_selected_experts_debug_mlp2_mismatch" => "port or match the prior exact MLP2/down replay policy in this backend branch",
+            "mlp1_bf16_backend_selected_experts_debug_selected_output_layout_mismatch" => "verify selected-output oracle rank/order/layout and bias boundary",
+            _ => "resolve expert30 debug setup or add a narrower boundary discriminator",
+        },
+    }))
+}
+
 #[cfg(not(feature = "cuda"))]
 fn execute_selected_experts_backend_compare(
     _model: &Path,
@@ -718,6 +966,19 @@ fn execute_selected_experts_backend_compare(
     _post_attention_residual: &[f32],
 ) -> Result<Value> {
     anyhow::bail!("selected experts BF16 backend compare requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn execute_selected_experts_debug(
+    _model: &Path,
+    _mlp_norm: &[f32],
+    _selected_experts: &[usize],
+    _selected_oracle: &[f32],
+    _expert30_mlp1_oracle: &[f32],
+    _expert30_swiglu_oracle: &[f32],
+    _expert30_mlp2_pre_bias_oracle: &[f32],
+) -> Result<Value> {
+    anyhow::bail!("selected experts debug requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]

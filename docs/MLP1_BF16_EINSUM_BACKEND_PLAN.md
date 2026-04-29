@@ -411,6 +411,100 @@ SwiGLU and MLP2/down boundaries, starting with expert30 because its MLP1 is
 known exact.
 ```
 
+## Stage 2 Selected Experts Debug Status
+
+This debug slice localized the selected-expert mismatch under the exact cuBLAS
+BF16 MLP1 backend. It focused on rank 1 / expert30 because full expert30 MLP1
+is already exact against the official MLP1-before-SwiGLU oracle.
+
+Selected expert order/layout:
+
+```text
+expected order: [3, 30, 11, 27]
+actual order:   [3, 30, 11, 27]
+expert30 rank:  1
+layout:         [rank, hidden]
+rank1 maps to expert30: true
+```
+
+Expert30 boundary metrics:
+
+```text
+cuBLAS MLP1 vs official expert30 MLP1:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+pinned SwiGLU vs official expert30 SwiGLU:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+local MLP2 pre-bias vs official expert30 MLP2 pre-bias:
+  max_abs_diff = 0.10264969
+  mean_abs_diff = 0.0006558841
+  mismatches = 2880
+
+selected output vs official selected-output rank1/expert30:
+  max_abs_diff = 0.03125
+  mean_abs_diff = 0.00060357933
+  mismatches = 899
+```
+
+Variant table summary:
+
+```text
+A. cuBLAS MLP1 -> pinned SwiGLU -> local MLP2
+   MLP1 exact
+   SwiGLU exact
+   MLP2 pre-bias mismatches all 2880 lanes
+   selected output mismatches 899 lanes
+
+B. official MLP1 -> pinned SwiGLU -> local MLP2
+   SwiGLU exact
+   MLP2 pre-bias mismatches all 2880 lanes
+   selected output mismatches 899 lanes
+
+C. cuBLAS MLP1 -> official SwiGLU -> local MLP2
+   MLP1 exact
+   MLP2 pre-bias mismatches all 2880 lanes
+   selected output mismatches 899 lanes
+
+D. official SwiGLU -> local MLP2
+   MLP2 pre-bias mismatches all 2880 lanes
+   selected output mismatches 899 lanes
+```
+
+Classification:
+
+```text
+mlp1_bf16_backend_selected_experts_debug_mlp2_mismatch
+```
+
+First mismatching boundary:
+
+```text
+expert30_mlp2_pre_bias
+```
+
+Conclusion:
+
+The Stage 2 broad selected-expert mismatch is not caused by the cuBLAS MLP1
+backend, the pinned SwiGLU policy, or selected-output rank/order/layout for
+expert30. Under both local and official SwiGLU inputs, this branch's local
+MLP2/down replay diverges at expert30 MLP2 pre-bias.
+
+Production runtime behavior did not change. This remains an isolated
+validation/backend diagnostic. No raw `/tmp` or `.live` artifacts were
+committed.
+
+Next bounded step:
+
+```text
+Port or match the prior exact expert30 MLP2/down replay policy in this backend
+branch, then rerun selected experts [3,30,11,27].
+```
+
 ## Validation Commands
 
 Start each slice with:
