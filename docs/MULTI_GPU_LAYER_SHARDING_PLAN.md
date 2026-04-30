@@ -2401,6 +2401,130 @@ Primary classification:
 
 multi_gpu_layer_sharding_real_model_split_allocation_f16_override_complete
 
+## Shard-local RoPE/metadata allocation skeleton status
+
+Added a bench-only shard-local runtime buffer skeleton for the split allocation
+smoke path.
+
+Model-runner helper/status types:
+
+```text
+RopeRuntimeBufferConfig
+ShardedRuntimeBufferPlan
+CudaShardRuntimeBufferPlan
+ShardedRuntimeBufferStatus
+CudaShardRuntimeBufferStatus
+ShardedRuntimeBuffers             # CUDA-gated
+CudaShardRuntimeBuffers           # CUDA-gated
+```
+
+Bench flag:
+
+```text
+multi_gpu_layer_sharding_split_allocation_smoke --allocate-rope-metadata
+```
+
+Default behavior remains unchanged. Without the flag, the split allocation smoke
+does not attempt RoPE/metadata allocation and still reports RoPE tables as an
+omitted allocation.
+
+With the flag, the bench command keeps the existing non-executing allocation
+flow, then allocates shard-local RoPE cos/sin tables on each shard's existing
+`CudaStream` using the same runtime table construction helper as
+`GpuModelRunner::new`:
+
+```text
+build_runtime_rope_tables(head_dim, max_position.min(8192), rope_theta)
+```
+
+Status JSON now includes, per shard:
+
+```text
+rope_allocated
+rope_cos_elements
+rope_sin_elements
+rope_total_bytes
+metadata_allocated
+metadata_status
+metadata_deferred_reason
+runtime_buffer_error
+```
+
+and top-level:
+
+```text
+rope_metadata_allocation_attempted
+rope_metadata_allocation_succeeded
+```
+
+Metadata allocation is intentionally deferred. The current runner metadata path
+uses request-shaped packed metadata buffers and graph/output-adjacent state, so
+this skeleton reports:
+
+```text
+metadata_status: deferred
+metadata_deferred_reason: request-shaped metadata packing buffers require batch/sequence inputs
+```
+
+The successful CUDA flag path classifies as:
+
+```text
+multi_gpu_layer_sharding_rope_allocated_metadata_deferred
+```
+
+Still not created:
+
+- `CudaCacheEngine` or KV cache buffers
+- fused QKV/gate-up weights
+- f16 scratch
+- MoE GPU expert uploads
+- activation-transfer buffers
+- transformer layers
+- `GpuModelRunner`
+- final norm / LM-head execution
+- logits, sampling, graph capture, or any forward pass
+
+Manual operator command, not run by default:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_rope_metadata_status.json
+```
+
+No serve/runtime behavior changed. Serve/runtime split maps remain
+non-executable and rejected before CUDA allocation.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `git diff --check`
+
+Next bounded step:
+
+Run the real-model RoPE/metadata smoke operator command and review the JSON
+status, or add a KV cache allocation skeleton behind the same bench-only
+boundary.
+
+Primary classification:
+
+multi_gpu_layer_sharding_rope_allocated_metadata_deferred
+
 ## Primary classification
 
-multi_gpu_layer_sharding_real_model_split_allocation_f16_override_complete
+multi_gpu_layer_sharding_rope_allocated_metadata_deferred

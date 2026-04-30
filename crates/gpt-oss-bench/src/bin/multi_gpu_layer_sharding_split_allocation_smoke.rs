@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
-    CudaShardResourceStatus, DeviceId, DeviceMap, LateAllocationKind, SafetensorHeaderManifest,
-    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
-    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedModelPlan, SplitAllocationReport,
+    CudaShardResourceStatus, CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, LateAllocationKind,
+    RopeRuntimeBufferConfig, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
+    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
     UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,8 @@ const LOADER_ERROR_CLASSIFICATION: &str =
 #[allow(dead_code)]
 const CUDA_UNAVAILABLE_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_split_allocation_smoke_cuda_unavailable";
+const ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_rope_allocated_metadata_deferred";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -73,6 +76,9 @@ struct Cli {
 
     #[arg(long)]
     output: Option<PathBuf>,
+
+    #[arg(long)]
+    allocate_rope_metadata: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -101,6 +107,8 @@ struct SplitAllocationSmokeReport {
     overridden_tensor_names: Vec<String>,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
+    rope_metadata_allocation_attempted: bool,
+    rope_metadata_allocation_succeeded: bool,
     kernel_dir: Option<String>,
     omitted_allocations: Vec<String>,
     shards: Vec<SplitAllocationSmokeShardReport>,
@@ -130,6 +138,14 @@ struct SplitAllocationSmokeShardReport {
     host_u8_total_bytes: usize,
     late_allocations: Vec<String>,
     resource_status: CudaResourceStatusReport,
+    rope_allocated: bool,
+    rope_cos_elements: usize,
+    rope_sin_elements: usize,
+    rope_total_bytes: usize,
+    metadata_allocated: bool,
+    metadata_status: String,
+    metadata_deferred_reason: Option<String>,
+    runtime_buffer_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,10 +156,13 @@ struct CudaResourceStatusReport {
     kernel_loader_created: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ModelPlanningConfig {
     num_layers: usize,
     tie_word_embeddings: bool,
+    head_dim: Option<usize>,
+    max_position: usize,
+    rope_theta: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +207,7 @@ fn main() -> Result<()> {
         cli.dtype,
         cli.tie_word_embeddings,
         cli.allow_restricted_sinks_override,
+        cli.allocate_rope_metadata,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -218,6 +238,7 @@ fn build_split_allocation_smoke_report(
     dtype_mode: DTypeMode,
     tie_word_embeddings_override: Option<bool>,
     allow_restricted_sinks_override: bool,
+    allocate_rope_metadata: bool,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let config = match read_model_planning_config(model_path, tie_word_embeddings_override) {
@@ -230,9 +251,29 @@ fn build_split_allocation_smoke_report(
                 selected_device,
                 dtype_mode,
                 kernel_dir,
+                allocate_rope_metadata,
                 Some(error.to_string()),
             );
         }
+    };
+    let runtime_buffer_config = if allocate_rope_metadata {
+        match build_runtime_buffer_config(config) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                return error_report(
+                    CONFIG_ERROR_CLASSIFICATION,
+                    model_path,
+                    device_map_spec,
+                    selected_device,
+                    dtype_mode,
+                    kernel_dir,
+                    allocate_rope_metadata,
+                    Some(error.to_string()),
+                );
+            }
+        }
+    } else {
+        None
     };
 
     let header_merge_policy = header_merge_policy(allow_restricted_sinks_override);
@@ -250,6 +291,7 @@ fn build_split_allocation_smoke_report(
                     kernel_dir,
                     config,
                     allow_restricted_sinks_override,
+                    allocate_rope_metadata,
                     Some(error.to_string()),
                 );
             }
@@ -272,6 +314,7 @@ fn build_split_allocation_smoke_report(
                 config,
                 &header_manifest,
                 allow_restricted_sinks_override,
+                allocate_rope_metadata,
                 Some(error.to_string()),
             );
         }
@@ -290,6 +333,7 @@ fn build_split_allocation_smoke_report(
                 config,
                 &header_manifest,
                 allow_restricted_sinks_override,
+                allocate_rope_metadata,
                 Some(error.to_string()),
             );
         }
@@ -313,6 +357,7 @@ fn build_split_allocation_smoke_report(
                 config,
                 &header_manifest,
                 allow_restricted_sinks_override,
+                allocate_rope_metadata,
                 Some(error.to_string()),
             );
         }
@@ -332,6 +377,7 @@ fn build_split_allocation_smoke_report(
                 config,
                 &header_manifest,
                 allow_restricted_sinks_override,
+                allocate_rope_metadata,
                 Some(error.to_string()),
             );
         }
@@ -347,6 +393,10 @@ fn build_split_allocation_smoke_report(
     if !construct_and_upload {
         let resource_plan = ShardedCudaResourcePlan::from_model_plan(&plan);
         let resource_status = ShardedCudaResourceStatus::from_plan(&resource_plan);
+        let runtime_buffer_status = runtime_buffer_config.map(|config| {
+            let runtime_plan = ShardedRuntimeBufferPlan::from_model_plan(&plan, config);
+            ShardedRuntimeBufferStatus::from_plan(&runtime_plan, false)
+        });
         return render_report(
             SUCCESS_CLASSIFICATION,
             model_path,
@@ -363,30 +413,52 @@ fn build_split_allocation_smoke_report(
             allow_restricted_sinks_override,
             false,
             true,
+            allocate_rope_metadata,
+            false,
+            runtime_buffer_status.as_ref(),
             None,
         );
     }
 
-    match run_cuda_allocation_smoke(model_path, &plan, &upload_manifest, kernel_dir, dtype_mode) {
-        Ok((resource_status, upload_counts)) => render_report_with_counts(
-            SUCCESS_CLASSIFICATION,
-            model_path,
-            device_map_spec,
-            selected_device,
-            dtype_mode,
-            kernel_dir,
-            config,
-            &header_manifest,
-            &allocation_report,
-            &manifest_by_device,
-            &header_bytes,
-            &resource_status,
-            &upload_counts,
-            allow_restricted_sinks_override,
-            true,
-            true,
-            None,
-        ),
+    match run_cuda_allocation_smoke(
+        model_path,
+        &plan,
+        &upload_manifest,
+        kernel_dir,
+        dtype_mode,
+        runtime_buffer_config,
+    ) {
+        Ok((resource_status, upload_counts, runtime_buffer_status)) => {
+            let runtime_buffer_succeeded =
+                allocate_rope_metadata && runtime_buffer_status.is_some();
+            let classification = if runtime_buffer_succeeded {
+                ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION
+            } else {
+                SUCCESS_CLASSIFICATION
+            };
+            render_report_with_counts(
+                classification,
+                model_path,
+                device_map_spec,
+                selected_device,
+                dtype_mode,
+                kernel_dir,
+                config,
+                &header_manifest,
+                &allocation_report,
+                &manifest_by_device,
+                &header_bytes,
+                &resource_status,
+                &upload_counts,
+                allow_restricted_sinks_override,
+                true,
+                true,
+                allocate_rope_metadata,
+                runtime_buffer_succeeded,
+                runtime_buffer_status.as_ref(),
+                None,
+            )
+        }
         Err((classification, error)) => {
             let resource_plan = ShardedCudaResourcePlan::from_model_plan(&plan);
             let resource_status = ShardedCudaResourceStatus::from_plan(&resource_plan);
@@ -406,6 +478,9 @@ fn build_split_allocation_smoke_report(
                 allow_restricted_sinks_override,
                 true,
                 false,
+                allocate_rope_metadata,
+                false,
+                None,
                 Some(error),
             )
         }
@@ -433,6 +508,26 @@ fn read_model_planning_config(
         .get("num_hidden_layers")
         .and_then(|value| value.as_u64())
         .context("config.json missing numeric num_hidden_layers")? as usize;
+    let get_usize = |key: &str| -> Option<usize> {
+        json.get(key)
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize)
+    };
+    let get_f32 = |key: &str, default: f32| -> f32 {
+        json.get(key)
+            .and_then(|value| value.as_f64())
+            .map(|value| value as f32)
+            .unwrap_or(default)
+    };
+    let hidden_size = get_usize("hidden_size");
+    let num_attention_heads = get_usize("num_attention_heads");
+    let head_dim = get_usize("head_dim").or_else(|| {
+        hidden_size
+            .zip(num_attention_heads)
+            .and_then(|(hidden_size, heads)| hidden_size.checked_div(heads))
+    });
+    let max_position = get_usize("max_position_embeddings").unwrap_or(2048);
+    let rope_theta = get_f32("rope_theta", 10000.0);
     let tie_word_embeddings = tie_word_embeddings_override.unwrap_or_else(|| {
         json.get("tie_word_embeddings")
             .and_then(|value| value.as_bool())
@@ -442,6 +537,9 @@ fn read_model_planning_config(
     Ok(ModelPlanningConfig {
         num_layers,
         tie_word_embeddings,
+        head_dim,
+        max_position,
+        rope_theta,
     })
 }
 
@@ -456,6 +554,14 @@ fn config_path_for_model(model_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
+fn build_runtime_buffer_config(config: ModelPlanningConfig) -> Result<RopeRuntimeBufferConfig> {
+    let head_dim = config
+        .head_dim
+        .context("config.json missing numeric head_dim or hidden_size/num_attention_heads")?;
+    RopeRuntimeBufferConfig::new(head_dim, config.max_position, config.rope_theta)
+        .map_err(anyhow::Error::msg)
+}
+
 #[cfg(feature = "cuda")]
 fn run_cuda_allocation_smoke(
     model_path: &Path,
@@ -463,10 +569,12 @@ fn run_cuda_allocation_smoke(
     upload_manifest: &gpt_oss_model_runner::ShardedUploadManifest,
     kernel_dir: Option<&Path>,
     dtype_mode: DTypeMode,
+    runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
+        Option<ShardedRuntimeBufferStatus>,
     ),
     (&'static str, String),
 > {
@@ -474,7 +582,7 @@ fn run_cuda_allocation_smoke(
         load_u8_weights_to_host_filtered, load_weights_to_gpu_f16_with_shapes_filtered,
         load_weights_to_gpu_with_shapes_filtered,
     };
-    use gpt_oss_model_runner::ShardedCudaResources;
+    use gpt_oss_model_runner::{ShardedCudaResources, ShardedRuntimeBuffers};
 
     let resources = match kernel_dir {
         Some(kernel_dir) => ShardedCudaResources::create_for_plan_with_kernel_dir(plan, kernel_dir),
@@ -544,7 +652,17 @@ fn run_cuda_allocation_smoke(
         );
     }
 
-    Ok((resources.status(), upload_counts))
+    let runtime_buffer_status = if let Some(runtime_buffer_config) = runtime_buffer_config {
+        Some(
+            ShardedRuntimeBuffers::create_for_resources(&resources, runtime_buffer_config)
+                .map_err(|error| (RESOURCE_ERROR_CLASSIFICATION, error.to_string()))?
+                .status(),
+        )
+    } else {
+        None
+    };
+
+    Ok((resources.status(), upload_counts, runtime_buffer_status))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -554,10 +672,12 @@ fn run_cuda_allocation_smoke(
     _upload_manifest: &gpt_oss_model_runner::ShardedUploadManifest,
     _kernel_dir: Option<&Path>,
     _dtype_mode: DTypeMode,
+    _runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
+        Option<ShardedRuntimeBufferStatus>,
     ),
     (&'static str, String),
 > {
@@ -594,6 +714,9 @@ fn render_report(
     allow_restricted_sinks_override: bool,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
+    rope_metadata_allocation_attempted: bool,
+    rope_metadata_allocation_succeeded: bool,
+    runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let upload_counts = manifest_by_device
@@ -623,6 +746,9 @@ fn render_report(
         allow_restricted_sinks_override,
         resource_construction_succeeded,
         allocation_smoke_succeeded,
+        rope_metadata_allocation_attempted,
+        rope_metadata_allocation_succeeded,
+        runtime_buffer_status,
         error,
     )
 }
@@ -644,6 +770,9 @@ fn render_report_with_counts(
     allow_restricted_sinks_override: bool,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
+    rope_metadata_allocation_attempted: bool,
+    rope_metadata_allocation_succeeded: bool,
+    runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let resource_by_device = resource_status
@@ -651,6 +780,15 @@ fn render_report_with_counts(
         .iter()
         .map(|status| (status.device_id, status))
         .collect::<HashMap<_, _>>();
+    let runtime_buffer_by_device = runtime_buffer_status
+        .map(|status| {
+            status
+                .shards
+                .iter()
+                .map(|status| (status.device_id, status))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     SplitAllocationSmokeReport {
         classification: classification.into(),
@@ -669,8 +807,10 @@ fn render_report_with_counts(
         overridden_tensor_names: header_manifest.overridden_tensor_names.clone(),
         resource_construction_succeeded,
         allocation_smoke_succeeded,
+        rope_metadata_allocation_attempted,
+        rope_metadata_allocation_succeeded,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
-        omitted_allocations: omitted_allocations(),
+        omitted_allocations: omitted_allocations(rope_metadata_allocation_succeeded),
         shards: allocation_report
             .shards
             .iter()
@@ -683,7 +823,14 @@ fn render_report_with_counts(
                     .cloned()
                     .unwrap_or_else(|| ShardUploadCounts::planned(manifest, header_bytes));
                 let resource = resource_by_device.get(&shard.device_id).copied();
-                render_shard_report(shard, counts, resource, resource_construction_succeeded)
+                let runtime_buffer = runtime_buffer_by_device.get(&shard.device_id).copied();
+                render_shard_report(
+                    shard,
+                    counts,
+                    resource,
+                    resource_construction_succeeded,
+                    runtime_buffer,
+                )
             })
             .collect(),
         unassigned_tensor_names: allocation_report.unassigned_tensor_names.clone(),
@@ -697,7 +844,43 @@ fn render_shard_report(
     counts: ShardUploadCounts,
     resource: Option<&CudaShardResourceStatus>,
     resource_created: bool,
+    runtime_buffer: Option<&CudaShardRuntimeBufferStatus>,
 ) -> SplitAllocationSmokeShardReport {
+    let (
+        rope_allocated,
+        rope_cos_elements,
+        rope_sin_elements,
+        rope_total_bytes,
+        metadata_allocated,
+        metadata_status,
+        metadata_deferred_reason,
+        runtime_buffer_error,
+    ) = runtime_buffer
+        .map(|status| {
+            (
+                status.rope_allocated,
+                status.rope_cos_elements,
+                status.rope_sin_elements,
+                status.rope_total_bytes,
+                status.metadata_allocated,
+                status.metadata_status.as_str().to_string(),
+                status.metadata_deferred_reason.clone(),
+                status.runtime_buffer_error.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                false,
+                0,
+                0,
+                0,
+                false,
+                "not_applicable".to_string(),
+                None,
+                None,
+            )
+        });
+
     SplitAllocationSmokeShardReport {
         device_id: shard.device_id.0,
         absolute_layers: shard.absolute_layers.clone(),
@@ -727,6 +910,14 @@ fn render_shard_report(
             cublas_created: resource.is_some() && resource_created,
             kernel_loader_created: resource.is_some() && resource_created,
         },
+        rope_allocated,
+        rope_cos_elements,
+        rope_sin_elements,
+        rope_total_bytes,
+        metadata_allocated,
+        metadata_status,
+        metadata_deferred_reason,
+        runtime_buffer_error,
     }
 }
 
@@ -737,6 +928,7 @@ fn error_report(
     selected_device: usize,
     dtype_mode: DTypeMode,
     kernel_dir: Option<&Path>,
+    rope_metadata_allocation_attempted: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     SplitAllocationSmokeReport {
@@ -758,8 +950,10 @@ fn error_report(
         overridden_tensor_names: Vec::new(),
         resource_construction_succeeded: false,
         allocation_smoke_succeeded: false,
+        rope_metadata_allocation_attempted,
+        rope_metadata_allocation_succeeded: false,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
-        omitted_allocations: omitted_allocations(),
+        omitted_allocations: omitted_allocations(false),
         shards: Vec::new(),
         unassigned_tensor_names: Vec::new(),
         invalid_tensor_names: Vec::new(),
@@ -776,6 +970,7 @@ fn error_report_with_config(
     kernel_dir: Option<&Path>,
     config: ModelPlanningConfig,
     allow_restricted_sinks_override: bool,
+    rope_metadata_allocation_attempted: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -785,6 +980,7 @@ fn error_report_with_config(
         selected_device,
         dtype_mode,
         kernel_dir,
+        rope_metadata_allocation_attempted,
         error,
     );
     report.num_layers = Some(config.num_layers);
@@ -806,6 +1002,7 @@ fn error_report_with_config_and_headers(
     config: ModelPlanningConfig,
     header_manifest: &SafetensorHeaderManifest,
     allow_restricted_sinks_override: bool,
+    rope_metadata_allocation_attempted: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -817,6 +1014,7 @@ fn error_report_with_config_and_headers(
         kernel_dir,
         config,
         allow_restricted_sinks_override,
+        rope_metadata_allocation_attempted,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
@@ -838,9 +1036,10 @@ fn tensor_byte_map(header_manifest: &SafetensorHeaderManifest) -> BTreeMap<Strin
         .collect()
 }
 
-fn omitted_allocations() -> Vec<String> {
+fn omitted_allocations(rope_allocated: bool) -> Vec<String> {
     OMITTED_ALLOCATIONS
         .iter()
+        .filter(|name| !(rope_allocated && **name == "rope_tables"))
         .map(|name| (*name).to_string())
         .collect()
 }
@@ -885,6 +1084,11 @@ mod tests {
         let config = serde_json::json!({
             "num_hidden_layers": num_layers,
             "tie_word_embeddings": tie_word_embeddings,
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "head_dim": 4,
+            "max_position_embeddings": 16,
+            "rope_theta": 10000.0,
         });
         std::fs::write(
             dir.join("config.json"),
@@ -955,6 +1159,14 @@ mod tests {
         dir: &Path,
         tie_word_embeddings: Option<bool>,
     ) -> SplitAllocationSmokeReport {
+        split_report_for_rope_metadata(dir, tie_word_embeddings, false)
+    }
+
+    fn split_report_for_rope_metadata(
+        dir: &Path,
+        tie_word_embeddings: Option<bool>,
+        allocate_rope_metadata: bool,
+    ) -> SplitAllocationSmokeReport {
         build_split_allocation_smoke_report(
             dir,
             "split:0-11@0,12-23@1",
@@ -963,6 +1175,7 @@ mod tests {
             DTypeMode::F16,
             tie_word_embeddings,
             false,
+            allocate_rope_metadata,
             false,
         )
     }
@@ -1018,6 +1231,69 @@ mod tests {
         for expected in [
             "kv_cache",
             "rope_tables",
+            "metadata_buffers",
+            "f16_scratch",
+            "fused_qkv_weights",
+            "fused_gate_up_weights",
+            "moe_gpu_weights",
+            "transformer_layers",
+            "gpu_model_runner",
+            "activation_transfer",
+        ] {
+            assert!(report.omitted_allocations.contains(&expected.to_string()));
+        }
+    }
+
+    #[test]
+    fn default_split_allocation_smoke_does_not_attempt_rope_metadata() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for(&dir, None);
+
+        assert!(!report.rope_metadata_allocation_attempted);
+        assert!(!report.rope_metadata_allocation_succeeded);
+        for shard in &report.shards {
+            assert!(!shard.rope_allocated);
+            assert_eq!(shard.rope_cos_elements, 0);
+            assert_eq!(shard.rope_sin_elements, 0);
+            assert_eq!(shard.rope_total_bytes, 0);
+            assert!(!shard.metadata_allocated);
+            assert_eq!(shard.metadata_status, "not_applicable");
+            assert!(shard.metadata_deferred_reason.is_none());
+        }
+    }
+
+    #[test]
+    fn rope_metadata_flag_surfaces_planned_rope_and_deferred_metadata() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_rope_metadata(&dir, None, true);
+
+        assert!(report.rope_metadata_allocation_attempted);
+        assert!(!report.rope_metadata_allocation_succeeded);
+        for shard in &report.shards {
+            assert!(!shard.rope_allocated);
+            assert_eq!(shard.rope_cos_elements, 32);
+            assert_eq!(shard.rope_sin_elements, 32);
+            assert_eq!(shard.rope_total_bytes, 256);
+            assert!(!shard.metadata_allocated);
+            assert_eq!(shard.metadata_status, "deferred");
+            assert!(shard
+                .metadata_deferred_reason
+                .as_deref()
+                .unwrap()
+                .contains("request-shaped metadata"));
+        }
+    }
+
+    #[test]
+    fn rope_metadata_flag_keeps_non_executing_allocations_omitted() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_rope_metadata(&dir, None, true);
+
+        for expected in [
+            "kv_cache",
             "metadata_buffers",
             "f16_scratch",
             "fused_qkv_weights",
@@ -1125,6 +1401,7 @@ mod tests {
             DTypeMode::F16,
             None,
             true,
+            false,
             false,
         );
 
