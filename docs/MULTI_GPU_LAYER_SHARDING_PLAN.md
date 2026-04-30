@@ -2630,6 +2630,150 @@ Primary classification:
 
 multi_gpu_layer_sharding_real_model_rope_allocated_metadata_deferred
 
+## Shard-local KV cache allocation skeleton status
+
+Added a bench-only, CUDA-gated shard-local KV cache allocation skeleton behind
+the split allocation smoke command. The skeleton allocates only f16 key/value
+cache buffers for shard-owned absolute layers and does not attach those buffers
+to a runner, layer, attention kernel, or cache engine execution path.
+
+Model-runner helper/status types:
+
+```text
+KvCacheAllocationConfig
+ShardedKvCacheAllocationPlan
+CudaShardKvCacheAllocationPlan
+CudaLayerKvCacheAllocationPlan
+ShardedKvCacheAllocationStatus
+CudaShardKvCacheAllocationStatus
+CudaLayerKvCacheAllocationStatus
+ShardedKvCacheBuffers             # CUDA-gated
+CudaShardKvCacheBuffers           # CUDA-gated
+CudaLayerKvCacheBuffers           # CUDA-gated
+```
+
+Bench flags:
+
+```text
+--allocate-kv-cache
+--kv-num-blocks <N>
+--kv-block-size <N>
+```
+
+The allocation size is explicit and bench-only. `--allocate-kv-cache` requires
+both `--kv-num-blocks` and `--kv-block-size`; the command reads
+`num_key_value_heads` and `head_dim` from `config.json` and uses the same f16
+cache element shape as the current CUDA cache path:
+
+```text
+[num_gpu_blocks, block_size, num_kv_heads, head_dim]
+```
+
+For `split:0-11@0,12-23@1`, the plan preserves absolute layer ids while using
+shard-local cache indices:
+
+- GPU0 allocates cache entries for absolute layers 0..11 with local indices
+  0..11.
+- GPU1 allocates cache entries for absolute layers 12..23 with local indices
+  0..11.
+
+Status JSON additions:
+
+```text
+kv_cache_allocation_attempted
+kv_cache_allocation_succeeded
+kv_num_blocks
+kv_block_size
+```
+
+Per shard:
+
+```text
+kv_cache_allocated
+kv_cache_entry_count
+kv_cache_layers
+kv_cache_local_indices
+kv_key_total_bytes
+kv_value_total_bytes
+kv_total_bytes
+kv_cache_entries
+kv_cache_error
+```
+
+`kv_cache_entries` reports each absolute layer id, shard-local cache index, key
+bytes, and value bytes. The public status remains absolute-layer-first so a
+future execution path does not accidentally index a shard-local vector with an
+absolute layer id.
+
+Default behavior remains unchanged. Without `--allocate-kv-cache`, the split
+allocation smoke does not attempt KV cache allocation and still reports
+`kv_cache` as omitted. With `--allocate-kv-cache`, `kv_cache` is removed from
+`omitted_allocations` and the status reports planned or allocated shard-local
+KV entries.
+
+The successful CUDA flag path classifies as:
+
+```text
+multi_gpu_layer_sharding_kv_cache_allocation_smoke_complete
+```
+
+Still not created:
+
+- request-shaped metadata packing buffers
+- fused QKV/gate-up weights
+- f16 scratch
+- MoE GPU expert uploads
+- activation-transfer buffers
+- transformer layers
+- `GpuModelRunner`
+- attention execution
+- final norm / LM-head execution
+- logits, sampling, graph capture, or any forward pass
+
+Manual operator command, not run by default:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_rope_kv_status.json
+```
+
+No serve/runtime behavior changed. Serve/runtime split maps remain
+non-executable and rejected before CUDA allocation.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `git diff --check`
+
+Next bounded step:
+
+Run the real-model KV cache allocation smoke operator command, then use that
+result to decide whether to refine KV memory accounting or move to the
+metadata-shape boundary design.
+
+Primary classification:
+
+multi_gpu_layer_sharding_kv_cache_allocation_skeleton_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_real_model_rope_allocated_metadata_deferred
+multi_gpu_layer_sharding_kv_cache_allocation_skeleton_complete

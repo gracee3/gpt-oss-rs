@@ -65,12 +65,15 @@ pub use shard_plan::{
     UploadManifestOptions,
 };
 pub use sharded_resources::{
-    CudaShardResourcePlan, CudaShardResourceStatus, CudaShardRuntimeBufferPlan,
-    CudaShardRuntimeBufferStatus, RopeRuntimeBufferConfig, RuntimeMetadataStatus,
-    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedRuntimeBufferPlan,
-    ShardedRuntimeBufferStatus,
+    CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus,
+    CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus, CudaShardResourcePlan,
+    CudaShardResourceStatus, CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus,
+    KvCacheAllocationConfig, RopeRuntimeBufferConfig, RuntimeMetadataStatus,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedKvCacheAllocationPlan,
+    ShardedKvCacheAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{
-    CudaShardResources, CudaShardRuntimeBuffers, ShardedCudaResources, ShardedRuntimeBuffers,
+    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardResources, CudaShardRuntimeBuffers,
+    ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
 };

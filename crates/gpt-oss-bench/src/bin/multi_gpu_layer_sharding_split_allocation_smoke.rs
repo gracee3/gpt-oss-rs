@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
-    CudaShardResourceStatus, CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, LateAllocationKind,
-    RopeRuntimeBufferConfig, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
-    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
+    CudaShardKvCacheAllocationStatus, CudaShardResourceStatus, CudaShardRuntimeBufferStatus,
+    DeviceId, DeviceMap, KvCacheAllocationConfig, LateAllocationKind, RopeRuntimeBufferConfig,
+    SafetensorHeaderManifest, SafetensorHeaderMergePolicy, ShardAllocationReport,
+    ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedModelPlan,
+    ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
     UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,8 @@ const CUDA_UNAVAILABLE_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_split_allocation_smoke_cuda_unavailable";
 const ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_rope_allocated_metadata_deferred";
+const KV_CACHE_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_kv_cache_allocation_smoke_complete";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -79,6 +83,15 @@ struct Cli {
 
     #[arg(long)]
     allocate_rope_metadata: bool,
+
+    #[arg(long)]
+    allocate_kv_cache: bool,
+
+    #[arg(long)]
+    kv_num_blocks: Option<usize>,
+
+    #[arg(long)]
+    kv_block_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -109,6 +122,10 @@ struct SplitAllocationSmokeReport {
     allocation_smoke_succeeded: bool,
     rope_metadata_allocation_attempted: bool,
     rope_metadata_allocation_succeeded: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_cache_allocation_succeeded: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     kernel_dir: Option<String>,
     omitted_allocations: Vec<String>,
     shards: Vec<SplitAllocationSmokeShardReport>,
@@ -146,6 +163,23 @@ struct SplitAllocationSmokeShardReport {
     metadata_status: String,
     metadata_deferred_reason: Option<String>,
     runtime_buffer_error: Option<String>,
+    kv_cache_allocated: bool,
+    kv_cache_entry_count: usize,
+    kv_cache_layers: Vec<usize>,
+    kv_cache_local_indices: Vec<usize>,
+    kv_key_total_bytes: usize,
+    kv_value_total_bytes: usize,
+    kv_total_bytes: usize,
+    kv_cache_entries: Vec<KvCacheEntryReport>,
+    kv_cache_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct KvCacheEntryReport {
+    absolute_layer_idx: usize,
+    local_cache_idx: usize,
+    key_bytes: usize,
+    value_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -161,6 +195,7 @@ struct ModelPlanningConfig {
     num_layers: usize,
     tie_word_embeddings: bool,
     head_dim: Option<usize>,
+    num_kv_heads: Option<usize>,
     max_position: usize,
     rope_theta: f32,
 }
@@ -208,6 +243,9 @@ fn main() -> Result<()> {
         cli.tie_word_embeddings,
         cli.allow_restricted_sinks_override,
         cli.allocate_rope_metadata,
+        cli.allocate_kv_cache,
+        cli.kv_num_blocks,
+        cli.kv_block_size,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -239,6 +277,9 @@ fn build_split_allocation_smoke_report(
     tie_word_embeddings_override: Option<bool>,
     allow_restricted_sinks_override: bool,
     allocate_rope_metadata: bool,
+    allocate_kv_cache: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let config = match read_model_planning_config(model_path, tie_word_embeddings_override) {
@@ -252,6 +293,9 @@ fn build_split_allocation_smoke_report(
                 dtype_mode,
                 kernel_dir,
                 allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
                 Some(error.to_string()),
             );
         }
@@ -268,12 +312,38 @@ fn build_split_allocation_smoke_report(
                     dtype_mode,
                     kernel_dir,
                     allocate_rope_metadata,
+                    allocate_kv_cache,
+                    kv_num_blocks,
+                    kv_block_size,
                     Some(error.to_string()),
                 );
             }
         }
     } else {
         None
+    };
+    let kv_cache_config = match build_kv_cache_allocation_config(
+        config,
+        allocate_kv_cache,
+        kv_num_blocks,
+        kv_block_size,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            return error_report(
+                CONFIG_ERROR_CLASSIFICATION,
+                model_path,
+                device_map_spec,
+                selected_device,
+                dtype_mode,
+                kernel_dir,
+                allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
+                Some(error.to_string()),
+            );
+        }
     };
 
     let header_merge_policy = header_merge_policy(allow_restricted_sinks_override);
@@ -292,6 +362,9 @@ fn build_split_allocation_smoke_report(
                     config,
                     allow_restricted_sinks_override,
                     allocate_rope_metadata,
+                    allocate_kv_cache,
+                    kv_num_blocks,
+                    kv_block_size,
                     Some(error.to_string()),
                 );
             }
@@ -315,6 +388,9 @@ fn build_split_allocation_smoke_report(
                 &header_manifest,
                 allow_restricted_sinks_override,
                 allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
                 Some(error.to_string()),
             );
         }
@@ -334,6 +410,9 @@ fn build_split_allocation_smoke_report(
                 &header_manifest,
                 allow_restricted_sinks_override,
                 allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
                 Some(error.to_string()),
             );
         }
@@ -358,6 +437,9 @@ fn build_split_allocation_smoke_report(
                 &header_manifest,
                 allow_restricted_sinks_override,
                 allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
                 Some(error.to_string()),
             );
         }
@@ -378,6 +460,9 @@ fn build_split_allocation_smoke_report(
                 &header_manifest,
                 allow_restricted_sinks_override,
                 allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
                 Some(error.to_string()),
             );
         }
@@ -397,6 +482,10 @@ fn build_split_allocation_smoke_report(
             let runtime_plan = ShardedRuntimeBufferPlan::from_model_plan(&plan, config);
             ShardedRuntimeBufferStatus::from_plan(&runtime_plan, false)
         });
+        let kv_cache_status = kv_cache_config.map(|config| {
+            let kv_allocation_plan = ShardedKvCacheAllocationPlan::from_model_plan(&plan, config);
+            ShardedKvCacheAllocationStatus::from_plan(&kv_allocation_plan, false)
+        });
         return render_report(
             SUCCESS_CLASSIFICATION,
             model_path,
@@ -415,7 +504,12 @@ fn build_split_allocation_smoke_report(
             true,
             allocate_rope_metadata,
             false,
+            allocate_kv_cache,
+            false,
+            kv_num_blocks,
+            kv_block_size,
             runtime_buffer_status.as_ref(),
+            kv_cache_status.as_ref(),
             None,
         );
     }
@@ -427,11 +521,15 @@ fn build_split_allocation_smoke_report(
         kernel_dir,
         dtype_mode,
         runtime_buffer_config,
+        kv_cache_config,
     ) {
-        Ok((resource_status, upload_counts, runtime_buffer_status)) => {
+        Ok((resource_status, upload_counts, runtime_buffer_status, kv_cache_status)) => {
             let runtime_buffer_succeeded =
                 allocate_rope_metadata && runtime_buffer_status.is_some();
-            let classification = if runtime_buffer_succeeded {
+            let kv_cache_succeeded = allocate_kv_cache && kv_cache_status.is_some();
+            let classification = if kv_cache_succeeded {
+                KV_CACHE_ALLOCATION_CLASSIFICATION
+            } else if runtime_buffer_succeeded {
                 ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION
             } else {
                 SUCCESS_CLASSIFICATION
@@ -455,7 +553,12 @@ fn build_split_allocation_smoke_report(
                 true,
                 allocate_rope_metadata,
                 runtime_buffer_succeeded,
+                allocate_kv_cache,
+                kv_cache_succeeded,
+                kv_num_blocks,
+                kv_block_size,
                 runtime_buffer_status.as_ref(),
+                kv_cache_status.as_ref(),
                 None,
             )
         }
@@ -480,6 +583,11 @@ fn build_split_allocation_smoke_report(
                 false,
                 allocate_rope_metadata,
                 false,
+                allocate_kv_cache,
+                false,
+                kv_num_blocks,
+                kv_block_size,
+                None,
                 None,
                 Some(error),
             )
@@ -526,6 +634,7 @@ fn read_model_planning_config(
             .zip(num_attention_heads)
             .and_then(|(hidden_size, heads)| hidden_size.checked_div(heads))
     });
+    let num_kv_heads = get_usize("num_key_value_heads").or(num_attention_heads);
     let max_position = get_usize("max_position_embeddings").unwrap_or(2048);
     let rope_theta = get_f32("rope_theta", 10000.0);
     let tie_word_embeddings = tie_word_embeddings_override.unwrap_or_else(|| {
@@ -538,6 +647,7 @@ fn read_model_planning_config(
         num_layers,
         tie_word_embeddings,
         head_dim,
+        num_kv_heads,
         max_position,
         rope_theta,
     })
@@ -562,6 +672,31 @@ fn build_runtime_buffer_config(config: ModelPlanningConfig) -> Result<RopeRuntim
         .map_err(anyhow::Error::msg)
 }
 
+fn build_kv_cache_allocation_config(
+    config: ModelPlanningConfig,
+    allocate_kv_cache: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
+) -> Result<Option<KvCacheAllocationConfig>> {
+    if !allocate_kv_cache {
+        return Ok(None);
+    }
+
+    let num_gpu_blocks =
+        kv_num_blocks.context("--allocate-kv-cache requires --kv-num-blocks <N>")?;
+    let block_size = kv_block_size.context("--allocate-kv-cache requires --kv-block-size <N>")?;
+    let num_kv_heads = config
+        .num_kv_heads
+        .context("config.json missing numeric num_key_value_heads or num_attention_heads")?;
+    let head_dim = config
+        .head_dim
+        .context("config.json missing numeric head_dim or hidden_size/num_attention_heads")?;
+
+    KvCacheAllocationConfig::new(num_kv_heads, head_dim, num_gpu_blocks, block_size)
+        .map(Some)
+        .map_err(anyhow::Error::msg)
+}
+
 #[cfg(feature = "cuda")]
 fn run_cuda_allocation_smoke(
     model_path: &Path,
@@ -570,11 +705,13 @@ fn run_cuda_allocation_smoke(
     kernel_dir: Option<&Path>,
     dtype_mode: DTypeMode,
     runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
+    kv_cache_config: Option<KvCacheAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
         Option<ShardedRuntimeBufferStatus>,
+        Option<ShardedKvCacheAllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -582,7 +719,9 @@ fn run_cuda_allocation_smoke(
         load_u8_weights_to_host_filtered, load_weights_to_gpu_f16_with_shapes_filtered,
         load_weights_to_gpu_with_shapes_filtered,
     };
-    use gpt_oss_model_runner::{ShardedCudaResources, ShardedRuntimeBuffers};
+    use gpt_oss_model_runner::{
+        ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
+    };
 
     let resources = match kernel_dir {
         Some(kernel_dir) => ShardedCudaResources::create_for_plan_with_kernel_dir(plan, kernel_dir),
@@ -662,7 +801,24 @@ fn run_cuda_allocation_smoke(
         None
     };
 
-    Ok((resources.status(), upload_counts, runtime_buffer_status))
+    let kv_cache_status = if let Some(kv_cache_config) = kv_cache_config {
+        let kv_allocation_plan =
+            ShardedKvCacheAllocationPlan::from_model_plan(plan, kv_cache_config);
+        Some(
+            ShardedKvCacheBuffers::create_for_resources(&resources, &kv_allocation_plan)
+                .map_err(|error| (RESOURCE_ERROR_CLASSIFICATION, error.to_string()))?
+                .status(),
+        )
+    } else {
+        None
+    };
+
+    Ok((
+        resources.status(),
+        upload_counts,
+        runtime_buffer_status,
+        kv_cache_status,
+    ))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -673,11 +829,13 @@ fn run_cuda_allocation_smoke(
     _kernel_dir: Option<&Path>,
     _dtype_mode: DTypeMode,
     _runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
+    _kv_cache_config: Option<KvCacheAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
         Option<ShardedRuntimeBufferStatus>,
+        Option<ShardedKvCacheAllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -716,7 +874,12 @@ fn render_report(
     allocation_smoke_succeeded: bool,
     rope_metadata_allocation_attempted: bool,
     rope_metadata_allocation_succeeded: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_cache_allocation_succeeded: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
+    kv_cache_status: Option<&ShardedKvCacheAllocationStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let upload_counts = manifest_by_device
@@ -748,7 +911,12 @@ fn render_report(
         allocation_smoke_succeeded,
         rope_metadata_allocation_attempted,
         rope_metadata_allocation_succeeded,
+        kv_cache_allocation_attempted,
+        kv_cache_allocation_succeeded,
+        kv_num_blocks,
+        kv_block_size,
         runtime_buffer_status,
+        kv_cache_status,
         error,
     )
 }
@@ -772,7 +940,12 @@ fn render_report_with_counts(
     allocation_smoke_succeeded: bool,
     rope_metadata_allocation_attempted: bool,
     rope_metadata_allocation_succeeded: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_cache_allocation_succeeded: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
+    kv_cache_status: Option<&ShardedKvCacheAllocationStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let resource_by_device = resource_status
@@ -781,6 +954,15 @@ fn render_report_with_counts(
         .map(|status| (status.device_id, status))
         .collect::<HashMap<_, _>>();
     let runtime_buffer_by_device = runtime_buffer_status
+        .map(|status| {
+            status
+                .shards
+                .iter()
+                .map(|status| (status.device_id, status))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let kv_cache_by_device = kv_cache_status
         .map(|status| {
             status
                 .shards
@@ -809,8 +991,15 @@ fn render_report_with_counts(
         allocation_smoke_succeeded,
         rope_metadata_allocation_attempted,
         rope_metadata_allocation_succeeded,
+        kv_cache_allocation_attempted,
+        kv_cache_allocation_succeeded,
+        kv_num_blocks,
+        kv_block_size,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
-        omitted_allocations: omitted_allocations(rope_metadata_allocation_succeeded),
+        omitted_allocations: omitted_allocations(
+            rope_metadata_allocation_succeeded,
+            kv_cache_allocation_attempted,
+        ),
         shards: allocation_report
             .shards
             .iter()
@@ -824,12 +1013,14 @@ fn render_report_with_counts(
                     .unwrap_or_else(|| ShardUploadCounts::planned(manifest, header_bytes));
                 let resource = resource_by_device.get(&shard.device_id).copied();
                 let runtime_buffer = runtime_buffer_by_device.get(&shard.device_id).copied();
+                let kv_cache = kv_cache_by_device.get(&shard.device_id).copied();
                 render_shard_report(
                     shard,
                     counts,
                     resource,
                     resource_construction_succeeded,
                     runtime_buffer,
+                    kv_cache,
                 )
             })
             .collect(),
@@ -845,6 +1036,7 @@ fn render_shard_report(
     resource: Option<&CudaShardResourceStatus>,
     resource_created: bool,
     runtime_buffer: Option<&CudaShardRuntimeBufferStatus>,
+    kv_cache: Option<&CudaShardKvCacheAllocationStatus>,
 ) -> SplitAllocationSmokeShardReport {
     let (
         rope_allocated,
@@ -880,6 +1072,48 @@ fn render_shard_report(
                 None,
             )
         });
+    let (
+        kv_cache_allocated,
+        kv_cache_entry_count,
+        kv_cache_layers,
+        kv_cache_local_indices,
+        kv_key_total_bytes,
+        kv_value_total_bytes,
+        kv_total_bytes,
+        kv_cache_entries,
+        kv_cache_error,
+    ) = kv_cache
+        .map(|status| {
+            (
+                status.kv_cache_allocated,
+                status.entries.len(),
+                status
+                    .entries
+                    .iter()
+                    .map(|entry| entry.absolute_layer_idx)
+                    .collect::<Vec<_>>(),
+                status
+                    .entries
+                    .iter()
+                    .map(|entry| entry.local_cache_idx)
+                    .collect::<Vec<_>>(),
+                status.key_total_bytes,
+                status.value_total_bytes,
+                status.total_bytes,
+                status
+                    .entries
+                    .iter()
+                    .map(|entry| KvCacheEntryReport {
+                        absolute_layer_idx: entry.absolute_layer_idx,
+                        local_cache_idx: entry.local_cache_idx,
+                        key_bytes: entry.key_bytes,
+                        value_bytes: entry.value_bytes,
+                    })
+                    .collect::<Vec<_>>(),
+                status.kv_cache_error.clone(),
+            )
+        })
+        .unwrap_or_else(|| (false, 0, Vec::new(), Vec::new(), 0, 0, 0, Vec::new(), None));
 
     SplitAllocationSmokeShardReport {
         device_id: shard.device_id.0,
@@ -918,6 +1152,15 @@ fn render_shard_report(
         metadata_status,
         metadata_deferred_reason,
         runtime_buffer_error,
+        kv_cache_allocated,
+        kv_cache_entry_count,
+        kv_cache_layers,
+        kv_cache_local_indices,
+        kv_key_total_bytes,
+        kv_value_total_bytes,
+        kv_total_bytes,
+        kv_cache_entries,
+        kv_cache_error,
     }
 }
 
@@ -929,6 +1172,9 @@ fn error_report(
     dtype_mode: DTypeMode,
     kernel_dir: Option<&Path>,
     rope_metadata_allocation_attempted: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     SplitAllocationSmokeReport {
@@ -952,8 +1198,12 @@ fn error_report(
         allocation_smoke_succeeded: false,
         rope_metadata_allocation_attempted,
         rope_metadata_allocation_succeeded: false,
+        kv_cache_allocation_attempted,
+        kv_cache_allocation_succeeded: false,
+        kv_num_blocks,
+        kv_block_size,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
-        omitted_allocations: omitted_allocations(false),
+        omitted_allocations: omitted_allocations(false, kv_cache_allocation_attempted),
         shards: Vec::new(),
         unassigned_tensor_names: Vec::new(),
         invalid_tensor_names: Vec::new(),
@@ -971,6 +1221,9 @@ fn error_report_with_config(
     config: ModelPlanningConfig,
     allow_restricted_sinks_override: bool,
     rope_metadata_allocation_attempted: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -981,6 +1234,9 @@ fn error_report_with_config(
         dtype_mode,
         kernel_dir,
         rope_metadata_allocation_attempted,
+        kv_cache_allocation_attempted,
+        kv_num_blocks,
+        kv_block_size,
         error,
     );
     report.num_layers = Some(config.num_layers);
@@ -1003,6 +1259,9 @@ fn error_report_with_config_and_headers(
     header_manifest: &SafetensorHeaderManifest,
     allow_restricted_sinks_override: bool,
     rope_metadata_allocation_attempted: bool,
+    kv_cache_allocation_attempted: bool,
+    kv_num_blocks: Option<usize>,
+    kv_block_size: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -1015,6 +1274,9 @@ fn error_report_with_config_and_headers(
         config,
         allow_restricted_sinks_override,
         rope_metadata_allocation_attempted,
+        kv_cache_allocation_attempted,
+        kv_num_blocks,
+        kv_block_size,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
@@ -1036,10 +1298,13 @@ fn tensor_byte_map(header_manifest: &SafetensorHeaderManifest) -> BTreeMap<Strin
         .collect()
 }
 
-fn omitted_allocations(rope_allocated: bool) -> Vec<String> {
+fn omitted_allocations(rope_allocated: bool, kv_cache_attempted: bool) -> Vec<String> {
     OMITTED_ALLOCATIONS
         .iter()
-        .filter(|name| !(rope_allocated && **name == "rope_tables"))
+        .filter(|name| {
+            !(rope_allocated && **name == "rope_tables")
+                && !(kv_cache_attempted && **name == "kv_cache")
+        })
         .map(|name| (*name).to_string())
         .collect()
 }
@@ -1086,6 +1351,7 @@ mod tests {
             "tie_word_embeddings": tie_word_embeddings,
             "hidden_size": 8,
             "num_attention_heads": 2,
+            "num_key_value_heads": 2,
             "head_dim": 4,
             "max_position_embeddings": 16,
             "rope_theta": 10000.0,
@@ -1176,6 +1442,32 @@ mod tests {
             tie_word_embeddings,
             false,
             allocate_rope_metadata,
+            false,
+            None,
+            None,
+            false,
+        )
+    }
+
+    fn split_report_for_kv_cache(
+        dir: &Path,
+        allocate_rope_metadata: bool,
+        allocate_kv_cache: bool,
+        kv_num_blocks: Option<usize>,
+        kv_block_size: Option<usize>,
+    ) -> SplitAllocationSmokeReport {
+        build_split_allocation_smoke_report(
+            dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F16,
+            None,
+            false,
+            allocate_rope_metadata,
+            allocate_kv_cache,
+            kv_num_blocks,
+            kv_block_size,
             false,
         )
     }
@@ -1308,6 +1600,113 @@ mod tests {
     }
 
     #[test]
+    fn default_split_allocation_smoke_does_not_attempt_kv_cache() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for(&dir, None);
+
+        assert!(!report.kv_cache_allocation_attempted);
+        assert!(!report.kv_cache_allocation_succeeded);
+        assert_eq!(report.kv_num_blocks, None);
+        assert_eq!(report.kv_block_size, None);
+        assert!(report.omitted_allocations.contains(&"kv_cache".to_string()));
+        for shard in &report.shards {
+            assert!(!shard.kv_cache_allocated);
+            assert_eq!(shard.kv_cache_entry_count, 0);
+            assert!(shard.kv_cache_layers.is_empty());
+            assert!(shard.kv_cache_local_indices.is_empty());
+            assert_eq!(shard.kv_total_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn kv_cache_flag_surfaces_planned_absolute_and_local_indices() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_kv_cache(&dir, false, true, Some(1), Some(16));
+
+        assert!(report.kv_cache_allocation_attempted);
+        assert!(!report.kv_cache_allocation_succeeded);
+        assert_eq!(report.kv_num_blocks, Some(1));
+        assert_eq!(report.kv_block_size, Some(16));
+        assert!(!report.omitted_allocations.contains(&"kv_cache".to_string()));
+
+        let gpu0 = shard(&report, 0);
+        assert!(!gpu0.kv_cache_allocated);
+        assert_eq!(gpu0.kv_cache_entry_count, 12);
+        assert_eq!(gpu0.kv_cache_layers, (0..12).collect::<Vec<_>>());
+        assert_eq!(gpu0.kv_cache_local_indices, (0..12).collect::<Vec<_>>());
+
+        let gpu1 = shard(&report, 1);
+        assert!(!gpu1.kv_cache_allocated);
+        assert_eq!(gpu1.kv_cache_entry_count, 12);
+        assert_eq!(gpu1.kv_cache_layers, (12..24).collect::<Vec<_>>());
+        assert_eq!(gpu1.kv_cache_local_indices, (0..12).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn kv_cache_flag_reports_bytes_per_shard() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_kv_cache(&dir, false, true, Some(1), Some(16));
+
+        let per_cache_bytes = 1 * 16 * 2 * 4 * std::mem::size_of::<half::f16>();
+        for shard in &report.shards {
+            assert_eq!(shard.kv_cache_entry_count, 12);
+            assert_eq!(shard.kv_key_total_bytes, per_cache_bytes * 12);
+            assert_eq!(shard.kv_value_total_bytes, per_cache_bytes * 12);
+            assert_eq!(shard.kv_total_bytes, per_cache_bytes * 24);
+            assert_eq!(shard.kv_cache_entries.len(), 12);
+            assert!(shard
+                .kv_cache_entries
+                .iter()
+                .all(|entry| entry.key_bytes == per_cache_bytes));
+            assert!(shard
+                .kv_cache_entries
+                .iter()
+                .all(|entry| entry.value_bytes == per_cache_bytes));
+        }
+    }
+
+    #[test]
+    fn kv_cache_flag_requires_num_blocks() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_kv_cache(&dir, false, true, None, Some(16));
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.kv_cache_allocation_attempted);
+        assert!(report.error.as_deref().unwrap().contains("--kv-num-blocks"));
+    }
+
+    #[test]
+    fn kv_cache_flag_requires_block_size() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_kv_cache(&dir, false, true, Some(1), None);
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.kv_cache_allocation_attempted);
+        assert!(report.error.as_deref().unwrap().contains("--kv-block-size"));
+    }
+
+    #[test]
+    fn kv_cache_status_is_independent_from_deferred_metadata() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_kv_cache(&dir, true, true, Some(1), Some(16));
+
+        assert!(report.rope_metadata_allocation_attempted);
+        assert!(!report.rope_metadata_allocation_succeeded);
+        assert!(report.kv_cache_allocation_attempted);
+        assert!(!report.kv_cache_allocation_succeeded);
+        for shard in &report.shards {
+            assert_eq!(shard.metadata_status, "deferred");
+            assert_eq!(shard.kv_cache_entry_count, 12);
+        }
+    }
+
+    #[test]
     fn tied_lm_head_fallback_remains_deferred_when_lm_head_absent() {
         let dir = unique_temp_model_dir("tied_fallback");
         write_config(&dir, 24, true);
@@ -1402,6 +1801,9 @@ mod tests {
             None,
             true,
             false,
+            false,
+            None,
+            None,
             false,
         );
 

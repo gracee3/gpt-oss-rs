@@ -6,7 +6,7 @@
 //! runner.
 
 use crate::device_map::DeviceId;
-use crate::shard_plan::ShardedModelPlan;
+use crate::shard_plan::{ShardedKvCachePlan, ShardedModelPlan};
 
 pub const RUNTIME_METADATA_DEFERRED_REASON: &str =
     "request-shaped metadata packing buffers require batch/sequence inputs";
@@ -47,6 +47,15 @@ pub struct RopeRuntimeBufferConfig {
     pub head_dim: usize,
     pub max_position: usize,
     pub rope_theta: f32,
+}
+
+/// CUDA-free configuration for shard-local KV cache allocation planning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvCacheAllocationConfig {
+    pub num_kv_heads: usize,
+    pub head_dim: usize,
+    pub num_gpu_blocks: usize,
+    pub block_size: usize,
 }
 
 /// Metadata allocation state for the non-executing runtime buffer skeleton.
@@ -100,6 +109,64 @@ pub struct ShardedRuntimeBufferStatus {
     pub shards: Vec<CudaShardRuntimeBufferStatus>,
 }
 
+/// CUDA-free plan for one shard-local layer KV cache entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerKvCacheAllocationPlan {
+    pub absolute_layer_idx: usize,
+    pub local_cache_idx: usize,
+    pub key_elements: usize,
+    pub value_elements: usize,
+    pub key_bytes: usize,
+    pub value_bytes: usize,
+}
+
+/// CUDA-free plan for one shard's KV cache allocations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardKvCacheAllocationPlan {
+    pub device_id: DeviceId,
+    pub entries: Vec<CudaLayerKvCacheAllocationPlan>,
+    pub num_kv_heads: usize,
+    pub head_dim: usize,
+    pub num_gpu_blocks: usize,
+    pub block_size: usize,
+    pub key_total_bytes: usize,
+    pub value_total_bytes: usize,
+    pub total_bytes: usize,
+}
+
+/// CUDA-free plan for shard-local KV cache allocations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedKvCacheAllocationPlan {
+    pub shards: Vec<CudaShardKvCacheAllocationPlan>,
+}
+
+/// Public status for one shard-local layer KV cache allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerKvCacheAllocationStatus {
+    pub absolute_layer_idx: usize,
+    pub local_cache_idx: usize,
+    pub key_bytes: usize,
+    pub value_bytes: usize,
+}
+
+/// Public status for one shard's KV cache allocation skeleton.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardKvCacheAllocationStatus {
+    pub device_id: DeviceId,
+    pub kv_cache_allocated: bool,
+    pub entries: Vec<CudaLayerKvCacheAllocationStatus>,
+    pub key_total_bytes: usize,
+    pub value_total_bytes: usize,
+    pub total_bytes: usize,
+    pub kv_cache_error: Option<String>,
+}
+
+/// Public status for all shard-local KV cache allocation skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedKvCacheAllocationStatus {
+    pub shards: Vec<CudaShardKvCacheAllocationStatus>,
+}
+
 impl RopeRuntimeBufferConfig {
     pub fn new(head_dim: usize, max_position: usize, rope_theta: f32) -> Result<Self, String> {
         if head_dim == 0 {
@@ -140,6 +207,43 @@ impl RopeRuntimeBufferConfig {
 
     pub fn rope_total_bytes(&self) -> usize {
         self.rope_table_elements() * 2 * std::mem::size_of::<f32>()
+    }
+}
+
+impl KvCacheAllocationConfig {
+    pub fn new(
+        num_kv_heads: usize,
+        head_dim: usize,
+        num_gpu_blocks: usize,
+        block_size: usize,
+    ) -> Result<Self, String> {
+        if num_kv_heads == 0 {
+            return Err("num_kv_heads must be non-zero for KV cache allocation".into());
+        }
+        if head_dim == 0 {
+            return Err("head_dim must be non-zero for KV cache allocation".into());
+        }
+        if num_gpu_blocks == 0 {
+            return Err("num_gpu_blocks must be non-zero for KV cache allocation".into());
+        }
+        if block_size == 0 {
+            return Err("block_size must be non-zero for KV cache allocation".into());
+        }
+
+        Ok(Self {
+            num_kv_heads,
+            head_dim,
+            num_gpu_blocks,
+            block_size,
+        })
+    }
+
+    pub fn elements_per_layer_cache(&self) -> usize {
+        self.num_gpu_blocks * self.block_size * self.num_kv_heads * self.head_dim
+    }
+
+    pub fn bytes_per_layer_cache(&self) -> usize {
+        self.elements_per_layer_cache() * std::mem::size_of::<half::f16>()
     }
 }
 
@@ -277,6 +381,106 @@ impl ShardedRuntimeBufferStatus {
     }
 }
 
+impl ShardedKvCacheAllocationPlan {
+    /// Build a metadata-only KV cache allocation plan from the existing
+    /// absolute-layer keyed shard KV cache plan.
+    pub fn from_model_plan(plan: &ShardedModelPlan, config: KvCacheAllocationConfig) -> Self {
+        Self::from_kv_cache_plan(&plan.kv_cache_plan(), config)
+    }
+
+    pub fn from_kv_cache_plan(
+        kv_cache_plan: &ShardedKvCachePlan,
+        config: KvCacheAllocationConfig,
+    ) -> Self {
+        Self {
+            shards: kv_cache_plan
+                .shards
+                .iter()
+                .map(|shard| CudaShardKvCacheAllocationPlan::from_shard_plan(shard, config))
+                .collect(),
+        }
+    }
+
+    pub fn shard_for_device(&self, device_id: DeviceId) -> Option<&CudaShardKvCacheAllocationPlan> {
+        self.shards
+            .iter()
+            .find(|shard| shard.device_id == device_id)
+    }
+}
+
+impl CudaShardKvCacheAllocationPlan {
+    fn from_shard_plan(
+        shard: &crate::shard_plan::ShardKvCachePlan,
+        config: KvCacheAllocationConfig,
+    ) -> Self {
+        let entries = shard
+            .entries
+            .iter()
+            .map(|entry| CudaLayerKvCacheAllocationPlan {
+                absolute_layer_idx: entry.absolute_layer_idx,
+                local_cache_idx: entry.local_cache_idx,
+                key_elements: config.elements_per_layer_cache(),
+                value_elements: config.elements_per_layer_cache(),
+                key_bytes: config.bytes_per_layer_cache(),
+                value_bytes: config.bytes_per_layer_cache(),
+            })
+            .collect::<Vec<_>>();
+        let key_total_bytes = entries.iter().map(|entry| entry.key_bytes).sum();
+        let value_total_bytes = entries.iter().map(|entry| entry.value_bytes).sum();
+
+        Self {
+            device_id: shard.device_id,
+            entries,
+            num_kv_heads: config.num_kv_heads,
+            head_dim: config.head_dim,
+            num_gpu_blocks: config.num_gpu_blocks,
+            block_size: config.block_size,
+            key_total_bytes,
+            value_total_bytes,
+            total_bytes: key_total_bytes + value_total_bytes,
+        }
+    }
+
+    pub fn status(&self, kv_cache_allocated: bool) -> CudaShardKvCacheAllocationStatus {
+        CudaShardKvCacheAllocationStatus {
+            device_id: self.device_id,
+            kv_cache_allocated,
+            entries: self
+                .entries
+                .iter()
+                .map(CudaLayerKvCacheAllocationPlan::status)
+                .collect(),
+            key_total_bytes: self.key_total_bytes,
+            value_total_bytes: self.value_total_bytes,
+            total_bytes: self.total_bytes,
+            kv_cache_error: None,
+        }
+    }
+}
+
+impl CudaLayerKvCacheAllocationPlan {
+    pub fn status(&self) -> CudaLayerKvCacheAllocationStatus {
+        CudaLayerKvCacheAllocationStatus {
+            absolute_layer_idx: self.absolute_layer_idx,
+            local_cache_idx: self.local_cache_idx,
+            key_bytes: self.key_bytes,
+            value_bytes: self.value_bytes,
+        }
+    }
+}
+
+impl ShardedKvCacheAllocationStatus {
+    pub fn from_plan(plan: &ShardedKvCacheAllocationPlan, kv_cache_allocated: bool) -> Self {
+        Self {
+            shards: plan
+                .shards
+                .iter()
+                .map(|shard| shard.status(kv_cache_allocated))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(feature = "cuda")]
 mod cuda {
     use std::path::Path;
@@ -286,11 +490,14 @@ mod cuda {
     use gpt_oss_core::prelude::{LLMError, Result};
     use gpt_oss_gpu::cublas::CublasHandle;
     use gpt_oss_gpu::kernel_loader::KernelLoader;
+    use half::f16;
 
     use super::{
-        CudaShardResourcePlan, CudaShardResourceStatus, CudaShardRuntimeBufferPlan,
-        CudaShardRuntimeBufferStatus, RopeRuntimeBufferConfig, ShardedCudaResourcePlan,
-        ShardedCudaResourceStatus, ShardedRuntimeBufferStatus,
+        CudaLayerKvCacheAllocationPlan, CudaShardKvCacheAllocationPlan,
+        CudaShardKvCacheAllocationStatus, CudaShardResourcePlan, CudaShardResourceStatus,
+        CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, RopeRuntimeBufferConfig,
+        ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedKvCacheAllocationPlan,
+        ShardedKvCacheAllocationStatus, ShardedRuntimeBufferStatus,
     };
     use crate::device_map::DeviceId;
     use crate::rope_validation::build_runtime_rope_tables;
@@ -327,6 +534,27 @@ mod cuda {
     /// Shard-local runtime buffers allocated from existing resource islands.
     pub struct ShardedRuntimeBuffers {
         pub shards: Vec<CudaShardRuntimeBuffers>,
+    }
+
+    /// One layer's non-executing shard-local KV cache buffers.
+    pub struct CudaLayerKvCacheBuffers {
+        pub absolute_layer_idx: usize,
+        pub local_cache_idx: usize,
+        pub key_cache: CudaSlice<f16>,
+        pub value_cache: CudaSlice<f16>,
+        pub plan: CudaLayerKvCacheAllocationPlan,
+    }
+
+    /// One shard's non-executing KV cache buffers.
+    pub struct CudaShardKvCacheBuffers {
+        pub device_id: DeviceId,
+        pub entries: Vec<CudaLayerKvCacheBuffers>,
+        pub plan: CudaShardKvCacheAllocationPlan,
+    }
+
+    /// Shard-local KV cache buffers allocated from existing resource islands.
+    pub struct ShardedKvCacheBuffers {
+        pub shards: Vec<CudaShardKvCacheBuffers>,
     }
 
     impl ShardedCudaResources {
@@ -485,11 +713,93 @@ mod cuda {
             self.plan.status(true)
         }
     }
+
+    impl ShardedKvCacheBuffers {
+        /// Allocate f16 KV cache key/value buffers for each shard-owned absolute
+        /// layer. The buffers are not attached to a runner or execution path.
+        pub fn create_for_resources(
+            resources: &ShardedCudaResources,
+            plan: &ShardedKvCacheAllocationPlan,
+        ) -> Result<Self> {
+            let mut shards = Vec::with_capacity(resources.shards.len());
+            for resource in &resources.shards {
+                let shard_plan = plan.shard_for_device(resource.device_id).ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "missing KV cache allocation plan for device {}",
+                        resource.device_id
+                    ))
+                })?;
+                shards.push(CudaShardKvCacheBuffers::create_for_resource(
+                    resource, shard_plan,
+                )?);
+            }
+            Ok(Self { shards })
+        }
+
+        pub fn status(&self) -> ShardedKvCacheAllocationStatus {
+            ShardedKvCacheAllocationStatus {
+                shards: self
+                    .shards
+                    .iter()
+                    .map(CudaShardKvCacheBuffers::status)
+                    .collect(),
+            }
+        }
+    }
+
+    impl CudaShardKvCacheBuffers {
+        fn create_for_resource(
+            resource: &CudaShardResources,
+            plan: &CudaShardKvCacheAllocationPlan,
+        ) -> Result<Self> {
+            let mut entries = Vec::with_capacity(plan.entries.len());
+
+            for entry_plan in &plan.entries {
+                let key_cache = resource
+                    .stream
+                    .alloc_zeros::<f16>(entry_plan.key_elements)
+                    .map_err(|e| {
+                        LLMError::GpuError(format!(
+                            "shard {} KV key alloc failed absolute layer {}: {e}",
+                            resource.device_id, entry_plan.absolute_layer_idx
+                        ))
+                    })?;
+                let value_cache = resource
+                    .stream
+                    .alloc_zeros::<f16>(entry_plan.value_elements)
+                    .map_err(|e| {
+                        LLMError::GpuError(format!(
+                            "shard {} KV value alloc failed absolute layer {}: {e}",
+                            resource.device_id, entry_plan.absolute_layer_idx
+                        ))
+                    })?;
+
+                entries.push(CudaLayerKvCacheBuffers {
+                    absolute_layer_idx: entry_plan.absolute_layer_idx,
+                    local_cache_idx: entry_plan.local_cache_idx,
+                    key_cache,
+                    value_cache,
+                    plan: entry_plan.clone(),
+                });
+            }
+
+            Ok(Self {
+                device_id: resource.device_id,
+                entries,
+                plan: plan.clone(),
+            })
+        }
+
+        pub fn status(&self) -> CudaShardKvCacheAllocationStatus {
+            self.plan.status(true)
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaShardResources, CudaShardRuntimeBuffers, ShardedCudaResources, ShardedRuntimeBuffers,
+    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardResources, CudaShardRuntimeBuffers,
+    ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
 };
 
 #[cfg(test)]
@@ -512,6 +822,10 @@ mod tests {
 
     fn runtime_buffer_config() -> RopeRuntimeBufferConfig {
         RopeRuntimeBufferConfig::new(4, 16, 10000.0).unwrap()
+    }
+
+    fn kv_cache_allocation_config() -> KvCacheAllocationConfig {
+        KvCacheAllocationConfig::new(2, 4, 3, 5).unwrap()
     }
 
     #[test]
@@ -641,6 +955,81 @@ mod tests {
             assert!(!shard.metadata_allocated);
             assert_eq!(shard.metadata_status, RuntimeMetadataStatus::Deferred);
             assert!(shard.runtime_buffer_error.is_none());
+        }
+    }
+
+    #[test]
+    fn kv_cache_allocation_plan_single_has_all_absolute_layers() {
+        let plan = ShardedKvCacheAllocationPlan::from_model_plan(
+            &single_plan(),
+            kv_cache_allocation_config(),
+        );
+
+        assert_eq!(plan.shards.len(), 1);
+        assert_eq!(plan.shards[0].device_id, DeviceId(0));
+        assert_eq!(
+            plan.shards[0]
+                .entries
+                .iter()
+                .map(|entry| entry.absolute_layer_idx)
+                .collect::<Vec<_>>(),
+            (0..24).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn kv_cache_allocation_plan_split_preserves_absolute_and_local_indices() {
+        let plan = ShardedKvCacheAllocationPlan::from_model_plan(
+            &split_plan(),
+            kv_cache_allocation_config(),
+        );
+
+        assert_eq!(plan.shards.len(), 2);
+        assert_eq!(plan.shards[0].device_id, DeviceId(0));
+        assert_eq!(plan.shards[1].device_id, DeviceId(1));
+        assert_eq!(plan.shards[0].entries[0].absolute_layer_idx, 0);
+        assert_eq!(plan.shards[0].entries[0].local_cache_idx, 0);
+        assert_eq!(plan.shards[0].entries[11].absolute_layer_idx, 11);
+        assert_eq!(plan.shards[0].entries[11].local_cache_idx, 11);
+        assert_eq!(plan.shards[1].entries[0].absolute_layer_idx, 12);
+        assert_eq!(plan.shards[1].entries[0].local_cache_idx, 0);
+        assert_eq!(plan.shards[1].entries[11].absolute_layer_idx, 23);
+        assert_eq!(plan.shards[1].entries[11].local_cache_idx, 11);
+    }
+
+    #[test]
+    fn kv_cache_allocation_plan_reports_bytes_per_shard() {
+        let config = kv_cache_allocation_config();
+        let plan = ShardedKvCacheAllocationPlan::from_model_plan(&split_plan(), config);
+        let per_cache = config.bytes_per_layer_cache();
+
+        for shard in &plan.shards {
+            assert_eq!(shard.entries.len(), 12);
+            assert_eq!(shard.key_total_bytes, per_cache * 12);
+            assert_eq!(shard.value_total_bytes, per_cache * 12);
+            assert_eq!(shard.total_bytes, per_cache * 24);
+            for entry in &shard.entries {
+                assert_eq!(entry.key_bytes, per_cache);
+                assert_eq!(entry.value_bytes, per_cache);
+            }
+        }
+    }
+
+    #[test]
+    fn kv_cache_allocation_status_reports_allocated_flag() {
+        let plan = ShardedKvCacheAllocationPlan::from_model_plan(
+            &split_plan(),
+            kv_cache_allocation_config(),
+        );
+        let status = ShardedKvCacheAllocationStatus::from_plan(&plan, true);
+
+        assert_eq!(status.shards.len(), 2);
+        for shard in &status.shards {
+            assert!(shard.kv_cache_allocated);
+            assert_eq!(shard.entries.len(), 12);
+            assert!(shard.key_total_bytes > 0);
+            assert!(shard.value_total_bytes > 0);
+            assert!(shard.kv_cache_error.is_none());
         }
     }
 
