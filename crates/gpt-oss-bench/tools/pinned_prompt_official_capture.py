@@ -730,8 +730,8 @@ def build_direct_output(
     layer_index: int,
     capture_body: dict[str, Any],
 ) -> dict[str, Any]:
-    if layer_index == 11 and args.lane is not None and args.output_dir is not None:
-        return build_layer11_consumer_status(args, boundary, layer_index, capture_body)
+    if args.lane is not None and args.output_dir is not None:
+        return build_ordered_mlp_consumer_status(args, boundary, layer_index, capture_body)
     return {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "backend": "official_torch",
@@ -1981,7 +1981,7 @@ def internal_blocked_status(
     }
 
 
-def build_layer11_consumer_status(
+def build_ordered_mlp_consumer_status(
     args: argparse.Namespace,
     boundary: str,
     layer_index: int,
@@ -2059,7 +2059,7 @@ def build_layer11_consumer_status(
 
     return {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
-        "classification": "layer11_ordered_mlp_bundle_generated_without_internals",
+        "classification": f"layer{layer_index}_ordered_mlp_bundle_generated_without_internals",
         "runtime_behavior_changed": False,
         "production_routing_changed": False,
         "cuda_kernels_changed": False,
@@ -2101,8 +2101,8 @@ def build_layer11_consumer_status(
         "consumer_expected_norm_policy": "pairwise",
         "producer_metadata": capture_body.get("producer_metadata", {}),
         "consumer_next_command_hint": (
-            "Use this status/bundle as the ordered layer11 MLP oracle evidence "
-            "for the coarse_mlp_output_debug_requires_ordered_mlp_bundle blocker."
+            f"Use this status/bundle as the ordered layer{layer_index} MLP oracle "
+            "evidence for the bundle-driven validation blocker."
         ),
     }
 
@@ -2379,6 +2379,7 @@ def main() -> int:
         dtype_probe_like = (
             args.boundary is not None and "down_einsum_dtype_probe" in args.boundary
         )
+        layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
                 "layer11_expert30_down_einsum_dtype_probe_blocked_by_memory"
@@ -2393,9 +2394,9 @@ def main() -> int:
                 if memory_like and args.expert_index == 30
                 else "layer11_expert30_internal_bundle_execution_failed"
                 if args.expert_index == 30
-                else "layer11_ordered_mlp_bundle_blocked_by_memory"
+                else f"layer{layer_label}_ordered_mlp_bundle_blocked_by_memory"
                 if memory_like
-                else "layer11_ordered_mlp_bundle_execution_failed"
+                else f"layer{layer_label}_ordered_mlp_bundle_execution_failed"
             ),
             "runtime_behavior_changed": False,
             "production_routing_changed": False,
