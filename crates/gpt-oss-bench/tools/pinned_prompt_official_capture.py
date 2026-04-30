@@ -55,8 +55,9 @@ def parse_args() -> argparse.Namespace:
         "--boundary",
         help=(
             "Boundary selector for direct mode, for example "
-            "layerN_final_token_mlp_ordered_boundary_bundle or "
-            "layer11_final_token_mlp_ordered_boundary_bundle."
+            "layerN_final_token_mlp_ordered_boundary_bundle, "
+            "layer11_final_token_mlp_ordered_boundary_bundle, or "
+            "layerN_final_token_attention_ordered_boundary_bundle."
         ),
     )
     parser.add_argument("--layer-idx", "--layer-index", dest="layer_idx", type=int)
@@ -215,6 +216,30 @@ def parse_ordered_mlp_selector(boundary: str, layer_idx: int | None) -> int | No
     return None
 
 
+def parse_ordered_attention_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layer1_final_token_attention_ordered_boundary_bundle":
+        if layer_idx is not None and layer_idx != 1:
+            raise ValueError(
+                "layer1_final_token_attention_ordered_boundary_bundle requires layer_idx unset or 1"
+            )
+        return 1
+    if boundary == "layerN_final_token_attention_ordered_boundary_bundle":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_attention_ordered_boundary_bundle requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_final_token_attention_ordered_boundary_bundle", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
 def parse_selected_expert_internal_selector(boundary: str, layer_idx: int | None) -> int | None:
     if boundary == "layerN_final_token_selected_expert_internal_boundary_bundle":
         if layer_idx is None:
@@ -241,6 +266,22 @@ def parse_selected_expert_internal_selector(boundary: str, layer_idx: int | None
             )
         return selector_layer
     return None
+
+
+def ordered_attention_boundary_names(layer_index: int) -> list[str]:
+    return [
+        f"layer{layer_index}_final_token_q_projection_output_before_rope",
+        f"layer{layer_index}_final_token_k_projection_output_before_rope",
+        f"layer{layer_index}_final_token_v_projection_output_before_attention",
+        f"layer{layer_index}_final_token_q_post_rope_before_attention",
+        f"layer{layer_index}_grouped_k_post_rope_before_attention",
+        f"layer{layer_index}_final_token_raw_scaled_qk_logits_pre_mask",
+        f"layer{layer_index}_final_token_masked_scaled_qk_logits_pre_softmax",
+        f"layer{layer_index}_final_token_attention_probs_post_softmax",
+        f"layer{layer_index}_final_token_attention_weighted_value_sum_before_output_projection",
+        f"layer{layer_index}_final_token_attention_output_after_o_proj_before_residual",
+        f"layer{layer_index}_final_token_hidden_state_after_attention_residual_add_before_mlp",
+    ]
 
 
 def parse_down_projection_terms_selector(boundary: str, layer_idx: int | None) -> int | None:
@@ -344,6 +385,479 @@ def compute_layer_attention_residual(model: Any, input_token_ids: list[int], lay
     for block_index in range(layer_index):
         hidden = model.block[block_index](hidden)
     return model.block[layer_index].attn(hidden)
+
+
+def projection_slice_metadata(attn: Any, q_dim: int, kv_dim: int) -> dict[str, Any]:
+    ranges = {
+        "q": [0, q_dim],
+        "k": [q_dim, q_dim + kv_dim],
+        "v": [q_dim + kv_dim, q_dim + 2 * kv_dim],
+    }
+    metadata = {}
+    for name, (start, end) in ranges.items():
+        bias_slice = attn.qkv.bias[start:end] if attn.qkv.bias is not None else None
+        if bias_slice is None:
+            bias_metadata = {
+                "present": False,
+                "shape": None,
+                "dtype": None,
+                "all_zero": None,
+                "nonzero_count": None,
+                "sha256_f32_le": None,
+            }
+        else:
+            bias_values = bias_slice.float().cpu()
+            bias_metadata = {
+                "present": True,
+                "shape": list(bias_slice.shape),
+                "dtype": str(bias_slice.dtype),
+                "all_zero": bool((bias_values == 0).all().item()),
+                "nonzero_count": int((bias_values != 0).sum().item()),
+                "sha256_f32_le": digest_f32_values(bias_values.tolist()),
+            }
+        metadata[name] = {
+            "qkv_output_slice_range": [start, end],
+            "weight_slice_shape": [end - start, attn.qkv.weight.shape[1]],
+            "weight_dtype": str(attn.qkv.weight.dtype),
+            "weight_digest_omitted_reason": (
+                "weight slice is not compact for this ordered bundle; slice range, "
+                "shape, dtype, and bias metadata are recorded"
+            ),
+            "bias": bias_metadata,
+        }
+    return metadata
+
+
+def capture_layer_final_token_attention_ordered_boundary_bundle(
+    model: Any,
+    input_token_ids: list[int],
+    torch: Any,
+    layer_index: int,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    with torch.inference_mode():
+        tokens = torch.as_tensor(
+            input_token_ids, dtype=torch.int64, device=model.embedding.weight.device
+        )
+        hidden = model.embedding(tokens)
+        for block_index in range(layer_index):
+            hidden = model.block[block_index](hidden)
+        layer_input = hidden
+        attn = model.block[layer_index].attn
+        normed = attn.norm(layer_input)
+        qkv = attn.qkv(normed)
+
+        token_count = len(input_token_ids)
+        final_token_index = token_count - 1
+        q_dim = attn.num_attention_heads * attn.head_dim
+        kv_dim = attn.num_key_value_heads * attn.head_dim
+        heads_per_kv = attn.num_attention_heads // attn.num_key_value_heads
+        projection_metadata = projection_slice_metadata(attn, q_dim, kv_dim)
+
+        q_flat = qkv[:, :q_dim].contiguous()
+        k_flat = qkv[:, q_dim : q_dim + kv_dim].contiguous()
+        v_flat = qkv[:, q_dim + kv_dim : q_dim + 2 * kv_dim].contiguous()
+        q = q_flat.view(
+            token_count,
+            attn.num_key_value_heads,
+            heads_per_kv,
+            attn.head_dim,
+        )
+        k = k_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        v = v_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        q_post_rope, k_post_rope = attn.rope(q, k)
+
+        q_final = q[final_token_index]
+        q_post_final = q_post_rope[final_token_index]
+        k_final = k[final_token_index]
+        v_final = v[final_token_index]
+        k_expanded = k_post_rope[:, :, None, :].expand(
+            -1, -1, heads_per_kv, -1
+        )
+        v_expanded = v[:, :, None, :].expand(-1, -1, heads_per_kv, -1)
+
+        raw = torch.einsum(
+            "qhmd,khmd->hmqk",
+            q_post_final.unsqueeze(0),
+            k_expanded,
+        )
+        raw *= attn.sm_scale
+        raw = raw.squeeze(2).reshape(attn.num_attention_heads, token_count)
+
+        mask = torch.triu(
+            raw.new_full((token_count, token_count), -float("inf")),
+            diagonal=1,
+        )
+        if attn.sliding_window > 0:
+            mask += torch.tril(
+                mask.new_full((token_count, token_count), -float("inf")),
+                diagonal=-attn.sliding_window,
+            )
+        final_mask_row = mask[final_token_index]
+        masked_key_logits = raw + final_mask_row[None, :]
+        sinks = attn.sinks.reshape(attn.num_key_value_heads, heads_per_kv)
+        pre_softmax = torch.cat([masked_key_logits, sinks.reshape(-1, 1)], dim=-1)
+        probs = torch.softmax(pre_softmax, dim=-1)
+        probs_real_keys = probs[:, :token_count].reshape(
+            attn.num_key_value_heads,
+            heads_per_kv,
+            1,
+            token_count,
+        )
+        weighted = torch.einsum("hmqk,khmd->qhmd", probs_real_keys, v_expanded)
+        weighted_flat = weighted.reshape(attn.num_attention_heads * attn.head_dim)
+        projected = attn.out(weighted_flat)
+        hidden_after_attention = layer_input[final_token_index] + projected
+
+        finite_key_positions = [
+            index
+            for index, value in enumerate(final_mask_row.cpu().tolist())
+            if value == 0.0
+        ]
+        masked_key_positions = [
+            index
+            for index, value in enumerate(final_mask_row.cpu().tolist())
+            if value != 0.0
+        ]
+        row_sums = probs.float().sum(dim=-1).cpu().tolist()
+        row_sum_diffs = [abs(float(value) - 1.0) for value in row_sums]
+        sink_values = probs[:, token_count].float().cpu().tolist()
+        real_key_prob_values = probs[:, :token_count].reshape(-1).float().cpu().tolist()
+        layer_input_values = layer_input[final_token_index].float().cpu().tolist()
+        projected_values = projected.float().cpu().tolist()
+        captured_boundaries = []
+
+        def add_boundary(entry: dict[str, Any]) -> None:
+            captured_boundaries.append(entry)
+
+        prefix = f"layer{layer_index}"
+        source_input_boundary = (
+            f"layer{layer_index - 1}_final_token_hidden_state_after_mlp_residual_add"
+            if layer_index > 0
+            else "embedding_output"
+        )
+        rope_metadata = {
+            "position_index": final_token_index,
+            "rope_metadata": {
+                "module_path": f"model.block[{layer_index}].attn.rope",
+                "head_dim": attn.head_dim,
+                "layout_before_rope_q": "[token, kv_head, heads_per_kv, head_dim]",
+                "layout_before_rope_k": "[token, kv_head, head_dim]",
+                "layout_after_rope_q": "[token, kv_head, heads_per_kv, head_dim]",
+                "layout_after_rope_k": "[token, kv_head, head_dim]",
+            },
+        }
+
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_q_projection_output_before_rope",
+                q_final.reshape(-1).float().cpu().tolist(),
+                [q_dim],
+                str(q_flat.dtype),
+                (
+                    "flat final-token Q projection vector [num_query_heads * head_dim]; "
+                    "logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+                ),
+                final_token_index,
+                layer_index,
+                qkv_slice_metadata=projection_metadata["q"],
+                logical_shape=[attn.num_key_value_heads, heads_per_kv, attn.head_dim],
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_k_projection_output_before_rope",
+                k_final.reshape(-1).float().cpu().tolist(),
+                [kv_dim],
+                str(k_flat.dtype),
+                "flat final-token K projection vector; logical view [num_kv_heads, head_dim]",
+                final_token_index,
+                layer_index,
+                qkv_slice_metadata=projection_metadata["k"],
+                logical_shape=[attn.num_key_value_heads, attn.head_dim],
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_v_projection_output_before_attention",
+                v_final.reshape(-1).float().cpu().tolist(),
+                [kv_dim],
+                str(v_flat.dtype),
+                "flat final-token V projection vector; logical view [num_kv_heads, head_dim]",
+                final_token_index,
+                layer_index,
+                qkv_slice_metadata=projection_metadata["v"],
+                logical_shape=[attn.num_key_value_heads, attn.head_dim],
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_q_post_rope_before_attention",
+                q_post_final.reshape(-1).float().cpu().tolist(),
+                [q_dim],
+                str(q_post_rope.dtype),
+                (
+                    "flat final-token post-RoPE Q vector [num_query_heads * head_dim]; "
+                    "logical grouped view [num_kv_heads, heads_per_kv, head_dim]"
+                ),
+                final_token_index,
+                layer_index,
+                logical_shape=[attn.num_key_value_heads, heads_per_kv, attn.head_dim],
+                **rope_metadata,
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_grouped_k_post_rope_before_attention",
+                k_post_rope.reshape(-1).float().cpu().tolist(),
+                [token_count, attn.num_key_value_heads, attn.head_dim],
+                str(k_post_rope.dtype),
+                "grouped all-real-token K after RoPE [token, kv_head, head_dim]",
+                final_token_index,
+                layer_index,
+                token_count=token_count,
+                position_index="all real token positions 0..token_count-1",
+                rope_metadata=rope_metadata["rope_metadata"],
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_raw_scaled_qk_logits_pre_mask",
+                raw.reshape(-1).float().cpu().tolist(),
+                [attn.num_attention_heads, token_count],
+                str(raw.dtype),
+                "head-major [query_head, real_key_position] before mask/sink",
+                final_token_index,
+                layer_index,
+                scale=float(attn.sm_scale),
+                num_query_heads=attn.num_attention_heads,
+                num_key_positions=token_count,
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_masked_scaled_qk_logits_pre_softmax",
+                pre_softmax.reshape(-1).float().cpu().tolist(),
+                [attn.num_attention_heads, token_count + 1],
+                str(pre_softmax.dtype),
+                (
+                    "head-major [query_head, key_position_or_sink], real keys "
+                    "0..token_count-1 followed by sink position token_count"
+                ),
+                final_token_index,
+                layer_index,
+                real_key_positions=list(range(token_count)),
+                sink_position=token_count,
+                masked_positions=masked_key_positions,
+                valid_unmasked_key_positions=finite_key_positions,
+                mask_metadata={
+                    "causal_mask_behavior": "future positions masked; final token has no future real keys",
+                    "sliding_window_behavior": (
+                        "disabled"
+                        if attn.sliding_window == 0
+                        else "past positions outside the sliding window are masked"
+                    ),
+                    "attention_sink_behavior": "sink logit appended after real key logits before softmax",
+                    "mask_value_convention": "-inf",
+                    "sliding_window": attn.sliding_window,
+                },
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_attention_probs_post_softmax",
+                probs.reshape(-1).float().cpu().tolist(),
+                [attn.num_attention_heads, token_count + 1],
+                str(probs.dtype),
+                (
+                    "head-major [query_head, key_position_or_sink], real keys "
+                    "0..token_count-1 followed by sink position token_count"
+                ),
+                final_token_index,
+                layer_index,
+                real_key_positions=list(range(token_count)),
+                sink_position=token_count,
+                masked_positions=masked_key_positions,
+                softmax_axis=-1,
+                softmax_dimension="key_position_or_sink",
+                probability_output_dtype=str(probs.dtype),
+                probability_row_sum_summary_after_bf16_serialization={
+                    "min_row_sum": min(float(value) for value in row_sums),
+                    "max_row_sum": max(float(value) for value in row_sums),
+                    "mean_row_sum": sum(float(value) for value in row_sums)
+                    / len(row_sums),
+                    "max_abs_row_sum_minus_1": max(row_sum_diffs),
+                },
+                sink_probability_summary=value_summary(sink_values),
+                real_key_probability_summary=value_summary(real_key_prob_values),
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_attention_weighted_value_sum_before_output_projection",
+                weighted_flat.float().cpu().tolist(),
+                [attn.num_attention_heads * attn.head_dim],
+                str(weighted.dtype),
+                (
+                    "flattened post-head-concatenation vector before attn.out/o_proj; "
+                    "equivalent to [query_head, head_dim] head-major flattened"
+                ),
+                final_token_index,
+                layer_index,
+                v_metadata={
+                    "shape": [token_count, attn.num_key_value_heads, attn.head_dim],
+                    "expanded_shape_used_for_weighted_sum": [
+                        token_count,
+                        attn.num_key_value_heads,
+                        heads_per_kv,
+                        attn.head_dim,
+                    ],
+                    "dtype": str(v.dtype),
+                    "layout": "[token, kv_head, head_dim], expanded to [token, kv_head, heads_per_kv, head_dim]",
+                    "positions": "real key/value positions only",
+                    "all_token_v_history_emitted_as_boundary": False,
+                },
+                sink_participation_semantics={
+                    "sink_participates_in_softmax_normalization": True,
+                    "sink_contributes_to_weighted_v_sum": False,
+                    "sink_value_source": None,
+                    "sink_probability_summary": value_summary(sink_values),
+                },
+                gqa_mapping={
+                    "q_head_to_kv_head_rule": "kv_head = q_head // heads_per_kv",
+                    "heads_per_kv": heads_per_kv,
+                    "replication": (
+                        "V is expanded with V[:, :, None, :].expand(-1, -1, "
+                        "heads_per_kv, -1); sharing happens by broadcast during einsum"
+                    ),
+                },
+                weighted_sum_dtype=str(weighted.dtype),
+                output_dtype_before_serialization=str(weighted.dtype),
+            )
+        )
+        out_bias = attn.out.bias
+        if out_bias is None:
+            out_bias_metadata = {"present": False, "shape": None, "dtype": None}
+        else:
+            out_bias_values = out_bias.float().cpu()
+            out_bias_metadata = {
+                "present": True,
+                "shape": list(out_bias.shape),
+                "dtype": str(out_bias.dtype),
+                "all_zero": bool((out_bias_values == 0).all().item()),
+                "nonzero_count": int((out_bias_values != 0).sum().item()),
+                "sha256_f32_le": digest_f32_values(out_bias_values.tolist()),
+            }
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_attention_output_after_o_proj_before_residual",
+                projected_values,
+                [len(projected_values)],
+                str(projected.dtype),
+                "flat hidden dimension vector [hidden_size] after attn.out/o_proj before residual add",
+                final_token_index,
+                layer_index,
+                o_proj_metadata={
+                    "module_path": f"model.block[{layer_index}].attn.out",
+                    "weight_shape": list(attn.out.weight.shape),
+                    "weight_dtype": str(attn.out.weight.dtype),
+                    "bias": out_bias_metadata,
+                    "input_shape": [attn.num_attention_heads * attn.head_dim],
+                    "input_dtype": str(weighted_flat.dtype),
+                    "output_dtype": str(projected.dtype),
+                },
+            )
+        )
+        add_boundary(
+            boundary_tensor_entry(
+                f"{prefix}_final_token_hidden_state_after_attention_residual_add_before_mlp",
+                hidden_after_attention.float().cpu().tolist(),
+                [len(projected_values)],
+                str(hidden_after_attention.dtype),
+                f"flat hidden dimension vector [hidden_size] after attention residual add before layer{layer_index} MLP",
+                final_token_index,
+                layer_index,
+                residual_add_input_boundary={
+                    "boundary": source_input_boundary,
+                    "shape": list(layer_input[final_token_index].shape),
+                    "dtype": str(layer_input.dtype),
+                    "layout": "flat hidden dimension vector [hidden_size]",
+                    "sha256_f32_le": digest_f32_values(layer_input_values),
+                },
+                attention_o_proj_boundary=(
+                    f"{prefix}_final_token_attention_output_after_o_proj_before_residual"
+                ),
+                attention_o_proj_sha256_f32_le=digest_f32_values(projected_values),
+                residual_add_semantics={
+                    "addend_order": f"layer{layer_index}_input_residual + attention_o_proj_output",
+                    "computation_dtype": str(hidden_after_attention.dtype),
+                    "output_dtype_before_serialization": str(hidden_after_attention.dtype),
+                    "rounded_or_cast_to_bf16_after_add": str(hidden_after_attention.dtype)
+                    == "torch.bfloat16",
+                    "official_source_expression": "AttentionBlock.forward: t = self.out(sdpa(...)); t = x + t",
+                },
+            )
+        )
+
+        captured_names = [entry["boundary"] for entry in captured_boundaries]
+        required_names = ordered_attention_boundary_names(layer_index)
+        missing = [name for name in required_names if name not in captured_names]
+        classification = (
+            f"official_layer{layer_index}_attention_ordered_boundary_bundle_captured"
+            if not missing
+            else f"official_layer{layer_index}_attention_ordered_boundary_bundle_partial"
+        )
+        return {
+            "boundary": f"layer{layer_index}_final_token_attention_ordered_boundary_bundle",
+            "classification": classification,
+            "case_scope": "developer-message-user-smoke",
+            "layer_index": layer_index,
+            "token_index": final_token_index,
+            "bundle_scope": {
+                "layer": layer_index,
+                "attention_path_only": True,
+                "final_query_token_where_applicable": True,
+                "stops_after_attention_residual_add": True,
+                "captures_mlp_router_expert_logits_or_later_layers": False,
+                "all_token_k_history_included": True,
+                "all_token_v_history_included_as_boundary": False,
+            },
+            "producer_metadata": {
+                "producer_function": "capture_layer_final_token_attention_ordered_boundary_bundle",
+                "boundary_selector": f"layer{layer_index}_final_token_attention_ordered_boundary_bundle",
+                "requested_layer_index": layer_index,
+                "all_token_k_history_included": True,
+                "all_token_v_history_included_as_boundary": False,
+                "port_source": PORT_SOURCE,
+            },
+            "captured_boundaries": captured_names,
+            "missing_boundaries": missing,
+            "boundaries": captured_boundaries,
+            f"source_layer{layer_index}_attention_input": {
+                "boundary": source_input_boundary,
+                "shape": list(layer_input[final_token_index].shape),
+                "dtype": str(layer_input.dtype),
+                "sha256_f32_le": digest_f32_values(layer_input_values),
+            },
+            f"layer{layer_index}_attention_metadata": {
+                "num_query_heads": attn.num_attention_heads,
+                "num_kv_heads": attn.num_key_value_heads,
+                "heads_per_kv": heads_per_kv,
+                "head_dim": attn.head_dim,
+                "token_count": token_count,
+                "scale": float(attn.sm_scale),
+                "sliding_window": attn.sliding_window,
+                "sink_position": token_count,
+            },
+            "next_bounded_step": (
+                f"runtime-forward compare layer{layer_index} attention ordered bundle "
+                "and report earliest mismatching seam"
+            ),
+        }
 
 
 def capture_layer_final_token_mlp_ordered_boundary_bundle(
@@ -2108,6 +2622,46 @@ def build_ordered_mlp_consumer_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    attention_layer = parse_ordered_attention_selector(boundary, layer_index)
+    if attention_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": attention_layer,
+            "layer_idx": attention_layer,
+            "classification": f"layer{attention_layer}_ordered_attention_bundle_schema_ready",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "focus_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "case": "developer-message-user-smoke",
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_boundaries": ordered_attention_boundary_names(attention_layer),
+            "history_metadata": {
+                "all_token_k_history_included": True,
+                "all_token_v_history_included_as_boundary": False,
+                "weighted_v_uses_all_real_token_v_history": True,
+            },
+            "producer_metadata": {
+                "producer_function": "capture_layer_final_token_attention_ordered_boundary_bundle",
+                "boundary_selector": boundary,
+                "requested_layer_index": attention_layer,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": (
+                f"run focused layer{attention_layer} ordered attention capture under /tmp "
+                "using source input tokens; do not treat the existing layer2 MLP-only "
+                "bundle as source-complete attention evidence"
+            ),
+        }
     dtype_probe_layer = parse_down_einsum_dtype_probe_selector(boundary, layer_index)
     if dtype_probe_layer is not None:
         return {
@@ -2239,13 +2793,24 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.input:
         capture_input = load_json(args.input)
         boundary = capture_input["boundary"]
+        attention_layer_index = parse_ordered_attention_selector(
+            boundary, capture_input.get("layer_idx")
+        )
         layer_index = parse_ordered_mlp_selector(boundary, capture_input.get("layer_idx"))
-        if layer_index is None:
+        if attention_layer_index is None and layer_index is None:
             raise ValueError(f"unsupported intermediate boundary: {boundary}")
         if args.dry_run_schema:
-            return dry_run_schema(boundary, layer_index, args)
+            return dry_run_schema(boundary, attention_layer_index or layer_index, args)
         model_path = Path(capture_input["official_model"])
         model, torch = load_model(model_path, args.official_checkout)
+        if attention_layer_index is not None:
+            body = capture_layer_final_token_attention_ordered_boundary_bundle(
+                model,
+                capture_input.get("input_token_ids"),
+                torch,
+                attention_layer_index,
+            )
+            return build_intermediate_output(capture_input, body)
         body = capture_layer_final_token_mlp_ordered_boundary_bundle(
             model,
             capture_input.get("input_token_ids"),
@@ -2257,12 +2822,14 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    attention_layer_index = parse_ordered_attention_selector(boundary, args.layer_idx)
     dtype_probe_layer_index = parse_down_einsum_dtype_probe_selector(boundary, args.layer_idx)
     down_terms_layer_index = parse_down_projection_terms_selector(boundary, args.layer_idx)
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
-        dtype_probe_layer_index is None
+        attention_layer_index is None
+        and dtype_probe_layer_index is None
         and down_terms_layer_index is None
         and internal_layer_index is None
         and layer_index is None
@@ -2271,11 +2838,17 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run_schema:
         return dry_run_schema(
             boundary,
-            dtype_probe_layer_index
+            attention_layer_index
+            or dtype_probe_layer_index
             or down_terms_layer_index
             or internal_layer_index
             or layer_index,
             args,
+        )
+    if attention_layer_index is not None:
+        raise ValueError(
+            "direct ordered attention capture requires --input JSON with input_token_ids; "
+            "direct --dry-run-schema is supported without loading a checkpoint"
         )
     model_path = args.official_model or args.model
     if model_path is None:
@@ -2379,10 +2952,18 @@ def main() -> int:
         dtype_probe_like = (
             args.boundary is not None and "down_einsum_dtype_probe" in args.boundary
         )
+        attention_like = (
+            args.boundary is not None
+            and "attention_ordered_boundary_bundle" in args.boundary
+        )
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
-                "layer11_expert30_down_einsum_dtype_probe_blocked_by_memory"
+                f"layer{layer_label}_ordered_attention_bundle_blocked_by_memory"
+                if attention_like and memory_like
+                else f"layer{layer_label}_ordered_attention_bundle_execution_failed"
+                if attention_like
+                else "layer11_expert30_down_einsum_dtype_probe_blocked_by_memory"
                 if dtype_probe_like and memory_like
                 else "layer11_expert30_down_einsum_dtype_probe_execution_failed"
                 if dtype_probe_like
