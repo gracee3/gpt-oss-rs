@@ -2315,6 +2315,92 @@ Primary classification:
 
 multi_gpu_layer_sharding_restricted_sinks_header_override_complete
 
+## Real-model split allocation smoke with sinks override status
+
+Operator validation run date: 2026-04-30.
+
+Command run:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_override_status.json
+```
+
+The status JSON and logs were written under `/tmp/multi_gpu_layer_sharding` and
+are not committed.
+
+Preflight result:
+
+- two visible CUDA devices: RTX 3090 device 0 and RTX 3090 device 1
+- model path exists
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+  passed with existing warnings
+
+Smoke result:
+
+- primary result classification:
+  `multi_gpu_layer_sharding_real_model_split_allocation_f16_override_complete`
+- command status classification:
+  `multi_gpu_layer_sharding_split_allocation_smoke_complete`
+- header merge policy: `allow_restricted_sinks_override`
+- restricted sinks override enabled: `true`
+- overridden tensor count: 24
+- `resource_construction_succeeded`: `true`
+- `allocation_smoke_succeeded`: `true`
+- unassigned tensor count: 0
+- invalid tensor count: 0
+- stderr contained compile warnings and the command invocation; no CUDA
+  resource, loader, OOM, or execution error was reported
+
+Shard summary:
+
+- GPU0 owns embeddings and absolute layers 0..11
+  - uploaded f16 tensor count: 181
+  - uploaded f16 shape count: 459
+  - uploaded f16 bytes reported by status: 1,804,456,704
+  - host U8 tensor count: 48
+  - host U8 bytes: 5,076,172,800
+  - resource status: context, stream, cuBLAS, and kernel loader created
+- GPU1 owns absolute layers 12..23 plus final-head tensors
+  - uploaded f16 tensor count: 182
+  - uploaded f16 shape count: 459
+  - uploaded f16 bytes reported by status: 1,804,462,464
+  - host U8 tensor count: 48
+  - host U8 bytes: 5,076,172,800
+  - resource status: context, stream, cuBLAS, and kernel loader created
+
+Interpretation:
+
+- the bench-only smoke advanced past header discovery using the restricted sinks
+  override policy
+- per-shard CUDA resource islands were created
+- manifest-owned f16 tensors were uploaded through the filtered f16 loader
+- manifest-owned GPT-OSS U8 expert payloads were retained through the filtered
+  U8 host loader
+- no KV cache, RoPE, metadata, scratch, fused weights, MoE GPU uploads,
+  activation-transfer buffers, runner, transformer layers, final norm, LM head,
+  sampling, logits, graph capture, or forward pass were created
+- no execution or parity claim is made
+- serve/runtime split maps remain non-executable and rejected before CUDA
+  allocation
+
+Next bounded step:
+
+The allocation-only smoke has now proven the current header/policy/resource and
+filtered-loader boundary for the real restricted model. The next implementation
+slice can add a shard-local RoPE/metadata allocation skeleton or a KV cache
+allocation skeleton behind the bench-only path, keeping serve/runtime split maps
+rejected.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_split_allocation_f16_override_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_restricted_sinks_header_override_complete
+multi_gpu_layer_sharding_real_model_split_allocation_f16_override_complete
