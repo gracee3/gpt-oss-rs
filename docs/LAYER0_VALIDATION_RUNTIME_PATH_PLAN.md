@@ -3453,6 +3453,60 @@ discussion. No correction metadata was applied, no ladder was continued, no
 production behavior changed, and no raw `/tmp` or `.live` artifacts are
 committed.
 
+## Layer2 Ordered Bundle Validation Status
+
+The validation-runtime consumer now has a split-status adapter under the
+existing generic mode:
+
+- `--mode layer-bundle-validate`
+- `--attention-bundle-status /tmp/layer2_ordered_attention_bundle_status.json`
+- `--mlp-bundle-status /tmp/layer2_ordered_mlp_bundle_status.json`
+
+Artifacts consumed:
+
+```text
+/tmp/layer2_ordered_attention_bundle_status.json
+/tmp/layer2_ordered_attention_bundle/
+/tmp/layer2_ordered_mlp_bundle_status.json
+/tmp/layer2_ordered_mlp_bundle/
+```
+
+Result:
+
+```text
+classification = layer2_ordered_bundle_validate_attention_cleared_mlp_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = false
+selected_experts = [21, 26, 29, 4]
+routing_weights = [0.55078125, 0.15625, 0.150390625, 0.142578125]
+best_mlp_down_policy = deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+The attention consumer checks final-token Q RoPE, final-token K RoPE, raw QK,
+masked logits, attention probabilities, o_proj, and the attention-residual to
+MLP-input bridge. These all match exactly. The ordered bundle contains only the
+final-token V boundary; all-token V was used internally by the oracle producer
+but is not emitted separately, so weighted V is accepted as the ordered seam
+for o_proj validation.
+
+The ordered MLP replay checks MLP norm, router logits, top-k/routing weights,
+selected expert outputs, weighted sum, and final MLP output. Baseline current
+sequential f32 still has one selected-output mismatch and one weighted-sum
+mismatch while the final output happens to match. The deterministic
+abs-ascending policy clears selected outputs, weighted sum, and final output
+exactly. The BF16-product evidence policy remains rejected with broad
+collateral mismatches:
+
+```text
+selected outputs: 3371 mismatches
+weighted sum:     919 mismatches
+final output:     416 mismatches
+```
+
+No layer2 output was emitted, the ladder was not continued, no runtime/default
+routing/CUDA behavior changed, and this makes no final-logit, all-layer,
+server, or 4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

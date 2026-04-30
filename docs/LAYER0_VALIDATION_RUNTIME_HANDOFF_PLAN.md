@@ -1218,6 +1218,74 @@ remains unresolved. No runtime behavior changed, no correction metadata was
 applied, no ladder was continued, and no raw `/tmp` or `.live` artifacts are
 committed.
 
+## Layer2 Ordered Bundle Validation Status
+
+The consumer lane now consumes the oracle-produced layer2 ordered attention
+bundle alongside the existing layer2 ordered MLP bundle:
+
+```text
+/tmp/layer2_ordered_attention_bundle_status.json
+/tmp/layer2_ordered_attention_bundle/
+/tmp/layer2_ordered_mlp_bundle_status.json
+/tmp/layer2_ordered_mlp_bundle/
+```
+
+Mode:
+
+- `--mode layer-bundle-validate`
+- split status inputs: `--attention-bundle-status` and `--mlp-bundle-status`
+
+Result:
+
+```text
+classification = layer2_ordered_bundle_validate_attention_cleared_mlp_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = false
+selected_experts = [21, 26, 29, 4]
+routing_weights = [0.55078125, 0.15625, 0.150390625, 0.142578125]
+best_mlp_down_policy = deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+Attention seam results:
+
+```text
+Q final-token RoPE: exact
+K final-token RoPE: exact
+raw QK: exact
+masked logits: exact
+attention probabilities: exact
+weighted V: official boundary used because all-token V is not emitted
+o_proj: exact
+attention residual -> ordered MLP input bridge: exact
+```
+
+MLP replay results:
+
+```text
+MLP norm: exact
+router logits: exact
+top-k/routing weights: exact
+baseline current sequential policy:
+  selected outputs: 1 mismatch
+  weighted sum:     1 mismatch
+  final output:     exact
+deterministic abs-ascending policy:
+  selected outputs: exact
+  weighted sum:     exact
+  final output:     exact
+BF16-product evidence policy:
+  selected outputs: 3371 mismatches
+  weighted sum:     919 mismatches
+  final output:     416 mismatches
+```
+
+This is validation-only ordered layer2 evidence. It does not continue the
+layer ladder, does not emit a layer2 output, does not change runtime behavior,
+and does not claim final logits, all-layer parity, server parity, or 4097-token
+coverage. All-token V was used by the oracle producer internally for weighted-V
+construction but is not emitted as a separate consumer boundary, so the consumer
+uses the ordered weighted-V seam for o-proj validation.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

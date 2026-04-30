@@ -81,9 +81,17 @@ struct Cli {
     #[arg(long)]
     attention_bundle: Option<PathBuf>,
 
+    /// Ordered attention bundle status artifact for split ordered bundle validation.
+    #[arg(long)]
+    attention_bundle_status: Option<PathBuf>,
+
     /// Official layer MLP ordered boundary bundle for backend seam validation.
     #[arg(long)]
     mlp_bundle: Option<PathBuf>,
+
+    /// Ordered MLP bundle status artifact for split ordered bundle validation.
+    #[arg(long)]
+    mlp_bundle_status: Option<PathBuf>,
 
     /// Ordered MLP bundle status artifact for focused ordered-consumer diagnostics.
     #[arg(long, alias = "ordered-mlp-status")]
@@ -4149,7 +4157,647 @@ fn execute_layer_mlp_bundle_validation(
     anyhow::bail!("layer bundle MLP validation requires the cuda feature")
 }
 
+fn status_artifact_path(status: &Value, key: &str, label: &str) -> Result<PathBuf> {
+    status
+        .get("artifacts")
+        .and_then(|artifacts| artifacts.get(key))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .with_context(|| format!("{label} artifact key {key:?} missing from status"))
+}
+
+fn status_layer_index(status: &Value) -> Result<usize> {
+    status
+        .get("layer_index")
+        .and_then(Value::as_u64)
+        .or_else(|| status.get("layer_idx").and_then(Value::as_u64))
+        .map(|layer| layer as usize)
+        .context("status missing layer_index")
+}
+
+fn status_usize_array(status: &Value, key: &str) -> Result<Vec<usize>> {
+    status
+        .get(key)
+        .or_else(|| status.get("selected_expert_indices"))
+        .and_then(Value::as_array)
+        .with_context(|| format!("status missing {key}"))?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_u64()
+                .map(|value| value as usize)
+                .with_context(|| format!("{key} entry must be an integer"))
+        })
+        .collect()
+}
+
+fn status_f32_array(status: &Value, key: &str) -> Result<Vec<f32>> {
+    status
+        .get(key)
+        .and_then(Value::as_array)
+        .with_context(|| format!("status missing {key}"))?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_f64()
+                .map(|value| value as f32)
+                .with_context(|| format!("{key} entry must be numeric"))
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda")]
+fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    anyhow::ensure!(
+        layer == 2,
+        "split ordered bundle validation currently emits layer2_ordered_bundle_validate_* classifications; got layer {layer}"
+    );
+    let lane = cli.lane;
+    let hidden = 2880usize;
+    let selected_count = 4usize;
+    anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let mlp_status_path = required_path(&cli.mlp_bundle_status, "MLP bundle status")?;
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(mlp_status_path, "MLP bundle status")?;
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let attention_status = load_json(attention_status_path)?;
+    let mlp_status = load_json(mlp_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&mlp_status)? == layer,
+        "MLP bundle layer did not match requested layer {layer}"
+    );
+
+    let attention_bundle_path =
+        status_artifact_path(&attention_status, "ordered_attention_bundle", "attention")?;
+    let mlp_bundle_path = status_artifact_path(&mlp_status, "ordered_mlp_bundle", "MLP")?;
+    let q_pre_path = status_artifact_path(&attention_status, "q_pre_rope", "attention")?;
+    let k_pre_path = status_artifact_path(&attention_status, "k_pre_rope", "attention")?;
+    let v_path = status_artifact_path(&attention_status, "v_before_attention", "attention")?;
+    let q_post_path = status_artifact_path(&attention_status, "q_post_rope", "attention")?;
+    let k_post_path = status_artifact_path(&attention_status, "grouped_k_post_rope", "attention")?;
+    let raw_qk_path = status_artifact_path(&attention_status, "raw_qk", "attention")?;
+    let masked_path = status_artifact_path(&attention_status, "masked_logits", "attention")?;
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    let attention_residual_path =
+        status_artifact_path(&attention_status, "attention_residual", "attention")?;
+
+    let mlp_input_path = status_artifact_path(&mlp_status, "mlp_input", "MLP")?;
+    let mlp_norm_path = status_artifact_path(&mlp_status, "mlp_norm", "MLP")?;
+    let router_logits_path = status_artifact_path(&mlp_status, "router_logits", "MLP")?;
+    let selected_outputs_path = status_artifact_path(&mlp_status, "selected_outputs", "MLP")?;
+    let weighted_sum_path = status_artifact_path(&mlp_status, "weighted_sum", "MLP")?;
+    let mlp_output_path = status_artifact_path(&mlp_status, "mlp_residual_output", "MLP")?;
+
+    for (label, path) in [
+        ("attention ordered bundle", &attention_bundle_path),
+        ("MLP ordered bundle", &mlp_bundle_path),
+        ("attention Q pre-RoPE", &q_pre_path),
+        ("attention K pre-RoPE", &k_pre_path),
+        ("attention V before attention", &v_path),
+        ("attention Q post-RoPE", &q_post_path),
+        ("attention grouped K post-RoPE", &k_post_path),
+        ("attention raw QK", &raw_qk_path),
+        ("attention masked logits", &masked_path),
+        ("attention probabilities", &probs_path),
+        ("attention weighted V", &weighted_v_path),
+        ("attention o_proj", &oproj_path),
+        ("attention residual", &attention_residual_path),
+        ("MLP input", &mlp_input_path),
+        ("MLP norm", &mlp_norm_path),
+        ("router logits", &router_logits_path),
+        ("selected outputs", &selected_outputs_path),
+        ("weighted sum", &weighted_sum_path),
+        ("MLP residual output", &mlp_output_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let q_dim = cli.query_heads * cli.head_dim;
+    let kv_dim = cli.kv_heads * cli.head_dim;
+    let k_history_count = cli.token_count * kv_dim;
+    let raw_count = cli.query_heads * cli.token_count;
+    let masked_count = cli.query_heads * (cli.token_count + 1);
+
+    let (q_pre_status, q_pre) = load_tensor_artifact(&q_pre_path, &[q_dim], &["values"])?;
+    let (k_pre_status, k_pre) = load_tensor_artifact(&k_pre_path, &[kv_dim], &["values"])?;
+    let (v_status, v_values) =
+        load_tensor_artifact(&v_path, &[kv_dim, k_history_count], &["values"])?;
+    let (q_post_status, q_post_oracle) = load_tensor_artifact(&q_post_path, &[q_dim], &["values"])?;
+    let (k_post_status, k_post_history) =
+        load_tensor_artifact(&k_post_path, &[k_history_count], &["values"])?;
+    let (raw_status, raw_oracle) = load_tensor_artifact(&raw_qk_path, &[raw_count], &["values"])?;
+    let (masked_status, masked_oracle) =
+        load_tensor_artifact(&masked_path, &[masked_count], &["values"])?;
+    let (probs_status, probs_oracle) =
+        load_tensor_artifact(&probs_path, &[masked_count], &["values"])?;
+    let (weighted_v_status, weighted_v_oracle) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (oproj_status, oproj_oracle) = load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+    let (attention_residual_status, attention_residual) =
+        load_tensor_artifact(&attention_residual_path, &[hidden], &["values"])?;
+    let (mlp_input_status, mlp_input) =
+        load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?;
+
+    let config = validation_rope_config(cli);
+    let q_rope_input = q_rope_input_for_helper(&q_pre, cli);
+    let (q_post_all, q_table_source) =
+        gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
+            &q_rope_input,
+            q_rope_token_count(&q_pre, cli),
+            cli.query_heads,
+            &config,
+        )
+        .map_err(|_| anyhow::anyhow!("BF16-boundary Q RoPE helper failed"))?;
+    let q_post_local = q_final_post_rope_slice(&q_post_all, q_pre.len(), cli).to_vec();
+    let q_post_metric = compare_hidden(&q_post_local, &q_post_oracle);
+
+    let mut k_padded = vec![0.0f32; k_history_count];
+    let final_k_start = cli.final_token_index * kv_dim;
+    if k_pre.len() == kv_dim && final_k_start + kv_dim <= k_padded.len() {
+        k_padded[final_k_start..final_k_start + kv_dim].copy_from_slice(&k_pre);
+    }
+    let (k_post_all, k_table_source) =
+        gpt_oss_model_runner::rope_validation::apply_k_rope_bf16_boundary_validation(
+            &k_padded,
+            cli.token_count,
+            cli.kv_heads,
+            &config,
+        )
+        .map_err(|_| anyhow::anyhow!("BF16-boundary K RoPE helper failed"))?;
+    let k_final_local = k_post_all[final_k_start..final_k_start + kv_dim].to_vec();
+    let k_final_oracle = k_post_history[final_k_start..final_k_start + kv_dim].to_vec();
+    let k_final_metric = compare_hidden(&k_final_local, &k_final_oracle);
+
+    let raw_qk = compute_raw_qk(&q_post_local, &k_post_history, cli);
+    let raw_qk_metric = compare_matrix(
+        &raw_qk,
+        &raw_oracle,
+        cli.query_heads,
+        cli.token_count,
+        MatrixSelection::All,
+    );
+    let masked_logits =
+        build_masked_logits_from_raw_qk(&raw_qk, &masked_oracle, cli.query_heads, cli.token_count);
+    let masked_metric = compare_matrix(
+        &masked_logits,
+        &masked_oracle,
+        cli.query_heads,
+        cli.token_count + 1,
+        MatrixSelection::All,
+    );
+    let attention_probs =
+        softmax_rows_bf16_output(&masked_logits, cli.query_heads, cli.token_count + 1);
+    let attention_probs_metric = compare_matrix(
+        &attention_probs,
+        &probs_oracle,
+        cli.query_heads,
+        cli.token_count + 1,
+        MatrixSelection::All,
+    );
+    let all_token_v_emitted = v_values.len() == k_history_count;
+    let (weighted_v_metric, weighted_v_source, weighted_v_for_oproj) = if all_token_v_emitted {
+        let weighted_v = compute_weighted_v(&attention_probs, &v_values, cli, true);
+        let metric = compare_matrix(
+            &weighted_v,
+            &weighted_v_oracle,
+            cli.query_heads,
+            cli.head_dim,
+            MatrixSelection::All,
+        );
+        (
+            Some(metric),
+            "recomputed_from_all_token_v_boundary",
+            weighted_v,
+        )
+    } else {
+        (
+            None,
+            "official_weighted_v_boundary_because_all_token_v_not_emitted",
+            weighted_v_oracle.clone(),
+        )
+    };
+
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+    let oproj_local = compute_attention_oproj_variant(
+        &weighted_v_for_oproj,
+        &oproj_weight,
+        &oproj_bias,
+        OprojPolicy::ChunkedPairwise,
+    );
+    let oproj_metric = compare_hidden(&oproj_local, &oproj_oracle);
+    let attention_to_mlp_bridge = compare_hidden(&attention_residual, &mlp_input);
+
+    let selected_experts = status_usize_array(&mlp_status, "selected_experts")?;
+    let routing_weights = status_f32_array(&mlp_status, "routing_weights")?;
+    anyhow::ensure!(
+        selected_experts.len() == selected_count && routing_weights.len() == selected_count,
+        "expected {selected_count} selected experts and routing weights"
+    );
+    let (_, ordered_mlp_norm) = load_tensor_artifact(&mlp_norm_path, &[hidden], &["values"])?;
+    let (_, ordered_router_logits) = load_tensor_artifact(&router_logits_path, &[32], &["values"])?;
+    let (_, ordered_selected_outputs) = load_tensor_artifact(
+        &selected_outputs_path,
+        &[selected_count * hidden],
+        &["values"],
+    )?;
+    let (_, ordered_weighted_sum) =
+        load_tensor_artifact(&weighted_sum_path, &[hidden], &["values"])?;
+    let (_, ordered_final_output) = load_tensor_artifact(&mlp_output_path, &[hidden], &["values"])?;
+
+    let norm_weight_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (norm_weight_source, norm_weight_values) =
+        load_model_tensor_f32(model, &[norm_weight_name.as_str()])?;
+    let mlp_norm_values = compute_mlp_rms_norm_with_policy(
+        &mlp_input,
+        &norm_weight_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let mlp_norm_metric = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
+
+    let router_weight_name = format!("model.layers.{layer}.mlp.router.weight");
+    let router_bias_name = format!("model.layers.{layer}.mlp.router.bias");
+    let (router_weight_source, router_weight) =
+        load_model_tensor_f32(model, &[router_weight_name.as_str()])?;
+    let (router_bias_source, router_bias) =
+        load_model_tensor_f32(model, &[router_bias_name.as_str()])?;
+    let router_logits =
+        compute_router_logits_bf16_linear(&mlp_norm_values, &router_weight, &router_bias);
+    let local_topk = compute_router_topk(&router_logits, selected_count);
+    let ordered_topk_indices = selected_experts
+        .iter()
+        .copied()
+        .map(|expert| expert as i64)
+        .collect::<Vec<_>>();
+    let router_logits_metric = compare_hidden(&router_logits, &ordered_router_logits);
+    let routing_weights_metric = compare_hidden(&local_topk.routing_weights, &routing_weights);
+    let topk_ordered_match = local_topk.indices == ordered_topk_indices;
+
+    let loaded = load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut expert_sources = Vec::with_capacity(selected_count);
+    for (rank, expert_id) in selected_experts.iter().copied().enumerate() {
+        let expert = loaded
+            .experts
+            .iter()
+            .find(|expert| expert.expert == expert_id)
+            .with_context(|| format!("selected expert {expert_id} missing from MXFP4 loader"))?;
+        let mlp1 = compute_mlp1_bf16_tensor_op(&mlp_norm_values, expert)
+            .with_context(|| format!("cuBLAS BF16 MLP1 failed for expert {expert_id}"))?;
+        let swiglu = compute_swiglu_bf16(&mlp1);
+        expert_sources.push((
+            rank,
+            expert_id,
+            swiglu,
+            expert.down_weight.clone(),
+            expert.down_bias.clone(),
+        ));
+    }
+
+    let policies = [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::NaiveF64,
+        DownCastSweepPolicy::PairwiseF64,
+        DownCastSweepPolicy::PairwiseF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ];
+    let scalar_comparison = |local: f32, oracle: f32| {
+        json!({
+            "local": local,
+            "oracle": oracle,
+            "abs_diff": (local - oracle).abs(),
+            "matched": local == oracle,
+        })
+    };
+    let mut policy_results = Vec::new();
+    let mut baseline = Value::Null;
+    let mut deterministic_result = Value::Null;
+    let mut bf16_product_result = Value::Null;
+    let mut best_policy = "none".to_string();
+    let mut best_total = usize::MAX;
+    let mut best_max = f32::INFINITY;
+
+    for policy in policies {
+        let mut selected_matrix = vec![0.0f32; selected_count * hidden];
+        let mut per_rank = Vec::with_capacity(selected_count);
+        for (rank, expert_id, swiglu, down_weight, down_bias) in &expert_sources {
+            let pre_bias = compute_down_projection_sweep_output(swiglu, down_weight, policy);
+            let selected_output = compute_expert30_selected_output_variant(
+                &pre_bias,
+                down_bias,
+                Expert30Mlp2Policy::Current,
+            );
+            let start = rank * hidden;
+            selected_matrix[start..start + hidden].copy_from_slice(&selected_output);
+            let rank_metric = compare_hidden(
+                &selected_output,
+                &ordered_selected_outputs[start..start + hidden],
+            );
+            per_rank.push(json!({
+                "rank": rank,
+                "expert": expert_id,
+                "metric": rank_metric,
+                "focus_lane": scalar_comparison(
+                    selected_output[lane],
+                    ordered_selected_outputs[start + lane],
+                ),
+            }));
+        }
+        let selected_metric = compare_hidden(&selected_matrix, &ordered_selected_outputs);
+        let weighted_sum =
+            compute_weighted_expert_sum_bf16(&selected_matrix, &routing_weights, hidden);
+        let weighted_metric = compare_hidden(&weighted_sum, &ordered_weighted_sum);
+        let final_output = compute_attention_residual(&mlp_input, &weighted_sum);
+        let final_metric = compare_hidden(&final_output, &ordered_final_output);
+        let total_mismatches = selected_metric.metrics.mismatches
+            + weighted_metric.metrics.mismatches
+            + final_metric.metrics.mismatches;
+        let max_abs = selected_metric
+            .metrics
+            .max_abs_diff
+            .max(weighted_metric.metrics.max_abs_diff)
+            .max(final_metric.metrics.max_abs_diff);
+        if !policy.evidence_only()
+            && (total_mismatches < best_total
+                || (total_mismatches == best_total && max_abs < best_max))
+        {
+            best_total = total_mismatches;
+            best_max = max_abs;
+            best_policy = policy.name().to_string();
+        }
+        let result = json!({
+            "policy": policy.name(),
+            "reduction_order": policy.reduction_order(),
+            "evidence_only": policy.evidence_only(),
+            "selected_outputs": {
+                "full_vector_metrics": selected_metric.metrics.clone(),
+                "first_mismatch": selected_metric.first_mismatch.clone(),
+                "worst_mismatch": selected_metric.worst_mismatch.clone(),
+                "per_rank": per_rank,
+            },
+            "weighted_sum": {
+                "full_vector_metrics": weighted_metric.metrics.clone(),
+                "first_mismatch": weighted_metric.first_mismatch.clone(),
+                "worst_mismatch": weighted_metric.worst_mismatch.clone(),
+            },
+            "final_output": {
+                "full_vector_metrics": final_metric.metrics.clone(),
+                "first_mismatch": final_metric.first_mismatch.clone(),
+                "worst_mismatch": final_metric.worst_mismatch.clone(),
+            },
+            "focus_lane": {
+                "weighted_sum": scalar_comparison(weighted_sum[lane], ordered_weighted_sum[lane]),
+                "final_output": scalar_comparison(final_output[lane], ordered_final_output[lane]),
+            },
+            "clears_all_selected_outputs": selected_metric.metrics.mismatches == 0,
+            "clears_weighted_sum": weighted_metric.metrics.mismatches == 0,
+            "clears_final_output": final_metric.metrics.mismatches == 0,
+            "introduces_collateral_mismatches": total_mismatches > 0
+                && weighted_sum[lane] == ordered_weighted_sum[lane]
+                && final_output[lane] == ordered_final_output[lane],
+            "total_ordered_mlp_mismatches": total_mismatches,
+        });
+        match policy {
+            DownCastSweepPolicy::CurrentSequentialF32 => baseline = result.clone(),
+            DownCastSweepPolicy::AbsAscendingF32 => deterministic_result = result.clone(),
+            DownCastSweepPolicy::Bf16ProductThenF32 => bf16_product_result = result.clone(),
+            _ => {}
+        }
+        policy_results.push(result);
+    }
+
+    let metric_zero = |value: &Value, pointer: &str| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+            == 0
+    };
+    let deterministic_clears = metric_zero(
+        &deterministic_result,
+        "/selected_outputs/full_vector_metrics/mismatches",
+    ) && metric_zero(
+        &deterministic_result,
+        "/weighted_sum/full_vector_metrics/mismatches",
+    ) && metric_zero(
+        &deterministic_result,
+        "/final_output/full_vector_metrics/mismatches",
+    );
+    let baseline_clears =
+        metric_zero(
+            &baseline,
+            "/selected_outputs/full_vector_metrics/mismatches",
+        ) && metric_zero(&baseline, "/weighted_sum/full_vector_metrics/mismatches")
+            && metric_zero(&baseline, "/final_output/full_vector_metrics/mismatches");
+
+    let attention_shape_blocked = !q_pre_status.shape_or_count_matched
+        || !k_pre_status.shape_or_count_matched
+        || !q_post_status.shape_or_count_matched
+        || !k_post_status.shape_or_count_matched
+        || !raw_status.shape_or_count_matched
+        || !masked_status.shape_or_count_matched
+        || !probs_status.shape_or_count_matched
+        || !weighted_v_status.shape_or_count_matched
+        || !oproj_status.shape_or_count_matched
+        || !attention_residual_status.shape_or_count_matched
+        || !mlp_input_status.shape_or_count_matched;
+    let attention_seams_clear = q_post_metric.metrics.mismatches == 0
+        && k_final_metric.metrics.mismatches == 0
+        && raw_qk_metric.metrics.mismatches == 0
+        && masked_metric.metrics.mismatches == 0
+        && attention_probs_metric.metrics.mismatches == 0
+        && weighted_v_metric
+            .as_ref()
+            .map(|metric| metric.metrics.mismatches == 0)
+            .unwrap_or(true)
+        && oproj_metric.metrics.mismatches == 0;
+    let bridge_clear = attention_to_mlp_bridge.metrics.mismatches == 0;
+    let mlp_guards_clear = mlp_norm_metric.metrics.mismatches == 0
+        && router_logits_metric.metrics.mismatches == 0
+        && topk_ordered_match
+        && routing_weights_metric.metrics.mismatches == 0;
+    let classification = if attention_shape_blocked {
+        "layer2_ordered_bundle_validate_blocked_by_schema"
+    } else if !attention_seams_clear {
+        "layer2_ordered_bundle_validate_attention_seam_mismatch"
+    } else if !bridge_clear {
+        "layer2_ordered_bundle_validate_attention_to_mlp_bridge_mismatch"
+    } else if !mlp_guards_clear {
+        "layer2_ordered_bundle_validate_mlp_seam_mismatch"
+    } else if deterministic_clears || baseline_clears {
+        "layer2_ordered_bundle_validate_attention_cleared_mlp_cleared"
+    } else if !baseline_clears {
+        "layer2_ordered_bundle_validate_mlp_down_policy_required"
+    } else {
+        "layer2_ordered_bundle_validate_mlp_seam_mismatch"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "layer-bundle-validate",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "attention_bundle_status": attention_status_path.display().to_string(),
+        "mlp_bundle_status": mlp_status_path.display().to_string(),
+        "attention_bundle": attention_bundle_path.display().to_string(),
+        "mlp_bundle": mlp_bundle_path.display().to_string(),
+        "source_complete_attention_capture": attention_status
+            .get("source_complete_attention_capture")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "all_token_v_emitted": attention_status
+            .get("all_token_v_emitted")
+            .and_then(Value::as_bool)
+            .unwrap_or(all_token_v_emitted),
+        "attention_metrics": {
+            "q_pre_rope": {
+                "artifact": q_pre_status,
+                "projection_recomputed": false,
+                "source": "ordered_attention_bundle",
+            },
+            "q_post_rope": {
+                "metric": q_post_metric,
+                "table_source": q_table_source,
+            },
+            "k_pre_rope": {
+                "artifact": k_pre_status,
+                "projection_recomputed": false,
+                "source": "ordered_attention_bundle_final_token",
+            },
+            "k_post_rope": {
+                "final_token_metric": k_final_metric,
+                "table_source": k_table_source,
+                "all_token_history_source": "ordered_attention_bundle_grouped_k_post_rope",
+                "all_token_k_pre_rope_available": false,
+            },
+            "v_before_attention": {
+                "artifact": v_status,
+                "all_token_v_emitted_as_boundary": all_token_v_emitted,
+            },
+            "raw_qk": raw_qk_metric,
+            "masked_logits": masked_metric,
+            "attention_probabilities": attention_probs_metric,
+            "weighted_v": {
+                "source": weighted_v_source,
+                "metric": weighted_v_metric,
+            },
+            "o_proj": oproj_metric,
+            "attention_residual": {
+                "artifact": attention_residual_status,
+                "residual_add_recomputed": cli.layer_input.is_some(),
+                "metric": serde_json::Value::Null,
+            },
+        },
+        "attention_to_mlp_bridge": {
+            "metric": attention_to_mlp_bridge,
+            "attention_residual_path": attention_residual_path.display().to_string(),
+            "mlp_input_path": mlp_input_path.display().to_string(),
+        },
+        "mlp_metrics": {
+            "mlp_norm": mlp_norm_metric,
+            "router_logits": router_logits_metric,
+            "topk": {
+                "ordered_match": topk_ordered_match,
+                "selected_experts_local": local_topk.indices,
+                "selected_experts_ordered": selected_experts,
+                "routing_weights_metric": routing_weights_metric,
+            },
+            "baseline": baseline,
+            "deterministic_abs_ascending": deterministic_result,
+            "bf16_product_evidence_policy": bf16_product_result,
+            "policy_results": policy_results,
+        },
+        "selected_experts": selected_experts,
+        "routing_weights": routing_weights,
+        "best_mlp_down_policy": best_policy,
+        "mlp_down_policy": {
+            "baseline": "current_sequential_f32_accum_bf16_output",
+            "deterministic_abs_ascending": "deterministic_f32_abs_ascending_sum_then_bf16_output",
+            "deterministic_abs_ascending_required": !baseline_clears && deterministic_clears,
+            "bf16_product_evidence_policy": "rejected_not_a_correction_candidate",
+        },
+        "artifacts": {
+            "attention_status_classification": attention_status["classification"].clone(),
+            "mlp_status_classification": mlp_status["classification"].clone(),
+        },
+        "model_tensors": {
+            "oproj_weight": oproj_weight_source,
+            "oproj_bias": oproj_bias_source,
+            "mlp_norm_weight": norm_weight_source,
+            "router_weight": router_weight_source,
+            "router_bias": router_bias_source,
+        },
+        "emitted_layer_output": serde_json::Value::Null,
+        "next_bounded_step": match classification {
+            "layer2_ordered_bundle_validate_attention_cleared_mlp_cleared" => {
+                "record layer2 source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
+            }
+            "layer2_ordered_bundle_validate_attention_seam_mismatch" => {
+                "localize the first mismatching ordered attention seam"
+            }
+            "layer2_ordered_bundle_validate_attention_to_mlp_bridge_mismatch" => {
+                "resolve attention residual versus MLP input bridge mismatch"
+            }
+            "layer2_ordered_bundle_validate_mlp_down_policy_required" => {
+                "inspect selected MLP down-policy replay before any runtime-design discussion"
+            }
+            _ => "resolve the reported layer2 ordered bundle validation blocker",
+        },
+        "caveats": {
+            "validation_only": true,
+            "layer_ladder_continued": false,
+            "source_complete_layer2_attention_claim_limited_to_ordered_bundle_surface": true,
+            "all_token_v_used_by_oracle_internally_but_not_emitted_as_boundary": !all_token_v_emitted,
+            "bf16_product_policy_used_as_correction": false,
+            "runtime_policy_changed": false,
+            "final_logits_claimed": false,
+            "all_layers_claimed": false,
+            "server_or_4097_claimed": false,
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_layer2_ordered_bundle_validate(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("layer2 ordered bundle validation requires the cuda feature")
+}
+
 fn run_layer_bundle_validate(cli: &Cli) -> Result<()> {
+    if cli.attention_bundle_status.is_some() || cli.mlp_bundle_status.is_some() {
+        return run_layer2_ordered_bundle_validate(cli);
+    }
+
     let layer = cli.layer_index;
     let layer_input = required_path(&cli.layer_input, "layer input")?;
     let attention_bundle = required_path(&cli.attention_bundle, "attention bundle")?;
