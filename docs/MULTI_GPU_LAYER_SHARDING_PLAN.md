@@ -2774,6 +2774,125 @@ Primary classification:
 
 multi_gpu_layer_sharding_kv_cache_allocation_skeleton_complete
 
+## Real-model KV cache allocation smoke status
+
+Ran the bench-only real-model f16 split allocation smoke with restricted sinks
+override, shard-local RoPE allocation, and small shard-local KV cache allocation
+enabled.
+
+Command run:
+
+```text
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_rope_kv_status.json
+```
+
+The output JSON and logs were left under `/tmp/multi_gpu_layer_sharding` and
+are not committed.
+
+Primary result classification:
+
+```text
+multi_gpu_layer_sharding_real_model_kv_cache_allocation_smoke_complete
+```
+
+Command status classification:
+
+```text
+multi_gpu_layer_sharding_kv_cache_allocation_smoke_complete
+```
+
+Run summary:
+
+- model path: `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- dtype: `f16`
+- device map: `split:0-11@0,12-23@1`
+- header merge policy: `allow_restricted_sinks_override`
+- overridden tensor count: 24
+- resource construction: succeeded
+- manifest-owned f16/U8 allocation smoke: succeeded
+- RoPE allocation: succeeded
+- KV cache allocation: succeeded
+- KV sizing: `kv_num_blocks=1`, `kv_block_size=16`
+- unassigned tensors: 0
+- invalid tensors: 0
+
+Shard summary:
+
+- GPU0 owns embeddings and layers 0..11.
+  - f16 tensors uploaded: 181
+  - U8 host tensors retained: 48
+  - f16 bytes: 1,804,456,704
+  - U8 host bytes: 5,076,172,800
+  - RoPE bytes: 2,097,152
+  - KV layers: 0..11
+  - KV local indices: 0..11
+  - KV key bytes: 196,608
+  - KV value bytes: 196,608
+  - KV total bytes: 393,216
+  - per-layer key/value bytes: 16,384 each
+  - metadata status: deferred
+- GPU1 owns layers 12..23 and the final head.
+  - f16 tensors uploaded: 182
+  - U8 host tensors retained: 48
+  - f16 bytes: 1,804,462,464
+  - U8 host bytes: 5,076,172,800
+  - RoPE bytes: 2,097,152
+  - KV layers: 12..23
+  - KV local indices: 0..11
+  - KV key bytes: 196,608
+  - KV value bytes: 196,608
+  - KV total bytes: 393,216
+  - per-layer key/value bytes: 16,384 each
+  - metadata status: deferred
+
+Metadata remains deferred for the expected request-shaped boundary:
+
+```text
+request-shaped metadata packing buffers require batch/sequence inputs
+```
+
+Stderr contained only build/runtime warnings already present in the CUDA check
+path and the final command invocation line; no smoke error was reported.
+
+This result only proves that the bench-only smoke can create per-shard CUDA
+resources, complete manifest-owned f16/U8 allocation/retention, allocate
+shard-local RoPE cos/sin tables, and allocate small shard-local KV cache buffers
+for the requested split plan. It does not prove metadata packing, layer
+construction, attention execution, cache indexing wired into attention,
+activation transfer, final-token parity, logit parity, or serve support.
+
+No serve/runtime behavior changed. Serve/runtime split maps remain
+non-executable and rejected before CUDA allocation.
+
+Validation:
+
+- `nvidia-smi`
+- `test -d /data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- real-model f16 RoPE+KV smoke command above
+- JSON/log status review with `jq` and `tail`
+- `git diff --check`
+
+Next bounded step:
+
+Design the metadata-shape boundary for request-shaped packing buffers, or move
+to tied LM-head fallback design before attempting any execution-adjacent
+activation handoff work.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_kv_cache_allocation_smoke_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_kv_cache_allocation_skeleton_complete
+multi_gpu_layer_sharding_real_model_kv_cache_allocation_smoke_complete
