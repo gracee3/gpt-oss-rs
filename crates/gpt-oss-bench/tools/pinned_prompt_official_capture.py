@@ -75,7 +75,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--layer-input",
         type=Path,
-        help="Reserved for wrapper compatibility; final-token-only layer input is not enough for attention reconstruction.",
+        help=(
+            "Optional JSON source for input_token_ids in direct ordered attention mode; "
+            "final-token-only layer inputs are not sufficient for source-complete attention."
+        ),
     )
     parser.add_argument("--lane", type=int, help="Optional focus lane metadata.")
     parser.add_argument("--selected-rank", type=int, help="Selected expert rank for internal capture.")
@@ -375,6 +378,32 @@ def extract_boundary_values(bundle_path: Path, boundary: str) -> tuple[list[floa
 
 def tensor_from_values(values: list[float], torch: Any, device: Any, dtype: Any) -> Any:
     return torch.tensor(values, dtype=torch.float32, device=device).to(dtype).view(1, -1)
+
+
+def input_token_ids_from_source(path: Path) -> tuple[list[int], dict[str, Any]]:
+    source = load_json(path)
+    if isinstance(source.get("input_token_ids"), list):
+        return [int(value) for value in source["input_token_ids"]], {
+            "path": str(path),
+            "source_shape": "top_level_input_token_ids",
+            "suite_id": source.get("suite_id"),
+            "case_id": source.get("case_id"),
+            "prompt_renderer": source.get("prompt_renderer"),
+        }
+    for case in source.get("cases", []):
+        if case.get("id") == "developer-message-user-smoke" and isinstance(
+            case.get("input_token_ids"), list
+        ):
+            return [int(value) for value in case["input_token_ids"]], {
+                "path": str(path),
+                "source_shape": "cases[].input_token_ids",
+                "suite_id": source.get("suite_id"),
+                "case_id": case.get("id"),
+                "prompt_renderer": case.get("prompt_renderer"),
+            }
+    raise ValueError(
+        f"{path} does not contain input_token_ids for developer-message-user-smoke"
+    )
 
 
 def compute_layer_attention_residual(model: Any, input_token_ids: list[int], layer_index: int, torch: Any) -> Any:
@@ -2621,6 +2650,84 @@ def build_ordered_mlp_consumer_status(
     }
 
 
+def build_ordered_attention_consumer_status(
+    args: argparse.Namespace,
+    boundary: str,
+    layer_index: int,
+    capture_body: dict[str, Any],
+    token_source_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    names = {
+        "q_pre_rope": f"layer{layer_index}_final_token_q_projection_output_before_rope",
+        "k_pre_rope": f"layer{layer_index}_final_token_k_projection_output_before_rope",
+        "v_before_attention": f"layer{layer_index}_final_token_v_projection_output_before_attention",
+        "q_post_rope": f"layer{layer_index}_final_token_q_post_rope_before_attention",
+        "grouped_k_post_rope": f"layer{layer_index}_grouped_k_post_rope_before_attention",
+        "raw_qk": f"layer{layer_index}_final_token_raw_scaled_qk_logits_pre_mask",
+        "masked_logits": f"layer{layer_index}_final_token_masked_scaled_qk_logits_pre_softmax",
+        "attention_probs": f"layer{layer_index}_final_token_attention_probs_post_softmax",
+        "weighted_v": f"layer{layer_index}_final_token_attention_weighted_value_sum_before_output_projection",
+        "o_proj": f"layer{layer_index}_final_token_attention_output_after_o_proj_before_residual",
+        "attention_residual": f"layer{layer_index}_final_token_hidden_state_after_attention_residual_add_before_mlp",
+    }
+    entries = {key: boundary_by_name(capture_body, name) for key, name in names.items()}
+    lane = int(args.lane) if args.lane is not None else 0
+    artifacts = {"bundle_dir": str(output_dir) + "/"}
+    for key, entry in entries.items():
+        values = entry.get("values", [])
+        focus_index = min(lane, len(values) - 1) if values else 0
+        artifacts[key] = write_boundary_artifact(output_dir, key, entry, focus_index)
+
+    bundle_path = output_dir / "ordered_attention_bundle.json"
+    write_json(bundle_path, capture_body)
+    artifacts["ordered_attention_bundle"] = str(bundle_path)
+
+    value_entries = {
+        key: [float(value) for value in entry.get("values", [])]
+        for key, entry in entries.items()
+    }
+    digests = {
+        key: finite_summary(values)["sha256_f32_le"]
+        for key, values in value_entries.items()
+    }
+    metadata = capture_body.get(f"layer{layer_index}_attention_metadata", {})
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": (
+            f"layer{layer_index}_ordered_attention_bundle_generated_without_all_token_v_boundary"
+        ),
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "boundary": boundary,
+        "layer_index": layer_index,
+        "layer_idx": layer_index,
+        "focus_lane": args.lane,
+        "model": str(args.official_model or args.model),
+        "case": "developer-message-user-smoke",
+        "source_complete_attention_capture": True,
+        "input_token_source": token_source_metadata,
+        "token_count": metadata.get("token_count"),
+        "artifacts": artifacts,
+        "digests": digests,
+        "all_token_v_emitted": False,
+        "history_metadata": {
+            "all_token_k_history_included": True,
+            "all_token_v_history_included_as_boundary": False,
+            "weighted_v_uses_all_real_token_v_history": True,
+        },
+        "producer_metadata": capture_body.get("producer_metadata", {}),
+        "consumer_next_command_hint": (
+            f"Use this status/bundle as source-complete ordered layer{layer_index} "
+            "attention oracle evidence before combining with the ordered MLP surface."
+        ),
+    }
+
+
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
     attention_layer = parse_ordered_attention_selector(boundary, layer_index)
     if attention_layer is not None:
@@ -2846,9 +2953,30 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             args,
         )
     if attention_layer_index is not None:
-        raise ValueError(
-            "direct ordered attention capture requires --input JSON with input_token_ids; "
-            "direct --dry-run-schema is supported without loading a checkpoint"
+        if args.layer_input is None:
+            raise ValueError(
+                "direct ordered attention capture requires --layer-input JSON with "
+                "source-complete input_token_ids"
+            )
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        if args.output_dir is None:
+            raise ValueError("direct ordered attention capture requires --output-dir")
+        input_token_ids, token_source_metadata = input_token_ids_from_source(args.layer_input)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_final_token_attention_ordered_boundary_bundle(
+            model,
+            input_token_ids,
+            torch,
+            attention_layer_index,
+        )
+        return build_ordered_attention_consumer_status(
+            args,
+            boundary,
+            attention_layer_index,
+            body,
+            token_source_metadata,
         )
     model_path = args.official_model or args.model
     if model_path is None:
@@ -2956,11 +3084,14 @@ def main() -> int:
             args.boundary is not None
             and "attention_ordered_boundary_bundle" in args.boundary
         )
+        missing_source_like = "source-complete input_token_ids" in message
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
                 f"layer{layer_label}_ordered_attention_bundle_blocked_by_memory"
                 if attention_like and memory_like
+                else f"layer{layer_label}_ordered_attention_bundle_blocked_by_missing_source_complete_input_path"
+                if attention_like and missing_source_like
                 else f"layer{layer_label}_ordered_attention_bundle_execution_failed"
                 if attention_like
                 else "layer11_expert30_down_einsum_dtype_probe_blocked_by_memory"
