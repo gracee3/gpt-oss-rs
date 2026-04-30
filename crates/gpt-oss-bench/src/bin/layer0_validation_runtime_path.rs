@@ -8098,8 +8098,15 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     };
     let source_layer11_policy_replay_status =
         "/tmp/layer11_selected_mlp_down_policy_replay_status.json";
+    let source_layer1_policy_replay_status =
+        "/tmp/layer1_selected_mlp_down_policy_replay_status.json";
     let source_down_cast_policy_sweep_status =
         "/tmp/layer11_expert30_down_cast_policy_sweep_status.json";
+    let ordered_mlp_seed_policy = if layer == 2 {
+        "official_coarse_attention_residual_seam"
+    } else {
+        "ordered_or_inferred_attention_residual_seam"
+    };
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -8113,7 +8120,9 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         "layer_index": layer,
         "focus_lane": lane,
         "ordered_mlp_status": ordered_status_path.display().to_string(),
+        "ordered_mlp_seed_policy": ordered_mlp_seed_policy,
         "source_layer11_policy_replay_status": source_layer11_policy_replay_status,
+        "source_layer1_policy_replay_status": source_layer1_policy_replay_status,
         "source_down_cast_policy_sweep_status": cli.down_cast_policy_sweep_status
             .as_deref()
             .map(|path| path.display().to_string())

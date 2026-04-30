@@ -1159,6 +1159,65 @@ Next bounded step: if runtime design is pursued, scope it separately using the
 recorded layer11 and layer1 ordered MLP proof surfaces; otherwise add another
 ordered MLP pilot before design.
 
+## Layer2 Selected MLP Down Policy Replay Status
+
+The third ordered MLP proof surface consumed the oracle-produced layer2 ordered
+MLP bundle:
+
+```text
+/tmp/layer2_ordered_mlp_bundle_status.json
+/tmp/layer2_ordered_mlp_bundle/
+```
+
+The layer2 bundle is MLP-only evidence. Its seed is the official/coarse
+attention residual seam, so this does not claim source-complete layer2 attention
+validation.
+
+Mode:
+
+- `--mode selected-mlp-down-policy-replay-status`
+
+Result:
+
+```text
+classification = layer2_selected_mlp_down_policy_replay_full_mlp_cleared
+ordered_mlp_seed_policy = official_coarse_attention_residual_seam
+selected_experts = [21, 26, 29, 4]
+routing_weights = [0.55078125, 0.15625, 0.150390625, 0.142578125]
+focus_lane = 1480
+```
+
+Layer2 baseline replay:
+
+```text
+selected outputs: 1 mismatch, max_abs_diff = 0.00048828125
+weighted sum:     1 mismatch, max_abs_diff = 0.00048828125
+final output:     exact
+```
+
+Layer2 candidate replay:
+
+| Policy | selected-output mismatches | weighted-sum mismatches | final-output mismatches | Status |
+| --- | ---: | ---: | ---: | --- |
+| `current_sequential_f32_accum_bf16_output` | `1` | `1` | `0` | baseline selected/weighted mismatch |
+| `naive_f64_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `pairwise_f64_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `pairwise_f32_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `deterministic_f32_abs_ascending_sum_then_bf16_output` | `0` | `0` | `0` | clears full ordered MLP replay |
+| `bf16_product_then_f32_sum_then_bf16_output` | `3371` | `919` | `416` | evidence-only, rejected |
+
+Best policy by ordered MLP full vector and focus lane:
+
+```text
+deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+This supports moving to a separate scoped runtime-design discussion for the
+selected MLP down convention, with the standing caveat that layer2 attention
+remains unresolved. No runtime behavior changed, no correction metadata was
+applied, no ladder was continued, and no raw `/tmp` or `.live` artifacts are
+committed.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

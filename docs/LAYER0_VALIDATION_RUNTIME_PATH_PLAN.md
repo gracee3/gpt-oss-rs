@@ -3395,6 +3395,64 @@ slice, no correction metadata was applied, no ladder was continued, no
 production behavior changed, and no raw `/tmp` or `.live` artifacts are
 committed.
 
+## Layer2 Selected MLP Down Policy Replay Status
+
+The oracle-produced layer2 ordered MLP bundle was consumed as a third
+validation-only proof surface:
+
+```text
+/tmp/layer2_ordered_mlp_bundle_status.json
+/tmp/layer2_ordered_mlp_bundle/
+```
+
+The layer2 bundle uses the official/coarse attention residual seam as its MLP
+input seed. This validates ordered layer2 MLP replay only; it does not validate
+source-complete layer2 attention.
+
+Mode:
+
+- `--mode selected-mlp-down-policy-replay-status`
+
+Result:
+
+```text
+classification = layer2_selected_mlp_down_policy_replay_full_mlp_cleared
+ordered_mlp_seed_policy = official_coarse_attention_residual_seam
+selected_experts = [21, 26, 29, 4]
+routing_weights = [0.55078125, 0.15625, 0.150390625, 0.142578125]
+focus_lane = 1480
+```
+
+Baseline replay:
+
+```text
+selected outputs: 1 mismatch, max_abs_diff = 0.00048828125
+weighted sum:     1 mismatch, max_abs_diff = 0.00048828125
+final output:     exact
+```
+
+Policy replay summary:
+
+| Policy | selected-output mismatches | weighted-sum mismatches | final-output mismatches | Status |
+| --- | ---: | ---: | ---: | --- |
+| `current_sequential_f32_accum_bf16_output` | `1` | `1` | `0` | baseline selected/weighted mismatch |
+| `naive_f64_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `pairwise_f64_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `pairwise_f32_sum_then_bf16_output` | `1` | `1` | `0` | non-regressive, does not clear |
+| `deterministic_f32_abs_ascending_sum_then_bf16_output` | `0` | `0` | `0` | clears full ordered MLP replay |
+| `bf16_product_then_f32_sum_then_bf16_output` | `3371` | `919` | `416` | evidence-only, rejected |
+
+Best policy by ordered MLP full vector and focus lane:
+
+```text
+deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+This is validation-only evidence for a separate scoped runtime-design
+discussion. No correction metadata was applied, no ladder was continued, no
+production behavior changed, and no raw `/tmp` or `.live` artifacts are
+committed.
+
 ## Validation Commands
 
 For the skeleton slice:
