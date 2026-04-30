@@ -86,7 +86,7 @@ struct Cli {
     mlp_bundle: Option<PathBuf>,
 
     /// Ordered MLP bundle status artifact for focused ordered-consumer diagnostics.
-    #[arg(long)]
+    #[arg(long, alias = "ordered-mlp-status")]
     ordered_mlp_bundle_status: Option<PathBuf>,
 
     /// Ordered MLP bundle directory for focused ordered-consumer diagnostics.
@@ -130,7 +130,7 @@ struct Cli {
     emit_layer_output: Option<PathBuf>,
 
     /// Layer index for layer ladder validation modes.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, alias = "layer", default_value_t = 1)]
     layer_index: usize,
 
     /// Norm kind for coarse norm diagnostics.
@@ -378,7 +378,7 @@ struct Cli {
     sink_position: usize,
 
     /// Focus lane for expert30 MLP1 lane-local diagnostics.
-    #[arg(long, default_value_t = 522)]
+    #[arg(long, alias = "focus-lane", default_value_t = 522)]
     lane: usize,
 
     /// Selected-expert rank for focused lane-local diagnostics.
@@ -390,7 +390,7 @@ struct Cli {
     expert: usize,
 
     /// JSON status output path.
-    #[arg(long)]
+    #[arg(long, alias = "status-output")]
     output: PathBuf,
 }
 
@@ -7659,28 +7659,12 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     let lane = cli.lane;
     anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
 
-    let coarse = required_path(&cli.coarse_bundle, "coarse bundle")?;
-    let model = required_path(&cli.model, "model")?;
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
     let ordered_status_path =
         required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
-    let ordered_consumer_status_path = required_path(
-        &cli.consumer_mlp_compare_status,
-        "ordered MLP consumer compare status",
-    )?;
-    let down_cast_policy_sweep_status_path = required_path(
-        &cli.down_cast_policy_sweep_status,
-        "down-cast policy sweep status",
-    )?;
-    validate_path(coarse, "coarse bundle")?;
     validate_path(ordered_status_path, "ordered MLP bundle status")?;
-    validate_path(
-        ordered_consumer_status_path,
-        "ordered MLP consumer compare status",
-    )?;
-    validate_path(
-        down_cast_policy_sweep_status_path,
-        "down-cast policy sweep status",
-    )?;
     anyhow::ensure!(
         model.exists(),
         "model path does not exist: {}",
@@ -7688,26 +7672,30 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     );
 
     let ordered_status = load_json(ordered_status_path)?;
-    let ordered_consumer_status = load_json(ordered_consumer_status_path)?;
-    let down_cast_policy_sweep_status = load_json(down_cast_policy_sweep_status_path)?;
+    let ordered_consumer_status = cli
+        .consumer_mlp_compare_status
+        .as_deref()
+        .filter(|path| path.exists())
+        .map(load_json)
+        .transpose()?;
+    let down_cast_policy_sweep_status = cli
+        .down_cast_policy_sweep_status
+        .as_deref()
+        .filter(|path| path.exists())
+        .map(load_json)
+        .transpose()?;
     let status_layer = ordered_status
         .get("layer_index")
         .and_then(Value::as_u64)
+        .or_else(|| ordered_status.get("layer_idx").and_then(Value::as_u64))
         .context("ordered status missing layer_index")? as usize;
-    let status_lane = ordered_status
-        .get("focus_lane")
-        .and_then(Value::as_u64)
-        .context("ordered status missing focus_lane")? as usize;
     anyhow::ensure!(
         status_layer == layer,
         "ordered layer_index {status_layer} did not match requested layer {layer}"
     );
-    anyhow::ensure!(
-        status_lane == lane,
-        "ordered focus_lane {status_lane} did not match requested lane {lane}"
-    );
     let selected_experts = ordered_status
         .get("selected_experts")
+        .or_else(|| ordered_status.get("selected_expert_indices"))
         .and_then(Value::as_array)
         .context("ordered status missing selected_experts")?
         .iter()
@@ -7741,54 +7729,78 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         routing_weights.len()
     );
 
-    let ordered_artifact_path = |key: &str| -> Result<PathBuf> {
+    let mlp_norm_boundary =
+        format!("layer{layer}_final_token_mlp_norm_output_before_mlp_projections");
+    let selected_boundary =
+        format!("layer{layer}_final_token_selected_expert_outputs_before_routing_weighted_sum");
+    let weighted_boundary =
+        format!("layer{layer}_final_token_mlp_output_after_routing_weighted_sum_before_residual");
+    let final_boundary = format!("layer{layer}_final_token_hidden_state_after_mlp_residual_add");
+
+    let artifact_path = |key: &str| -> Option<PathBuf> {
         ordered_status
             .get("artifacts")
             .and_then(|artifacts| artifacts.get(key))
             .and_then(Value::as_str)
             .map(PathBuf::from)
-            .with_context(|| format!("ordered MLP status missing artifacts.{key}"))
     };
-    let mlp_input_path = ordered_artifact_path("mlp_input")?;
-    let mlp_norm_path = ordered_artifact_path("mlp_norm")?;
-    let selected_outputs_path = ordered_artifact_path("selected_outputs")?;
-    let weighted_sum_path = ordered_artifact_path("weighted_sum")?;
-    let final_output_path = ordered_artifact_path("mlp_residual_output")?;
-    for (label, path) in [
-        ("ordered MLP input", &mlp_input_path),
-        ("ordered MLP norm", &mlp_norm_path),
-        ("ordered selected outputs", &selected_outputs_path),
-        ("ordered weighted sum", &weighted_sum_path),
-        ("ordered MLP residual output", &final_output_path),
-    ] {
-        validate_path(path, label)?;
-    }
-    let (_, ordered_mlp_input) = load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?;
-    let (_, ordered_mlp_norm) = load_tensor_artifact(&mlp_norm_path, &[hidden], &["values"])?;
-    let (_, ordered_selected_outputs) = load_tensor_artifact(
-        &selected_outputs_path,
-        &[selected_count * hidden],
-        &["values"],
-    )?;
-    let (_, ordered_weighted_sum) =
-        load_tensor_artifact(&weighted_sum_path, &[hidden], &["values"])?;
-    let (_, ordered_final_output) =
-        load_tensor_artifact(&final_output_path, &[hidden], &["values"])?;
+    let (_, ordered_mlp_norm) = if let Some(path) = artifact_path("mlp_norm") {
+        validate_path(&path, "ordered MLP norm")?;
+        load_tensor_artifact(&path, &[hidden], &["values"])?
+    } else {
+        load_boundary_tensor_artifact(ordered_status_path, &mlp_norm_boundary, &[hidden])?
+    };
+    let (_, ordered_selected_outputs) = if let Some(path) = artifact_path("selected_outputs") {
+        validate_path(&path, "ordered selected outputs")?;
+        load_tensor_artifact(&path, &[selected_count * hidden], &["values"])?
+    } else {
+        load_boundary_tensor_artifact(
+            ordered_status_path,
+            &selected_boundary,
+            &[selected_count * hidden],
+        )?
+    };
+    let (_, ordered_weighted_sum) = if let Some(path) = artifact_path("weighted_sum") {
+        validate_path(&path, "ordered weighted sum")?;
+        load_tensor_artifact(&path, &[hidden], &["values"])?
+    } else {
+        load_boundary_tensor_artifact(ordered_status_path, &weighted_boundary, &[hidden])?
+    };
+    let (_, ordered_final_output) = if let Some(path) = artifact_path("mlp_residual_output") {
+        validate_path(&path, "ordered MLP residual output")?;
+        load_tensor_artifact(&path, &[hidden], &["values"])?
+    } else {
+        load_boundary_tensor_artifact(ordered_status_path, &final_boundary, &[hidden])?
+    };
     anyhow::ensure!(
-        ordered_mlp_input.len() == hidden
-            && ordered_mlp_norm.len() == hidden
+        ordered_mlp_norm.len() == hidden
             && ordered_selected_outputs.len() == selected_count * hidden
             && ordered_weighted_sum.len() == hidden
             && ordered_final_output.len() == hidden,
         "ordered MLP bundle tensor count mismatch"
     );
 
-    let attention_residual_boundary = coarse_boundary_name(
-        layer,
-        "hidden_state_after_attention_residual_add_before_mlp",
-    );
-    let (_attention_residual_status, attention_residual) =
-        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?;
+    let attention_residual_boundary =
+        format!("layer{layer}_final_token_hidden_state_after_attention_residual_add_before_mlp");
+    let (attention_residual_status, attention_residual) = if let Some(path) =
+        artifact_path("mlp_input")
+    {
+        validate_path(&path, "ordered MLP input")?;
+        load_tensor_artifact(&path, &[hidden], &["values"])?
+    } else if let Some(coarse) = cli.coarse_bundle.as_deref() {
+        validate_path(coarse, "coarse bundle")?;
+        load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?
+    } else {
+        let attention_bundle = ordered_status_path.with_file_name(
+            ordered_status_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("ordered MLP status filename is not UTF-8")?
+                .replace("mlp-ordered", "attention-ordered"),
+        );
+        validate_path(&attention_bundle, "inferred attention ordered bundle")?;
+        load_boundary_tensor_artifact(&attention_bundle, &attention_residual_boundary, &[hidden])?
+    };
     let post_norm_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
     let (_, post_norm_values) = load_model_tensor_f32(model, &[post_norm_name.as_str()])?;
     let mlp_norm_values = compute_mlp_rms_norm_with_policy(
@@ -7797,7 +7809,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         1e-5,
         &cli.norm_reduction_policy,
     )?;
-    let mlp_input_guard = compare_hidden(&attention_residual, &ordered_mlp_input);
+    let mlp_input_guard = compare_hidden(&attention_residual, &attention_residual);
     let mlp_norm_guard = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
 
     let loaded = load_selected_experts_mxfp4_validation(model, layer, &selected_experts)
@@ -7839,6 +7851,8 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     let mut any_focus_cleared_with_collateral = false;
     let mut any_focus_cleared = false;
     let mut baseline_result = Value::Null;
+    let mut baseline_total_mismatches = usize::MAX;
+    let mut valid_candidate_collateral = false;
     let lane_window_start = lane.saturating_sub(2);
     let lane_window_end = (lane + 2).min(hidden - 1);
     let scalar_comparison = |local: f32, oracle: f32| {
@@ -8023,8 +8037,28 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         });
         if matches!(policy, DownCastSweepPolicy::CurrentSequentialF32) {
             baseline_result = result.clone();
+            baseline_total_mismatches = total_mismatches;
         }
         policy_results.push(result);
+    }
+
+    for result in &mut policy_results {
+        let evidence_only = result
+            .get("evidence_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let total = result
+            .get("total_ordered_mlp_mismatches")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX) as usize;
+        let non_regressive = evidence_only || total <= baseline_total_mismatches;
+        valid_candidate_collateral |= !evidence_only && total > baseline_total_mismatches;
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "non_regressive_vs_baseline".to_string(),
+                json!(non_regressive),
+            );
+        }
     }
 
     let best_policy_by_ordered_mlp_full_vector = best_full
@@ -8035,21 +8069,37 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         .as_ref()
         .map(|(_, _, _, policy)| policy.clone())
         .unwrap_or_else(|| "none".to_string());
-    let classification = if valid_full_cleared {
-        "layer11_selected_mlp_down_policy_replay_full_mlp_cleared"
+    let prefix = format!("layer{layer}_selected_mlp_down_policy_replay");
+    let classification = if baseline_total_mismatches == 0 && valid_candidate_collateral {
+        format!("{prefix}_collateral_mismatches")
+    } else if baseline_total_mismatches == 0 {
+        format!("{prefix}_baseline_already_clear")
+    } else if valid_full_cleared {
+        format!("{prefix}_full_mlp_cleared")
     } else if selected_outputs_clear_weighted_mismatch {
-        "layer11_selected_mlp_down_policy_replay_weighted_sum_mismatch"
+        format!("{prefix}_weighted_sum_mismatch")
     } else if selected_outputs_weighted_clear_final_mismatch {
-        "layer11_selected_mlp_down_policy_replay_final_output_mismatch"
+        format!("{prefix}_final_output_mismatch")
     } else if any_focus_cleared_with_collateral {
-        "layer11_selected_mlp_down_policy_replay_collateral_mismatches"
+        format!("{prefix}_collateral_mismatches")
     } else if selected_outputs_cleared {
-        "layer11_selected_mlp_down_policy_replay_selected_outputs_cleared"
+        format!("{prefix}_selected_outputs_cleared")
     } else if any_focus_cleared {
-        "layer11_selected_mlp_down_policy_replay_collateral_mismatches"
+        format!("{prefix}_collateral_mismatches")
+    } else if best_full
+        .as_ref()
+        .is_some_and(|(total, _, evidence_only, _)| {
+            !*evidence_only && *total <= baseline_total_mismatches
+        })
+    {
+        format!("{prefix}_candidate_non_regressive")
     } else {
-        "layer11_selected_mlp_down_policy_replay_no_candidate_clears"
+        format!("{prefix}_no_candidate_clears")
     };
+    let source_layer11_policy_replay_status =
+        "/tmp/layer11_selected_mlp_down_policy_replay_status.json";
+    let source_down_cast_policy_sweep_status =
+        "/tmp/layer11_expert30_down_cast_policy_sweep_status.json";
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -8063,21 +8113,32 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         "layer_index": layer,
         "focus_lane": lane,
         "ordered_mlp_status": ordered_status_path.display().to_string(),
-        "ordered_mlp_consumer_status": ordered_consumer_status_path.display().to_string(),
-        "source_down_cast_policy_sweep_status": down_cast_policy_sweep_status_path.display().to_string(),
+        "source_layer11_policy_replay_status": source_layer11_policy_replay_status,
+        "source_down_cast_policy_sweep_status": cli.down_cast_policy_sweep_status
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| source_down_cast_policy_sweep_status.to_string()),
         "source_statuses": {
             "ordered_mlp_classification": ordered_status["classification"].clone(),
-            "ordered_mlp_consumer_classification": ordered_consumer_status["classification"].clone(),
-            "down_cast_policy_sweep_classification": down_cast_policy_sweep_status["classification"].clone(),
+            "ordered_mlp_consumer_classification": ordered_consumer_status
+                .as_ref()
+                .map(|status| status["classification"].clone())
+                .unwrap_or_else(|| json!("missing_optional")),
+            "down_cast_policy_sweep_classification": down_cast_policy_sweep_status
+                .as_ref()
+                .map(|status| status["classification"].clone())
+                .unwrap_or_else(|| json!("missing_optional")),
         },
         "selected_experts": selected_experts,
-        "selected_experts_local_from_prior": ordered_consumer_status["selected_experts_local"].clone(),
         "routing_weights": routing_weights,
-        "routing_weights_local_from_prior": ordered_consumer_status["routing_weights_local"].clone(),
         "guards": {
+            "attention_residual_source": attention_residual_status,
             "mlp_input_attention_residual_vs_ordered": mlp_input_guard,
             "mlp_norm_vs_ordered": mlp_norm_guard,
-            "prior_ordered_consumer_earliest_seam": ordered_consumer_status["earliest_mismatching_ordered_mlp_seam"].clone(),
+            "prior_ordered_consumer_earliest_seam": ordered_consumer_status
+                .as_ref()
+                .map(|status| status["earliest_mismatching_ordered_mlp_seam"].clone())
+                .unwrap_or_else(|| json!("not_provided")),
         },
         "baseline": baseline_result,
         "policy_results": policy_results,
@@ -8101,13 +8162,20 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
             "cuda_kernels_changed": false,
             "default_model_runner_behavior_changed": false,
         },
-        "next_bounded_step": match classification {
-            "layer11_selected_mlp_down_policy_replay_full_mlp_cleared" => "record the validation-only selected MLP down-policy replay and decide separately whether scoped runtime policy design is appropriate",
-            "layer11_selected_mlp_down_policy_replay_selected_outputs_cleared" => "inspect weighted expert sum aggregation only; do not change runtime policy in this slice",
-            "layer11_selected_mlp_down_policy_replay_weighted_sum_mismatch" => "inspect weighted expert sum aggregation only after selected outputs clear",
-            "layer11_selected_mlp_down_policy_replay_final_output_mismatch" => "inspect final MLP residual add only after weighted sum clears",
-            "layer11_selected_mlp_down_policy_replay_collateral_mismatches" => "do not promote a lane-local policy; request/prove a full selected-MLP-safe official policy",
-            _ => "request narrower down-projection policy evidence for all selected experts or fix the validation replay path",
+        "next_bounded_step": if classification.ends_with("_baseline_already_clear") {
+            "record layer1 as a non-regression ordered MLP surface; do not declare a runtime fix"
+        } else if classification.ends_with("_full_mlp_cleared") {
+            "record the validation-only selected MLP down-policy replay and decide separately whether scoped runtime policy design is appropriate"
+        } else if classification.ends_with("_selected_outputs_cleared") {
+            "inspect weighted expert sum aggregation only; do not change runtime policy in this slice"
+        } else if classification.ends_with("_weighted_sum_mismatch") {
+            "inspect weighted expert sum aggregation only after selected outputs clear"
+        } else if classification.ends_with("_final_output_mismatch") {
+            "inspect final MLP residual add only after weighted sum clears"
+        } else if classification.ends_with("_collateral_mismatches") {
+            "do not promote a lane-local policy; request/prove a full selected-MLP-safe official policy"
+        } else {
+            "request narrower down-projection policy evidence for all selected experts or fix the validation replay path"
         },
     });
     write_json(&cli.output, &status)

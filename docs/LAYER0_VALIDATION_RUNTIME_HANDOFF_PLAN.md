@@ -1102,6 +1102,63 @@ the candidate convention on at least one additional ordered MLP surface if
 available. Prefer an existing layer1 ordered MLP bundle if present; otherwise
 request or generate a layer2 ordered MLP pilot before runtime-policy design.
 
+## Layer1 Selected MLP Down Policy Replay Status
+
+The additional ordered MLP proof gate consumed the existing layer1 ordered MLP
+bundle:
+
+```text
+/home/emmy/openai/worktrees/runtime-forward/.live/pinned-prompt-parity-official-reference-20260424/developer-message.ppp-layer1-final-token-mlp-ordered-boundary-bundle-status.json
+```
+
+Mode:
+
+- `--mode selected-mlp-down-policy-replay-status`
+
+Result:
+
+```text
+classification = layer1_selected_mlp_down_policy_replay_full_mlp_cleared
+selected_experts = [28, 6, 1, 18]
+routing_weights = [0.451171875, 0.2021484375, 0.17578125, 0.1708984375]
+focus_lane = 1480
+```
+
+Layer1 baseline replay reproduces the already-known rank0 / expert28 /
+lane2269 mismatch:
+
+```text
+selected outputs: 1 mismatch, max_abs_diff = 0.0001220703125
+weighted sum:     1 mismatch, max_abs_diff = 0.0000457763671875
+final output:     1 mismatch, max_abs_diff = 0.0009765625
+```
+
+Layer1 candidate replay:
+
+| Policy | selected-output mismatches | weighted-sum mismatches | final-output mismatches | Status |
+| --- | ---: | ---: | ---: | --- |
+| `current_sequential_f32_accum_bf16_output` | `1` | `1` | `1` | baseline mismatch |
+| `naive_f64_sum_then_bf16_output` | `1` | `1` | `1` | non-regressive, does not clear |
+| `pairwise_f64_sum_then_bf16_output` | `1` | `1` | `1` | non-regressive, does not clear |
+| `pairwise_f32_sum_then_bf16_output` | `1` | `1` | `1` | non-regressive, does not clear |
+| `deterministic_f32_abs_ascending_sum_then_bf16_output` | `0` | `0` | `0` | clears full ordered MLP replay |
+| `bf16_product_then_f32_sum_then_bf16_output` | `3133` | `952` | `475` | evidence-only, rejected |
+
+Best policy by ordered MLP full vector and focus lane:
+
+```text
+deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+This is a validation-only consumer proof surface. No runtime policy discussion
+is allowed from this slice, no correction metadata was applied, no ladder was
+continued, no production behavior changed, and no raw `/tmp` or `.live`
+artifacts are committed.
+
+Next bounded step: if runtime design is pursued, scope it separately using the
+recorded layer11 and layer1 ordered MLP proof surfaces; otherwise add another
+ordered MLP pilot before design.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
