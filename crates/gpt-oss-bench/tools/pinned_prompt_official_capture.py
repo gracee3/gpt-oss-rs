@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
         help="Prior ordered MLP oracle status used as provenance for internal capture.",
     )
     parser.add_argument(
+        "--source-ordered-attention-status",
+        type=Path,
+        help="Prior ordered attention oracle status used as provenance for audit capture.",
+    )
+    parser.add_argument(
         "--source-consumer-compare-status",
         type=Path,
         help="Consumer compare status requesting selected expert internals.",
@@ -233,6 +238,24 @@ def parse_ordered_attention_selector(boundary: str, layer_idx: int | None) -> in
             )
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_attention_ordered_boundary_bundle", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_ordered_attention_audit_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_attention_ordered_audit_bundle":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_attention_ordered_audit_bundle requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_final_token_attention_ordered_audit_bundle", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -462,6 +485,8 @@ def capture_layer_final_token_attention_ordered_boundary_bundle(
     input_token_ids: list[int],
     torch: Any,
     layer_index: int,
+    *,
+    include_audit_supplement: bool = False,
 ) -> dict[str, Any]:
     if layer_index < 0 or layer_index >= len(model.block):
         raise ValueError(
@@ -557,6 +582,7 @@ def capture_layer_final_token_attention_ordered_boundary_bundle(
         sink_values = probs[:, token_count].float().cpu().tolist()
         real_key_prob_values = probs[:, :token_count].reshape(-1).float().cpu().tolist()
         layer_input_values = layer_input[final_token_index].float().cpu().tolist()
+        all_token_v_values = v.reshape(-1).float().cpu().tolist()
         projected_values = projected.float().cpu().tolist()
         captured_boundaries = []
 
@@ -840,7 +866,7 @@ def capture_layer_final_token_attention_ordered_boundary_bundle(
             if not missing
             else f"official_layer{layer_index}_attention_ordered_boundary_bundle_partial"
         )
-        return {
+        result = {
             "boundary": f"layer{layer_index}_final_token_attention_ordered_boundary_bundle",
             "classification": classification,
             "case_scope": "developer-message-user-smoke",
@@ -887,6 +913,33 @@ def capture_layer_final_token_attention_ordered_boundary_bundle(
                 "and report earliest mismatching seam"
             ),
         }
+        if include_audit_supplement:
+            result["audit_supplement"] = {
+                "layer_input_before_attention_norm": boundary_tensor_entry(
+                    f"layer{layer_index}_final_token_layer_input_before_attention_norm",
+                    layer_input_values,
+                    [len(layer_input_values)],
+                    str(layer_input.dtype),
+                    "flat hidden dimension vector [hidden_size] entering attention norm",
+                    final_token_index,
+                    layer_index,
+                    source_input_boundary=source_input_boundary,
+                ),
+                "all_token_v_before_attention": boundary_tensor_entry(
+                    f"layer{layer_index}_all_token_v_projection_output_before_attention",
+                    all_token_v_values,
+                    [token_count, attn.num_key_value_heads, attn.head_dim],
+                    str(v.dtype),
+                    "all-real-token V projection tensor [token, kv_head, head_dim]",
+                    final_token_index,
+                    layer_index,
+                    token_count=token_count,
+                    logical_shape=[token_count, attn.num_key_value_heads, attn.head_dim],
+                    flattened_layout="token-major, then kv_head, then head_dim",
+                    qkv_slice_metadata=projection_metadata["v"],
+                ),
+            }
+        return result
 
 
 def capture_layer_final_token_mlp_ordered_boundary_bundle(
@@ -2728,7 +2781,177 @@ def build_ordered_attention_consumer_status(
     }
 
 
+def build_ordered_attention_audit_status(
+    args: argparse.Namespace,
+    boundary: str,
+    layer_index: int,
+    capture_body: dict[str, Any],
+    source_status: dict[str, Any],
+    source_status_path: Path,
+    token_source_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    supplement = capture_body.get("audit_supplement")
+    if not isinstance(supplement, dict):
+        raise ValueError("ordered attention audit capture did not produce audit_supplement")
+    layer_input_entry = supplement["layer_input_before_attention_norm"]
+    all_token_v_entry = supplement["all_token_v_before_attention"]
+    source_artifacts = source_status.get("artifacts", {})
+    weighted_v_path = source_artifacts.get("weighted_v")
+    o_proj_path = source_artifacts.get("o_proj")
+    attention_residual_path = source_artifacts.get("attention_residual")
+    if not weighted_v_path or not o_proj_path or not attention_residual_path:
+        raise ValueError("source ordered attention status is missing required reference artifacts")
+
+    artifacts = {
+        "bundle_dir": str(output_dir) + "/",
+        "layer_input_before_attention_norm": write_boundary_artifact(
+            output_dir,
+            "layer_input_before_attention_norm",
+            layer_input_entry,
+            int(args.lane) if args.lane is not None else 0,
+        ),
+        "all_token_v_before_attention": write_boundary_artifact(
+            output_dir,
+            "all_token_v_before_attention",
+            all_token_v_entry,
+            int(args.lane) if args.lane is not None else 0,
+        ),
+        "weighted_v": weighted_v_path,
+        "o_proj": o_proj_path,
+        "attention_residual": attention_residual_path,
+    }
+    values_by_key = {
+        "layer_input_before_attention_norm": [
+            float(value) for value in layer_input_entry.get("values", [])
+        ],
+        "all_token_v_before_attention": [
+            float(value) for value in all_token_v_entry.get("values", [])
+        ],
+    }
+    digests = {
+        key: finite_summary(values)["sha256_f32_le"]
+        for key, values in values_by_key.items()
+    }
+    for key, path in (
+        ("weighted_v", weighted_v_path),
+        ("o_proj", o_proj_path),
+        ("attention_residual", attention_residual_path),
+    ):
+        try:
+            reference = load_json(Path(path))
+            digests[key] = finite_summary(
+                [float(value) for value in reference.get("values", [])]
+            )["sha256_f32_le"]
+        except Exception as exc:  # pragma: no cover - best-effort reference digest
+            digests[key] = {"unavailable": str(exc)}
+
+    bundle_path = output_dir / "ordered_attention_audit_bundle.json"
+    write_json(
+        bundle_path,
+        {
+            "boundary": f"layer{layer_index}_final_token_attention_ordered_audit_bundle",
+            "layer_index": layer_index,
+            "source_ordered_attention_status": str(source_status_path),
+            "audit_supplement": supplement,
+            "source_references": {
+                "weighted_v": weighted_v_path,
+                "o_proj": o_proj_path,
+                "attention_residual": attention_residual_path,
+            },
+        },
+    )
+    artifacts["audit_bundle"] = str(bundle_path)
+
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": f"layer{layer_index}_ordered_attention_audit_bundle_generated_with_all_token_v",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "boundary": boundary,
+        "layer_index": layer_index,
+        "layer_idx": layer_index,
+        "focus_lane": args.lane,
+        "model": str(args.official_model or args.model),
+        "case": source_status.get("case") or "developer-message-user-smoke",
+        "source_complete_attention_capture": True,
+        "source_ordered_attention_status": str(source_status_path),
+        "input_token_source": token_source_metadata,
+        "artifacts": artifacts,
+        "all_token_v": {
+            "emitted": True,
+            "shape": all_token_v_entry.get("shape"),
+            "layout": all_token_v_entry.get("layout"),
+            "logical_shape": all_token_v_entry.get("logical_shape"),
+            "flattened_layout": all_token_v_entry.get("flattened_layout"),
+        },
+        "residual_recompute_inputs": {
+            "layer_input_available": True,
+            "o_proj_available": True,
+            "attention_residual_available": True,
+        },
+        "digests": digests,
+        "producer_metadata": {
+            "producer_function": "capture_layer_final_token_attention_ordered_boundary_bundle",
+            "boundary_selector": boundary,
+            "requested_layer_index": layer_index,
+            "audit_supplement": True,
+            "all_token_v_history_included_as_boundary": True,
+            "source_ordered_attention_status": str(source_status_path),
+            "port_source": PORT_SOURCE,
+        },
+        "consumer_next_command_hint": (
+            f"Recompute layer{layer_index} weighted-V from attention_probs plus "
+            "all-token V, and recompute attention residual from layer input plus o-proj."
+        ),
+    }
+
+
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    attention_audit_layer = parse_ordered_attention_audit_selector(boundary, layer_index)
+    if attention_audit_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": attention_audit_layer,
+            "layer_idx": attention_audit_layer,
+            "classification": f"layer{attention_audit_layer}_ordered_attention_audit_bundle_schema_ready",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "focus_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "case": "developer-message-user-smoke",
+            "source_ordered_attention_status": str(args.source_ordered_attention_status)
+            if args.source_ordered_attention_status
+            else None,
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_boundaries": [
+                f"layer{attention_audit_layer}_final_token_layer_input_before_attention_norm",
+                f"layer{attention_audit_layer}_all_token_v_projection_output_before_attention",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_final_token_attention_ordered_boundary_bundle",
+                "boundary_selector": boundary,
+                "requested_layer_index": attention_audit_layer,
+                "audit_supplement": True,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": (
+                f"run layer{attention_audit_layer} ordered attention audit capture under /tmp"
+            ),
+        }
     attention_layer = parse_ordered_attention_selector(boundary, layer_index)
     if attention_layer is not None:
         return {
@@ -2929,13 +3152,15 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    attention_audit_layer_index = parse_ordered_attention_audit_selector(boundary, args.layer_idx)
     attention_layer_index = parse_ordered_attention_selector(boundary, args.layer_idx)
     dtype_probe_layer_index = parse_down_einsum_dtype_probe_selector(boundary, args.layer_idx)
     down_terms_layer_index = parse_down_projection_terms_selector(boundary, args.layer_idx)
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
-        attention_layer_index is None
+        attention_audit_layer_index is None
+        and attention_layer_index is None
         and dtype_probe_layer_index is None
         and down_terms_layer_index is None
         and internal_layer_index is None
@@ -2945,12 +3170,51 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run_schema:
         return dry_run_schema(
             boundary,
-            attention_layer_index
+            attention_audit_layer_index
+            or attention_layer_index
             or dtype_probe_layer_index
             or down_terms_layer_index
             or internal_layer_index
             or layer_index,
             args,
+        )
+    if attention_audit_layer_index is not None:
+        if args.source_ordered_attention_status is None:
+            raise ValueError(
+                "ordered attention audit capture requires --source-ordered-attention-status"
+            )
+        if args.output_dir is None:
+            raise ValueError("ordered attention audit capture requires --output-dir")
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        source_status = load_json(args.source_ordered_attention_status)
+        token_source_path = args.layer_input
+        if token_source_path is None:
+            token_source = source_status.get("input_token_source", {})
+            token_source_path_value = token_source.get("path")
+            if not token_source_path_value:
+                raise ValueError(
+                    "source ordered attention status is missing input_token_source.path"
+                )
+            token_source_path = Path(token_source_path_value)
+        input_token_ids, token_source_metadata = input_token_ids_from_source(token_source_path)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_final_token_attention_ordered_boundary_bundle(
+            model,
+            input_token_ids,
+            torch,
+            attention_audit_layer_index,
+            include_audit_supplement=True,
+        )
+        return build_ordered_attention_audit_status(
+            args,
+            boundary,
+            attention_audit_layer_index,
+            body,
+            source_status,
+            args.source_ordered_attention_status,
+            token_source_metadata,
         )
     if attention_layer_index is not None:
         if args.layer_input is None:
@@ -3084,11 +3348,22 @@ def main() -> int:
             args.boundary is not None
             and "attention_ordered_boundary_bundle" in args.boundary
         )
+        attention_audit_like = (
+            args.boundary is not None
+            and "attention_ordered_audit_bundle" in args.boundary
+        )
         missing_source_like = "source-complete input_token_ids" in message
+        missing_prior_attention_like = "source ordered attention status" in message
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
-                f"layer{layer_label}_ordered_attention_bundle_blocked_by_memory"
+                f"layer{layer_label}_ordered_attention_audit_bundle_blocked_by_memory"
+                if attention_audit_like and memory_like
+                else f"layer{layer_label}_ordered_attention_audit_bundle_blocked_by_missing_prior_attention_bundle"
+                if attention_audit_like and missing_prior_attention_like
+                else f"layer{layer_label}_ordered_attention_audit_bundle_execution_failed"
+                if attention_audit_like
+                else f"layer{layer_label}_ordered_attention_bundle_blocked_by_memory"
                 if attention_like and memory_like
                 else f"layer{layer_label}_ordered_attention_bundle_blocked_by_missing_source_complete_input_path"
                 if attention_like and missing_source_like
