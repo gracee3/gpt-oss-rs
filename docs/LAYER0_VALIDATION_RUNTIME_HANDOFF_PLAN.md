@@ -1340,6 +1340,33 @@ selected MLP down policy. The ladder was not continued, no layer2 output was
 emitted, no runtime/default routing/CUDA behavior changed, and this makes no
 final-logit, all-layer, server, or 4097-token claim.
 
+## Selected MLP Down Policy Design Candidate
+
+A scoped design note now records the selected MLP down-projection
+reduction/output-cast candidate:
+
+```text
+docs/SELECTED_MLP_DOWN_POLICY_RUNTIME_DESIGN.md
+```
+
+The design remains validation-only. It records three ordered MLP proof surfaces:
+
+- layer11: `layer11_selected_mlp_down_policy_replay_full_mlp_cleared`
+- layer1: `layer1_selected_mlp_down_policy_replay_full_mlp_cleared`
+- layer2: `layer2_selected_mlp_down_policy_replay_full_mlp_cleared`
+
+The candidate policy is:
+
+```text
+deterministic_f32_abs_ascending_sum_then_bf16_output
+```
+
+The layer2 caveat remains active: the layer2 ordered MLP bundle uses the
+official/coarse attention residual seam and does not prove source-complete
+layer2 attention. No runtime implementation, production routing change, default
+model-runner behavior change, CUDA kernel change, or correction metadata is
+included in this design slice.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
