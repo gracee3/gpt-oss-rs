@@ -52,7 +52,8 @@ pub use device_map::{DeviceId, DeviceMap, DeviceMapError};
 pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
 pub use model_loader::{
-    detect_format, load_model_weights, ModelFormat, SafetensorHeaderManifest, SafetensorTensorInfo,
+    detect_format, load_model_weights, ModelFormat, SafetensorHeaderManifest,
+    SafetensorHeaderMergePolicy, SafetensorTensorInfo,
 };
 pub use quant::{detect_quant_method, QuantConfig, QuantMethod, QuantizedLinear, QuantizedWeight};
 pub use runner::{ModelRunner, ModelRunnerConfig};

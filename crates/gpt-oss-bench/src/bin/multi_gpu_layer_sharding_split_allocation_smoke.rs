@@ -5,8 +5,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
     CudaShardResourceStatus, DeviceId, DeviceMap, LateAllocationKind, SafetensorHeaderManifest,
-    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedModelPlan, SplitAllocationReport, UploadManifestOptions,
+    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedModelPlan, SplitAllocationReport,
+    UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,9 @@ struct Cli {
     tie_word_embeddings: Option<bool>,
 
     #[arg(long)]
+    allow_restricted_sinks_override: bool,
+
+    #[arg(long)]
     output: Option<PathBuf>,
 }
 
@@ -91,6 +95,10 @@ struct SplitAllocationSmokeReport {
     tie_word_embeddings: Option<bool>,
     tensor_count_from_headers: Option<usize>,
     total_header_tensor_bytes: Option<usize>,
+    header_merge_policy: String,
+    restricted_sinks_override_enabled: bool,
+    overridden_tensor_count: usize,
+    overridden_tensor_names: Vec<String>,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
     kernel_dir: Option<String>,
@@ -179,6 +187,7 @@ fn main() -> Result<()> {
         cli.kernel_dir.as_deref(),
         cli.dtype,
         cli.tie_word_embeddings,
+        cli.allow_restricted_sinks_override,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -208,6 +217,7 @@ fn build_split_allocation_smoke_report(
     kernel_dir: Option<&Path>,
     dtype_mode: DTypeMode,
     tie_word_embeddings_override: Option<bool>,
+    allow_restricted_sinks_override: bool,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let config = match read_model_planning_config(model_path, tie_word_embeddings_override) {
@@ -225,21 +235,25 @@ fn build_split_allocation_smoke_report(
         }
     };
 
-    let header_manifest = match SafetensorHeaderManifest::discover(model_path) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return error_report_with_config(
-                HEADER_ERROR_CLASSIFICATION,
-                model_path,
-                device_map_spec,
-                selected_device,
-                dtype_mode,
-                kernel_dir,
-                config,
-                Some(error.to_string()),
-            );
-        }
-    };
+    let header_merge_policy = header_merge_policy(allow_restricted_sinks_override);
+    let header_manifest =
+        match SafetensorHeaderManifest::discover_with_merge_policy(model_path, header_merge_policy)
+        {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return error_report_with_config(
+                    HEADER_ERROR_CLASSIFICATION,
+                    model_path,
+                    device_map_spec,
+                    selected_device,
+                    dtype_mode,
+                    kernel_dir,
+                    config,
+                    allow_restricted_sinks_override,
+                    Some(error.to_string()),
+                );
+            }
+        };
 
     let device_map = match DeviceMap::parse(
         device_map_spec,
@@ -257,6 +271,7 @@ fn build_split_allocation_smoke_report(
                 kernel_dir,
                 config,
                 &header_manifest,
+                allow_restricted_sinks_override,
                 Some(error.to_string()),
             );
         }
@@ -274,6 +289,7 @@ fn build_split_allocation_smoke_report(
                 kernel_dir,
                 config,
                 &header_manifest,
+                allow_restricted_sinks_override,
                 Some(error.to_string()),
             );
         }
@@ -296,6 +312,7 @@ fn build_split_allocation_smoke_report(
                 kernel_dir,
                 config,
                 &header_manifest,
+                allow_restricted_sinks_override,
                 Some(error.to_string()),
             );
         }
@@ -314,6 +331,7 @@ fn build_split_allocation_smoke_report(
                 kernel_dir,
                 config,
                 &header_manifest,
+                allow_restricted_sinks_override,
                 Some(error.to_string()),
             );
         }
@@ -342,6 +360,7 @@ fn build_split_allocation_smoke_report(
             &manifest_by_device,
             &header_bytes,
             &resource_status,
+            allow_restricted_sinks_override,
             false,
             true,
             None,
@@ -363,6 +382,7 @@ fn build_split_allocation_smoke_report(
             &header_bytes,
             &resource_status,
             &upload_counts,
+            allow_restricted_sinks_override,
             true,
             true,
             None,
@@ -383,11 +403,20 @@ fn build_split_allocation_smoke_report(
                 &manifest_by_device,
                 &header_bytes,
                 &resource_status,
+                allow_restricted_sinks_override,
                 true,
                 false,
                 Some(error),
             )
         }
+    }
+}
+
+fn header_merge_policy(allow_restricted_sinks_override: bool) -> SafetensorHeaderMergePolicy {
+    if allow_restricted_sinks_override {
+        SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+    } else {
+        SafetensorHeaderMergePolicy::RejectDuplicates
     }
 }
 
@@ -562,6 +591,7 @@ fn render_report(
     manifest_by_device: &HashMap<DeviceId, &ShardTensorManifest>,
     header_bytes: &BTreeMap<String, usize>,
     resource_status: &ShardedCudaResourceStatus,
+    allow_restricted_sinks_override: bool,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
     error: Option<String>,
@@ -590,6 +620,7 @@ fn render_report(
         header_bytes,
         resource_status,
         &upload_counts,
+        allow_restricted_sinks_override,
         resource_construction_succeeded,
         allocation_smoke_succeeded,
         error,
@@ -610,6 +641,7 @@ fn render_report_with_counts(
     header_bytes: &BTreeMap<String, usize>,
     resource_status: &ShardedCudaResourceStatus,
     upload_counts: &BTreeMap<DeviceId, ShardUploadCounts>,
+    allow_restricted_sinks_override: bool,
     resource_construction_succeeded: bool,
     allocation_smoke_succeeded: bool,
     error: Option<String>,
@@ -631,6 +663,10 @@ fn render_report_with_counts(
         tie_word_embeddings: Some(config.tie_word_embeddings),
         tensor_count_from_headers: Some(header_manifest.tensors.len()),
         total_header_tensor_bytes: Some(header_manifest.tensors.iter().map(|t| t.byte_size).sum()),
+        header_merge_policy: header_manifest.merge_policy.as_str().into(),
+        restricted_sinks_override_enabled: allow_restricted_sinks_override,
+        overridden_tensor_count: header_manifest.overridden_tensor_count(),
+        overridden_tensor_names: header_manifest.overridden_tensor_names.clone(),
         resource_construction_succeeded,
         allocation_smoke_succeeded,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
@@ -714,6 +750,12 @@ fn error_report(
         tie_word_embeddings: None,
         tensor_count_from_headers: None,
         total_header_tensor_bytes: None,
+        header_merge_policy: SafetensorHeaderMergePolicy::RejectDuplicates
+            .as_str()
+            .into(),
+        restricted_sinks_override_enabled: false,
+        overridden_tensor_count: 0,
+        overridden_tensor_names: Vec::new(),
         resource_construction_succeeded: false,
         allocation_smoke_succeeded: false,
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
@@ -733,6 +775,7 @@ fn error_report_with_config(
     dtype_mode: DTypeMode,
     kernel_dir: Option<&Path>,
     config: ModelPlanningConfig,
+    allow_restricted_sinks_override: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -746,6 +789,10 @@ fn error_report_with_config(
     );
     report.num_layers = Some(config.num_layers);
     report.tie_word_embeddings = Some(config.tie_word_embeddings);
+    report.header_merge_policy = header_merge_policy(allow_restricted_sinks_override)
+        .as_str()
+        .into();
+    report.restricted_sinks_override_enabled = allow_restricted_sinks_override;
     report
 }
 
@@ -758,6 +805,7 @@ fn error_report_with_config_and_headers(
     kernel_dir: Option<&Path>,
     config: ModelPlanningConfig,
     header_manifest: &SafetensorHeaderManifest,
+    allow_restricted_sinks_override: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -768,12 +816,17 @@ fn error_report_with_config_and_headers(
         dtype_mode,
         kernel_dir,
         config,
+        allow_restricted_sinks_override,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
     report.tensor_count_from_headers = Some(header_manifest.tensors.len());
     report.total_header_tensor_bytes =
         Some(header_manifest.tensors.iter().map(|t| t.byte_size).sum());
+    report.header_merge_policy = header_manifest.merge_policy.as_str().into();
+    report.restricted_sinks_override_enabled = allow_restricted_sinks_override;
+    report.overridden_tensor_count = header_manifest.overridden_tensor_count();
+    report.overridden_tensor_names = header_manifest.overridden_tensor_names.clone();
     report
 }
 
@@ -910,6 +963,7 @@ mod tests {
             DTypeMode::F16,
             tie_word_embeddings,
             false,
+            false,
         )
     }
 
@@ -1044,5 +1098,49 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
 
         assert!(json.contains(SUCCESS_CLASSIFICATION));
+    }
+
+    #[test]
+    fn split_allocation_smoke_reports_restricted_sinks_overrides() {
+        let dir = unique_temp_model_dir("restricted_sinks_override");
+        write_config(&dir, 24, true);
+        write_safetensors(
+            &dir.join("model-00000-of-00002.safetensors"),
+            &[
+                ("model.embed_tokens.weight", "F16", &[2, 4], 16),
+                ("model.layers.0.self_attn.sinks", "F32", &[2], 8),
+                ("model.norm.weight", "F32", &[4], 16),
+            ],
+        );
+        write_safetensors(
+            &dir.join("zzzz-sinks-override.safetensors"),
+            &[("model.layers.0.self_attn.sinks", "F32", &[2], 8)],
+        );
+
+        let report = build_split_allocation_smoke_report(
+            &dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F16,
+            None,
+            true,
+            false,
+        );
+
+        assert_eq!(report.classification, SUCCESS_CLASSIFICATION);
+        assert!(report.restricted_sinks_override_enabled);
+        assert_eq!(
+            report.header_merge_policy,
+            "allow_restricted_sinks_override"
+        );
+        assert_eq!(report.overridden_tensor_count, 1);
+        assert_eq!(
+            report.overridden_tensor_names,
+            vec!["model.layers.0.self_attn.sinks".to_string()]
+        );
+        assert!(shard(&report, 0)
+            .required_tensor_names
+            .contains(&"model.layers.0.self_attn.sinks".to_string()));
     }
 }

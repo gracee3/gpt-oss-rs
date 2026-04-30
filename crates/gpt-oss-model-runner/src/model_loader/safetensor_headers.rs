@@ -4,7 +4,7 @@
 //! payloads into host vectors, convert tensor data, allocate GPU buffers, or
 //! call the runtime loaders.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,8 @@ use gpt_oss_core::error::{LLMError, Result};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetensorHeaderManifest {
     pub tensors: Vec<SafetensorTensorInfo>,
+    pub merge_policy: SafetensorHeaderMergePolicy,
+    pub overridden_tensor_names: Vec<String>,
 }
 
 /// Header-only metadata for one tensor entry.
@@ -26,14 +28,29 @@ pub struct SafetensorTensorInfo {
     pub byte_size: usize,
 }
 
+/// Duplicate handling policy for header-only safetensors discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafetensorHeaderMergePolicy {
+    RejectDuplicates,
+    AllowRestrictedSinksOverride,
+}
+
 impl SafetensorHeaderManifest {
     /// Discover safetensors header metadata from a single file or directory.
     pub fn discover(path: &Path) -> Result<Self> {
+        Self::discover_with_merge_policy(path, SafetensorHeaderMergePolicy::RejectDuplicates)
+    }
+
+    /// Discover safetensors header metadata with an explicit merge policy.
+    pub fn discover_with_merge_policy(
+        path: &Path,
+        merge_policy: SafetensorHeaderMergePolicy,
+    ) -> Result<Self> {
         if path.is_file() {
-            return Self::from_file(path);
+            return Self::from_file_with_merge_policy(path, merge_policy);
         }
         if path.is_dir() {
-            return Self::from_dir(path);
+            return Self::from_dir_with_merge_policy(path, merge_policy);
         }
 
         Err(LLMError::ModelError(format!(
@@ -44,31 +61,67 @@ impl SafetensorHeaderManifest {
 
     /// Discover header metadata from one `.safetensors` file.
     pub fn from_file(path: &Path) -> Result<Self> {
+        Self::from_file_with_merge_policy(path, SafetensorHeaderMergePolicy::RejectDuplicates)
+    }
+
+    /// Discover header metadata from one `.safetensors` file with a merge policy.
+    pub fn from_file_with_merge_policy(
+        path: &Path,
+        merge_policy: SafetensorHeaderMergePolicy,
+    ) -> Result<Self> {
         let mut tensors = parse_header_file(path)?;
         tensors.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Self { tensors })
+        Ok(Self {
+            tensors,
+            merge_policy,
+            overridden_tensor_names: Vec::new(),
+        })
     }
 
     /// Discover header metadata from all `.safetensors` files in a directory.
     pub fn from_dir(dir: &Path) -> Result<Self> {
+        Self::from_dir_with_merge_policy(dir, SafetensorHeaderMergePolicy::RejectDuplicates)
+    }
+
+    /// Discover header metadata from all `.safetensors` files in a directory
+    /// with an explicit duplicate handling policy.
+    pub fn from_dir_with_merge_policy(
+        dir: &Path,
+        merge_policy: SafetensorHeaderMergePolicy,
+    ) -> Result<Self> {
         let shard_files = collect_safetensor_files(dir)?;
         let mut tensors = Vec::new();
-        let mut seen = HashSet::new();
+        let mut tensor_indices = HashMap::new();
+        let mut overridden_tensor_names = Vec::new();
 
         for shard_file in shard_files {
             for tensor in parse_header_file(&shard_file)? {
-                if !seen.insert(tensor.name.clone()) {
+                if let Some(&existing_idx) = tensor_indices.get(&tensor.name) {
+                    if merge_policy.allows_restricted_sinks_override(&shard_file, &tensor.name) {
+                        overridden_tensor_names.push(tensor.name.clone());
+                        tensors[existing_idx] = tensor;
+                    } else {
+                        return Err(duplicate_tensor_error(&tensor.name));
+                    }
+                } else if merge_policy.rejects_unique_override_tensor(&shard_file) {
                     return Err(LLMError::ModelError(format!(
-                        "duplicate tensor '{}' across safetensors shards",
+                        "restricted sinks override tensor '{}' does not replace an existing base shard tensor",
                         tensor.name
                     )));
+                } else {
+                    tensor_indices.insert(tensor.name.clone(), tensors.len());
+                    tensors.push(tensor);
                 }
-                tensors.push(tensor);
             }
         }
 
         tensors.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Self { tensors })
+        overridden_tensor_names.sort();
+        Ok(Self {
+            tensors,
+            merge_policy,
+            overridden_tensor_names,
+        })
     }
 
     /// Stable list of discovered tensor names.
@@ -88,6 +141,56 @@ impl SafetensorHeaderManifest {
     pub fn has_lm_head_weight(&self) -> bool {
         self.contains_tensor("lm_head.weight")
     }
+
+    /// Number of tensor headers replaced by the configured merge policy.
+    pub fn overridden_tensor_count(&self) -> usize {
+        self.overridden_tensor_names.len()
+    }
+}
+
+impl SafetensorHeaderMergePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SafetensorHeaderMergePolicy::RejectDuplicates => "reject_duplicates",
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride => {
+                "allow_restricted_sinks_override"
+            }
+        }
+    }
+
+    fn allows_restricted_sinks_override(self, shard_file: &Path, tensor_name: &str) -> bool {
+        self == SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+            && shard_file_name(shard_file) == Some(RESTRICTED_SINKS_OVERRIDE_FILE)
+            && is_restricted_sinks_tensor_name(tensor_name)
+    }
+
+    fn rejects_unique_override_tensor(self, shard_file: &Path) -> bool {
+        self == SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+            && shard_file_name(shard_file) == Some(RESTRICTED_SINKS_OVERRIDE_FILE)
+    }
+}
+
+const RESTRICTED_SINKS_OVERRIDE_FILE: &str = "zzzz-sinks-override.safetensors";
+
+fn duplicate_tensor_error(tensor_name: &str) -> LLMError {
+    LLMError::ModelError(format!(
+        "duplicate tensor '{tensor_name}' across safetensors shards"
+    ))
+}
+
+fn shard_file_name(path: &Path) -> Option<&str> {
+    path.file_name().and_then(|name| name.to_str())
+}
+
+fn is_restricted_sinks_tensor_name(tensor_name: &str) -> bool {
+    let Some(rest) = tensor_name.strip_prefix("model.layers.") else {
+        return false;
+    };
+    let Some((layer_idx, suffix)) = rest.split_once('.') else {
+        return false;
+    };
+
+    suffix == "self_attn.sinks" && layer_idx.parse::<usize>().is_ok()
 }
 
 fn collect_safetensor_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -316,6 +419,226 @@ mod tests {
             err.to_string()
                 .contains("duplicate tensor 'model.norm.weight'"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn restricted_sinks_override_allows_sink_replacement_from_override_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = write_safetensors(
+            &dir.path().join("model-00000-of-00002.safetensors"),
+            &[
+                (
+                    "model.layers.0.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[0u8; 8],
+                ),
+                (
+                    "model.layers.1.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[1u8; 8],
+                ),
+            ],
+        );
+        let override_path = write_safetensors(
+            &dir.path().join("zzzz-sinks-override.safetensors"),
+            &[(
+                "model.layers.0.self_attn.sinks",
+                &[2],
+                DType::F32,
+                &[2u8; 8],
+            )],
+        );
+
+        let manifest = SafetensorHeaderManifest::from_dir_with_merge_policy(
+            dir.path(),
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.tensor_names(),
+            vec![
+                "model.layers.0.self_attn.sinks",
+                "model.layers.1.self_attn.sinks"
+            ]
+        );
+        assert_eq!(
+            manifest.overridden_tensor_names,
+            vec!["model.layers.0.self_attn.sinks".to_string()]
+        );
+        assert_eq!(manifest.overridden_tensor_count(), 1);
+        assert_eq!(
+            manifest.merge_policy,
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+        );
+
+        let overridden = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == "model.layers.0.self_attn.sinks")
+            .unwrap();
+        assert_eq!(overridden.source_file, Some(override_path));
+
+        let base_only = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == "model.layers.1.self_attn.sinks")
+            .unwrap();
+        assert_eq!(base_only.source_file, Some(base));
+    }
+
+    #[test]
+    fn restricted_sinks_override_rejects_duplicate_non_sink_from_override_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_safetensors(
+            &dir.path().join("model-00000-of-00002.safetensors"),
+            &[("model.norm.weight", &[2], DType::F32, &[0u8; 8])],
+        );
+        write_safetensors(
+            &dir.path().join("zzzz-sinks-override.safetensors"),
+            &[("model.norm.weight", &[2], DType::F32, &[1u8; 8])],
+        );
+
+        let err = SafetensorHeaderManifest::from_dir_with_merge_policy(
+            dir.path(),
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("duplicate tensor 'model.norm.weight'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn restricted_sinks_override_rejects_sink_duplicate_from_non_override_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_safetensors(
+            &dir.path().join("model-00000-of-00002.safetensors"),
+            &[(
+                "model.layers.0.self_attn.sinks",
+                &[2],
+                DType::F32,
+                &[0u8; 8],
+            )],
+        );
+        write_safetensors(
+            &dir.path().join("model-00001-of-00002.safetensors"),
+            &[(
+                "model.layers.0.self_attn.sinks",
+                &[2],
+                DType::F32,
+                &[1u8; 8],
+            )],
+        );
+
+        let err = SafetensorHeaderManifest::from_dir_with_merge_policy(
+            dir.path(),
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("duplicate tensor 'model.layers.0.self_attn.sinks'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn restricted_sinks_override_rejects_unique_tensor_from_override_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_safetensors(
+            &dir.path().join("model-00000-of-00002.safetensors"),
+            &[("model.norm.weight", &[2], DType::F32, &[0u8; 8])],
+        );
+        write_safetensors(
+            &dir.path().join("zzzz-sinks-override.safetensors"),
+            &[(
+                "model.layers.0.self_attn.sinks",
+                &[2],
+                DType::F32,
+                &[1u8; 8],
+            )],
+        );
+
+        let err = SafetensorHeaderManifest::from_dir_with_merge_policy(
+            dir.path(),
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("does not replace an existing base shard tensor"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn restricted_sinks_override_preserves_deterministic_tensor_ordering() {
+        let dir = tempfile::tempdir().unwrap();
+        write_safetensors(
+            &dir.path().join("model-00000-of-00002.safetensors"),
+            &[
+                (
+                    "model.layers.1.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[0u8; 8],
+                ),
+                ("model.embed_tokens.weight", &[2], DType::F16, &[1u8; 4]),
+                (
+                    "model.layers.0.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[2u8; 8],
+                ),
+            ],
+        );
+        write_safetensors(
+            &dir.path().join("zzzz-sinks-override.safetensors"),
+            &[
+                (
+                    "model.layers.1.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[3u8; 8],
+                ),
+                (
+                    "model.layers.0.self_attn.sinks",
+                    &[2],
+                    DType::F32,
+                    &[4u8; 8],
+                ),
+            ],
+        );
+
+        let manifest = SafetensorHeaderManifest::from_dir_with_merge_policy(
+            dir.path(),
+            SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.tensor_names(),
+            vec![
+                "model.embed_tokens.weight",
+                "model.layers.0.self_attn.sinks",
+                "model.layers.1.self_attn.sinks",
+            ]
+        );
+        assert_eq!(
+            manifest.overridden_tensor_names,
+            vec![
+                "model.layers.0.self_attn.sinks".to_string(),
+                "model.layers.1.self_attn.sinks".to_string()
+            ]
         );
     }
 

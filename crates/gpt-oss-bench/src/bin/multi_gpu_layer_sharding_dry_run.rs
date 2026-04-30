@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use gpt_oss_model_runner::{
-    DeviceId, DeviceMap, LateAllocationKind, SafetensorHeaderManifest, ShardAllocationReport,
-    ShardedModelPlan, SplitAllocationReport, UploadManifestOptions,
+    DeviceId, DeviceMap, LateAllocationKind, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
+    ShardAllocationReport, ShardedModelPlan, SplitAllocationReport, UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,9 @@ struct Cli {
     tie_word_embeddings: Option<bool>,
 
     #[arg(long)]
+    allow_restricted_sinks_override: bool,
+
+    #[arg(long)]
     output: Option<PathBuf>,
 }
 
@@ -42,6 +45,10 @@ struct DryRunReport {
     invalid_tensor_count: usize,
     has_lm_head_weight: bool,
     tie_word_embeddings: bool,
+    header_merge_policy: String,
+    restricted_sinks_override_enabled: bool,
+    overridden_tensor_count: usize,
+    overridden_tensor_names: Vec<String>,
     shards: Vec<DryRunShardReport>,
     unassigned_tensor_names: Vec<String>,
     invalid_tensor_names: Vec<String>,
@@ -77,6 +84,7 @@ fn main() -> Result<()> {
         &cli.device_map,
         cli.selected_device,
         cli.tie_word_embeddings,
+        cli.allow_restricted_sinks_override,
     )?;
     let json = serde_json::to_string_pretty(&report)?;
 
@@ -103,14 +111,18 @@ fn build_dry_run_report(
     device_map_spec: &str,
     selected_device: usize,
     tie_word_embeddings_override: Option<bool>,
+    allow_restricted_sinks_override: bool,
 ) -> Result<DryRunReport> {
     let config = read_model_planning_config(model_path, tie_word_embeddings_override)?;
-    let header_manifest = SafetensorHeaderManifest::discover(model_path).with_context(|| {
-        format!(
-            "multi_gpu_layer_sharding_dry_run_invalid_headers: failed to discover safetensors headers under {}",
-            model_path.display()
-        )
-    })?;
+    let header_merge_policy = header_merge_policy(allow_restricted_sinks_override);
+    let header_manifest =
+        SafetensorHeaderManifest::discover_with_merge_policy(model_path, header_merge_policy)
+            .with_context(|| {
+                format!(
+                    "multi_gpu_layer_sharding_dry_run_invalid_headers: failed to discover safetensors headers under {}",
+                    model_path.display()
+                )
+            })?;
     let device_map = DeviceMap::parse(
         device_map_spec,
         config.num_layers,
@@ -139,7 +151,16 @@ fn build_dry_run_report(
         config,
         &header_manifest,
         allocation_report,
+        allow_restricted_sinks_override,
     ))
+}
+
+fn header_merge_policy(allow_restricted_sinks_override: bool) -> SafetensorHeaderMergePolicy {
+    if allow_restricted_sinks_override {
+        SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+    } else {
+        SafetensorHeaderMergePolicy::RejectDuplicates
+    }
 }
 
 fn read_model_planning_config(
@@ -185,6 +206,7 @@ fn render_dry_run_report(
     config: ModelPlanningConfig,
     header_manifest: &SafetensorHeaderManifest,
     allocation_report: SplitAllocationReport,
+    allow_restricted_sinks_override: bool,
 ) -> DryRunReport {
     DryRunReport {
         classification: SUCCESS_CLASSIFICATION.into(),
@@ -202,6 +224,10 @@ fn render_dry_run_report(
         invalid_tensor_count: allocation_report.invalid_tensor_count,
         has_lm_head_weight: header_manifest.has_lm_head_weight(),
         tie_word_embeddings: config.tie_word_embeddings,
+        header_merge_policy: header_manifest.merge_policy.as_str().into(),
+        restricted_sinks_override_enabled: allow_restricted_sinks_override,
+        overridden_tensor_count: header_manifest.overridden_tensor_count(),
+        overridden_tensor_names: header_manifest.overridden_tensor_names.clone(),
         shards: allocation_report
             .shards
             .iter()
@@ -334,7 +360,7 @@ mod tests {
     }
 
     fn split_report_for(dir: &Path, tie_word_embeddings: Option<bool>) -> DryRunReport {
-        build_dry_run_report(dir, "split:0-11@0,12-23@1", 0, tie_word_embeddings).unwrap()
+        build_dry_run_report(dir, "split:0-11@0,12-23@1", 0, tie_word_embeddings, false).unwrap()
     }
 
     fn shard(report: &DryRunReport, device_id: usize) -> &DryRunShardReport {
@@ -469,7 +495,7 @@ mod tests {
             &[("model.norm.weight", "F32", &[4], 16)],
         );
 
-        let err = build_dry_run_report(&dir, "split:0-11@0,12-23@1", 0, None).unwrap_err();
+        let err = build_dry_run_report(&dir, "split:0-11@0,12-23@1", 0, None, false).unwrap_err();
 
         assert!(
             err.to_string()
@@ -493,5 +519,39 @@ mod tests {
         assert!(!shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
+    }
+
+    #[test]
+    fn dry_run_restricted_sinks_override_reports_overridden_tensors() {
+        let dir = unique_temp_model_dir("restricted_sinks_override");
+        write_config(&dir, 24, true);
+        write_safetensors(
+            &dir.join("model-00000-of-00002.safetensors"),
+            &[
+                ("model.embed_tokens.weight", "F16", &[2, 4], 16),
+                ("model.layers.0.self_attn.sinks", "F32", &[2], 8),
+                ("model.norm.weight", "F32", &[4], 16),
+            ],
+        );
+        write_safetensors(
+            &dir.join("zzzz-sinks-override.safetensors"),
+            &[("model.layers.0.self_attn.sinks", "F32", &[2], 8)],
+        );
+
+        let report = build_dry_run_report(&dir, "split:0-11@0,12-23@1", 0, None, true).unwrap();
+
+        assert!(report.restricted_sinks_override_enabled);
+        assert_eq!(
+            report.header_merge_policy,
+            "allow_restricted_sinks_override"
+        );
+        assert_eq!(report.overridden_tensor_count, 1);
+        assert_eq!(
+            report.overridden_tensor_names,
+            vec!["model.layers.0.self_attn.sinks".to_string()]
+        );
+        assert!(shard(&report, 0)
+            .required_tensor_names
+            .contains(&"model.layers.0.self_attn.sinks".to_string()));
     }
 }

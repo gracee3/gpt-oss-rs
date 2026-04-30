@@ -34,7 +34,9 @@ pub enum ModelFormat {
     GGUF,
 }
 
-pub use safetensor_headers::{SafetensorHeaderManifest, SafetensorTensorInfo};
+pub use safetensor_headers::{
+    SafetensorHeaderManifest, SafetensorHeaderMergePolicy, SafetensorTensorInfo,
+};
 
 /// Detect format from a path. Checks extension of files in a directory,
 /// or the extension of a single file.

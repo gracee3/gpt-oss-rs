@@ -2219,6 +2219,102 @@ Primary classification:
 
 multi_gpu_layer_sharding_real_model_split_allocation_f16_blocked
 
+## Restricted sinks override header policy status
+
+Added an explicit opt-in safetensors header merge policy for the restricted
+integration model view.
+
+Default behavior remains unchanged:
+
+- `SafetensorHeaderManifest::discover`
+- `SafetensorHeaderManifest::from_dir`
+- `SafetensorHeaderMergePolicy::RejectDuplicates`
+
+These paths still reject any duplicate tensor name across safetensors shards.
+There is no broad last-writer-wins policy.
+
+New policy/API:
+
+```text
+SafetensorHeaderMergePolicy::AllowRestrictedSinksOverride
+SafetensorHeaderManifest::discover_with_merge_policy(path, policy)
+SafetensorHeaderManifest::from_dir_with_merge_policy(path, policy)
+```
+
+Bench/status flags:
+
+```text
+multi_gpu_layer_sharding_dry_run --allow-restricted-sinks-override
+multi_gpu_layer_sharding_split_allocation_smoke --allow-restricted-sinks-override
+```
+
+The opt-in policy permits only this override file basename:
+
+```text
+zzzz-sinks-override.safetensors
+```
+
+and only replacement tensor names matching:
+
+```text
+model.layers.<N>.self_attn.sinks
+```
+
+where `<N>` is numeric. The override tensor must replace a previously discovered
+base-shard tensor with the same name; unique tensors from
+`zzzz-sinks-override.safetensors` are rejected.
+
+The header helper remains independent of model config, so it does not validate
+`<N>` against `num_hidden_layers`; downstream tensor manifest planning still
+surfaces out-of-range layer tensor names as invalid.
+
+Still rejected:
+
+- arbitrary duplicate tensor names
+- duplicate non-sinks tensor names, even from `zzzz-sinks-override.safetensors`
+- duplicate sinks from any later file whose basename is not
+  `zzzz-sinks-override.safetensors`
+- duplicate sinks across ordinary shard files
+- unique tensors inside `zzzz-sinks-override.safetensors` that do not replace an
+  existing base-shard header
+
+Reporting:
+
+- `SafetensorHeaderManifest` now records `merge_policy` and
+  `overridden_tensor_names`
+- bench/status JSON includes `header_merge_policy`,
+  `restricted_sinks_override_enabled`, `overridden_tensor_count`, and
+  `overridden_tensor_names`
+- overridden tensor names are reported deterministically
+
+No loader/upload/runtime behavior changed. The policy is header-only and is
+used by the bench/status tools only when the new restricted override flag is
+passed. Serve/runtime split maps remain non-executable and rejected before CUDA
+allocation.
+
+Validation:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `git diff --check`
+
+Next bounded step:
+
+Rerun the real-model f16 split allocation smoke with
+`--allow-restricted-sinks-override`. If the run advances past header discovery,
+preserve the next exact failure boundary or record the successful allocation-only
+status without making execution or parity claims.
+
+Primary classification:
+
+multi_gpu_layer_sharding_restricted_sinks_header_override_complete
+
 ## Primary classification
 
-multi_gpu_layer_sharding_real_model_split_allocation_f16_blocked
+multi_gpu_layer_sharding_restricted_sinks_header_override_complete
