@@ -2896,3 +2896,271 @@ multi_gpu_layer_sharding_real_model_kv_cache_allocation_smoke_complete
 ## Primary classification
 
 multi_gpu_layer_sharding_real_model_kv_cache_allocation_smoke_complete
+
+## Metadata-shape boundary design
+
+This section records the request-shaped metadata boundary that remains after the
+bench-only allocation path proved shard-local CUDA resources, manifest-owned
+f16/U8 payloads, RoPE tables, and small shard-local KV cache buffers.
+
+This is a design-only slice. It does not allocate request-shaped metadata,
+construct layers or a runner, run attention, add activation transfer, or change
+serve/runtime behavior.
+
+### Current metadata path
+
+Request metadata is produced before the model runner sees a batch:
+
+- `GpuLLMEngine::build_metadata` owns sequence block allocation for the serving
+  path. It maintains `seq_block_tables`, allocates physical `BlockId`s from the
+  configured `cache.block_size` and `num_gpu_blocks`, and emits
+  `SequenceGroupMetadata`.
+- `crates/gpt-oss-engine/src/worker/input.rs` converts
+  `SequenceGroupMetadata` into `ModelInput`.
+  - `prepare_prefill` emits all prompt tokens for each live sequence.
+  - `prepare_decode` and `prepare_decode_reuse` emit one token per sequence.
+  - `merge_inputs` concatenates prefill rows first and decode rows second for
+    mixed batches.
+- `ModelInput` carries `token_ids`, `position_ids`, `is_prefill`, and
+  `bridge::AttentionMetadata`.
+- `AttentionMetadata` carries `slot_mapping`, `context_lens`, `block_tables`,
+  `max_context_len`, and `query_lens`.
+- For CUDA graph decode, `GraphRunner::pad_input` may add dummy decode rows and
+  zero-ish metadata up to the padded graph batch size before the runner upload.
+
+The single-device CUDA runner then packs metadata:
+
+- `GpuModelRunner::new` computes `graph_max_blocks` as
+  `(config.max_position + cache.block_size() - 1) / cache.block_size()`.
+  This fixed stride is used for `block_tables` to keep graph-captured pointers
+  and layout stable.
+- `GpuModelRunner` owns:
+  - `cpu_scratch: RefCell<Vec<i32>>`
+  - `meta_packed: RefCell<ReusableGpuBuf>`
+  - `meta_packed_offsets: Cell<PackedMetaOffsets>`
+  - `graph_output: RefCell<Option<CudaSlice<i32>>>`
+- `GpuModelRunner::upload_metadata` packs all per-step fields into
+  `cpu_scratch` as `i32`, then performs one `memcpy_htod` into `meta_packed`.
+  Filtering is not involved here; the packed metadata corresponds to one
+  concrete request batch.
+- `GpuModelRunner::forward_ex`, `forward_last_token_logits`,
+  `debug_prefill_trace`, `forward_graph_body`, and `forward_gpu_only` slice
+  `meta_packed` through `PackedMetaOffsets` and pass those views into
+  `GpuLayerInput`.
+- `GpuLayerInput` passes:
+  - `positions` to RoPE kernels.
+  - `slot_mapping` to cache write kernels.
+  - `block_tables`, `context_lens`, and `seq_start_pos` to prefill attention.
+  - `block_tables` and `context_lens` to decode attention.
+  - `key_cache` and `value_cache` as explicit per-layer cache slice pointers.
+
+`graph_output` is graph/output-adjacent, not request metadata. It is lazily
+allocated by GPU-only/graph paths as `[num_tokens] i32` token ids and should
+remain out of scope for the first split metadata allocation smoke.
+
+### Request-shaped inputs
+
+All packed metadata fields are currently uploaded as `i32` in one contiguous
+GPU buffer, even when the CPU source type is `u32`.
+
+| Object | Owner today | CPU source | GPU view / buffer | Shape / length | Depends on |
+| --- | --- | --- | --- | --- | --- |
+| `token_ids` | `ModelInput`, packed by `GpuModelRunner::upload_metadata` | `Vec<u32>` | slice of `meta_packed` as `CudaView<i32>` | `num_tokens` | request tokens, prefill/decode mode, graph padding |
+| `positions` | `ModelInput`, packed by `GpuModelRunner::upload_metadata` | `Vec<u32>` | slice of `meta_packed` as `CudaView<i32>` | `num_tokens` | per-token absolute position, prefill/decode mode, graph padding |
+| `context_lens` | `AttentionMetadata`, packed by `GpuModelRunner::upload_metadata` | `Vec<u32>` | slice of `meta_packed` as `CudaView<i32>` | `num_seqs` | sequence lengths including past/cache length; graph padding may add dummy sequences |
+| `block_tables` | `SequenceGroupMetadata` -> `AttentionMetadata`, padded by `upload_metadata` | `Vec<Vec<u32>>` of physical block ids | slice of `meta_packed` as `CudaView<i32>` | `num_seqs * graph_max_blocks` | block size, max model length, allocated physical blocks, sequence lengths, graph layout |
+| `slot_mapping` | `AttentionMetadata`, packed by `GpuModelRunner::upload_metadata` | `Vec<u32>` | slice of `meta_packed` as `CudaView<i32>` | `num_tokens` | block size, physical block table, token position within each sequence |
+| `query_lens` | `AttentionMetadata`; not uploaded directly | `Vec<u32>` | folded into `seq_start_pos` | `num_seqs` CPU-side input | prefill/decode mode; mixed batches have prompt lengths plus decode ones |
+| `seq_start_pos` | derived inside `GpuModelRunner::upload_metadata` | computed from `query_lens` | slice of `meta_packed` as `CudaView<i32>` | `num_seqs + 1` with sentinel `num_tokens` | query-token counts, mixed batch order, prefill/decode mode |
+| `max_context_len` | `AttentionMetadata` | scalar `u32` | scalar argument, not in `meta_packed` | one value | max of `context_lens`; past/cache length |
+| `graph_output` | `GpuModelRunner` graph path | none before forward | `CudaSlice<i32>` | `num_tokens` | graph/GPU-only output policy, not metadata allocation |
+
+The packed buffer size in elements is:
+
+```text
+num_tokens                  // token_ids
++ num_tokens                // positions
++ num_seqs                 // context_lens
++ num_seqs * graph_max_blocks
++ num_tokens                // slot_mapping
++ num_seqs + 1              // seq_start_pos
+```
+
+The byte count is that element count times `sizeof(i32)`.
+
+Prefill and decode differ in source shapes:
+
+- Prefill: each sequence contributes its full prompt. `query_lens ==
+  context_lens`, `num_tokens` is the sum of prompt lengths, and `positions`
+  are `0..prompt_len` per sequence in the current input builder.
+- Decode: each sequence contributes one token. `query_lens` is all ones,
+  `num_tokens == num_seqs`, and `positions` is `seq_len - 1` per sequence.
+- Mixed batches: prefill rows are concatenated before decode rows and
+  `seq_start_pos` must be derived from `query_lens`, not from `context_lens`.
+
+### Global vs shard-local metadata ownership
+
+The future split path should treat request metadata as layer-independent and
+small compared with weights/KV cache. The first implementation should duplicate
+the same packed request metadata to every shard that will execute layers for
+that request.
+
+Recommended ownership:
+
+- `token_ids`: duplicate only to the embedding shard for the first split
+  execution path. It is needed for embedding lookup, not for middle/final
+  shards after activation handoff exists. A metadata allocation smoke may still
+  report its shape globally.
+- `positions`: duplicate to every layer-owning shard because every shard's
+  layers need RoPE positions.
+- `context_lens`: duplicate to every layer-owning shard because attention is
+  layer-local but request layout is global.
+- `block_tables`: duplicate to every layer-owning shard. The physical block ids
+  name slots inside each shard's own KV cache allocation; using the same block
+  ids is valid as long as every shard allocates the same block count and block
+  size for its local layers.
+- `slot_mapping`: duplicate to every layer-owning shard because every local
+  layer writes its own K/V into that shard's cache at the same token slots.
+- `seq_start_pos`: duplicate to every layer-owning shard for prefill attention.
+- `max_context_len`: pass unchanged to every layer-owning shard.
+- `graph_output`: final-head/output-shard only, and deferred until split
+  execution without graphs is already working.
+
+Do not split request metadata by layer ownership. Layer ownership already
+decides which cache pointers and weights are local. Request metadata describes
+the batch, not the layer set.
+
+### Interaction with shard-local KV cache
+
+The existing split KV allocation plan is absolute-layer-first at the public
+boundary and shard-local inside each resource island:
+
+- GPU0 for `split:0-11@0,12-23@1` owns absolute layers 0..11 with local cache
+  indices 0..11.
+- GPU1 owns absolute layers 12..23 with local cache indices 0..11.
+
+Metadata should not contain layer indices and should not know about local cache
+indices. The layer execution boundary should resolve:
+
+```text
+absolute_layer_idx -> ShardKvCachePlan::entry_for_absolute_layer(...)
+                   -> local_cache_idx
+                   -> key/value cache slice pointers
+```
+
+before constructing `GpuLayerInput`.
+
+Avoid any design where layer execution indexes a shard-local `gpu_cache` vector
+with `absolute_layer_idx`. The metadata packet can remain identical across
+shards because the layer-to-cache resolution happens outside the metadata.
+
+### Minimal bench-only metadata allocation smoke
+
+A future smoke should be bench-only and synthetic-request-shaped. It should not
+reuse a live server request and should not run attention.
+
+Suggested flags on `multi_gpu_layer_sharding_split_allocation_smoke`:
+
+```text
+--allocate-metadata
+--metadata-mode <decode|prefill>
+--metadata-num-tokens <N>
+--metadata-num-seqs <N>
+--metadata-context-len <N>
+--metadata-block-size <N>
+```
+
+For the first slice, prefer `decode` mode only:
+
+- Require `metadata_num_tokens == metadata_num_seqs`.
+- Set `query_lens = vec![1; num_seqs]`.
+- Set `context_lens = vec![metadata_context_len; num_seqs]`.
+- Build one block-table row per sequence with
+  `ceil(metadata_context_len / metadata_block_size)` logical block ids, then
+  pad to `graph_max_blocks` during packing.
+- Set `slot_mapping` for one decode token per sequence using the final token's
+  physical block and offset.
+- Set `positions` to `metadata_context_len - 1` for every sequence.
+- Derive `seq_start_pos = 0..num_seqs` plus sentinel `num_tokens`.
+
+Status should report, per shard:
+
+```text
+metadata_allocated
+metadata_mode
+metadata_num_tokens
+metadata_num_seqs
+metadata_graph_max_blocks
+metadata_packed_elements
+metadata_packed_bytes
+metadata_token_ids_len
+metadata_positions_len
+metadata_context_lens_len
+metadata_block_tables_len
+metadata_slot_mapping_len
+metadata_seq_start_pos_len
+metadata_error
+```
+
+This smoke should allocate/copy only the packed metadata buffer on each
+layer-owning shard stream. It must not build `GpuModelRunner`, run embedding,
+write KV cache, launch attention, allocate graph output, or read logits.
+
+The existing real-model allocation smoke may accept these synthetic metadata
+flags later, clearly labeled as metadata allocation smoke inputs. Without those
+flags it should remain allocation-only and keep metadata deferred.
+
+### Prefill/decode scope
+
+The first metadata smoke should target decode-like metadata only. Decode has
+the smallest useful shape contract: one token per sequence, one query per
+sequence, and the graph-padding path already cares about stable decode batch
+sizes.
+
+Prefill should remain deferred until decode metadata allocation is proven.
+Prefill adds variable query lengths per sequence, larger `num_tokens`, and a
+stronger requirement that `seq_start_pos` be built from `query_lens` rather than
+from `context_lens`. Mixed prefill+decode should remain further out of scope.
+
+### CUDA graph scope
+
+CUDA graph capture and replay should stay out of scope for split sharding until
+eager split execution works without graphs.
+
+Reason:
+
+- Graph replay depends on stable metadata pointers, padded decode batch sizes,
+  `graph_output`, and graph-captured kernel launch topology.
+- Split execution will add activation handoff and per-shard sequencing that
+  should be validated eagerly before capture is considered.
+- The first split metadata allocation smoke can use the same `graph_max_blocks`
+  padded layout for future compatibility, but it should not begin capture,
+  replay graphs, allocate graph output, or make graph-safety claims.
+
+### Risks / blockers
+
+- The current `upload_metadata` helper is an instance method on
+  `GpuModelRunner`, which is intentionally not constructed in the split bench
+  path. A future metadata smoke should either extract a narrow packing helper or
+  implement a bench-only packer that mirrors the formulas above.
+- Decode metadata uses physical block ids from the serving allocator. A
+  synthetic smoke must ensure its generated block ids fit within the requested
+  `kv_num_blocks`.
+- `block_tables` are padded to `graph_max_blocks`, which derives from model
+  max position and block size, not only the request's visible context. This can
+  dominate metadata byte counts for larger synthetic `num_seqs`.
+- Future execution must keep the absolute-layer to local-cache mapping outside
+  metadata to avoid shard-local indexing bugs.
+- Tied LM-head fallback remains independent from metadata allocation and still
+  needs a separate final-shard design.
+
+### Next bounded step
+
+Add a bench-only metadata allocation skeleton with synthetic decode request
+shape flags. The skeleton should duplicate the packed metadata buffer to each
+layer-owning shard, report shapes and byte counts, keep graph output deferred,
+and continue to make no attention/execution/parity claim.
+
+### Primary classification
+
+multi_gpu_layer_sharding_metadata_shape_boundary_design_complete
