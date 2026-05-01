@@ -1788,6 +1788,64 @@ Next bounded step: either collect another ordered surface or decide whether
 reverse o-proj accumulation belongs in a scoped validation-only policy design
 discussion. It is not promoted here.
 
+## Layer5 Ordered Surface Validation Status
+
+The oracle lane generated a focused layer5 ordered surface pilot:
+
+```text
+/tmp/layer5_ordered_surface_pilot_status.json
+/tmp/layer5_ordered_attention_bundle_status.json
+/tmp/layer5_ordered_attention_bundle/
+/tmp/layer5_ordered_attention_audit_bundle_status.json
+/tmp/layer5_ordered_attention_audit_bundle/
+/tmp/layer5_ordered_mlp_bundle_status.json
+/tmp/layer5_ordered_mlp_bundle/
+```
+
+Consumer summary status:
+
+```text
+/tmp/layer5_ordered_consumer_surface_status.json
+classification = layer5_ordered_consumer_attention_audit_failed
+```
+
+The layer5 attention audit consumes the supplemental all-token V boundary
+emitted by the oracle:
+
+```text
+classification = layer5_ordered_attention_audit_weighted_v_mismatch
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+
+weighted V mismatches = 1
+weighted V max_abs_diff = 0.00000095367431640625
+first/worst weighted V mismatch = hidden lane 3028
+local = 0.000194549560546875
+official = 0.00019550323486328125
+
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+Because Phase A stopped on this weighted-V audit mismatch, the consumer did not
+run strict/default layer5 ordered bundle validation, selected MLP down replay,
+raw-QK policy sweep, o-proj policy sweep, or policy revalidation. The ordered
+MLP bundle metadata remains recorded but unconsumed:
+
+```text
+selected_experts = [24, 6, 12, 1]
+routing_weights = [0.392578125, 0.25390625, 0.19140625, 0.1611328125]
+```
+
+No BF16-product correction or other policy was applied. No layer5 output was
+emitted, the ladder was not continued, no tolerance or correction metadata was
+applied, no runtime/default routing/CUDA behavior changed, and there is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+localize the layer5 weighted-V single-lane audit mismatch, including sink-column
+handling, GQA mapping, shape/layout, and rounding policy, before using the
+layer5 ordered attention surface for full bundle validation.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

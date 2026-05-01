@@ -4014,6 +4014,64 @@ or 4097-token claim. Next bounded step: treat reverse o-proj accumulation as
 validation-only evidence pending additional ordered surfaces or a separate
 scoped policy discussion.
 
+## Layer5 Ordered Surface Validation Status
+
+The layer5 ordered surface pilot is now partially consumed on the
+validation-runtime side:
+
+```text
+/tmp/layer5_ordered_surface_pilot_status.json
+/tmp/layer5_ordered_attention_bundle_status.json
+/tmp/layer5_ordered_attention_bundle/
+/tmp/layer5_ordered_attention_audit_bundle_status.json
+/tmp/layer5_ordered_attention_audit_bundle/
+/tmp/layer5_ordered_mlp_bundle_status.json
+/tmp/layer5_ordered_mlp_bundle/
+```
+
+Summary status:
+
+```text
+/tmp/layer5_ordered_consumer_surface_status.json
+classification = layer5_ordered_consumer_attention_audit_failed
+```
+
+The attention audit stopped at weighted-V recomputation from attention
+probabilities plus audit all-token V:
+
+```text
+classification = layer5_ordered_attention_audit_weighted_v_mismatch
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+
+weighted V mismatches = 1
+weighted V max_abs_diff = 0.00000095367431640625
+first/worst weighted V mismatch = hidden lane 3028
+local = 0.000194549560546875
+official = 0.00019550323486328125
+
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The ordered MLP bundle was inspected but not replayed because Phase A did not
+clear:
+
+```text
+selected_experts = [24, 6, 12, 1]
+routing_weights = [0.392578125, 0.25390625, 0.19140625, 0.1611328125]
+```
+
+Strict/default ordered bundle validation, selected MLP down replay, raw-QK
+policy sweep, o-proj policy sweep, and policy revalidation were not run for
+layer5. No layer5 output was emitted, the ladder was not continued, no
+runtime/default routing/CUDA behavior changed, no tolerance or correction
+metadata was applied, no BF16-product correction was applied, and there is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+localize the layer5 weighted-V single-lane audit mismatch before full ordered
+bundle validation or MLP replay.
+
 ## Validation Commands
 
 For the skeleton slice:
