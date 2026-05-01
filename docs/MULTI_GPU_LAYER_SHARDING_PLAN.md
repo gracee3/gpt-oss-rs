@@ -5945,3 +5945,129 @@ before CUDA allocation.
 Primary classification:
 
 multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete
+
+## Real-model fused QKV + norm + bias allocation smoke status
+
+This operator slice reran the real restricted model with the full current
+bench-only allocation baseline after adding QKV/O bias f16 conversion.
+
+Command run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_bias_status.json
+```
+
+The output JSON and redirected logs are under `/tmp/multi_gpu_layer_sharding`
+and are not committed.
+
+Run configuration:
+
+- model path: `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`.
+- dtype: `f16`.
+- device map: `split:0-11@0,12-23@1`.
+- restricted sinks override: enabled.
+- RoPE metadata allocation: enabled.
+- KV cache allocation: enabled with `kv_num_blocks=1`, `kv_block_size=16`.
+- synthetic decode metadata allocation: enabled with tokens/seqs/context/block
+  size `1 / 1 / 1 / 16`.
+- fused f16 allocation: enabled.
+
+Result:
+
+- primary result classification:
+  `multi_gpu_layer_sharding_real_model_fused_qkv_norm_bias_allocation_smoke_complete`.
+- command status classification:
+  `multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete`.
+- resource construction: succeeded.
+- manifest-owned f16/U8 allocation and retention: succeeded.
+- selective f32 norm/bias loading: succeeded.
+- RoPE allocation: succeeded.
+- KV allocation: succeeded.
+- synthetic decode metadata allocation: succeeded.
+- fused QKV allocation: succeeded.
+- input/post-attention norm f16 conversion: succeeded.
+- QKV/O bias f16 conversion: succeeded.
+- unassigned tensor count: 0.
+- invalid tensor count: 0.
+
+Shard summary:
+
+- GPU0 owns embeddings and absolute layers 0..11:
+  - f16 tensors: 181.
+  - f32 norm/bias tensors: 72.
+  - U8 host tensors: 48.
+  - RoPE: 2,097,152 bytes.
+  - KV: 393,216 bytes.
+  - metadata: 32,792 bytes.
+  - fused QKV: 12 buffers, 353,894,400 bytes.
+  - input layernorm f16: 12 buffers, 69,120 bytes.
+  - post-attention norm f16: 12 buffers, 69,120 bytes.
+  - fused QKV bias f16: 12 buffers, 122,880 bytes.
+  - O-projection bias f16: 12 buffers, 69,120 bytes.
+  - fused total: 354,224,640 bytes.
+  - dense gate/up: `not_applicable`.
+  - f16 scratch: `not_applicable`.
+- GPU1 owns absolute layers 12..23 and the final head:
+  - f16 tensors: 182.
+  - f32 norm/bias tensors: 72.
+  - U8 host tensors: 48.
+  - RoPE: 2,097,152 bytes.
+  - KV: 393,216 bytes.
+  - metadata: 32,792 bytes.
+  - fused QKV: 12 buffers, 353,894,400 bytes.
+  - input layernorm f16: 12 buffers, 69,120 bytes.
+  - post-attention norm f16: 12 buffers, 69,120 bytes.
+  - fused QKV bias f16: 12 buffers, 122,880 bytes.
+  - O-projection bias f16: 12 buffers, 69,120 bytes.
+  - fused total: 354,224,640 bytes.
+  - dense gate/up: `not_applicable`.
+  - f16 scratch: `not_applicable`.
+
+Per-layer fused status showed every owned absolute layer with:
+
+- fused QKV: `allocated`.
+- input layernorm f16: `allocated`.
+- post-attention norm f16: `allocated`.
+- QKV bias f16: `allocated`.
+- O-projection bias f16: `allocated`.
+- dense gate/up: `not_applicable`.
+
+Stderr contained existing Rust/CUDA build warnings and the cargo command line;
+the status JSON reported no top-level fused error.
+
+No exact failure boundary remains for this slice.
+
+No split execution, layer construction, `GpuModelRunner` construction,
+attention, graph output, final norm execution, LM-head execution, logits, graph
+capture, forward pass, serving behavior, or parity path was added or exercised.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+Next bounded step:
+
+- final/embed f16 conversion allocation.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
+- layer-construction skeleton without execution.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_fused_qkv_norm_bias_allocation_smoke_complete
