@@ -94,6 +94,7 @@ pub enum RuntimeMetadataStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FusedF16AllocationStatus {
     Allocated,
+    AvailableFromUploadedF16,
     Deferred,
     NotApplicable,
 }
@@ -353,7 +354,13 @@ pub struct CudaShardFusedF16AllocationStatus {
     pub f16_qkv_bias_count: usize,
     pub f16_o_proj_bias_count: usize,
     pub embedding_f16_allocated: bool,
+    pub embedding_f16_status: FusedF16AllocationStatus,
+    pub embedding_f16_bytes: usize,
+    pub embedding_f16_source: Option<String>,
     pub final_norm_f16_allocated: bool,
+    pub final_norm_f16_status: FusedF16AllocationStatus,
+    pub final_norm_f16_bytes: usize,
+    pub final_norm_f16_source: Option<String>,
     pub fused_qkv_total_bytes: usize,
     pub fused_gate_up_total_bytes: usize,
     pub f16_layernorm_total_bytes: usize,
@@ -655,6 +662,7 @@ impl FusedF16AllocationStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             FusedF16AllocationStatus::Allocated => "allocated",
+            FusedF16AllocationStatus::AvailableFromUploadedF16 => "available_from_uploaded_f16",
             FusedF16AllocationStatus::Deferred => "deferred",
             FusedF16AllocationStatus::NotApplicable => "not_applicable",
         }
@@ -1169,7 +1177,19 @@ impl CudaShardFusedF16AllocationPlan {
             f16_qkv_bias_count: self.f16_qkv_bias_count,
             f16_o_proj_bias_count: self.f16_o_proj_bias_count,
             embedding_f16_allocated: fused_f16_allocated && self.embedding_f16_planned,
+            embedding_f16_status: allocation_status_for_planned(
+                self.embedding_f16_planned,
+                fused_f16_allocated && self.embedding_f16_planned,
+            ),
+            embedding_f16_bytes: 0,
+            embedding_f16_source: None,
             final_norm_f16_allocated: fused_f16_allocated && self.final_norm_f16_planned,
+            final_norm_f16_status: allocation_status_for_planned(
+                self.final_norm_f16_planned,
+                fused_f16_allocated && self.final_norm_f16_planned,
+            ),
+            final_norm_f16_bytes: 0,
+            final_norm_f16_source: None,
             fused_qkv_total_bytes: if fused_f16_allocated {
                 self.fused_qkv_total_bytes
             } else {
@@ -1548,6 +1568,8 @@ mod cuda {
     pub struct CudaShardFusedF16Buffers {
         pub device_id: DeviceId,
         pub layers: Vec<CudaLayerFusedF16Buffers>,
+        pub embedding_f16: Option<CudaSlice<f16>>,
+        pub final_norm_f16: Option<CudaSlice<f16>>,
         pub status: CudaShardFusedF16AllocationStatus,
     }
 
@@ -1949,7 +1971,8 @@ mod cuda {
             let needs_f32_casts = plan.f16_layernorm_count > 0
                 || plan.f16_postnorm_count > 0
                 || plan.f16_qkv_bias_count > 0
-                || plan.f16_o_proj_bias_count > 0;
+                || plan.f16_o_proj_bias_count > 0
+                || plan.final_norm_f16_planned;
             let cast_kernel = if needs_f32_casts {
                 Some(
                     get_or_load_cast_f32_to_f16_kernel(
@@ -1981,6 +2004,38 @@ mod cuda {
                     cast_kernel.as_ref(),
                 )?);
             }
+
+            let embedding_f16 = if plan.embedding_f16_planned {
+                embedding_f16_available_from_uploaded(resource, &store, weights)
+            } else {
+                GlobalF16SideBuffer::not_applicable()
+            };
+            let final_norm_f16 = if plan.final_norm_f16_planned {
+                allocate_final_norm_f16(
+                    resource,
+                    &store,
+                    f32_weights.ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing f32 final norm weights for shard {}",
+                            resource.device_id
+                        ))
+                    })?,
+                    f32_shapes.ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing f32 final norm shapes for shard {}",
+                            resource.device_id
+                        ))
+                    })?,
+                    cast_kernel.as_ref().ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing f16 final norm cast kernel for shard {}",
+                            resource.device_id
+                        ))
+                    })?,
+                )?
+            } else {
+                GlobalF16SideBuffer::not_applicable()
+            };
 
             let fused_qkv_weight_count = layers
                 .iter()
@@ -2043,20 +2098,24 @@ mod cuda {
                 + f16_layernorm_total_bytes
                 + f16_postnorm_total_bytes
                 + f16_qkv_bias_total_bytes
-                + f16_o_proj_bias_total_bytes;
+                + f16_o_proj_bias_total_bytes
+                + final_norm_f16.bytes;
             let fused_f16_allocated = fused_qkv_weight_count > 0
                 || fused_gate_up_weight_count > 0
                 || f16_layernorm_count > 0
                 || f16_postnorm_count > 0
                 || f16_qkv_bias_count > 0
-                || f16_o_proj_bias_count > 0;
+                || f16_o_proj_bias_count > 0
+                || final_norm_f16.buffer.is_some()
+                || embedding_f16.status == FusedF16AllocationStatus::AvailableFromUploadedF16;
             let fused_f16_status = if fused_f16_allocated {
                 FusedF16AllocationStatus::Allocated
             } else {
                 plan.fused_status
             };
-            let conversion_work_deferred =
-                plan.embedding_f16_planned || plan.final_norm_f16_planned;
+            let conversion_work_deferred = embedding_f16.status
+                == FusedF16AllocationStatus::Deferred
+                || final_norm_f16.status == FusedF16AllocationStatus::Deferred;
 
             let status = CudaShardFusedF16AllocationStatus {
                 device_id: resource.device_id,
@@ -2072,7 +2131,13 @@ mod cuda {
                 f16_qkv_bias_count,
                 f16_o_proj_bias_count,
                 embedding_f16_allocated: false,
-                final_norm_f16_allocated: false,
+                embedding_f16_status: embedding_f16.status,
+                embedding_f16_bytes: embedding_f16.bytes,
+                embedding_f16_source: embedding_f16.source.clone(),
+                final_norm_f16_allocated: final_norm_f16.buffer.is_some(),
+                final_norm_f16_status: final_norm_f16.status,
+                final_norm_f16_bytes: final_norm_f16.bytes,
+                final_norm_f16_source: final_norm_f16.source.clone(),
                 fused_qkv_total_bytes,
                 fused_gate_up_total_bytes,
                 f16_layernorm_total_bytes,
@@ -2101,6 +2166,8 @@ mod cuda {
             Ok(Self {
                 device_id: resource.device_id,
                 layers,
+                embedding_f16: embedding_f16.buffer,
+                final_norm_f16: final_norm_f16.buffer,
                 status,
             })
         }
@@ -2296,6 +2363,95 @@ mod cuda {
                 status,
             })
         }
+    }
+
+    struct GlobalF16SideBuffer {
+        buffer: Option<CudaSlice<f16>>,
+        status: FusedF16AllocationStatus,
+        bytes: usize,
+        source: Option<String>,
+    }
+
+    impl GlobalF16SideBuffer {
+        fn not_applicable() -> Self {
+            Self {
+                buffer: None,
+                status: FusedF16AllocationStatus::NotApplicable,
+                bytes: 0,
+                source: None,
+            }
+        }
+    }
+
+    fn embedding_f16_available_from_uploaded(
+        resource: &CudaShardResources,
+        store: &ShardWeightStore,
+        weights: &HashMap<String, CudaSlice<f16>>,
+    ) -> GlobalF16SideBuffer {
+        let name = match store.embedding_tensor_name_if_owned() {
+            Ok(Some(name)) => name,
+            Ok(None) => return GlobalF16SideBuffer::not_applicable(),
+            Err(error) => {
+                return GlobalF16SideBuffer {
+                    buffer: None,
+                    status: FusedF16AllocationStatus::Deferred,
+                    bytes: 0,
+                    source: Some(format!("embedding ownership deferred: {error:?}")),
+                };
+            }
+        };
+
+        if let Some(weight) = weights.get(&name) {
+            GlobalF16SideBuffer {
+                buffer: None,
+                status: FusedF16AllocationStatus::AvailableFromUploadedF16,
+                bytes: weight.len() * std::mem::size_of::<f16>(),
+                source: Some("uploaded_f16".into()),
+            }
+        } else {
+            GlobalF16SideBuffer {
+                buffer: None,
+                status: FusedF16AllocationStatus::Deferred,
+                bytes: 0,
+                source: Some(format!(
+                    "deferred_by_embedding_f32_fallback_boundary on shard {}",
+                    resource.device_id
+                )),
+            }
+        }
+    }
+
+    fn allocate_final_norm_f16(
+        resource: &CudaShardResources,
+        store: &ShardWeightStore,
+        f32_weights: &HashMap<String, CudaSlice<f32>>,
+        f32_shapes: &HashMap<String, Vec<usize>>,
+        cast_kernel: &CudaFunction,
+    ) -> Result<GlobalF16SideBuffer> {
+        let Some(name) = store
+            .final_norm_tensor_name_if_owned()
+            .map_err(|error| LLMError::GpuError(format!("f16 final norm ownership: {error:?}")))?
+        else {
+            return Ok(GlobalF16SideBuffer::not_applicable());
+        };
+        let weight = require_f32_weight(f32_weights, &name)?;
+        let elements = require_vector_shape(f32_shapes, &name)?;
+        require_f32_slice_len(weight, elements, &name)?;
+
+        let final_norm = cast_f32_tensor_to_f16(&resource.stream, weight, elements, cast_kernel)
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} f16 final norm cast failed tensor {}: {e}",
+                    resource.device_id, name
+                ))
+            })?;
+        let bytes = final_norm.len() * std::mem::size_of::<f16>();
+        Ok(GlobalF16SideBuffer {
+            buffer: Some(final_norm),
+            status: FusedF16AllocationStatus::Allocated,
+            bytes,
+            source: Some("f32_cast".into()),
+        })
     }
 
     fn allocate_fused_qkv(
@@ -3229,6 +3385,39 @@ mod tests {
         assert!(plan.shards[1].owns_final_head);
         assert!(!plan.shards[1].embedding_f16_planned);
         assert!(plan.shards[1].final_norm_f16_planned);
+    }
+
+    #[test]
+    fn fused_f16_plan_status_reports_global_side_buffers_deferred_until_allocation() {
+        let manifest = split_fused_upload_manifest();
+        let plan = ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, None);
+        let status = ShardedFusedF16AllocationStatus::from_plan(&plan, false, false);
+
+        let gpu0 = &status.shards[0];
+        assert_eq!(
+            gpu0.embedding_f16_status,
+            FusedF16AllocationStatus::Deferred
+        );
+        assert_eq!(
+            gpu0.final_norm_f16_status,
+            FusedF16AllocationStatus::NotApplicable
+        );
+        assert_eq!(gpu0.embedding_f16_bytes, 0);
+        assert_eq!(gpu0.embedding_f16_source, None);
+        assert!(!gpu0.embedding_f16_allocated);
+
+        let gpu1 = &status.shards[1];
+        assert_eq!(
+            gpu1.embedding_f16_status,
+            FusedF16AllocationStatus::NotApplicable
+        );
+        assert_eq!(
+            gpu1.final_norm_f16_status,
+            FusedF16AllocationStatus::Deferred
+        );
+        assert_eq!(gpu1.final_norm_f16_bytes, 0);
+        assert_eq!(gpu1.final_norm_f16_source, None);
+        assert!(!gpu1.final_norm_f16_allocated);
     }
 
     #[test]

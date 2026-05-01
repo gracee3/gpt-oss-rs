@@ -1,6 +1,4 @@
-#[cfg(feature = "cuda")]
-use std::collections::BTreeSet;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -50,6 +48,8 @@ const FUSED_QKV_NORM_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete";
 const FUSED_QKV_NORM_BIAS_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete";
+const FUSED_QKV_NORM_BIAS_GLOBAL_F16_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_norm_bias_global_f16_allocation_smoke_complete";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
@@ -57,6 +57,8 @@ const FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_allocation_cast_error";
 const BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_bias_conversion_allocation_blocked";
+const GLOBAL_F16_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_global_f16_allocation_blocked";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -281,7 +283,13 @@ struct SplitAllocationSmokeShardReport {
     f16_qkv_bias_total_bytes: usize,
     f16_o_proj_bias_total_bytes: usize,
     embedding_f16_allocated: bool,
+    embedding_f16_status: String,
+    embedding_f16_bytes: usize,
+    embedding_f16_source: Option<String>,
     final_norm_f16_allocated: bool,
+    final_norm_f16_status: String,
+    final_norm_f16_bytes: usize,
+    final_norm_f16_source: Option<String>,
     fused_total_bytes: usize,
     fused_layer_absolute_indices: Vec<usize>,
     fused_layer_statuses: Vec<FusedLayerReport>,
@@ -896,6 +904,15 @@ fn build_split_allocation_smoke_report(
             let classification = if fused_f16_succeeded {
                 if actual_fused_f16_status
                     .as_ref()
+                    .map(|status| {
+                        fused_status_has_allocated_biases(status)
+                            && fused_status_has_global_f16(status)
+                    })
+                    .unwrap_or(false)
+                {
+                    FUSED_QKV_NORM_BIAS_GLOBAL_F16_ALLOCATION_CLASSIFICATION
+                } else if actual_fused_f16_status
+                    .as_ref()
                     .map(fused_status_has_allocated_biases)
                     .unwrap_or(false)
                 {
@@ -1393,7 +1410,6 @@ fn shapes_for_names<'a>(
         .sum()
 }
 
-#[cfg(feature = "cuda")]
 fn fused_f32_tensor_filter_set(manifest: &ShardTensorManifest) -> BTreeSet<String> {
     let mut filter = BTreeSet::new();
     for &layer_idx in &manifest.absolute_layers {
@@ -1410,6 +1426,9 @@ fn fused_f32_tensor_filter_set(manifest: &ShardTensorManifest) -> BTreeSet<Strin
                 filter.insert(name);
             }
         }
+    }
+    if manifest.should_load_required_tensor("model.norm.weight") {
+        filter.insert("model.norm.weight".to_string());
     }
     filter
 }
@@ -1439,8 +1458,19 @@ fn fused_status_has_allocated_biases(status: &ShardedFusedF16AllocationStatus) -
     })
 }
 
+fn fused_status_has_global_f16(status: &ShardedFusedF16AllocationStatus) -> bool {
+    status.shards.iter().any(|shard| {
+        shard.final_norm_f16_allocated
+            || shard.final_norm_f16_bytes > 0
+            || shard.embedding_f16_status == FusedF16AllocationStatus::AvailableFromUploadedF16
+            || shard.embedding_f16_bytes > 0
+    })
+}
+
 fn classify_fused_f16_error(error: &str) -> &'static str {
-    if error.contains("f16 bias") || error.contains("f32 bias") {
+    if error.contains("final norm") || error.contains("embedding f16") {
+        GLOBAL_F16_ALLOCATION_BLOCKED_CLASSIFICATION
+    } else if error.contains("f16 bias") || error.contains("f32 bias") {
         BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION
     } else if error.contains("f16 norm cast")
         || error.contains("f16 cast kernel")
@@ -1855,7 +1885,13 @@ fn render_shard_report(
         f16_qkv_bias_total_bytes,
         f16_o_proj_bias_total_bytes,
         embedding_f16_allocated,
+        embedding_f16_status,
+        embedding_f16_bytes,
+        embedding_f16_source,
         final_norm_f16_allocated,
+        final_norm_f16_status,
+        final_norm_f16_bytes,
+        final_norm_f16_source,
         fused_total_bytes,
         fused_layer_absolute_indices,
         fused_layer_statuses,
@@ -1884,7 +1920,13 @@ fn render_shard_report(
                 status.f16_qkv_bias_total_bytes,
                 status.f16_o_proj_bias_total_bytes,
                 status.embedding_f16_allocated,
+                status.embedding_f16_status.as_str().to_string(),
+                status.embedding_f16_bytes,
+                status.embedding_f16_source.clone(),
                 status.final_norm_f16_allocated,
+                status.final_norm_f16_status.as_str().to_string(),
+                status.final_norm_f16_bytes,
+                status.final_norm_f16_source.clone(),
                 status.fused_total_bytes,
                 status.fused_layer_absolute_indices.clone(),
                 status
@@ -1918,7 +1960,13 @@ fn render_shard_report(
                 0,
                 0,
                 false,
+                FusedF16AllocationStatus::NotApplicable.as_str().to_string(),
+                0,
+                None,
                 false,
+                FusedF16AllocationStatus::NotApplicable.as_str().to_string(),
+                0,
+                None,
                 0,
                 Vec::new(),
                 Vec::new(),
@@ -2007,7 +2055,13 @@ fn render_shard_report(
         f16_qkv_bias_total_bytes,
         f16_o_proj_bias_total_bytes,
         embedding_f16_allocated,
+        embedding_f16_status,
+        embedding_f16_bytes,
+        embedding_f16_source,
         final_norm_f16_allocated,
+        final_norm_f16_status,
+        final_norm_f16_bytes,
+        final_norm_f16_source,
         fused_total_bytes,
         fused_layer_absolute_indices,
         fused_layer_statuses,
@@ -2958,6 +3012,15 @@ mod tests {
     }
 
     #[test]
+    fn fused_f16_error_classification_maps_global_f16_errors() {
+        let classification = classify_fused_f16_error(
+            "gpu error: shard 1 f16 final norm cast failed tensor model.norm.weight",
+        );
+
+        assert_eq!(classification, GLOBAL_F16_ALLOCATION_BLOCKED_CLASSIFICATION);
+    }
+
+    #[test]
     fn fused_f16_error_classification_keeps_qkv_errors_distinct() {
         let classification = classify_fused_f16_error(
             "gpu error: shard 0 fused QKV q copy failed absolute layer 12",
@@ -3026,15 +3089,46 @@ mod tests {
         let gpu0 = shard(&report, 0);
         assert!(gpu0.owns_embeddings);
         assert!(!gpu0.embedding_f16_allocated);
+        assert_eq!(gpu0.embedding_f16_status, "deferred");
+        assert_eq!(gpu0.embedding_f16_bytes, 0);
         assert!(!gpu0.final_norm_f16_allocated);
+        assert_eq!(gpu0.final_norm_f16_status, "not_applicable");
 
         let gpu1 = shard(&report, 1);
         assert!(gpu1.owns_final_head);
         assert!(!gpu1.embedding_f16_allocated);
+        assert_eq!(gpu1.embedding_f16_status, "not_applicable");
         assert!(!gpu1.final_norm_f16_allocated);
+        assert_eq!(gpu1.final_norm_f16_status, "deferred");
+        assert_eq!(gpu1.final_norm_f16_bytes, 0);
         assert!(gpu1
             .required_tensor_names
             .contains(&"model.norm.weight".to_string()));
+    }
+
+    #[test]
+    fn fused_f16_selective_f32_filter_loads_final_norm_only_on_final_shard() {
+        let dir = fixture_with_lm_head();
+        let header_manifest =
+            SafetensorHeaderManifest::discover_with_merge_policy(&dir, header_merge_policy(false))
+                .unwrap();
+        let device_map = DeviceMap::parse("split:0-11@0,12-23@1", 24, DeviceId(0)).unwrap();
+        let plan = ShardedModelPlan::from_device_map(device_map, 24).unwrap();
+        let upload_manifest = plan
+            .upload_manifest_for_tensor_names(
+                header_manifest.tensor_names(),
+                UploadManifestOptions {
+                    tie_word_embeddings: true,
+                },
+            )
+            .unwrap();
+
+        let gpu0_filter = fused_f32_tensor_filter_set(&upload_manifest.shards[0]);
+        let gpu1_filter = fused_f32_tensor_filter_set(&upload_manifest.shards[1]);
+
+        assert!(!gpu0_filter.contains("model.norm.weight"));
+        assert!(gpu1_filter.contains("model.norm.weight"));
+        assert!(!gpu1_filter.contains("model.embed_tokens.weight"));
     }
 
     #[test]
