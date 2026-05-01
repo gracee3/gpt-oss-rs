@@ -5877,7 +5877,11 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
     let lane = cli.lane;
     let hidden = 2880usize;
     let q_dim = cli.query_heads * cli.head_dim;
+    let kv_dim = cli.kv_heads * cli.head_dim;
+    let v_history_count = cli.token_count * kv_dim;
+    let probs_count = cli.query_heads * (cli.token_count + 1);
     anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+    let weighted_v_policy = parse_weighted_v_accum_policy(&cli.weighted_v_accum_policy)?;
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -5908,9 +5912,16 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
     );
 
     let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    let v_path = status_artifact_path(&attention_status, "v_before_attention", "attention")?;
     let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
     let attention_residual_path =
         status_artifact_path(&attention_status, "attention_residual", "attention")?;
+    let audit_all_token_v_path = status_artifact_path(
+        &attention_audit_status,
+        "all_token_v_before_attention",
+        "attention audit",
+    )?;
     let layer_input_path = status_artifact_path(
         &attention_audit_status,
         "layer_input_before_attention_norm",
@@ -5918,6 +5929,12 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
     )?;
     for (label, path) in [
         ("attention weighted V", &weighted_v_path),
+        ("attention probabilities", &probs_path),
+        ("attention V before attention", &v_path),
+        (
+            "audit all-token V before attention",
+            &audit_all_token_v_path,
+        ),
         ("attention o-proj", &oproj_path),
         ("attention residual", &attention_residual_path),
         ("audit layer input", &layer_input_path),
@@ -5950,6 +5967,12 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
 
     let (weighted_status, weighted_v) =
         load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (probs_status, attention_probs) =
+        load_tensor_artifact(&probs_path, &[probs_count], &["values"])?;
+    let (base_v_status, base_v_values) =
+        load_tensor_artifact(&v_path, &[kv_dim, v_history_count], &["values"])?;
+    let (audit_all_token_v_status, audit_all_token_v) =
+        load_tensor_artifact(&audit_all_token_v_path, &[v_history_count], &["values"])?;
     let (oproj_status, oproj_oracle) = load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
     let (layer_input_status, layer_input) =
         load_tensor_artifact(&layer_input_path, &[hidden], &["values"])?;
@@ -5975,6 +5998,72 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
         || !oproj_status.shape_or_count_matched
         || !layer_input_status.shape_or_count_matched
         || !residual_status.shape_or_count_matched;
+    let base_all_token_v_emitted =
+        base_v_status.shape_or_count_matched && base_v_values.len() == v_history_count;
+    let (weighted_v_for_oproj, weighted_v_source, weighted_v_metric) =
+        if probs_status.shape_or_count_matched && audit_all_token_v_status.shape_or_count_matched {
+            let candidate = compute_weighted_v_with_policy(
+                &attention_probs,
+                &audit_all_token_v,
+                cli,
+                true,
+                weighted_v_policy,
+            );
+            let metric = compare_matrix(
+                &candidate,
+                &weighted_v,
+                cli.query_heads,
+                cli.head_dim,
+                MatrixSelection::All,
+            );
+            (
+                candidate,
+                "recomputed_from_attention_probs_and_audit_all_token_v_with_weighted_v_policy",
+                Some(metric),
+            )
+        } else if probs_status.shape_or_count_matched && base_all_token_v_emitted {
+            let candidate = compute_weighted_v_with_policy(
+                &attention_probs,
+                &base_v_values,
+                cli,
+                true,
+                weighted_v_policy,
+            );
+            let metric = compare_matrix(
+                &candidate,
+                &weighted_v,
+                cli.query_heads,
+                cli.head_dim,
+                MatrixSelection::All,
+            );
+            (
+                candidate,
+                "recomputed_from_attention_probs_and_base_all_token_v_with_weighted_v_policy",
+                Some(metric),
+            )
+        } else {
+            (
+                weighted_v.clone(),
+                "ordered_weighted_v_artifact_fallback_because_weighted_v_recompute_schema_blocked",
+                None,
+            )
+        };
+    let weighted_v_policy_source_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_weighted_v_single_mismatch_debug_status.json"
+    ));
+    let weighted_v_policy_source_status = if weighted_v_policy_source_status_path.exists() {
+        load_json(&weighted_v_policy_source_status_path).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let pairwise_attention_audit_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_ordered_attention_audit_validate_pairwise_weighted_v_status.json"
+    ));
+    let pairwise_attention_audit_status = if pairwise_attention_audit_status_path.exists() {
+        load_json(&pairwise_attention_audit_status_path).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     let baseline_mismatches = prior_status
         .pointer("/attention_metrics/o_proj/metrics/mismatches")
         .and_then(Value::as_u64)
@@ -6021,8 +6110,12 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
 
     if !schema_blocked {
         for policy in policies {
-            let output =
-                compute_attention_oproj_variant(&weighted_v, &oproj_weight, &oproj_bias, policy);
+            let output = compute_attention_oproj_variant(
+                &weighted_v_for_oproj,
+                &oproj_weight,
+                &oproj_bias,
+                policy,
+            );
             let residual_output = compute_attention_residual(&layer_input, &output);
             let oproj_metric = compare_hidden(&output, &oproj_oracle);
             let residual_metric = compare_hidden(&residual_output, &residual_oracle);
@@ -6146,18 +6239,47 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
         "validation_only": true,
         "layer_index": layer,
         "focus_lane": lane,
+        "weighted_v_accum_policy": weighted_v_policy.name(),
+        "weighted_v_accum_policy_requested": cli.weighted_v_accum_policy.as_str(),
         "source_statuses": {
             "attention_bundle_status": attention_status_path.display().to_string(),
             "attention_audit_status": attention_audit_status_path.display().to_string(),
             "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+            "weighted_v_policy_source_status": if weighted_v_policy_source_status_path.exists() {
+                json!(weighted_v_policy_source_status_path.display().to_string())
+            } else {
+                Value::Null
+            },
+            "pairwise_attention_audit_status": if pairwise_attention_audit_status_path.exists() {
+                json!(pairwise_attention_audit_status_path.display().to_string())
+            } else {
+                Value::Null
+            },
             "mlp_bundle_status": mlp_bundle_status_path.as_ref().map(|path| path.display().to_string()),
             "attention_classification": attention_status["classification"].clone(),
             "attention_audit_classification": attention_audit_status["classification"].clone(),
             "ordered_bundle_validate_classification": prior_status["classification"].clone(),
+            "weighted_v_policy_source_classification": weighted_v_policy_source_status
+                .get("classification")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "pairwise_attention_audit_classification": pairwise_attention_audit_status
+                .get("classification")
+                .cloned()
+                .unwrap_or(Value::Null),
         },
         "weighted_v_source": {
-            "policy": "ordered_weighted_v_artifact_validated_by_attention_audit",
-            "artifact": weighted_status,
+            "source": weighted_v_source,
+            "policy": weighted_v_policy.name(),
+            "policy_description": weighted_v_policy.description(),
+            "policy_diagnostic_only": weighted_v_policy.diagnostic_only(),
+            "policy_validation_only": true,
+            "metric_vs_ordered_weighted_v": weighted_v_metric,
+            "ordered_weighted_v_artifact": weighted_status,
+            "attention_probs_artifact": probs_status,
+            "base_v_before_attention_artifact": base_v_status,
+            "attention_audit_all_token_v_artifact": audit_all_token_v_status,
+            "base_all_token_v_emitted": base_all_token_v_emitted,
         },
         "artifacts": {
             "o_proj_oracle": oproj_status,
@@ -6184,9 +6306,9 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
         "best_policy_by_focus_lane": best_focus_policy,
         "candidate_policy_discussion_allowed": false,
         "next_bounded_step": if any_valid_clears {
-            "rerun layer4 ordered bundle validation with the best explicit validation-only o-proj policy; do not emit layer output or continue the ladder"
+            format!("rerun layer{layer} ordered bundle validation with the best explicit validation-only o-proj policy; do not emit layer output or continue the ladder")
         } else {
-            "keep layer4 strict ordered attention blocked on o-proj; request a focused o-proj producer-side dtype/accumulation probe"
+            format!("keep layer{layer} strict ordered attention blocked on o-proj; request a focused o-proj producer-side dtype/accumulation probe")
         },
     });
     write_json(&cli.output, &status)
@@ -6207,6 +6329,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let weighted_v_policy = parse_weighted_v_accum_policy(&cli.weighted_v_accum_policy)?;
     let weighted_v_policy_explicit =
         !matches!(weighted_v_policy, WeightedVAccumPolicy::CurrentSequential);
+    let weighted_v_oproj_policy_explicit = weighted_v_policy_explicit && oproj_policy_explicit;
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -6726,13 +6849,17 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         && topk_ordered_match
         && routing_weights_metric.metrics.mismatches == 0;
     let classification = if attention_shape_blocked {
-        if weighted_v_policy_explicit {
+        if weighted_v_oproj_policy_explicit {
+            format!("{classification_prefix}_weighted_v_oproj_policy_blocked_by_schema")
+        } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_weighted_v_policy_blocked_by_schema")
         } else {
             format!("{classification_prefix}_blocked_by_schema")
         }
     } else if !attention_seams_clear {
-        if weighted_v_policy_explicit {
+        if weighted_v_oproj_policy_explicit {
+            format!("{classification_prefix}_weighted_v_oproj_policy_attention_mismatch")
+        } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_weighted_v_policy_attention_mismatch")
         } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_attention_mismatch")
@@ -6742,7 +6869,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_attention_seam_mismatch")
         }
     } else if !bridge_clear {
-        if weighted_v_policy_explicit {
+        if weighted_v_oproj_policy_explicit {
+            format!("{classification_prefix}_weighted_v_oproj_policy_bridge_mismatch")
+        } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_weighted_v_policy_bridge_mismatch")
         } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_bridge_mismatch")
@@ -6752,7 +6881,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
         }
     } else if !mlp_guards_clear {
-        if weighted_v_policy_explicit {
+        if weighted_v_oproj_policy_explicit {
+            format!("{classification_prefix}_weighted_v_oproj_policy_mlp_mismatch")
+        } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_weighted_v_policy_mlp_mismatch")
         } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_mlp_mismatch")
@@ -6762,7 +6893,11 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_mlp_seam_mismatch")
         }
     } else if deterministic_clears || baseline_clears {
-        if weighted_v_policy_explicit {
+        if weighted_v_oproj_policy_explicit {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_oproj_policy"
+            )
+        } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_policy")
         } else if oproj_policy_explicit {
             format!("{classification_prefix}_attention_cleared_mlp_cleared_with_oproj_policy")
@@ -6932,8 +7067,12 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         },
         "emitted_layer_output": serde_json::Value::Null,
         "layer3_output_emitted": false,
+        "layer5_output_emitted": false,
         "next_bounded_step": if classification.ends_with("_attention_cleared_mlp_cleared") {
                 "record source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
+            }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_weighted_v_oproj_policy") {
+                "record ordered layer validation under explicit validation-only weighted-V and o-proj policies; do not emit output or continue the ladder"
             }
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_weighted_v_policy") {
                 "record ordered layer validation under explicit validation-only weighted-V accumulation policy; do not emit output or continue the ladder"

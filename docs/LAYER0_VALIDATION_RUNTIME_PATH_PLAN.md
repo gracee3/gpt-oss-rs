@@ -4192,6 +4192,68 @@ continued, and there is no final-logit, all-layer, server, or 4097-token
 claim. Next bounded step: localize the layer5 o-proj mismatch under explicit
 pairwise weighted-V before any output emission or ladder continuation.
 
+## Layer5 o-proj Policy Sweep Status
+
+The layer5 o-proj mismatch under explicit pairwise weighted-V was localized
+with the existing validation-only o-proj policy sweep:
+
+```text
+/tmp/layer5_attention_oproj_policy_sweep_status.json
+classification = layer5_attention_oproj_policy_sweep_reverse_clears
+
+weighted_v_accum_policy = pairwise_f32_bf16_output
+focus lane = 2602
+
+current/default o-proj:
+  mismatches = 1
+  max_abs_diff = 0.0009765625
+
+reverse o-proj:
+  mismatches = 0
+```
+
+The sweep input was recomputed from attention probabilities plus audit
+all-token V using the explicit pairwise weighted-V policy, rather than using
+the prior current/sequential weighted-V source. Reverse f32 o-proj accumulation
+clears the full o-proj vector, the attention residual, and the
+attention-to-MLP bridge. Pairwise, chunked-pairwise, f64 diagnostic, and the
+prebias/bias variants do not clear the full vector for this layer5 surface.
+
+Full bundle validation was then rerun with both explicit validation-only
+policies:
+
+```text
+/tmp/layer5_ordered_bundle_validate_weighted_v_oproj_policy_status.json
+classification =
+  layer5_ordered_bundle_validate_attention_cleared_mlp_cleared_with_weighted_v_oproj_policy
+
+weighted-V policy = pairwise_f32_bf16_output
+o-proj policy = reverse_f32_accum_f32_bias_bf16_output
+
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o-proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+MLP norm/router/top-k/routing weights mismatches = 0
+deterministic abs-ascending selected/weighted/final mismatches = 0
+```
+
+The compact consumer summary now records:
+
+```text
+/tmp/layer5_ordered_consumer_surface_status.json
+classification =
+  layer5_ordered_consumer_surface_validated_with_weighted_v_oproj_policy
+```
+
+This remains validation-only evidence. The explicit weighted-V and o-proj
+policies are not production/default runtime behavior, BF16-product remains
+evidence-only/rejected, no tolerance or correction was applied, no layer5
+output was emitted, the ladder was not continued, and there is no final-logit,
+all-layer, server, or 4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

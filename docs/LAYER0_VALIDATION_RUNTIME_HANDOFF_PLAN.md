@@ -1953,6 +1953,49 @@ claim. Next bounded step: localize the layer5 o-proj mismatch under the
 explicit pairwise weighted-V policy before any layer5 output emission or
 ladder continuation.
 
+## Layer5 o-proj Policy Sweep Status
+
+The layer5 o-proj blocker under explicit pairwise weighted-V was localized and
+cleared with a second validation-only attention policy:
+
+```text
+o-proj policy sweep:
+  /tmp/layer5_attention_oproj_policy_sweep_status.json
+  classification =
+    layer5_attention_oproj_policy_sweep_reverse_clears
+
+full bundle revalidation:
+  /tmp/layer5_ordered_bundle_validate_weighted_v_oproj_policy_status.json
+  classification =
+    layer5_ordered_bundle_validate_attention_cleared_mlp_cleared_with_weighted_v_oproj_policy
+
+summary:
+  /tmp/layer5_ordered_consumer_surface_status.json
+  classification =
+    layer5_ordered_consumer_surface_validated_with_weighted_v_oproj_policy
+```
+
+The o-proj sweep used the exact layer5 weighted-V input recomputed from
+attention probabilities plus audit all-token V with
+`pairwise_f32_bf16_output`. The default/current o-proj policy still has one
+mismatch at lane `2602` with max abs diff `0.0009765625`. The only bounded
+candidate that clears full o-proj, attention residual, and the bridge is
+`reverse_f32_accum_f32_bias_bf16_output`; pairwise and chunked-pairwise o-proj
+do not clear this layer5 vector.
+
+The full ordered bundle revalidation with both explicit policies clears raw
+QK, masked logits, attention probabilities, weighted V, o-proj, the
+attention-to-MLP bridge, MLP norm, router/top-k/routing weights, selected
+outputs, weighted expert sum, and final MLP residual output. The ordered MLP
+side remains cleared by deterministic abs-ascending MLP down replay, while
+BF16-product remains evidence-only/rejected with broad collateral mismatches.
+
+This is not default layer5 runtime parity. Both the weighted-V pairwise policy
+and reverse o-proj policy are validation-only evidence. No tolerance or
+correction was applied, no runtime/default routing/CUDA behavior changed, no
+layer5 output was emitted, the ladder was not continued, and there is no
+final-logit, all-layer, server, or 4097-token claim.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
