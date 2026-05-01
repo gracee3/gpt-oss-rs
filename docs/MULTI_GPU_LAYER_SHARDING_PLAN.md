@@ -5316,3 +5316,148 @@ Recommended next slices:
 ### Primary classification
 
 multi_gpu_layer_sharding_f16_norm_conversion_helper_complete
+
+## Bench-only f16 norm conversion allocation status
+
+This slice extends the existing bench-only fused f16 allocation path under
+`--allocate-fused-f16` so it also allocates shard-local f16 copies of per-layer
+norm weights:
+
+- `model.layers.<N>.input_layernorm.weight`.
+- `model.layers.<N>.post_attention_layernorm.weight`.
+
+The path remains non-executing. The converted buffers are allocated only for
+owned absolute layers, reported in JSON status, and dropped after status
+collection.
+
+### Helpers and modules
+
+The allocation path uses:
+
+- `ShardWeightStore` for absolute-layer ownership and canonical tensor-name
+  validation.
+- `cast_f32_tensor_to_f16` from
+  `crates/gpt-oss-model-runner/src/fused_f16.rs`.
+- `ShardedFusedF16Buffers`, `CudaShardFusedF16Buffers`, and
+  `CudaLayerFusedF16Buffers` in
+  `crates/gpt-oss-model-runner/src/sharded_resources.rs`.
+
+### f32 norm loading policy
+
+The real operator command can remain `--dtype f16`.
+
+When `--allocate-fused-f16` is enabled in f16 mode, the bench smoke performs a
+small additional filtered f32 upload for only the owned per-layer norm tensors
+needed by the cast helper. It does not upload all f32 weights to every shard.
+
+### Status JSON
+
+Per layer:
+
+- `layernorm_f16_status`.
+- `layernorm_f16_bytes`.
+- `postnorm_f16_status`.
+- `postnorm_f16_bytes`.
+
+Per shard:
+
+- `f16_layernorm_count`.
+- `f16_postnorm_count`.
+- `f16_layernorm_total_bytes`.
+- `f16_postnorm_total_bytes`.
+- `fused_total_bytes`, now including fused QKV, optional dense gate/up, and
+  allocated layernorm/postnorm f16 bytes.
+
+Successful fused QKV plus norm conversion allocation reports:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete
+```
+
+### Still deferred
+
+The split path still does not allocate:
+
+- QKV bias f16 conversion.
+- O-projection bias f16 conversion.
+- final norm f16 conversion.
+- embedding f16 conversion.
+- tied LM-head fallback.
+- `F16LayerScratch`.
+- GPT-OSS MoE GPU expert weights.
+- transformer layers or `GpuModelRunner`.
+
+Dense gate/up remains allocated only when dense gate/up tensors exist; GPT-OSS
+MoE U8-only layers continue to report dense gate/up as `not_applicable`.
+
+### Manual operator command
+
+Do not run automatically during this implementation slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_norm_status.json
+```
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner fused_f16
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke
+cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda
+git diff --check
+```
+
+No real-model CUDA smoke was run for this implementation slice.
+
+### Non-execution boundary
+
+No split execution, layer construction, `GpuModelRunner` construction, attention,
+graph output, final norm execution, LM-head execution, logits, graph capture,
+forward pass, serving behavior, or parity path was added.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- real-model fused QKV + norm conversion allocation smoke operator run.
+- bias f16 conversion allocation.
+- final/embed f16 conversion allocation.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete

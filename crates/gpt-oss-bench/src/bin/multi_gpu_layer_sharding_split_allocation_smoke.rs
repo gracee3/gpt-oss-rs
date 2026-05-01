@@ -1,3 +1,5 @@
+#[cfg(feature = "cuda")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +46,8 @@ const FUSED_F16_PLAN_STATUS_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_f16_plan_status_complete";
 const FUSED_QKV_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete";
+const FUSED_QKV_NORM_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
@@ -262,6 +266,8 @@ struct SplitAllocationSmokeShardReport {
     fused_qkv_total_bytes: usize,
     fused_gate_up_weight_count: usize,
     fused_gate_up_total_bytes: usize,
+    f16_layernorm_total_bytes: usize,
+    f16_postnorm_total_bytes: usize,
     f16_layernorm_count: usize,
     f16_postnorm_count: usize,
     f16_qkv_bias_count: usize,
@@ -307,7 +313,9 @@ struct FusedLayerReport {
     fused_gate_up_status: String,
     fused_gate_up_bytes: usize,
     layernorm_f16_status: String,
+    layernorm_f16_bytes: usize,
     postnorm_f16_status: String,
+    postnorm_f16_bytes: usize,
     qkv_bias_f16_status: String,
     o_proj_bias_f16_status: String,
     layer_error: Option<String>,
@@ -876,7 +884,15 @@ fn build_split_allocation_smoke_report(
                     .map(fused_status_succeeded)
                     .unwrap_or(false);
             let classification = if fused_f16_succeeded {
-                FUSED_QKV_ALLOCATION_CLASSIFICATION
+                if actual_fused_f16_status
+                    .as_ref()
+                    .map(fused_status_has_allocated_norms)
+                    .unwrap_or(false)
+                {
+                    FUSED_QKV_NORM_ALLOCATION_CLASSIFICATION
+                } else {
+                    FUSED_QKV_ALLOCATION_CLASSIFICATION
+                }
             } else if fused_f16_status.is_some() {
                 FUSED_F16_PLAN_STATUS_CLASSIFICATION
             } else if metadata_succeeded {
@@ -1159,6 +1175,8 @@ fn run_cuda_allocation_smoke(
     .map_err(|error| (RESOURCE_ERROR_CLASSIFICATION, error.to_string()))?;
 
     let mut upload_counts = BTreeMap::new();
+    let mut f32_weights_by_device = BTreeMap::new();
+    let mut f32_shapes_by_device = BTreeMap::new();
     let mut f16_weights_by_device = BTreeMap::new();
     let mut f16_shapes_by_device = BTreeMap::new();
     for resource in &resources.shards {
@@ -1175,17 +1193,32 @@ fn run_cuda_allocation_smoke(
 
         let required = manifest.required_tensor_filter_set();
         let host_u8 = manifest.host_u8_tensor_filter_set();
+        let f32_filter = if matches!(dtype_mode, DTypeMode::F32 | DTypeMode::Both) {
+            required.clone()
+        } else if fused_f16_options.allocate_fused_f16 {
+            fused_norm_tensor_filter_set(manifest)
+        } else {
+            BTreeSet::new()
+        };
 
         let (uploaded_f32_tensor_count, uploaded_f32_shape_count, uploaded_f32_total_elements) =
-            if matches!(dtype_mode, DTypeMode::F32 | DTypeMode::Both) {
+            if matches!(dtype_mode, DTypeMode::F32 | DTypeMode::Both)
+                || (fused_f16_options.allocate_fused_f16 && !f32_filter.is_empty())
+            {
                 let (weights, shapes) = load_weights_to_gpu_with_shapes_filtered(
                     model_path,
                     &resource.stream,
-                    |name| required.contains(name),
+                    |name| f32_filter.contains(name),
                 )
                 .map_err(|error| (LOADER_ERROR_CLASSIFICATION, error.to_string()))?;
                 let total_elements = shapes_for_names(&shapes, weights.keys());
-                (weights.len(), shapes.len(), total_elements)
+                let weight_count = weights.len();
+                let shape_count = shapes.len();
+                if fused_f16_options.allocate_fused_f16 {
+                    f32_shapes_by_device.insert(resource.device_id, shapes.clone());
+                    f32_weights_by_device.insert(resource.device_id, weights);
+                }
+                (weight_count, shape_count, total_elements)
             } else {
                 (0, 0, 0)
             };
@@ -1269,6 +1302,8 @@ fn run_cuda_allocation_smoke(
                         upload_manifest,
                         &f16_weights_by_device,
                         &f16_shapes_by_device,
+                        &f32_weights_by_device,
+                        &f32_shapes_by_device,
                         f16_scratch_config,
                     )
                     .map_err(|error| {
@@ -1344,10 +1379,33 @@ fn shapes_for_names<'a>(
         .sum()
 }
 
+#[cfg(feature = "cuda")]
+fn fused_norm_tensor_filter_set(manifest: &ShardTensorManifest) -> BTreeSet<String> {
+    let mut filter = BTreeSet::new();
+    for &layer_idx in &manifest.absolute_layers {
+        for suffix in ["input_layernorm.weight", "post_attention_layernorm.weight"] {
+            let name = format!("model.layers.{layer_idx}.{suffix}");
+            if manifest.should_load_required_tensor(&name) {
+                filter.insert(name);
+            }
+        }
+    }
+    filter
+}
+
 fn fused_status_succeeded(status: &ShardedFusedF16AllocationStatus) -> bool {
     status.shards.iter().all(|shard| {
         shard.fused_f16_allocated
             || shard.fused_f16_status == FusedF16AllocationStatus::NotApplicable
+    })
+}
+
+fn fused_status_has_allocated_norms(status: &ShardedFusedF16AllocationStatus) -> bool {
+    status.shards.iter().any(|shard| {
+        shard.f16_layernorm_count > 0
+            || shard.f16_postnorm_count > 0
+            || shard.f16_layernorm_total_bytes > 0
+            || shard.f16_postnorm_total_bytes > 0
     })
 }
 
@@ -1745,6 +1803,8 @@ fn render_shard_report(
         fused_qkv_total_bytes,
         fused_gate_up_weight_count,
         fused_gate_up_total_bytes,
+        f16_layernorm_total_bytes,
+        f16_postnorm_total_bytes,
         f16_layernorm_count,
         f16_postnorm_count,
         f16_qkv_bias_count,
@@ -1770,6 +1830,8 @@ fn render_shard_report(
                 status.fused_qkv_total_bytes,
                 status.fused_gate_up_weight_count,
                 status.fused_gate_up_total_bytes,
+                status.f16_layernorm_total_bytes,
+                status.f16_postnorm_total_bytes,
                 status.f16_layernorm_count,
                 status.f16_postnorm_count,
                 status.f16_qkv_bias_count,
@@ -1796,6 +1858,8 @@ fn render_shard_report(
             (
                 false,
                 FusedF16AllocationStatus::NotApplicable.as_str().to_string(),
+                0,
+                0,
                 0,
                 0,
                 0,
@@ -1885,6 +1949,8 @@ fn render_shard_report(
         fused_qkv_total_bytes,
         fused_gate_up_weight_count,
         fused_gate_up_total_bytes,
+        f16_layernorm_total_bytes,
+        f16_postnorm_total_bytes,
         f16_layernorm_count,
         f16_postnorm_count,
         f16_qkv_bias_count,
@@ -1915,7 +1981,9 @@ fn render_fused_layer_report(status: &CudaLayerFusedF16AllocationStatus) -> Fuse
         fused_gate_up_status: status.fused_gate_up_status.as_str().to_string(),
         fused_gate_up_bytes: status.fused_gate_up_bytes,
         layernorm_f16_status: status.layernorm_f16_status.as_str().to_string(),
+        layernorm_f16_bytes: status.layernorm_f16_bytes,
         postnorm_f16_status: status.postnorm_f16_status.as_str().to_string(),
+        postnorm_f16_bytes: status.postnorm_f16_bytes,
         qkv_bias_f16_status: status.qkv_bias_f16_status.as_str().to_string(),
         o_proj_bias_f16_status: status.o_proj_bias_f16_status.as_str().to_string(),
         layer_error: status.layer_error.clone(),
