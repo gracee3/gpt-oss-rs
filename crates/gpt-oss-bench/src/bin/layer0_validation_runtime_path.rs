@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
@@ -477,6 +478,7 @@ enum Mode {
     SelectedMlpDownPolicyReplayStatus,
     SelectedMlpDownPolicyCandidateStatus,
     SelectedMlpDownPolicyCandidateReplayStatus,
+    SelectedMlpDownPolicyCostStatus,
     AttentionAuditValidate,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
@@ -1468,6 +1470,7 @@ fn main() -> Result<()> {
         Mode::SelectedMlpDownPolicyCandidateReplayStatus => {
             run_selected_mlp_down_policy_candidate_replay_status(&cli)
         }
+        Mode::SelectedMlpDownPolicyCostStatus => run_selected_mlp_down_policy_cost_status(&cli),
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -9004,6 +9007,7 @@ fn build_selected_mlp_down_policy_replay_status(
     };
 
     for policy in policies {
+        let policy_start = Instant::now();
         let mut selected_matrix = vec![0.0f32; selected_count * hidden];
         let mut selected_output_metrics = serde_json::Map::new();
         let mut focus_selected_outputs_by_rank = Vec::new();
@@ -9043,6 +9047,7 @@ fn build_selected_mlp_down_policy_replay_status(
         let weighted_metric = compare_hidden(&weighted_sum, &ordered_weighted_sum);
         let final_output = compute_attention_residual(&attention_residual, &weighted_sum);
         let final_metric = compare_hidden(&final_output, &ordered_final_output);
+        let policy_elapsed = policy_start.elapsed();
 
         let clears_all_selected_outputs = selected_metric.metrics.mismatches == 0;
         let clears_weighted_sum = weighted_metric.metrics.mismatches == 0;
@@ -9208,6 +9213,14 @@ fn build_selected_mlp_down_policy_replay_status(
             "clears_final_output": clears_final_output,
             "introduces_collateral_mismatches": introduces_collateral_mismatches,
             "total_ordered_mlp_mismatches": total_mismatches,
+            "timing": {
+                "scope": "selected-output replay, weighted-sum replay, final-output replay, and comparisons for one policy",
+                "elapsed_ms": policy_elapsed.as_secs_f64() * 1000.0,
+                "includes_json_loading": false,
+                "includes_model_weight_loading": false,
+                "includes_mlp1_cublas_and_swiglu": false,
+                "includes_cargo_compile_time": false,
+            },
         });
         if matches!(policy, DownCastSweepPolicy::CurrentSequentialF32) {
             baseline_result = result.clone();
@@ -9861,6 +9874,376 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
     write_json(&cli.output, &status)
 }
 
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_correctness_summary(result: &Value) -> Value {
+    json!({
+        "selected_outputs": result["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
+        "weighted_sum": result["weighted_sum"]["full_vector_metrics"].clone(),
+        "final_output": result["final_output"]["full_vector_metrics"].clone(),
+        "clears_all_selected_outputs": result.get("clears_all_selected_outputs").cloned().unwrap_or_else(|| json!(false)),
+        "clears_weighted_sum": result.get("clears_weighted_sum").cloned().unwrap_or_else(|| json!(false)),
+        "clears_final_output": result.get("clears_final_output").cloned().unwrap_or_else(|| json!(false)),
+        "introduces_collateral_mismatches": result.get("introduces_collateral_mismatches").cloned().unwrap_or_else(|| json!(false)),
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_down_policy_operation_estimate(
+    policy: DownCastSweepPolicy,
+    selected_count: usize,
+    hidden: usize,
+) -> Value {
+    let output_lanes = selected_count * hidden;
+    let total_products = output_lanes * hidden;
+    let sort_count = if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
+        output_lanes
+    } else {
+        0
+    };
+    let product_buffer_len = if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
+        hidden
+    } else {
+        0
+    };
+    json!({
+        "selected_experts_count": selected_count,
+        "output_hidden_size": hidden,
+        "input_hidden_size_down_projection_width": hidden,
+        "total_output_lanes_evaluated": output_lanes,
+        "total_product_count": total_products,
+        "sort_count": sort_count,
+        "asymptotic_cost": match policy {
+            DownCastSweepPolicy::AbsAscendingF32 => "O(selected_experts * outputs * inputs log inputs) if implemented by sorting per output",
+            _ => "O(selected_experts * outputs * inputs)",
+        },
+        "sort_key": if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
+            "ascending absolute product magnitude"
+        } else {
+            "none"
+        },
+        "memory_estimate": {
+            "common_selected_output_matrix_bytes": output_lanes * std::mem::size_of::<f32>(),
+            "product_buffer_length": product_buffer_len,
+            "bytes_per_product_entry": std::mem::size_of::<f32>(),
+            "per_output_temporary_allocation_bytes": product_buffer_len * std::mem::size_of::<f32>(),
+            "allocation_policy_in_validation_helper": if product_buffer_len == 0 {
+                "no per-output product vector allocation for this policy"
+            } else {
+                "temporary product vector is allocated per output lane in the validation helper"
+            },
+        },
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_cost_policy_entry(status: &Value, policy: DownCastSweepPolicy) -> Value {
+    let result = selected_mlp_policy_result(status, policy.name());
+    json!({
+        "policy": policy.name(),
+        "valid_candidate": matches!(policy, DownCastSweepPolicy::AbsAscendingF32),
+        "evidence_only": policy.evidence_only(),
+        "rejected": matches!(policy, DownCastSweepPolicy::Bf16ProductThenF32),
+        "correctness": result
+            .as_ref()
+            .map(selected_mlp_policy_correctness_summary)
+            .unwrap_or_else(|| json!(null)),
+        "operation_estimate": selected_mlp_down_policy_operation_estimate(policy, 4, 2880),
+        "timing": result
+            .as_ref()
+            .map(|value| value["timing"].clone())
+            .unwrap_or_else(|| json!(null)),
+        "memory_estimate": selected_mlp_down_policy_operation_estimate(policy, 4, 2880)["memory_estimate"].clone(),
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_cost_surface_status(
+    surface: &str,
+    layer: usize,
+    required: bool,
+    path: Option<&Path>,
+    model: &Path,
+    norm_reduction_policy: &str,
+) -> Value {
+    let Some(path) = path else {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    };
+    if !path.exists() {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "path": path.display().to_string(),
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    }
+
+    let surface_start = Instant::now();
+    match build_selected_mlp_down_policy_replay_status(
+        layer,
+        1480,
+        &[1480],
+        norm_reduction_policy,
+        model,
+        path,
+        None,
+        None,
+        None,
+    ) {
+        Ok(status) => {
+            let surface_elapsed = surface_start.elapsed();
+            let policies = [
+                DownCastSweepPolicy::CurrentSequentialF32,
+                DownCastSweepPolicy::AbsAscendingF32,
+                DownCastSweepPolicy::Bf16ProductThenF32,
+            ];
+            let policy_costs = policies
+                .iter()
+                .map(|&policy| selected_mlp_cost_policy_entry(&status, policy))
+                .collect::<Vec<_>>();
+            json!({
+                "surface": surface,
+                "layer_index": layer,
+                "required": required,
+                "available": true,
+                "path": path.display().to_string(),
+                "classification": status["classification"].clone(),
+                "selected_experts": status["selected_experts"].clone(),
+                "routing_weights": status["routing_weights"].clone(),
+                "correctness_summary": {
+                    "current_sequential_f32_accum_bf16_output": selected_mlp_policy_result(
+                        &status,
+                        DownCastSweepPolicy::CurrentSequentialF32.name(),
+                    ).as_ref().map(selected_mlp_policy_correctness_summary).unwrap_or_else(|| json!(null)),
+                    "deterministic_f32_abs_ascending_sum_then_bf16_output": selected_mlp_policy_result(
+                        &status,
+                        DownCastSweepPolicy::AbsAscendingF32.name(),
+                    ).as_ref().map(selected_mlp_policy_correctness_summary).unwrap_or_else(|| json!(null)),
+                    "bf16_product_then_f32_sum_then_bf16_output": selected_mlp_policy_result(
+                        &status,
+                        DownCastSweepPolicy::Bf16ProductThenF32.name(),
+                    ).as_ref().map(selected_mlp_policy_correctness_summary).unwrap_or_else(|| json!(null)),
+                },
+                "policy_costs": policy_costs,
+                "timing": {
+                    "scope": "full surface replay status build, including JSON artifact loading, model tensor loading, MLP1/SwiGLU setup, all policy replays, and JSON assembly",
+                    "elapsed_ms": surface_elapsed.as_secs_f64() * 1000.0,
+                    "includes_cargo_compile_time": false,
+                },
+            })
+        }
+        Err(error) => json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": true,
+            "path": path.display().to_string(),
+            "classification": "surface_cost_replay_error",
+            "error": error.to_string(),
+        }),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_timing_ms(entry: &Value) -> Option<f64> {
+    entry.pointer("/timing/elapsed_ms").and_then(Value::as_f64)
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_surface_policy_cost(surface: &Value, policy: &str) -> Option<Value> {
+    surface
+        .get("policy_costs")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("policy").and_then(Value::as_str) == Some(policy))
+        })
+        .cloned()
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_aggregate_policy_costs(surfaces: &serde_json::Map<String, Value>) -> Vec<Value> {
+    [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ]
+    .iter()
+    .map(|&policy| {
+        let mut total_elapsed_ms = 0.0f64;
+        let mut measured_surface_count = 0usize;
+        let mut surface_results = serde_json::Map::new();
+        for (name, surface) in surfaces {
+            if surface.get("available").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if let Some(cost) = selected_mlp_surface_policy_cost(surface, policy.name()) {
+                if let Some(elapsed) = selected_mlp_timing_ms(&cost) {
+                    total_elapsed_ms += elapsed;
+                    measured_surface_count += 1;
+                }
+                surface_results.insert(name.clone(), cost);
+            }
+        }
+        json!({
+            "policy": policy.name(),
+            "valid_candidate": matches!(policy, DownCastSweepPolicy::AbsAscendingF32),
+            "evidence_only": policy.evidence_only(),
+            "rejected": matches!(policy, DownCastSweepPolicy::Bf16ProductThenF32),
+            "surface_results": surface_results,
+            "operation_estimate_per_surface": selected_mlp_down_policy_operation_estimate(policy, 4, 2880),
+            "timing": {
+                "debug_total_elapsed_ms_across_available_surfaces": total_elapsed_ms,
+                "measured_surface_count": measured_surface_count,
+                "scope": "sum of per-policy replay sections; excludes cargo compile time and shared MLP1/SwiGLU setup",
+            },
+            "memory_estimate": selected_mlp_down_policy_operation_estimate(policy, 4, 2880)["memory_estimate"].clone(),
+        })
+    })
+    .collect()
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_mlp_down_policy_cost_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+
+    let mut surfaces = serde_json::Map::new();
+    surfaces.insert(
+        "layer1".to_string(),
+        selected_mlp_cost_surface_status(
+            "layer1",
+            1,
+            true,
+            cli.layer1_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+    surfaces.insert(
+        "layer2".to_string(),
+        selected_mlp_cost_surface_status(
+            "layer2",
+            2,
+            true,
+            cli.layer2_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+    surfaces.insert(
+        "layer11".to_string(),
+        selected_mlp_cost_surface_status(
+            "layer11",
+            11,
+            false,
+            cli.optional_layer11_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+
+    let required_missing = ["layer1", "layer2"].iter().any(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| surface.get("classification"))
+            .and_then(Value::as_str)
+            == Some("missing_required_artifact")
+    });
+    let schema_or_execution_error = surfaces.values().any(|surface| {
+        surface
+            .get("classification")
+            .and_then(Value::as_str)
+            .is_some_and(|classification| classification == "surface_cost_replay_error")
+    });
+    let policy_costs = selected_mlp_aggregate_policy_costs(&surfaces);
+    let timing_for_policy = |policy: &str| -> f64 {
+        policy_costs
+            .iter()
+            .find(|entry| entry.get("policy").and_then(Value::as_str) == Some(policy))
+            .and_then(|entry| {
+                entry
+                    .pointer("/timing/debug_total_elapsed_ms_across_available_surfaces")
+                    .and_then(Value::as_f64)
+            })
+            .unwrap_or(0.0)
+    };
+    let current_ms = timing_for_policy(DownCastSweepPolicy::CurrentSequentialF32.name());
+    let abs_ms = timing_for_policy(DownCastSweepPolicy::AbsAscendingF32.name());
+    let bf16_product_ms = timing_for_policy(DownCastSweepPolicy::Bf16ProductThenF32.name());
+    let ratio = |numerator: f64, denominator: f64| {
+        if denominator > 0.0 {
+            json!(numerator / denominator)
+        } else {
+            json!(null)
+        }
+    };
+    let classification = if required_missing {
+        "selected_mlp_down_policy_cost_report_blocked_by_missing_required_artifact"
+    } else if schema_or_execution_error {
+        "selected_mlp_down_policy_cost_report_blocked_by_schema"
+    } else {
+        "selected_mlp_down_policy_cost_report_generated_debug_only"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-mlp-down-policy-cost-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "candidate_policy": DownCastSweepPolicy::AbsAscendingF32.name(),
+        "rejected_policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+        "surfaces": Value::Object(surfaces),
+        "policy_costs": policy_costs,
+        "relative_cost_summary": {
+            "timing_mode": "debug",
+            "timing_scope": "per-policy replay section only; excludes cargo compile time and shared setup unless noted per surface",
+            "current_sequential_total_ms": current_ms,
+            "deterministic_abs_ascending_total_ms": abs_ms,
+            "bf16_product_total_ms": bf16_product_ms,
+            "deterministic_abs_ascending_vs_current": ratio(abs_ms, current_ms),
+            "bf16_product_vs_current": ratio(bf16_product_ms, current_ms),
+            "release_timing_generated": false,
+            "release_timing_note": "release run skipped in this slice to avoid a noisy release compilation benchmark; debug timing is directional only",
+        },
+        "production_viability_note": "correctness is promising on available ordered MLP surfaces, but deterministic abs-ascending has O(outputs * inputs log inputs) sort cost and per-output temporary allocation in the validation helper; production viability is not established",
+        "runtime_policy_discussion_allowed": false,
+        "runtime_implementation_included": false,
+        "remaining_gates": [
+            "release/performance assessment before runtime discussion",
+            "no production/default routing change",
+            "no CUDA kernel change",
+            "no correction metadata",
+            "no final-logit/all-layer/server/4097 claim",
+            "more ordered surfaces or focus lanes if available",
+        ],
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": "decide whether a separate validation-only implementation experiment should benchmark a lower-overhead deterministic reduction without changing production runtime behavior",
+    });
+    write_json(&cli.output, &status)
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_selected_mlp_down_policy_replay_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected MLP down-policy replay requires the cuda feature")
@@ -9869,6 +10252,11 @@ fn run_selected_mlp_down_policy_replay_status(_cli: &Cli) -> Result<()> {
 #[cfg(not(feature = "cuda"))]
 fn run_selected_mlp_down_policy_candidate_replay_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected MLP down-policy candidate replay requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_mlp_down_policy_cost_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected MLP down-policy cost status requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]

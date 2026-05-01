@@ -309,6 +309,34 @@ and the requested focus lanes. Layer11 remains docs-only provenance unless its
 local ordered bundle is present. Runtime policy discussion remains disabled and
 performance remains unassessed.
 
+## Cost/Performance Characterization
+
+The validation branch also records a bounded cost report at:
+
+```text
+/tmp/selected_mlp_down_policy_cost_status.json
+```
+
+The report measures the same available ordered MLP surfaces, layer1 and layer2,
+with layer11 included only when its local artifact exists. It keeps correctness
+and cost separate: the deterministic absolute-ascending candidate still clears
+selected outputs, weighted sum, and final output on the available surfaces, but
+the cost profile is materially different from current sequential f32 replay.
+
+The current sequential replay is O(selected_experts * outputs * inputs). The
+deterministic absolute-ascending candidate is O(selected_experts * outputs *
+inputs log inputs) when implemented as a per-output product sort. In the current
+validation helper this also allocates a temporary product buffer per output
+lane. The timings are debug-mode, per-policy replay timings and are only
+directional; they exclude cargo compile time and are not a production
+performance benchmark.
+
+The BF16-product policy remains evidence-only and rejected regardless of speed
+because it introduces broad collateral mismatches. The cost report does not
+authorize runtime implementation, production/default routing changes, CUDA
+kernel changes, correction metadata, ladder continuation, or any final-logit,
+all-layer, server, or 4097-token claim.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.
