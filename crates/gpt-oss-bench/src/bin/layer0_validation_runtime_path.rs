@@ -118,7 +118,7 @@ struct Cli {
     oracle_down_terms_status: Option<PathBuf>,
 
     /// Focused selected-expert down-projection einsum dtype probe status.
-    #[arg(long)]
+    #[arg(long, alias = "oracle-dtype-probe-status")]
     oracle_einsum_dtype_probe_status: Option<PathBuf>,
 
     /// Previous consumer ordered MLP compare status for source provenance.
@@ -394,11 +394,11 @@ struct Cli {
     sink_position: usize,
 
     /// Query head for focused raw-QK diagnostics.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, alias = "focus-q-head", default_value_t = 0)]
     q_head: usize,
 
     /// Real-key column/token for focused raw-QK diagnostics.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, alias = "focus-key-column", default_value_t = 0)]
     key_column: usize,
 
     /// Focus lane for expert30 MLP1 lane-local diagnostics.
@@ -461,6 +461,7 @@ enum Mode {
     SelectedMlpDownPolicyReplayStatus,
     AttentionAuditValidate,
     RawQkSingleMismatchDebug,
+    RawQkPolicySweepStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1447,6 +1448,7 @@ fn main() -> Result<()> {
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::RawQkSingleMismatchDebug => run_raw_qk_single_mismatch_debug(&cli),
+        Mode::RawQkPolicySweepStatus => run_raw_qk_policy_sweep_status(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -4925,6 +4927,332 @@ fn run_raw_qk_single_mismatch_debug(cli: &Cli) -> Result<()> {
             "decide whether to request a raw-QK producer precision trace or document the single nonpropagating ordered seam blocker; do not apply tolerance as a fix"
         } else {
             "localize the reported raw-QK policy/source mismatch before claiming full ordered attention seam parity"
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_raw_qk_policy_sweep_status(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let focus_q_head = cli.q_head;
+    let focus_key_column = cli.key_column;
+    let focus_kv_head = focus_q_head / cli.heads_per_kv;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let kv_dim = cli.kv_heads * cli.head_dim;
+    let k_history_count = cli.token_count * kv_dim;
+    let raw_count = cli.query_heads * cli.token_count;
+    let masked_count = cli.query_heads * (cli.token_count + 1);
+    anyhow::ensure!(
+        focus_q_head < cli.query_heads,
+        "focus q-head {focus_q_head} out of range for {} query heads",
+        cli.query_heads
+    );
+    anyhow::ensure!(
+        focus_key_column < cli.token_count,
+        "focus key-column {focus_key_column} must be a real-token column < {}",
+        cli.token_count
+    );
+    anyhow::ensure!(
+        focus_kv_head < cli.kv_heads,
+        "mapped focus kv_head {focus_kv_head} out of range for {} kv heads",
+        cli.kv_heads
+    );
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let prior_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    let dtype_probe_status_path = required_path(
+        &cli.oracle_einsum_dtype_probe_status,
+        "oracle raw-QK dtype probe status",
+    )?;
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(prior_validate_status_path, "ordered bundle validate status")?;
+    validate_path(dtype_probe_status_path, "oracle raw-QK dtype probe status")?;
+    let attention_status = load_json(attention_status_path)?;
+    let prior_status = load_json(prior_validate_status_path)?;
+    let dtype_probe_status = load_json(dtype_probe_status_path)?;
+    let consumer_single_status = load_json(Path::new(
+        "/tmp/layer3_raw_qk_single_mismatch_debug_status.json",
+    ))
+    .unwrap_or_else(|_| Value::Null);
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&prior_status)? == layer,
+        "ordered bundle validation layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&dtype_probe_status)? == layer,
+        "oracle dtype probe layer did not match requested layer {layer}"
+    );
+
+    let q_post_path = status_artifact_path(&attention_status, "q_post_rope", "attention")?;
+    let k_post_path = status_artifact_path(&attention_status, "grouped_k_post_rope", "attention")?;
+    let raw_path = status_artifact_path(&attention_status, "raw_qk", "attention")?;
+    let masked_path = status_artifact_path(&attention_status, "masked_logits", "attention")?;
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    for (label, path) in [
+        ("attention Q post-RoPE", &q_post_path),
+        ("attention grouped K post-RoPE", &k_post_path),
+        ("attention raw QK", &raw_path),
+        ("attention masked logits", &masked_path),
+        ("attention probabilities", &probs_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (q_post_status, q_post) = load_tensor_artifact(&q_post_path, &[q_dim], &["values"])?;
+    let (k_post_status, k_post) =
+        load_tensor_artifact(&k_post_path, &[k_history_count], &["values"])?;
+    let (raw_status, raw_oracle) = load_tensor_artifact(&raw_path, &[raw_count], &["values"])?;
+    let (masked_status, masked_oracle) =
+        load_tensor_artifact(&masked_path, &[masked_count], &["values"])?;
+    let (probs_status, probs_oracle) =
+        load_tensor_artifact(&probs_path, &[masked_count], &["values"])?;
+    let schema_blocked = !q_post_status.shape_or_count_matched
+        || !k_post_status.shape_or_count_matched
+        || !raw_status.shape_or_count_matched
+        || !masked_status.shape_or_count_matched
+        || !probs_status.shape_or_count_matched;
+
+    let focus_raw_index = focus_q_head * cli.token_count + focus_key_column;
+    let focus_masked_index = focus_q_head * (cli.token_count + 1) + focus_key_column;
+    let policies = [
+        RawQkSweepPolicy::CurrentSequential,
+        RawQkSweepPolicy::ReverseF32,
+        RawQkSweepPolicy::PairwiseF32,
+        RawQkSweepPolicy::F64Diagnostic,
+        RawQkSweepPolicy::ScalePerTermSequential,
+        RawQkSweepPolicy::DeterministicAbsAscending,
+        RawQkSweepPolicy::Bf16Product,
+    ];
+
+    let mut policy_results = Vec::new();
+    let mut best_full_policy = "none";
+    let mut best_full_mismatches = usize::MAX;
+    let mut best_full_max_diff = f32::INFINITY;
+    let mut best_focus_policy = "none";
+    let mut best_focus_diff = f32::INFINITY;
+    let mut reverse_full_clear = false;
+    let mut pairwise_full_clear = false;
+    let mut candidate_full_clear = false;
+    let mut focus_only_clear = false;
+    let mut collateral_mismatches = false;
+    let baseline_raw_mismatches = prior_status
+        .pointer("/attention_metrics/raw_qk/metrics/mismatches")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(usize::MAX);
+
+    if !schema_blocked {
+        for policy in policies {
+            let raw_qk = compute_raw_qk_with_policy(&q_post, &k_post, cli, policy);
+            let raw_metric = compare_matrix(
+                &raw_qk,
+                &raw_oracle,
+                cli.query_heads,
+                cli.token_count,
+                MatrixSelection::All,
+            );
+            let masked_logits = build_masked_logits_from_raw_qk(
+                &raw_qk,
+                &masked_oracle,
+                cli.query_heads,
+                cli.token_count,
+            );
+            let masked_metric = compare_matrix(
+                &masked_logits,
+                &masked_oracle,
+                cli.query_heads,
+                cli.token_count + 1,
+                MatrixSelection::All,
+            );
+            let attention_probs =
+                softmax_rows_bf16_output(&masked_logits, cli.query_heads, cli.token_count + 1);
+            let probs_metric = compare_matrix(
+                &attention_probs,
+                &probs_oracle,
+                cli.query_heads,
+                cli.token_count + 1,
+                MatrixSelection::All,
+            );
+            let focus_raw_value = raw_qk[focus_raw_index];
+            let focus_masked_value = masked_logits[focus_masked_index];
+            let official_raw = raw_oracle[focus_raw_index];
+            let official_masked = masked_oracle[focus_masked_index];
+            let clears_focus_entry =
+                focus_raw_value == official_raw && focus_masked_value == official_masked;
+            let clears_full_raw_qk = raw_metric.metrics.mismatches == 0;
+            let clears_full_masked_logits = masked_metric.metrics.mismatches == 0;
+            let full_clear = clears_full_raw_qk && clears_full_masked_logits;
+            let diagnostic_only = policy.diagnostic_only();
+            let evidence_only = policy.evidence_only();
+            let valid_candidate = !diagnostic_only && !evidence_only;
+            let introduces_collateral = if clears_focus_entry {
+                raw_metric.metrics.mismatches > 0 || masked_metric.metrics.mismatches > 0
+            } else {
+                raw_metric.metrics.mismatches > baseline_raw_mismatches
+            };
+
+            if raw_metric.metrics.mismatches < best_full_mismatches
+                || (raw_metric.metrics.mismatches == best_full_mismatches
+                    && raw_metric.metrics.max_abs_diff < best_full_max_diff)
+            {
+                best_full_policy = policy.name();
+                best_full_mismatches = raw_metric.metrics.mismatches;
+                best_full_max_diff = raw_metric.metrics.max_abs_diff;
+            }
+            let focus_diff = (focus_raw_value - official_raw).abs();
+            if focus_diff < best_focus_diff {
+                best_focus_policy = policy.name();
+                best_focus_diff = focus_diff;
+            }
+            if full_clear && valid_candidate {
+                candidate_full_clear = true;
+                if matches!(policy, RawQkSweepPolicy::ReverseF32) {
+                    reverse_full_clear = true;
+                }
+                if matches!(policy, RawQkSweepPolicy::PairwiseF32) {
+                    pairwise_full_clear = true;
+                }
+            }
+            if clears_focus_entry && !full_clear {
+                focus_only_clear = true;
+            }
+            if introduces_collateral {
+                collateral_mismatches = true;
+            }
+
+            policy_results.push(json!({
+                "policy": policy.name(),
+                "description": policy.description(),
+                "valid_candidate": valid_candidate,
+                "diagnostic_only": diagnostic_only,
+                "evidence_only": evidence_only,
+                "raw_qk": raw_metric,
+                "masked_logits": masked_metric,
+                "attention_probabilities": probs_metric,
+                "focus_entry": {
+                    "q_head": focus_q_head,
+                    "key_column": focus_key_column,
+                    "raw_qk": {
+                        "local": focus_raw_value,
+                        "official": official_raw,
+                        "abs_diff": focus_diff,
+                    },
+                    "masked_logits": {
+                        "local": focus_masked_value,
+                        "official": official_masked,
+                        "abs_diff": (focus_masked_value - official_masked).abs(),
+                    },
+                },
+                "clears_focus_entry": clears_focus_entry,
+                "clears_full_raw_qk": clears_full_raw_qk,
+                "clears_full_masked_logits": clears_full_masked_logits,
+                "introduces_collateral_mismatches": introduces_collateral,
+            }));
+        }
+    }
+
+    let classification = if schema_blocked {
+        format!("layer{layer}_raw_qk_policy_sweep_blocked_by_schema")
+    } else if pairwise_full_clear {
+        format!("layer{layer}_raw_qk_policy_sweep_pairwise_clears_full_matrix")
+    } else if reverse_full_clear {
+        format!("layer{layer}_raw_qk_policy_sweep_reverse_clears_full_matrix")
+    } else if candidate_full_clear {
+        format!("layer{layer}_raw_qk_policy_sweep_full_raw_qk_cleared")
+    } else if collateral_mismatches {
+        format!("layer{layer}_raw_qk_policy_sweep_collateral_mismatches")
+    } else if focus_only_clear {
+        format!("layer{layer}_raw_qk_policy_sweep_focus_entry_only_cleared")
+    } else {
+        format!("layer{layer}_raw_qk_policy_sweep_no_candidate_clears")
+    };
+
+    let downstream = consumer_single_status
+        .get("downstream_propagation")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "attention_probs_exact": prior_status.pointer("/attention_metrics/attention_probabilities/metrics/mismatches").and_then(Value::as_u64) == Some(0),
+                "weighted_v_exact": prior_status.pointer("/attention_metrics/weighted_v/metric/metrics/mismatches").and_then(Value::as_u64) == Some(0),
+                "o_proj_exact": prior_status.pointer("/attention_metrics/o_proj/metrics/mismatches").and_then(Value::as_u64) == Some(0),
+            })
+        });
+    let downstream_nonpropagating = downstream
+        .get("attention_probs_exact")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && downstream
+            .get("weighted_v_exact")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        && downstream
+            .get("o_proj_exact")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "raw-qk-policy-sweep-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus": {
+            "q_head": focus_q_head,
+            "key_column": focus_key_column,
+            "kv_head": focus_kv_head,
+            "scale": cli.scale,
+        },
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+            "oracle_dtype_probe_status": dtype_probe_status_path.display().to_string(),
+            "consumer_single_debug_status": "/tmp/layer3_raw_qk_single_mismatch_debug_status.json",
+            "attention_classification": attention_status["classification"].clone(),
+            "ordered_bundle_validate_classification": prior_status["classification"].clone(),
+            "oracle_dtype_probe_classification": dtype_probe_status["classification"].clone(),
+            "consumer_single_debug_classification": consumer_single_status.get("classification").cloned().unwrap_or(Value::Null),
+        },
+        "matrix_shape": {
+            "raw_qk": [cli.query_heads, cli.token_count],
+            "masked_logits": [cli.query_heads, cli.token_count + 1],
+            "attention_probabilities": [cli.query_heads, cli.token_count + 1],
+        },
+        "artifacts": {
+            "q_post_rope": q_post_status,
+            "grouped_k_post_rope": k_post_status,
+            "raw_qk": raw_status,
+            "masked_logits": masked_status,
+            "attention_probs": probs_status,
+        },
+        "policy_results": policy_results,
+        "best_policy_by_full_raw_qk": best_full_policy,
+        "best_policy_by_focus_entry": best_focus_policy,
+        "official_probe_interpretation": {
+            "classification": dtype_probe_status["classification"].clone(),
+            "interpretation": dtype_probe_status.get("interpretation").cloned().unwrap_or(Value::Null),
+            "official_expression_results": dtype_probe_status.get("official_expression_results").cloned().unwrap_or(Value::Null),
+        },
+        "downstream_propagation": downstream,
+        "downstream_nonpropagating": downstream_nonpropagating,
+        "candidate_policy_discussion_allowed": false,
+        "next_bounded_step": if candidate_full_clear {
+            "record the full-matrix raw-QK accumulation policy as validation-only evidence; do not apply a runtime fix or continue the ladder in this slice"
+        } else if focus_only_clear || collateral_mismatches {
+            "do not claim strict layer3 attention seam parity; request broader oracle precision or a source-complete raw-QK full-expression policy trace"
+        } else {
+            "keep layer3 strict ordered attention blocked on raw-QK accumulation/output-cast policy"
         },
     });
     write_json(&cli.output, &status)
@@ -12775,6 +13103,113 @@ fn compute_raw_qk(q_final: &[f32], k_post: &[f32], cli: &Cli) -> Vec<f32> {
         }
     }
     output
+}
+
+#[derive(Clone, Copy)]
+enum RawQkSweepPolicy {
+    CurrentSequential,
+    ReverseF32,
+    PairwiseF32,
+    F64Diagnostic,
+    ScalePerTermSequential,
+    DeterministicAbsAscending,
+    Bf16Product,
+}
+
+impl RawQkSweepPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CurrentSequential => "current_sequential_f32_scale_after_sum_bf16_output",
+            Self::ReverseF32 => "reverse_f32_scale_after_sum_bf16_output",
+            Self::PairwiseF32 => "pairwise_f32_scale_after_sum_bf16_output",
+            Self::F64Diagnostic => "f64_diagnostic_scale_after_sum_bf16_output",
+            Self::ScalePerTermSequential => "scale_per_term_sequential_f32_bf16_output",
+            Self::DeterministicAbsAscending => "deterministic_abs_ascending_f32_bf16_output",
+            Self::Bf16Product => "bf16_product_then_f32_sum_bf16_output",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::CurrentSequential => "sequential f32 dot, scale after sum, BF16 output",
+            Self::ReverseF32 => "reverse f32 dot, scale after sum, BF16 output",
+            Self::PairwiseF32 => "pairwise f32 dot, scale after sum, BF16 output",
+            Self::F64Diagnostic => "f64 diagnostic dot, scale after sum, BF16 output",
+            Self::ScalePerTermSequential => {
+                "sequential f32 dot with scale applied per term, BF16 output"
+            }
+            Self::DeterministicAbsAscending => {
+                "deterministic f32 dot sorted by ascending absolute product magnitude"
+            }
+            Self::Bf16Product => "evidence-only f32 dot after each product is rounded to BF16",
+        }
+    }
+
+    fn diagnostic_only(self) -> bool {
+        matches!(self, Self::F64Diagnostic)
+    }
+
+    fn evidence_only(self) -> bool {
+        matches!(self, Self::DeterministicAbsAscending | Self::Bf16Product)
+    }
+}
+
+fn compute_raw_qk_with_policy(
+    q_final: &[f32],
+    k_post: &[f32],
+    cli: &Cli,
+    policy: RawQkSweepPolicy,
+) -> Vec<f32> {
+    let mut output = vec![0.0f32; cli.query_heads * cli.token_count];
+    for q_head in 0..cli.query_heads {
+        let kv_head = q_head / cli.heads_per_kv;
+        for token in 0..cli.token_count {
+            let q_base = q_head * cli.head_dim;
+            let k_base = (token * cli.kv_heads + kv_head) * cli.head_dim;
+            let terms = (0..cli.head_dim)
+                .map(|lane| q_final[q_base + lane] * k_post[k_base + lane])
+                .collect::<Vec<_>>();
+            output[q_head * cli.token_count + token] =
+                raw_qk_policy_output_from_terms(&terms, cli.scale, policy);
+        }
+    }
+    output
+}
+
+fn raw_qk_policy_output_from_terms(terms: &[f32], scale: f32, policy: RawQkSweepPolicy) -> f32 {
+    match policy {
+        RawQkSweepPolicy::CurrentSequential => {
+            let sum = terms.iter().fold(0.0f32, |sum, value| sum + *value);
+            round_bf16(sum * scale)
+        }
+        RawQkSweepPolicy::ReverseF32 => {
+            let sum = terms.iter().rev().fold(0.0f32, |sum, value| sum + *value);
+            round_bf16(sum * scale)
+        }
+        RawQkSweepPolicy::PairwiseF32 => round_bf16(pairwise_sum_f32(terms) * scale),
+        RawQkSweepPolicy::F64Diagnostic => {
+            let sum = terms.iter().fold(0.0f64, |sum, value| sum + *value as f64);
+            round_bf16((sum * scale as f64) as f32)
+        }
+        RawQkSweepPolicy::ScalePerTermSequential => {
+            let sum = terms
+                .iter()
+                .fold(0.0f32, |sum, value| sum + (*value * scale));
+            round_bf16(sum)
+        }
+        RawQkSweepPolicy::DeterministicAbsAscending => {
+            let mut sorted_terms = terms.to_vec();
+            sorted_terms.sort_by(|left, right| left.abs().total_cmp(&right.abs()));
+            let sum = sorted_terms.iter().fold(0.0f32, |sum, value| sum + *value);
+            round_bf16(sum * scale)
+        }
+        RawQkSweepPolicy::Bf16Product => {
+            let sum = terms
+                .iter()
+                .fold(0.0f32, |sum, value| sum + round_bf16(*value));
+            round_bf16(sum * scale)
+        }
+    }
 }
 
 fn build_masked_logits_from_raw_qk(

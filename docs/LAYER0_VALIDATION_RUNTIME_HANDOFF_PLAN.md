@@ -1488,6 +1488,86 @@ validation-only diagnostic. No layer3 output was emitted, the ladder was not
 continued, no runtime/default routing/CUDA behavior changed, and there is no
 final-logit, all-layer, server, or 4097-token claim.
 
+## Layer3 Raw-QK Policy Sweep Status
+
+The oracle dtype probe confirmed that the official full raw-QK expression is
+deterministic BF16 output and that the single-entry mismatch is consistent with
+an accumulation/output-cast boundary:
+
+```text
+/tmp/layer3_raw_qk_qhead2_col1_dtype_probe_status.json
+classification = layer3_raw_qk_dtype_probe_confirms_accumulation_boundary
+official full expression = 0.0002918243408203125
+isolated dot / matmul-equivalent = 0.000293731689453125
+```
+
+The consumer then swept full final-token raw-QK policies over the entire
+`[64, 74]` real-key matrix and rebuilt masked logits over `[64, 75]` using the
+official sink column:
+
+```text
+/tmp/layer3_raw_qk_policy_sweep_status.json
+classification = layer3_raw_qk_policy_sweep_pairwise_clears_full_matrix
+
+focus:
+  layer = 3
+  q_head = 2
+  key_column = 1
+  kv_head = 0
+  scale = 0.125
+```
+
+Policy sweep results:
+
+```text
+current sequential f32:
+  raw-QK mismatches = 1
+  masked-logit mismatches = 1
+  attention-probability mismatches = 0
+
+reverse f32:
+  raw-QK mismatches = 0
+  masked-logit mismatches = 0
+  attention-probability mismatches = 0
+
+pairwise f32:
+  raw-QK mismatches = 0
+  masked-logit mismatches = 0
+  attention-probability mismatches = 0
+
+f64 diagnostic:
+  raw-QK mismatches = 0
+  masked-logit mismatches = 0
+  attention-probability mismatches = 0
+
+scale-per-term sequential f32:
+  raw-QK mismatches = 1
+  masked-logit mismatches = 1
+  attention-probability mismatches = 0
+
+deterministic abs-ascending f32:
+  raw-QK mismatches = 1
+  masked-logit mismatches = 1
+  attention-probability mismatches = 0
+
+BF16-product evidence policy:
+  raw-QK mismatches = 2433
+  masked-logit mismatches = 2433
+  attention-probability mismatches = 2581
+```
+
+Reverse f32 and pairwise f32 both clear the full raw-QK and masked-logit
+matrices without collateral mismatches; f64 remains diagnostic evidence only.
+The BF16-product policy remains rejected/evidence-only because it introduces
+broad collateral mismatches. Existing downstream provenance remains
+non-propagating: attention probabilities, weighted V, and o-proj are exact.
+
+This is validation-only evidence that layer3 raw-QK can be made exact under an
+explicit accumulation policy, but no tolerance, correction metadata, runtime
+policy, or CUDA/default routing change was applied. No layer3 output was emitted,
+the ladder was not continued, and there is no final-logit, all-layer, server, or
+4097-token claim.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

@@ -3712,6 +3712,81 @@ attention seam pass until the raw-QK accumulation convention is matched or
 separately scoped. No layer3 output was emitted, the ladder was not continued,
 and there is no final-logit, all-layer, server, or 4097-token claim.
 
+## Layer3 Raw-QK Policy Sweep Status
+
+The oracle dtype probe now records the producer-side interpretation:
+
+```text
+/tmp/layer3_raw_qk_qhead2_col1_dtype_probe_status.json
+classification = layer3_raw_qk_dtype_probe_confirms_accumulation_boundary
+official full raw-QK expression = 0.0002918243408203125
+isolated dot / matmul equivalent = 0.000293731689453125
+official output dtype = torch.bfloat16
+downstream_nonpropagating = true
+```
+
+The validation-runtime consumer swept the full layer3 final-token raw-QK matrix
+and rebuilt masked logits from each policy:
+
+```text
+/tmp/layer3_raw_qk_policy_sweep_status.json
+classification = layer3_raw_qk_policy_sweep_pairwise_clears_full_matrix
+raw-QK shape = [64, 74]
+masked-logits shape = [64, 75]
+```
+
+Full-matrix policy results:
+
+```text
+current sequential f32:
+  raw-QK mismatches = 1
+  masked logits mismatches = 1
+  focus entry clears = false
+
+reverse f32:
+  raw-QK mismatches = 0
+  masked logits mismatches = 0
+  focus entry clears = true
+
+pairwise f32:
+  raw-QK mismatches = 0
+  masked logits mismatches = 0
+  focus entry clears = true
+
+f64 diagnostic:
+  raw-QK mismatches = 0
+  masked logits mismatches = 0
+  focus entry clears = true
+
+scale-per-term sequential f32:
+  raw-QK mismatches = 1
+  masked logits mismatches = 1
+  focus entry clears = false
+
+deterministic abs-ascending f32:
+  raw-QK mismatches = 1
+  masked logits mismatches = 1
+  focus entry clears = false
+
+BF16-product evidence policy:
+  raw-QK mismatches = 2433
+  masked logits mismatches = 2433
+  attention probabilities mismatches = 2581
+```
+
+Both reverse f32 and pairwise f32 clear the full raw-QK and masked-logit
+matrices without collateral mismatches. The f64 result is diagnostic only.
+Attention probabilities remain exact for every non-BF16-product policy, and the
+existing downstream provenance remains non-propagating through weighted V and
+o-proj. BF16-product remains rejected/evidence-only due broad collateral
+mismatches.
+
+This improves the layer3 ordered attention evidence to a full-matrix,
+validation-only accumulation policy sweep. It does not apply tolerance, does not
+change runtime/default routing/CUDA behavior, does not emit a layer3 output, and
+does not continue the ladder. Treat strict layer3 ordered attention parity as
+available only under an explicit validation-only raw-QK accumulation policy.
+
 ## Validation Commands
 
 For the skeleton slice:
