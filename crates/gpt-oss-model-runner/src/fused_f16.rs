@@ -8,7 +8,11 @@
 use std::sync::Arc;
 
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+};
+#[cfg(feature = "cuda")]
+use gpt_oss_gpu::kernel_loader::{default_ptx_dir, KernelLoader};
 #[cfg(feature = "cuda")]
 use half::f16;
 
@@ -91,6 +95,43 @@ impl F16ScratchElementCounts {
     pub fn total_bytes(self) -> usize {
         self.total_elements() * std::mem::size_of::<half::f16>()
     }
+}
+
+#[cfg(feature = "cuda")]
+pub fn get_or_load_cast_f32_to_f16_kernel(
+    loader: &KernelLoader,
+    context: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+) -> BridgeResult<CudaFunction> {
+    const MODULE: &str = "cast_fp";
+    const FUNCTION: &str = "cast_f32_to_f16_kernel";
+
+    if loader.has_module(MODULE) {
+        return loader
+            .get_func(MODULE, FUNCTION)
+            .map_err(|e| LLMError::GpuError(format!("cast_f32_to_f16 kernel lookup failed: {e}")));
+    }
+
+    let ptx_path = default_ptx_dir().join("cast_fp.ptx");
+    if !ptx_path.exists() {
+        return Err(LLMError::GpuError(format!(
+            "cast_fp PTX not found at {}",
+            ptx_path.display()
+        )));
+    }
+
+    let mut cast_loader = KernelLoader::empty(context.clone(), stream.clone());
+    cast_loader.load_ptx_file(MODULE, &ptx_path).map_err(|e| {
+        LLMError::GpuError(format!(
+            "cast_f32_to_f16 kernel module load failed from {}: {e}",
+            ptx_path.display()
+        ))
+    })?;
+    cast_loader.get_func(MODULE, FUNCTION).map_err(|e| {
+        LLMError::GpuError(format!(
+            "cast_f32_to_f16 kernel lookup failed after load: {e}"
+        ))
+    })
 }
 
 #[cfg(feature = "cuda")]

@@ -1415,6 +1415,7 @@ mod cuda {
     use crate::device_map::DeviceId;
     use crate::fused_f16::{
         cast_f32_tensor_to_f16, fused_gate_up_num_elements, fused_qkv_num_elements,
+        get_or_load_cast_f32_to_f16_kernel,
     };
     use crate::model_loader::{ShardWeightStore, ShardWeightStorePlan};
     use crate::rope_validation::build_runtime_rope_tables;
@@ -1902,15 +1903,17 @@ mod cuda {
             let needs_norm_casts = plan.f16_layernorm_count > 0 || plan.f16_postnorm_count > 0;
             let cast_kernel = if needs_norm_casts {
                 Some(
-                    resource
-                        .loader
-                        .get_func("cast_fp", "cast_f32_to_f16_kernel")
-                        .map_err(|e| {
-                            LLMError::GpuError(format!(
-                                "shard {} f16 norm cast kernel lookup failed: {e}",
-                                resource.device_id
-                            ))
-                        })?,
+                    get_or_load_cast_f32_to_f16_kernel(
+                        &resource.loader,
+                        &resource.context,
+                        &resource.stream,
+                    )
+                    .map_err(|e| {
+                        LLMError::GpuError(format!(
+                            "shard {} f16 norm cast kernel load failed: {e}",
+                            resource.device_id
+                        ))
+                    })?,
                 )
             } else {
                 None

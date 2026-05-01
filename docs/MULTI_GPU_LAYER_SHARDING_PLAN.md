@@ -5575,3 +5575,129 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_fused_qkv_norm_allocation_cast_error
+
+## Bench-only f16 norm cast kernel repair status
+
+The previous real-model fused QKV + norm conversion allocation smoke failed at:
+
+```text
+gpu error: shard 0 f16 norm cast kernel lookup failed: gpu error: module 'cast_fp' not loaded
+```
+
+The split bench path allocated fused QKV without kernels, but the new
+layernorm/postnorm f32 -> f16 conversion path needs `cast_fp`. The shard
+resource loader can be empty when no `--kernel-dir` is supplied, so the
+bench-only norm conversion path now obtains the cast kernel explicitly.
+
+### Helper added
+
+`crates/gpt-oss-model-runner/src/fused_f16.rs` now provides:
+
+```text
+get_or_load_cast_f32_to_f16_kernel
+```
+
+The helper first uses `cast_fp::cast_f32_to_f16_kernel` if it is already loaded
+in the shard's `KernelLoader`. If the shard loader has no `cast_fp` module, it
+loads only `cast_fp.ptx` from `gpt_oss_gpu::kernel_loader::default_ptx_dir()`
+into a temporary loader and returns the loaded `CudaFunction`. The returned
+function owns the loaded module, so the shard resource `Arc<KernelLoader>` does
+not need mutation.
+
+`CudaShardFusedF16Buffers::create_for_resource` now calls this helper once per
+shard when layernorm/postnorm casts are planned, then passes the resulting
+kernel handle into the per-layer norm conversion calls.
+
+`GpuModelRunner::fuse_weights` remains behavior-preserving and continues to use
+its existing runner-owned loader path.
+
+### Status/classification refinement
+
+The fused allocation error mapping now distinguishes norm cast failures from
+fused QKV copy/allocation failures. Norm cast kernel load, lookup, allocation,
+or launch failures map to:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_norm_allocation_cast_error
+```
+
+Successful fused QKV + norm conversion allocation still reports:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete
+```
+
+No new status JSON fields were added in this slice; the error string remains
+the detailed boundary report.
+
+### Manual operator command
+
+Do not run automatically during this implementation slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_norm_status.json
+```
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner fused_f16
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke
+cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda
+git diff --check
+```
+
+No real-model CUDA smoke was run for this implementation slice.
+
+### Non-execution boundary
+
+No split execution, layer construction, `GpuModelRunner` construction, attention,
+graph output, final norm execution, LM-head execution, logits, graph capture,
+forward pass, serving behavior, or parity path was added.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- rerun the real-model fused QKV + norm conversion allocation smoke.
+- bias f16 conversion allocation.
+- final/embed f16 conversion allocation.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_norm_cast_kernel_boundary_repaired

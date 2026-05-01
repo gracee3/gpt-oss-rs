@@ -51,6 +51,8 @@ const FUSED_QKV_NORM_ALLOCATION_CLASSIFICATION: &str =
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
+const FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_norm_allocation_cast_error";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -1307,10 +1309,8 @@ fn run_cuda_allocation_smoke(
                         f16_scratch_config,
                     )
                     .map_err(|error| {
-                        (
-                            FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION,
-                            error.to_string(),
-                        )
+                        let error = error.to_string();
+                        (classify_fused_f16_error(&error), error)
                     })?
                     .status(),
                 )
@@ -1407,6 +1407,14 @@ fn fused_status_has_allocated_norms(status: &ShardedFusedF16AllocationStatus) ->
             || shard.f16_layernorm_total_bytes > 0
             || shard.f16_postnorm_total_bytes > 0
     })
+}
+
+fn classify_fused_f16_error(error: &str) -> &'static str {
+    if error.contains("f16 norm cast") || error.contains("cast_f32_f16") {
+        FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION
+    } else {
+        FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION
+    }
 }
 
 fn render_report(
@@ -2878,6 +2886,27 @@ mod tests {
             assert_eq!(shard.f16_scratch_status, "not_applicable");
             assert!(shard.fused_layer_absolute_indices.is_empty());
         }
+    }
+
+    #[test]
+    fn fused_f16_error_classification_maps_norm_cast_errors() {
+        let classification = classify_fused_f16_error(
+            "gpu error: shard 0 f16 norm cast kernel load failed: gpu error: module 'cast_fp' not loaded",
+        );
+
+        assert_eq!(
+            classification,
+            FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION
+        );
+    }
+
+    #[test]
+    fn fused_f16_error_classification_keeps_qkv_errors_distinct() {
+        let classification = classify_fused_f16_error(
+            "gpu error: shard 0 fused QKV q copy failed absolute layer 12",
+        );
+
+        assert_eq!(classification, FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION);
     }
 
     #[test]
