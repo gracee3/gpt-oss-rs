@@ -4519,3 +4519,225 @@ before any fused allocation is attempted.
 ### Primary classification
 
 multi_gpu_layer_sharding_shard_local_weight_container_design_complete
+
+## Shard-local weight wrapper skeleton status
+
+This slice added a pure, CUDA-free shard-local weight access skeleton. It
+proves ownership-gated tensor naming and loadability decisions without
+wrapping live CUDA slices, allocating fused buffers, allocating scratch,
+uploading MoE GPU expert weights, constructing layers, or constructing
+`GpuModelRunner`.
+
+### Module/type names
+
+The skeleton lives in:
+
+```text
+crates/gpt-oss-model-runner/src/model_loader/shard_weights.rs
+```
+
+It is exported through:
+
+```text
+crates/gpt-oss-model-runner/src/model_loader/mod.rs
+crates/gpt-oss-model-runner/src/lib.rs
+```
+
+New public types:
+
+```text
+ShardWeightStorePlan
+ShardWeightStoreStatus
+ShardTensorAvailability
+ShardWeightLookupError
+ShardWeightStore
+```
+
+`ShardWeightStorePlan` records:
+
+```text
+device_id
+absolute_layers
+owns_embeddings
+owns_final_head
+required_tensor_names
+host_u8_tensor_names
+global_shape_names
+tied_lm_head_fallback_required
+```
+
+`ShardWeightStoreStatus` reports deterministic counts plus
+`missing_required_tensor_names`.
+
+### Constructor/source plans
+
+The constructor is:
+
+```text
+ShardWeightStorePlan::from_shard_manifest(
+  shard_plan,
+  shard_manifest,
+  global_shapes,
+  has_lm_head_weight,
+  tie_word_embeddings,
+)
+```
+
+It consumes existing pure planning state:
+
+- `GpuShardPlan` for device id, absolute layers, embedding ownership, and
+  final-head ownership.
+- `ShardTensorManifest.required_tensor_names` for f32/f16 loadability.
+- `ShardTensorManifest.host_u8_tensor_names` for U8 host loadability.
+- global shape names from header/loader shape metadata for shape visibility.
+- `LateAllocationKind::TiedLmHeadFallback` plus config/header inputs to keep
+  tied fallback explicit.
+
+No safetensor payloads are read and no loader functions are called by this
+wrapper.
+
+### Absolute-layer-first access policy
+
+Public accessors validate absolute layer ownership before constructing tensor
+names:
+
+```text
+owns_layer(absolute_layer_idx)
+local_layer_idx(absolute_layer_idx)
+layer_tensor_name(absolute_layer_idx, suffix)
+require_owned_layer_tensor_name(absolute_layer_idx, suffix)
+optional_owned_layer_tensor_name(absolute_layer_idx, suffix)
+u8_owned_layer_tensor_name(absolute_layer_idx, suffix)
+require_required_tensor_name(name)
+```
+
+For the target split `split:0-11@0,12-23@1`, GPU1 owns absolute layer 12 and
+`layer_tensor_name(12, "self_attn.q_proj.weight")` returns:
+
+```text
+model.layers.12.self_attn.q_proj.weight
+```
+
+It never maps GPU1 layer 12 to `model.layers.0.*`. Non-owned layers return:
+
+```text
+ShardWeightLookupError::LayerNotOwned
+```
+
+Owned-but-missing required layer tensors return:
+
+```text
+ShardWeightLookupError::RequiredTensorMissing
+```
+
+This keeps unowned and missing-owned failures distinct for future fused
+allocation.
+
+### Shape visibility vs loadability
+
+The wrapper records `global_shape_names` separately from loadable tensor sets.
+This allows a shard to report shape visibility for unowned tensors while still
+rejecting those tensors for local loading or fused allocation.
+
+Availability classification:
+
+```text
+ShardTensorAvailability::Required
+ShardTensorAvailability::HostU8
+ShardTensorAvailability::ShapeOnly
+ShardTensorAvailability::NotVisible
+```
+
+Shape-only visibility does not imply loadability. For example, GPU1 can see
+the shape name for `model.embed_tokens.weight` when global shapes are provided,
+but `should_load_required_tensor("model.embed_tokens.weight")` remains false
+for the target split.
+
+### Embedding/final-head ownership behavior
+
+Ownership-specific accessors:
+
+```text
+embedding_tensor_name_if_owned()
+final_norm_tensor_name_if_owned()
+lm_head_tensor_name_if_owned_or_deferred()
+```
+
+For `split:0-11@0,12-23@1`:
+
+- GPU0 owns `model.embed_tokens.weight`.
+- GPU1 does not own embeddings.
+- GPU1 owns `model.norm.weight`.
+- GPU1 owns `lm_head.weight` when it exists.
+- GPU0 does not own final norm or LM head.
+
+### Tied LM-head fallback behavior
+
+When `lm_head.weight` is absent and `tie_word_embeddings=true`, the final
+shard reports:
+
+```text
+ShardWeightLookupError::TiedLmHeadFallbackDeferred
+```
+
+The wrapper does not copy `model.embed_tokens.weight` to the final shard and
+does not make the embedding tensor loadable on GPU1. Tied fallback remains a
+separate late allocation design.
+
+### Fused allocation unblock
+
+Future fused allocation can use this boundary as the source of truth:
+
+```text
+for absolute_layer_idx in shard_store.plan().absolute_layers {
+  shard_store.require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.q_proj.weight")
+  shard_store.require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.k_proj.weight")
+  shard_store.require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.v_proj.weight")
+  shard_store.optional_owned_layer_tensor_name(absolute_layer_idx, "self_attn.q_proj.bias")
+  shard_store.u8_owned_layer_tensor_name(absolute_layer_idx, "mlp.experts.gate_up_proj_blocks")
+}
+```
+
+This replaces full-runner local loops like `0..self.layers.len()` with
+explicit absolute layer ids while preserving shard-local local indices only as
+an internal/status convenience.
+
+Wrapping actual `GpuModelWeights` / `CudaSlice` maps is still deferred. The
+next implementation can layer CUDA-backed accessors under the same ownership
+checks without changing serve/runtime behavior.
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+git diff --check
+```
+
+### Non-execution boundary
+
+No loader payload behavior, tensor upload behavior, CUDA resource construction,
+fused allocation, f16 scratch allocation, GPT-OSS MoE GPU upload, tied LM-head
+fallback implementation, layer construction, runner construction, attention,
+graph output, logits, execution, serving, or parity path was added. Serve and
+runtime split maps remain non-executable and continue to reject before CUDA
+allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- narrow helper extraction from `GpuModelRunner::fuse_weights`.
+- `F16LayerScratch` visibility/sizing boundary design.
+- actual bench-only fused f16 allocation using `ShardWeightStore`.
+- tied LM-head fallback design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_shard_weight_wrapper_skeleton_complete

@@ -13,6 +13,7 @@ pub mod mapper;
 pub mod safetensor_headers;
 pub mod safetensors;
 pub mod shard;
+pub mod shard_weights;
 pub mod weights;
 
 use std::path::Path;
@@ -36,6 +37,10 @@ pub enum ModelFormat {
 
 pub use safetensor_headers::{
     SafetensorHeaderManifest, SafetensorHeaderMergePolicy, SafetensorTensorInfo,
+};
+pub use shard_weights::{
+    ShardTensorAvailability, ShardWeightLookupError, ShardWeightStore, ShardWeightStorePlan,
+    ShardWeightStoreStatus,
 };
 
 /// Detect format from a path. Checks extension of files in a directory,

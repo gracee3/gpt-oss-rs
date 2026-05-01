@@ -53,7 +53,8 @@ pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
 pub use model_loader::{
     detect_format, load_model_weights, ModelFormat, SafetensorHeaderManifest,
-    SafetensorHeaderMergePolicy, SafetensorTensorInfo,
+    SafetensorHeaderMergePolicy, SafetensorTensorInfo, ShardTensorAvailability,
+    ShardWeightLookupError, ShardWeightStore, ShardWeightStorePlan, ShardWeightStoreStatus,
 };
 pub use quant::{detect_quant_method, QuantConfig, QuantMethod, QuantizedLinear, QuantizedWeight};
 pub use runner::{ModelRunner, ModelRunnerConfig};
