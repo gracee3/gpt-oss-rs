@@ -3507,6 +3507,65 @@ No layer2 output was emitted, the ladder was not continued, no runtime/default
 routing/CUDA behavior changed, and this makes no final-logit, all-layer,
 server, or 4097-token claim.
 
+## Layer2 Attention Audit Validation Status
+
+A supplemental layer2 ordered attention audit bundle is now consumed by:
+
+```text
+--mode attention-audit-validate
+--attention-bundle-status /tmp/layer2_ordered_attention_bundle_status.json
+--attention-audit-status /tmp/layer2_ordered_attention_audit_bundle_status.json
+--ordered-bundle-validate-status /tmp/layer2_ordered_bundle_validate_status.json
+```
+
+Audit artifact:
+
+```text
+/tmp/layer2_ordered_attention_audit_bundle_status.json
+/tmp/layer2_ordered_attention_audit_bundle/
+```
+
+Result:
+
+```text
+classification = layer2_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+all_token_v_layout = all-real-token V projection tensor [token, kv_head, head_dim]
+```
+
+The audit mode recomputes weighted V from the ordered attention probabilities
+and the audit all-token V tensor. The probability rows include the sink column,
+but the weighted-V sum uses only the 74 real-token V rows with `kv_head =
+q_head / 8`. This matches the ordered weighted-V reference exactly:
+
+```text
+weighted V max_abs_diff = 0
+weighted V mean_abs_diff = 0
+weighted V mismatches = 0
+```
+
+The audit mode also recomputes the attention residual from the layer2
+final-token layer input before attention norm plus the ordered o_proj output
+using the BF16 residual-add boundary. This matches the ordered attention
+residual exactly, and the attention residual to ordered MLP input bridge remains
+exact:
+
+```text
+attention residual max_abs_diff = 0
+attention residual mean_abs_diff = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+This removes the prior weighted-V official-seam-only and residual bridge-only
+caveats for layer2 ordered attention validation. Layer2 MLP remains validated
+under the ordered MLP bundle with deterministic abs-ascending selected MLP down
+replay. No layer output was emitted, no ladder continuation occurred, no
+runtime/default routing/CUDA behavior changed, and this makes no final-logit,
+all-layer, server, or 4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

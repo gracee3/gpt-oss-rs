@@ -1213,10 +1213,10 @@ deterministic_f32_abs_ascending_sum_then_bf16_output
 ```
 
 This supports moving to a separate scoped runtime-design discussion for the
-selected MLP down convention, with the standing caveat that layer2 attention
-remains unresolved. No runtime behavior changed, no correction metadata was
-applied, no ladder was continued, and no raw `/tmp` or `.live` artifacts are
-committed.
+selected MLP down convention. The replay itself is MLP-only; the later ordered
+attention and audit sections record the layer2 attention evidence. No runtime
+behavior changed, no correction metadata was applied, no ladder was continued,
+and no raw `/tmp` or `.live` artifacts are committed.
 
 ## Layer2 Ordered Bundle Validation Status
 
@@ -1285,6 +1285,60 @@ and does not claim final logits, all-layer parity, server parity, or 4097-token
 coverage. All-token V was used by the oracle producer internally for weighted-V
 construction but is not emitted as a separate consumer boundary, so the consumer
 uses the ordered weighted-V seam for o-proj validation.
+
+## Layer2 Attention Audit Validation Status
+
+The oracle lane added a supplemental layer2 ordered attention audit bundle:
+
+```text
+/tmp/layer2_ordered_attention_audit_bundle_status.json
+/tmp/layer2_ordered_attention_audit_bundle/
+```
+
+Mode:
+
+- `--mode attention-audit-validate`
+- source attention status: `/tmp/layer2_ordered_attention_bundle_status.json`
+- audit status: `/tmp/layer2_ordered_attention_audit_bundle_status.json`
+- prior ordered validation status: `/tmp/layer2_ordered_bundle_validate_status.json`
+
+Result:
+
+```text
+classification = layer2_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+all_token_v_layout = all-real-token V projection tensor [token, kv_head, head_dim]
+```
+
+Audit recomputation:
+
+```text
+weighted V:
+  attention probabilities + all-token V -> weighted V
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+attention residual:
+  layer input before attention norm + o_proj -> attention residual
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+
+attention residual -> ordered MLP input bridge:
+  max_abs_diff = 0
+  mean_abs_diff = 0
+  mismatches = 0
+```
+
+This removes the prior consumer caveats that weighted V was only an official
+seam and that the attention residual was only bridge-checked. Layer2 MLP remains
+validated by the ordered MLP bundle with the deterministic abs-ascending
+selected MLP down policy. The ladder was not continued, no layer2 output was
+emitted, no runtime/default routing/CUDA behavior changed, and this makes no
+final-logit, all-layer, server, or 4097-token claim.
 
 ## Validation-Only Non-Goals
 

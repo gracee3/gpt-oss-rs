@@ -85,6 +85,14 @@ struct Cli {
     #[arg(long)]
     attention_bundle_status: Option<PathBuf>,
 
+    /// Supplemental ordered attention audit bundle status artifact.
+    #[arg(long)]
+    attention_audit_status: Option<PathBuf>,
+
+    /// Prior ordered bundle validation status artifact for audit provenance.
+    #[arg(long)]
+    ordered_bundle_validate_status: Option<PathBuf>,
+
     /// Official layer MLP ordered boundary bundle for backend seam validation.
     #[arg(long)]
     mlp_bundle: Option<PathBuf>,
@@ -443,6 +451,7 @@ enum Mode {
     SelectedExpertDownTermsCompareStatus,
     SelectedExpertDownCastPolicySweepStatus,
     SelectedMlpDownPolicyReplayStatus,
+    AttentionAuditValidate,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1427,6 +1436,7 @@ fn main() -> Result<()> {
             run_selected_expert_down_cast_policy_sweep_status(&cli)
         }
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
+        Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -4204,6 +4214,265 @@ fn status_f32_array(status: &Value, key: &str) -> Result<Vec<f32>> {
                 .with_context(|| format!("{key} entry must be numeric"))
         })
         .collect()
+}
+
+fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    anyhow::ensure!(
+        layer == 2,
+        "attention-audit-validate currently emits layer2_ordered_attention_audit_* classifications; got layer {layer}"
+    );
+    let lane = cli.lane;
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let kv_dim = cli.kv_heads * cli.head_dim;
+    let v_history_count = cli.token_count * kv_dim;
+    let probs_count = cli.query_heads * (cli.token_count + 1);
+    anyhow::ensure!(lane < q_dim, "focus lane must be < {q_dim}, got {lane}");
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let audit_status_path = required_path(&cli.attention_audit_status, "attention audit status")?;
+    let prior_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(audit_status_path, "attention audit status")?;
+    validate_path(prior_validate_status_path, "ordered bundle validate status")?;
+
+    let attention_status = load_json(attention_status_path)?;
+    let audit_status = load_json(audit_status_path)?;
+    let prior_status = load_json(prior_validate_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&audit_status)? == layer,
+        "attention audit bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&prior_status)? == layer,
+        "prior ordered bundle validation layer did not match requested layer {layer}"
+    );
+
+    let mlp_status_path = if let Some(path) = cli.mlp_bundle_status.as_deref() {
+        path.to_path_buf()
+    } else {
+        prior_status
+            .get("mlp_bundle_status")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .context("prior ordered validation status missing mlp_bundle_status")?
+    };
+    validate_path(&mlp_status_path, "MLP bundle status")?;
+    let mlp_status = load_json(&mlp_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&mlp_status)? == layer,
+        "MLP bundle layer did not match requested layer {layer}"
+    );
+
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    let attention_residual_path =
+        status_artifact_path(&attention_status, "attention_residual", "attention")?;
+    let layer_input_path =
+        status_artifact_path(&audit_status, "layer_input_before_attention_norm", "audit")?;
+    let all_token_v_path =
+        status_artifact_path(&audit_status, "all_token_v_before_attention", "audit")?;
+    let mlp_input_path = status_artifact_path(&mlp_status, "mlp_input", "MLP")?;
+
+    for (label, path) in [
+        ("attention probabilities", &probs_path),
+        ("attention weighted V", &weighted_v_path),
+        ("attention o_proj", &oproj_path),
+        ("attention residual", &attention_residual_path),
+        ("audit layer input", &layer_input_path),
+        ("audit all-token V", &all_token_v_path),
+        ("MLP input", &mlp_input_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (probs_status, attention_probs) =
+        load_tensor_artifact(&probs_path, &[probs_count], &["values"])?;
+    let (all_token_v_status, all_token_v) =
+        load_tensor_artifact(&all_token_v_path, &[v_history_count], &["values"])?;
+    let (weighted_v_status, weighted_v_oracle) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (layer_input_status, layer_input) =
+        load_tensor_artifact(&layer_input_path, &[hidden], &["values"])?;
+    let (oproj_status, oproj) = load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+    let (attention_residual_status, attention_residual) =
+        load_tensor_artifact(&attention_residual_path, &[hidden], &["values"])?;
+    let (mlp_input_status, mlp_input) =
+        load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?;
+
+    let schema_blocked = !probs_status.shape_or_count_matched
+        || !all_token_v_status.shape_or_count_matched
+        || !weighted_v_status.shape_or_count_matched
+        || !layer_input_status.shape_or_count_matched
+        || !oproj_status.shape_or_count_matched
+        || !attention_residual_status.shape_or_count_matched
+        || !mlp_input_status.shape_or_count_matched;
+
+    let (weighted_v_metrics, weighted_v_focus) = if schema_blocked {
+        (Value::Null, Value::Null)
+    } else {
+        let weighted_v = compute_weighted_v(&attention_probs, &all_token_v, cli, true);
+        let metric = compare_hidden(&weighted_v, &weighted_v_oracle);
+        (
+            json!(metric),
+            json!({
+                "lane": lane,
+                "local": weighted_v[lane],
+                "oracle": weighted_v_oracle[lane],
+                "abs_diff": (weighted_v[lane] - weighted_v_oracle[lane]).abs(),
+                "matched": weighted_v[lane] == weighted_v_oracle[lane],
+            }),
+        )
+    };
+    let (attention_residual_metrics, residual_focus) = if schema_blocked {
+        (Value::Null, Value::Null)
+    } else {
+        let residual = compute_attention_residual(&layer_input, &oproj);
+        let metric = compare_hidden(&residual, &attention_residual);
+        (
+            json!(metric),
+            json!({
+                "lane": lane,
+                "local": residual[lane],
+                "oracle": attention_residual[lane],
+                "abs_diff": (residual[lane] - attention_residual[lane]).abs(),
+                "matched": residual[lane] == attention_residual[lane],
+            }),
+        )
+    };
+    let attention_to_mlp_bridge = if schema_blocked {
+        Value::Null
+    } else {
+        json!(compare_hidden(&attention_residual, &mlp_input))
+    };
+
+    let metric_mismatches = |value: &Value| {
+        value
+            .pointer("/metrics/mismatches")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    };
+    let weighted_clear = !schema_blocked && metric_mismatches(&weighted_v_metrics) == 0;
+    let residual_clear = !schema_blocked && metric_mismatches(&attention_residual_metrics) == 0;
+    let bridge_clear = !schema_blocked && metric_mismatches(&attention_to_mlp_bridge) == 0;
+    let classification = if schema_blocked {
+        "layer2_ordered_attention_audit_blocked_by_schema"
+    } else if !weighted_clear {
+        "layer2_ordered_attention_audit_weighted_v_mismatch"
+    } else if !residual_clear {
+        "layer2_ordered_attention_audit_weighted_v_cleared_residual_mismatch"
+    } else if !bridge_clear {
+        "layer2_ordered_attention_audit_bridge_mismatch"
+    } else {
+        "layer2_ordered_attention_audit_weighted_v_and_residual_cleared"
+    };
+
+    let remaining_caveats =
+        if classification == "layer2_ordered_attention_audit_weighted_v_and_residual_cleared" {
+            vec![
+                "layer ladder not continued",
+                "no final-logit claim",
+                "no all-layer claim",
+                "no server or 4097-token claim",
+            ]
+        } else {
+            vec![
+                "resolve the reported layer2 ordered attention audit mismatch or schema blocker",
+                "layer ladder not continued",
+                "no final-logit claim",
+                "no all-layer claim",
+                "no server or 4097-token claim",
+            ]
+        };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "attention-audit-validate",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "attention_bundle_status": attention_status_path.display().to_string(),
+        "attention_audit_status": audit_status_path.display().to_string(),
+        "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+        "mlp_bundle_status": mlp_status_path.display().to_string(),
+        "source_complete_attention_capture": audit_status
+            .get("source_complete_attention_capture")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "all_token_v_emitted": audit_status
+            .pointer("/all_token_v/emitted")
+            .and_then(Value::as_bool)
+            .unwrap_or(!schema_blocked),
+        "all_token_v": {
+            "artifact": all_token_v_status,
+            "shape": audit_status.pointer("/all_token_v/shape").cloned().unwrap_or_else(|| json!([cli.token_count, cli.kv_heads, cli.head_dim])),
+            "layout": audit_status.pointer("/all_token_v/layout").cloned().unwrap_or_else(|| json!("all-real-token V projection tensor [token, kv_head, head_dim]")),
+        },
+        "weighted_v_recomputed": !schema_blocked,
+        "attention_residual_recomputed": !schema_blocked,
+        "weighted_v_metrics": weighted_v_metrics,
+        "weighted_v_focus_lane": weighted_v_focus,
+        "attention_residual_metrics": attention_residual_metrics,
+        "attention_residual_focus_lane": residual_focus,
+        "attention_to_mlp_bridge": attention_to_mlp_bridge,
+        "artifacts": {
+            "attention_probs": probs_status,
+            "weighted_v_reference": weighted_v_status,
+            "layer_input_before_attention_norm": layer_input_status,
+            "o_proj_reference": oproj_status,
+            "attention_residual_reference": attention_residual_status,
+            "mlp_input": mlp_input_status,
+        },
+        "source_policy": {
+            "weighted_v": "recomputed_from_attention_probs_and_audit_all_token_v_real_tokens_only",
+            "sink_column": "participates in softmax normalization but is ignored for weighted-V summation",
+            "gqa_mapping": "kv_head = q_head / heads_per_kv",
+            "attention_residual": "BF16 layer input plus BF16 o_proj, BF16 output",
+            "layer_ladder_continued": false,
+        },
+        "caveats_removed": {
+            "weighted_v_official_seam_only": weighted_clear,
+            "attention_residual_bridge_only": residual_clear && bridge_clear,
+        },
+        "remaining_caveats": remaining_caveats,
+        "source_statuses": {
+            "attention_classification": attention_status["classification"].clone(),
+            "audit_classification": audit_status["classification"].clone(),
+            "prior_ordered_bundle_validate_classification": prior_status["classification"].clone(),
+            "mlp_classification": mlp_status["classification"].clone(),
+        },
+        "next_bounded_step": match classification {
+            "layer2_ordered_attention_audit_weighted_v_and_residual_cleared" => {
+                "record that layer2 weighted-V and attention residual-add audit caveats are cleared; do not continue the ladder in this slice"
+            }
+            "layer2_ordered_attention_audit_weighted_v_mismatch" => {
+                "localize weighted-V policy, sink-column handling, GQA mapping, shape/layout, or rounding before using the audit surface"
+            }
+            "layer2_ordered_attention_audit_weighted_v_cleared_residual_mismatch" => {
+                "localize BF16 residual-add policy from layer input plus o-proj"
+            }
+            "layer2_ordered_attention_audit_bridge_mismatch" => {
+                "resolve attention residual versus ordered MLP input bridge mismatch"
+            }
+            _ => "fix the reported layer2 ordered attention audit blocker",
+        },
+    });
+    write_json(&cli.output, &status)
 }
 
 #[cfg(feature = "cuda")]
