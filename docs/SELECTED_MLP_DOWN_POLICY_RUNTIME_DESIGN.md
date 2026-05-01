@@ -337,6 +337,43 @@ authorize runtime implementation, production/default routing changes, CUDA
 kernel changes, correction metadata, ladder continuation, or any final-logit,
 all-layer, server, or 4097-token claim.
 
+## Lower-Overhead Deterministic Sweep
+
+The validation branch also records a lower-overhead deterministic reduction
+sweep at:
+
+```text
+/tmp/selected_mlp_down_policy_low_overhead_sweep_status.json
+```
+
+The sweep compares the exact absolute-ascending reference against cheaper
+deterministic variants on the available ordered MLP surfaces, layer1 and layer2,
+with layer11 included only when its local artifact exists. The tested variants
+include exponent-bucket reductions, sign-split reductions, Kahan and Neumaier
+compensated summation, and fixed-block pairwise summation. Full-vector metrics
+remain authoritative.
+
+Result:
+
+```text
+classification = selected_mlp_down_policy_low_overhead_sweep_abs_sort_only_full_clear
+best_lower_overhead_candidate = null
+reference_abs_sort_remains_only_known_full_clear = true
+```
+
+The exponent-bucket variants were close but did not clear layer2 selected-output
+and weighted-sum full vectors. Sign-split, compensated, and block-pairwise
+variants also left ordered MLP mismatches. The deterministic absolute-ascending
+reference remains the only known full-clear policy for the local layer1/layer2
+ordered MLP surfaces. BF16-product remains evidence-only and rejected.
+
+This sweep strengthens the correctness evidence for the reference policy while
+also sharpening the performance concern: no cheaper deterministic substitute is
+currently proven. Runtime policy discussion remains disabled until a separate
+release/performance validation gate exists. No production/default routing, CUDA
+kernel, correction metadata, ladder, final-logit, all-layer, server, or
+4097-token behavior changed.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.

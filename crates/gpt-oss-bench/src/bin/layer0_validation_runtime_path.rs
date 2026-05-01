@@ -479,6 +479,7 @@ enum Mode {
     SelectedMlpDownPolicyCandidateStatus,
     SelectedMlpDownPolicyCandidateReplayStatus,
     SelectedMlpDownPolicyCostStatus,
+    SelectedMlpDownPolicyLowOverheadSweepStatus,
     AttentionAuditValidate,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
@@ -1471,6 +1472,9 @@ fn main() -> Result<()> {
             run_selected_mlp_down_policy_candidate_replay_status(&cli)
         }
         Mode::SelectedMlpDownPolicyCostStatus => run_selected_mlp_down_policy_cost_status(&cli),
+        Mode::SelectedMlpDownPolicyLowOverheadSweepStatus => {
+            run_selected_mlp_down_policy_low_overhead_sweep_status(&cli)
+        }
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -8783,6 +8787,40 @@ fn parse_focus_lanes(cli: &Cli, hidden: usize) -> Result<Vec<usize>> {
     Ok(lanes)
 }
 
+fn selected_mlp_default_down_policies() -> [DownCastSweepPolicy; 6] {
+    [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::NaiveF64,
+        DownCastSweepPolicy::PairwiseF64,
+        DownCastSweepPolicy::PairwiseF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ]
+}
+
+fn selected_mlp_cost_policies() -> [DownCastSweepPolicy; 3] {
+    [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+    ]
+}
+
+fn selected_mlp_low_overhead_sweep_policies() -> [DownCastSweepPolicy; 10] {
+    [
+        DownCastSweepPolicy::CurrentSequentialF32,
+        DownCastSweepPolicy::AbsAscendingF32,
+        DownCastSweepPolicy::Bf16ProductThenF32,
+        DownCastSweepPolicy::AbsBucketExponentIndexF32,
+        DownCastSweepPolicy::AbsBucketExponentPairwiseF32,
+        DownCastSweepPolicy::SignSplitAbsAscendingF32,
+        DownCastSweepPolicy::SignSplitIndexOrderF32,
+        DownCastSweepPolicy::KahanF32,
+        DownCastSweepPolicy::NeumaierF32,
+        DownCastSweepPolicy::BlockPairwiseF32,
+    ]
+}
+
 #[cfg(feature = "cuda")]
 fn build_selected_mlp_down_policy_replay_status(
     layer: usize,
@@ -8794,6 +8832,7 @@ fn build_selected_mlp_down_policy_replay_status(
     coarse_bundle: Option<&Path>,
     consumer_mlp_compare_status: Option<&Path>,
     down_cast_policy_sweep_status_path: Option<&Path>,
+    policies: &[DownCastSweepPolicy],
 ) -> Result<Value> {
     validate_norm_reduction_policy(norm_reduction_policy)?;
     let hidden = 2880usize;
@@ -8975,14 +9014,6 @@ fn build_selected_mlp_down_policy_replay_status(
         ));
     }
 
-    let policies = [
-        DownCastSweepPolicy::CurrentSequentialF32,
-        DownCastSweepPolicy::NaiveF64,
-        DownCastSweepPolicy::PairwiseF64,
-        DownCastSweepPolicy::PairwiseF32,
-        DownCastSweepPolicy::AbsAscendingF32,
-        DownCastSweepPolicy::Bf16ProductThenF32,
-    ];
     let mut policy_results = Vec::new();
     let mut best_full: Option<(usize, f32, bool, String)> = None;
     let mut best_focus: Option<(usize, f32, bool, String)> = None;
@@ -9006,7 +9037,7 @@ fn build_selected_mlp_down_policy_replay_status(
         })
     };
 
-    for policy in policies {
+    for &policy in policies {
         let policy_start = Instant::now();
         let mut selected_matrix = vec![0.0f32; selected_count * hidden];
         let mut selected_output_metrics = serde_json::Map::new();
@@ -9394,6 +9425,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         cli.coarse_bundle.as_deref(),
         cli.consumer_mlp_compare_status.as_deref(),
         cli.down_cast_policy_sweep_status.as_deref(),
+        &selected_mlp_default_down_policies(),
     )?;
     write_json(&cli.output, &status)
 }
@@ -9582,6 +9614,7 @@ fn selected_mlp_replay_surface_status(
         None,
         None,
         None,
+        &selected_mlp_default_down_policies(),
     ) {
         Ok(status) => {
             let candidate = DownCastSweepPolicy::AbsAscendingF32.name();
@@ -9877,9 +9910,21 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
 #[cfg(feature = "cuda")]
 fn selected_mlp_policy_correctness_summary(result: &Value) -> Value {
     json!({
-        "selected_outputs": result["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
-        "weighted_sum": result["weighted_sum"]["full_vector_metrics"].clone(),
-        "final_output": result["final_output"]["full_vector_metrics"].clone(),
+        "selected_outputs": {
+            "full_vector_metrics": result["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
+            "first_mismatch": result["selected_outputs_all_ranks"]["first_mismatch"].clone(),
+            "worst_mismatch": result["selected_outputs_all_ranks"]["worst_mismatch"].clone(),
+        },
+        "weighted_sum": {
+            "full_vector_metrics": result["weighted_sum"]["full_vector_metrics"].clone(),
+            "first_mismatch": result["weighted_sum"]["first_mismatch"].clone(),
+            "worst_mismatch": result["weighted_sum"]["worst_mismatch"].clone(),
+        },
+        "final_output": {
+            "full_vector_metrics": result["final_output"]["full_vector_metrics"].clone(),
+            "first_mismatch": result["final_output"]["first_mismatch"].clone(),
+            "worst_mismatch": result["final_output"]["worst_mismatch"].clone(),
+        },
         "clears_all_selected_outputs": result.get("clears_all_selected_outputs").cloned().unwrap_or_else(|| json!(false)),
         "clears_weighted_sum": result.get("clears_weighted_sum").cloned().unwrap_or_else(|| json!(false)),
         "clears_final_output": result.get("clears_final_output").cloned().unwrap_or_else(|| json!(false)),
@@ -9895,15 +9940,65 @@ fn selected_mlp_down_policy_operation_estimate(
 ) -> Value {
     let output_lanes = selected_count * hidden;
     let total_products = output_lanes * hidden;
-    let sort_count = if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
-        output_lanes
-    } else {
-        0
+    let sort_count = match policy {
+        DownCastSweepPolicy::AbsAscendingF32 => output_lanes,
+        DownCastSweepPolicy::SignSplitAbsAscendingF32 => output_lanes * 2,
+        _ => 0,
     };
-    let product_buffer_len = if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
-        hidden
-    } else {
-        0
+    let product_buffer_len = match policy {
+        DownCastSweepPolicy::AbsAscendingF32
+        | DownCastSweepPolicy::SignSplitAbsAscendingF32
+        | DownCastSweepPolicy::AbsBucketExponentPairwiseF32 => hidden,
+        DownCastSweepPolicy::AbsBucketExponentIndexF32 => 256,
+        DownCastSweepPolicy::BlockPairwiseF32 => 64,
+        _ => 0,
+    };
+    let (asymptotic_cost, full_sort, cost_notes) = match policy {
+        DownCastSweepPolicy::AbsAscendingF32 => (
+            "O(selected_experts * outputs * inputs log inputs) if implemented by sorting per output",
+            true,
+            "full product sort per output lane",
+        ),
+        DownCastSweepPolicy::SignSplitAbsAscendingF32 => (
+            "O(selected_experts * outputs * inputs log inputs) due sign-split per-output sorting",
+            true,
+            "two sign-partitioned product sorts per output lane",
+        ),
+        DownCastSweepPolicy::AbsBucketExponentIndexF32 => (
+            "O(selected_experts * outputs * (inputs + buckets))",
+            false,
+            "256 absolute-exponent buckets, deterministic index-order accumulation within bucket",
+        ),
+        DownCastSweepPolicy::AbsBucketExponentPairwiseF32 => (
+            "O(selected_experts * outputs * (inputs + buckets)) plus pairwise bucket reductions",
+            false,
+            "256 absolute-exponent buckets with pairwise f32 sums inside buckets",
+        ),
+        DownCastSweepPolicy::SignSplitIndexOrderF32 => (
+            "O(selected_experts * outputs * inputs)",
+            false,
+            "positive and negative accumulators in input-index order",
+        ),
+        DownCastSweepPolicy::KahanF32 => (
+            "O(selected_experts * outputs * inputs)",
+            false,
+            "left-to-right Kahan compensated f32 summation",
+        ),
+        DownCastSweepPolicy::NeumaierF32 => (
+            "O(selected_experts * outputs * inputs)",
+            false,
+            "left-to-right Neumaier compensated f32 summation",
+        ),
+        DownCastSweepPolicy::BlockPairwiseF32 => (
+            "O(selected_experts * outputs * inputs)",
+            false,
+            "fixed 64-wide deterministic block pairwise f32 reduction",
+        ),
+        _ => (
+            "O(selected_experts * outputs * inputs)",
+            false,
+            "no full per-output sort",
+        ),
     };
     json!({
         "selected_experts_count": selected_count,
@@ -9912,14 +10007,13 @@ fn selected_mlp_down_policy_operation_estimate(
         "total_output_lanes_evaluated": output_lanes,
         "total_product_count": total_products,
         "sort_count": sort_count,
-        "asymptotic_cost": match policy {
-            DownCastSweepPolicy::AbsAscendingF32 => "O(selected_experts * outputs * inputs log inputs) if implemented by sorting per output",
-            _ => "O(selected_experts * outputs * inputs)",
-        },
-        "sort_key": if matches!(policy, DownCastSweepPolicy::AbsAscendingF32) {
-            "ascending absolute product magnitude"
-        } else {
-            "none"
+        "full_per_output_sort": full_sort,
+        "asymptotic_cost": asymptotic_cost,
+        "cost_notes": cost_notes,
+        "sort_key": match policy {
+            DownCastSweepPolicy::AbsAscendingF32 => "ascending absolute product magnitude",
+            DownCastSweepPolicy::SignSplitAbsAscendingF32 => "ascending absolute product magnitude within each sign",
+            _ => "none",
         },
         "memory_estimate": {
             "common_selected_output_matrix_bytes": output_lanes * std::mem::size_of::<f32>(),
@@ -9998,6 +10092,7 @@ fn selected_mlp_cost_surface_status(
         None,
         None,
         None,
+        &selected_mlp_cost_policies(),
     ) {
         Ok(status) => {
             let surface_elapsed = surface_start.elapsed();
@@ -10244,6 +10339,364 @@ fn run_selected_mlp_down_policy_cost_status(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_result_clears(result: &Value) -> bool {
+    result
+        .get("clears_all_selected_outputs")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && result.get("clears_weighted_sum").and_then(Value::as_bool) == Some(true)
+        && result.get("clears_final_output").and_then(Value::as_bool) == Some(true)
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_result_total_mismatches(result: &Value) -> u64 {
+    result
+        .get("total_ordered_mlp_mismatches")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_low_overhead_surface_status(
+    surface: &str,
+    layer: usize,
+    required: bool,
+    path: Option<&Path>,
+    model: &Path,
+    norm_reduction_policy: &str,
+) -> Value {
+    let Some(path) = path else {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    };
+    if !path.exists() {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "path": path.display().to_string(),
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    }
+
+    let surface_start = Instant::now();
+    match build_selected_mlp_down_policy_replay_status(
+        layer,
+        1480,
+        &[1480],
+        norm_reduction_policy,
+        model,
+        path,
+        None,
+        None,
+        None,
+        &selected_mlp_low_overhead_sweep_policies(),
+    ) {
+        Ok(status) => {
+            let surface_elapsed = surface_start.elapsed();
+            let variant_results = selected_mlp_low_overhead_sweep_policies()
+                .iter()
+                .map(|&policy| {
+                    let result = selected_mlp_policy_result(&status, policy.name());
+                    let clears = result
+                        .as_ref()
+                        .is_some_and(selected_mlp_policy_result_clears);
+                    let evidence_only = policy.evidence_only()
+                        || (matches!(
+                            policy,
+                            DownCastSweepPolicy::KahanF32 | DownCastSweepPolicy::NeumaierF32
+                        ) && !clears);
+                    json!({
+                        "policy": policy.name(),
+                        "valid_candidate": !policy.evidence_only() && clears,
+                        "lower_overhead_candidate": policy.lower_overhead_candidate(),
+                        "reference_abs_sort": policy.reference_abs_sort(),
+                        "evidence_only": evidence_only,
+                        "rejected": matches!(policy, DownCastSweepPolicy::Bf16ProductThenF32),
+                        "correctness": result
+                            .as_ref()
+                            .map(selected_mlp_policy_correctness_summary)
+                            .unwrap_or_else(|| json!(null)),
+                        "clears_full_surface": clears,
+                        "total_ordered_mlp_mismatches": result
+                            .as_ref()
+                            .map(selected_mlp_policy_result_total_mismatches)
+                            .unwrap_or(u64::MAX),
+                        "cost": selected_mlp_down_policy_operation_estimate(policy, 4, 2880),
+                        "timing": result
+                            .as_ref()
+                            .map(|value| value["timing"].clone())
+                            .unwrap_or_else(|| json!(null)),
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "surface": surface,
+                "layer_index": layer,
+                "required": required,
+                "available": true,
+                "path": path.display().to_string(),
+                "classification": status["classification"].clone(),
+                "selected_experts": status["selected_experts"].clone(),
+                "routing_weights": status["routing_weights"].clone(),
+                "variant_results": variant_results,
+                "reference_abs_sort_clears_surface": selected_mlp_policy_result(&status, DownCastSweepPolicy::AbsAscendingF32.name())
+                    .as_ref()
+                    .is_some_and(selected_mlp_policy_result_clears),
+                "bf16_product_evidence_policy": selected_mlp_policy_result(&status, DownCastSweepPolicy::Bf16ProductThenF32.name())
+                    .map(|result| json!({
+                        "evidence_only": true,
+                        "rejected": true,
+                        "correctness": selected_mlp_policy_correctness_summary(&result),
+                    }))
+                    .unwrap_or_else(|| json!(null)),
+                "timing": {
+                    "scope": "full surface low-overhead sweep, including JSON artifact loading, model tensor loading, MLP1/SwiGLU setup, all policy replays, and JSON assembly",
+                    "elapsed_ms": surface_elapsed.as_secs_f64() * 1000.0,
+                    "includes_cargo_compile_time": false,
+                },
+            })
+        }
+        Err(error) => json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": true,
+            "path": path.display().to_string(),
+            "classification": "surface_low_overhead_sweep_error",
+            "error": error.to_string(),
+        }),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_sweep_surface_policy_result(surface: &Value, policy: &str) -> Option<Value> {
+    surface
+        .get("variant_results")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("policy").and_then(Value::as_str) == Some(policy))
+        })
+        .cloned()
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_sweep_policy_clears_required(
+    surfaces: &serde_json::Map<String, Value>,
+    policy: DownCastSweepPolicy,
+) -> bool {
+    ["layer1", "layer2"].iter().all(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| selected_mlp_sweep_surface_policy_result(surface, policy.name()))
+            .and_then(|entry| entry.get("clears_full_surface").cloned())
+            .and_then(|value| value.as_bool())
+            == Some(true)
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_low_overhead_variant_results(
+    surfaces: &serde_json::Map<String, Value>,
+) -> Vec<Value> {
+    selected_mlp_low_overhead_sweep_policies()
+        .iter()
+        .map(|&policy| {
+            let mut per_surface = serde_json::Map::new();
+            let mut total_elapsed_ms = 0.0f64;
+            let mut measured_surface_count = 0usize;
+            for (name, surface) in surfaces {
+                if surface.get("available").and_then(Value::as_bool) != Some(true) {
+                    continue;
+                }
+                if let Some(entry) = selected_mlp_sweep_surface_policy_result(surface, policy.name())
+                {
+                    if let Some(elapsed) = selected_mlp_timing_ms(&entry) {
+                        total_elapsed_ms += elapsed;
+                        measured_surface_count += 1;
+                    }
+                    per_surface.insert(name.clone(), entry);
+                }
+            }
+            let clears_required = selected_mlp_sweep_policy_clears_required(surfaces, policy);
+            let evidence_only = policy.evidence_only()
+                || (matches!(
+                    policy,
+                    DownCastSweepPolicy::KahanF32 | DownCastSweepPolicy::NeumaierF32
+                ) && !clears_required);
+            json!({
+                "policy": policy.name(),
+                "valid_candidate": !policy.evidence_only() && clears_required,
+                "lower_overhead_candidate": policy.lower_overhead_candidate(),
+                "reference_abs_sort": policy.reference_abs_sort(),
+                "evidence_only": evidence_only,
+                "rejected": matches!(policy, DownCastSweepPolicy::Bf16ProductThenF32),
+                "correctness": per_surface,
+                "clears_layer1_layer2_full_vectors": clears_required,
+                "cost": selected_mlp_down_policy_operation_estimate(policy, 4, 2880),
+                "timing": {
+                    "debug_total_elapsed_ms_across_available_surfaces": total_elapsed_ms,
+                    "measured_surface_count": measured_surface_count,
+                    "scope": "sum of per-policy replay sections; excludes cargo compile time and shared MLP1/SwiGLU setup",
+                },
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_mlp_down_policy_low_overhead_sweep_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+
+    let mut surfaces = serde_json::Map::new();
+    surfaces.insert(
+        "layer1".to_string(),
+        selected_mlp_low_overhead_surface_status(
+            "layer1",
+            1,
+            true,
+            cli.layer1_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+    surfaces.insert(
+        "layer2".to_string(),
+        selected_mlp_low_overhead_surface_status(
+            "layer2",
+            2,
+            true,
+            cli.layer2_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+    surfaces.insert(
+        "layer11".to_string(),
+        selected_mlp_low_overhead_surface_status(
+            "layer11",
+            11,
+            false,
+            cli.optional_layer11_ordered_mlp_status.as_deref(),
+            model,
+            &cli.norm_reduction_policy,
+        ),
+    );
+
+    let required_missing = ["layer1", "layer2"].iter().any(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| surface.get("classification"))
+            .and_then(Value::as_str)
+            == Some("missing_required_artifact")
+    });
+    let schema_or_execution_error = surfaces.values().any(|surface| {
+        surface
+            .get("classification")
+            .and_then(Value::as_str)
+            .is_some_and(|classification| classification == "surface_low_overhead_sweep_error")
+    });
+    let variant_results = selected_mlp_low_overhead_variant_results(&surfaces);
+    let reference_abs_sort_clears =
+        selected_mlp_sweep_policy_clears_required(&surfaces, DownCastSweepPolicy::AbsAscendingF32);
+    let best_lower_overhead_candidate = variant_results
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("lower_overhead_candidate")
+                .and_then(Value::as_bool)
+                == Some(true)
+                && entry
+                    .get("clears_layer1_layer2_full_vectors")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && entry.get("rejected").and_then(Value::as_bool) != Some(true)
+        })
+        .min_by(|left, right| {
+            let left_elapsed = left
+                .pointer("/timing/debug_total_elapsed_ms_across_available_surfaces")
+                .and_then(Value::as_f64)
+                .unwrap_or(f64::INFINITY);
+            let right_elapsed = right
+                .pointer("/timing/debug_total_elapsed_ms_across_available_surfaces")
+                .and_then(Value::as_f64)
+                .unwrap_or(f64::INFINITY);
+            left_elapsed
+                .partial_cmp(&right_elapsed)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .and_then(|entry| entry.get("policy").and_then(Value::as_str))
+        .map(str::to_string);
+    let classification = if required_missing {
+        "selected_mlp_down_policy_low_overhead_sweep_blocked_by_missing_required_artifact"
+    } else if schema_or_execution_error {
+        "selected_mlp_down_policy_low_overhead_sweep_blocked_by_schema"
+    } else if best_lower_overhead_candidate.is_some() {
+        "selected_mlp_down_policy_low_overhead_sweep_found_candidate"
+    } else if reference_abs_sort_clears {
+        "selected_mlp_down_policy_low_overhead_sweep_abs_sort_only_full_clear"
+    } else {
+        "selected_mlp_down_policy_low_overhead_sweep_no_candidate_clears"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-mlp-down-policy-low-overhead-sweep-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "reference_policy": DownCastSweepPolicy::AbsAscendingF32.name(),
+        "candidate_policy": DownCastSweepPolicy::AbsAscendingF32.name(),
+        "rejected_policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+        "surfaces": Value::Object(surfaces),
+        "variant_results": variant_results,
+        "best_lower_overhead_candidate": best_lower_overhead_candidate,
+        "reference_abs_sort_remains_only_known_full_clear": reference_abs_sort_clears
+            && classification == "selected_mlp_down_policy_low_overhead_sweep_abs_sort_only_full_clear",
+        "runtime_policy_discussion_allowed": false,
+        "runtime_implementation_included": false,
+        "remaining_gates": [
+            "release/performance assessment before runtime discussion",
+            "no production/default routing change",
+            "no CUDA kernel change",
+            "no correction metadata",
+            "no final-logit/all-layer/server/4097 claim",
+            "more ordered surfaces if available",
+        ],
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "next_bounded_step": if classification == "selected_mlp_down_policy_low_overhead_sweep_found_candidate" {
+            "run a release/performance validation-only benchmark for the clearing lower-overhead candidate before any runtime-policy discussion"
+        } else if reference_abs_sort_clears {
+            "treat exact abs-sort as the only known clearing policy and keep performance as an unresolved gate"
+        } else {
+            "debug the ordered replay path before any runtime-policy discussion"
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
 #[cfg(not(feature = "cuda"))]
 fn run_selected_mlp_down_policy_replay_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected MLP down-policy replay requires the cuda feature")
@@ -10257,6 +10710,11 @@ fn run_selected_mlp_down_policy_candidate_replay_status(_cli: &Cli) -> Result<()
 #[cfg(not(feature = "cuda"))]
 fn run_selected_mlp_down_policy_cost_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected MLP down-policy cost status requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_mlp_down_policy_low_overhead_sweep_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected MLP down-policy low-overhead sweep requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -14790,9 +15248,134 @@ fn compute_down_projection_sweep_output(
                 });
                 round_bf16(sum)
             }
+            DownCastSweepPolicy::AbsBucketExponentIndexF32 => {
+                let mut bucket_sums = [0.0f32; 256];
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    bucket_sums[f32_abs_exponent_bucket(term)] += term;
+                }
+                round_bf16(
+                    bucket_sums
+                        .into_iter()
+                        .fold(0.0f32, |sum, value| sum + value),
+                )
+            }
+            DownCastSweepPolicy::AbsBucketExponentPairwiseF32 => {
+                const BUCKETS: usize = 256;
+                const LEVELS: usize = 13;
+                let mut partials = [0.0f32; BUCKETS * LEVELS];
+                let mut occupied = [false; BUCKETS * LEVELS];
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    let bucket = f32_abs_exponent_bucket(term);
+                    let mut carry = term;
+                    let mut level = 0usize;
+                    loop {
+                        let slot = bucket * LEVELS + level;
+                        if !occupied[slot] {
+                            partials[slot] = carry;
+                            occupied[slot] = true;
+                            break;
+                        }
+                        carry += partials[slot];
+                        occupied[slot] = false;
+                        level += 1;
+                    }
+                }
+                let mut sum = 0.0f32;
+                for bucket in 0..BUCKETS {
+                    let mut bucket_sum = 0.0f32;
+                    for level in 0..LEVELS {
+                        let slot = bucket * LEVELS + level;
+                        if occupied[slot] {
+                            bucket_sum += partials[slot];
+                        }
+                    }
+                    sum += bucket_sum;
+                }
+                round_bf16(sum)
+            }
+            DownCastSweepPolicy::SignSplitAbsAscendingF32 => {
+                let mut positive = Vec::new();
+                let mut negative = Vec::new();
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    if term >= 0.0 {
+                        positive.push(term);
+                    } else {
+                        negative.push(term);
+                    }
+                }
+                positive.sort_by(|left, right| left.abs().total_cmp(&right.abs()));
+                negative.sort_by(|left, right| left.abs().total_cmp(&right.abs()));
+                let positive_sum = positive.into_iter().fold(0.0f32, |sum, value| sum + value);
+                let negative_sum = negative.into_iter().fold(0.0f32, |sum, value| sum + value);
+                round_bf16(positive_sum + negative_sum)
+            }
+            DownCastSweepPolicy::SignSplitIndexOrderF32 => {
+                let mut positive = 0.0f32;
+                let mut negative = 0.0f32;
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    if term >= 0.0 {
+                        positive += term;
+                    } else {
+                        negative += term;
+                    }
+                }
+                round_bf16(positive + negative)
+            }
+            DownCastSweepPolicy::KahanF32 => {
+                let mut sum = 0.0f32;
+                let mut compensation = 0.0f32;
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    let y = term - compensation;
+                    let t = sum + y;
+                    compensation = (t - sum) - y;
+                    sum = t;
+                }
+                round_bf16(sum)
+            }
+            DownCastSweepPolicy::NeumaierF32 => {
+                let mut sum = 0.0f32;
+                let mut compensation = 0.0f32;
+                for in_idx in 0..hidden {
+                    let term = round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx];
+                    let t = sum + term;
+                    if sum.abs() >= term.abs() {
+                        compensation += (sum - t) + term;
+                    } else {
+                        compensation += (term - t) + sum;
+                    }
+                    sum = t;
+                }
+                round_bf16(sum + compensation)
+            }
+            DownCastSweepPolicy::BlockPairwiseF32 => {
+                let mut block_sums = Vec::with_capacity(hidden.div_ceil(64));
+                for block_start in (0..hidden).step_by(64) {
+                    let mut block_terms = Vec::with_capacity(64.min(hidden - block_start));
+                    for in_idx in block_start..(block_start + 64).min(hidden) {
+                        block_terms
+                            .push(round_bf16(swiglu[in_idx]) * down_weight[weight_base + in_idx]);
+                    }
+                    block_sums.push(pairwise_sum_f32(&block_terms));
+                }
+                round_bf16(pairwise_sum_f32(&block_sums))
+            }
         };
     }
     output
+}
+
+fn f32_abs_exponent_bucket(value: f32) -> usize {
+    let abs = value.abs();
+    if abs == 0.0 || !abs.is_finite() {
+        0
+    } else {
+        ((abs.to_bits() >> 23) & 0xff) as usize
+    }
 }
 
 fn round_f16(value: f32) -> f32 {
@@ -17447,6 +18030,13 @@ enum DownCastSweepPolicy {
     PairwiseF32,
     AbsAscendingF32,
     Bf16ProductThenF32,
+    AbsBucketExponentIndexF32,
+    AbsBucketExponentPairwiseF32,
+    SignSplitAbsAscendingF32,
+    SignSplitIndexOrderF32,
+    KahanF32,
+    NeumaierF32,
+    BlockPairwiseF32,
 }
 
 impl DownCastSweepPolicy {
@@ -17460,6 +18050,23 @@ impl DownCastSweepPolicy {
                 "deterministic_f32_abs_ascending_sum_then_bf16_output"
             }
             DownCastSweepPolicy::Bf16ProductThenF32 => "bf16_product_then_f32_sum_then_bf16_output",
+            DownCastSweepPolicy::AbsBucketExponentIndexF32 => {
+                "deterministic_f32_abs_bucket_by_exponent_then_index_sum_then_bf16"
+            }
+            DownCastSweepPolicy::AbsBucketExponentPairwiseF32 => {
+                "deterministic_f32_abs_bucket_by_exponent_then_pairwise_sum_then_bf16"
+            }
+            DownCastSweepPolicy::SignSplitAbsAscendingF32 => {
+                "deterministic_f32_sign_split_abs_ascending_sum_then_bf16"
+            }
+            DownCastSweepPolicy::SignSplitIndexOrderF32 => {
+                "deterministic_f32_sign_split_index_order_sum_then_bf16"
+            }
+            DownCastSweepPolicy::KahanF32 => "deterministic_f32_compensated_kahan_sum_then_bf16",
+            DownCastSweepPolicy::NeumaierF32 => "deterministic_f32_neumaier_sum_then_bf16",
+            DownCastSweepPolicy::BlockPairwiseF32 => {
+                "deterministic_f32_block_pairwise_sum_then_bf16"
+            }
         }
     }
 
@@ -17483,11 +18090,44 @@ impl DownCastSweepPolicy {
             DownCastSweepPolicy::Bf16ProductThenF32 => {
                 "left-to-right f32 reduction after each product is rounded to BF16"
             }
+            DownCastSweepPolicy::AbsBucketExponentIndexF32 => {
+                "f32 products bucketed by absolute-value exponent, buckets reduced in exponent order, input-index order within each bucket"
+            }
+            DownCastSweepPolicy::AbsBucketExponentPairwiseF32 => {
+                "f32 products bucketed by absolute-value exponent, pairwise f32 reduction within buckets, buckets reduced in exponent order"
+            }
+            DownCastSweepPolicy::SignSplitAbsAscendingF32 => {
+                "f32 products split by sign, absolute-ascending f32 reduction within each sign, positive and negative sums combined deterministically"
+            }
+            DownCastSweepPolicy::SignSplitIndexOrderF32 => {
+                "f32 products split by sign, input-index-order f32 reduction within each sign, positive and negative sums combined deterministically"
+            }
+            DownCastSweepPolicy::KahanF32 => "left-to-right f32 Kahan compensated summation",
+            DownCastSweepPolicy::NeumaierF32 => "left-to-right f32 Neumaier compensated summation",
+            DownCastSweepPolicy::BlockPairwiseF32 => {
+                "fixed 64-wide deterministic block pairwise f32 reduction"
+            }
         }
     }
 
     fn evidence_only(self) -> bool {
         matches!(self, DownCastSweepPolicy::Bf16ProductThenF32)
+    }
+
+    fn lower_overhead_candidate(self) -> bool {
+        matches!(
+            self,
+            DownCastSweepPolicy::AbsBucketExponentIndexF32
+                | DownCastSweepPolicy::AbsBucketExponentPairwiseF32
+                | DownCastSweepPolicy::SignSplitIndexOrderF32
+                | DownCastSweepPolicy::KahanF32
+                | DownCastSweepPolicy::NeumaierF32
+                | DownCastSweepPolicy::BlockPairwiseF32
+        )
+    }
+
+    fn reference_abs_sort(self) -> bool {
+        matches!(self, DownCastSweepPolicy::AbsAscendingF32)
     }
 }
 
