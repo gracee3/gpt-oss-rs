@@ -1376,6 +1376,21 @@ assessment. No runtime implementation, production routing change, default
 model-runner behavior change, CUDA kernel change, or correction metadata is
 included in this design slice.
 
+Current disposition:
+
+```text
+selected_mlp_down_policy_validation_proof_oracle_preserved
+```
+
+The implementation branch
+`feature/selected-mlp-down-policy-validation` is preserved as a validation-only
+proof oracle. It records the candidate status, ordered MLP replay, multi-lane
+smoke, cost characterization, and lower-overhead deterministic sweep. The exact
+abs-ascending policy remains the only known full-clear policy on the available
+layer1/layer2 ordered MLP surfaces, while cheaper deterministic variants did not
+clear full vectors. Runtime implementation and a production feature flag remain
+blocked by the unresolved release/performance and implementation-cost gate.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

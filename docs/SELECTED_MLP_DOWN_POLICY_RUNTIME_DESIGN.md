@@ -374,6 +374,74 @@ release/performance validation gate exists. No production/default routing, CUDA
 kernel, correction metadata, ladder, final-logit, all-layer, server, or
 4097-token behavior changed.
 
+## Proof-Oracle Disposition
+
+Current branch:
+
+```text
+feature/selected-mlp-down-policy-validation
+```
+
+Current status:
+
+```text
+selected_mlp_down_policy_validation_proof_oracle_preserved
+```
+
+This branch should be preserved as a validation-only proof oracle. It
+centralizes the selected MLP down-policy candidate, replay modes, multi-lane
+smoke, cost report, and lower-overhead sweep evidence, but it does not authorize
+runtime implementation.
+
+Correctness evidence preserved here:
+
+- layer1 ordered MLP clears under exact deterministic absolute-ascending
+  reduction
+- layer2 ordered MLP clears under exact deterministic absolute-ascending
+  reduction
+- layer11 remains docs-only provenance unless the local ordered bundle is
+  restored
+- the multi-lane smoke clears the requested lanes on layer1 and layer2
+- the layer2 ordered attention audit clears weighted-V recomputation and
+  attention residual recomputation
+
+Cost evidence preserved here:
+
+- exact absolute-ascending reduction is the only known full-clear policy on the
+  available layer1/layer2 ordered MLP surfaces
+- lower-overhead deterministic variants did not clear full vectors
+- debug timing shows significant overhead versus current sequential f32 replay
+- release/performance assessment remains unrun and unresolved
+
+Decision:
+
+- do not promote this candidate to runtime implementation yet
+- do not add a production feature flag yet
+- keep this branch as a validation/proof harness until a lower-overhead
+  candidate or explicit release/performance plan exists
+
+Blockers before any runtime implementation:
+
+- release/performance assessment
+- lower-overhead deterministic candidate or acceptable performance design
+- additional ordered surfaces if available
+- no production/default routing change
+- no CUDA kernel change
+- no correction metadata
+- no final-logit, all-layer, server, or 4097-token claim
+
+Useful validation-only status modes on this branch:
+
+```text
+selected-mlp-down-policy-candidate-status
+selected-mlp-down-policy-candidate-replay-status
+selected-mlp-down-policy-cost-status
+selected-mlp-down-policy-low-overhead-sweep-status
+```
+
+The BF16-product policy remains evidence-only and rejected due broad collateral
+mismatches. Its speed does not make it a correction candidate.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.
