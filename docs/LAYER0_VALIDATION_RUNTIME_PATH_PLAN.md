@@ -3787,6 +3787,72 @@ change runtime/default routing/CUDA behavior, does not emit a layer3 output, and
 does not continue the ladder. Treat strict layer3 ordered attention parity as
 available only under an explicit validation-only raw-QK accumulation policy.
 
+## Layer3 Ordered Bundle Validation With Raw-QK Policy
+
+The ordered bundle validator now supports an explicit validation-only raw-QK
+accumulation option:
+
+```text
+--raw-qk-accum-policy current|pairwise|reverse|f64-diagnostic
+```
+
+`current` remains the default. With `--raw-qk-accum-policy pairwise`, the layer3
+ordered attention and MLP bundle validates exactly:
+
+```text
+/tmp/layer3_ordered_bundle_validate_pairwise_raw_qk_status.json
+classification = layer3_ordered_bundle_validate_attention_cleared_mlp_cleared_with_raw_qk_policy
+raw_qk_accum_policy = pairwise_f32_scale_after_sum_bf16_output
+policy source = /tmp/layer3_raw_qk_policy_sweep_status.json
+oracle dtype probe = /tmp/layer3_raw_qk_qhead2_col1_dtype_probe_status.json
+```
+
+Attention metrics under pairwise:
+
+```text
+raw QK max_abs_diff = 0
+raw QK mismatches = 0
+masked logits max_abs_diff = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+MLP metrics remain exact:
+
+```text
+MLP norm mismatches = 0
+router logits mismatches = 0
+top-k ordered match = true
+routing weights mismatches = 0
+selected experts = [0, 9, 23, 1]
+routing weights = [0.3984375, 0.30078125, 0.1630859375, 0.1376953125]
+selected outputs mismatches = 0
+weighted sum mismatches = 0
+final output mismatches = 0
+```
+
+Reverse f32 was run as optional corroboration and also clears the same ordered
+surface:
+
+```text
+/tmp/layer3_ordered_bundle_validate_reverse_raw_qk_status.json
+classification = layer3_ordered_bundle_validate_attention_cleared_mlp_cleared_with_raw_qk_policy
+raw_qk_accum_policy = reverse_f32_scale_after_sum_bf16_output
+```
+
+The layer3 selected MLP down-projection baseline is already exact. The
+deterministic abs-ascending policy is exact but not required for layer3, and
+BF16-product remains rejected/evidence-only due broad selected-output,
+weighted-sum, and final-output collateral mismatches.
+
+This is validation-only. It does not change the default raw-QK policy, runtime
+routing, model-runner behavior, or CUDA kernels. It does not apply tolerance or
+correction metadata, does not emit/promote layer3 output, does not continue the
+ladder, and makes no final-logit, all-layer, server, or 4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

@@ -1568,6 +1568,61 @@ policy, or CUDA/default routing change was applied. No layer3 output was emitted
 the ladder was not continued, and there is no final-logit, all-layer, server, or
 4097-token claim.
 
+## Layer3 Ordered Bundle Validation With Raw-QK Policy
+
+The full split ordered bundle validator now accepts an explicit validation-only
+raw-QK accumulation policy:
+
+```text
+--raw-qk-accum-policy current|pairwise|reverse|f64-diagnostic
+```
+
+The default remains `current`. Re-running layer3 with the preferred pairwise f32
+policy clears the full ordered layer surface:
+
+```text
+/tmp/layer3_ordered_bundle_validate_pairwise_raw_qk_status.json
+classification = layer3_ordered_bundle_validate_attention_cleared_mlp_cleared_with_raw_qk_policy
+raw_qk_accum_policy = pairwise_f32_scale_after_sum_bf16_output
+raw_qk_policy_source_status = /tmp/layer3_raw_qk_policy_sweep_status.json
+oracle_dtype_probe_status = /tmp/layer3_raw_qk_qhead2_col1_dtype_probe_status.json
+
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+
+MLP norm mismatches = 0
+router logits mismatches = 0
+top-k ordered match = true
+routing weights mismatches = 0
+selected outputs mismatches = 0
+weighted sum mismatches = 0
+final MLP output mismatches = 0
+```
+
+The optional reverse f32 corroboration also clears:
+
+```text
+/tmp/layer3_ordered_bundle_validate_reverse_raw_qk_status.json
+classification = layer3_ordered_bundle_validate_attention_cleared_mlp_cleared_with_raw_qk_policy
+raw_qk_accum_policy = reverse_f32_scale_after_sum_bf16_output
+```
+
+Layer3 MLP did not require the deterministic abs-ascending selected-MLP down
+policy; the current sequential selected MLP replay is already exact. The
+deterministic abs-ascending policy is also exact, while BF16-product remains
+rejected/evidence-only due broad collateral mismatches.
+
+This is not default layer3 parity and is not a runtime fix. It is a scoped
+validation result: layer3 ordered validation clears under an explicit
+validation-only raw-QK pairwise accumulation policy. No tolerance, correction
+metadata, layer3 output emission, ladder continuation, runtime/default routing
+change, CUDA change, final-logit claim, all-layer claim, server claim, or
+4097-token claim was made.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

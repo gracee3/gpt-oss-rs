@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -156,6 +158,10 @@ struct Cli {
     /// RMSNorm reduction policy for validation-only coarse checks.
     #[arg(long, default_value = "current")]
     norm_reduction_policy: String,
+
+    /// Validation-only raw-QK dot-product accumulation policy.
+    #[arg(long, default_value = "current")]
+    raw_qk_accum_policy: String,
 
     /// Start layer for generic ladder validation.
     #[arg(long, default_value_t = 0)]
@@ -5266,10 +5272,26 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let hidden = 2880usize;
     let selected_count = 4usize;
     anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+    let raw_qk_policy = parse_raw_qk_accum_policy(&cli.raw_qk_accum_policy)?;
+    let raw_qk_policy_explicit = !matches!(raw_qk_policy, RawQkSweepPolicy::CurrentSequential);
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
     let mlp_status_path = required_path(&cli.mlp_bundle_status, "MLP bundle status")?;
+    let raw_qk_policy_source_status_path =
+        PathBuf::from(format!("/tmp/layer{layer}_raw_qk_policy_sweep_status.json"));
+    let raw_qk_policy_source_status = if raw_qk_policy_source_status_path.exists() {
+        load_json(&raw_qk_policy_source_status_path).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let oracle_dtype_probe_status_path = cli.oracle_einsum_dtype_probe_status.as_deref();
+    let oracle_dtype_probe_status = if let Some(path) = oracle_dtype_probe_status_path {
+        validate_path(path, "oracle raw-QK dtype probe status")?;
+        load_json(path)?
+    } else {
+        Value::Null
+    };
     let default_model =
         PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
     let model = cli.model.as_deref().unwrap_or(default_model.as_path());
@@ -5406,7 +5428,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let k_final_oracle = k_post_history[final_k_start..final_k_start + kv_dim].to_vec();
     let k_final_metric = compare_hidden(&k_final_local, &k_final_oracle);
 
-    let raw_qk = compute_raw_qk(&q_post_local, &k_post_history, cli);
+    let raw_qk = compute_raw_qk_with_policy(&q_post_local, &k_post_history, cli, raw_qk_policy);
     let raw_qk_metric = compare_matrix(
         &raw_qk,
         &raw_oracle,
@@ -5745,13 +5767,29 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let classification = if attention_shape_blocked {
         format!("{classification_prefix}_blocked_by_schema")
     } else if !attention_seams_clear {
-        format!("{classification_prefix}_attention_seam_mismatch")
+        if raw_qk_policy_explicit {
+            format!("{classification_prefix}_raw_qk_policy_attention_mismatch")
+        } else {
+            format!("{classification_prefix}_attention_seam_mismatch")
+        }
     } else if !bridge_clear {
-        format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
+        if raw_qk_policy_explicit {
+            format!("{classification_prefix}_raw_qk_policy_bridge_mismatch")
+        } else {
+            format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
+        }
     } else if !mlp_guards_clear {
-        format!("{classification_prefix}_mlp_seam_mismatch")
+        if raw_qk_policy_explicit {
+            format!("{classification_prefix}_raw_qk_policy_mlp_mismatch")
+        } else {
+            format!("{classification_prefix}_mlp_seam_mismatch")
+        }
     } else if deterministic_clears || baseline_clears {
-        format!("{classification_prefix}_attention_cleared_mlp_cleared")
+        if raw_qk_policy_explicit {
+            format!("{classification_prefix}_attention_cleared_mlp_cleared_with_raw_qk_policy")
+        } else {
+            format!("{classification_prefix}_attention_cleared_mlp_cleared")
+        }
     } else if !baseline_clears {
         format!("{classification_prefix}_mlp_down_policy_required")
     } else {
@@ -5769,6 +5807,24 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "validation_only": true,
         "layer_index": layer,
         "focus_lane": lane,
+        "raw_qk_accum_policy": raw_qk_policy.name(),
+        "raw_qk_accum_policy_requested": cli.raw_qk_accum_policy.as_str(),
+        "raw_qk_policy_source_status": if raw_qk_policy_source_status_path.exists() {
+            json!(raw_qk_policy_source_status_path.display().to_string())
+        } else {
+            Value::Null
+        },
+        "raw_qk_policy_source_classification": raw_qk_policy_source_status
+            .get("classification")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "oracle_dtype_probe_status": oracle_dtype_probe_status_path
+            .map(|path| json!(path.display().to_string()))
+            .unwrap_or(Value::Null),
+        "oracle_dtype_probe_classification": oracle_dtype_probe_status
+            .get("classification")
+            .cloned()
+            .unwrap_or(Value::Null),
         "attention_bundle_status": attention_status_path.display().to_string(),
         "mlp_bundle_status": mlp_status_path.display().to_string(),
         "attention_audit_status": cli.attention_audit_status
@@ -5786,6 +5842,8 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             .and_then(Value::as_bool)
             .unwrap_or(all_token_v_emitted),
         "attention_metrics": {
+            "raw_qk_accum_policy": raw_qk_policy.name(),
+            "raw_qk_accum_policy_validation_only": true,
             "q_pre_rope": {
                 "artifact": q_pre_status,
                 "projection_recomputed": false,
@@ -5869,8 +5927,12 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "router_bias": router_bias_source,
         },
         "emitted_layer_output": serde_json::Value::Null,
+        "layer3_output_emitted": false,
         "next_bounded_step": if classification.ends_with("_attention_cleared_mlp_cleared") {
                 "record source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
+            }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_raw_qk_policy") {
+                "record ordered layer validation under explicit validation-only raw-QK accumulation policy; do not continue the ladder in this slice"
             }
             else if classification.ends_with("_attention_seam_mismatch") {
                 "localize the first mismatching ordered attention seam"
@@ -5887,6 +5949,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "caveats": {
             "validation_only": true,
             "layer_ladder_continued": false,
+            "raw_qk_accum_policy_is_default_runtime": false,
             "source_complete_attention_claim_limited_to_ordered_bundle_surface": true,
             "all_token_v_used_by_oracle_internally_but_not_emitted_as_base_boundary": !base_all_token_v_emitted,
             "bf16_product_policy_used_as_correction": false,
@@ -13151,6 +13214,26 @@ impl RawQkSweepPolicy {
 
     fn evidence_only(self) -> bool {
         matches!(self, Self::DeterministicAbsAscending | Self::Bf16Product)
+    }
+}
+
+fn parse_raw_qk_accum_policy(value: &str) -> Result<RawQkSweepPolicy> {
+    match value {
+        "current" | "current-sequential" | "current_sequential_f32_scale_after_sum_bf16_output" => {
+            Ok(RawQkSweepPolicy::CurrentSequential)
+        }
+        "reverse" | "reverse-f32" | "reverse_f32_scale_after_sum_bf16_output" => {
+            Ok(RawQkSweepPolicy::ReverseF32)
+        }
+        "pairwise" | "pairwise-f32" | "pairwise_f32_scale_after_sum_bf16_output" => {
+            Ok(RawQkSweepPolicy::PairwiseF32)
+        }
+        "f64-diagnostic" | "f64" | "f64_diagnostic_scale_after_sum_bf16_output" => {
+            Ok(RawQkSweepPolicy::F64Diagnostic)
+        }
+        other => anyhow::bail!(
+            "unsupported raw-QK accumulation policy {other:?}; expected current, pairwise, reverse, or f64-diagnostic"
+        ),
     }
 }
 
