@@ -5461,3 +5461,117 @@ Recommended next slices:
 ### Primary classification
 
 multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete
+
+## Real-model fused QKV + norm conversion allocation smoke status
+
+Operator run date: 2026-05-01.
+
+Command run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_norm_status.json
+```
+
+The generated JSON and logs are operator artifacts under
+`/tmp/multi_gpu_layer_sharding/` and are not committed.
+
+Preflight:
+
+- `nvidia-smi` showed two visible NVIDIA GeForce RTX 3090 devices.
+- `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration` existed.
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+  passed with existing warnings.
+
+Result:
+
+- Primary result classification:
+  `multi_gpu_layer_sharding_real_model_fused_qkv_norm_allocation_cast_error`.
+- Command status classification:
+  `multi_gpu_layer_sharding_fused_qkv_allocation_blocked`.
+- Header merge policy: `allow_restricted_sinks_override`.
+- Restricted sinks overrides: 24.
+- Resource construction: succeeded.
+- Manifest validation: 0 unassigned tensors, 0 invalid tensors.
+- f16/U8 allocation result: blocked status; U8 host payloads were retained, but
+  `allocation_smoke_succeeded` was false.
+- Selective f32 norm loading result: did not complete; status reports 0
+  uploaded f32 tensors on each shard.
+- RoPE allocation result: not reached in the success-status path.
+- KV allocation result: not reached in the success-status path.
+- Synthetic decode metadata allocation result: not reached in the
+  success-status path.
+- Fused QKV allocation result: not reached; per-layer fused QKV statuses remain
+  `deferred`.
+- Norm conversion allocation result: blocked on the first shard norm cast
+  kernel lookup.
+
+Exact failure boundary:
+
+```text
+gpu error: shard 0 f16 norm cast kernel lookup failed: gpu error: module 'cast_fp' not loaded
+```
+
+Shard status summary:
+
+- GPU0 owns embeddings and layers 0..11.
+  - uploaded f16 tensors reported: 0.
+  - uploaded f32 norm tensors reported: 0.
+  - U8 host tensors: 48, 5,076,172,800 bytes.
+  - RoPE bytes: 0.
+  - KV bytes: 0.
+  - metadata bytes: 0.
+  - fused QKV statuses: 12 deferred.
+  - input/post norm statuses: 12 deferred / 12 deferred.
+  - dense gate/up: 12 `not_applicable`.
+  - f16 scratch: `not_applicable`.
+
+- GPU1 owns layers 12..23 and the final head.
+  - uploaded f16 tensors reported: 0.
+  - uploaded f32 norm tensors reported: 0.
+  - U8 host tensors: 48, 5,076,172,800 bytes.
+  - RoPE bytes: 0.
+  - KV bytes: 0.
+  - metadata bytes: 0.
+  - fused QKV statuses: 12 deferred.
+  - input/post norm statuses: 12 deferred / 12 deferred.
+  - dense gate/up: 12 `not_applicable`.
+  - f16 scratch: `not_applicable`.
+
+Stderr contained only existing Rust/CUDA build warnings and the cargo command
+line; the precise failure was reported in the status JSON.
+
+No split execution, layer construction, `GpuModelRunner` construction,
+attention, graph output, final norm execution, LM-head execution, logits, graph
+capture, forward pass, serving behavior, or parity path was added or exercised.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+Next bounded step:
+
+- bounded repair for the norm conversion cast-kernel boundary, likely ensuring
+  the bench-only per-shard kernel loader has the `cast_fp` module available
+  before invoking `cast_f32_tensor_to_f16`.
+- status refinement so norm conversion failures classify as a norm/cast
+  boundary rather than the coarser fused QKV blocked classification.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_fused_qkv_norm_allocation_cast_error
