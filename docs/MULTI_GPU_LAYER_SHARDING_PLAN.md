@@ -5089,3 +5089,130 @@ Recommended next slices:
 ### Primary classification
 
 multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete
+
+## Real-model fused QKV allocation smoke status
+
+The real restricted integration model was run through the bench-only fused QKV
+allocation smoke on the 2x RTX 3090 host. This was an operator validation run
+only; the generated JSON and logs stayed under `/tmp/multi_gpu_layer_sharding`
+and were not committed.
+
+### Command
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_qkv_status.json
+```
+
+Output status path:
+
+```text
+/tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_qkv_status.json
+```
+
+### Result
+
+Primary result classification:
+
+```text
+multi_gpu_layer_sharding_real_model_fused_qkv_allocation_smoke_complete
+```
+
+Command status classification:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete
+```
+
+Resource/allocation results:
+
+- resource construction: succeeded.
+- manifest-owned f16/U8 allocation: succeeded.
+- RoPE allocation: succeeded.
+- KV allocation: succeeded.
+- synthetic decode metadata allocation: succeeded.
+- fused QKV allocation: succeeded.
+- unassigned tensors: 0.
+- invalid tensors: 0.
+- restricted sinks overrides: 24.
+
+### Shard summary
+
+GPU0:
+
+- owns embeddings and layers 0..11.
+- f16 tensors: 181.
+- U8 host tensors: 48.
+- RoPE bytes: 2,097,152.
+- KV bytes: 393,216.
+- metadata bytes: 32,792.
+- fused QKV buffers: 12.
+- fused QKV bytes: 353,894,400.
+- dense gate/up buffers: 0, reported as `not_applicable` for GPT-OSS MoE
+  layers.
+- f16 scratch: `not_applicable` because `--allocate-f16-scratch` was not
+  passed.
+
+GPU1:
+
+- owns layers 12..23 and final head.
+- f16 tensors: 182.
+- U8 host tensors: 48.
+- RoPE bytes: 2,097,152.
+- KV bytes: 393,216.
+- metadata bytes: 32,792.
+- fused QKV buffers: 12.
+- fused QKV bytes: 353,894,400.
+- dense gate/up buffers: 0, reported as `not_applicable` for GPT-OSS MoE
+  layers.
+- f16 scratch: `not_applicable` because `--allocate-f16-scratch` was not
+  passed.
+
+Each fused layer status preserved absolute layer ids and shard-local indices.
+GPU1 reported absolute layers 12..23 with local fused indices 0..11.
+
+### Stderr summary
+
+The command completed successfully. Stderr contained the expected cargo/CUDA
+build warnings and the command invocation line; no smoke error, allocation
+error, copy error, ownership error, OOM, or manifest error was reported.
+
+### Non-execution boundary
+
+This result means only that the bench-only path created per-shard CUDA
+resources, completed manifest-owned f16/U8 allocation, allocated RoPE, allocated
+the small synthetic KV cache, allocated synthetic decode metadata, and allocated
+fused QKV f16 buffers for shard-owned absolute layers.
+
+It does not claim f16 scratch allocation, layernorm/postnorm casts, bias casts,
+embedding/final norm conversion, GPT-OSS MoE GPU upload, tied LM-head fallback,
+layer construction, attention, activation transfer, final-token parity, logit
+parity, graph capture, forward execution, or serving.
+
+Serve/runtime split maps remain non-executable and are still rejected before
+CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- f16 layernorm/postnorm conversion helper extraction.
+- bias f16 conversion helper extraction.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
