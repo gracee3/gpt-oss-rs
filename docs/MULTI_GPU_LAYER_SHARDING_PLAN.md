@@ -3567,3 +3567,397 @@ Use the successful metadata allocation smoke as the allocation baseline for the
 next design slice. Recommended options are tied LM-head fallback design,
 activation handoff design refinement, shard-local fused/f16 scratch allocation
 skeleton, or a layer-construction skeleton without execution.
+
+## Shard-local fused/f16 scratch allocation design
+
+This is a design/recon slice for the next runtime-adjacent allocation group. No
+fused weights, f16 scratch, MoE GPU expert payloads, layers, runner, attention,
+or execution path were added in this slice.
+
+### Current fused/scratch path
+
+The current single-device f16 setup is owned by `GpuModelRunner` in
+`crates/gpt-oss-model-runner/src/gpu_runner.rs`.
+
+Key structs and fields:
+
+- `GpuModelRunner`
+  - Owns one full `GpuModelWeights` container.
+  - Owns one full `Vec<GpuTransformerLayer>`.
+  - Owns full-runner fused allocation fields:
+    - `fused_qkv_weights: Vec<CudaSlice<f16>>`
+    - `fused_gate_up_weights: Vec<CudaSlice<f16>>`
+    - `fused_layernorm_f16: Vec<CudaSlice<f16>>`
+    - `fused_post_norm_f16: Vec<CudaSlice<f16>>`
+    - `fused_qkv_bias_f16: Vec<Option<CudaSlice<f16>>>`
+    - `fused_o_proj_bias_f16: Vec<Option<CudaSlice<f16>>>`
+    - `final_norm_weight_f16: Option<CudaSlice<f16>>`
+    - `embed_tokens_f16: Option<CudaSlice<f16>>`
+    - `f16_scratch: Option<F16LayerScratch>`
+- `F16LayerScratch`
+  - Current reusable buffers:
+    - `qkv: [max_tokens * qkv_dim]`
+    - `attn_out: [max_tokens * q_dim]`
+    - `o_proj: [max_tokens * hidden]`
+    - `normed: [max_tokens * hidden]`
+    - `residual: [max_tokens * hidden]`
+    - `gate_up: [max_tokens * intermediate * 2]`
+    - `silu_out: [max_tokens * intermediate]`
+    - `down: [max_tokens * hidden]`
+  - Allocated by `GpuModelRunner::alloc_scratch`.
+  - Current `max_tokens` is hard-coded to 32 for the max graph batch path.
+
+Current setup sequence:
+
+1. `GpuWorker::load_weights` loads f32 weights, U8 host tensors, and f16
+   weights when the worker dtype is half.
+2. `GpuWorker::build_gpu_model_runner` moves those maps into
+   `model_loader::gpu_weights::GpuModelWeights`.
+3. `GpuModelRunner::new` validates that only single-device maps are executable,
+   clones global tensors, constructs all `GpuTransformerLayer` shells, uploads
+   RoPE tables, and builds GPT-OSS MoE layer metadata.
+4. `GpuWorker::ensure_runner_initialized` calls:
+   - `runner.enable_fp16()`
+   - `runner.fuse_weights()`
+   - `runner.prepare_gpt_oss_graph_decode()` for GPT-OSS f16 graph decode
+
+`GpuModelRunner::fuse_weights` currently does several jobs at once:
+
+- Fused QKV weights:
+  - Iterates `0..self.layers.len()`.
+  - Reads f16
+    `model.layers.<i>.self_attn.{q_proj,k_proj,v_proj}.weight`.
+  - Allocates `[q_dim + kv_dim + kv_dim, hidden]` f16.
+  - Copies Q, K, and V into one contiguous device buffer.
+- Fused dense gate/up weights:
+  - Reads f16 `model.layers.<i>.mlp.{gate_proj,up_proj}.weight`.
+  - Allocates `[intermediate * 2, hidden]` f16.
+  - Skips dense gate/up only for GPT-OSS MoE layers where those dense tensors
+    are absent.
+- Layernorm and post-attention norm f16 conversions:
+  - Reads f32
+    `model.layers.<i>.input_layernorm.weight` and
+    `model.layers.<i>.post_attention_layernorm.weight`.
+  - Uses `cast_fp::cast_f32_to_f16_kernel`.
+- QKV bias f16 conversion:
+  - If f32 Q/K/V biases exist, allocates a temporary f32 fused bias buffer,
+    device-to-device copies Q/K/V into it, then casts to f16.
+- O projection bias f16 conversion:
+  - If f32 `o_proj.bias` exists, casts it to f16.
+- Final norm f16 conversion:
+  - Casts global `model.norm.weight` to f16.
+- Embedding f16 conversion:
+  - Clones f16 `model.embed_tokens.weight` when available, otherwise casts the
+    f32 embedding table to f16.
+- f16 scratch:
+  - Calls `alloc_scratch()`.
+
+`GpuLayerWeightsF16` in `gpu_layer.rs` consumes these fused/preconverted
+buffers during execution. It still carries the original per-layer projection
+weights and biases as fallback inputs, plus optional fused QKV, optional fused
+gate/up, optional f16 norm weights, and optional fused f16 biases.
+
+GPT-OSS MoE upload is adjacent but separate:
+
+- `GpuModelRunner::build_gpt_oss_moe_layers` builds one optional
+  `GptOssMoeLayerWeights` per absolute layer.
+- It reads U8 expert block/scale payloads from `GpuModelWeights::get_u8`.
+- It already clones router f32 weights/biases to host and keeps GPU references
+  to router tensors.
+- It uploads per-expert gate/up and down bias chunks to GPU.
+- It leaves U8 gate/up and down block/scale GPU fields as `None`.
+- `GpuModelRunner::prepare_gpt_oss_graph_decode` later uploads those U8
+  block/scale payloads to GPU so `supports_gpu_decode()` can become true.
+
+The first fused/scratch smoke should keep GPT-OSS MoE GPU expert uploads
+deferred unless the extraction boundary makes them trivial to count. They are
+not required to prove dense fused f16 allocation and scratch sizing.
+
+### Shard-local ownership rules
+
+Future split allocation should allocate fused/preconverted f16 state only on
+the shard that owns the relevant absolute layer or global tensor.
+
+Per-layer ownership:
+
+- Fused QKV weights: allocate only for absolute layers owned by the shard.
+- Fused dense gate/up weights: allocate only for owned absolute layers whose
+  dense gate/up tensors exist. GPT-OSS MoE layers should report dense gate/up
+  as not applicable, not as an error.
+- Input layernorm f16: allocate only for owned absolute layers.
+- Post-attention layernorm f16: allocate only for owned absolute layers.
+- Fused QKV bias f16: allocate only for owned absolute layers when Q/K/V biases
+  exist.
+- O projection bias f16: allocate only for owned absolute layers when the bias
+  exists.
+- GPT-OSS MoE GPU expert uploads: remain a separate deferred per-owned-layer
+  late allocation until the MoE upload boundary is designed.
+
+Global tensor ownership:
+
+- Embedding f16 conversion belongs to the embedding shard only.
+- Final norm f16 conversion belongs to the final shard only.
+- `lm_head.weight` loads normally on the final shard when present.
+- If `lm_head.weight` is absent and `tie_word_embeddings=true`, the tied LM-head
+  fallback must remain explicit and deferred. The final shard must not assume
+  `model.embed_tokens.weight` is local.
+
+Scratch ownership:
+
+- Allocate f16 scratch per layer-owning shard.
+- Size scratch for the shard's intended execution shape, not for the full model.
+- The first smoke should use an explicit bench-only sizing flag, for example
+  `--f16-scratch-max-tokens <N>`, instead of silently reusing the current
+  runner's graph-batch constant.
+- Scratch can be one reusable set per shard because each shard will execute its
+  owned layers sequentially on that shard's stream.
+
+### Required input state for future smoke
+
+A future bench-only fused/scratch smoke should build on the existing
+`multi_gpu_layer_sharding_split_allocation_smoke` path and retain enough
+allocation state instead of immediately dropping it after counting.
+
+Needed inputs:
+
+- `ShardedModelPlan`
+  - device ids
+  - absolute layer ids
+  - embedding/final-head ownership
+- `ShardTensorManifest`
+  - `required_tensor_names` for f16 loader filters
+  - `host_u8_tensor_names` for later MoE upload design
+  - `deferred_or_late_gpu_allocations` for status comparison
+- Per-shard CUDA resources
+  - context
+  - stream
+  - cuBLAS handle
+  - kernel loader
+- Per-shard f16 uploaded tensor map from
+  `load_weights_to_gpu_f16_with_shapes_filtered`.
+- Per-shard shape metadata from the f16 loader or
+  `SafetensorHeaderManifest`.
+- Model config
+  - `hidden_size`
+  - `num_heads`
+  - `num_kv_heads`
+  - `head_dim`
+  - `intermediate_size`
+  - `num_layers`
+  - `architecture`
+  - layer types / sliding-window data, if the later layer-construction skeleton
+    needs to validate config alignment.
+- Optional per-shard U8 host map from `load_u8_weights_to_host_filtered`, but
+  the first fused/scratch smoke should count/report MoE upload as deferred.
+
+The current split allocation smoke only keeps counts after loader calls. A
+fused/scratch smoke will need a CUDA-gated shard-local allocation state object
+that retains uploaded maps long enough to build fused buffers and count bytes.
+That object should still not construct `GpuTransformerLayer` or
+`GpuModelRunner`.
+
+### Avoiding GpuModelRunner construction
+
+Do not construct `GpuModelRunner` just to call `fuse_weights()`.
+
+Reasons:
+
+- `GpuModelRunner::new` validates split maps as non-executable and is designed
+  around a single CUDA context.
+- It constructs all `GpuTransformerLayer` shells.
+- It requires a `CudaCacheEngine`.
+- It owns global tensors and full layer vectors.
+- Its fused vectors are indexed as if one runner owns all layers.
+
+Recommended future approach:
+
+1. Add a narrow shard-local fused allocation helper, CUDA-gated and bench-only
+   at first.
+2. Feed it a shard-local f16 map, shape metadata, model config, shard absolute
+   layers, and the shard's stream/kernel loader.
+3. Store outputs in a small shard-local container such as:
+
+   ```text
+   ShardedF16AllocationBuffers
+   CudaShardF16AllocationBuffers
+   CudaLayerF16AllocationBuffers
+   ```
+
+4. Key per-layer outputs by absolute layer id in the public status. Internal
+   storage may also carry shard-local indices, but status and validation should
+   stay absolute-layer-first.
+5. Extract helper functions from `GpuModelRunner::fuse_weights` only when the
+   extraction is clearly mechanical and no-op for the single-device path. Good
+   candidates are:
+   - concat Q/K/V into a provided fused f16 buffer
+   - concat gate/up into a provided fused f16 buffer
+   - concat Q/K/V f32 biases then cast to f16
+   - cast one f32 tensor to f16 using an existing `cast_fp` kernel
+   - compute f16 scratch element counts from model config and max tokens
+
+If extraction risks changing the single-device runtime, mirror the formulas in
+the bench-only helper first and leave unification as a later cleanup.
+
+### Future bench-only fused/scratch smoke
+
+Extend `multi_gpu_layer_sharding_split_allocation_smoke` only behind explicit
+flags, for example:
+
+```text
+--allocate-fused-f16
+--allocate-f16-scratch
+--f16-scratch-max-tokens <N>
+```
+
+Suggested first behavior:
+
+1. Run the existing header discovery, split plan, upload manifest, resource
+   construction, filtered f16 upload, filtered U8 host retention, RoPE, KV, and
+   synthetic metadata steps as requested.
+2. Retain per-shard f16 tensor maps for the duration of fused allocation.
+3. For each shard:
+   - allocate fused QKV for each owned absolute layer when the required Q/K/V
+     f16 tensors are present and the architecture path supports dense fused QKV.
+   - allocate fused dense gate/up for each owned absolute layer when dense
+     gate/up tensors are present.
+   - cast input and post-attention layernorm weights for each owned absolute
+     layer.
+   - cast/fuse QKV and O projection biases when present.
+   - allocate embedding f16 conversion only if `owns_embeddings`.
+   - allocate final norm f16 conversion only if `owns_final_head`.
+   - allocate f16 scratch only if the shard owns at least one layer and
+     `--allocate-f16-scratch` is present.
+4. Drop fused/scratch buffers after status collection unless a later
+   layer-construction skeleton needs to inspect them.
+5. Do not construct layers, runner, graph output, attention inputs, activation
+   transfer buffers, final norm execution, LM-head execution, logits, or graph
+   capture.
+
+The smoke should not make `--allocate-fused-f16` imply MoE GPU upload. GPT-OSS
+MoE GPU expert upload needs its own explicit flag and design because it copies
+U8 block/scale tensors and carries decode-specific `supports_gpu_decode`
+semantics.
+
+### Status JSON design
+
+Top-level additions:
+
+```text
+fused_f16_allocation_attempted
+fused_f16_allocation_succeeded
+f16_scratch_allocation_attempted
+f16_scratch_allocation_succeeded
+f16_scratch_max_tokens
+fused_f16_error
+```
+
+Per-shard additions:
+
+```text
+fused_f16_allocated
+fused_qkv_weight_count
+fused_gate_up_weight_count
+fused_layernorm_count
+fused_postnorm_count
+fused_qkv_bias_count
+fused_o_proj_bias_count
+embedding_f16_allocated
+final_norm_f16_allocated
+f16_scratch_allocated
+fused_total_bytes
+f16_scratch_bytes
+fused_layer_absolute_indices
+fused_allocation_error
+```
+
+Optional per-layer detail:
+
+```text
+absolute_layer_idx
+local_layer_idx
+fused_qkv_bytes
+fused_gate_up_bytes
+layernorm_f16_bytes
+postnorm_f16_bytes
+fused_qkv_bias_bytes
+o_proj_bias_f16_bytes
+moe_gpu_upload_status
+```
+
+Status byte accounting should sum actual buffer lengths, not rely only on the
+current `alloc_scratch()` log formula. The current scratch struct has eight
+buffers, and future status should report the bytes for each buffer category or
+the exact sum across those buffers.
+
+Success classification for the future smoke:
+
+```text
+multi_gpu_layer_sharding_fused_scratch_allocation_smoke_complete
+```
+
+If fused f16 allocation succeeds but MoE GPU upload remains deferred, keep that
+deferred state explicit in `late_allocations` / per-layer status.
+
+### Validation strategy
+
+Future validation should be allocation/status only.
+
+Required no-GPU tests:
+
+- Fused/scratch plan for `single` assigns all absolute layers to one shard.
+- Fused/scratch plan for `split:0-11@0,12-23@1` assigns layers 0..11 to GPU0
+  and 12..23 to GPU1.
+- Embedding f16 conversion appears only on the embedding shard.
+- Final norm f16 conversion appears only on the final shard.
+- Tied LM-head fallback does not copy embedding to the final shard.
+- Dense gate/up fused status is not required for GPT-OSS MoE layers when dense
+  gate/up tensors are absent.
+- Scratch byte formulas use the requested `f16_scratch_max_tokens`.
+
+Required CUDA compile/status checks:
+
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- Bench command unit tests for JSON/status shape.
+
+Future real-model operator validation should use the restricted model and small
+synthetic metadata/KV settings already proven in prior slices. It should report
+counts and bytes only. It must not execute attention or produce parity claims.
+
+### Risks / blockers
+
+- There is no shard-local `GpuModelWeights` type today. The existing container
+  is a name-keyed map and can hold partial maps, but `GpuModelRunner` assumes
+  full-runner ownership.
+- `GpuModelRunner::fuse_weights` loops over local indices
+  `0..self.layers.len()` and formats tensor names as `model.layers.<i>...`.
+  Split allocation needs absolute layer ids such as 12..23 on GPU1, not local
+  loop indices.
+- Existing fused vectors are indexed with `get(i)`. Sparse or split storage
+  should avoid depending on full-model vector positions unless the vector has
+  explicit holes or a map from absolute layer id.
+- `GpuModelRunner::new` constructs layers and cache state, so it is the wrong
+  boundary for a non-executing fused/scratch smoke.
+- `F16LayerScratch` is private to `gpu_runner.rs`. A future reusable helper
+  may need a public status-only plan plus a CUDA-gated buffer wrapper without
+  exposing runner internals.
+- Scratch sizing is currently tied to a hard-coded max graph batch of 32. A
+  split smoke should require explicit synthetic sizing.
+- GPT-OSS MoE GPU uploads are related but not identical. Router/bias state,
+  host U8 payloads, and U8 block/scale GPU uploads need a separate design and
+  explicit opt-in.
+- Tied LM-head fallback remains unresolved and should not be silently folded
+  into fused allocation.
+- Activation handoff is still absent, so even successful fused/scratch
+  allocation cannot imply split execution readiness.
+
+### Next bounded step
+
+Add a bench-only fused/f16 scratch allocation skeleton, still non-executing,
+or design the tied LM-head fallback before allocating final-shard LM-head
+fallback state. The allocation skeleton should retain per-shard f16 maps only
+long enough to build fused/preconverted buffers and report counts/bytes.
+
+### Primary classification
+
+multi_gpu_layer_sharding_fused_scratch_design_complete
