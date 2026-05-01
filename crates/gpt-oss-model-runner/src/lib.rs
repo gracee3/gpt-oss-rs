@@ -50,6 +50,8 @@ pub use attention::{
     SplitKvAttention,
 };
 pub use device_map::{DeviceId, DeviceMap, DeviceMapError};
+#[cfg(feature = "cuda")]
+pub use fused_f16::cast_f32_tensor_to_f16;
 pub use fused_f16::{
     f16_scratch_element_counts, fused_gate_up_dim, fused_gate_up_num_elements, fused_gate_up_shape,
     fused_qkv_dim, fused_qkv_num_elements, fused_qkv_shape, F16ScratchElementCounts,

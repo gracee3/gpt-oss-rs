@@ -97,8 +97,8 @@ mod cuda_impl {
     use crate::bridge::{LLMError, Result};
     use crate::device_map::DeviceMap;
     use crate::fused_f16::{
-        f16_scratch_element_counts, fused_gate_up_dim, fused_gate_up_num_elements, fused_qkv_dim,
-        fused_qkv_num_elements,
+        cast_f32_tensor_to_f16, f16_scratch_element_counts, fused_gate_up_dim,
+        fused_gate_up_num_elements, fused_qkv_dim, fused_qkv_num_elements,
     };
     use crate::rope_validation::build_runtime_rope_tables;
     use crate::runner::ModelRunnerConfig;
@@ -549,8 +549,7 @@ mod cuda_impl {
                     .ok_or_else(|| {
                         LLMError::GpuError(format!("missing input_layernorm layer {i}"))
                     })?;
-                let ln_f16 =
-                    Self::gpu_cast_f32_to_f16_static(&self.stream, ln_w, hidden, &cast_kernel)?;
+                let ln_f16 = cast_f32_tensor_to_f16(&self.stream, ln_w, hidden, &cast_kernel)?;
                 self.fused_layernorm_f16.push(ln_f16);
 
                 // post_attention_layernorm: f32 -> f16
@@ -560,8 +559,7 @@ mod cuda_impl {
                     .ok_or_else(|| {
                         LLMError::GpuError(format!("missing post_attention_layernorm layer {i}"))
                     })?;
-                let pn_f16 =
-                    Self::gpu_cast_f32_to_f16_static(&self.stream, pn_w, hidden, &cast_kernel)?;
+                let pn_f16 = cast_f32_tensor_to_f16(&self.stream, pn_w, hidden, &cast_kernel)?;
                 self.fused_post_norm_f16.push(pn_f16);
 
                 // Fuse QKV biases: concat q_bias || k_bias || v_bias -> f16
@@ -589,7 +587,7 @@ mod cuda_impl {
                     self.stream
                         .memcpy_dtod(vb, &mut fused_bias_f32.slice_mut(q_dim + kv_dim..qkv_dim))
                         .map_err(|e| LLMError::GpuError(format!("fused_bias v copy: {e}")))?;
-                    let bias_f16 = Self::gpu_cast_f32_to_f16_static(
+                    let bias_f16 = cast_f32_tensor_to_f16(
                         &self.stream,
                         &fused_bias_f32,
                         qkv_dim,
@@ -604,8 +602,7 @@ mod cuda_impl {
                     .weights
                     .get(&format!("model.layers.{i}.self_attn.o_proj.bias"));
                 if let Some(ob) = o_bias {
-                    let bias_f16 =
-                        Self::gpu_cast_f32_to_f16_static(&self.stream, ob, hidden, &cast_kernel)?;
+                    let bias_f16 = cast_f32_tensor_to_f16(&self.stream, ob, hidden, &cast_kernel)?;
                     self.fused_o_proj_bias_f16.push(Some(bias_f16));
                 } else {
                     self.fused_o_proj_bias_f16.push(None);
@@ -613,7 +610,7 @@ mod cuda_impl {
             }
 
             // Final norm weight: f32 -> f16
-            let fn_f16 = Self::gpu_cast_f32_to_f16_static(
+            let fn_f16 = cast_f32_tensor_to_f16(
                 &self.stream,
                 &self.final_norm_weight,
                 hidden,
@@ -634,7 +631,7 @@ mod cuda_impl {
                 self.embed_tokens_f16 = Some(et_clone);
             } else {
                 let vocab = self.config.vocab_size;
-                let et_f16 = Self::gpu_cast_f32_to_f16_static(
+                let et_f16 = cast_f32_tensor_to_f16(
                     &self.stream,
                     &self.embed_tokens,
                     vocab * hidden,
@@ -1011,25 +1008,25 @@ mod cuda_impl {
                     });
                     let mut attention_trace =
                         (layer_idx == 0 || capture_layer_seed).then(|| PrefillAttentionTrace {
-                        attention_norm_input_full: Vec::new(),
-                        raw_v_proj: Vec::new(),
-                        biased_v_proj: Vec::new(),
-                        v_compact_for_context: Vec::new(),
-                        v_for_context: Vec::new(),
-                        attention_context_pre_cast: Vec::new(),
-                        last_q_for_scores: Vec::new(),
-                        raw_k_proj: Vec::new(),
-                        biased_k_proj: Vec::new(),
-                        k_after_proj: Vec::new(),
-                        k_after_rope_unpacked: Vec::new(),
-                        pre_write_k_path: Vec::new(),
-                        k_for_scores: Vec::new(),
-                        attention_scores: Vec::new(),
-                        attention_probs: Vec::new(),
-                        attention_context: Vec::new(),
-                        o_proj: Vec::new(),
-                        post_attn_norm_output: Vec::new(),
-                    });
+                            attention_norm_input_full: Vec::new(),
+                            raw_v_proj: Vec::new(),
+                            biased_v_proj: Vec::new(),
+                            v_compact_for_context: Vec::new(),
+                            v_for_context: Vec::new(),
+                            attention_context_pre_cast: Vec::new(),
+                            last_q_for_scores: Vec::new(),
+                            raw_k_proj: Vec::new(),
+                            biased_k_proj: Vec::new(),
+                            k_after_proj: Vec::new(),
+                            k_after_rope_unpacked: Vec::new(),
+                            pre_write_k_path: Vec::new(),
+                            k_for_scores: Vec::new(),
+                            attention_scores: Vec::new(),
+                            attention_probs: Vec::new(),
+                            attention_context: Vec::new(),
+                            o_proj: Vec::new(),
+                            post_attn_norm_output: Vec::new(),
+                        });
                     let (residual, mlp_out) = layer.forward_f16(
                         &input,
                         &weights,
@@ -2612,35 +2609,6 @@ mod cuda_impl {
                 .map_err(|e| LLMError::GpuError(format!("trace dtoh f32: {e}")))?;
             let start = (num_tokens - 1) * hidden_size;
             Ok(host[start..start + hidden_size].to_vec())
-        }
-
-        /// GPU cast f32 -> f16 (static helper, does not need &self).
-        fn gpu_cast_f32_to_f16_static(
-            stream: &Arc<CudaStream>,
-            input: &CudaSlice<f32>,
-            n: usize,
-            kernel: &cudarc::driver::CudaFunction,
-        ) -> Result<CudaSlice<f16>> {
-            // Safety: cast kernel writes all n elements
-            let mut output = unsafe { stream.alloc::<f16>(n) }
-                .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 alloc: {e}")))?;
-            let threads = 256u32;
-            let blocks = ((n as u32) + threads - 1) / threads;
-            let cfg = LaunchConfig {
-                grid_dim: (blocks, 1, 1),
-                block_dim: (threads, 1, 1),
-                shared_mem_bytes: 0,
-            };
-            unsafe {
-                stream
-                    .launch_builder(kernel)
-                    .arg(&mut output)
-                    .arg(input)
-                    .arg(&(n as i32))
-                    .launch(cfg)
-                    .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 launch: {e}")))?;
-            }
-            Ok(output)
         }
 
         /// RMSNorm f16: f16 input, f16 weight, f16 output.

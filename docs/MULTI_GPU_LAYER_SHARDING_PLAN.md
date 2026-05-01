@@ -5216,3 +5216,103 @@ Recommended next slices:
 - bias f16 conversion helper extraction.
 - `F16LayerScratch` visibility/sizing implementation.
 - GPT-OSS MoE GPU upload design.
+
+## f16 norm conversion helper extraction status
+
+This slice extracted the generic CUDA f32-to-f16 tensor cast used by
+`GpuModelRunner::fuse_weights` into the fused f16 helper module. The extraction
+is intentionally a helper boundary only; no split-path norm allocation was
+added.
+
+### Helper
+
+New CUDA-gated helper:
+
+```text
+cast_f32_tensor_to_f16
+```
+
+Location:
+
+```text
+crates/gpt-oss-model-runner/src/fused_f16.rs
+```
+
+The helper takes the current stream, an input `CudaSlice<f32>`, an explicit
+element count, and the already-loaded `cast_f32_to_f16_kernel`. It preserves the
+current allocation and launch behavior, including the existing
+`cast_f32_f16 alloc` and `cast_f32_f16 launch` error strings.
+
+The helper is also re-exported from `lib.rs` behind `--features cuda` for future
+shard-local use.
+
+### Runner conversion sites
+
+`GpuModelRunner::fuse_weights` now calls `cast_f32_tensor_to_f16` for:
+
+- `model.layers.<N>.input_layernorm.weight`.
+- `model.layers.<N>.post_attention_layernorm.weight`.
+- fused QKV bias after concatenating q/k/v bias.
+- O-projection bias.
+- final norm weight.
+- embedding f32 fallback when an uploaded f16 embedding table is absent.
+
+The runner still loads `cast_f32_to_f16_kernel` once and passes the same kernel
+handle to each cast call. Existing layer indexing, runner-owned vectors, vector
+ordering, final norm/embed side effects, and scratch allocation behavior are
+unchanged.
+
+### Still runner-coupled
+
+The following remain coupled to `GpuModelRunner::fuse_weights` or later runner
+state:
+
+- mutation of runner-owned `fused_layernorm_f16` and `fused_post_norm_f16`
+  vectors.
+- fused QKV/O bias vector ownership.
+- final norm and embedding side-effect assignment.
+- private `F16LayerScratch` allocation.
+- GPT-OSS MoE GPU upload.
+- layer construction and execution.
+
+Shard-local bench norm allocation remains a later slice because it needs to
+combine this helper with `ShardWeightStore` ownership validation, per-shard f32
+maps, and explicit status reporting without mutating runner-owned vectors.
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner fused_f16
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+git diff --check
+```
+
+No real-model CUDA smoke was run for this helper-only slice.
+
+### Non-execution boundary
+
+No split norm conversion allocation, transformer layers, `GpuModelRunner`
+construction from a split path, attention, graph output, final norm execution,
+LM-head execution, logits, graph capture, forward pass, serving, or parity path
+was added. Serve/runtime split maps remain non-executable and continue to be
+rejected before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- bench-only shard-local layernorm/postnorm f16 conversion allocation.
+- bias f16 conversion helper extraction/status boundary.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_f16_norm_conversion_helper_complete

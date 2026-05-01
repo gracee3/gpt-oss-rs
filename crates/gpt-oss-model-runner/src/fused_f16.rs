@@ -4,6 +4,17 @@
 //! `GpuModelRunner` so future shard-local allocation can reuse the same shape
 //! rules without constructing a runner.
 
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
+
+#[cfg(feature = "cuda")]
+use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+#[cfg(feature = "cuda")]
+use half::f16;
+
+#[cfg(feature = "cuda")]
+use crate::bridge::{LLMError, Result as BridgeResult};
+
 /// Per-buffer element counts for the reusable f16 layer scratch set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct F16ScratchElementCounts {
@@ -80,6 +91,35 @@ impl F16ScratchElementCounts {
     pub fn total_bytes(self) -> usize {
         self.total_elements() * std::mem::size_of::<half::f16>()
     }
+}
+
+#[cfg(feature = "cuda")]
+pub fn cast_f32_tensor_to_f16(
+    stream: &Arc<CudaStream>,
+    input: &CudaSlice<f32>,
+    element_count: usize,
+    kernel: &CudaFunction,
+) -> BridgeResult<CudaSlice<f16>> {
+    // Safety: cast kernel writes all element_count elements.
+    let mut output = unsafe { stream.alloc::<f16>(element_count) }
+        .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 alloc: {e}")))?;
+    let threads = 256u32;
+    let blocks = ((element_count as u32) + threads - 1) / threads;
+    let cfg = LaunchConfig {
+        grid_dim: (blocks, 1, 1),
+        block_dim: (threads, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    unsafe {
+        stream
+            .launch_builder(kernel)
+            .arg(&mut output)
+            .arg(input)
+            .arg(&(element_count as i32))
+            .launch(cfg)
+            .map_err(|e| LLMError::GpuError(format!("cast_f32_f16 launch: {e}")))?;
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
