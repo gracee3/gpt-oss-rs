@@ -4872,3 +4872,220 @@ Recommended next slices:
 ### Primary classification
 
 multi_gpu_layer_sharding_fused_f16_shape_helpers_complete
+
+## Bench-only fused QKV allocation smoke status
+
+This slice changed the existing `--allocate-fused-f16` bench flag from
+plan/status-only to actual fused QKV allocation in the CUDA bench smoke when
+f16 Q/K/V tensors are available. The path is still bench-only and
+non-executing.
+
+### Helper and module names
+
+Updated model-runner status/allocation boundary:
+
+```text
+crates/gpt-oss-model-runner/src/sharded_resources.rs
+```
+
+New/extended status and CUDA-gated buffer types:
+
+```text
+CudaLayerFusedF16AllocationPlan
+CudaLayerFusedF16AllocationStatus
+CudaLayerFusedF16Buffers
+CudaShardFusedF16Buffers
+ShardedFusedF16Buffers
+```
+
+Updated bench command:
+
+```text
+crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_split_allocation_smoke.rs
+```
+
+### ShardWeightStore usage
+
+The CUDA bench path builds a shard-local `ShardWeightStore` from each
+`ShardTensorManifest` before fused allocation. For each owned absolute layer,
+it validates ownership and canonical tensor names before looking up uploaded
+f16 slices.
+
+This preserves the absolute-layer-first policy:
+
+```text
+GPU1 layer 12 -> model.layers.12.*
+```
+
+It never maps GPU1 layer 12 to `model.layers.0.*`.
+
+### What is actually allocated
+
+With `--allocate-fused-f16` and `--dtype f16` or `--dtype both`, the bench
+smoke now retains each shard's uploaded f16 tensor map long enough to allocate:
+
+- fused QKV f16 buffers for shard-owned layers with
+  `self_attn.q_proj.weight`, `self_attn.k_proj.weight`, and
+  `self_attn.v_proj.weight`.
+- optional dense fused gate/up f16 buffers when both
+  `mlp.gate_proj.weight` and `mlp.up_proj.weight` are present.
+
+The fused layout matches the current runner layout:
+
+```text
+QKV:     q_proj || k_proj || v_proj
+gate/up: gate_proj || up_proj
+```
+
+Sizing uses the existing helpers:
+
+```text
+fused_qkv_num_elements
+fused_gate_up_num_elements
+```
+
+The fused buffers are dropped after status collection. They are not attached to
+layers, runner state, graph state, or any execution path.
+
+### Dense gate/up policy
+
+Dense gate/up fusion is opportunistic. If dense gate/up tensors are present,
+the bench helper allocates the fused dense buffer. For GPT-OSS MoE layers where
+dense gate/up tensors are absent and owned U8 expert payloads exist, dense
+gate/up status is reported as `not_applicable`, not as an error.
+
+GPT-OSS MoE GPU expert upload remains a separate deferred boundary.
+
+### Still deferred
+
+The following fused/preconverted f16 work remains deferred:
+
+- f16 input layernorm conversion.
+- f16 post-attention layernorm conversion.
+- f16 QKV bias conversion.
+- f16 O-projection bias conversion.
+- embedding f16 conversion.
+- final norm f16 conversion.
+- tied LM-head fallback.
+- f16 scratch allocation.
+
+`--allocate-f16-scratch` remains status/deferred only and still reports the
+private runner-state boundary around `F16LayerScratch`.
+
+### Status JSON
+
+Top-level status now uses this success classification when fused QKV allocation
+succeeds:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete
+```
+
+Useful blocked classification:
+
+```text
+multi_gpu_layer_sharding_fused_qkv_allocation_blocked
+```
+
+Per-shard status includes:
+
+```text
+fused_f16_allocated
+fused_f16_status
+fused_qkv_weight_count
+fused_qkv_total_bytes
+fused_gate_up_weight_count
+fused_gate_up_total_bytes
+fused_total_bytes
+fused_layer_absolute_indices
+fused_layer_statuses
+fused_deferred_reason
+f16_scratch_status
+f16_scratch_deferred_reason
+```
+
+Per-layer status includes:
+
+```text
+absolute_layer_idx
+local_layer_idx
+fused_qkv_allocated
+fused_qkv_status
+fused_qkv_bytes
+fused_gate_up_allocated
+fused_gate_up_status
+fused_gate_up_bytes
+layernorm_f16_status
+postnorm_f16_status
+qkv_bias_f16_status
+o_proj_bias_f16_status
+layer_error
+```
+
+### Manual operator command
+
+Do not run this automatically. The 2x RTX 3090 operator command is:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_qkv_status.json
+```
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner fused_f16
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke
+cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help
+git diff --check
+```
+
+Neighboring bench checks were also run because this slice touched the shared
+split allocation smoke.
+
+### Non-execution boundary
+
+No transformer layers, `GpuModelRunner`, attention, graph output, final norm
+execution, LM-head execution, logits, graph capture, forward pass, serving, or
+parity path was added. No f16 scratch allocation, GPT-OSS MoE GPU upload, tied
+LM-head fallback, activation transfer, NCCL, peer copy, collectives, tensor
+parallelism, or expert parallelism was added. Serve/runtime split maps remain
+non-executable and continue to be rejected before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- real-model fused QKV allocation smoke operator run.
+- f16 layernorm/bias/final/embed conversion helper extraction.
+- `F16LayerScratch` visibility/sizing implementation.
+- GPT-OSS MoE GPU upload design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete

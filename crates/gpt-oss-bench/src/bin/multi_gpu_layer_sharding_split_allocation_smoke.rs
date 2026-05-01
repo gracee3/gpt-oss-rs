@@ -4,15 +4,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
-    CudaShardFusedF16AllocationStatus, CudaShardKvCacheAllocationStatus,
-    CudaShardMetadataAllocationStatus, CudaShardResourceStatus, CudaShardRuntimeBufferStatus,
-    DeviceId, DeviceMap, F16ScratchAllocationConfig, FusedF16AllocationStatus,
-    KvCacheAllocationConfig, LateAllocationKind, MetadataAllocationConfig, MetadataMode,
-    RopeRuntimeBufferConfig, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
-    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan,
-    ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus,
-    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
+    CudaLayerFusedF16AllocationStatus, CudaShardFusedF16AllocationStatus,
+    CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationStatus, CudaShardResourceStatus,
+    CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, F16ScratchAllocationConfig,
+    FusedF16AllocationStatus, KvCacheAllocationConfig, LateAllocationKind,
+    MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
+    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
+    ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
+    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedModelPlan,
+    ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
     UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,11 @@ const METADATA_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_metadata_allocation_smoke_complete";
 const FUSED_F16_PLAN_STATUS_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_f16_plan_status_complete";
+const FUSED_QKV_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete";
+#[allow(dead_code)]
+const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -253,7 +259,9 @@ struct SplitAllocationSmokeShardReport {
     fused_f16_allocated: bool,
     fused_f16_status: String,
     fused_qkv_weight_count: usize,
+    fused_qkv_total_bytes: usize,
     fused_gate_up_weight_count: usize,
+    fused_gate_up_total_bytes: usize,
     f16_layernorm_count: usize,
     f16_postnorm_count: usize,
     f16_qkv_bias_count: usize,
@@ -262,6 +270,7 @@ struct SplitAllocationSmokeShardReport {
     final_norm_f16_allocated: bool,
     fused_total_bytes: usize,
     fused_layer_absolute_indices: Vec<usize>,
+    fused_layer_statuses: Vec<FusedLayerReport>,
     fused_deferred_reason: Option<String>,
     fused_error: Option<String>,
     f16_scratch_allocated: bool,
@@ -285,6 +294,23 @@ struct CudaResourceStatusReport {
     stream_created: bool,
     cublas_created: bool,
     kernel_loader_created: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct FusedLayerReport {
+    absolute_layer_idx: usize,
+    local_layer_idx: usize,
+    fused_qkv_allocated: bool,
+    fused_qkv_status: String,
+    fused_qkv_bytes: usize,
+    fused_gate_up_allocated: bool,
+    fused_gate_up_status: String,
+    fused_gate_up_bytes: usize,
+    layernorm_f16_status: String,
+    postnorm_f16_status: String,
+    qkv_bias_f16_status: String,
+    o_proj_bias_f16_status: String,
+    layer_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -557,6 +583,31 @@ fn build_split_allocation_smoke_report(
             );
         }
     };
+    if fused_f16_options.allocate_fused_f16
+        && !matches!(dtype_mode, DTypeMode::F16 | DTypeMode::Both)
+    {
+        return error_report(
+            CONFIG_ERROR_CLASSIFICATION,
+            model_path,
+            device_map_spec,
+            selected_device,
+            dtype_mode,
+            kernel_dir,
+            allocate_rope_metadata,
+            allocate_kv_cache,
+            kv_num_blocks,
+            kv_block_size,
+            allocate_metadata,
+            metadata_mode,
+            metadata_num_tokens,
+            metadata_num_seqs,
+            metadata_context_len,
+            metadata_block_size,
+            metadata_config.map(|config| config.graph_max_blocks()),
+            fused_f16_options,
+            Some("--allocate-fused-f16 requires --dtype f16 or --dtype both".to_string()),
+        );
+    }
 
     let header_merge_policy = header_merge_policy(allow_restricted_sinks_override);
     let header_manifest =
@@ -804,6 +855,8 @@ fn build_split_allocation_smoke_report(
         runtime_buffer_config,
         kv_cache_config,
         metadata_config,
+        fused_f16_options,
+        f16_scratch_config,
     ) {
         Ok((
             resource_status,
@@ -811,12 +864,20 @@ fn build_split_allocation_smoke_report(
             runtime_buffer_status,
             kv_cache_status,
             metadata_status,
+            actual_fused_f16_status,
         )) => {
             let runtime_buffer_succeeded =
                 allocate_rope_metadata && runtime_buffer_status.is_some();
             let kv_cache_succeeded = allocate_kv_cache && kv_cache_status.is_some();
             let metadata_succeeded = allocate_metadata && metadata_status.is_some();
-            let classification = if fused_f16_status.is_some() {
+            let fused_f16_succeeded = fused_f16_options.allocate_fused_f16
+                && actual_fused_f16_status
+                    .as_ref()
+                    .map(fused_status_succeeded)
+                    .unwrap_or(false);
+            let classification = if fused_f16_succeeded {
+                FUSED_QKV_ALLOCATION_CLASSIFICATION
+            } else if fused_f16_status.is_some() {
                 FUSED_F16_PLAN_STATUS_CLASSIFICATION
             } else if metadata_succeeded {
                 METADATA_ALLOCATION_CLASSIFICATION
@@ -857,7 +918,9 @@ fn build_split_allocation_smoke_report(
                 kv_cache_status.as_ref(),
                 metadata_status.as_ref(),
                 fused_f16_options,
-                fused_f16_status.as_ref(),
+                actual_fused_f16_status
+                    .as_ref()
+                    .or(fused_f16_status.as_ref()),
                 None,
             )
         }
@@ -1067,6 +1130,8 @@ fn run_cuda_allocation_smoke(
     runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
     kv_cache_config: Option<KvCacheAllocationConfig>,
     metadata_config: Option<MetadataAllocationConfig>,
+    fused_f16_options: FusedF16SmokeOptions,
+    f16_scratch_config: Option<F16ScratchAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
@@ -1074,6 +1139,7 @@ fn run_cuda_allocation_smoke(
         Option<ShardedRuntimeBufferStatus>,
         Option<ShardedKvCacheAllocationStatus>,
         Option<ShardedMetadataAllocationStatus>,
+        Option<ShardedFusedF16AllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -1082,7 +1148,8 @@ fn run_cuda_allocation_smoke(
         load_weights_to_gpu_with_shapes_filtered,
     };
     use gpt_oss_model_runner::{
-        ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
+        ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers,
+        ShardedMetadataBuffers, ShardedRuntimeBuffers,
     };
 
     let resources = match kernel_dir {
@@ -1092,6 +1159,8 @@ fn run_cuda_allocation_smoke(
     .map_err(|error| (RESOURCE_ERROR_CLASSIFICATION, error.to_string()))?;
 
     let mut upload_counts = BTreeMap::new();
+    let mut f16_weights_by_device = BTreeMap::new();
+    let mut f16_shapes_by_device = BTreeMap::new();
     for resource in &resources.shards {
         let manifest = upload_manifest
             .shards
@@ -1130,7 +1199,13 @@ fn run_cuda_allocation_smoke(
                 )
                 .map_err(|error| (LOADER_ERROR_CLASSIFICATION, error.to_string()))?;
                 let total_elements = shapes_for_names(&shapes, weights.keys());
-                (weights.len(), shapes.len(), total_elements)
+                let weight_count = weights.len();
+                let shape_count = shapes.len();
+                if fused_f16_options.allocate_fused_f16 {
+                    f16_shapes_by_device.insert(resource.device_id, shapes.clone());
+                    f16_weights_by_device.insert(resource.device_id, weights);
+                }
+                (weight_count, shape_count, total_elements)
             } else {
                 (0, 0, 0)
             };
@@ -1185,12 +1260,47 @@ fn run_cuda_allocation_smoke(
         None
     };
 
+    let fused_f16_status =
+        if fused_f16_options.allocate_fused_f16 || fused_f16_options.allocate_f16_scratch {
+            if fused_f16_options.allocate_fused_f16 {
+                Some(
+                    ShardedFusedF16Buffers::create_for_resources(
+                        &resources,
+                        upload_manifest,
+                        &f16_weights_by_device,
+                        &f16_shapes_by_device,
+                        f16_scratch_config,
+                    )
+                    .map_err(|error| {
+                        (
+                            FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION,
+                            error.to_string(),
+                        )
+                    })?
+                    .status(),
+                )
+            } else {
+                let fused_plan = ShardedFusedF16AllocationPlan::from_upload_manifest(
+                    upload_manifest,
+                    f16_scratch_config,
+                );
+                Some(ShardedFusedF16AllocationStatus::from_plan(
+                    &fused_plan,
+                    false,
+                    false,
+                ))
+            }
+        } else {
+            None
+        };
+
     Ok((
         resources.status(),
         upload_counts,
         runtime_buffer_status,
         kv_cache_status,
         metadata_status,
+        fused_f16_status,
     ))
 }
 
@@ -1204,6 +1314,8 @@ fn run_cuda_allocation_smoke(
     _runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
     _kv_cache_config: Option<KvCacheAllocationConfig>,
     _metadata_config: Option<MetadataAllocationConfig>,
+    _fused_f16_options: FusedF16SmokeOptions,
+    _f16_scratch_config: Option<F16ScratchAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
@@ -1211,6 +1323,7 @@ fn run_cuda_allocation_smoke(
         Option<ShardedRuntimeBufferStatus>,
         Option<ShardedKvCacheAllocationStatus>,
         Option<ShardedMetadataAllocationStatus>,
+        Option<ShardedFusedF16AllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -1229,6 +1342,13 @@ fn shapes_for_names<'a>(
         .filter_map(|name| shapes.get(name))
         .map(|shape| shape.iter().product::<usize>())
         .sum()
+}
+
+fn fused_status_succeeded(status: &ShardedFusedF16AllocationStatus) -> bool {
+    status.shards.iter().all(|shard| {
+        shard.fused_f16_allocated
+            || shard.fused_f16_status == FusedF16AllocationStatus::NotApplicable
+    })
 }
 
 fn render_report(
@@ -1382,6 +1502,10 @@ fn render_report_with_counts(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
+    let fused_f16_allocation_succeeded = fused_f16_options.allocate_fused_f16
+        && fused_f16_status
+            .map(fused_status_succeeded)
+            .unwrap_or(false);
 
     SplitAllocationSmokeReport {
         classification: classification.into(),
@@ -1416,7 +1540,7 @@ fn render_report_with_counts(
         metadata_graph_max_blocks: metadata_config.map(|config| config.graph_max_blocks()),
         metadata_error: error.clone().filter(|_| metadata_allocation_attempted),
         fused_f16_allocation_attempted: fused_f16_options.allocate_fused_f16,
-        fused_f16_allocation_succeeded: false,
+        fused_f16_allocation_succeeded,
         f16_scratch_allocation_attempted: fused_f16_options.allocate_f16_scratch,
         f16_scratch_allocation_succeeded: false,
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
@@ -1618,7 +1742,9 @@ fn render_shard_report(
         fused_f16_allocated,
         fused_f16_status,
         fused_qkv_weight_count,
+        fused_qkv_total_bytes,
         fused_gate_up_weight_count,
+        fused_gate_up_total_bytes,
         f16_layernorm_count,
         f16_postnorm_count,
         f16_qkv_bias_count,
@@ -1627,6 +1753,7 @@ fn render_shard_report(
         final_norm_f16_allocated,
         fused_total_bytes,
         fused_layer_absolute_indices,
+        fused_layer_statuses,
         fused_deferred_reason,
         fused_error,
         f16_scratch_allocated,
@@ -1640,7 +1767,9 @@ fn render_shard_report(
                 status.fused_f16_allocated,
                 status.fused_f16_status.as_str().to_string(),
                 status.fused_qkv_weight_count,
+                status.fused_qkv_total_bytes,
                 status.fused_gate_up_weight_count,
+                status.fused_gate_up_total_bytes,
                 status.f16_layernorm_count,
                 status.f16_postnorm_count,
                 status.f16_qkv_bias_count,
@@ -1649,6 +1778,11 @@ fn render_shard_report(
                 status.final_norm_f16_allocated,
                 status.fused_total_bytes,
                 status.fused_layer_absolute_indices.clone(),
+                status
+                    .fused_layer_statuses
+                    .iter()
+                    .map(render_fused_layer_report)
+                    .collect::<Vec<_>>(),
                 status.fused_deferred_reason.clone(),
                 status.fused_error.clone(),
                 status.f16_scratch_allocated,
@@ -1668,9 +1802,12 @@ fn render_shard_report(
                 0,
                 0,
                 0,
+                0,
+                0,
                 false,
                 false,
                 0,
+                Vec::new(),
                 Vec::new(),
                 None,
                 None,
@@ -1745,7 +1882,9 @@ fn render_shard_report(
         fused_f16_allocated,
         fused_f16_status,
         fused_qkv_weight_count,
+        fused_qkv_total_bytes,
         fused_gate_up_weight_count,
+        fused_gate_up_total_bytes,
         f16_layernorm_count,
         f16_postnorm_count,
         f16_qkv_bias_count,
@@ -1754,6 +1893,7 @@ fn render_shard_report(
         final_norm_f16_allocated,
         fused_total_bytes,
         fused_layer_absolute_indices,
+        fused_layer_statuses,
         fused_deferred_reason,
         fused_error,
         f16_scratch_allocated,
@@ -1761,6 +1901,24 @@ fn render_shard_report(
         f16_scratch_bytes,
         f16_scratch_deferred_reason,
         f16_scratch_error,
+    }
+}
+
+fn render_fused_layer_report(status: &CudaLayerFusedF16AllocationStatus) -> FusedLayerReport {
+    FusedLayerReport {
+        absolute_layer_idx: status.absolute_layer_idx,
+        local_layer_idx: status.local_layer_idx,
+        fused_qkv_allocated: status.fused_qkv_allocated,
+        fused_qkv_status: status.fused_qkv_status.as_str().to_string(),
+        fused_qkv_bytes: status.fused_qkv_bytes,
+        fused_gate_up_allocated: status.fused_gate_up_allocated,
+        fused_gate_up_status: status.fused_gate_up_status.as_str().to_string(),
+        fused_gate_up_bytes: status.fused_gate_up_bytes,
+        layernorm_f16_status: status.layernorm_f16_status.as_str().to_string(),
+        postnorm_f16_status: status.postnorm_f16_status.as_str().to_string(),
+        qkv_bias_f16_status: status.qkv_bias_f16_status.as_str().to_string(),
+        o_proj_bias_f16_status: status.o_proj_bias_f16_status.as_str().to_string(),
+        layer_error: status.layer_error.clone(),
     }
 }
 
@@ -2676,6 +2834,14 @@ mod tests {
             (0..12).collect::<Vec<_>>()
         );
         assert_eq!(gpu0.fused_f16_status, "deferred");
+        let gpu0_layer0 = gpu0
+            .fused_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(gpu0_layer0.local_layer_idx, 0);
+        assert_eq!(gpu0_layer0.fused_qkv_status, "not_applicable");
+        assert!(!gpu0_layer0.fused_qkv_allocated);
         assert!(gpu0
             .fused_deferred_reason
             .as_deref()
@@ -2688,6 +2854,13 @@ mod tests {
             (12..24).collect::<Vec<_>>()
         );
         assert_eq!(gpu1.fused_f16_status, "deferred");
+        let gpu1_layer12 = gpu1
+            .fused_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(gpu1_layer12.local_layer_idx, 0);
+        assert_eq!(gpu1_layer12.fused_qkv_status, "not_applicable");
     }
 
     #[test]
@@ -2723,6 +2896,43 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("--f16-scratch-max-tokens"));
+    }
+
+    #[test]
+    fn fused_f16_flag_requires_f16_dtype_mode() {
+        let dir = fixture_with_lm_head();
+
+        let report = build_split_allocation_smoke_report(
+            &dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F32,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            false,
+            None,
+            false,
+        );
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.fused_f16_allocation_attempted);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("--allocate-fused-f16 requires --dtype f16"));
     }
 
     #[test]

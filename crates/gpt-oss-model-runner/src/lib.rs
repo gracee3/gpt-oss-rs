@@ -71,6 +71,7 @@ pub use shard_plan::{
     UploadManifestOptions,
 };
 pub use sharded_resources::{
+    CudaLayerFusedF16AllocationPlan, CudaLayerFusedF16AllocationStatus,
     CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus,
     CudaShardFusedF16AllocationPlan, CudaShardFusedF16AllocationStatus,
     CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus,
@@ -85,7 +86,8 @@ pub use sharded_resources::{
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{
-    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources,
-    CudaShardRuntimeBuffers, ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers,
+    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardFusedF16Buffers,
+    CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources, CudaShardRuntimeBuffers,
+    ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers,
     ShardedRuntimeBuffers,
 };

@@ -13,6 +13,8 @@ pub const RUNTIME_METADATA_DEFERRED_REASON: &str =
     "request-shaped metadata packing buffers require batch/sequence inputs";
 pub const FUSED_F16_DEFERRED_REASON: &str =
     "GpuModelRunner::fuse_weights assumes full-model runner-owned weight containers and full-runner layer indexing";
+pub const FUSED_F16_CASTS_DEFERRED_REASON: &str =
+    "fused QKV/gate-up buffers allocated; f16 layernorm/postnorm/bias/final/embed conversions remain deferred by cast/helper boundary";
 pub const F16_SCRATCH_DEFERRED_REASON: &str =
     "F16LayerScratch is private runner state and tied to GpuModelRunner allocation";
 
@@ -261,6 +263,38 @@ pub struct F16ScratchAllocationConfig {
     pub max_tokens: usize,
 }
 
+/// CUDA-free plan for one layer's fused/preconverted f16 boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerFusedF16AllocationPlan {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub fused_qkv_planned: bool,
+    pub fused_gate_up_planned: bool,
+    pub has_u8_expert_tensors: bool,
+    pub f16_layernorm_planned: bool,
+    pub f16_postnorm_planned: bool,
+    pub f16_qkv_bias_planned: bool,
+    pub f16_o_proj_bias_planned: bool,
+}
+
+/// Public status for one layer's fused/preconverted f16 boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerFusedF16AllocationStatus {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub fused_qkv_allocated: bool,
+    pub fused_qkv_status: FusedF16AllocationStatus,
+    pub fused_qkv_bytes: usize,
+    pub fused_gate_up_allocated: bool,
+    pub fused_gate_up_status: FusedF16AllocationStatus,
+    pub fused_gate_up_bytes: usize,
+    pub layernorm_f16_status: FusedF16AllocationStatus,
+    pub postnorm_f16_status: FusedF16AllocationStatus,
+    pub qkv_bias_f16_status: FusedF16AllocationStatus,
+    pub o_proj_bias_f16_status: FusedF16AllocationStatus,
+    pub layer_error: Option<String>,
+}
+
 /// CUDA-free plan for one shard's fused/preconverted f16 and scratch boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudaShardFusedF16AllocationPlan {
@@ -276,7 +310,10 @@ pub struct CudaShardFusedF16AllocationPlan {
     pub f16_o_proj_bias_count: usize,
     pub embedding_f16_planned: bool,
     pub final_norm_f16_planned: bool,
+    pub fused_qkv_total_bytes: usize,
+    pub fused_gate_up_total_bytes: usize,
     pub fused_layer_absolute_indices: Vec<usize>,
+    pub fused_layer_plans: Vec<CudaLayerFusedF16AllocationPlan>,
     pub fused_total_bytes: usize,
     pub fused_status: FusedF16AllocationStatus,
     pub fused_deferred_reason: Option<String>,
@@ -309,8 +346,11 @@ pub struct CudaShardFusedF16AllocationStatus {
     pub f16_o_proj_bias_count: usize,
     pub embedding_f16_allocated: bool,
     pub final_norm_f16_allocated: bool,
+    pub fused_qkv_total_bytes: usize,
+    pub fused_gate_up_total_bytes: usize,
     pub fused_total_bytes: usize,
     pub fused_layer_absolute_indices: Vec<usize>,
+    pub fused_layer_statuses: Vec<CudaLayerFusedF16AllocationStatus>,
     pub fused_deferred_reason: Option<String>,
     pub fused_error: Option<String>,
     pub f16_scratch_allocated: bool,
@@ -993,61 +1033,40 @@ impl CudaShardFusedF16AllocationPlan {
         scratch_config: Option<F16ScratchAllocationConfig>,
     ) -> Self {
         let fused_layer_absolute_indices = manifest.absolute_layers.clone();
-        let fused_qkv_weight_count = fused_layer_absolute_indices
+        let fused_layer_plans = fused_layer_absolute_indices
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensors(
+            .enumerate()
+            .map(|(local_layer_idx, &absolute_layer_idx)| {
+                CudaLayerFusedF16AllocationPlan::from_manifest(
                     manifest,
-                    layer_idx,
-                    &[
-                        "self_attn.q_proj.weight",
-                        "self_attn.k_proj.weight",
-                        "self_attn.v_proj.weight",
-                    ],
+                    absolute_layer_idx,
+                    local_layer_idx,
                 )
             })
-            .count();
-        let fused_gate_up_weight_count = fused_layer_absolute_indices
+            .collect::<Vec<_>>();
+        let fused_qkv_weight_count = fused_layer_plans
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensors(
-                    manifest,
-                    layer_idx,
-                    &["mlp.gate_proj.weight", "mlp.up_proj.weight"],
-                )
-            })
+            .filter(|layer| layer.fused_qkv_planned)
             .count();
-        let f16_layernorm_count = fused_layer_absolute_indices
+        let fused_gate_up_weight_count = fused_layer_plans
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensor(manifest, layer_idx, "input_layernorm.weight")
-            })
+            .filter(|layer| layer.fused_gate_up_planned)
             .count();
-        let f16_postnorm_count = fused_layer_absolute_indices
+        let f16_layernorm_count = fused_layer_plans
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensor(manifest, layer_idx, "post_attention_layernorm.weight")
-            })
+            .filter(|layer| layer.f16_layernorm_planned)
             .count();
-        let f16_qkv_bias_count = fused_layer_absolute_indices
+        let f16_postnorm_count = fused_layer_plans
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensors(
-                    manifest,
-                    layer_idx,
-                    &[
-                        "self_attn.q_proj.bias",
-                        "self_attn.k_proj.bias",
-                        "self_attn.v_proj.bias",
-                    ],
-                )
-            })
+            .filter(|layer| layer.f16_postnorm_planned)
             .count();
-        let f16_o_proj_bias_count = fused_layer_absolute_indices
+        let f16_qkv_bias_count = fused_layer_plans
             .iter()
-            .filter(|&&layer_idx| {
-                manifest_has_layer_tensor(manifest, layer_idx, "self_attn.o_proj.bias")
-            })
+            .filter(|layer| layer.f16_qkv_bias_planned)
+            .count();
+        let f16_o_proj_bias_count = fused_layer_plans
+            .iter()
+            .filter(|layer| layer.f16_o_proj_bias_planned)
             .count();
         let owns_embeddings = manifest.should_load_required_tensor("model.embed_tokens.weight");
         let owns_final_head = manifest.should_load_required_tensor("model.norm.weight")
@@ -1084,7 +1103,10 @@ impl CudaShardFusedF16AllocationPlan {
             f16_o_proj_bias_count,
             embedding_f16_planned,
             final_norm_f16_planned,
+            fused_qkv_total_bytes: 0,
+            fused_gate_up_total_bytes: 0,
             fused_layer_absolute_indices,
+            fused_layer_plans,
             fused_total_bytes: 0,
             fused_status,
             fused_deferred_reason: (fused_status == FusedF16AllocationStatus::Deferred)
@@ -1132,12 +1154,27 @@ impl CudaShardFusedF16AllocationPlan {
             f16_o_proj_bias_count: self.f16_o_proj_bias_count,
             embedding_f16_allocated: fused_f16_allocated && self.embedding_f16_planned,
             final_norm_f16_allocated: fused_f16_allocated && self.final_norm_f16_planned,
+            fused_qkv_total_bytes: if fused_f16_allocated {
+                self.fused_qkv_total_bytes
+            } else {
+                0
+            },
+            fused_gate_up_total_bytes: if fused_f16_allocated {
+                self.fused_gate_up_total_bytes
+            } else {
+                0
+            },
             fused_total_bytes: if fused_f16_allocated {
                 self.fused_total_bytes
             } else {
                 0
             },
             fused_layer_absolute_indices: self.fused_layer_absolute_indices.clone(),
+            fused_layer_statuses: self
+                .fused_layer_plans
+                .iter()
+                .map(|layer| layer.status(false, false, 0, 0, None))
+                .collect(),
             fused_deferred_reason: (!fused_f16_allocated)
                 .then(|| self.fused_deferred_reason.clone())
                 .flatten(),
@@ -1155,6 +1192,118 @@ impl CudaShardFusedF16AllocationPlan {
                 .flatten(),
             f16_scratch_error: None,
         }
+    }
+}
+
+impl CudaLayerFusedF16AllocationPlan {
+    fn from_manifest(
+        manifest: &ShardTensorManifest,
+        absolute_layer_idx: usize,
+        local_layer_idx: usize,
+    ) -> Self {
+        Self {
+            absolute_layer_idx,
+            local_layer_idx,
+            fused_qkv_planned: manifest_has_layer_tensors(
+                manifest,
+                absolute_layer_idx,
+                &[
+                    "self_attn.q_proj.weight",
+                    "self_attn.k_proj.weight",
+                    "self_attn.v_proj.weight",
+                ],
+            ),
+            fused_gate_up_planned: manifest_has_layer_tensors(
+                manifest,
+                absolute_layer_idx,
+                &["mlp.gate_proj.weight", "mlp.up_proj.weight"],
+            ),
+            has_u8_expert_tensors: manifest_has_owned_u8_expert_tensors(
+                manifest,
+                absolute_layer_idx,
+            ),
+            f16_layernorm_planned: manifest_has_layer_tensor(
+                manifest,
+                absolute_layer_idx,
+                "input_layernorm.weight",
+            ),
+            f16_postnorm_planned: manifest_has_layer_tensor(
+                manifest,
+                absolute_layer_idx,
+                "post_attention_layernorm.weight",
+            ),
+            f16_qkv_bias_planned: manifest_has_layer_tensors(
+                manifest,
+                absolute_layer_idx,
+                &[
+                    "self_attn.q_proj.bias",
+                    "self_attn.k_proj.bias",
+                    "self_attn.v_proj.bias",
+                ],
+            ),
+            f16_o_proj_bias_planned: manifest_has_layer_tensor(
+                manifest,
+                absolute_layer_idx,
+                "self_attn.o_proj.bias",
+            ),
+        }
+    }
+
+    pub fn status(
+        &self,
+        fused_qkv_allocated: bool,
+        fused_gate_up_allocated: bool,
+        fused_qkv_bytes: usize,
+        fused_gate_up_bytes: usize,
+        layer_error: Option<String>,
+    ) -> CudaLayerFusedF16AllocationStatus {
+        CudaLayerFusedF16AllocationStatus {
+            absolute_layer_idx: self.absolute_layer_idx,
+            local_layer_idx: self.local_layer_idx,
+            fused_qkv_allocated,
+            fused_qkv_status: allocation_status_for_planned(
+                self.fused_qkv_planned,
+                fused_qkv_allocated,
+            ),
+            fused_qkv_bytes: if fused_qkv_allocated {
+                fused_qkv_bytes
+            } else {
+                0
+            },
+            fused_gate_up_allocated,
+            fused_gate_up_status: allocation_status_for_planned(
+                self.fused_gate_up_planned,
+                fused_gate_up_allocated,
+            ),
+            fused_gate_up_bytes: if fused_gate_up_allocated {
+                fused_gate_up_bytes
+            } else {
+                0
+            },
+            layernorm_f16_status: deferred_status_for_planned(self.f16_layernorm_planned),
+            postnorm_f16_status: deferred_status_for_planned(self.f16_postnorm_planned),
+            qkv_bias_f16_status: deferred_status_for_planned(self.f16_qkv_bias_planned),
+            o_proj_bias_f16_status: deferred_status_for_planned(self.f16_o_proj_bias_planned),
+            layer_error,
+        }
+    }
+}
+
+fn allocation_status_for_planned(planned: bool, allocated: bool) -> FusedF16AllocationStatus {
+    if allocated {
+        FusedF16AllocationStatus::Allocated
+    } else if planned {
+        FusedF16AllocationStatus::Deferred
+    } else {
+        FusedF16AllocationStatus::NotApplicable
+    }
+}
+
+fn deferred_status_for_planned(planned: bool) -> FusedF16AllocationStatus {
+    if planned {
+        FusedF16AllocationStatus::Deferred
+    } else {
+        FusedF16AllocationStatus::NotApplicable
     }
 }
 
@@ -1192,8 +1341,17 @@ fn manifest_has_layer_tensor(
     manifest.should_load_required_tensor(&format!("model.layers.{layer_idx}.{suffix}"))
 }
 
+fn manifest_has_owned_u8_expert_tensors(manifest: &ShardTensorManifest, layer_idx: usize) -> bool {
+    let prefix = format!("model.layers.{layer_idx}.mlp.experts.");
+    manifest
+        .host_u8_tensor_names
+        .iter()
+        .any(|name| name.starts_with(&prefix))
+}
+
 #[cfg(feature = "cuda")]
 mod cuda {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::path::Path;
     use std::sync::Arc;
 
@@ -1204,17 +1362,23 @@ mod cuda {
     use half::f16;
 
     use super::{
-        CudaLayerKvCacheAllocationPlan, CudaShardKvCacheAllocationPlan,
+        CudaLayerFusedF16AllocationPlan, CudaLayerFusedF16AllocationStatus,
+        CudaLayerKvCacheAllocationPlan, CudaShardFusedF16AllocationPlan,
+        CudaShardFusedF16AllocationStatus, CudaShardKvCacheAllocationPlan,
         CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationPlan,
         CudaShardMetadataAllocationStatus, CudaShardResourcePlan, CudaShardResourceStatus,
-        CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, MetadataAllocationConfig,
-        RopeRuntimeBufferConfig, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+        CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, F16ScratchAllocationConfig,
+        FusedF16AllocationStatus, MetadataAllocationConfig, RopeRuntimeBufferConfig,
+        ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationStatus,
         ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
         ShardedMetadataAllocationStatus, ShardedRuntimeBufferStatus,
+        FUSED_F16_CASTS_DEFERRED_REASON,
     };
     use crate::device_map::DeviceId;
+    use crate::fused_f16::{fused_gate_up_num_elements, fused_qkv_num_elements};
+    use crate::model_loader::{ShardWeightStore, ShardWeightStorePlan};
     use crate::rope_validation::build_runtime_rope_tables;
-    use crate::shard_plan::ShardedModelPlan;
+    use crate::shard_plan::{LateAllocationKind, ShardTensorManifest, ShardedModelPlan};
 
     /// One non-executing CUDA ownership island for a future layer shard.
     pub struct CudaShardResources {
@@ -1280,6 +1444,27 @@ mod cuda {
     /// Shard-local synthetic metadata buffers allocated from resource islands.
     pub struct ShardedMetadataBuffers {
         pub shards: Vec<CudaShardMetadataBuffers>,
+    }
+
+    /// One layer's non-executing fused f16 buffers.
+    pub struct CudaLayerFusedF16Buffers {
+        pub absolute_layer_idx: usize,
+        pub local_layer_idx: usize,
+        pub fused_qkv: Option<CudaSlice<f16>>,
+        pub fused_gate_up: Option<CudaSlice<f16>>,
+        pub status: CudaLayerFusedF16AllocationStatus,
+    }
+
+    /// One shard's non-executing fused f16 buffers.
+    pub struct CudaShardFusedF16Buffers {
+        pub device_id: DeviceId,
+        pub layers: Vec<CudaLayerFusedF16Buffers>,
+        pub status: CudaShardFusedF16AllocationStatus,
+    }
+
+    /// Shard-local fused f16 buffers allocated from resource islands.
+    pub struct ShardedFusedF16Buffers {
+        pub shards: Vec<CudaShardFusedF16Buffers>,
     }
 
     impl ShardedCudaResources {
@@ -1579,12 +1764,414 @@ mod cuda {
             self.plan.status(true)
         }
     }
+
+    impl ShardedFusedF16Buffers {
+        /// Allocate non-executing fused QKV and optional dense gate/up buffers
+        /// for each shard-owned absolute layer. Buffers are not attached to a
+        /// layer, runner, graph, or execution path.
+        pub fn create_for_resources(
+            resources: &ShardedCudaResources,
+            upload_manifest: &crate::shard_plan::ShardedUploadManifest,
+            f16_weights_by_device: &BTreeMap<DeviceId, HashMap<String, CudaSlice<f16>>>,
+            f16_shapes_by_device: &BTreeMap<DeviceId, HashMap<String, Vec<usize>>>,
+            scratch_config: Option<F16ScratchAllocationConfig>,
+        ) -> Result<Self> {
+            let mut shards = Vec::with_capacity(resources.shards.len());
+            for resource in &resources.shards {
+                let manifest = upload_manifest
+                    .shard_for_device(resource.device_id)
+                    .ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing fused f16 upload manifest for device {}",
+                            resource.device_id
+                        ))
+                    })?;
+                let weights = f16_weights_by_device
+                    .get(&resource.device_id)
+                    .ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing f16 uploaded weights for fused allocation device {}",
+                            resource.device_id
+                        ))
+                    })?;
+                let shapes = f16_shapes_by_device
+                    .get(&resource.device_id)
+                    .ok_or_else(|| {
+                        LLMError::GpuError(format!(
+                            "missing f16 uploaded shapes for fused allocation device {}",
+                            resource.device_id
+                        ))
+                    })?;
+                let plan = CudaShardFusedF16AllocationPlan::from_manifest(manifest, scratch_config);
+                shards.push(CudaShardFusedF16Buffers::create_for_resource(
+                    resource, manifest, &plan, weights, shapes,
+                )?);
+            }
+
+            Ok(Self { shards })
+        }
+
+        pub fn status(&self) -> ShardedFusedF16AllocationStatus {
+            ShardedFusedF16AllocationStatus {
+                shards: self
+                    .shards
+                    .iter()
+                    .map(|shard| shard.status.clone())
+                    .collect(),
+            }
+        }
+    }
+
+    impl CudaShardFusedF16Buffers {
+        fn create_for_resource(
+            resource: &CudaShardResources,
+            manifest: &ShardTensorManifest,
+            plan: &CudaShardFusedF16AllocationPlan,
+            weights: &HashMap<String, CudaSlice<f16>>,
+            shapes: &HashMap<String, Vec<usize>>,
+        ) -> Result<Self> {
+            let store = ShardWeightStore::new(ShardWeightStorePlan {
+                device_id: manifest.device_id,
+                absolute_layers: manifest.absolute_layers.clone(),
+                owns_embeddings: resource.owns_embeddings,
+                owns_final_head: resource.owns_final_head,
+                required_tensor_names: manifest.required_tensor_filter_set(),
+                host_u8_tensor_names: manifest.host_u8_tensor_filter_set(),
+                global_shape_names: shapes.keys().cloned().collect::<BTreeSet<_>>(),
+                tied_lm_head_fallback_required: manifest
+                    .deferred_or_late_gpu_allocations
+                    .iter()
+                    .any(|allocation| allocation == &LateAllocationKind::TiedLmHeadFallback),
+            });
+
+            let mut layers = Vec::with_capacity(plan.fused_layer_plans.len());
+            for layer_plan in &plan.fused_layer_plans {
+                layers.push(CudaLayerFusedF16Buffers::create_for_layer(
+                    resource, &store, layer_plan, weights, shapes,
+                )?);
+            }
+
+            let fused_qkv_weight_count = layers
+                .iter()
+                .filter(|layer| layer.status.fused_qkv_allocated)
+                .count();
+            let fused_gate_up_weight_count = layers
+                .iter()
+                .filter(|layer| layer.status.fused_gate_up_allocated)
+                .count();
+            let fused_qkv_total_bytes = layers
+                .iter()
+                .map(|layer| layer.status.fused_qkv_bytes)
+                .sum();
+            let fused_gate_up_total_bytes = layers
+                .iter()
+                .map(|layer| layer.status.fused_gate_up_bytes)
+                .sum();
+            let fused_total_bytes = fused_qkv_total_bytes + fused_gate_up_total_bytes;
+            let fused_f16_allocated = fused_qkv_weight_count > 0 || fused_gate_up_weight_count > 0;
+            let fused_f16_status = if fused_f16_allocated {
+                FusedF16AllocationStatus::Allocated
+            } else {
+                plan.fused_status
+            };
+            let conversion_work_deferred = plan.f16_layernorm_count > 0
+                || plan.f16_postnorm_count > 0
+                || plan.f16_qkv_bias_count > 0
+                || plan.f16_o_proj_bias_count > 0
+                || plan.embedding_f16_planned
+                || plan.final_norm_f16_planned;
+
+            let status = CudaShardFusedF16AllocationStatus {
+                device_id: resource.device_id,
+                absolute_layers: resource.absolute_layers.clone(),
+                owns_embeddings: resource.owns_embeddings,
+                owns_final_head: resource.owns_final_head,
+                fused_f16_allocated,
+                fused_f16_status,
+                fused_qkv_weight_count,
+                fused_gate_up_weight_count,
+                f16_layernorm_count: plan.f16_layernorm_count,
+                f16_postnorm_count: plan.f16_postnorm_count,
+                f16_qkv_bias_count: plan.f16_qkv_bias_count,
+                f16_o_proj_bias_count: plan.f16_o_proj_bias_count,
+                embedding_f16_allocated: false,
+                final_norm_f16_allocated: false,
+                fused_qkv_total_bytes,
+                fused_gate_up_total_bytes,
+                fused_total_bytes,
+                fused_layer_absolute_indices: plan.fused_layer_absolute_indices.clone(),
+                fused_layer_statuses: layers.iter().map(|layer| layer.status.clone()).collect(),
+                fused_deferred_reason: conversion_work_deferred
+                    .then(|| FUSED_F16_CASTS_DEFERRED_REASON.into())
+                    .or_else(|| {
+                        (!fused_f16_allocated)
+                            .then(|| plan.fused_deferred_reason.clone())
+                            .flatten()
+                    }),
+                fused_error: None,
+                f16_scratch_allocated: false,
+                f16_scratch_status: plan.f16_scratch_status,
+                f16_scratch_bytes: 0,
+                f16_scratch_max_tokens: plan.f16_scratch_max_tokens,
+                f16_scratch_deferred_reason: plan.f16_scratch_deferred_reason.clone(),
+                f16_scratch_error: None,
+            };
+
+            Ok(Self {
+                device_id: resource.device_id,
+                layers,
+                status,
+            })
+        }
+    }
+
+    impl CudaLayerFusedF16Buffers {
+        fn create_for_layer(
+            resource: &CudaShardResources,
+            store: &ShardWeightStore,
+            plan: &CudaLayerFusedF16AllocationPlan,
+            weights: &HashMap<String, CudaSlice<f16>>,
+            shapes: &HashMap<String, Vec<usize>>,
+        ) -> Result<Self> {
+            let (fused_qkv, fused_qkv_bytes) = if plan.fused_qkv_planned {
+                let fused_qkv =
+                    allocate_fused_qkv(resource, store, plan.absolute_layer_idx, weights, shapes)?;
+                let bytes = fused_qkv.len() * std::mem::size_of::<f16>();
+                (Some(fused_qkv), bytes)
+            } else {
+                (None, 0)
+            };
+
+            let (fused_gate_up, fused_gate_up_bytes) = if plan.fused_gate_up_planned {
+                let fused_gate_up = allocate_fused_gate_up(
+                    resource,
+                    store,
+                    plan.absolute_layer_idx,
+                    weights,
+                    shapes,
+                )?;
+                let bytes = fused_gate_up.len() * std::mem::size_of::<f16>();
+                (Some(fused_gate_up), bytes)
+            } else {
+                (None, 0)
+            };
+
+            let status = plan.status(
+                fused_qkv.is_some(),
+                fused_gate_up.is_some(),
+                fused_qkv_bytes,
+                fused_gate_up_bytes,
+                None,
+            );
+
+            Ok(Self {
+                absolute_layer_idx: plan.absolute_layer_idx,
+                local_layer_idx: plan.local_layer_idx,
+                fused_qkv,
+                fused_gate_up,
+                status,
+            })
+        }
+    }
+
+    fn allocate_fused_qkv(
+        resource: &CudaShardResources,
+        store: &ShardWeightStore,
+        absolute_layer_idx: usize,
+        weights: &HashMap<String, CudaSlice<f16>>,
+        shapes: &HashMap<String, Vec<usize>>,
+    ) -> Result<CudaSlice<f16>> {
+        let q_name = store
+            .require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.q_proj.weight")
+            .map_err(|error| LLMError::GpuError(format!("fused QKV q ownership: {error:?}")))?;
+        let k_name = store
+            .require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.k_proj.weight")
+            .map_err(|error| LLMError::GpuError(format!("fused QKV k ownership: {error:?}")))?;
+        let v_name = store
+            .require_owned_layer_tensor_name(absolute_layer_idx, "self_attn.v_proj.weight")
+            .map_err(|error| LLMError::GpuError(format!("fused QKV v ownership: {error:?}")))?;
+
+        let q = require_f16_weight(weights, &q_name)?;
+        let k = require_f16_weight(weights, &k_name)?;
+        let v = require_f16_weight(weights, &v_name)?;
+        let (q_dim, hidden) = require_matrix_shape(shapes, &q_name)?;
+        let (k_dim, k_hidden) = require_matrix_shape(shapes, &k_name)?;
+        let (v_dim, v_hidden) = require_matrix_shape(shapes, &v_name)?;
+        if hidden != k_hidden || hidden != v_hidden {
+            return Err(LLMError::GpuError(format!(
+                "fused QKV hidden mismatch for layer {absolute_layer_idx}: q={hidden}, k={k_hidden}, v={v_hidden}"
+            )));
+        }
+        if k_dim != v_dim {
+            return Err(LLMError::GpuError(format!(
+                "fused QKV kv dim mismatch for layer {absolute_layer_idx}: k={k_dim}, v={v_dim}"
+            )));
+        }
+
+        let q_elements = checked_matrix_elements(q_dim, hidden, &q_name)?;
+        let k_elements = checked_matrix_elements(k_dim, hidden, &k_name)?;
+        let v_elements = checked_matrix_elements(v_dim, hidden, &v_name)?;
+        require_slice_len(q, q_elements, &q_name)?;
+        require_slice_len(k, k_elements, &k_name)?;
+        require_slice_len(v, v_elements, &v_name)?;
+
+        let total_elements = fused_qkv_num_elements(q_dim, k_dim, hidden);
+        let mut fused = resource
+            .stream
+            .alloc_zeros::<f16>(total_elements)
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused QKV alloc failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+        resource
+            .stream
+            .memcpy_dtod(q, &mut fused.slice_mut(..q_elements))
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused QKV q copy failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+        resource
+            .stream
+            .memcpy_dtod(k, &mut fused.slice_mut(q_elements..q_elements + k_elements))
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused QKV k copy failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+        resource
+            .stream
+            .memcpy_dtod(
+                v,
+                &mut fused.slice_mut(q_elements + k_elements..total_elements),
+            )
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused QKV v copy failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+
+        Ok(fused)
+    }
+
+    fn allocate_fused_gate_up(
+        resource: &CudaShardResources,
+        store: &ShardWeightStore,
+        absolute_layer_idx: usize,
+        weights: &HashMap<String, CudaSlice<f16>>,
+        shapes: &HashMap<String, Vec<usize>>,
+    ) -> Result<CudaSlice<f16>> {
+        let gate_name = store
+            .require_owned_layer_tensor_name(absolute_layer_idx, "mlp.gate_proj.weight")
+            .map_err(|error| {
+                LLMError::GpuError(format!("fused gate/up gate ownership: {error:?}"))
+            })?;
+        let up_name = store
+            .require_owned_layer_tensor_name(absolute_layer_idx, "mlp.up_proj.weight")
+            .map_err(|error| {
+                LLMError::GpuError(format!("fused gate/up up ownership: {error:?}"))
+            })?;
+        let gate = require_f16_weight(weights, &gate_name)?;
+        let up = require_f16_weight(weights, &up_name)?;
+        let (intermediate, hidden) = require_matrix_shape(shapes, &gate_name)?;
+        let (up_intermediate, up_hidden) = require_matrix_shape(shapes, &up_name)?;
+        if intermediate != up_intermediate || hidden != up_hidden {
+            return Err(LLMError::GpuError(format!(
+                "fused gate/up shape mismatch for layer {absolute_layer_idx}: gate=[{intermediate},{hidden}], up=[{up_intermediate},{up_hidden}]"
+            )));
+        }
+
+        let gate_elements = checked_matrix_elements(intermediate, hidden, &gate_name)?;
+        let up_elements = checked_matrix_elements(up_intermediate, up_hidden, &up_name)?;
+        require_slice_len(gate, gate_elements, &gate_name)?;
+        require_slice_len(up, up_elements, &up_name)?;
+
+        let total_elements = fused_gate_up_num_elements(intermediate, hidden);
+        let mut fused = resource
+            .stream
+            .alloc_zeros::<f16>(total_elements)
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused gate/up alloc failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+        resource
+            .stream
+            .memcpy_dtod(gate, &mut fused.slice_mut(..gate_elements))
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused gate copy failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+        resource
+            .stream
+            .memcpy_dtod(up, &mut fused.slice_mut(gate_elements..total_elements))
+            .map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} fused up copy failed absolute layer {}: {e}",
+                    resource.device_id, absolute_layer_idx
+                ))
+            })?;
+
+        Ok(fused)
+    }
+
+    fn require_f16_weight<'a>(
+        weights: &'a HashMap<String, CudaSlice<f16>>,
+        name: &str,
+    ) -> Result<&'a CudaSlice<f16>> {
+        weights
+            .get(name)
+            .ok_or_else(|| LLMError::GpuError(format!("missing uploaded f16 tensor {name}")))
+    }
+
+    fn require_matrix_shape(
+        shapes: &HashMap<String, Vec<usize>>,
+        name: &str,
+    ) -> Result<(usize, usize)> {
+        let shape = shapes
+            .get(name)
+            .ok_or_else(|| LLMError::GpuError(format!("missing f16 shape for tensor {name}")))?;
+        match shape.as_slice() {
+            [rows, cols] => Ok((*rows, *cols)),
+            other => Err(LLMError::GpuError(format!(
+                "expected 2D f16 tensor shape for {name}, got {other:?}"
+            ))),
+        }
+    }
+
+    fn checked_matrix_elements(rows: usize, cols: usize, name: &str) -> Result<usize> {
+        rows.checked_mul(cols).ok_or_else(|| {
+            LLMError::GpuError(format!(
+                "matrix element count overflow for tensor {name}: {rows} x {cols}"
+            ))
+        })
+    }
+
+    fn require_slice_len(slice: &CudaSlice<f16>, expected: usize, name: &str) -> Result<()> {
+        if slice.len() == expected {
+            Ok(())
+        } else {
+            Err(LLMError::GpuError(format!(
+                "f16 tensor {name} length mismatch: got {}, expected {expected}",
+                slice.len()
+            )))
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources,
-    CudaShardRuntimeBuffers, ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers,
+    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardFusedF16Buffers,
+    CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources, CudaShardRuntimeBuffers,
+    ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers,
     ShardedRuntimeBuffers,
 };
 
@@ -2077,14 +2664,49 @@ mod tests {
     }
 
     #[test]
+    fn fused_f16_layer_statuses_preserve_absolute_and_local_indices() {
+        let manifest = split_fused_upload_manifest();
+        let plan = ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, None);
+        let status = ShardedFusedF16AllocationStatus::from_plan(&plan, false, false);
+        let gpu1 = &status.shards[1];
+
+        let layer12 = gpu1
+            .fused_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+
+        assert_eq!(layer12.local_layer_idx, 0);
+        assert!(!layer12.fused_qkv_allocated);
+        assert_eq!(layer12.fused_qkv_status, FusedF16AllocationStatus::Deferred);
+        assert_eq!(layer12.fused_qkv_bytes, 0);
+    }
+
+    #[test]
     fn fused_f16_plan_does_not_require_dense_gate_up_for_gpt_oss_u8_experts() {
         let manifest = split_gpt_oss_upload_manifest();
         let plan = ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, None);
+        let status = ShardedFusedF16AllocationStatus::from_plan(&plan, false, false);
 
         assert_eq!(plan.shards[0].fused_gate_up_weight_count, 0);
         assert_eq!(plan.shards[1].fused_gate_up_weight_count, 0);
         assert_eq!(plan.shards[0].fused_qkv_weight_count, 1);
         assert_eq!(plan.shards[1].fused_qkv_weight_count, 1);
+
+        let gpu0_layer0 = status.shards[0]
+            .fused_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(
+            gpu0_layer0.fused_qkv_status,
+            FusedF16AllocationStatus::Deferred
+        );
+        assert_eq!(
+            gpu0_layer0.fused_gate_up_status,
+            FusedF16AllocationStatus::NotApplicable
+        );
+        assert!(plan.shards[0].fused_layer_plans[0].has_u8_expert_tensors);
     }
 
     #[test]
