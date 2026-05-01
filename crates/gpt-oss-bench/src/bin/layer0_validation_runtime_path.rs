@@ -95,6 +95,10 @@ struct Cli {
     #[arg(long)]
     ordered_bundle_validate_status: Option<PathBuf>,
 
+    /// Prior attention audit validation status artifact for focused audit diagnostics.
+    #[arg(long)]
+    attention_audit_validate_status: Option<PathBuf>,
+
     /// Official layer MLP ordered boundary bundle for backend seam validation.
     #[arg(long)]
     mlp_bundle: Option<PathBuf>,
@@ -411,6 +415,18 @@ struct Cli {
     #[arg(long, alias = "focus-key-column", default_value_t = 0)]
     key_column: usize,
 
+    /// Flat weighted-V lane for focused weighted-V diagnostics.
+    #[arg(long)]
+    weighted_v_lane: Option<usize>,
+
+    /// K/V head for focused weighted-V diagnostics.
+    #[arg(long)]
+    kv_head: Option<usize>,
+
+    /// Per-head lane for focused weighted-V diagnostics.
+    #[arg(long)]
+    head_dim_lane: Option<usize>,
+
     /// Focus lane for expert30 MLP1 lane-local diagnostics.
     #[arg(long, alias = "focus-lane", default_value_t = 522)]
     lane: usize,
@@ -470,6 +486,7 @@ enum Mode {
     SelectedExpertDownCastPolicySweepStatus,
     SelectedMlpDownPolicyReplayStatus,
     AttentionAuditValidate,
+    WeightedVSingleMismatchDebug,
     RawQkSingleMismatchDebug,
     RawQkPolicySweepStatus,
     AttentionOprojPolicySweepStatus,
@@ -1458,6 +1475,7 @@ fn main() -> Result<()> {
         }
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
+        Mode::WeightedVSingleMismatchDebug => run_weighted_v_single_mismatch_debug(&cli),
         Mode::RawQkSingleMismatchDebug => run_raw_qk_single_mismatch_debug(&cli),
         Mode::RawQkPolicySweepStatus => run_raw_qk_policy_sweep_status(&cli),
         Mode::AttentionOprojPolicySweepStatus => run_attention_oproj_policy_sweep_status(&cli),
@@ -4500,6 +4518,522 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
             else {
                 "fix the reported ordered attention audit blocker"
             },
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_weighted_v_single_mismatch_debug(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let weighted_lane = cli.weighted_v_lane.unwrap_or(cli.lane);
+    let q_head = cli.q_head;
+    let head_dim_lane = cli.head_dim_lane.unwrap_or(weighted_lane % cli.head_dim);
+    let expected_q_head = weighted_lane / cli.head_dim;
+    let expected_kv_head = q_head / cli.heads_per_kv;
+    let kv_head = cli.kv_head.unwrap_or(expected_kv_head);
+    let q_dim = cli.query_heads * cli.head_dim;
+    let kv_dim = cli.kv_heads * cli.head_dim;
+    let v_history_count = cli.token_count * kv_dim;
+    let probs_count = cli.query_heads * (cli.token_count + 1);
+    anyhow::ensure!(
+        weighted_lane < q_dim,
+        "weighted-V lane must be < {q_dim}, got {weighted_lane}"
+    );
+    anyhow::ensure!(
+        q_head < cli.query_heads,
+        "q-head must be < {}, got {q_head}",
+        cli.query_heads
+    );
+    anyhow::ensure!(
+        kv_head < cli.kv_heads,
+        "kv-head must be < {}, got {kv_head}",
+        cli.kv_heads
+    );
+    anyhow::ensure!(
+        head_dim_lane < cli.head_dim,
+        "head-dim lane must be < {}, got {head_dim_lane}",
+        cli.head_dim
+    );
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let audit_status_path = required_path(&cli.attention_audit_status, "attention audit status")?;
+    let audit_validate_status_path = required_path(
+        &cli.attention_audit_validate_status,
+        "attention audit validate status",
+    )?;
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(audit_status_path, "attention audit status")?;
+    validate_path(
+        audit_validate_status_path,
+        "attention audit validate status",
+    )?;
+
+    let attention_status = load_json(attention_status_path)?;
+    let audit_status = load_json(audit_status_path)?;
+    let audit_validate_status = load_json(audit_validate_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&audit_status)? == layer,
+        "attention audit layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&audit_validate_status)? == layer,
+        "attention audit validation layer did not match requested layer {layer}"
+    );
+
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let all_token_v_path =
+        status_artifact_path(&audit_status, "all_token_v_before_attention", "audit")?;
+    for (label, path) in [
+        ("attention probabilities", &probs_path),
+        ("weighted-V reference", &weighted_v_path),
+        ("audit all-token V", &all_token_v_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (probs_status, attention_probs) =
+        load_tensor_artifact(&probs_path, &[probs_count], &["values"])?;
+    let (all_token_v_status, all_token_v) =
+        load_tensor_artifact(&all_token_v_path, &[v_history_count], &["values"])?;
+    let (weighted_v_status, weighted_v_oracle) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let schema_blocked = !probs_status.shape_or_count_matched
+        || !all_token_v_status.shape_or_count_matched
+        || !weighted_v_status.shape_or_count_matched;
+    let mapping_matches = expected_q_head == q_head
+        && expected_kv_head == kv_head
+        && q_head * cli.head_dim + head_dim_lane == weighted_lane;
+
+    let prob_width = if cli.query_heads == 0 {
+        0
+    } else {
+        attention_probs.len() / cli.query_heads
+    };
+    let sink_column_present = prob_width > cli.token_count;
+    let sink_column_index = sink_column_present.then_some(cli.token_count);
+
+    let mut source_summaries = Value::Null;
+    let mut weighted_sum_variants = Vec::new();
+    let mut full_vector_guard = Value::Null;
+    let mut official_value = f32::NAN;
+    let mut current_local_value = f32::NAN;
+    let mut abs_diff = f32::NAN;
+    let mut rounding_probe = Value::Null;
+    let mut best_matching_variant = Value::Null;
+    let mut classification = if schema_blocked {
+        format!("layer{layer}_weighted_v_single_mismatch_blocked_by_schema")
+    } else if !mapping_matches {
+        format!("layer{layer}_weighted_v_single_mismatch_gqa_mapping_mismatch")
+    } else {
+        format!("layer{layer}_weighted_v_single_mismatch_unresolved")
+    };
+
+    if !schema_blocked && mapping_matches {
+        let row_start = q_head * prob_width;
+        let prob_row = &attention_probs[row_start..row_start + prob_width];
+        let real_probs = &prob_row[..cli.token_count.min(prob_width)];
+        let sink_prob = sink_column_index
+            .and_then(|index| prob_row.get(index))
+            .copied();
+        let v_values_for_lane = (0..cli.token_count)
+            .map(|token| {
+                let v_idx = (token * cli.kv_heads + kv_head) * cli.head_dim + head_dim_lane;
+                all_token_v[v_idx]
+            })
+            .collect::<Vec<_>>();
+        let contributions = real_probs
+            .iter()
+            .zip(v_values_for_lane.iter())
+            .enumerate()
+            .map(|(token, (&prob, &v_value))| {
+                let product = prob * v_value;
+                json!({
+                    "token": token,
+                    "probability": prob,
+                    "v_value": v_value,
+                    "product": product,
+                    "abs_product": product.abs(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut top_contributions = contributions.clone();
+        top_contributions.sort_by(|left, right| {
+            let left_abs = left
+                .get("abs_product")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let right_abs = right
+                .get("abs_product")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            right_abs.total_cmp(&left_abs)
+        });
+        top_contributions.truncate(8);
+
+        let real_sum = real_probs.iter().sum::<f32>();
+        let row_sum_including_sink = prob_row.iter().sum::<f32>();
+        source_summaries = json!({
+            "probability_row": {
+                "finite_summary": finite_summary(prob_row),
+                "digest_f32_le": digest_f32_le(prob_row),
+                "real_token_sum": real_sum,
+                "sink_probability": sink_prob,
+                "row_sum_including_sink": row_sum_including_sink,
+                "finite": prob_row.iter().all(|value| value.is_finite()),
+            },
+            "v_values_for_kv_head_lane": {
+                "finite_summary": finite_summary(&v_values_for_lane),
+                "digest_f32_le": digest_f32_le(&v_values_for_lane),
+                "finite": v_values_for_lane.iter().all(|value| value.is_finite()),
+            },
+            "top_abs_contribution_terms": top_contributions,
+        });
+
+        official_value = weighted_v_oracle[weighted_lane];
+        let terms = real_probs
+            .iter()
+            .zip(v_values_for_lane.iter())
+            .map(|(&prob, &v)| prob * v)
+            .collect::<Vec<_>>();
+        let mut reverse_terms = terms.clone();
+        reverse_terms.reverse();
+        let bf16_product_terms = terms
+            .iter()
+            .map(|&term| round_bf16(term))
+            .collect::<Vec<_>>();
+        let sink_zero_terms = sink_prob
+            .map(|prob| {
+                let mut values = terms.clone();
+                values.push(prob * 0.0);
+                values
+            })
+            .unwrap_or_else(|| terms.clone());
+        let sink_last_row_terms = sink_prob
+            .map(|prob| {
+                let mut values = terms.clone();
+                let last_v = v_values_for_lane.last().copied().unwrap_or(0.0);
+                values.push(prob * last_v);
+                values
+            })
+            .unwrap_or_else(|| terms.clone());
+        let variant_specs = [
+            (
+                "current_audit_policy",
+                "sequential f32 over real tokens, BF16 output",
+                terms.iter().sum::<f32>(),
+                false,
+                true,
+            ),
+            (
+                "sequential_f32_tokens_0_to_73_bf16_output",
+                "sequential f32 over real tokens 0..73, BF16 output",
+                terms.iter().sum::<f32>(),
+                false,
+                true,
+            ),
+            (
+                "reverse_f32_tokens_73_to_0_bf16_output",
+                "reverse f32 over real tokens, BF16 output",
+                reverse_terms.iter().sum::<f32>(),
+                false,
+                true,
+            ),
+            (
+                "pairwise_f32_bf16_output",
+                "pairwise f32 over real tokens, BF16 output",
+                pairwise_sum_f32(&terms),
+                false,
+                true,
+            ),
+            (
+                "f64_diagnostic_bf16_output",
+                "f64 diagnostic over real tokens, BF16 output",
+                terms.iter().map(|&value| value as f64).sum::<f64>() as f32,
+                true,
+                true,
+            ),
+            (
+                "bf16_product_then_f32_sum_bf16_output",
+                "BF16-rounded product terms, f32 sum, BF16 output",
+                bf16_product_terms.iter().sum::<f32>(),
+                true,
+                true,
+            ),
+            (
+                "sequential_f32_no_bf16_output",
+                "sequential f32 over real tokens, f32 output diagnostic",
+                terms.iter().sum::<f32>(),
+                true,
+                false,
+            ),
+            (
+                "include_sink_as_zero_term_bf16_output",
+                "sink probability included as an explicit zero-valued term",
+                sink_zero_terms.iter().sum::<f32>(),
+                true,
+                true,
+            ),
+            (
+                "include_sink_mapped_to_last_real_v_row_guard",
+                "incorrect guard: sink probability mapped to last real V row",
+                sink_last_row_terms.iter().sum::<f32>(),
+                true,
+                true,
+            ),
+        ];
+
+        let mut matching_variant_names = Vec::new();
+        let mut clearing_full_vector_names = Vec::new();
+        for (name, description, pre_output, diagnostic_only, round_output) in variant_specs {
+            let output = if round_output {
+                round_bf16(pre_output)
+            } else {
+                pre_output
+            };
+            let matches_official = output == official_value;
+            if matches_official {
+                matching_variant_names.push(name);
+            }
+            weighted_sum_variants.push(json!({
+                "name": name,
+                "description": description,
+                "pre_output": pre_output,
+                "output": output,
+                "official": official_value,
+                "abs_diff": (output - official_value).abs(),
+                "matches_official": matches_official,
+                "diagnostic_only": diagnostic_only,
+                "bf16_output_boundary": round_output,
+            }));
+        }
+        current_local_value = weighted_sum_variants
+            .iter()
+            .find(|entry| entry.get("name").and_then(Value::as_str) == Some("current_audit_policy"))
+            .and_then(|entry| entry.get("output"))
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(f32::NAN);
+        abs_diff = (current_local_value - official_value).abs();
+
+        let official_bits = bf16::from_f32(official_value).to_bits();
+        let current_bits = bf16::from_f32(current_local_value).to_bits();
+        let previous_official =
+            (official_bits > 0).then(|| bf16::from_bits(official_bits - 1).to_f32());
+        let next_official = Some(bf16::from_bits(official_bits + 1).to_f32());
+        let adjacent_bf16 = previous_official == Some(current_local_value)
+            || next_official == Some(current_local_value)
+            || (i32::from(official_bits) - i32::from(current_bits)).abs() == 1;
+        rounding_probe = json!({
+            "official_bf16_bits": official_bits,
+            "current_bf16_bits": current_bits,
+            "previous_official_lattice_value": previous_official,
+            "next_official_lattice_value": next_official,
+            "official_and_current_adjacent_bf16_lattice_values": adjacent_bf16,
+            "variant_outputs": weighted_sum_variants,
+        });
+
+        let compute_full = |policy: &str| -> Vec<f32> {
+            let prob_width = cli.token_count + 1;
+            let mut output = vec![0.0f32; q_dim];
+            for q in 0..cli.query_heads {
+                let kv = q / cli.heads_per_kv;
+                for lane in 0..cli.head_dim {
+                    let terms = (0..cli.token_count)
+                        .map(|token| {
+                            let prob = attention_probs[q * prob_width + token];
+                            let v_idx = (token * cli.kv_heads + kv) * cli.head_dim + lane;
+                            prob * all_token_v[v_idx]
+                        })
+                        .collect::<Vec<_>>();
+                    let sum = match policy {
+                        "reverse_f32_tokens_73_to_0_bf16_output" => {
+                            terms.iter().rev().copied().sum::<f32>()
+                        }
+                        "pairwise_f32_bf16_output" => pairwise_sum_f32(&terms),
+                        "f64_diagnostic_bf16_output" => {
+                            terms.iter().map(|&value| value as f64).sum::<f64>() as f32
+                        }
+                        "bf16_product_then_f32_sum_bf16_output" => {
+                            terms.iter().map(|&value| round_bf16(value)).sum::<f32>()
+                        }
+                        "include_sink_as_zero_term_bf16_output" => {
+                            let sink = attention_probs[q * prob_width + cli.token_count];
+                            terms.iter().sum::<f32>() + sink * 0.0
+                        }
+                        _ => terms.iter().sum::<f32>(),
+                    };
+                    output[q * cli.head_dim + lane] = round_bf16(sum);
+                }
+            }
+            output
+        };
+        let mut full_policy_results = Vec::new();
+        for policy in [
+            "current_audit_policy",
+            "reverse_f32_tokens_73_to_0_bf16_output",
+            "pairwise_f32_bf16_output",
+            "f64_diagnostic_bf16_output",
+            "bf16_product_then_f32_sum_bf16_output",
+            "include_sink_as_zero_term_bf16_output",
+        ] {
+            let full_output = compute_full(policy);
+            let metric = compare_hidden(&full_output, &weighted_v_oracle);
+            if metric.metrics.mismatches == 0
+                && !matches!(
+                    policy,
+                    "f64_diagnostic_bf16_output" | "bf16_product_then_f32_sum_bf16_output"
+                )
+            {
+                clearing_full_vector_names.push(policy);
+            }
+            full_policy_results.push(json!({
+                "policy": policy,
+                "metric": metric,
+                "focus_lane": {
+                    "local": full_output[weighted_lane],
+                    "official": official_value,
+                    "abs_diff": (full_output[weighted_lane] - official_value).abs(),
+                    "matched": full_output[weighted_lane] == official_value,
+                },
+            }));
+        }
+        full_vector_guard = json!({
+            "run": true,
+            "policy_results": full_policy_results,
+            "clearing_full_vector_policies": clearing_full_vector_names,
+            "authoritative_for_full_layer_validation": false,
+        });
+        best_matching_variant = json!(matching_variant_names.first().copied());
+
+        let probability_sources_finite = prob_row.iter().all(|value| value.is_finite());
+        let v_sources_finite = v_values_for_lane.iter().all(|value| value.is_finite());
+        classification = if !probability_sources_finite {
+            format!("layer{layer}_weighted_v_single_mismatch_source_probs_mismatch")
+        } else if !v_sources_finite {
+            format!("layer{layer}_weighted_v_single_mismatch_source_v_mismatch")
+        } else if weighted_sum_variants.iter().any(|entry| {
+            entry.get("name").and_then(Value::as_str)
+                == Some("include_sink_mapped_to_last_real_v_row_guard")
+                && entry
+                    .get("matches_official")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }) {
+            format!("layer{layer}_weighted_v_single_mismatch_sink_handling_mismatch")
+        } else if !clearing_full_vector_names.is_empty() {
+            format!("layer{layer}_weighted_v_single_mismatch_full_vector_policy_candidate")
+        } else if matching_variant_names.iter().any(|name| {
+            matches!(
+                *name,
+                "reverse_f32_tokens_73_to_0_bf16_output"
+                    | "pairwise_f32_bf16_output"
+                    | "f64_diagnostic_bf16_output"
+            )
+        }) {
+            format!("layer{layer}_weighted_v_single_mismatch_accumulation_policy_mismatch")
+        } else if matching_variant_names.iter().any(|name| {
+            matches!(
+                *name,
+                "sequential_f32_no_bf16_output" | "current_audit_policy"
+            )
+        }) || adjacent_bf16
+        {
+            format!("layer{layer}_weighted_v_single_mismatch_output_rounding_mismatch")
+        } else if adjacent_bf16 {
+            format!("layer{layer}_weighted_v_single_mismatch_artifact_precision_boundary")
+        } else {
+            format!("layer{layer}_weighted_v_single_mismatch_downstream_nonpropagating")
+        };
+    }
+
+    let source_shapes = json!({
+        "attention_probabilities": {
+            "artifact": probs_status,
+            "expected_shape": [cli.query_heads, cli.token_count + 1],
+            "prob_width": prob_width,
+            "includes_sink_column": sink_column_present,
+            "real_token_count": cli.token_count,
+            "sink_column_index": sink_column_index,
+        },
+        "all_token_v": {
+            "artifact": all_token_v_status,
+            "expected_shape": [cli.token_count, cli.kv_heads, cli.head_dim],
+            "layout": audit_status.pointer("/all_token_v/layout").cloned().unwrap_or_else(|| json!("all-real-token V projection tensor [token, kv_head, head_dim]")),
+        },
+        "weighted_v": {
+            "artifact": weighted_v_status,
+            "expected_shape": [cli.query_heads, cli.head_dim],
+        },
+        "mapping": {
+            "weighted_v_lane": weighted_lane,
+            "expected_q_head_from_lane": expected_q_head,
+            "q_head": q_head,
+            "head_dim_lane": head_dim_lane,
+            "expected_kv_head_from_gqa": expected_kv_head,
+            "kv_head": kv_head,
+            "mapping_matches": mapping_matches,
+        },
+    });
+
+    let earliest_mismatch_source = if schema_blocked {
+        "schema"
+    } else if !mapping_matches {
+        "mapping"
+    } else if classification.ends_with("_full_vector_policy_candidate")
+        || classification.ends_with("_accumulation_policy_mismatch")
+    {
+        "weighted_v_accumulation_policy"
+    } else if classification.ends_with("_output_rounding_mismatch") {
+        "weighted_v_output_rounding"
+    } else if classification.ends_with("_sink_handling_mismatch") {
+        "sink_handling"
+    } else {
+        "weighted_v_precision_boundary"
+    };
+    let next_bounded_step = if classification.ends_with("_full_vector_policy_candidate") {
+        "use the full-vector guard policy as explicit validation-only evidence before any full layer5 ordered bundle validation"
+    } else {
+        "localize weighted-V accumulation/output policy further before running full layer5 ordered bundle validation or MLP replay"
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "weighted-v-single-mismatch-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "weighted_v_lane": weighted_lane,
+        "q_head": q_head,
+        "kv_head": kv_head,
+        "head_dim_lane": head_dim_lane,
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "attention_audit_status": audit_status_path.display().to_string(),
+            "attention_audit_validate_status": audit_validate_status_path.display().to_string(),
+            "attention_classification": attention_status["classification"].clone(),
+            "attention_audit_classification": audit_status["classification"].clone(),
+            "attention_audit_validate_classification": audit_validate_status["classification"].clone(),
+        },
+        "source_shapes": source_shapes,
+        "source_summaries": source_summaries,
+        "weighted_sum_variants": weighted_sum_variants,
+        "official_value": official_value,
+        "current_local_value": current_local_value,
+        "abs_diff": abs_diff,
+        "rounding_probe": rounding_probe,
+        "full_vector_guard": full_vector_guard,
+        "best_matching_variant": best_matching_variant,
+        "earliest_mismatch_source": earliest_mismatch_source,
+        "next_bounded_step": next_bounded_step,
     });
     write_json(&cli.output, &status)
 }

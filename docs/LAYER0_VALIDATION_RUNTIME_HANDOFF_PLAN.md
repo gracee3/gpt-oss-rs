@@ -1846,6 +1846,52 @@ localize the layer5 weighted-V single-lane audit mismatch, including sink-column
 handling, GQA mapping, shape/layout, and rounding policy, before using the
 layer5 ordered attention surface for full bundle validation.
 
+## Layer5 Weighted-V Single Mismatch Debug Status
+
+The layer5 weighted-V audit blocker was localized with a focused
+validation-only diagnostic:
+
+```text
+/tmp/layer5_weighted_v_single_mismatch_debug_status.json
+classification =
+  layer5_weighted_v_single_mismatch_full_vector_policy_candidate
+
+weighted_v_lane = 3028
+q_head = 47
+kv_head = 5
+head_dim_lane = 20
+
+local = 0.000194549560546875
+official = 0.00019550323486328125
+diff = 0.00000095367431640625
+```
+
+The source layout and mapping checks matched the expected layer5 audit schema:
+attention probabilities are `[64, 75]` with sink column index `74`,
+all-token V is `[74, 8, 64]`, weighted V is `[4096]` interpreted as
+`[64, 64]`, and `q_head = 47` maps to `kv_head = 5`. The probability row and
+all-token V values for the focused lane are finite. Including the sink as a
+zero-valued term does not change the mismatch, while intentionally mapping the
+sink to a real V row is rejected by a large guard mismatch, so the issue is not
+localized to sink handling or GQA layout.
+
+The focused weighted-sum variants show an accumulation/output-boundary
+difference. Current sequential f32 accumulation produces the local value,
+while reverse f32, pairwise f32, and f64 diagnostic accumulation round to the
+official BF16 value. The local and official values are adjacent BF16 lattice
+values. A lightweight full-vector guard found that reverse f32 and pairwise
+f32 clear the entire weighted-V vector, while BF16-product remains
+evidence-only/rejected with broad collateral mismatches.
+
+This does not by itself claim full layer5 ordered attention parity. No
+tolerance or correction was applied, no full layer5 ordered bundle validation
+or MLP replay was run in this slice, no layer5 output was emitted, the ladder
+was not continued, no runtime/default routing/CUDA behavior changed, and there
+is no final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+add or use an explicit validation-only weighted-V accumulation policy, with
+pairwise f32 as the conventional deterministic candidate, before rerunning the
+layer5 attention audit/full bundle path.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

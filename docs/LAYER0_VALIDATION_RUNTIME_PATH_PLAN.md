@@ -4072,6 +4072,48 @@ final-logit, all-layer, server, or 4097-token claim. Next bounded step:
 localize the layer5 weighted-V single-lane audit mismatch before full ordered
 bundle validation or MLP replay.
 
+## Layer5 Weighted-V Single Mismatch Debug Status
+
+Layer5 weighted-V lane `3028` was debugged with a focused validation-only mode:
+
+```text
+/tmp/layer5_weighted_v_single_mismatch_debug_status.json
+classification =
+  layer5_weighted_v_single_mismatch_full_vector_policy_candidate
+
+q_head = 47
+kv_head = 5
+head_dim_lane = 20
+local = 0.000194549560546875
+official = 0.00019550323486328125
+diff = 0.00000095367431640625
+```
+
+The source shape checks matched the expected schema: attention probabilities
+are `[64, 75]` with sink column index `74`, audit all-token V is `[74, 8, 64]`,
+and weighted V is `[4096]` / `[64, 64]`. The focused mapping is consistent:
+`weighted_v_lane = q_head * 64 + head_dim_lane`, and `q_head / 8 = kv_head`.
+The probability row and V lane sources are finite. The sink column participates
+in softmax normalization but is excluded from the weighted-V sum; adding it as
+a zero-valued term leaves the local mismatch unchanged, and mapping it to a
+real V row is an invalid guard with a large mismatch.
+
+The localized variants point at weighted-V accumulation/output rounding:
+current/sequential f32 rounds to the local value, while reverse f32, pairwise
+f32, and f64 diagnostic accumulation round to the official BF16 value. The
+local and official values are adjacent BF16 lattice values. A lightweight
+full-vector guard found reverse f32 and pairwise f32 clear the whole weighted-V
+vector, while BF16-product remains evidence-only/rejected and introduces broad
+collateral mismatches.
+
+No tolerance or correction was applied. This slice did not run full layer5
+ordered bundle validation or selected MLP replay, did not emit a layer5 output,
+did not continue the ladder, did not change runtime/default routing/CUDA
+behavior, and makes no final-logit, all-layer, server, or 4097-token claim.
+Next bounded step: rerun the layer5 audit/full ordered bundle path only after
+adding an explicit validation-only weighted-V accumulation policy, preferably
+pairwise f32 if it is promoted from this guard to a full audit policy.
+
 ## Validation Commands
 
 For the skeleton slice:
