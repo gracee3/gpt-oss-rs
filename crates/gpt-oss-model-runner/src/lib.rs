@@ -66,13 +66,16 @@ pub use shard_plan::{
 };
 pub use sharded_resources::{
     CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus,
+    CudaShardFusedF16AllocationPlan, CudaShardFusedF16AllocationStatus,
     CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus,
     CudaShardMetadataAllocationPlan, CudaShardMetadataAllocationStatus, CudaShardResourcePlan,
     CudaShardResourceStatus, CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus,
-    KvCacheAllocationConfig, MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig,
-    RuntimeMetadataStatus, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan,
-    ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
+    F16ScratchAllocationConfig, FusedF16AllocationStatus, KvCacheAllocationConfig,
+    MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig, RuntimeMetadataStatus,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
+    ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
+    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan,
+    ShardedRuntimeBufferStatus,
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{

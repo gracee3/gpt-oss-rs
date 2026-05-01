@@ -3961,3 +3961,213 @@ long enough to build fused/preconverted buffers and report counts/bytes.
 ### Primary classification
 
 multi_gpu_layer_sharding_fused_scratch_design_complete
+
+## Shard-local fused/f16 scratch allocation skeleton status
+
+This slice added the bench-only fused/preconverted f16 and f16 scratch
+status boundary. It did not allocate fused f16 buffers or f16 scratch because
+the current allocation helpers remain coupled to `GpuModelRunner`,
+full-runner-owned `GpuModelWeights`, and full-runner layer indexing.
+
+### Module/helper names
+
+Pure model-runner plan/status helpers live in:
+
+```text
+crates/gpt-oss-model-runner/src/sharded_resources.rs
+```
+
+New CUDA-free types:
+
+```text
+F16ScratchAllocationConfig
+FusedF16AllocationStatus
+ShardedFusedF16AllocationPlan
+CudaShardFusedF16AllocationPlan
+ShardedFusedF16AllocationStatus
+CudaShardFusedF16AllocationStatus
+```
+
+The bench integration lives in:
+
+```text
+crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_split_allocation_smoke.rs
+```
+
+### Bench flags
+
+New explicit flags:
+
+```text
+--allocate-fused-f16
+--allocate-f16-scratch
+--f16-scratch-max-tokens <N>
+```
+
+`--allocate-f16-scratch` requires `--f16-scratch-max-tokens <N>`.
+None of these flags imply MoE GPU upload, tied LM-head fallback, layer
+construction, runner construction, graph output, attention, logits, or
+execution.
+
+Default behavior remains unchanged: without these flags the split allocation
+smoke does not attempt fused f16 or scratch planning, and the corresponding
+JSON fields report `not_applicable`.
+
+### Actual allocation status
+
+Actual fused/preconverted f16 allocation remains deferred.
+
+Deferred reason:
+
+```text
+GpuModelRunner::fuse_weights assumes full-model runner-owned weight containers and full-runner layer indexing
+```
+
+Actual f16 scratch allocation remains deferred.
+
+Deferred reason:
+
+```text
+F16LayerScratch is private runner state and tied to GpuModelRunner allocation
+```
+
+The status boundary still reports deterministic shard-local ownership,
+planned layer coverage, and planned fused input counts so a later allocation
+helper can be validated without changing the JSON contract again.
+
+### Shard-local ownership policy
+
+The fused f16 plan derives from each `ShardTensorManifest`:
+
+- fused QKV status is counted only when a shard owns all Q/K/V f16 tensor names
+  for an absolute layer.
+- fused dense gate/up status is counted only when a shard owns both dense
+  gate/up tensor names for an absolute layer.
+- GPT-OSS MoE layers with U8 expert tensors and no dense gate/up tensors report
+  dense gate/up as not applicable rather than as an error.
+- f16 layernorm and post-attention norm counts are derived from owned absolute
+  layer tensor names.
+- f16 QKV and O-projection bias counts are derived from owned bias tensor names.
+- embedding f16 conversion is planned only on the embedding shard.
+- final norm f16 conversion is planned only on the final shard.
+- tied LM-head fallback remains explicit/deferred and does not copy embeddings
+  to the final shard.
+- scratch status is per layer-owning shard and is gated by the explicit
+  `--f16-scratch-max-tokens` value.
+
+### Status JSON fields
+
+Top-level additions:
+
+```text
+fused_f16_allocation_attempted
+fused_f16_allocation_succeeded
+f16_scratch_allocation_attempted
+f16_scratch_allocation_succeeded
+f16_scratch_max_tokens
+fused_f16_error
+f16_scratch_error
+```
+
+Per-shard additions:
+
+```text
+fused_f16_allocated
+fused_f16_status
+fused_qkv_weight_count
+fused_gate_up_weight_count
+f16_layernorm_count
+f16_postnorm_count
+f16_qkv_bias_count
+f16_o_proj_bias_count
+embedding_f16_allocated
+final_norm_f16_allocated
+fused_total_bytes
+fused_layer_absolute_indices
+fused_deferred_reason
+fused_error
+f16_scratch_allocated
+f16_scratch_status
+f16_scratch_bytes
+f16_scratch_deferred_reason
+f16_scratch_error
+```
+
+When either fused f16 or scratch planning is requested, the command reports:
+
+```text
+multi_gpu_layer_sharding_fused_f16_plan_status_complete
+```
+
+This classification means only that the bench-only status boundary was built.
+It does not mean fused buffers or scratch buffers were allocated.
+
+### Manual operator command
+
+Do not run automatically. Operator-only command for a future real-model
+status review:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_full_skeleton_status.json
+```
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke
+cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run
+cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke
+cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda
+git diff --check
+```
+
+### Non-execution boundary
+
+No layers, `GpuModelRunner`, attention inputs, graph output, final norm
+execution, LM-head execution, logits, graph capture, forward pass, or parity
+path was added. No GPT-OSS MoE GPU expert upload or tied LM-head fallback was
+implemented. Serve/runtime split maps remain non-executable and continue to be
+rejected before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- shard-local `GpuModelWeights` design.
+- narrow helper extraction from `GpuModelRunner::fuse_weights`.
+- `F16LayerScratch` visibility/sizing boundary design.
+- tied LM-head fallback design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_fused_f16_plan_status_complete
