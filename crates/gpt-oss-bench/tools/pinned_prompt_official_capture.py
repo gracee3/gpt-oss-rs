@@ -81,8 +81,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--lane", type=int, help="Optional focus lane metadata.")
+    parser.add_argument("--q-head", type=int, help="Query head for raw-QK dtype probes.")
+    parser.add_argument("--key-column", type=int, help="Real key column for raw-QK dtype probes.")
     parser.add_argument("--selected-rank", type=int, help="Selected expert rank for internal capture.")
     parser.add_argument("--expert-index", type=int, help="Expected expert index for internal capture.")
+    parser.add_argument(
+        "--source-attention-status",
+        type=Path,
+        help="Prior ordered attention oracle status used as provenance for raw-QK probes.",
+    )
+    parser.add_argument(
+        "--source-consumer-debug-status",
+        type=Path,
+        help="Consumer debug status requesting a focused raw-QK probe.",
+    )
     parser.add_argument(
         "--source-ordered-mlp-status",
         type=Path,
@@ -256,6 +268,22 @@ def parse_ordered_attention_audit_selector(boundary: str, layer_idx: int | None)
             )
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_attention_ordered_audit_bundle", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_raw_qk_dtype_probe_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_raw_qk_dtype_probe":
+        if layer_idx is None:
+            raise ValueError("layerN_final_token_raw_qk_dtype_probe requires --layer-idx")
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_final_token_raw_qk_dtype_probe", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -1518,6 +1546,32 @@ def pairwise_sum(values: list[float]) -> float:
     return float(current[0])
 
 
+def round_f32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+
+
+def sequential_f32_sum(values: list[float]) -> float:
+    accumulator = round_f32(0.0)
+    for value in values:
+        accumulator = round_f32(accumulator + round_f32(value))
+    return accumulator
+
+
+def pairwise_f32_sum(values: list[float]) -> float:
+    if not values:
+        return round_f32(0.0)
+    current = [round_f32(value) for value in values]
+    while len(current) > 1:
+        next_values = []
+        for index in range(0, len(current), 2):
+            if index + 1 < len(current):
+                next_values.append(round_f32(current[index] + current[index + 1]))
+            else:
+                next_values.append(current[index])
+        current = next_values
+    return round_f32(current[0])
+
+
 def write_vector_terms_artifact(
     output_dir: Path,
     name: str,
@@ -1617,6 +1671,520 @@ def get_nested(container: dict[str, Any], path: list[str], default: Any = None) 
             return default
         current = current[key]
     return current
+
+
+def capture_layer_raw_qk_dtype_probe(
+    model: Any,
+    input_token_ids: list[int],
+    torch: Any,
+    layer_index: int,
+    q_head: int,
+    key_column: int,
+    *,
+    lane: int | None,
+    source_attention_status: Path | None,
+    source_consumer_debug_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    source_attention = (
+        load_json(source_attention_status) if source_attention_status else {}
+    )
+    source_debug = (
+        load_json(source_consumer_debug_status) if source_consumer_debug_status else {}
+    )
+    official_prior = source_debug.get("official_value")
+    current_local_value = source_debug.get("current_local_value")
+    consumer_variants = {
+        item.get("name"): item
+        for item in source_debug.get("dot_variants", [])
+        if isinstance(item, dict)
+    }
+    downstream = source_debug.get("downstream_propagation", {})
+
+    def bf16_round(value: float) -> dict[str, Any]:
+        f32_tensor = torch.tensor(float(value), dtype=torch.float32)
+        bf16_tensor = f32_tensor.to(torch.bfloat16)
+        return {
+            "float32_input": float(f32_tensor.item()),
+            "bfloat16_output": float(bf16_tensor.float().item()),
+            "output_dtype": str(bf16_tensor.dtype),
+        }
+
+    def qk_tensor_result(tensor: Any) -> dict[str, Any]:
+        return {
+            "value": float(tensor[q_head, key_column].float().cpu().item()),
+            "dtype": str(tensor.dtype),
+            "device": str(tensor.device),
+            "shape": list(tensor.shape),
+            "index": {"q_head": q_head, "key_column": key_column},
+        }
+
+    with torch.inference_mode():
+        tokens = torch.as_tensor(
+            input_token_ids, dtype=torch.int64, device=model.embedding.weight.device
+        )
+        hidden = model.embedding(tokens)
+        for block_index in range(layer_index):
+            hidden = model.block[block_index](hidden)
+        attn = model.block[layer_index].attn
+        normed = attn.norm(hidden)
+        qkv = attn.qkv(normed)
+
+        token_count = len(input_token_ids)
+        final_token_index = token_count - 1
+        q_dim = attn.num_attention_heads * attn.head_dim
+        kv_dim = attn.num_key_value_heads * attn.head_dim
+        heads_per_kv = attn.num_attention_heads // attn.num_key_value_heads
+        if q_head < 0 or q_head >= attn.num_attention_heads:
+            raise ValueError(f"q_head {q_head} outside 0..{attn.num_attention_heads - 1}")
+        if key_column < 0 or key_column >= token_count:
+            raise ValueError(f"key_column {key_column} outside 0..{token_count - 1}")
+
+        kv_head = q_head // heads_per_kv
+        head_within_kv = q_head % heads_per_kv
+        q_flat = qkv[:, :q_dim].contiguous()
+        k_flat = qkv[:, q_dim : q_dim + kv_dim].contiguous()
+        q = q_flat.view(
+            token_count,
+            attn.num_key_value_heads,
+            heads_per_kv,
+            attn.head_dim,
+        )
+        k = k_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        q_post_rope, k_post_rope = attn.rope(q, k)
+        q_post_final = q_post_rope[final_token_index]
+        k_expanded = k_post_rope[:, :, None, :].expand(
+            -1, -1, heads_per_kv, -1
+        )
+
+        repeated_raw = []
+        repeated_unscaled = []
+        for _ in range(3):
+            raw_unscaled = torch.einsum(
+                "qhmd,khmd->hmqk",
+                q_post_final.unsqueeze(0),
+                k_expanded,
+            )
+            raw_scaled = raw_unscaled * attn.sm_scale
+            repeated_unscaled.append(
+                raw_unscaled.squeeze(2).reshape(attn.num_attention_heads, token_count)
+            )
+            repeated_raw.append(
+                raw_scaled.squeeze(2).reshape(attn.num_attention_heads, token_count)
+            )
+
+        original_raw = repeated_raw[0]
+        original_unscaled = repeated_unscaled[0]
+        q_vector = q_post_final[kv_head, head_within_kv, :]
+        k_vector = k_post_rope[key_column, kv_head, :]
+        isolated_unscaled = torch.einsum("d,d->", q_vector, k_vector)
+        isolated_scaled = isolated_unscaled * attn.sm_scale
+        key_matrix = k_post_rope[:, kv_head, :]
+        matmul_scaled = (key_matrix @ q_vector) * attn.sm_scale
+        elementwise_product_sum_scaled = (q_vector * k_vector).sum() * attn.sm_scale
+
+        q_f32 = q_vector.float()
+        k_f32 = k_vector.float()
+        product_f32_values = [
+            round_f32(float(left) * float(right))
+            for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist())
+        ]
+        sequential_unscaled = sequential_f32_sum(product_f32_values)
+        reverse_unscaled = sequential_f32_sum(list(reversed(product_f32_values)))
+        pairwise_unscaled = pairwise_f32_sum(product_f32_values)
+        f64_unscaled = float(
+            sum(float(left) * float(right) for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist()))
+        )
+        sequential_scaled = round_f32(sequential_unscaled * float(attn.sm_scale))
+        reverse_scaled = round_f32(reverse_unscaled * float(attn.sm_scale))
+        pairwise_scaled = round_f32(pairwise_unscaled * float(attn.sm_scale))
+        f64_scaled = float(f64_unscaled * float(attn.sm_scale))
+        scale_per_term_unscaled = sequential_unscaled
+        scale_per_term_scaled = sequential_f32_sum(
+            [round_f32(value * float(attn.sm_scale)) for value in product_f32_values]
+        )
+        bf16_product_values = [
+            bf16_round(float(left) * float(right))["bfloat16_output"]
+            for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist())
+        ]
+        bf16_product_unscaled = sequential_f32_sum(bf16_product_values)
+        bf16_product_scaled = round_f32(
+            bf16_product_unscaled * float(attn.sm_scale)
+        )
+        explicit_torch_f32_scaled = (
+            torch.einsum("d,d->", q_f32, k_f32) * float(attn.sm_scale)
+        )
+        cpu_f32_scaled = (
+            torch.einsum("d,d->", q_f32.cpu(), k_f32.cpu()) * float(attn.sm_scale)
+        )
+        cpu_bf16_scaled = (
+            torch.einsum("d,d->", q_vector.cpu(), k_vector.cpu()) * float(attn.sm_scale)
+        )
+
+        q_values = q_f32.cpu().tolist()
+        k_values = k_f32.cpu().tolist()
+        term_values = [
+            {
+                "input_index": index,
+                "q": float(q_values[index]),
+                "k": float(k_values[index]),
+                "product_f32": product_f32_values[index],
+                "scaled_product_f32": round_f32(
+                    product_f32_values[index] * float(attn.sm_scale)
+                ),
+                "abs_product": abs(product_f32_values[index]),
+            }
+            for index in range(len(product_f32_values))
+        ]
+        top_terms = sorted(
+            term_values, key=lambda item: item["abs_product"], reverse=True
+        )[:16]
+
+        environment = {
+            "python_executable": sys.executable,
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "device_used": str(q_post_rope.device),
+            "gpu_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "torch_backends_cuda_matmul_allow_tf32": getattr(
+                torch.backends.cuda.matmul, "allow_tf32", None
+            ),
+            "torch_backends_cuda_matmul_allow_bf16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_bf16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_backends_cuda_matmul_allow_fp16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_fp16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision()
+            if hasattr(torch, "get_float32_matmul_precision")
+            else None,
+            "autocast_enabled": bool(torch.is_autocast_enabled())
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+            "autocast_cpu_enabled": bool(torch.is_autocast_enabled("cpu"))
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+        }
+
+        tensor_meta = {
+            "q_post_rope": tensor_metadata(q_post_rope),
+            "grouped_k_post_rope": tensor_metadata(k_post_rope),
+            "raw_qk_output": tensor_metadata(original_raw),
+            "raw_qk_unscaled_output": tensor_metadata(original_unscaled),
+        }
+        official_expression_results = {
+            "full_expression": qk_tensor_result(original_raw),
+            "full_unscaled_expression": qk_tensor_result(original_unscaled),
+            "repeated_full_expression": [
+                qk_tensor_result(raw_output) for raw_output in repeated_raw
+            ],
+            "isolated_dot": {
+                "unscaled": scalar_tensor_result(isolated_unscaled),
+                "scaled": scalar_tensor_result(isolated_scaled),
+            },
+            "matmul_equivalent": {
+                "key_vector_result": vector_lane_result(matmul_scaled, key_column),
+                "expression": "(k_post_rope[:, kv_head, :] @ q_vector) * scale",
+            },
+            "elementwise_product_sum": scalar_tensor_result(
+                elementwise_product_sum_scaled
+            ),
+        }
+
+    def variant_result(name: str, unscaled: float, scaled: float) -> dict[str, Any]:
+        rounded = bf16_round(scaled)
+        return {
+            "name": name,
+            "unscaled_sum": float(unscaled),
+            "scaled_before_output_round": float(scaled),
+            "bf16_output": rounded["bfloat16_output"],
+            "rounding": rounded,
+            "matches_prior_official": (
+                official_prior is not None
+                and rounded["bfloat16_output"] == float(official_prior)
+            ),
+        }
+
+    dtype_variant_results = {
+        "original_tensors_unchanged": {
+            "full_expression": official_expression_results["full_expression"],
+            "isolated_dot": official_expression_results["isolated_dot"],
+            "matmul_equivalent": official_expression_results["matmul_equivalent"],
+            "elementwise_product_sum": official_expression_results[
+                "elementwise_product_sum"
+            ],
+        },
+        "explicit_f32_sequential_scale_after": variant_result(
+            "explicit_f32_sequential_scale_after",
+            sequential_unscaled,
+            sequential_scaled,
+        ),
+        "explicit_f32_reverse_scale_after": variant_result(
+            "explicit_f32_reverse_scale_after",
+            reverse_unscaled,
+            reverse_scaled,
+        ),
+        "explicit_f32_pairwise_scale_after": variant_result(
+            "explicit_f32_pairwise_scale_after",
+            pairwise_unscaled,
+            pairwise_scaled,
+        ),
+        "explicit_f64_diagnostic_scale_after": variant_result(
+            "explicit_f64_diagnostic_scale_after",
+            f64_unscaled,
+            f64_scaled,
+        ),
+        "explicit_f32_sequential_scale_per_term": variant_result(
+            "explicit_f32_sequential_scale_per_term",
+            scale_per_term_unscaled,
+            scale_per_term_scaled,
+        ),
+        "bf16_product_then_f32_sum_evidence_only": variant_result(
+            "bf16_product_then_f32_sum_evidence_only",
+            bf16_product_unscaled,
+            bf16_product_scaled,
+        ),
+        "torch_explicit_f32_isolated_dot": scalar_tensor_result(
+            explicit_torch_f32_scaled
+        ),
+        "cpu_f32_isolated_dot": scalar_tensor_result(cpu_f32_scaled),
+        "cpu_bf16_isolated_dot": scalar_tensor_result(cpu_bf16_scaled),
+        "consumer_variants": consumer_variants,
+    }
+
+    rounding_inputs = {
+        "consumer_current_local_output": current_local_value,
+        "consumer_current_local_scaled_pre_output": get_nested(
+            consumer_variants,
+            ["current_local_policy", "scaled_before_output_round"],
+        ),
+        "official_raw_qk_output": official_prior,
+        "official_full_expression_output": official_expression_results[
+            "full_expression"
+        ]["value"],
+        "explicit_reverse_scaled_pre_output": reverse_scaled,
+        "explicit_pairwise_scaled_pre_output": pairwise_scaled,
+        "explicit_f64_scaled_pre_output": f64_scaled,
+        "explicit_sequential_scaled_pre_output": sequential_scaled,
+    }
+    bf16_rounding_probe = {
+        name: bf16_round(float(value))
+        for name, value in rounding_inputs.items()
+        if value is not None
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    q_vector_path = output_dir / f"q_vector_head{q_head}.json"
+    k_vector_path = output_dir / f"k_vector_token{key_column}_kvhead{kv_head}.json"
+    terms_path = output_dir / f"raw_qk_dot_terms_qhead{q_head}_col{key_column}.json"
+    write_json(
+        q_vector_path,
+        {
+            "boundary": f"layer{layer_index}_final_token_q_post_rope_head{q_head}",
+            "layer_index": layer_index,
+            "q_head": q_head,
+            "kv_head": kv_head,
+            "head_within_kv": head_within_kv,
+            "shape": [len(q_values)],
+            "dtype": "torch.float32_json_from_live_tensor",
+            "summary": finite_summary(q_values),
+            "values": q_values,
+        },
+    )
+    write_json(
+        k_vector_path,
+        {
+            "boundary": (
+                f"layer{layer_index}_key_column{key_column}_kv_head{kv_head}_"
+                "k_post_rope"
+            ),
+            "layer_index": layer_index,
+            "key_column": key_column,
+            "kv_head": kv_head,
+            "shape": [len(k_values)],
+            "dtype": "torch.float32_json_from_live_tensor",
+            "summary": finite_summary(k_values),
+            "values": k_values,
+        },
+    )
+    write_json(
+        terms_path,
+        {
+            "boundary": f"layer{layer_index}_raw_qk_qhead{q_head}_col{key_column}_terms",
+            "layer_index": layer_index,
+            "q_head": q_head,
+            "key_column": key_column,
+            "kv_head": kv_head,
+            "scale": float(source_debug.get("scale", 0.0) or 0.0)
+            if source_debug
+            else None,
+            "term_count": len(term_values),
+            "summary": finite_summary(product_f32_values),
+            "positive_term_sum": float(
+                sum(value for value in product_f32_values if value > 0.0)
+            ),
+            "negative_term_sum": float(
+                sum(value for value in product_f32_values if value < 0.0)
+            ),
+            "top_abs_product_terms": top_terms,
+            "terms": term_values,
+        },
+    )
+
+    official_output = official_expression_results["full_expression"]["value"]
+    official_matches_prior = (
+        official_prior is not None and official_output == float(official_prior)
+    )
+    matching_variant_names = [
+        name
+        for name in (
+            "explicit_f32_reverse_scale_after",
+            "explicit_f32_pairwise_scale_after",
+            "explicit_f64_diagnostic_scale_after",
+        )
+        if dtype_variant_results[name]["matches_prior_official"]
+    ]
+    downstream_nonpropagating = bool(
+        downstream.get("attention_probs_exact")
+        and downstream.get("weighted_v_exact")
+        and downstream.get("o_proj_exact")
+    )
+    current_rounds_to = get_nested(
+        bf16_rounding_probe,
+        ["consumer_current_local_scaled_pre_output", "bfloat16_output"],
+    )
+    consistent_with_boundary = bool(
+        official_matches_prior
+        and matching_variant_names
+        and current_local_value is not None
+        and current_rounds_to == float(current_local_value)
+    )
+    classification = (
+        "layer3_raw_qk_dtype_probe_confirms_accumulation_boundary"
+        if consistent_with_boundary
+        else "layer3_raw_qk_dtype_probe_generated_without_precise_precast"
+    )
+
+    artifact_path = output_dir / "raw_qk_dtype_probe.json"
+    source_vector_summaries = {
+        "q_vector_head2": {
+            "artifact": str(q_vector_path),
+            "summary": finite_summary(q_values),
+        },
+        "k_vector_token1_kvhead0": {
+            "artifact": str(k_vector_path),
+            "summary": finite_summary(k_values),
+        },
+        "dot_terms": {
+            "artifact": str(terms_path),
+            "summary": finite_summary(product_f32_values),
+            "top_abs_product_terms": top_terms,
+            "positive_term_sum": float(
+                sum(value for value in product_f32_values if value > 0.0)
+            ),
+            "negative_term_sum": float(
+                sum(value for value in product_f32_values if value < 0.0)
+            ),
+        },
+    }
+    mapping = {
+        "q_head": q_head,
+        "kv_head": kv_head,
+        "head_within_kv": head_within_kv,
+        "key_column": key_column,
+        "key_column_kind": "real_token",
+        "head_dim": int(attn.head_dim),
+        "heads_per_kv": int(heads_per_kv),
+        "token_count": int(token_count),
+        "final_token_index": int(final_token_index),
+        "scale": float(attn.sm_scale),
+        "official_expression": (
+            "torch.einsum('qhmd,khmd->hmqk', q_post_final.unsqueeze(0), "
+            "k_expanded) * attn.sm_scale"
+        ),
+    }
+    interpretation = {
+        "official_output_dtype": official_expression_results["full_expression"]["dtype"],
+        "official_expression_matches_prior": official_matches_prior,
+        "matches_pairwise_or_f64": bool(matching_variant_names),
+        "matching_pairwise_reverse_f64_variants": matching_variant_names,
+        "current_sequential_local_value_is_adjacent_bf16_lattice_value": bool(
+            get_nested(source_debug, ["rounding_probe", "one_ulp_like"], False)
+        ),
+        "consistent_with_accumulation_boundary": consistent_with_boundary,
+        "precise_precast_accumulator_available": False,
+        "downstream_nonpropagating": downstream_nonpropagating,
+        "next_consumer_step": (
+            "Use this live-tensor raw-QK probe to choose a validation-only "
+            "accumulation/output-cast policy for the single layer3 raw-QK seam."
+        ),
+    }
+    status = {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": classification,
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "layer_index": layer_index,
+        "focus_lane": lane,
+        "q_head": q_head,
+        "key_column": key_column,
+        "kv_head": kv_head,
+        "scale": float(attn.sm_scale),
+        "source_attention_status": str(source_attention_status)
+        if source_attention_status
+        else None,
+        "source_consumer_debug_status": str(source_consumer_debug_status)
+        if source_consumer_debug_status
+        else None,
+        "source_attention_classification": source_attention.get("classification"),
+        "environment": environment,
+        "tensor_metadata": tensor_meta,
+        "mapping": mapping,
+        "official_expression_results": official_expression_results,
+        "dtype_variant_results": dtype_variant_results,
+        "bf16_rounding_probe": bf16_rounding_probe,
+        "source_vector_summaries": source_vector_summaries,
+        "artifacts": {
+            "bundle_dir": str(output_dir) + "/",
+            "raw_qk_dtype_probe": str(artifact_path),
+            f"q_vector_head{q_head}": str(q_vector_path),
+            f"k_vector_token{key_column}_kvhead{kv_head}": str(k_vector_path),
+            f"dot_terms_qhead{q_head}_col{key_column}": str(terms_path),
+        },
+        "interpretation": interpretation,
+        "producer_metadata": {
+            "producer_function": "capture_layer_raw_qk_dtype_probe",
+            "boundary_selector": "layerN_final_token_raw_qk_dtype_probe",
+            "requested_layer_index": layer_index,
+            "port_source": PORT_SOURCE,
+        },
+    }
+    write_json(
+        artifact_path,
+        {
+            "environment": environment,
+            "tensor_metadata": tensor_meta,
+            "mapping": mapping,
+            "official_expression_results": official_expression_results,
+            "dtype_variant_results": dtype_variant_results,
+            "bf16_rounding_probe": bf16_rounding_probe,
+            "source_vector_summaries": source_vector_summaries,
+            "interpretation": interpretation,
+        },
+    )
+    return status
 
 
 def capture_layer_selected_expert_internal_boundary_bundle(
@@ -2912,6 +3480,48 @@ def build_ordered_attention_audit_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    raw_qk_probe_layer = parse_raw_qk_dtype_probe_selector(boundary, layer_index)
+    if raw_qk_probe_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": raw_qk_probe_layer,
+            "layer_idx": raw_qk_probe_layer,
+            "classification": f"layer{raw_qk_probe_layer}_raw_qk_dtype_probe_schema_ready",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "q_head": args.q_head,
+            "key_column": args.key_column,
+            "focus_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "source_attention_status": str(args.source_attention_status)
+            if args.source_attention_status
+            else None,
+            "source_consumer_debug_status": str(args.source_consumer_debug_status)
+            if args.source_consumer_debug_status
+            else None,
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_artifacts": [
+                "raw_qk_dtype_probe",
+                "q_vector",
+                "k_vector",
+                "dot_terms",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_raw_qk_dtype_probe",
+                "boundary_selector": boundary,
+                "requested_layer_index": raw_qk_probe_layer,
+                "port_source": PORT_SOURCE,
+            },
+        }
     attention_audit_layer = parse_ordered_attention_audit_selector(boundary, layer_index)
     if attention_audit_layer is not None:
         return {
@@ -3160,6 +3770,7 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    raw_qk_probe_layer_index = parse_raw_qk_dtype_probe_selector(boundary, args.layer_idx)
     attention_audit_layer_index = parse_ordered_attention_audit_selector(boundary, args.layer_idx)
     attention_layer_index = parse_ordered_attention_selector(boundary, args.layer_idx)
     dtype_probe_layer_index = parse_down_einsum_dtype_probe_selector(boundary, args.layer_idx)
@@ -3167,7 +3778,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
-        attention_audit_layer_index is None
+        raw_qk_probe_layer_index is None
+        and attention_audit_layer_index is None
         and attention_layer_index is None
         and dtype_probe_layer_index is None
         and down_terms_layer_index is None
@@ -3178,7 +3790,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run_schema:
         return dry_run_schema(
             boundary,
-            attention_audit_layer_index
+            raw_qk_probe_layer_index
+            or attention_audit_layer_index
             or attention_layer_index
             or dtype_probe_layer_index
             or down_terms_layer_index
@@ -3186,6 +3799,44 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             or layer_index,
             args,
         )
+    if raw_qk_probe_layer_index is not None:
+        if args.q_head is None or args.key_column is None:
+            raise ValueError("raw-QK dtype probe requires --q-head and --key-column")
+        if args.source_attention_status is None:
+            raise ValueError("raw-QK dtype probe requires --source-attention-status")
+        if args.source_consumer_debug_status is None:
+            raise ValueError("raw-QK dtype probe requires --source-consumer-debug-status")
+        if args.output_dir is None:
+            raise ValueError("raw-QK dtype probe requires --output-dir")
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        source_status = load_json(args.source_attention_status)
+        token_source_path = args.layer_input
+        if token_source_path is None:
+            token_source = source_status.get("input_token_source", {})
+            token_source_path_value = token_source.get("path")
+            if not token_source_path_value:
+                raise ValueError(
+                    "source attention status is missing input_token_source.path"
+                )
+            token_source_path = Path(token_source_path_value)
+        input_token_ids, _token_source_metadata = input_token_ids_from_source(token_source_path)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_raw_qk_dtype_probe(
+            model,
+            input_token_ids,
+            torch,
+            raw_qk_probe_layer_index,
+            args.q_head,
+            args.key_column,
+            lane=args.lane,
+            source_attention_status=args.source_attention_status,
+            source_consumer_debug_status=args.source_consumer_debug_status,
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     if attention_audit_layer_index is not None:
         if args.source_ordered_attention_status is None:
             raise ValueError(
@@ -3352,6 +4003,9 @@ def main() -> int:
         dtype_probe_like = (
             args.boundary is not None and "down_einsum_dtype_probe" in args.boundary
         )
+        raw_qk_probe_like = (
+            args.boundary is not None and "raw_qk_dtype_probe" in args.boundary
+        )
         attention_like = (
             args.boundary is not None
             and "attention_ordered_boundary_bundle" in args.boundary
@@ -3365,7 +4019,13 @@ def main() -> int:
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
-                f"layer{layer_label}_ordered_attention_audit_bundle_blocked_by_memory"
+                f"layer{layer_label}_raw_qk_dtype_probe_blocked_by_memory"
+                if raw_qk_probe_like and memory_like
+                else f"layer{layer_label}_raw_qk_dtype_probe_blocked_by_schema"
+                if raw_qk_probe_like and "requires" in message
+                else f"layer{layer_label}_raw_qk_dtype_probe_execution_failed"
+                if raw_qk_probe_like
+                else f"layer{layer_label}_ordered_attention_audit_bundle_blocked_by_memory"
                 if attention_audit_like and memory_like
                 else f"layer{layer_label}_ordered_attention_audit_bundle_blocked_by_missing_prior_attention_bundle"
                 if attention_audit_like and missing_prior_attention_like
