@@ -96,6 +96,10 @@ mod cuda_impl {
 
     use crate::bridge::{LLMError, Result};
     use crate::device_map::DeviceMap;
+    use crate::fused_f16::{
+        f16_scratch_element_counts, fused_gate_up_dim, fused_gate_up_num_elements, fused_qkv_dim,
+        fused_qkv_num_elements,
+    };
     use crate::rope_validation::build_runtime_rope_tables;
     use crate::runner::ModelRunnerConfig;
 
@@ -423,9 +427,9 @@ mod cuda_impl {
             let hidden = self.config.hidden_size;
             let q_dim = self.config.num_heads * self.config.head_dim;
             let kv_dim = self.config.num_kv_heads * self.config.head_dim;
-            let qkv_dim = q_dim + kv_dim + kv_dim;
+            let qkv_dim = fused_qkv_dim(q_dim, kv_dim);
             let intermediate = self.config.intermediate_size;
-            let gate_up_dim = intermediate * 2;
+            let gate_up_dim = fused_gate_up_dim(intermediate);
 
             for i in 0..num_layers {
                 let has_gpt_oss_moe = self.config.architecture == "GptOssForCausalLM"
@@ -458,7 +462,7 @@ mod cuda_impl {
 
                     let mut fused_qkv = self
                         .stream
-                        .alloc_zeros::<half::f16>(qkv_dim * hidden)
+                        .alloc_zeros::<half::f16>(fused_qkv_num_elements(q_dim, kv_dim, hidden))
                         .map_err(|e| LLMError::GpuError(format!("fused_qkv alloc: {e}")))?;
                     // Copy Q, K, V contiguously
                     self.stream
@@ -492,7 +496,10 @@ mod cuda_impl {
                     (Some(gate_w), Some(up_w)) => {
                         let mut fused_gu = self
                             .stream
-                            .alloc_zeros::<half::f16>(gate_up_dim * hidden)
+                            .alloc_zeros::<half::f16>(fused_gate_up_num_elements(
+                                intermediate,
+                                hidden,
+                            ))
                             .map_err(|e| LLMError::GpuError(format!("fused_gate_up alloc: {e}")))?;
                         self.stream
                             .memcpy_dtod(gate_w, &mut fused_gu.slice_mut(..intermediate * hidden))
@@ -650,8 +657,11 @@ mod cuda_impl {
             let hidden = self.config.hidden_size;
             let q_dim = self.config.num_heads * self.config.head_dim;
             let kv_dim = self.config.num_kv_heads * self.config.head_dim;
-            let qkv_dim = q_dim + kv_dim + kv_dim;
             let intermediate = self.config.intermediate_size;
+            let qkv_dim = fused_qkv_dim(q_dim, kv_dim);
+            let counts =
+                f16_scratch_element_counts(hidden, q_dim, kv_dim, intermediate, max_tokens)
+                    .map_err(|e| LLMError::GpuError(format!("f16 scratch sizing: {e}")))?;
 
             let alloc = |n: usize| -> Result<CudaSlice<f16>> {
                 self.stream
@@ -660,17 +670,18 @@ mod cuda_impl {
             };
 
             let scratch = F16LayerScratch {
-                qkv: alloc(max_tokens * qkv_dim)?,
-                attn_out: alloc(max_tokens * q_dim)?,
-                o_proj: alloc(max_tokens * hidden)?,
-                normed: alloc(max_tokens * hidden)?,
-                residual: alloc(max_tokens * hidden)?,
-                gate_up: alloc(max_tokens * intermediate * 2)?,
-                silu_out: alloc(max_tokens * intermediate)?,
-                down: alloc(max_tokens * hidden)?,
+                qkv: alloc(counts.qkv)?,
+                attn_out: alloc(counts.attn_out)?,
+                o_proj: alloc(counts.o_proj)?,
+                normed: alloc(counts.normed)?,
+                residual: alloc(counts.residual)?,
+                gate_up: alloc(counts.gate_up)?,
+                silu_out: alloc(counts.silu_out)?,
+                down: alloc(counts.down)?,
             };
 
-            let total_bytes = (max_tokens * (qkv_dim + q_dim + hidden * 3 + intermediate * 3)) * 2;
+            let total_bytes = (max_tokens * (qkv_dim + q_dim + hidden * 3 + intermediate * 3))
+                * std::mem::size_of::<f16>();
             info!(max_tokens, total_bytes, "f16 layer scratch allocated");
             self.f16_scratch = Some(scratch);
             Ok(())

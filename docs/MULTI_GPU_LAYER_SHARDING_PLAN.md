@@ -4741,3 +4741,134 @@ Recommended next slices:
 ### Primary classification
 
 multi_gpu_layer_sharding_shard_weight_wrapper_skeleton_complete
+
+## Fused f16 helper extraction status
+
+This slice extracted narrow CUDA-free sizing helpers for fused f16 allocation
+planning. It did not add split fused allocation, f16 scratch allocation from a
+split path, layer construction, runner construction, execution, or serve
+behavior.
+
+### Helper names
+
+New helper module:
+
+```text
+crates/gpt-oss-model-runner/src/fused_f16.rs
+```
+
+New public helpers:
+
+```text
+F16ScratchElementCounts
+fused_qkv_dim(q_dim, kv_dim)
+fused_qkv_shape(q_dim, kv_dim, hidden)
+fused_qkv_num_elements(q_dim, kv_dim, hidden)
+fused_gate_up_dim(intermediate)
+fused_gate_up_shape(intermediate, hidden)
+fused_gate_up_num_elements(intermediate, hidden)
+f16_scratch_element_counts(hidden, q_dim, kv_dim, intermediate, max_tokens)
+```
+
+`F16ScratchElementCounts` exposes the eight current scratch buffers:
+
+```text
+qkv
+attn_out
+o_proj
+normed
+residual
+gate_up
+silu_out
+down
+```
+
+It also reports `total_elements()` and `total_bytes()` using
+`sizeof(f16)`.
+
+### Extraction scope
+
+The extraction is pure shape/count only. CUDA copy helper extraction remains
+deferred.
+
+`GpuModelRunner::fuse_weights` now uses the pure helpers for:
+
+- fused QKV dimension and allocation element count.
+- fused dense gate/up dimension and allocation element count.
+- f16 scratch per-buffer element counts.
+
+The runner still owns the existing CUDA allocations and device-to-device
+copies. The existing layer loop, tensor naming, fused vector mutation, error
+strings, and scratch ownership remain in `GpuModelRunner`.
+
+### What remains runner-coupled
+
+The following are intentionally still coupled to the single-device runner:
+
+- `0..self.layers.len()` layer iteration.
+- mutation of `self.fused_qkv_weights`.
+- mutation of `self.fused_gate_up_weights`.
+- mutation of `self.fused_layernorm_f16`.
+- mutation of `self.fused_post_norm_f16`.
+- mutation of `self.fused_qkv_bias_f16`.
+- mutation of `self.fused_o_proj_bias_f16`.
+- final norm f16 assignment.
+- embedding f16 assignment.
+- private `F16LayerScratch` construction and assignment.
+- Q/K/V bias CUDA concatenation and cast.
+- GPT-OSS MoE GPU upload / graph-decode preparation.
+
+### Future ShardWeightStore integration
+
+The next fused allocation smoke can combine this slice with
+`ShardWeightStore`:
+
+```text
+for absolute_layer_idx in shard_store.plan().absolute_layers {
+  validate Q/K/V ownership with ShardWeightStore
+  size fused QKV with fused_qkv_num_elements
+  validate dense gate/up ownership if present
+  size fused gate/up with fused_gate_up_num_elements
+}
+```
+
+The future helper extraction still needs CUDA copy helpers that take explicit
+shard-local tensor references and absolute layer ids instead of mutating
+runner-owned full-model vectors.
+
+### Validation commands
+
+```bash
+cargo fmt
+cargo test -p gpt-oss-model-runner shard
+cargo test -p gpt-oss-model-runner f16
+cargo test -p gpt-oss-model-runner device_map
+cargo test -p gpt-oss-model-runner header
+cargo test -p gpt-oss-model-runner safetensor
+cargo test -p gpt-oss-model-runner u8
+cargo check -p gpt-oss-model-runner --features cuda
+git diff --check
+```
+
+### Non-execution boundary
+
+No split fused allocation, f16 scratch allocation from a split path, layer
+construction, runner construction, attention, final norm execution, LM-head
+execution, logits, graph capture, forward pass, serving, or parity path was
+added. No GPT-OSS MoE GPU expert upload or tied LM-head fallback was
+implemented. Serve/runtime split maps remain non-executable and continue to be
+rejected before CUDA allocation.
+
+### Next bounded step
+
+Recommended next slices:
+
+- actual bench-only fused f16 allocation using `ShardWeightStore` and the
+  extracted sizing helpers.
+- `F16LayerScratch` visibility/sizing boundary implementation.
+- tied LM-head fallback design.
+- GPT-OSS MoE GPU upload design.
+
+### Primary classification
+
+multi_gpu_layer_sharding_fused_f16_shape_helpers_complete

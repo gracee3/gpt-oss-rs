@@ -11,6 +11,7 @@ pub mod architectures;
 pub mod attention;
 pub mod bridge;
 pub mod device_map;
+pub mod fused_f16;
 pub mod input;
 pub mod kv_cache;
 pub mod layers;
@@ -49,6 +50,10 @@ pub use attention::{
     SplitKvAttention,
 };
 pub use device_map::{DeviceId, DeviceMap, DeviceMapError};
+pub use fused_f16::{
+    f16_scratch_element_counts, fused_gate_up_dim, fused_gate_up_num_elements, fused_gate_up_shape,
+    fused_qkv_dim, fused_qkv_num_elements, fused_qkv_shape, F16ScratchElementCounts,
+};
 pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
 pub use model_loader::{
