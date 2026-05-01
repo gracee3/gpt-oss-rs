@@ -393,6 +393,14 @@ struct Cli {
     #[arg(long, default_value_t = 74)]
     sink_position: usize,
 
+    /// Query head for focused raw-QK diagnostics.
+    #[arg(long, default_value_t = 0)]
+    q_head: usize,
+
+    /// Real-key column/token for focused raw-QK diagnostics.
+    #[arg(long, default_value_t = 0)]
+    key_column: usize,
+
     /// Focus lane for expert30 MLP1 lane-local diagnostics.
     #[arg(long, alias = "focus-lane", default_value_t = 522)]
     lane: usize,
@@ -452,6 +460,7 @@ enum Mode {
     SelectedExpertDownCastPolicySweepStatus,
     SelectedMlpDownPolicyReplayStatus,
     AttentionAuditValidate,
+    RawQkSingleMismatchDebug,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1437,6 +1446,7 @@ fn main() -> Result<()> {
         }
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
+        Mode::RawQkSingleMismatchDebug => run_raw_qk_single_mismatch_debug(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -4476,6 +4486,446 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
             else {
                 "fix the reported ordered attention audit blocker"
             },
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_raw_qk_single_mismatch_debug(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let q_head = cli.q_head;
+    let key_column = cli.key_column;
+    let head_dim = cli.head_dim;
+    let q_dim = cli.query_heads * head_dim;
+    let kv_dim = cli.kv_heads * head_dim;
+    let k_history_count = cli.token_count * kv_dim;
+    let raw_count = cli.query_heads * cli.token_count;
+    let masked_count = cli.query_heads * (cli.token_count + 1);
+    anyhow::ensure!(
+        q_head < cli.query_heads,
+        "q-head {q_head} out of range for {} query heads",
+        cli.query_heads
+    );
+    anyhow::ensure!(
+        key_column < cli.token_count,
+        "key-column {key_column} must be a real-token column < {}",
+        cli.token_count
+    );
+    let kv_head = q_head / cli.heads_per_kv;
+    anyhow::ensure!(
+        kv_head < cli.kv_heads,
+        "mapped kv_head {kv_head} out of range for {} kv heads",
+        cli.kv_heads
+    );
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let prior_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(prior_validate_status_path, "ordered bundle validate status")?;
+    let attention_status = load_json(attention_status_path)?;
+    let prior_status = load_json(prior_validate_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&prior_status)? == layer,
+        "ordered bundle validation layer did not match requested layer {layer}"
+    );
+
+    let q_post_path = status_artifact_path(&attention_status, "q_post_rope", "attention")?;
+    let k_post_path = status_artifact_path(&attention_status, "grouped_k_post_rope", "attention")?;
+    let raw_path = status_artifact_path(&attention_status, "raw_qk", "attention")?;
+    let masked_path = status_artifact_path(&attention_status, "masked_logits", "attention")?;
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    for (label, path) in [
+        ("attention Q post-RoPE", &q_post_path),
+        ("attention grouped K post-RoPE", &k_post_path),
+        ("attention raw QK", &raw_path),
+        ("attention masked logits", &masked_path),
+        ("attention probabilities", &probs_path),
+    ] {
+        validate_path(path, label)?;
+    }
+
+    let (q_post_status, q_post) = load_tensor_artifact(&q_post_path, &[q_dim], &["values"])?;
+    let (k_post_status, k_post) =
+        load_tensor_artifact(&k_post_path, &[k_history_count], &["values"])?;
+    let (raw_status, raw_oracle) = load_tensor_artifact(&raw_path, &[raw_count], &["values"])?;
+    let (masked_status, masked_oracle) =
+        load_tensor_artifact(&masked_path, &[masked_count], &["values"])?;
+    let (probs_status, _probs_oracle) =
+        load_tensor_artifact(&probs_path, &[masked_count], &["values"])?;
+    let schema_blocked = !q_post_status.shape_or_count_matched
+        || !k_post_status.shape_or_count_matched
+        || !raw_status.shape_or_count_matched
+        || !masked_status.shape_or_count_matched
+        || !probs_status.shape_or_count_matched;
+
+    let raw_index = q_head * cli.token_count + key_column;
+    let masked_index = q_head * (cli.token_count + 1) + key_column;
+    let q_base = q_head * head_dim;
+    let k_base = (key_column * cli.kv_heads + kv_head) * head_dim;
+    let (q_vector, k_vector, terms) = if schema_blocked {
+        (&[][..], &[][..], Vec::new())
+    } else {
+        let q_vector = &q_post[q_base..q_base + head_dim];
+        let k_vector = &k_post[k_base..k_base + head_dim];
+        let terms = q_vector
+            .iter()
+            .zip(k_vector.iter())
+            .map(|(&q, &k)| q * k)
+            .collect::<Vec<_>>();
+        (q_vector, k_vector, terms)
+    };
+
+    let official_value = raw_oracle.get(raw_index).copied().unwrap_or(f32::NAN);
+    let official_masked_value = masked_oracle.get(masked_index).copied().unwrap_or(f32::NAN);
+    let make_variant = |name: &str, policy: &str, unscaled_sum: f64, scaled: f64, output: f32| {
+        json!({
+            "name": name,
+            "policy": policy,
+            "unscaled_sum": unscaled_sum,
+            "scaled_before_output_round": scaled,
+            "output": output,
+            "abs_diff": (output - official_value).abs(),
+            "matches_official": output == official_value,
+        })
+    };
+    let mut variants = Vec::new();
+    if !schema_blocked {
+        let sequential_sum = terms.iter().fold(0.0f32, |sum, value| sum + *value);
+        let sequential_scaled = sequential_sum * cli.scale;
+        variants.push(make_variant(
+            "current_local_policy",
+            "sequential f32 dot, scale after sum, BF16 output",
+            sequential_sum as f64,
+            sequential_scaled as f64,
+            round_bf16(sequential_scaled),
+        ));
+
+        let scale_per_term_sum = terms
+            .iter()
+            .fold(0.0f32, |sum, value| sum + (*value * cli.scale));
+        variants.push(make_variant(
+            "sequential_f32_scale_per_term_bf16_output",
+            "sequential f32 dot with scale applied per term, BF16 output",
+            (scale_per_term_sum / cli.scale) as f64,
+            scale_per_term_sum as f64,
+            round_bf16(scale_per_term_sum),
+        ));
+
+        let reverse_sum = terms.iter().rev().fold(0.0f32, |sum, value| sum + *value);
+        variants.push(make_variant(
+            "reverse_f32_sum_scale_after_bf16_output",
+            "reverse f32 dot, scale after sum, BF16 output",
+            reverse_sum as f64,
+            (reverse_sum * cli.scale) as f64,
+            round_bf16(reverse_sum * cli.scale),
+        ));
+
+        let pairwise_sum = pairwise_sum_f32(&terms);
+        variants.push(make_variant(
+            "pairwise_f32_sum_scale_after_bf16_output",
+            "pairwise f32 dot, scale after sum, BF16 output",
+            pairwise_sum as f64,
+            (pairwise_sum * cli.scale) as f64,
+            round_bf16(pairwise_sum * cli.scale),
+        ));
+
+        let f64_sum = terms.iter().fold(0.0f64, |sum, value| sum + *value as f64);
+        variants.push(make_variant(
+            "f64_sum_scale_after_bf16_output",
+            "f64 diagnostic dot, scale after sum, BF16 output",
+            f64_sum,
+            f64_sum * cli.scale as f64,
+            round_bf16((f64_sum * cli.scale as f64) as f32),
+        ));
+
+        let mut abs_terms = terms.clone();
+        abs_terms.sort_by(|left, right| left.abs().total_cmp(&right.abs()));
+        let abs_sum = abs_terms.iter().fold(0.0f32, |sum, value| sum + *value);
+        variants.push(make_variant(
+            "deterministic_abs_ascending_f32_sum_scale_after_bf16_output",
+            "deterministic f32 dot sorted by ascending absolute product magnitude",
+            abs_sum as f64,
+            (abs_sum * cli.scale) as f64,
+            round_bf16(abs_sum * cli.scale),
+        ));
+
+        let bf16_product_sum = terms
+            .iter()
+            .fold(0.0f32, |sum, value| sum + round_bf16(*value));
+        variants.push(make_variant(
+            "bf16_product_then_f32_sum_scale_after_bf16_output",
+            "evidence-only f32 dot after each product is rounded to BF16",
+            bf16_product_sum as f64,
+            (bf16_product_sum * cli.scale) as f64,
+            round_bf16(bf16_product_sum * cli.scale),
+        ));
+
+        variants.push(make_variant(
+            "sequential_f32_scale_after_no_output_round",
+            "sequential f32 dot, scale after sum, no BF16 output round",
+            sequential_sum as f64,
+            sequential_scaled as f64,
+            sequential_scaled,
+        ));
+    }
+
+    let current_local_value = variants
+        .iter()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some("current_local_policy"))
+        .and_then(|entry| entry.get("output"))
+        .and_then(Value::as_f64)
+        .map(|value| value as f32)
+        .unwrap_or(f32::NAN);
+    let abs_diff = (current_local_value - official_value).abs();
+
+    let mut gqa_variants = Vec::new();
+    if !schema_blocked {
+        for candidate_kv_head in 0..cli.kv_heads {
+            let candidate_k_base = (key_column * cli.kv_heads + candidate_kv_head) * head_dim;
+            let candidate_k = &k_post[candidate_k_base..candidate_k_base + head_dim];
+            let sum = q_vector
+                .iter()
+                .zip(candidate_k.iter())
+                .fold(0.0f32, |sum, (&q, &k)| sum + q * k);
+            let output = round_bf16(sum * cli.scale);
+            gqa_variants.push(json!({
+                "kv_head": candidate_kv_head,
+                "expected_mapping": candidate_kv_head == kv_head,
+                "output": output,
+                "matches_official": output == official_value,
+                "abs_diff": (output - official_value).abs(),
+            }));
+        }
+    }
+
+    let official_bf16 = bf16::from_f32(official_value);
+    let official_bits = official_bf16.to_bits();
+    let prev_bf16 = if official_bits > 0 {
+        Some(bf16::from_bits(official_bits - 1).to_f32())
+    } else {
+        None
+    };
+    let next_bf16 = Some(bf16::from_bits(official_bits + 1).to_f32());
+    let one_ulp_like = prev_bf16 == Some(current_local_value)
+        || next_bf16 == Some(current_local_value)
+        || prev_bf16
+            .map(|prev| (official_value - prev).abs() == abs_diff)
+            .unwrap_or(false)
+        || next_bf16
+            .map(|next| (next - official_value).abs() == abs_diff)
+            .unwrap_or(false);
+
+    let variant_matches = variants
+        .iter()
+        .filter_map(|entry| {
+            let matches = entry
+                .get("matches_official")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            matches.then(|| {
+                entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            })
+        })
+        .collect::<Vec<_>>();
+    let non_current_variant_match = variant_matches
+        .iter()
+        .copied()
+        .find(|name| *name != "current_local_policy");
+    let alternate_gqa_match = gqa_variants.iter().any(|entry| {
+        entry
+            .get("matches_official")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && !entry
+                .get("expected_mapping")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
+
+    let metric_mismatches = |pointer: &str| {
+        prior_status
+            .pointer(pointer)
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    };
+    let masked_logits_mismatch =
+        metric_mismatches("/attention_metrics/masked_logits/metrics/mismatches") != 0;
+    let attention_probs_exact =
+        metric_mismatches("/attention_metrics/attention_probabilities/metrics/mismatches") == 0;
+    let weighted_v_exact =
+        metric_mismatches("/attention_metrics/weighted_v/metric/metrics/mismatches") == 0;
+    let o_proj_exact = metric_mismatches("/attention_metrics/o_proj/metrics/mismatches") == 0;
+
+    let classification = if schema_blocked {
+        format!("layer{layer}_raw_qk_single_mismatch_blocked_by_schema")
+    } else if alternate_gqa_match {
+        format!("layer{layer}_raw_qk_single_mismatch_gqa_mapping_mismatch")
+    } else if let Some(name) = non_current_variant_match {
+        if name.contains("scale_per_term") {
+            format!("layer{layer}_raw_qk_single_mismatch_scale_order_mismatch")
+        } else if name.contains("no_output_round") {
+            format!("layer{layer}_raw_qk_single_mismatch_output_rounding_mismatch")
+        } else {
+            format!("layer{layer}_raw_qk_single_mismatch_accumulation_policy_mismatch")
+        }
+    } else if one_ulp_like && attention_probs_exact && weighted_v_exact && o_proj_exact {
+        format!("layer{layer}_raw_qk_single_mismatch_artifact_precision_boundary")
+    } else if attention_probs_exact && weighted_v_exact && o_proj_exact {
+        format!("layer{layer}_raw_qk_single_mismatch_downstream_nonpropagating")
+    } else {
+        format!("layer{layer}_raw_qk_single_mismatch_execution_failed")
+    };
+
+    let mut top_terms = terms
+        .iter()
+        .enumerate()
+        .map(|(lane, &product)| {
+            let q = q_vector.get(lane).copied().unwrap_or(f32::NAN);
+            let k = k_vector.get(lane).copied().unwrap_or(f32::NAN);
+            (lane, q, k, product)
+        })
+        .collect::<Vec<_>>();
+    top_terms.sort_by(|left, right| right.3.abs().total_cmp(&left.3.abs()));
+    let top_terms = top_terms
+        .into_iter()
+        .take(8)
+        .map(|(lane, q, k, product)| {
+            json!({
+                "lane": lane,
+                "q": q,
+                "k": k,
+                "product": product,
+                "scaled_product": product * cli.scale,
+            })
+        })
+        .collect::<Vec<_>>();
+    let lane_window = if schema_blocked {
+        Vec::new()
+    } else {
+        (0..head_dim.min(8))
+            .map(|lane| {
+                json!({
+                    "lane": lane,
+                    "q": q_vector[lane],
+                    "k": k_vector[lane],
+                    "product": terms[lane],
+                    "scaled_product": terms[lane] * cli.scale,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "raw-qk-single-mismatch-debug",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "q_head": q_head,
+        "key_column": key_column,
+        "kv_head": kv_head,
+        "scale": cli.scale,
+        "sink_column": cli.sink_position,
+        "sink_handling": {
+            "key_column_is_real_token": key_column < cli.token_count,
+            "key_column_is_sink": key_column == cli.sink_position,
+            "sink_irrelevant_to_this_mismatch": key_column != cli.sink_position,
+        },
+        "source_status": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+            "attention_classification": attention_status["classification"].clone(),
+            "ordered_bundle_validate_classification": prior_status["classification"].clone(),
+        },
+        "source_vectors": {
+            "q_post_rope": {
+                "artifact": q_post_status,
+                "shape": [head_dim],
+                "q_head": q_head,
+                "finite_summary": if schema_blocked { Value::Null } else { json!(finite_summary(q_vector)) },
+                "digest": digest_f32_le(q_vector),
+                "prior_validation_metric": prior_status.pointer("/attention_metrics/q_post_rope/metric/metrics").cloned().unwrap_or(Value::Null),
+            },
+            "grouped_k_post_rope": {
+                "artifact": k_post_status,
+                "shape": [head_dim],
+                "token": key_column,
+                "kv_head": kv_head,
+                "finite_summary": if schema_blocked { Value::Null } else { json!(finite_summary(k_vector)) },
+                "digest": digest_f32_le(k_vector),
+                "source": "ordered grouped K post-RoPE all-token history",
+            },
+            "lane_window_first_8": lane_window,
+            "top_abs_product_terms": top_terms,
+            "all_source_values_finite": q_vector.iter().all(|value| value.is_finite())
+                && k_vector.iter().all(|value| value.is_finite()),
+        },
+        "dot_variants": variants,
+        "gqa_mapping_variants": gqa_variants,
+        "official_value": official_value,
+        "official_masked_value": official_masked_value,
+        "current_local_value": current_local_value,
+        "abs_diff": abs_diff,
+        "rounding_probe": {
+            "official_bf16_value": official_bf16.to_f32(),
+            "previous_bf16_value": prev_bf16,
+            "next_bf16_value": next_bf16,
+            "one_ulp_like": one_ulp_like,
+            "variant_matches_official": variant_matches,
+        },
+        "earliest_mismatch_source": if classification.ends_with("_gqa_mapping_mismatch") {
+            "GQA head mapping variant matched official"
+        } else if classification.ends_with("_accumulation_policy_mismatch") {
+            "raw-QK dot-product accumulation policy"
+        } else if classification.ends_with("_scale_order_mismatch") {
+            "raw-QK scale placement"
+        } else if classification.ends_with("_output_rounding_mismatch") {
+            "raw-QK output rounding boundary"
+        } else if classification.ends_with("_artifact_precision_boundary") {
+            "single BF16-ULP-like raw-QK artifact precision/readout boundary"
+        } else {
+            "raw-QK single-entry mismatch did not propagate downstream"
+        },
+        "downstream_propagation": {
+            "masked_logits_mismatch": masked_logits_mismatch,
+            "masked_logits_value": {
+                "local": current_local_value,
+                "official": official_masked_value,
+                "abs_diff": (current_local_value - official_masked_value).abs(),
+            },
+            "attention_probs_exact": attention_probs_exact,
+            "weighted_v_exact": weighted_v_exact,
+            "o_proj_exact": o_proj_exact,
+            "attention_probabilities_metric": prior_status.pointer("/attention_metrics/attention_probabilities/metrics").cloned().unwrap_or(Value::Null),
+            "weighted_v_metric": prior_status.pointer("/attention_metrics/weighted_v/metric/metrics").cloned().unwrap_or(Value::Null),
+            "o_proj_metric": prior_status.pointer("/attention_metrics/o_proj/metrics").cloned().unwrap_or(Value::Null),
+        },
+        "artifacts": {
+            "raw_qk": raw_status,
+            "masked_logits": masked_status,
+            "attention_probs": probs_status,
+        },
+        "next_bounded_step": if classification.ends_with("_artifact_precision_boundary")
+            || classification.ends_with("_downstream_nonpropagating")
+        {
+            "decide whether to request a raw-QK producer precision trace or document the single nonpropagating ordered seam blocker; do not apply tolerance as a fix"
+        } else {
+            "localize the reported raw-QK policy/source mismatch before claiming full ordered attention seam parity"
+        },
     });
     write_json(&cli.output, &status)
 }

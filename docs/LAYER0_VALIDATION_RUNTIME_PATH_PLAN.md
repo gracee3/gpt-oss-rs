@@ -3648,6 +3648,70 @@ server, or 4097-token claim. Next bounded step: localize the layer3 raw-QK /
 masked-logit single-entry mismatch before treating layer3 as a full ordered
 attention seam pass.
 
+## Layer3 Raw-QK Single Mismatch Debug Status
+
+Focused consumer debug status:
+
+```text
+/tmp/layer3_raw_qk_single_mismatch_debug_status.json
+classification = layer3_raw_qk_single_mismatch_accumulation_policy_mismatch
+```
+
+The mismatch is:
+
+```text
+layer = 3
+q_head = 2
+key_column = 1
+kv_head = 0
+scale = 0.125
+local = 0.000293731689453125
+official = 0.0002918243408203125
+diff = 0.0000019073486328125
+```
+
+The Q post-RoPE vector and grouped K post-RoPE vector were read from the ordered
+attention bundle and were finite. Prior source seam metrics for Q post-RoPE were
+exact, and the grouped K post-RoPE source is the ordered all-token K history.
+The GQA probe confirms `kv_head = q_head / 8 = 0`; alternate KV-head choices do
+not approach the official value. Column 1 is a real-token column, so sink
+handling is irrelevant.
+
+Dot-product variants localize the difference to accumulation order and output
+rounding at the BF16 boundary:
+
+```text
+current sequential f32, scale after sum, BF16 output:
+  0.000293731689453125
+reverse f32, scale after sum, BF16 output:
+  0.0002918243408203125
+pairwise f32, scale after sum, BF16 output:
+  0.0002918243408203125
+f64 diagnostic, scale after sum, BF16 output:
+  0.0002918243408203125
+deterministic abs-ascending f32:
+  0.000293731689453125
+BF16-product evidence policy:
+  -0.00933837890625
+```
+
+The official value and the current local value are adjacent BF16 lattice values.
+The same one-entry mismatch appears in masked logits, but attention
+probabilities, weighted V, and o-proj remain exact:
+
+```text
+masked logits mismatches = 1
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+```
+
+No tolerance or correction was applied. This is validation-only localization,
+not a runtime policy change. Layer3 remains blocked from a strict full ordered
+attention seam pass until the raw-QK accumulation convention is matched or
+separately scoped. No layer3 output was emitted, the ladder was not continued,
+and there is no final-logit, all-layer, server, or 4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

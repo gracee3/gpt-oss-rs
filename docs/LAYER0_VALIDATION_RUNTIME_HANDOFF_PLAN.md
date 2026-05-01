@@ -1422,6 +1422,72 @@ behavior, and does not claim final logits, all-layer parity, server parity, or
 4097-token coverage. Next bounded step: localize the layer3 raw-QK/masked-logit
 single-entry mismatch before claiming full ordered layer3 attention seam parity.
 
+## Layer3 Raw-QK Single Mismatch Debug Status
+
+The consumer-side focused debug mode localized the one remaining layer3
+raw-QK/masked-logit mismatch:
+
+```text
+/tmp/layer3_raw_qk_single_mismatch_debug_status.json
+classification = layer3_raw_qk_single_mismatch_accumulation_policy_mismatch
+
+layer = 3
+q_head = 2
+key_column = 1
+kv_head = 0
+scale = 0.125
+local = 0.000293731689453125
+official = 0.0002918243408203125
+diff = 0.0000019073486328125
+```
+
+The selected Q post-RoPE and grouped K post-RoPE source vectors loaded from the
+ordered attention bundle were finite and matched the prior source seam checks.
+The GQA mapping check kept the expected `kv_head = q_head / 8 = 0`; alternate
+KV heads were far from the official value, so the mismatch is not a head mapping
+or sink-column issue. Column 1 is a real-token column, not the sink column.
+
+Dot-product variant results:
+
+```text
+current sequential f32, scale after sum, BF16 output:
+  0.000293731689453125
+
+reverse f32, scale after sum, BF16 output:
+  0.0002918243408203125
+
+pairwise f32, scale after sum, BF16 output:
+  0.0002918243408203125
+
+f64 diagnostic, scale after sum, BF16 output:
+  0.0002918243408203125
+
+deterministic abs-ascending f32:
+  0.000293731689453125
+
+BF16-product evidence policy:
+  -0.00933837890625
+```
+
+The local and official raw-QK values are adjacent BF16 lattice values at this
+magnitude. The earliest localized mismatch source is the raw-QK dot-product
+accumulation policy. The same one-entry difference appears in masked logits, but
+it does not propagate:
+
+```text
+masked logits mismatches = 1
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+```
+
+No tolerance, correction metadata, or runtime policy change was applied. Layer3
+still should not be recorded as a strict full ordered attention seam pass until
+the raw-QK accumulation convention is either matched or explicitly scoped as a
+validation-only diagnostic. No layer3 output was emitted, the ladder was not
+continued, no runtime/default routing/CUDA behavior changed, and there is no
+final-logit, all-layer, server, or 4097-token claim.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
