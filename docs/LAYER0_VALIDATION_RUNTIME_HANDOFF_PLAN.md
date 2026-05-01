@@ -1892,6 +1892,67 @@ add or use an explicit validation-only weighted-V accumulation policy, with
 pairwise f32 as the conventional deterministic candidate, before rerunning the
 layer5 attention audit/full bundle path.
 
+## Layer5 Ordered Bundle Validation With Weighted-V Policy
+
+The layer5 weighted-V policy candidate was then consumed by the attention audit
+and full split-status bundle validator:
+
+```text
+weighted-V policy source:
+  /tmp/layer5_weighted_v_single_mismatch_debug_status.json
+
+pairwise audit:
+  /tmp/layer5_ordered_attention_audit_validate_pairwise_weighted_v_status.json
+  classification =
+    layer5_ordered_attention_audit_weighted_v_and_residual_cleared_with_weighted_v_policy
+
+reverse audit, corroborating:
+  /tmp/layer5_ordered_attention_audit_validate_reverse_weighted_v_status.json
+
+full bundle validation:
+  /tmp/layer5_ordered_bundle_validate_pairwise_weighted_v_status.json
+  classification =
+    layer5_ordered_bundle_validate_weighted_v_policy_attention_mismatch
+
+selected MLP down replay:
+  /tmp/layer5_selected_mlp_down_policy_replay_status.json
+  classification =
+    layer5_selected_mlp_down_policy_replay_full_mlp_cleared
+
+summary:
+  /tmp/layer5_ordered_consumer_surface_status.json
+  classification =
+    layer5_ordered_consumer_bundle_validation_failed_under_weighted_v_policy
+```
+
+Under explicit validation-only `pairwise_f32_bf16_output`, weighted V is exact
+against the ordered reference, and the attention residual recompute plus
+attention-to-MLP bridge remain exact. The full ordered bundle validation then
+clears raw QK, masked logits, attention probabilities, weighted V, the bridge,
+MLP norm, router/top-k, and routing weights, but it stops on an o-proj
+mismatch:
+
+```text
+o-proj mismatches = 1
+o-proj max_abs_diff = 0.0009765625
+first/worst lane = 2602
+```
+
+The layer5 ordered MLP bundle was also replayed because the bridge/MLP input is
+exact. Baseline current sequential MLP down has one selected-output mismatch
+and one weighted-sum mismatch while final output remains exact. Deterministic
+abs-ascending clears selected outputs, weighted sum, and final output.
+BF16-product remains evidence-only/rejected with broad collateral mismatches:
+3432 selected-output, 1025 weighted-sum, and 441 final-output mismatches.
+
+No tolerance or correction was applied. The weighted-V policy is
+validation-only and is not default runtime behavior. No runtime/default
+routing/CUDA behavior changed, no layer5 output was emitted, the ladder was
+not continued, and there is no final-logit, all-layer, server, or 4097-token
+claim. Next bounded step: localize the layer5 o-proj mismatch under the
+explicit pairwise weighted-V policy before any layer5 output emission or
+ladder continuation.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

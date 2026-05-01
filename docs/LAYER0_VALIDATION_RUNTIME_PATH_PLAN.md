@@ -4114,6 +4114,84 @@ Next bounded step: rerun the layer5 audit/full ordered bundle path only after
 adding an explicit validation-only weighted-V accumulation policy, preferably
 pairwise f32 if it is promoted from this guard to a full audit policy.
 
+## Layer5 Ordered Bundle Validation With Weighted-V Policy
+
+Layer5 weighted-V was rerun under the explicit validation-only pairwise policy:
+
+```text
+/tmp/layer5_ordered_attention_audit_validate_pairwise_weighted_v_status.json
+classification =
+  layer5_ordered_attention_audit_weighted_v_and_residual_cleared_with_weighted_v_policy
+
+weighted_v_accum_policy = pairwise_f32_bf16_output
+weighted V mismatches = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The reverse weighted-V policy also clears the audit as corroborating evidence:
+
+```text
+/tmp/layer5_ordered_attention_audit_validate_reverse_weighted_v_status.json
+classification =
+  layer5_ordered_attention_audit_weighted_v_and_residual_cleared_with_weighted_v_policy
+```
+
+The full ordered bundle validator was then rerun with pairwise weighted V:
+
+```text
+/tmp/layer5_ordered_bundle_validate_pairwise_weighted_v_status.json
+classification =
+  layer5_ordered_bundle_validate_weighted_v_policy_attention_mismatch
+
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o-proj mismatches = 1
+o-proj max_abs_diff = 0.0009765625
+o-proj first/worst lane = 2602
+attention-to-MLP bridge mismatches = 0
+```
+
+The selected MLP down replay was run because the bridge into the ordered MLP
+bundle is exact:
+
+```text
+/tmp/layer5_selected_mlp_down_policy_replay_status.json
+classification = layer5_selected_mlp_down_policy_replay_full_mlp_cleared
+
+baseline current sequential:
+  selected-output mismatches = 1
+  weighted-sum mismatches = 1
+  final-output mismatches = 0
+
+deterministic abs-ascending:
+  selected-output mismatches = 0
+  weighted-sum mismatches = 0
+  final-output mismatches = 0
+
+BF16-product evidence policy:
+  selected-output mismatches = 3432
+  weighted-sum mismatches = 1025
+  final-output mismatches = 441
+```
+
+The compact consumer summary now records:
+
+```text
+/tmp/layer5_ordered_consumer_surface_status.json
+classification =
+  layer5_ordered_consumer_bundle_validation_failed_under_weighted_v_policy
+```
+
+This is validation-only evidence. The weighted-V policy is not production or
+default runtime behavior, BF16-product remains rejected, no tolerance or
+correction was applied, no layer5 output was emitted, the ladder was not
+continued, and there is no final-logit, all-layer, server, or 4097-token
+claim. Next bounded step: localize the layer5 o-proj mismatch under explicit
+pairwise weighted-V before any output emission or ladder continuation.
+
 ## Validation Commands
 
 For the skeleton slice:

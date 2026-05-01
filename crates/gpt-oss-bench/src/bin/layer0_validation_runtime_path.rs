@@ -171,6 +171,10 @@ struct Cli {
     #[arg(long, default_value = "current")]
     attention_oproj_policy: String,
 
+    /// Validation-only weighted-V accumulation/output policy.
+    #[arg(long, default_value = "current")]
+    weighted_v_accum_policy: String,
+
     /// Start layer for generic ladder validation.
     #[arg(long, default_value_t = 0)]
     start_layer: usize,
@@ -4268,6 +4272,9 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let v_history_count = cli.token_count * kv_dim;
     let probs_count = cli.query_heads * (cli.token_count + 1);
     anyhow::ensure!(lane < q_dim, "focus lane must be < {q_dim}, got {lane}");
+    let weighted_v_policy = parse_weighted_v_accum_policy(&cli.weighted_v_accum_policy)?;
+    let weighted_v_policy_explicit =
+        !matches!(weighted_v_policy, WeightedVAccumPolicy::CurrentSequential);
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -4302,11 +4309,12 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     } else {
         prior_status
             .as_ref()
-            .context("attention audit validation needs --mlp-bundle-status when --ordered-bundle-validate-status is absent")?
-            .get("mlp_bundle_status")
+            .and_then(|status| status.get("mlp_bundle_status"))
             .and_then(Value::as_str)
             .map(PathBuf::from)
-            .context("prior ordered validation status missing mlp_bundle_status")?
+            .unwrap_or_else(|| {
+                PathBuf::from(format!("/tmp/layer{layer}_ordered_mlp_bundle_status.json"))
+            })
     };
     validate_path(&mlp_status_path, "MLP bundle status")?;
     let mlp_status = load_json(&mlp_status_path)?;
@@ -4363,7 +4371,13 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let (weighted_v_metrics, weighted_v_focus) = if schema_blocked {
         (Value::Null, Value::Null)
     } else {
-        let weighted_v = compute_weighted_v(&attention_probs, &all_token_v, cli, true);
+        let weighted_v = compute_weighted_v_with_policy(
+            &attention_probs,
+            &all_token_v,
+            cli,
+            true,
+            weighted_v_policy,
+        );
         let metric = compare_hidden(&weighted_v, &weighted_v_oracle);
         (
             json!(metric),
@@ -4407,7 +4421,17 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let weighted_clear = !schema_blocked && metric_mismatches(&weighted_v_metrics) == 0;
     let residual_clear = !schema_blocked && metric_mismatches(&attention_residual_metrics) == 0;
     let bridge_clear = !schema_blocked && metric_mismatches(&attention_to_mlp_bridge) == 0;
-    let classification = if schema_blocked {
+    let classification = if weighted_v_policy_explicit && schema_blocked {
+        format!("{classification_prefix}_weighted_v_policy_blocked_by_schema")
+    } else if weighted_v_policy_explicit && !weighted_clear {
+        format!("{classification_prefix}_weighted_v_policy_mismatch")
+    } else if weighted_v_policy_explicit && !residual_clear {
+        format!("{classification_prefix}_weighted_v_policy_residual_mismatch")
+    } else if weighted_v_policy_explicit && !bridge_clear {
+        format!("{classification_prefix}_weighted_v_policy_bridge_mismatch")
+    } else if weighted_v_policy_explicit {
+        format!("{classification_prefix}_weighted_v_and_residual_cleared_with_weighted_v_policy")
+    } else if schema_blocked {
         format!("{classification_prefix}_blocked_by_schema")
     } else if !weighted_clear {
         format!("{classification_prefix}_weighted_v_mismatch")
@@ -4419,7 +4443,7 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         format!("{classification_prefix}_weighted_v_and_residual_cleared")
     };
 
-    let remaining_caveats = if classification.ends_with("_weighted_v_and_residual_cleared") {
+    let remaining_caveats = if weighted_clear && residual_clear && bridge_clear {
         vec![
             "layer ladder not continued",
             "no final-logit claim",
@@ -4435,6 +4459,14 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
             "no server or 4097-token claim",
         ]
     };
+    let weighted_v_policy_source_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_weighted_v_single_mismatch_debug_status.json"
+    ));
+    let weighted_v_policy_source_status = if weighted_v_policy_source_status_path.exists() {
+        load_json(&weighted_v_policy_source_status_path).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -4447,6 +4479,16 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         "validation_only": true,
         "layer_index": layer,
         "focus_lane": lane,
+        "weighted_v_accum_policy": weighted_v_policy.name(),
+        "weighted_v_accum_policy_requested": cli.weighted_v_accum_policy.as_str(),
+        "weighted_v_accum_policy_validation_only": true,
+        "weighted_v_policy_source_status": {
+            "path": weighted_v_policy_source_status_path.display().to_string(),
+            "classification": weighted_v_policy_source_status
+                .get("classification")
+                .cloned()
+                .unwrap_or(Value::Null),
+        },
         "attention_bundle_status": attention_status_path.display().to_string(),
         "attention_audit_status": audit_status_path.display().to_string(),
         "ordered_bundle_validate_status": cli.ordered_bundle_validate_status
@@ -4484,6 +4526,8 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         },
         "source_policy": {
             "weighted_v": "recomputed_from_attention_probs_and_audit_all_token_v_real_tokens_only",
+            "weighted_v_accum_policy": weighted_v_policy.name(),
+            "weighted_v_accum_policy_is_default_runtime": false,
             "sink_column": "participates in softmax normalization but is ignored for weighted-V summation",
             "gqa_mapping": "kv_head = q_head / heads_per_kv",
             "attention_residual": "BF16 layer input plus BF16 o_proj, BF16 output",
@@ -4503,8 +4547,14 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
                 .unwrap_or_else(|| json!("not_provided")),
             "mlp_classification": mlp_status["classification"].clone(),
         },
-        "next_bounded_step": if classification.ends_with("_weighted_v_and_residual_cleared") {
+        "next_bounded_step": if classification.ends_with("_weighted_v_and_residual_cleared_with_weighted_v_policy") {
+                "run full layer ordered bundle validation with the same explicit validation-only weighted-V policy; do not emit output or continue the ladder"
+            }
+            else if classification.ends_with("_weighted_v_and_residual_cleared") {
                 "record that weighted-V and attention residual-add audit caveats are cleared; do not continue the ladder in this slice"
+            }
+            else if classification.ends_with("_weighted_v_policy_mismatch") {
+                "localize why the explicit weighted-V accumulation policy failed before running full ordered bundle validation"
             }
             else if classification.ends_with("_weighted_v_mismatch") {
                 "localize weighted-V policy, sink-column handling, GQA mapping, shape/layout, or rounding before using the audit surface"
@@ -6154,6 +6204,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let raw_qk_policy_explicit = !matches!(raw_qk_policy, RawQkSweepPolicy::CurrentSequential);
     let oproj_policy = parse_attention_oproj_policy(&cli.attention_oproj_policy)?;
     let oproj_policy_explicit = cli.attention_oproj_policy.as_str() != "current";
+    let weighted_v_policy = parse_weighted_v_accum_policy(&cli.weighted_v_accum_policy)?;
+    let weighted_v_policy_explicit =
+        !matches!(weighted_v_policy, WeightedVAccumPolicy::CurrentSequential);
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -6162,6 +6215,14 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         PathBuf::from(format!("/tmp/layer{layer}_raw_qk_policy_sweep_status.json"));
     let raw_qk_policy_source_status = if raw_qk_policy_source_status_path.exists() {
         load_json(&raw_qk_policy_source_status_path).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let weighted_v_policy_source_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_weighted_v_single_mismatch_debug_status.json"
+    ));
+    let weighted_v_policy_source_status = if weighted_v_policy_source_status_path.exists() {
+        load_json(&weighted_v_policy_source_status_path).unwrap_or(Value::Null)
     } else {
         Value::Null
     };
@@ -6352,7 +6413,13 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             .is_some_and(|(status, _)| status.shape_or_count_matched);
     let (weighted_v_metric, weighted_v_source, weighted_v_for_oproj, audit_all_token_v_status) =
         if base_all_token_v_emitted {
-            let weighted_v = compute_weighted_v(&attention_probs, &v_values, cli, true);
+            let weighted_v = compute_weighted_v_with_policy(
+                &attention_probs,
+                &v_values,
+                cli,
+                true,
+                weighted_v_policy,
+            );
             let metric = compare_matrix(
                 &weighted_v,
                 &weighted_v_oracle,
@@ -6362,13 +6429,23 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             );
             (
                 Some(metric),
-                "recomputed_from_all_token_v_boundary",
+                if weighted_v_policy_explicit {
+                    "recomputed_from_all_token_v_boundary_with_weighted_v_accum_policy"
+                } else {
+                    "recomputed_from_all_token_v_boundary"
+                },
                 weighted_v,
                 Value::Null,
             )
         } else if let Some((artifact_status, values)) = audit_all_token_v {
             if artifact_status.shape_or_count_matched {
-                let weighted_v = compute_weighted_v(&attention_probs, &values, cli, true);
+                let weighted_v = compute_weighted_v_with_policy(
+                    &attention_probs,
+                    &values,
+                    cli,
+                    true,
+                    weighted_v_policy,
+                );
                 let metric = compare_matrix(
                     &weighted_v,
                     &weighted_v_oracle,
@@ -6378,7 +6455,11 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
                 );
                 (
                     Some(metric),
-                    "recomputed_from_attention_audit_all_token_v_boundary",
+                    if weighted_v_policy_explicit {
+                        "recomputed_from_attention_audit_all_token_v_boundary_with_weighted_v_accum_policy"
+                    } else {
+                        "recomputed_from_attention_audit_all_token_v_boundary"
+                    },
                     weighted_v,
                     json!(artifact_status),
                 )
@@ -6645,9 +6726,15 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         && topk_ordered_match
         && routing_weights_metric.metrics.mismatches == 0;
     let classification = if attention_shape_blocked {
-        format!("{classification_prefix}_blocked_by_schema")
+        if weighted_v_policy_explicit {
+            format!("{classification_prefix}_weighted_v_policy_blocked_by_schema")
+        } else {
+            format!("{classification_prefix}_blocked_by_schema")
+        }
     } else if !attention_seams_clear {
-        if oproj_policy_explicit {
+        if weighted_v_policy_explicit {
+            format!("{classification_prefix}_weighted_v_policy_attention_mismatch")
+        } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_attention_mismatch")
         } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_attention_mismatch")
@@ -6655,7 +6742,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_attention_seam_mismatch")
         }
     } else if !bridge_clear {
-        if oproj_policy_explicit {
+        if weighted_v_policy_explicit {
+            format!("{classification_prefix}_weighted_v_policy_bridge_mismatch")
+        } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_bridge_mismatch")
         } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_bridge_mismatch")
@@ -6663,7 +6752,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
         }
     } else if !mlp_guards_clear {
-        if oproj_policy_explicit {
+        if weighted_v_policy_explicit {
+            format!("{classification_prefix}_weighted_v_policy_mlp_mismatch")
+        } else if oproj_policy_explicit {
             format!("{classification_prefix}_oproj_policy_mlp_mismatch")
         } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_mlp_mismatch")
@@ -6671,7 +6762,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_mlp_seam_mismatch")
         }
     } else if deterministic_clears || baseline_clears {
-        if oproj_policy_explicit {
+        if weighted_v_policy_explicit {
+            format!("{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_policy")
+        } else if oproj_policy_explicit {
             format!("{classification_prefix}_attention_cleared_mlp_cleared_with_oproj_policy")
         } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_attention_cleared_mlp_cleared_with_raw_qk_policy")
@@ -6697,6 +6790,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "focus_lane": lane,
         "raw_qk_accum_policy": raw_qk_policy.name(),
         "raw_qk_accum_policy_requested": cli.raw_qk_accum_policy.as_str(),
+        "weighted_v_accum_policy": weighted_v_policy.name(),
+        "weighted_v_accum_policy_requested": cli.weighted_v_accum_policy.as_str(),
+        "weighted_v_accum_policy_validation_only": true,
         "attention_oproj_policy": oproj_policy.name(),
         "attention_oproj_policy_requested": cli.attention_oproj_policy.as_str(),
         "attention_oproj_policy_validation_only": true,
@@ -6706,6 +6802,15 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             Value::Null
         },
         "raw_qk_policy_source_classification": raw_qk_policy_source_status
+            .get("classification")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "weighted_v_policy_source_status": if weighted_v_policy_source_status_path.exists() {
+            json!(weighted_v_policy_source_status_path.display().to_string())
+        } else {
+            Value::Null
+        },
+        "weighted_v_policy_source_classification": weighted_v_policy_source_status
             .get("classification")
             .cloned()
             .unwrap_or(Value::Null),
@@ -6731,10 +6836,12 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "all_token_v_emitted": attention_status
             .get("all_token_v_emitted")
             .and_then(Value::as_bool)
-            .unwrap_or(all_token_v_emitted),
+            .unwrap_or(false) || all_token_v_emitted,
         "attention_metrics": {
             "raw_qk_accum_policy": raw_qk_policy.name(),
             "raw_qk_accum_policy_validation_only": true,
+            "weighted_v_accum_policy": weighted_v_policy.name(),
+            "weighted_v_accum_policy_validation_only": true,
             "o_proj_policy": oproj_policy.name(),
             "o_proj_policy_validation_only": true,
             "q_pre_rope": {
@@ -6767,6 +6874,10 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "attention_probabilities": attention_probs_metric,
             "weighted_v": {
                 "source": weighted_v_source,
+                "policy": weighted_v_policy.name(),
+                "policy_description": weighted_v_policy.description(),
+                "policy_diagnostic_only": weighted_v_policy.diagnostic_only(),
+                "policy_validation_only": true,
                 "metric": weighted_v_metric,
             },
             "o_proj": oproj_metric,
@@ -6824,6 +6935,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "next_bounded_step": if classification.ends_with("_attention_cleared_mlp_cleared") {
                 "record source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
             }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_weighted_v_policy") {
+                "record ordered layer validation under explicit validation-only weighted-V accumulation policy; do not emit output or continue the ladder"
+            }
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_raw_qk_policy") {
                 "record ordered layer validation under explicit validation-only raw-QK accumulation policy; do not continue the ladder in this slice"
             }
@@ -6846,6 +6960,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "validation_only": true,
             "layer_ladder_continued": false,
             "raw_qk_accum_policy_is_default_runtime": false,
+            "weighted_v_accum_policy_is_default_runtime": false,
             "attention_oproj_policy_is_default_runtime": false,
             "source_complete_attention_claim_limited_to_ordered_bundle_surface": true,
             "all_token_v_used_by_oracle_internally_but_not_emitted_as_base_boundary": !base_all_token_v_emitted,
@@ -14066,6 +14181,60 @@ fn compute_raw_qk(q_final: &[f32], k_post: &[f32], cli: &Cli) -> Vec<f32> {
 }
 
 #[derive(Clone, Copy)]
+enum WeightedVAccumPolicy {
+    CurrentSequential,
+    PairwiseF32,
+    ReverseF32,
+    F64Diagnostic,
+}
+
+impl WeightedVAccumPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CurrentSequential => "current_sequential_f32_tokens_0_to_73_bf16_output",
+            Self::PairwiseF32 => "pairwise_f32_bf16_output",
+            Self::ReverseF32 => "reverse_f32_tokens_73_to_0_bf16_output",
+            Self::F64Diagnostic => "f64_diagnostic_bf16_output",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::CurrentSequential => {
+                "sequential f32 weighted-V sum over real tokens, BF16 output"
+            }
+            Self::PairwiseF32 => "pairwise f32 weighted-V sum over real tokens, BF16 output",
+            Self::ReverseF32 => "reverse f32 weighted-V sum over real tokens, BF16 output",
+            Self::F64Diagnostic => "f64 diagnostic weighted-V sum over real tokens, BF16 output",
+        }
+    }
+
+    fn diagnostic_only(self) -> bool {
+        matches!(self, Self::F64Diagnostic)
+    }
+}
+
+fn parse_weighted_v_accum_policy(value: &str) -> Result<WeightedVAccumPolicy> {
+    match value {
+        "current" | "current-sequential" | "current_sequential_f32_tokens_0_to_73_bf16_output" => {
+            Ok(WeightedVAccumPolicy::CurrentSequential)
+        }
+        "pairwise" | "pairwise-f32" | "pairwise_f32_bf16_output" => {
+            Ok(WeightedVAccumPolicy::PairwiseF32)
+        }
+        "reverse" | "reverse-f32" | "reverse_f32_tokens_73_to_0_bf16_output" => {
+            Ok(WeightedVAccumPolicy::ReverseF32)
+        }
+        "f64-diagnostic" | "f64" | "f64_diagnostic_bf16_output" => {
+            Ok(WeightedVAccumPolicy::F64Diagnostic)
+        }
+        other => anyhow::bail!(
+            "unsupported weighted-V accumulation policy {other:?}; expected current, pairwise, reverse, or f64-diagnostic"
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
 enum RawQkSweepPolicy {
     CurrentSequential,
     ReverseF32,
@@ -14236,17 +14405,46 @@ fn compute_weighted_v(
     cli: &Cli,
     round_output_bf16: bool,
 ) -> Vec<f32> {
+    compute_weighted_v_with_policy(
+        probs,
+        v_values,
+        cli,
+        round_output_bf16,
+        WeightedVAccumPolicy::CurrentSequential,
+    )
+}
+
+fn compute_weighted_v_with_policy(
+    probs: &[f32],
+    v_values: &[f32],
+    cli: &Cli,
+    round_output_bf16: bool,
+    policy: WeightedVAccumPolicy,
+) -> Vec<f32> {
     let prob_width = cli.token_count + 1;
     let mut output = vec![0.0f32; cli.query_heads * cli.head_dim];
     for q_head in 0..cli.query_heads {
         let kv_head = q_head / cli.heads_per_kv;
         for lane in 0..cli.head_dim {
-            let mut sum = 0.0f32;
-            for token in 0..cli.token_count {
-                let prob = probs[q_head * prob_width + token];
-                let v_idx = (token * cli.kv_heads + kv_head) * cli.head_dim + lane;
-                sum += prob * v_values[v_idx];
-            }
+            let terms = (0..cli.token_count)
+                .map(|token| {
+                    let prob = probs[q_head * prob_width + token];
+                    let v_idx = (token * cli.kv_heads + kv_head) * cli.head_dim + lane;
+                    prob * v_values[v_idx]
+                })
+                .collect::<Vec<_>>();
+            let sum = match policy {
+                WeightedVAccumPolicy::CurrentSequential => {
+                    terms.iter().fold(0.0f32, |sum, value| sum + *value)
+                }
+                WeightedVAccumPolicy::PairwiseF32 => pairwise_sum_f32(&terms),
+                WeightedVAccumPolicy::ReverseF32 => {
+                    terms.iter().rev().fold(0.0f32, |sum, value| sum + *value)
+                }
+                WeightedVAccumPolicy::F64Diagnostic => {
+                    terms.iter().map(|&value| value as f64).sum::<f64>() as f32
+                }
+            };
             output[q_head * cli.head_dim + lane] = if round_output_bf16 {
                 round_bf16(sum)
             } else {
