@@ -413,6 +413,14 @@ struct Cli {
     #[arg(long, alias = "focus-lane", default_value_t = 522)]
     lane: usize,
 
+    /// Comma-separated focus lanes for compact multi-lane replay summaries.
+    #[arg(long)]
+    focus_lanes: Option<String>,
+
+    /// Use the fixed selected MLP down-policy multi-lane smoke lane list.
+    #[arg(long, default_value_t = false)]
+    multi_lane_smoke: bool,
+
     /// Selected-expert rank for focused lane-local diagnostics.
     #[arg(long, default_value_t = 0)]
     rank: usize,
@@ -8747,10 +8755,36 @@ fn run_selected_mlp_down_policy_candidate_status(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn parse_focus_lanes(cli: &Cli, hidden: usize) -> Result<Vec<usize>> {
+    let mut lanes = if let Some(raw) = cli.focus_lanes.as_deref() {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid focus lane {value:?}"))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else if cli.multi_lane_smoke {
+        vec![0, 1, 2, 127, 248, 522, 1024, 1480, 1990, 2108, 2269, 2879]
+    } else {
+        vec![cli.lane]
+    };
+    lanes.sort_unstable();
+    lanes.dedup();
+    anyhow::ensure!(!lanes.is_empty(), "at least one focus lane is required");
+    for &lane in &lanes {
+        anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+    }
+    Ok(lanes)
+}
+
 #[cfg(feature = "cuda")]
 fn build_selected_mlp_down_policy_replay_status(
     layer: usize,
     lane: usize,
+    focus_lanes: &[usize],
     norm_reduction_policy: &str,
     model: &Path,
     ordered_status_path: &Path,
@@ -8762,6 +8796,16 @@ fn build_selected_mlp_down_policy_replay_status(
     let hidden = 2880usize;
     let selected_count = 4usize;
     anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
+    anyhow::ensure!(
+        !focus_lanes.is_empty(),
+        "at least one focus lane is required"
+    );
+    for &focus_lane in focus_lanes {
+        anyhow::ensure!(
+            focus_lane < hidden,
+            "focus lane must be < {hidden}, got {focus_lane}"
+        );
+    }
 
     validate_path(ordered_status_path, "ordered MLP bundle status")?;
     anyhow::ensure!(
@@ -9092,6 +9136,36 @@ fn build_selected_mlp_down_policy_replay_status(
                 })
             })
             .collect::<Vec<_>>();
+        let requested_focus_lanes = focus_lanes
+            .iter()
+            .map(|&focus_lane| {
+                let selected_outputs_by_rank = (0..selected_count)
+                    .map(|rank| {
+                        let index = rank * hidden + focus_lane;
+                        json!({
+                            "rank": rank,
+                            "expert": selected_experts[rank],
+                            "candidate": selected_matrix[index],
+                            "oracle": ordered_selected_outputs[index],
+                            "abs_diff": (selected_matrix[index] - ordered_selected_outputs[index]).abs(),
+                            "matched": selected_matrix[index] == ordered_selected_outputs[index],
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "hidden_lane": focus_lane,
+                    "selected_outputs_by_rank": selected_outputs_by_rank,
+                    "weighted_sum": scalar_comparison(weighted_sum[focus_lane], ordered_weighted_sum[focus_lane]),
+                    "final_output": scalar_comparison(final_output[focus_lane], ordered_final_output[focus_lane]),
+                    "all_selected_outputs_match": (0..selected_count).all(|rank| {
+                        let index = rank * hidden + focus_lane;
+                        selected_matrix[index] == ordered_selected_outputs[index]
+                    }),
+                    "weighted_sum_matches": weighted_sum[focus_lane] == ordered_weighted_sum[focus_lane],
+                    "final_output_matches": final_output[focus_lane] == ordered_final_output[focus_lane],
+                })
+            })
+            .collect::<Vec<_>>();
 
         let result = json!({
             "policy": policy.name(),
@@ -9122,6 +9196,11 @@ fn build_selected_mlp_down_policy_replay_status(
                 "start": lane_window_start,
                 "end": lane_window_end,
                 "comparisons": lane_window_comparisons,
+            },
+            "requested_focus_lanes": {
+                "lanes": focus_lanes,
+                "comparisons": requested_focus_lanes,
+                "full_vector_metrics_are_authoritative": true,
             },
             "clears_focus_lane": clears_focus_lane,
             "clears_all_selected_outputs": clears_all_selected_outputs,
@@ -9214,6 +9293,7 @@ fn build_selected_mlp_down_policy_replay_status(
         "validation_only": true,
         "layer_index": layer,
         "focus_lane": lane,
+        "focus_lanes": focus_lanes,
         "ordered_mlp_status": ordered_status_path.display().to_string(),
         "ordered_mlp_seed_policy": ordered_mlp_seed_policy,
         "source_layer11_policy_replay_status": source_layer11_policy_replay_status,
@@ -9294,6 +9374,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     let status = build_selected_mlp_down_policy_replay_status(
         cli.layer_index,
         cli.lane,
+        &parse_focus_lanes(cli, 2880)?,
         &cli.norm_reduction_policy,
         model,
         ordered_status_path,
@@ -9339,6 +9420,112 @@ fn selected_mlp_policy_has_collateral(status: &Value, policy: &str) -> bool {
     })
 }
 
+fn selected_mlp_policy_focus_lanes_clear(status: &Value, policy: &str) -> bool {
+    selected_mlp_policy_result(status, policy).is_some_and(|result| {
+        result
+            .pointer("/requested_focus_lanes/comparisons")
+            .and_then(Value::as_array)
+            .is_some_and(|comparisons| {
+                !comparisons.is_empty()
+                    && comparisons.iter().all(|entry| {
+                        entry
+                            .get("all_selected_outputs_match")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                            && entry.get("weighted_sum_matches").and_then(Value::as_bool)
+                                == Some(true)
+                            && entry.get("final_output_matches").and_then(Value::as_bool)
+                                == Some(true)
+                    })
+            })
+    })
+}
+
+fn selected_mlp_surface_focus_lane_summary(status: &Value, lanes: &[usize]) -> Value {
+    let baseline_policy = DownCastSweepPolicy::CurrentSequentialF32.name();
+    let candidate_policy = DownCastSweepPolicy::AbsAscendingF32.name();
+    let rejected_policy = DownCastSweepPolicy::Bf16ProductThenF32.name();
+    let lane_for_policy = |policy: &str, lane: usize| -> Option<Value> {
+        selected_mlp_policy_result(status, policy)
+            .and_then(|result| {
+                result
+                    .pointer("/requested_focus_lanes/comparisons")
+                    .cloned()
+            })
+            .and_then(|value| {
+                value.as_array().and_then(|comparisons| {
+                    comparisons
+                        .iter()
+                        .find(|entry| {
+                            entry
+                                .get("hidden_lane")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|value| value as usize == lane)
+                        })
+                        .cloned()
+                })
+            })
+    };
+    let comparisons = lanes
+        .iter()
+        .map(|&lane| {
+            let baseline = lane_for_policy(baseline_policy, lane).unwrap_or_else(|| json!(null));
+            let candidate = lane_for_policy(candidate_policy, lane).unwrap_or_else(|| json!(null));
+            let rejected = lane_for_policy(rejected_policy, lane).unwrap_or_else(|| json!(null));
+            let candidate_matches_oracle = candidate
+                .get("all_selected_outputs_match")
+                .and_then(Value::as_bool)
+                == Some(true)
+                && candidate
+                    .get("weighted_sum_matches")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && candidate
+                    .get("final_output_matches")
+                    .and_then(Value::as_bool)
+                    == Some(true);
+            let baseline_mismatches = baseline
+                .get("all_selected_outputs_match")
+                .and_then(Value::as_bool)
+                != Some(true)
+                || baseline
+                    .get("weighted_sum_matches")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+                || baseline
+                    .get("final_output_matches")
+                    .and_then(Value::as_bool)
+                    != Some(true);
+            let bf16_product_mismatches = rejected
+                .get("all_selected_outputs_match")
+                .and_then(Value::as_bool)
+                != Some(true)
+                || rejected
+                    .get("weighted_sum_matches")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+                || rejected
+                    .get("final_output_matches")
+                    .and_then(Value::as_bool)
+                    != Some(true);
+            json!({
+                "hidden_lane": lane,
+                "baseline": baseline,
+                "deterministic_abs_ascending_candidate": candidate,
+                "bf16_product_evidence_policy": rejected,
+                "candidate_matches_oracle": candidate_matches_oracle,
+                "baseline_mismatches": baseline_mismatches,
+                "bf16_product_mismatches": bf16_product_mismatches,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "lanes": lanes,
+        "comparisons": comparisons,
+        "full_vector_metrics_are_authoritative": true,
+    })
+}
+
 #[cfg(feature = "cuda")]
 fn selected_mlp_replay_surface_status(
     surface: &str,
@@ -9346,6 +9533,7 @@ fn selected_mlp_replay_surface_status(
     required: bool,
     path: Option<&Path>,
     lane: usize,
+    focus_lanes: &[usize],
     norm_reduction_policy: &str,
     model: &Path,
 ) -> Value {
@@ -9374,6 +9562,7 @@ fn selected_mlp_replay_surface_status(
     match build_selected_mlp_down_policy_replay_status(
         layer,
         lane,
+        focus_lanes,
         norm_reduction_policy,
         model,
         path,
@@ -9395,11 +9584,30 @@ fn selected_mlp_replay_surface_status(
                 "routing_weights": status["routing_weights"].clone(),
                 "baseline": status["baseline"].clone(),
                 "policy_results": status["policy_results"].clone(),
+                "full_vector": {
+                    "baseline": {
+                        "selected_outputs": status["baseline"]["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
+                        "weighted_sum": status["baseline"]["weighted_sum"]["full_vector_metrics"].clone(),
+                        "final_output": status["baseline"]["final_output"]["full_vector_metrics"].clone(),
+                    },
+                    "deterministic_abs_ascending_candidate": selected_mlp_policy_result(&status, candidate).map(|result| json!({
+                        "selected_outputs": result["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
+                        "weighted_sum": result["weighted_sum"]["full_vector_metrics"].clone(),
+                        "final_output": result["final_output"]["full_vector_metrics"].clone(),
+                    })).unwrap_or_else(|| json!(null)),
+                    "bf16_product_evidence_policy": selected_mlp_policy_result(&status, rejected).map(|result| json!({
+                        "selected_outputs": result["selected_outputs_all_ranks"]["full_vector_metrics"].clone(),
+                        "weighted_sum": result["weighted_sum"]["full_vector_metrics"].clone(),
+                        "final_output": result["final_output"]["full_vector_metrics"].clone(),
+                    })).unwrap_or_else(|| json!(null)),
+                },
+                "focus_lanes": selected_mlp_surface_focus_lane_summary(&status, focus_lanes),
                 "best_policy_by_ordered_mlp_full_vector": status["best_policy_by_ordered_mlp_full_vector"].clone(),
                 "best_policy_by_focus_lane": status["best_policy_by_focus_lane"].clone(),
                 "candidate_policy": {
                     "policy": candidate,
                     "clears_available_surface": selected_mlp_policy_clears(&status, candidate),
+                    "clears_requested_focus_lanes": selected_mlp_policy_focus_lanes_clear(&status, candidate),
                     "introduces_collateral_mismatches": selected_mlp_policy_has_collateral(&status, candidate),
                 },
                 "bf16_product_evidence_policy": {
@@ -9470,6 +9678,8 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
         PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
     let model = cli.model.as_deref().unwrap_or(default_model.as_path());
     let candidate = DownCastSweepPolicy::AbsAscendingF32.name();
+    let focus_lanes = parse_focus_lanes(cli, 2880)?;
+    let multi_lane = focus_lanes.len() > 1;
 
     let mut surfaces = serde_json::Map::new();
     surfaces.insert(
@@ -9480,6 +9690,7 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
             true,
             cli.layer1_ordered_mlp_status.as_deref(),
             cli.lane,
+            &focus_lanes,
             &cli.norm_reduction_policy,
             model,
         ),
@@ -9492,6 +9703,7 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
             true,
             cli.layer2_ordered_mlp_status.as_deref(),
             cli.lane,
+            &focus_lanes,
             &cli.norm_reduction_policy,
             model,
         ),
@@ -9504,6 +9716,7 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
             false,
             cli.optional_layer11_ordered_mlp_status.as_deref(),
             cli.lane,
+            &focus_lanes,
             &cli.norm_reduction_policy,
             model,
         ),
@@ -9533,10 +9746,24 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
                 .and_then(Value::as_bool)
                 == Some(true)
         });
+    let candidate_clears_requested_focus_lanes = !available_surface_values.is_empty()
+        && available_surface_values.iter().all(|surface| {
+            surface
+                .pointer("/candidate_policy/clears_requested_focus_lanes")
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
     let required_candidate_clears = ["layer1", "layer2"].iter().all(|key| {
         surfaces
             .get(*key)
             .and_then(|surface| surface.pointer("/candidate_policy/clears_available_surface"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    let required_focus_lanes_clear = ["layer1", "layer2"].iter().all(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| surface.pointer("/candidate_policy/clears_requested_focus_lanes"))
             .and_then(Value::as_bool)
             == Some(true)
     });
@@ -9551,16 +9778,30 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
         .and_then(|surface| surface.get("available"))
         .and_then(Value::as_bool)
         == Some(true);
-    let classification = if required_missing {
+    let classification = if multi_lane && required_missing {
+        "selected_mlp_down_policy_candidate_multilane_blocked_by_missing_required_artifact"
+    } else if required_missing {
         "selected_mlp_down_policy_candidate_replay_blocked_by_missing_required_artifact"
+    } else if multi_lane && schema_or_execution_error {
+        "selected_mlp_down_policy_candidate_multilane_blocked_by_schema"
     } else if schema_or_execution_error {
         "selected_mlp_down_policy_candidate_replay_blocked_by_schema"
+    } else if multi_lane && candidate_collateral {
+        "selected_mlp_down_policy_candidate_multilane_collateral_mismatch"
     } else if candidate_collateral {
         "selected_mlp_down_policy_candidate_replay_collateral_mismatch"
+    } else if multi_lane && !candidate_clears_requested_focus_lanes {
+        "selected_mlp_down_policy_candidate_multilane_focus_lane_mismatch"
+    } else if multi_lane && candidate_clears_available_surfaces && layer11_available {
+        "selected_mlp_down_policy_candidate_multilane_available_surfaces_cleared"
     } else if candidate_clears_available_surfaces && layer11_available {
         "selected_mlp_down_policy_candidate_replay_validated_on_available_surfaces"
+    } else if multi_lane && required_candidate_clears && required_focus_lanes_clear {
+        "selected_mlp_down_policy_candidate_multilane_layer1_layer2_cleared"
     } else if required_candidate_clears {
         "selected_mlp_down_policy_candidate_replay_layer1_layer2_cleared"
+    } else if multi_lane {
+        "selected_mlp_down_policy_candidate_multilane_focus_lane_mismatch"
     } else {
         "selected_mlp_down_policy_candidate_replay_no_candidate_clears"
     };
@@ -9580,10 +9821,14 @@ fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()>
         "validation_only": true,
         "candidate_policy": candidate,
         "rejected_policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+        "focus_lanes": focus_lanes,
         "policy_registry": selected_mlp_down_policy_registry_status(),
         "surfaces": Value::Object(surfaces),
         "layer2_attention_audit": layer2_attention_audit,
         "candidate_clears_available_surfaces": candidate_clears_available_surfaces,
+        "candidate_clears_available_surfaces_full_vector": candidate_clears_available_surfaces,
+        "candidate_clears_requested_focus_lanes": candidate_clears_requested_focus_lanes,
+        "bf16_product_remains_rejected": true,
         "runtime_policy_discussion_allowed": false,
         "runtime_implementation_included": false,
         "remaining_gates": [

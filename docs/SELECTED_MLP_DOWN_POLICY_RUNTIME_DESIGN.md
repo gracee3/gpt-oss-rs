@@ -293,6 +293,22 @@ discussion remains disabled, production/default routing and CUDA kernels remain
 unchanged, no correction metadata is applied, and performance is still
 unassessed.
 
+The same replay mode also supports a deterministic multi-lane smoke summary
+using:
+
+```text
+--focus-lanes 0,1,2,127,248,522,1024,1480,1990,2108,2269,2879
+```
+
+The lane list includes edge lanes, historical localization lanes, and a small
+mid-vector checkpoint set. The smoke report is intentionally readable evidence
+only: the full-vector selected-output, weighted-sum, and final-output metrics
+remain authoritative. On the available local surfaces, layer1 and layer2 clear
+with the deterministic absolute-ascending candidate across both the full vector
+and the requested focus lanes. Layer11 remains docs-only provenance unless its
+local ordered bundle is present. Runtime policy discussion remains disabled and
+performance remains unassessed.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.
