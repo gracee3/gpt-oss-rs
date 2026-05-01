@@ -44,6 +44,10 @@ pub fn fused_qkv_num_elements(q_dim: usize, kv_dim: usize, hidden: usize) -> usi
     fused_qkv_dim(q_dim, kv_dim) * hidden
 }
 
+pub fn fused_qkv_bias_num_elements(q_dim: usize, kv_dim: usize) -> usize {
+    fused_qkv_dim(q_dim, kv_dim)
+}
+
 pub fn fused_gate_up_dim(intermediate: usize) -> usize {
     intermediate * 2
 }
@@ -178,6 +182,17 @@ mod tests {
             (q_dim + kv_dim + kv_dim) * hidden
         );
         assert_eq!(fused_qkv_shape(q_dim, kv_dim, hidden), [96, 128]);
+    }
+
+    #[test]
+    fn fused_f16_qkv_bias_num_elements_matches_concat_formula() {
+        let q_dim = 64;
+        let kv_dim = 16;
+
+        assert_eq!(
+            fused_qkv_bias_num_elements(q_dim, kv_dim),
+            q_dim + kv_dim + kv_dim
+        );
     }
 
     #[test]

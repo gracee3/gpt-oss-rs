@@ -48,11 +48,15 @@ const FUSED_QKV_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_smoke_complete";
 const FUSED_QKV_NORM_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_allocation_smoke_complete";
+const FUSED_QKV_NORM_BIAS_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
 const FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_allocation_cast_error";
+const BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_bias_conversion_allocation_blocked";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -274,6 +278,8 @@ struct SplitAllocationSmokeShardReport {
     f16_postnorm_count: usize,
     f16_qkv_bias_count: usize,
     f16_o_proj_bias_count: usize,
+    f16_qkv_bias_total_bytes: usize,
+    f16_o_proj_bias_total_bytes: usize,
     embedding_f16_allocated: bool,
     final_norm_f16_allocated: bool,
     fused_total_bytes: usize,
@@ -319,7 +325,9 @@ struct FusedLayerReport {
     postnorm_f16_status: String,
     postnorm_f16_bytes: usize,
     qkv_bias_f16_status: String,
+    qkv_bias_f16_bytes: usize,
     o_proj_bias_f16_status: String,
+    o_proj_bias_f16_bytes: usize,
     layer_error: Option<String>,
 }
 
@@ -888,6 +896,12 @@ fn build_split_allocation_smoke_report(
             let classification = if fused_f16_succeeded {
                 if actual_fused_f16_status
                     .as_ref()
+                    .map(fused_status_has_allocated_biases)
+                    .unwrap_or(false)
+                {
+                    FUSED_QKV_NORM_BIAS_ALLOCATION_CLASSIFICATION
+                } else if actual_fused_f16_status
+                    .as_ref()
                     .map(fused_status_has_allocated_norms)
                     .unwrap_or(false)
                 {
@@ -1198,7 +1212,7 @@ fn run_cuda_allocation_smoke(
         let f32_filter = if matches!(dtype_mode, DTypeMode::F32 | DTypeMode::Both) {
             required.clone()
         } else if fused_f16_options.allocate_fused_f16 {
-            fused_norm_tensor_filter_set(manifest)
+            fused_f32_tensor_filter_set(manifest)
         } else {
             BTreeSet::new()
         };
@@ -1380,10 +1394,17 @@ fn shapes_for_names<'a>(
 }
 
 #[cfg(feature = "cuda")]
-fn fused_norm_tensor_filter_set(manifest: &ShardTensorManifest) -> BTreeSet<String> {
+fn fused_f32_tensor_filter_set(manifest: &ShardTensorManifest) -> BTreeSet<String> {
     let mut filter = BTreeSet::new();
     for &layer_idx in &manifest.absolute_layers {
-        for suffix in ["input_layernorm.weight", "post_attention_layernorm.weight"] {
+        for suffix in [
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "self_attn.q_proj.bias",
+            "self_attn.k_proj.bias",
+            "self_attn.v_proj.bias",
+            "self_attn.o_proj.bias",
+        ] {
             let name = format!("model.layers.{layer_idx}.{suffix}");
             if manifest.should_load_required_tensor(&name) {
                 filter.insert(name);
@@ -1409,8 +1430,22 @@ fn fused_status_has_allocated_norms(status: &ShardedFusedF16AllocationStatus) ->
     })
 }
 
+fn fused_status_has_allocated_biases(status: &ShardedFusedF16AllocationStatus) -> bool {
+    status.shards.iter().any(|shard| {
+        shard.f16_qkv_bias_count > 0
+            || shard.f16_o_proj_bias_count > 0
+            || shard.f16_qkv_bias_total_bytes > 0
+            || shard.f16_o_proj_bias_total_bytes > 0
+    })
+}
+
 fn classify_fused_f16_error(error: &str) -> &'static str {
-    if error.contains("f16 norm cast") || error.contains("cast_f32_f16") {
+    if error.contains("f16 bias") || error.contains("f32 bias") {
+        BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION
+    } else if error.contains("f16 norm cast")
+        || error.contains("f16 cast kernel")
+        || error.contains("cast_f32_f16")
+    {
         FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION
     } else {
         FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION
@@ -1817,6 +1852,8 @@ fn render_shard_report(
         f16_postnorm_count,
         f16_qkv_bias_count,
         f16_o_proj_bias_count,
+        f16_qkv_bias_total_bytes,
+        f16_o_proj_bias_total_bytes,
         embedding_f16_allocated,
         final_norm_f16_allocated,
         fused_total_bytes,
@@ -1844,6 +1881,8 @@ fn render_shard_report(
                 status.f16_postnorm_count,
                 status.f16_qkv_bias_count,
                 status.f16_o_proj_bias_count,
+                status.f16_qkv_bias_total_bytes,
+                status.f16_o_proj_bias_total_bytes,
                 status.embedding_f16_allocated,
                 status.final_norm_f16_allocated,
                 status.fused_total_bytes,
@@ -1866,6 +1905,8 @@ fn render_shard_report(
             (
                 false,
                 FusedF16AllocationStatus::NotApplicable.as_str().to_string(),
+                0,
+                0,
                 0,
                 0,
                 0,
@@ -1963,6 +2004,8 @@ fn render_shard_report(
         f16_postnorm_count,
         f16_qkv_bias_count,
         f16_o_proj_bias_count,
+        f16_qkv_bias_total_bytes,
+        f16_o_proj_bias_total_bytes,
         embedding_f16_allocated,
         final_norm_f16_allocated,
         fused_total_bytes,
@@ -1993,7 +2036,9 @@ fn render_fused_layer_report(status: &CudaLayerFusedF16AllocationStatus) -> Fuse
         postnorm_f16_status: status.postnorm_f16_status.as_str().to_string(),
         postnorm_f16_bytes: status.postnorm_f16_bytes,
         qkv_bias_f16_status: status.qkv_bias_f16_status.as_str().to_string(),
+        qkv_bias_f16_bytes: status.qkv_bias_f16_bytes,
         o_proj_bias_f16_status: status.o_proj_bias_f16_status.as_str().to_string(),
+        o_proj_bias_f16_bytes: status.o_proj_bias_f16_bytes,
         layer_error: status.layer_error.clone(),
     }
 }
@@ -2897,6 +2942,18 @@ mod tests {
         assert_eq!(
             classification,
             FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION
+        );
+    }
+
+    #[test]
+    fn fused_f16_error_classification_maps_bias_errors() {
+        let classification = classify_fused_f16_error(
+            "gpu error: shard 0 f16 bias partial QKV bias set absolute layer 12 missing tensors",
+        );
+
+        assert_eq!(
+            classification,
+            BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION
         );
     }
 

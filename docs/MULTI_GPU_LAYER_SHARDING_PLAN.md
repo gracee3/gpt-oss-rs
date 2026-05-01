@@ -5820,3 +5820,128 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_fused_qkv_norm_allocation_smoke_complete
+
+## Bench-only f16 bias conversion allocation status
+
+This implementation slice extends the non-executing `--allocate-fused-f16`
+bench path to cover per-layer attention bias preconversion after the real-model
+fused QKV + norm allocation smoke succeeded.
+
+Helper/module names used or added:
+
+- `fused_qkv_bias_num_elements` in
+  `crates/gpt-oss-model-runner/src/fused_f16.rs`.
+- `CudaLayerFusedF16Buffers::create_for_layer` in
+  `crates/gpt-oss-model-runner/src/sharded_resources.rs`.
+- `allocate_fused_qkv_bias_f16` and `allocate_o_proj_bias_f16` in the
+  CUDA-gated sharded resource helper.
+- `ShardWeightStore` remains the ownership/naming boundary before any tensor
+  lookup.
+
+Actual allocation behavior:
+
+- For each shard-owned absolute layer, the bench path validates ownership with
+  `ShardWeightStore` before resolving bias tensor names.
+- If all Q/K/V bias tensors are present, it assembles one f32 CUDA buffer in
+  runner-compatible `Q || K || V` layout, casts that buffer to f16 with
+  `cast_f32_tensor_to_f16`, and reports `qkv_bias_f16_status=allocated`.
+- If no Q/K/V bias tensors are present, QKV bias conversion reports
+  `not_applicable`.
+- If only some Q/K/V bias tensors are present, allocation fails at the bias
+  boundary with the exact missing tensor names.
+- If `self_attn.o_proj.bias` is present for an owned absolute layer, it is cast
+  from f32 to f16 and reports `o_proj_bias_f16_status=allocated`; absence is
+  `not_applicable`.
+
+Selective f32 loading under `--dtype f16`:
+
+- `multi_gpu_layer_sharding_split_allocation_smoke` now selectively loads only
+  the f32 tensors needed for already-implemented f16 preconversion:
+  input layernorm, post-attention layernorm, Q/K/V bias, and O-projection bias.
+- The command still does not upload all f32 weights to every shard.
+
+Status JSON behavior:
+
+- Per layer:
+  - `qkv_bias_f16_status`
+  - `qkv_bias_f16_bytes`
+  - `o_proj_bias_f16_status`
+  - `o_proj_bias_f16_bytes`
+- Per shard:
+  - `f16_qkv_bias_count`
+  - `f16_o_proj_bias_count`
+  - `f16_qkv_bias_total_bytes`
+  - `f16_o_proj_bias_total_bytes`
+  - `fused_total_bytes`, now including fused QKV, optional dense gate/up,
+    input/post norm f16, QKV bias f16, and O-projection bias f16 bytes.
+
+Classification behavior:
+
+- Successful fused QKV + norm + bias allocation reports:
+  `multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete`.
+- Bias-specific allocation failures classify as:
+  `multi_gpu_layer_sharding_bias_conversion_allocation_blocked`.
+
+Still deferred:
+
+- final norm f16 conversion.
+- embedding f16 conversion.
+- tied LM-head fallback.
+- `F16LayerScratch`.
+- GPT-OSS MoE GPU upload.
+- layer construction and `GpuModelRunner` construction.
+- attention, graph output, execution, serving, logits, and parity paths.
+
+Manual operator command, not run in this implementation slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_fused_bias_status.json
+```
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner fused_f16`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `git diff --check`
+
+No split execution, layer construction, `GpuModelRunner` construction,
+attention, graph output, final norm execution, LM-head execution, logits, graph
+capture, forward pass, serving behavior, or parity path was added.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+Primary classification:
+
+multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete
