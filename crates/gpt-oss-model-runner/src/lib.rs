@@ -66,14 +66,17 @@ pub use shard_plan::{
 };
 pub use sharded_resources::{
     CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus,
-    CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus, CudaShardResourcePlan,
+    CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus,
+    CudaShardMetadataAllocationPlan, CudaShardMetadataAllocationStatus, CudaShardResourcePlan,
     CudaShardResourceStatus, CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus,
-    KvCacheAllocationConfig, RopeRuntimeBufferConfig, RuntimeMetadataStatus,
-    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedKvCacheAllocationPlan,
-    ShardedKvCacheAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
+    KvCacheAllocationConfig, MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig,
+    RuntimeMetadataStatus, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan,
+    ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{
-    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardResources, CudaShardRuntimeBuffers,
-    ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
+    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources,
+    CudaShardRuntimeBuffers, ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers,
+    ShardedRuntimeBuffers,
 };

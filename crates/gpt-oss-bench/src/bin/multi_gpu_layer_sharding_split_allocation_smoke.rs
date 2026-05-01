@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
-    CudaShardKvCacheAllocationStatus, CudaShardResourceStatus, CudaShardRuntimeBufferStatus,
-    DeviceId, DeviceMap, KvCacheAllocationConfig, LateAllocationKind, RopeRuntimeBufferConfig,
-    SafetensorHeaderManifest, SafetensorHeaderMergePolicy, ShardAllocationReport,
-    ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedModelPlan,
-    ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
+    CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationStatus, CudaShardResourceStatus,
+    CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, KvCacheAllocationConfig, LateAllocationKind,
+    MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
+    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedKvCacheAllocationPlan,
+    ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus,
+    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
     UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,8 @@ const ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_rope_allocated_metadata_deferred";
 const KV_CACHE_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_kv_cache_allocation_smoke_complete";
+const METADATA_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_metadata_allocation_smoke_complete";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -92,6 +95,24 @@ struct Cli {
 
     #[arg(long)]
     kv_block_size: Option<usize>,
+
+    #[arg(long)]
+    allocate_metadata: bool,
+
+    #[arg(long, value_enum)]
+    metadata_mode: Option<MetadataModeArg>,
+
+    #[arg(long)]
+    metadata_num_tokens: Option<usize>,
+
+    #[arg(long)]
+    metadata_num_seqs: Option<usize>,
+
+    #[arg(long)]
+    metadata_context_len: Option<usize>,
+
+    #[arg(long)]
+    metadata_block_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -100,6 +121,20 @@ enum DTypeMode {
     F32,
     F16,
     Both,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum MetadataModeArg {
+    Decode,
+}
+
+impl MetadataModeArg {
+    fn to_runner_mode(self) -> MetadataMode {
+        match self {
+            MetadataModeArg::Decode => MetadataMode::Decode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +161,15 @@ struct SplitAllocationSmokeReport {
     kv_cache_allocation_succeeded: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_allocation_succeeded: bool,
+    metadata_mode: Option<String>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
+    metadata_graph_max_blocks: Option<usize>,
+    metadata_error: Option<String>,
     kernel_dir: Option<String>,
     omitted_allocations: Vec<String>,
     shards: Vec<SplitAllocationSmokeShardReport>,
@@ -172,6 +216,20 @@ struct SplitAllocationSmokeShardReport {
     kv_total_bytes: usize,
     kv_cache_entries: Vec<KvCacheEntryReport>,
     kv_cache_error: Option<String>,
+    metadata_mode: Option<String>,
+    metadata_num_tokens: usize,
+    metadata_num_seqs: usize,
+    metadata_graph_max_blocks: usize,
+    metadata_packed_elements: usize,
+    metadata_packed_bytes: usize,
+    metadata_token_ids_len: usize,
+    metadata_positions_len: usize,
+    metadata_context_lens_len: usize,
+    metadata_block_tables_len: usize,
+    metadata_slot_mapping_len: usize,
+    metadata_seq_start_pos_len: usize,
+    metadata_max_context_len: usize,
+    metadata_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,6 +304,12 @@ fn main() -> Result<()> {
         cli.allocate_kv_cache,
         cli.kv_num_blocks,
         cli.kv_block_size,
+        cli.allocate_metadata,
+        cli.metadata_mode,
+        cli.metadata_num_tokens,
+        cli.metadata_num_seqs,
+        cli.metadata_context_len,
+        cli.metadata_block_size,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -280,6 +344,12 @@ fn build_split_allocation_smoke_report(
     allocate_kv_cache: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    allocate_metadata: bool,
+    metadata_mode: Option<MetadataModeArg>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let config = match read_model_planning_config(model_path, tie_word_embeddings_override) {
@@ -296,6 +366,13 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                None,
                 Some(error.to_string()),
             );
         }
@@ -315,6 +392,13 @@ fn build_split_allocation_smoke_report(
                     allocate_kv_cache,
                     kv_num_blocks,
                     kv_block_size,
+                    allocate_metadata,
+                    metadata_mode,
+                    metadata_num_tokens,
+                    metadata_num_seqs,
+                    metadata_context_len,
+                    metadata_block_size,
+                    None,
                     Some(error.to_string()),
                 );
             }
@@ -341,6 +425,47 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                None,
+                Some(error.to_string()),
+            );
+        }
+    };
+    let metadata_config = match build_metadata_allocation_config(
+        config,
+        allocate_metadata,
+        metadata_mode,
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_context_len,
+        metadata_block_size,
+        kv_cache_config.as_ref(),
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            return error_report(
+                CONFIG_ERROR_CLASSIFICATION,
+                model_path,
+                device_map_spec,
+                selected_device,
+                dtype_mode,
+                kernel_dir,
+                allocate_rope_metadata,
+                allocate_kv_cache,
+                kv_num_blocks,
+                kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                None,
                 Some(error.to_string()),
             );
         }
@@ -365,6 +490,13 @@ fn build_split_allocation_smoke_report(
                     allocate_kv_cache,
                     kv_num_blocks,
                     kv_block_size,
+                    allocate_metadata,
+                    metadata_mode,
+                    metadata_num_tokens,
+                    metadata_num_seqs,
+                    metadata_context_len,
+                    metadata_block_size,
+                    metadata_config.map(|config| config.graph_max_blocks()),
                     Some(error.to_string()),
                 );
             }
@@ -391,6 +523,13 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                metadata_config.map(|config| config.graph_max_blocks()),
                 Some(error.to_string()),
             );
         }
@@ -413,6 +552,13 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                metadata_config.map(|config| config.graph_max_blocks()),
                 Some(error.to_string()),
             );
         }
@@ -440,6 +586,13 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                metadata_config.map(|config| config.graph_max_blocks()),
                 Some(error.to_string()),
             );
         }
@@ -463,6 +616,13 @@ fn build_split_allocation_smoke_report(
                 allocate_kv_cache,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_mode,
+                metadata_num_tokens,
+                metadata_num_seqs,
+                metadata_context_len,
+                metadata_block_size,
+                metadata_config.map(|config| config.graph_max_blocks()),
                 Some(error.to_string()),
             );
         }
@@ -486,6 +646,10 @@ fn build_split_allocation_smoke_report(
             let kv_allocation_plan = ShardedKvCacheAllocationPlan::from_model_plan(&plan, config);
             ShardedKvCacheAllocationStatus::from_plan(&kv_allocation_plan, false)
         });
+        let metadata_status = metadata_config.map(|config| {
+            let metadata_plan = ShardedMetadataAllocationPlan::from_model_plan(&plan, config);
+            ShardedMetadataAllocationStatus::from_plan(&metadata_plan, false)
+        });
         return render_report(
             SUCCESS_CLASSIFICATION,
             model_path,
@@ -508,8 +672,12 @@ fn build_split_allocation_smoke_report(
             false,
             kv_num_blocks,
             kv_block_size,
+            allocate_metadata,
+            false,
+            metadata_config,
             runtime_buffer_status.as_ref(),
             kv_cache_status.as_ref(),
+            metadata_status.as_ref(),
             None,
         );
     }
@@ -522,12 +690,22 @@ fn build_split_allocation_smoke_report(
         dtype_mode,
         runtime_buffer_config,
         kv_cache_config,
+        metadata_config,
     ) {
-        Ok((resource_status, upload_counts, runtime_buffer_status, kv_cache_status)) => {
+        Ok((
+            resource_status,
+            upload_counts,
+            runtime_buffer_status,
+            kv_cache_status,
+            metadata_status,
+        )) => {
             let runtime_buffer_succeeded =
                 allocate_rope_metadata && runtime_buffer_status.is_some();
             let kv_cache_succeeded = allocate_kv_cache && kv_cache_status.is_some();
-            let classification = if kv_cache_succeeded {
+            let metadata_succeeded = allocate_metadata && metadata_status.is_some();
+            let classification = if metadata_succeeded {
+                METADATA_ALLOCATION_CLASSIFICATION
+            } else if kv_cache_succeeded {
                 KV_CACHE_ALLOCATION_CLASSIFICATION
             } else if runtime_buffer_succeeded {
                 ROPE_ALLOCATED_METADATA_DEFERRED_CLASSIFICATION
@@ -557,8 +735,12 @@ fn build_split_allocation_smoke_report(
                 kv_cache_succeeded,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                metadata_succeeded,
+                metadata_config,
                 runtime_buffer_status.as_ref(),
                 kv_cache_status.as_ref(),
+                metadata_status.as_ref(),
                 None,
             )
         }
@@ -587,6 +769,10 @@ fn build_split_allocation_smoke_report(
                 false,
                 kv_num_blocks,
                 kv_block_size,
+                allocate_metadata,
+                false,
+                metadata_config,
+                None,
                 None,
                 None,
                 Some(error),
@@ -697,6 +883,46 @@ fn build_kv_cache_allocation_config(
         .map_err(anyhow::Error::msg)
 }
 
+fn build_metadata_allocation_config(
+    config: ModelPlanningConfig,
+    allocate_metadata: bool,
+    metadata_mode: Option<MetadataModeArg>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
+    kv_cache_config: Option<&KvCacheAllocationConfig>,
+) -> Result<Option<MetadataAllocationConfig>> {
+    if !allocate_metadata {
+        return Ok(None);
+    }
+
+    let mode = metadata_mode.unwrap_or(MetadataModeArg::Decode);
+    match mode.to_runner_mode() {
+        MetadataMode::Decode => {}
+    }
+
+    let num_tokens =
+        metadata_num_tokens.context("--allocate-metadata requires --metadata-num-tokens <N>")?;
+    let num_seqs =
+        metadata_num_seqs.context("--allocate-metadata requires --metadata-num-seqs <N>")?;
+    let context_len =
+        metadata_context_len.context("--allocate-metadata requires --metadata-context-len <N>")?;
+    let block_size =
+        metadata_block_size.context("--allocate-metadata requires --metadata-block-size <N>")?;
+
+    MetadataAllocationConfig::new_decode(
+        num_tokens,
+        num_seqs,
+        context_len,
+        block_size,
+        config.max_position,
+        kv_cache_config,
+    )
+    .map(Some)
+    .map_err(anyhow::Error::msg)
+}
+
 #[cfg(feature = "cuda")]
 fn run_cuda_allocation_smoke(
     model_path: &Path,
@@ -706,12 +932,14 @@ fn run_cuda_allocation_smoke(
     dtype_mode: DTypeMode,
     runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
     kv_cache_config: Option<KvCacheAllocationConfig>,
+    metadata_config: Option<MetadataAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
         Option<ShardedRuntimeBufferStatus>,
         Option<ShardedKvCacheAllocationStatus>,
+        Option<ShardedMetadataAllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -720,7 +948,7 @@ fn run_cuda_allocation_smoke(
         load_weights_to_gpu_with_shapes_filtered,
     };
     use gpt_oss_model_runner::{
-        ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
+        ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
     };
 
     let resources = match kernel_dir {
@@ -813,11 +1041,22 @@ fn run_cuda_allocation_smoke(
         None
     };
 
+    let metadata_status = if let Some(metadata_config) = metadata_config {
+        Some(
+            ShardedMetadataBuffers::create_for_resources(&resources, metadata_config)
+                .map_err(|error| (RESOURCE_ERROR_CLASSIFICATION, error.to_string()))?
+                .status(),
+        )
+    } else {
+        None
+    };
+
     Ok((
         resources.status(),
         upload_counts,
         runtime_buffer_status,
         kv_cache_status,
+        metadata_status,
     ))
 }
 
@@ -830,12 +1069,14 @@ fn run_cuda_allocation_smoke(
     _dtype_mode: DTypeMode,
     _runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
     _kv_cache_config: Option<KvCacheAllocationConfig>,
+    _metadata_config: Option<MetadataAllocationConfig>,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
         BTreeMap<DeviceId, ShardUploadCounts>,
         Option<ShardedRuntimeBufferStatus>,
         Option<ShardedKvCacheAllocationStatus>,
+        Option<ShardedMetadataAllocationStatus>,
     ),
     (&'static str, String),
 > {
@@ -878,8 +1119,12 @@ fn render_report(
     kv_cache_allocation_succeeded: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_allocation_succeeded: bool,
+    metadata_config: Option<MetadataAllocationConfig>,
     runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
     kv_cache_status: Option<&ShardedKvCacheAllocationStatus>,
+    metadata_status: Option<&ShardedMetadataAllocationStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let upload_counts = manifest_by_device
@@ -915,8 +1160,12 @@ fn render_report(
         kv_cache_allocation_succeeded,
         kv_num_blocks,
         kv_block_size,
+        metadata_allocation_attempted,
+        metadata_allocation_succeeded,
+        metadata_config,
         runtime_buffer_status,
         kv_cache_status,
+        metadata_status,
         error,
     )
 }
@@ -944,8 +1193,12 @@ fn render_report_with_counts(
     kv_cache_allocation_succeeded: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_allocation_succeeded: bool,
+    metadata_config: Option<MetadataAllocationConfig>,
     runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
     kv_cache_status: Option<&ShardedKvCacheAllocationStatus>,
+    metadata_status: Option<&ShardedMetadataAllocationStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let resource_by_device = resource_status
@@ -963,6 +1216,15 @@ fn render_report_with_counts(
         })
         .unwrap_or_default();
     let kv_cache_by_device = kv_cache_status
+        .map(|status| {
+            status
+                .shards
+                .iter()
+                .map(|status| (status.device_id, status))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let metadata_by_device = metadata_status
         .map(|status| {
             status
                 .shards
@@ -995,10 +1257,20 @@ fn render_report_with_counts(
         kv_cache_allocation_succeeded,
         kv_num_blocks,
         kv_block_size,
+        metadata_allocation_attempted,
+        metadata_allocation_succeeded,
+        metadata_mode: metadata_config.map(|config| config.mode.as_str().to_string()),
+        metadata_num_tokens: metadata_config.map(|config| config.num_tokens),
+        metadata_num_seqs: metadata_config.map(|config| config.num_seqs),
+        metadata_context_len: metadata_config.map(|config| config.context_len),
+        metadata_block_size: metadata_config.map(|config| config.block_size),
+        metadata_graph_max_blocks: metadata_config.map(|config| config.graph_max_blocks()),
+        metadata_error: error.clone().filter(|_| metadata_allocation_attempted),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
         omitted_allocations: omitted_allocations(
             rope_metadata_allocation_succeeded,
             kv_cache_allocation_attempted,
+            metadata_allocation_attempted,
         ),
         shards: allocation_report
             .shards
@@ -1014,6 +1286,7 @@ fn render_report_with_counts(
                 let resource = resource_by_device.get(&shard.device_id).copied();
                 let runtime_buffer = runtime_buffer_by_device.get(&shard.device_id).copied();
                 let kv_cache = kv_cache_by_device.get(&shard.device_id).copied();
+                let metadata = metadata_by_device.get(&shard.device_id).copied();
                 render_shard_report(
                     shard,
                     counts,
@@ -1021,6 +1294,7 @@ fn render_report_with_counts(
                     resource_construction_succeeded,
                     runtime_buffer,
                     kv_cache,
+                    metadata,
                 )
             })
             .collect(),
@@ -1037,6 +1311,7 @@ fn render_shard_report(
     resource_created: bool,
     runtime_buffer: Option<&CudaShardRuntimeBufferStatus>,
     kv_cache: Option<&CudaShardKvCacheAllocationStatus>,
+    metadata: Option<&CudaShardMetadataAllocationStatus>,
 ) -> SplitAllocationSmokeShardReport {
     let (
         rope_allocated,
@@ -1072,6 +1347,66 @@ fn render_shard_report(
                 None,
             )
         });
+    let (
+        metadata_mode,
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_graph_max_blocks,
+        metadata_packed_elements,
+        metadata_packed_bytes,
+        metadata_token_ids_len,
+        metadata_positions_len,
+        metadata_context_lens_len,
+        metadata_block_tables_len,
+        metadata_slot_mapping_len,
+        metadata_seq_start_pos_len,
+        metadata_max_context_len,
+        metadata_error,
+        metadata_allocated,
+        metadata_status,
+        metadata_deferred_reason,
+    ) = metadata
+        .map(|status| {
+            (
+                Some(status.mode.as_str().to_string()),
+                status.num_tokens,
+                status.num_seqs,
+                status.graph_max_blocks,
+                status.packed_elements,
+                status.packed_bytes,
+                status.token_ids_len,
+                status.positions_len,
+                status.context_lens_len,
+                status.block_tables_len,
+                status.slot_mapping_len,
+                status.seq_start_pos_len,
+                status.max_context_len,
+                status.metadata_error.clone(),
+                status.metadata_allocated,
+                status.metadata_status.as_str().to_string(),
+                None,
+            )
+        })
+        .unwrap_or((
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            metadata_allocated,
+            metadata_status,
+            metadata_deferred_reason,
+        ));
+
     let (
         kv_cache_allocated,
         kv_cache_entry_count,
@@ -1161,6 +1496,20 @@ fn render_shard_report(
         kv_total_bytes,
         kv_cache_entries,
         kv_cache_error,
+        metadata_mode,
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_graph_max_blocks,
+        metadata_packed_elements,
+        metadata_packed_bytes,
+        metadata_token_ids_len,
+        metadata_positions_len,
+        metadata_context_lens_len,
+        metadata_block_tables_len,
+        metadata_slot_mapping_len,
+        metadata_seq_start_pos_len,
+        metadata_max_context_len,
+        metadata_error,
     }
 }
 
@@ -1175,6 +1524,13 @@ fn error_report(
     kv_cache_allocation_attempted: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_mode: Option<MetadataModeArg>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
+    metadata_graph_max_blocks: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     SplitAllocationSmokeReport {
@@ -1202,8 +1558,21 @@ fn error_report(
         kv_cache_allocation_succeeded: false,
         kv_num_blocks,
         kv_block_size,
+        metadata_allocation_attempted,
+        metadata_allocation_succeeded: false,
+        metadata_mode: metadata_mode.map(|mode| mode.to_runner_mode().as_str().to_string()),
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_context_len,
+        metadata_block_size,
+        metadata_graph_max_blocks,
+        metadata_error: error.clone(),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
-        omitted_allocations: omitted_allocations(false, kv_cache_allocation_attempted),
+        omitted_allocations: omitted_allocations(
+            false,
+            kv_cache_allocation_attempted,
+            metadata_allocation_attempted,
+        ),
         shards: Vec::new(),
         unassigned_tensor_names: Vec::new(),
         invalid_tensor_names: Vec::new(),
@@ -1224,6 +1593,13 @@ fn error_report_with_config(
     kv_cache_allocation_attempted: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_mode: Option<MetadataModeArg>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
+    metadata_graph_max_blocks: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -1237,6 +1613,13 @@ fn error_report_with_config(
         kv_cache_allocation_attempted,
         kv_num_blocks,
         kv_block_size,
+        metadata_allocation_attempted,
+        metadata_mode,
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_context_len,
+        metadata_block_size,
+        metadata_graph_max_blocks,
         error,
     );
     report.num_layers = Some(config.num_layers);
@@ -1262,6 +1645,13 @@ fn error_report_with_config_and_headers(
     kv_cache_allocation_attempted: bool,
     kv_num_blocks: Option<usize>,
     kv_block_size: Option<usize>,
+    metadata_allocation_attempted: bool,
+    metadata_mode: Option<MetadataModeArg>,
+    metadata_num_tokens: Option<usize>,
+    metadata_num_seqs: Option<usize>,
+    metadata_context_len: Option<usize>,
+    metadata_block_size: Option<usize>,
+    metadata_graph_max_blocks: Option<usize>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -1277,6 +1667,13 @@ fn error_report_with_config_and_headers(
         kv_cache_allocation_attempted,
         kv_num_blocks,
         kv_block_size,
+        metadata_allocation_attempted,
+        metadata_mode,
+        metadata_num_tokens,
+        metadata_num_seqs,
+        metadata_context_len,
+        metadata_block_size,
+        metadata_graph_max_blocks,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
@@ -1298,12 +1695,17 @@ fn tensor_byte_map(header_manifest: &SafetensorHeaderManifest) -> BTreeMap<Strin
         .collect()
 }
 
-fn omitted_allocations(rope_allocated: bool, kv_cache_attempted: bool) -> Vec<String> {
+fn omitted_allocations(
+    rope_allocated: bool,
+    kv_cache_attempted: bool,
+    metadata_attempted: bool,
+) -> Vec<String> {
     OMITTED_ALLOCATIONS
         .iter()
         .filter(|name| {
             !(rope_allocated && **name == "rope_tables")
                 && !(kv_cache_attempted && **name == "kv_cache")
+                && !(metadata_attempted && **name == "metadata_buffers")
         })
         .map(|name| (*name).to_string())
         .collect()
@@ -1346,6 +1748,15 @@ mod tests {
     }
 
     fn write_config(dir: &Path, num_layers: usize, tie_word_embeddings: bool) {
+        write_config_with_max_position(dir, num_layers, tie_word_embeddings, 16);
+    }
+
+    fn write_config_with_max_position(
+        dir: &Path,
+        num_layers: usize,
+        tie_word_embeddings: bool,
+        max_position: usize,
+    ) {
         let config = serde_json::json!({
             "num_hidden_layers": num_layers,
             "tie_word_embeddings": tie_word_embeddings,
@@ -1353,7 +1764,7 @@ mod tests {
             "num_attention_heads": 2,
             "num_key_value_heads": 2,
             "head_dim": 4,
-            "max_position_embeddings": 16,
+            "max_position_embeddings": max_position,
             "rope_theta": 10000.0,
         });
         std::fs::write(
@@ -1446,6 +1857,12 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
         )
     }
 
@@ -1468,6 +1885,44 @@ mod tests {
             allocate_kv_cache,
             kv_num_blocks,
             kv_block_size,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+    }
+
+    fn split_report_for_metadata(
+        dir: &Path,
+        allocate_kv_cache: bool,
+        kv_num_blocks: Option<usize>,
+        kv_block_size: Option<usize>,
+        metadata_num_tokens: Option<usize>,
+        metadata_num_seqs: Option<usize>,
+        metadata_context_len: Option<usize>,
+        metadata_block_size: Option<usize>,
+    ) -> SplitAllocationSmokeReport {
+        build_split_allocation_smoke_report(
+            dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F16,
+            None,
+            false,
+            false,
+            allocate_kv_cache,
+            kv_num_blocks,
+            kv_block_size,
+            true,
+            Some(MetadataModeArg::Decode),
+            metadata_num_tokens,
+            metadata_num_seqs,
+            metadata_context_len,
+            metadata_block_size,
             false,
         )
     }
@@ -1707,6 +2162,158 @@ mod tests {
     }
 
     #[test]
+    fn default_split_allocation_smoke_does_not_attempt_metadata_allocation() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for(&dir, None);
+
+        assert!(!report.metadata_allocation_attempted);
+        assert!(!report.metadata_allocation_succeeded);
+        assert_eq!(report.metadata_mode, None);
+        assert!(report
+            .omitted_allocations
+            .contains(&"metadata_buffers".to_string()));
+    }
+
+    #[test]
+    fn metadata_flag_surfaces_decode_shape_status_per_shard() {
+        let dir = fixture_with_lm_head();
+
+        let report =
+            split_report_for_metadata(&dir, false, None, None, Some(2), Some(2), Some(1), Some(16));
+
+        assert!(report.metadata_allocation_attempted);
+        assert!(!report.metadata_allocation_succeeded);
+        assert_eq!(report.metadata_mode.as_deref(), Some("decode"));
+        assert_eq!(report.metadata_num_tokens, Some(2));
+        assert_eq!(report.metadata_num_seqs, Some(2));
+        assert_eq!(report.metadata_context_len, Some(1));
+        assert_eq!(report.metadata_block_size, Some(16));
+        assert_eq!(report.metadata_graph_max_blocks, Some(1));
+        assert!(!report
+            .omitted_allocations
+            .contains(&"metadata_buffers".to_string()));
+
+        for shard in &report.shards {
+            assert!(!shard.metadata_allocated);
+            assert_eq!(shard.metadata_status, "deferred");
+            assert_eq!(shard.metadata_mode.as_deref(), Some("decode"));
+            assert_eq!(shard.metadata_num_tokens, 2);
+            assert_eq!(shard.metadata_num_seqs, 2);
+            assert_eq!(shard.metadata_graph_max_blocks, 1);
+            assert_eq!(shard.metadata_token_ids_len, 2);
+            assert_eq!(shard.metadata_positions_len, 2);
+            assert_eq!(shard.metadata_context_lens_len, 2);
+            assert_eq!(shard.metadata_block_tables_len, 2);
+            assert_eq!(shard.metadata_slot_mapping_len, 2);
+            assert_eq!(shard.metadata_seq_start_pos_len, 3);
+            assert_eq!(shard.metadata_packed_elements, 13);
+            assert_eq!(shard.metadata_packed_bytes, 13 * std::mem::size_of::<i32>());
+            assert_eq!(shard.metadata_max_context_len, 1);
+        }
+    }
+
+    #[test]
+    fn metadata_flag_rejects_tokens_sequences_mismatch() {
+        let dir = fixture_with_lm_head();
+
+        let report =
+            split_report_for_metadata(&dir, false, None, None, Some(2), Some(1), Some(1), Some(16));
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.metadata_allocation_attempted);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("metadata-num-tokens == metadata-num-seqs"));
+    }
+
+    #[test]
+    fn metadata_flag_rejects_zero_context_len() {
+        let dir = fixture_with_lm_head();
+
+        let report =
+            split_report_for_metadata(&dir, false, None, None, Some(1), Some(1), Some(0), Some(16));
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("metadata-context-len"));
+    }
+
+    #[test]
+    fn metadata_flag_rejects_zero_block_size() {
+        let dir = fixture_with_lm_head();
+
+        let report =
+            split_report_for_metadata(&dir, false, None, None, Some(1), Some(1), Some(1), Some(0));
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("metadata-block-size"));
+    }
+
+    #[test]
+    fn metadata_flag_rejects_kv_block_size_mismatch() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_metadata(
+            &dir,
+            true,
+            Some(1),
+            Some(8),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(16),
+        );
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.error.as_deref().unwrap().contains("kv-block-size"));
+    }
+
+    #[test]
+    fn metadata_flag_rejects_generated_blocks_beyond_kv_blocks() {
+        let dir = fixture_with_lm_head();
+        write_config_with_max_position(&dir, 24, true, 64);
+
+        let report = split_report_for_metadata(
+            &dir,
+            true,
+            Some(1),
+            Some(16),
+            Some(1),
+            Some(1),
+            Some(17),
+            Some(16),
+        );
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.error.as_deref().unwrap().contains("kv-num-blocks"));
+    }
+
+    #[test]
+    fn metadata_mode_cli_rejects_unsupported_values() {
+        let parsed = Cli::try_parse_from([
+            "multi_gpu_layer_sharding_split_allocation_smoke",
+            "--model",
+            "/tmp/model",
+            "--device-map",
+            "single",
+            "--metadata-mode",
+            "prefill",
+        ]);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
     fn tied_lm_head_fallback_remains_deferred_when_lm_head_absent() {
         let dir = unique_temp_model_dir("tied_fallback");
         write_config(&dir, 24, true);
@@ -1802,6 +2409,12 @@ mod tests {
             true,
             false,
             false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
             None,
             None,
             false,

@@ -7,6 +7,7 @@
 
 use crate::device_map::DeviceId;
 use crate::shard_plan::{ShardedKvCachePlan, ShardedModelPlan};
+use std::str::FromStr;
 
 pub const RUNTIME_METADATA_DEFERRED_REASON: &str =
     "request-shaped metadata packing buffers require batch/sequence inputs";
@@ -56,6 +57,23 @@ pub struct KvCacheAllocationConfig {
     pub head_dim: usize,
     pub num_gpu_blocks: usize,
     pub block_size: usize,
+}
+
+/// Synthetic metadata shape supported by the first split allocation smoke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataMode {
+    Decode,
+}
+
+/// CUDA-free configuration for synthetic request-shaped metadata allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetadataAllocationConfig {
+    pub mode: MetadataMode,
+    pub num_tokens: usize,
+    pub num_seqs: usize,
+    pub context_len: usize,
+    pub block_size: usize,
+    pub max_position: usize,
 }
 
 /// Metadata allocation state for the non-executing runtime buffer skeleton.
@@ -167,6 +185,64 @@ pub struct ShardedKvCacheAllocationStatus {
     pub shards: Vec<CudaShardKvCacheAllocationStatus>,
 }
 
+/// CUDA-free plan for one shard's synthetic packed metadata buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardMetadataAllocationPlan {
+    pub device_id: DeviceId,
+    pub absolute_layers: Vec<usize>,
+    pub owns_embeddings: bool,
+    pub owns_final_head: bool,
+    pub mode: MetadataMode,
+    pub num_tokens: usize,
+    pub num_seqs: usize,
+    pub context_len: usize,
+    pub block_size: usize,
+    pub graph_max_blocks: usize,
+    pub max_context_len: usize,
+    pub token_ids_len: usize,
+    pub positions_len: usize,
+    pub context_lens_len: usize,
+    pub block_tables_len: usize,
+    pub slot_mapping_len: usize,
+    pub seq_start_pos_len: usize,
+    pub packed_elements: usize,
+    pub packed_bytes: usize,
+}
+
+/// CUDA-free plan for shard-local synthetic metadata allocations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedMetadataAllocationPlan {
+    pub shards: Vec<CudaShardMetadataAllocationPlan>,
+}
+
+/// Public status for one shard's synthetic metadata allocation skeleton.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardMetadataAllocationStatus {
+    pub device_id: DeviceId,
+    pub metadata_allocated: bool,
+    pub metadata_status: RuntimeMetadataStatus,
+    pub mode: MetadataMode,
+    pub num_tokens: usize,
+    pub num_seqs: usize,
+    pub graph_max_blocks: usize,
+    pub packed_elements: usize,
+    pub packed_bytes: usize,
+    pub token_ids_len: usize,
+    pub positions_len: usize,
+    pub context_lens_len: usize,
+    pub block_tables_len: usize,
+    pub slot_mapping_len: usize,
+    pub seq_start_pos_len: usize,
+    pub max_context_len: usize,
+    pub metadata_error: Option<String>,
+}
+
+/// Public status for all synthetic metadata allocation skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedMetadataAllocationStatus {
+    pub shards: Vec<CudaShardMetadataAllocationStatus>,
+}
+
 impl RopeRuntimeBufferConfig {
     pub fn new(head_dim: usize, max_position: usize, rope_theta: f32) -> Result<Self, String> {
         if head_dim == 0 {
@@ -244,6 +320,188 @@ impl KvCacheAllocationConfig {
 
     pub fn bytes_per_layer_cache(&self) -> usize {
         self.elements_per_layer_cache() * std::mem::size_of::<half::f16>()
+    }
+}
+
+impl MetadataMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetadataMode::Decode => "decode",
+        }
+    }
+}
+
+impl FromStr for MetadataMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "decode" => Ok(Self::Decode),
+            other => Err(format!(
+                "unsupported metadata mode {other:?}; only decode is supported"
+            )),
+        }
+    }
+}
+
+impl MetadataAllocationConfig {
+    pub fn new_decode(
+        num_tokens: usize,
+        num_seqs: usize,
+        context_len: usize,
+        block_size: usize,
+        max_position: usize,
+        kv_cache_config: Option<&KvCacheAllocationConfig>,
+    ) -> Result<Self, String> {
+        if num_tokens == 0 {
+            return Err("metadata-num-tokens must be non-zero for decode metadata".into());
+        }
+        if num_seqs == 0 {
+            return Err("metadata-num-seqs must be non-zero for decode metadata".into());
+        }
+        if num_tokens != num_seqs {
+            return Err(format!(
+                "decode metadata requires metadata-num-tokens == metadata-num-seqs, got {num_tokens} and {num_seqs}"
+            ));
+        }
+        if context_len == 0 {
+            return Err("metadata-context-len must be non-zero for decode metadata".into());
+        }
+        if block_size == 0 {
+            return Err("metadata-block-size must be non-zero for decode metadata".into());
+        }
+        if max_position == 0 {
+            return Err("max_position must be non-zero for decode metadata".into());
+        }
+
+        let config = Self {
+            mode: MetadataMode::Decode,
+            num_tokens,
+            num_seqs,
+            context_len,
+            block_size,
+            max_position,
+        };
+
+        if config.required_blocks_per_seq() > config.graph_max_blocks() {
+            return Err(format!(
+                "metadata-context-len ({context_len}) requires {} block(s), exceeding graph_max_blocks ({}) derived from max_position ({max_position}) and metadata-block-size ({block_size})",
+                config.required_blocks_per_seq(),
+                config.graph_max_blocks()
+            ));
+        }
+
+        if let Some(kv_cache_config) = kv_cache_config {
+            if config.block_size != kv_cache_config.block_size {
+                return Err(format!(
+                    "metadata-block-size ({}) must match kv-block-size ({}) when both metadata and KV cache allocation are requested",
+                    config.block_size, kv_cache_config.block_size
+                ));
+            }
+            let required_blocks = config.required_blocks_per_seq();
+            if required_blocks > kv_cache_config.num_gpu_blocks {
+                return Err(format!(
+                    "decode metadata requires {required_blocks} block(s) per sequence, exceeding kv-num-blocks ({})",
+                    kv_cache_config.num_gpu_blocks
+                ));
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn graph_max_blocks(&self) -> usize {
+        self.max_position.div_ceil(self.block_size)
+    }
+
+    pub fn required_blocks_per_seq(&self) -> usize {
+        self.context_len.div_ceil(self.block_size)
+    }
+
+    pub fn token_ids_len(&self) -> usize {
+        self.num_tokens
+    }
+
+    pub fn positions_len(&self) -> usize {
+        self.num_tokens
+    }
+
+    pub fn context_lens_len(&self) -> usize {
+        self.num_seqs
+    }
+
+    pub fn block_tables_len(&self) -> usize {
+        self.num_seqs * self.graph_max_blocks()
+    }
+
+    pub fn slot_mapping_len(&self) -> usize {
+        self.num_tokens
+    }
+
+    pub fn seq_start_pos_len(&self) -> usize {
+        self.num_seqs + 1
+    }
+
+    pub fn packed_elements(&self) -> usize {
+        self.token_ids_len()
+            + self.positions_len()
+            + self.context_lens_len()
+            + self.block_tables_len()
+            + self.slot_mapping_len()
+            + self.seq_start_pos_len()
+    }
+
+    pub fn packed_bytes(&self) -> usize {
+        self.packed_elements() * std::mem::size_of::<i32>()
+    }
+
+    pub fn token_ids(&self) -> Vec<i32> {
+        (0..self.num_tokens).map(|token| token as i32).collect()
+    }
+
+    pub fn positions(&self) -> Vec<i32> {
+        vec![(self.context_len - 1) as i32; self.num_tokens]
+    }
+
+    pub fn context_lens(&self) -> Vec<i32> {
+        vec![self.context_len as i32; self.num_seqs]
+    }
+
+    pub fn block_tables(&self) -> Vec<i32> {
+        let graph_max_blocks = self.graph_max_blocks();
+        let required_blocks = self.required_blocks_per_seq();
+        let mut block_tables = vec![0i32; self.block_tables_len()];
+
+        for seq_idx in 0..self.num_seqs {
+            let row_start = seq_idx * graph_max_blocks;
+            for block_idx in 0..required_blocks {
+                block_tables[row_start + block_idx] = block_idx as i32;
+            }
+        }
+
+        block_tables
+    }
+
+    pub fn slot_mapping(&self) -> Vec<i32> {
+        let block_index = (self.context_len - 1) / self.block_size;
+        let block_offset = (self.context_len - 1) % self.block_size;
+        let slot = block_index * self.block_size + block_offset;
+        vec![slot as i32; self.num_tokens]
+    }
+
+    pub fn seq_start_pos(&self) -> Vec<i32> {
+        (0..=self.num_seqs).map(|pos| pos as i32).collect()
+    }
+
+    pub fn packed_metadata(&self) -> Vec<i32> {
+        let mut packed = Vec::with_capacity(self.packed_elements());
+        packed.extend(self.token_ids());
+        packed.extend(self.positions());
+        packed.extend(self.context_lens());
+        packed.extend(self.block_tables());
+        packed.extend(self.slot_mapping());
+        packed.extend(self.seq_start_pos());
+        packed
     }
 }
 
@@ -481,6 +739,122 @@ impl ShardedKvCacheAllocationStatus {
     }
 }
 
+impl ShardedMetadataAllocationPlan {
+    /// Build a metadata-only allocation plan from a shard placement plan.
+    ///
+    /// The packed request metadata is intentionally duplicated to every shard
+    /// that owns layers. It is not split by layer ownership.
+    pub fn from_model_plan(plan: &ShardedModelPlan, config: MetadataAllocationConfig) -> Self {
+        Self {
+            shards: plan
+                .shards
+                .iter()
+                .filter(|shard| !shard.absolute_layers.is_empty())
+                .map(|shard| {
+                    CudaShardMetadataAllocationPlan::from_parts(
+                        shard.device_id,
+                        shard.absolute_layers.clone(),
+                        shard.owns_embeddings,
+                        shard.owns_final_head,
+                        config,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn shard_for_device(
+        &self,
+        device_id: DeviceId,
+    ) -> Option<&CudaShardMetadataAllocationPlan> {
+        self.shards
+            .iter()
+            .find(|shard| shard.device_id == device_id)
+    }
+}
+
+impl CudaShardMetadataAllocationPlan {
+    fn from_parts(
+        device_id: DeviceId,
+        absolute_layers: Vec<usize>,
+        owns_embeddings: bool,
+        owns_final_head: bool,
+        config: MetadataAllocationConfig,
+    ) -> Self {
+        Self {
+            device_id,
+            absolute_layers,
+            owns_embeddings,
+            owns_final_head,
+            mode: config.mode,
+            num_tokens: config.num_tokens,
+            num_seqs: config.num_seqs,
+            context_len: config.context_len,
+            block_size: config.block_size,
+            graph_max_blocks: config.graph_max_blocks(),
+            max_context_len: config.context_len,
+            token_ids_len: config.token_ids_len(),
+            positions_len: config.positions_len(),
+            context_lens_len: config.context_lens_len(),
+            block_tables_len: config.block_tables_len(),
+            slot_mapping_len: config.slot_mapping_len(),
+            seq_start_pos_len: config.seq_start_pos_len(),
+            packed_elements: config.packed_elements(),
+            packed_bytes: config.packed_bytes(),
+        }
+    }
+
+    pub fn status(&self, metadata_allocated: bool) -> CudaShardMetadataAllocationStatus {
+        CudaShardMetadataAllocationStatus {
+            device_id: self.device_id,
+            metadata_allocated,
+            metadata_status: if metadata_allocated {
+                RuntimeMetadataStatus::Allocated
+            } else {
+                RuntimeMetadataStatus::Deferred
+            },
+            mode: self.mode,
+            num_tokens: self.num_tokens,
+            num_seqs: self.num_seqs,
+            graph_max_blocks: self.graph_max_blocks,
+            packed_elements: self.packed_elements,
+            packed_bytes: self.packed_bytes,
+            token_ids_len: self.token_ids_len,
+            positions_len: self.positions_len,
+            context_lens_len: self.context_lens_len,
+            block_tables_len: self.block_tables_len,
+            slot_mapping_len: self.slot_mapping_len,
+            seq_start_pos_len: self.seq_start_pos_len,
+            max_context_len: self.max_context_len,
+            metadata_error: None,
+        }
+    }
+
+    pub fn packed_metadata(&self) -> Vec<i32> {
+        MetadataAllocationConfig {
+            mode: self.mode,
+            num_tokens: self.num_tokens,
+            num_seqs: self.num_seqs,
+            context_len: self.context_len,
+            block_size: self.block_size,
+            max_position: self.graph_max_blocks * self.block_size,
+        }
+        .packed_metadata()
+    }
+}
+
+impl ShardedMetadataAllocationStatus {
+    pub fn from_plan(plan: &ShardedMetadataAllocationPlan, metadata_allocated: bool) -> Self {
+        Self {
+            shards: plan
+                .shards
+                .iter()
+                .map(|shard| shard.status(metadata_allocated))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(feature = "cuda")]
 mod cuda {
     use std::path::Path;
@@ -494,10 +868,12 @@ mod cuda {
 
     use super::{
         CudaLayerKvCacheAllocationPlan, CudaShardKvCacheAllocationPlan,
-        CudaShardKvCacheAllocationStatus, CudaShardResourcePlan, CudaShardResourceStatus,
-        CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, RopeRuntimeBufferConfig,
-        ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedKvCacheAllocationPlan,
-        ShardedKvCacheAllocationStatus, ShardedRuntimeBufferStatus,
+        CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationPlan,
+        CudaShardMetadataAllocationStatus, CudaShardResourcePlan, CudaShardResourceStatus,
+        CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, MetadataAllocationConfig,
+        RopeRuntimeBufferConfig, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+        ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
+        ShardedMetadataAllocationStatus, ShardedRuntimeBufferStatus,
     };
     use crate::device_map::DeviceId;
     use crate::rope_validation::build_runtime_rope_tables;
@@ -555,6 +931,18 @@ mod cuda {
     /// Shard-local KV cache buffers allocated from existing resource islands.
     pub struct ShardedKvCacheBuffers {
         pub shards: Vec<CudaShardKvCacheBuffers>,
+    }
+
+    /// One shard's non-executing synthetic packed metadata buffer.
+    pub struct CudaShardMetadataBuffers {
+        pub device_id: DeviceId,
+        pub packed_metadata: CudaSlice<i32>,
+        pub plan: CudaShardMetadataAllocationPlan,
+    }
+
+    /// Shard-local synthetic metadata buffers allocated from resource islands.
+    pub struct ShardedMetadataBuffers {
+        pub shards: Vec<CudaShardMetadataBuffers>,
     }
 
     impl ShardedCudaResources {
@@ -794,12 +1182,73 @@ mod cuda {
             self.plan.status(true)
         }
     }
+
+    impl ShardedMetadataBuffers {
+        /// Allocate and copy synthetic packed request metadata to each shard's
+        /// stream. The buffer is not attached to a runner or execution path.
+        pub fn create_for_resources(
+            resources: &ShardedCudaResources,
+            config: MetadataAllocationConfig,
+        ) -> Result<Self> {
+            let mut shards = Vec::with_capacity(resources.shards.len());
+            for resource in &resources.shards {
+                let shard_plan = CudaShardMetadataAllocationPlan::from_parts(
+                    resource.device_id,
+                    resource.absolute_layers.clone(),
+                    resource.owns_embeddings,
+                    resource.owns_final_head,
+                    config,
+                );
+                shards.push(CudaShardMetadataBuffers::create_for_resource(
+                    resource,
+                    &shard_plan,
+                )?);
+            }
+            Ok(Self { shards })
+        }
+
+        pub fn status(&self) -> ShardedMetadataAllocationStatus {
+            ShardedMetadataAllocationStatus {
+                shards: self
+                    .shards
+                    .iter()
+                    .map(CudaShardMetadataBuffers::status)
+                    .collect(),
+            }
+        }
+    }
+
+    impl CudaShardMetadataBuffers {
+        fn create_for_resource(
+            resource: &CudaShardResources,
+            plan: &CudaShardMetadataAllocationPlan,
+        ) -> Result<Self> {
+            let packed_values = plan.packed_metadata();
+            let packed_metadata = resource.stream.clone_htod(&packed_values).map_err(|e| {
+                LLMError::GpuError(format!(
+                    "shard {} metadata HtoD failed: {e}",
+                    resource.device_id
+                ))
+            })?;
+
+            Ok(Self {
+                device_id: resource.device_id,
+                packed_metadata,
+                plan: plan.clone(),
+            })
+        }
+
+        pub fn status(&self) -> CudaShardMetadataAllocationStatus {
+            self.plan.status(true)
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardResources, CudaShardRuntimeBuffers,
-    ShardedCudaResources, ShardedKvCacheBuffers, ShardedRuntimeBuffers,
+    CudaLayerKvCacheBuffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources,
+    CudaShardRuntimeBuffers, ShardedCudaResources, ShardedKvCacheBuffers, ShardedMetadataBuffers,
+    ShardedRuntimeBuffers,
 };
 
 #[cfg(test)]
@@ -826,6 +1275,10 @@ mod tests {
 
     fn kv_cache_allocation_config() -> KvCacheAllocationConfig {
         KvCacheAllocationConfig::new(2, 4, 3, 5).unwrap()
+    }
+
+    fn metadata_allocation_config() -> MetadataAllocationConfig {
+        MetadataAllocationConfig::new_decode(2, 2, 17, 16, 64, None).unwrap()
     }
 
     #[test]
@@ -1031,6 +1484,120 @@ mod tests {
             assert!(shard.value_total_bytes > 0);
             assert!(shard.kv_cache_error.is_none());
         }
+    }
+
+    #[test]
+    fn decode_metadata_requires_tokens_equal_sequences() {
+        let err = MetadataAllocationConfig::new_decode(2, 1, 1, 16, 64, None).unwrap_err();
+
+        assert!(err.contains("metadata-num-tokens == metadata-num-seqs"));
+    }
+
+    #[test]
+    fn decode_metadata_rejects_zero_context_len() {
+        let err = MetadataAllocationConfig::new_decode(1, 1, 0, 16, 64, None).unwrap_err();
+
+        assert!(err.contains("metadata-context-len"));
+    }
+
+    #[test]
+    fn decode_metadata_rejects_zero_block_size() {
+        let err = MetadataAllocationConfig::new_decode(1, 1, 1, 0, 64, None).unwrap_err();
+
+        assert!(err.contains("metadata-block-size"));
+    }
+
+    #[test]
+    fn metadata_mode_rejects_unsupported_values() {
+        let err = "prefill".parse::<MetadataMode>().unwrap_err();
+
+        assert!(err.contains("only decode is supported"));
+    }
+
+    #[test]
+    fn decode_metadata_packed_element_count_matches_layout_formula() {
+        let config = metadata_allocation_config();
+
+        assert_eq!(config.graph_max_blocks(), 4);
+        assert_eq!(config.token_ids_len(), 2);
+        assert_eq!(config.positions_len(), 2);
+        assert_eq!(config.context_lens_len(), 2);
+        assert_eq!(config.block_tables_len(), 8);
+        assert_eq!(config.slot_mapping_len(), 2);
+        assert_eq!(config.seq_start_pos_len(), 3);
+        assert_eq!(config.packed_elements(), 19);
+        assert_eq!(config.packed_bytes(), 19 * std::mem::size_of::<i32>());
+    }
+
+    #[test]
+    fn decode_metadata_generates_expected_seq_start_positions() {
+        let config = metadata_allocation_config();
+
+        assert_eq!(config.seq_start_pos(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn decode_metadata_positions_are_context_len_minus_one() {
+        let config = metadata_allocation_config();
+
+        assert_eq!(config.positions(), vec![16, 16]);
+    }
+
+    #[test]
+    fn decode_metadata_slot_mapping_uses_final_token_slot() {
+        let config = metadata_allocation_config();
+
+        assert_eq!(config.slot_mapping(), vec![16, 16]);
+    }
+
+    #[test]
+    fn decode_metadata_block_tables_are_padded_to_graph_max_blocks() {
+        let config = metadata_allocation_config();
+
+        assert_eq!(config.block_tables(), vec![0, 1, 0, 0, 0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn decode_metadata_rejects_required_blocks_beyond_kv_blocks() {
+        let kv_config = KvCacheAllocationConfig::new(2, 4, 2, 16).unwrap();
+        let err =
+            MetadataAllocationConfig::new_decode(1, 1, 33, 16, 64, Some(&kv_config)).unwrap_err();
+
+        assert!(err.contains("exceeding kv-num-blocks"));
+    }
+
+    #[test]
+    fn decode_metadata_rejects_kv_block_size_mismatch() {
+        let kv_config = KvCacheAllocationConfig::new(2, 4, 3, 8).unwrap();
+        let err =
+            MetadataAllocationConfig::new_decode(1, 1, 17, 16, 64, Some(&kv_config)).unwrap_err();
+
+        assert!(err.contains("metadata-block-size"));
+        assert!(err.contains("kv-block-size"));
+    }
+
+    #[test]
+    fn metadata_allocation_plan_split_reports_per_shard_shapes() {
+        let plan = ShardedMetadataAllocationPlan::from_model_plan(
+            &split_plan(),
+            metadata_allocation_config(),
+        );
+        let status = ShardedMetadataAllocationStatus::from_plan(&plan, false);
+
+        assert_eq!(plan.shards.len(), 2);
+        assert_eq!(status.shards.len(), 2);
+        assert_eq!(status.shards[0].device_id, DeviceId(0));
+        assert!(!status.shards[0].metadata_allocated);
+        assert_eq!(
+            status.shards[0].metadata_status,
+            RuntimeMetadataStatus::Deferred
+        );
+        assert_eq!(status.shards[0].num_tokens, 2);
+        assert_eq!(status.shards[0].num_seqs, 2);
+        assert_eq!(status.shards[0].graph_max_blocks, 4);
+        assert_eq!(status.shards[0].packed_elements, 19);
+        assert_eq!(status.shards[1].device_id, DeviceId(1));
+        assert_eq!(status.shards[1].packed_bytes, status.shards[0].packed_bytes);
     }
 
     #[cfg(feature = "cuda")]

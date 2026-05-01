@@ -3164,3 +3164,243 @@ and continue to make no attention/execution/parity claim.
 ### Primary classification
 
 multi_gpu_layer_sharding_metadata_shape_boundary_design_complete
+
+## Shard-local metadata allocation skeleton status
+
+This slice adds a bench-only synthetic decode metadata allocation skeleton. It
+is opt-in from `multi_gpu_layer_sharding_split_allocation_smoke` and remains
+separate from serve/runtime execution.
+
+### Module and helper names
+
+The CUDA-free plan/status types live in
+`crates/gpt-oss-model-runner/src/sharded_resources.rs`:
+
+- `MetadataMode`
+- `MetadataAllocationConfig`
+- `ShardedMetadataAllocationPlan`
+- `CudaShardMetadataAllocationPlan`
+- `ShardedMetadataAllocationStatus`
+- `CudaShardMetadataAllocationStatus`
+
+CUDA-gated allocation wrappers in the same module allocate/copy the packed
+metadata buffer through the existing per-shard resource islands:
+
+- `ShardedMetadataBuffers`
+- `CudaShardMetadataBuffers`
+
+The model-runner crate re-exports these types from `src/lib.rs`.
+
+### Bench flags
+
+`crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_split_allocation_smoke.rs`
+now accepts:
+
+```text
+--allocate-metadata
+--metadata-mode decode
+--metadata-num-tokens <N>
+--metadata-num-seqs <N>
+--metadata-context-len <N>
+--metadata-block-size <N>
+```
+
+Metadata allocation is disabled by default. Without `--allocate-metadata`,
+the existing split allocation smoke behavior is unchanged and metadata remains
+deferred.
+
+### Decode-only scope
+
+The first skeleton supports only `metadata-mode=decode`.
+
+Validation rules:
+
+- `metadata-num-tokens` must equal `metadata-num-seqs`.
+- `metadata-context-len` must be non-zero.
+- `metadata-block-size` must be non-zero.
+- `max_position_embeddings` from `config.json` must be non-zero.
+- If KV allocation is also requested, `metadata-block-size` must match
+  `kv-block-size`.
+- If KV allocation is also requested, the generated decode block ids must fit
+  within `kv-num-blocks`.
+
+Unsupported modes such as `prefill` are rejected by the CLI. Prefill and mixed
+prefill/decode metadata remain deferred.
+
+### Packed metadata fields
+
+The skeleton builds deterministic synthetic decode metadata and packs all
+fields as `i32`, matching the current runner metadata packet type.
+
+For decode mode:
+
+- `token_ids_len = metadata_num_tokens`
+- `positions_len = metadata_num_tokens`
+- `context_lens_len = metadata_num_seqs`
+- `graph_max_blocks = ceil(max_position_embeddings / metadata_block_size)`
+- `block_tables_len = metadata_num_seqs * graph_max_blocks`
+- `slot_mapping_len = metadata_num_tokens`
+- `seq_start_pos_len = metadata_num_seqs + 1`
+
+Packed element count:
+
+```text
+token_ids_len
++ positions_len
++ context_lens_len
++ block_tables_len
++ slot_mapping_len
++ seq_start_pos_len
+```
+
+Packed byte count is `packed_elements * sizeof(i32)`.
+
+### Decode metadata generation
+
+The synthetic decode packet uses deterministic values:
+
+- `query_lens` is represented by `seq_start_pos = [0, 1, ..., num_seqs]`.
+- `context_lens = [metadata_context_len; num_seqs]`.
+- `positions = [metadata_context_len - 1; num_tokens]`.
+- `token_ids = 0..num_tokens`.
+- `block_tables` has one row per sequence, uses physical block ids starting at
+  zero, and pads each row to `graph_max_blocks`.
+- `slot_mapping` uses the final token position:
+  `block_index = (metadata_context_len - 1) / metadata_block_size`,
+  `block_offset = (metadata_context_len - 1) % metadata_block_size`, and
+  `slot = physical_block * metadata_block_size + block_offset`.
+
+### Per-shard ownership
+
+The packed metadata buffer is duplicated to every shard that owns layers. It is
+not split by layer ownership. Metadata remains layer-independent; shard-local
+layer ownership continues to determine which weights and KV cache entries are
+local.
+
+The status path preserves the existing absolute-layer-first KV policy:
+
+```text
+absolute_layer_idx -> local_cache_idx -> key/value cache slices
+```
+
+The metadata packet does not carry layer ids and does not decide local cache
+indices.
+
+### Status JSON fields
+
+Top-level status adds:
+
+```text
+metadata_allocation_attempted
+metadata_allocation_succeeded
+metadata_mode
+metadata_num_tokens
+metadata_num_seqs
+metadata_context_len
+metadata_block_size
+metadata_graph_max_blocks
+metadata_error
+```
+
+Each shard reports:
+
+```text
+metadata_allocated
+metadata_status
+metadata_mode
+metadata_num_tokens
+metadata_num_seqs
+metadata_graph_max_blocks
+metadata_packed_elements
+metadata_packed_bytes
+metadata_token_ids_len
+metadata_positions_len
+metadata_context_lens_len
+metadata_block_tables_len
+metadata_slot_mapping_len
+metadata_seq_start_pos_len
+metadata_max_context_len
+metadata_error
+```
+
+When metadata allocation succeeds, the command classification becomes:
+
+```text
+multi_gpu_layer_sharding_metadata_allocation_smoke_complete
+```
+
+### What remains deferred
+
+This slice does not allocate or create:
+
+- graph output buffers
+- request-shaped metadata from a live server request
+- prefill or mixed prefill/decode metadata
+- KV-cache execution accessors
+- f16 scratch
+- fused QKV/gate-up weights
+- MoE GPU expert uploads
+- transformer layers
+- `GpuModelRunner`
+- attention execution
+- activation transfer
+- logits, sampling, graph capture, serving, or parity paths
+
+Serve/runtime split maps remain non-executable.
+
+### Manual operator command
+
+Do not run this as part of normal validation. A future operator run can use:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_rope_kv_metadata_status.json
+```
+
+### Validation
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `git diff --check`
+
+Neighboring bench checks were also run because the shared split allocation
+smoke command shape changed:
+
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+
+### Primary classification
+
+multi_gpu_layer_sharding_metadata_allocation_skeleton_complete
+
+### Next bounded step
+
+Run the real-model metadata allocation smoke as an operator validation slice,
+then review the emitted status JSON. No real-model metadata command was run in
+this implementation slice.
