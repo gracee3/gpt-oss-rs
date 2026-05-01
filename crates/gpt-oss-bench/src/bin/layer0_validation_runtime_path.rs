@@ -163,6 +163,10 @@ struct Cli {
     #[arg(long, default_value = "current")]
     raw_qk_accum_policy: String,
 
+    /// Validation-only attention o-proj accumulation/output policy.
+    #[arg(long, default_value = "current")]
+    attention_oproj_policy: String,
+
     /// Start layer for generic ladder validation.
     #[arg(long, default_value_t = 0)]
     start_layer: usize,
@@ -468,6 +472,7 @@ enum Mode {
     AttentionAuditValidate,
     RawQkSingleMismatchDebug,
     RawQkPolicySweepStatus,
+    AttentionOprojPolicySweepStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1455,6 +1460,7 @@ fn main() -> Result<()> {
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::RawQkSingleMismatchDebug => run_raw_qk_single_mismatch_debug(&cli),
         Mode::RawQkPolicySweepStatus => run_raw_qk_policy_sweep_status(&cli),
+        Mode::AttentionOprojPolicySweepStatus => run_attention_oproj_policy_sweep_status(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -5264,6 +5270,344 @@ fn run_raw_qk_policy_sweep_status(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn hidden_mismatch_samples(actual: &[f32], expected: &[f32], limit: usize) -> Vec<HiddenDiff> {
+    actual
+        .iter()
+        .zip(expected.iter())
+        .enumerate()
+        .filter_map(|(hidden_lane, (&actual, &expected))| {
+            let abs_diff = (actual - expected).abs();
+            (abs_diff != 0.0).then_some(HiddenDiff {
+                hidden_lane,
+                actual,
+                expected,
+                abs_diff,
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let lane = cli.lane;
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let attention_audit_status_path =
+        required_path(&cli.attention_audit_status, "attention audit status")?;
+    let prior_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    validate_path(attention_status_path, "attention bundle status")?;
+    validate_path(attention_audit_status_path, "attention audit status")?;
+    validate_path(prior_validate_status_path, "ordered bundle validate status")?;
+
+    let attention_status = load_json(attention_status_path)?;
+    let attention_audit_status = load_json(attention_audit_status_path)?;
+    let prior_status = load_json(prior_validate_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&attention_status)? == layer,
+        "attention bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&attention_audit_status)? == layer,
+        "attention audit bundle layer did not match requested layer {layer}"
+    );
+    anyhow::ensure!(
+        status_layer_index(&prior_status)? == layer,
+        "ordered bundle validation layer did not match requested layer {layer}"
+    );
+
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    let attention_residual_path =
+        status_artifact_path(&attention_status, "attention_residual", "attention")?;
+    let layer_input_path = status_artifact_path(
+        &attention_audit_status,
+        "layer_input_before_attention_norm",
+        "attention audit",
+    )?;
+    for (label, path) in [
+        ("attention weighted V", &weighted_v_path),
+        ("attention o-proj", &oproj_path),
+        ("attention residual", &attention_residual_path),
+        ("audit layer input", &layer_input_path),
+    ] {
+        validate_path(path, label)?;
+    }
+    let mlp_bundle_status_path =
+        cli.mlp_bundle_status
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| {
+                prior_status
+                    .get("mlp_bundle_status")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+            });
+    let mlp_input_loaded = if let Some(path) = mlp_bundle_status_path.as_deref() {
+        validate_path(path, "MLP bundle status")?;
+        let mlp_status = load_json(path)?;
+        let mlp_input_path = status_artifact_path(&mlp_status, "mlp_input", "MLP")?;
+        validate_path(&mlp_input_path, "MLP input")?;
+        Some((
+            path.display().to_string(),
+            mlp_input_path.display().to_string(),
+            load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?,
+        ))
+    } else {
+        None
+    };
+
+    let (weighted_status, weighted_v) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (oproj_status, oproj_oracle) = load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+    let (layer_input_status, layer_input) =
+        load_tensor_artifact(&layer_input_path, &[hidden], &["values"])?;
+    let (residual_status, residual_oracle) =
+        load_tensor_artifact(&attention_residual_path, &[hidden], &["values"])?;
+
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    anyhow::ensure!(
+        model.exists(),
+        "model artifact does not exist: {}",
+        model.display()
+    );
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+
+    let schema_blocked = !weighted_status.shape_or_count_matched
+        || !oproj_status.shape_or_count_matched
+        || !layer_input_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched;
+    let baseline_mismatches = prior_status
+        .pointer("/attention_metrics/o_proj/metrics/mismatches")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(usize::MAX);
+    let baseline_max_abs_diff = prior_status
+        .pointer("/attention_metrics/o_proj/metrics/max_abs_diff")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let baseline_first = prior_status
+        .pointer("/attention_metrics/o_proj/first_mismatch")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let baseline_worst = prior_status
+        .pointer("/attention_metrics/o_proj/worst_mismatch")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let policies = [
+        OprojPolicy::Current,
+        OprojPolicy::F32Bias,
+        OprojPolicy::Reverse,
+        OprojPolicy::Pairwise,
+        OprojPolicy::ChunkedPairwise,
+        OprojPolicy::ChunkedPairwise16,
+        OprojPolicy::ChunkedPairwise32,
+        OprojPolicy::ChunkedPairwise128,
+        OprojPolicy::F64Diagnostic,
+        OprojPolicy::PreBiasRound,
+        OprojPolicy::F32InputBf16Weight,
+    ];
+    let mut policy_results = Vec::new();
+    let mut best_full_policy: Option<&'static str> = None;
+    let mut best_focus_policy: Option<&'static str> = None;
+    let mut best_full_mismatches = usize::MAX;
+    let mut best_full_max_abs = f32::INFINITY;
+    let mut best_focus_diff = f32::INFINITY;
+    let mut chunked_clears = false;
+    let mut pairwise_clears = false;
+    let mut reverse_clears = false;
+    let mut any_valid_clears = false;
+    let mut focus_only_cleared = false;
+    let mut collateral_mismatches = false;
+
+    if !schema_blocked {
+        for policy in policies {
+            let output =
+                compute_attention_oproj_variant(&weighted_v, &oproj_weight, &oproj_bias, policy);
+            let residual_output = compute_attention_residual(&layer_input, &output);
+            let oproj_metric = compare_hidden(&output, &oproj_oracle);
+            let residual_metric = compare_hidden(&residual_output, &residual_oracle);
+            let bridge_metric = mlp_input_loaded
+                .as_ref()
+                .filter(|(_, _, (status, _))| status.shape_or_count_matched)
+                .map(|(_, _, (_, mlp_input))| compare_hidden(&residual_output, mlp_input));
+            let focus_abs_diff = (output[lane] - oproj_oracle[lane]).abs();
+            let clears_focus_lane = focus_abs_diff == 0.0;
+            let clears_full_oproj = oproj_metric.metrics.mismatches == 0;
+            let clears_attention_residual = residual_metric.metrics.mismatches == 0;
+            let clears_bridge = bridge_metric
+                .as_ref()
+                .is_none_or(|metric| metric.metrics.mismatches == 0);
+            let full_clear = clears_full_oproj && clears_attention_residual && clears_bridge;
+            let valid_candidate = policy.valid_candidate();
+            let diagnostic_only = policy.diagnostic_only();
+            let introduces_collateral = if clears_focus_lane && !clears_full_oproj {
+                oproj_metric.metrics.mismatches > 0
+            } else {
+                oproj_metric.metrics.mismatches > baseline_mismatches
+            };
+
+            if valid_candidate
+                && (oproj_metric.metrics.mismatches < best_full_mismatches
+                    || (oproj_metric.metrics.mismatches == best_full_mismatches
+                        && oproj_metric.metrics.max_abs_diff < best_full_max_abs))
+            {
+                best_full_policy = Some(policy.name());
+                best_full_mismatches = oproj_metric.metrics.mismatches;
+                best_full_max_abs = oproj_metric.metrics.max_abs_diff;
+            }
+            if valid_candidate && focus_abs_diff < best_focus_diff {
+                best_focus_policy = Some(policy.name());
+                best_focus_diff = focus_abs_diff;
+            }
+            if full_clear && valid_candidate {
+                any_valid_clears = true;
+                if matches!(
+                    policy,
+                    OprojPolicy::ChunkedPairwise
+                        | OprojPolicy::ChunkedPairwise16
+                        | OprojPolicy::ChunkedPairwise32
+                        | OprojPolicy::ChunkedPairwise128
+                ) {
+                    chunked_clears = true;
+                }
+                if matches!(policy, OprojPolicy::Pairwise) {
+                    pairwise_clears = true;
+                }
+                if matches!(policy, OprojPolicy::Reverse) {
+                    reverse_clears = true;
+                }
+            }
+            if clears_focus_lane && !clears_full_oproj {
+                focus_only_cleared = true;
+            }
+            if introduces_collateral {
+                collateral_mismatches = true;
+            }
+
+            policy_results.push(json!({
+                "policy": policy.name(),
+                "description": policy.description(),
+                "valid_candidate": valid_candidate,
+                "diagnostic_only": diagnostic_only,
+                "o_proj": {
+                    "metrics": oproj_metric.metrics,
+                    "first_mismatch": oproj_metric.first_mismatch,
+                    "worst_mismatch": oproj_metric.worst_mismatch,
+                    "mismatch_samples": hidden_mismatch_samples(&output, &oproj_oracle, 4),
+                },
+                "attention_residual": {
+                    "metrics": residual_metric.metrics,
+                    "first_mismatch": residual_metric.first_mismatch,
+                    "worst_mismatch": residual_metric.worst_mismatch,
+                },
+                "attention_to_mlp_bridge": bridge_metric,
+                "focus_lane": {
+                    "lane": lane,
+                    "local": output[lane],
+                    "official": oproj_oracle[lane],
+                    "abs_diff": focus_abs_diff,
+                    "matched": clears_focus_lane,
+                },
+                "clears_focus_lane": clears_focus_lane,
+                "clears_full_oproj": clears_full_oproj,
+                "clears_attention_residual": clears_attention_residual,
+                "clears_attention_to_mlp_bridge": clears_bridge,
+                "introduces_collateral_mismatches": introduces_collateral,
+            }));
+        }
+    }
+
+    let classification = if schema_blocked {
+        format!("layer{layer}_attention_oproj_policy_sweep_blocked_by_schema")
+    } else if chunked_clears {
+        format!("layer{layer}_attention_oproj_policy_sweep_chunked_pairwise_clears")
+    } else if pairwise_clears {
+        format!("layer{layer}_attention_oproj_policy_sweep_pairwise_clears")
+    } else if reverse_clears {
+        format!("layer{layer}_attention_oproj_policy_sweep_reverse_clears")
+    } else if any_valid_clears {
+        format!("layer{layer}_attention_oproj_policy_sweep_cublas_clears")
+    } else if collateral_mismatches {
+        format!("layer{layer}_attention_oproj_policy_sweep_collateral_mismatches")
+    } else if focus_only_cleared {
+        format!("layer{layer}_attention_oproj_policy_sweep_focus_only_cleared")
+    } else {
+        format!("layer{layer}_attention_oproj_policy_sweep_no_candidate_clears")
+    };
+
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "attention-oproj-policy-sweep-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "layer_index": layer,
+        "focus_lane": lane,
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "attention_audit_status": attention_audit_status_path.display().to_string(),
+            "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+            "mlp_bundle_status": mlp_bundle_status_path.as_ref().map(|path| path.display().to_string()),
+            "attention_classification": attention_status["classification"].clone(),
+            "attention_audit_classification": attention_audit_status["classification"].clone(),
+            "ordered_bundle_validate_classification": prior_status["classification"].clone(),
+        },
+        "weighted_v_source": {
+            "policy": "ordered_weighted_v_artifact_validated_by_attention_audit",
+            "artifact": weighted_status,
+        },
+        "artifacts": {
+            "o_proj_oracle": oproj_status,
+            "layer_input_before_attention_norm": layer_input_status,
+            "attention_residual_oracle": residual_status,
+            "mlp_input": mlp_input_loaded.as_ref().map(|(_, path, (status, _))| json!({
+                "path": path,
+                "artifact": status,
+            })).unwrap_or(Value::Null),
+        },
+        "model_tensors": {
+            "oproj_weight": oproj_weight_source,
+            "oproj_bias": oproj_bias_source,
+        },
+        "baseline": {
+            "source": "prior layer-bundle-validate status",
+            "o_proj_mismatches": baseline_mismatches,
+            "max_abs_diff": baseline_max_abs_diff,
+            "first_mismatch": baseline_first,
+            "worst_mismatch": baseline_worst,
+        },
+        "policy_results": policy_results,
+        "best_policy_by_full_oproj": best_full_policy,
+        "best_policy_by_focus_lane": best_focus_policy,
+        "candidate_policy_discussion_allowed": false,
+        "next_bounded_step": if any_valid_clears {
+            "rerun layer4 ordered bundle validation with the best explicit validation-only o-proj policy; do not emit layer output or continue the ladder"
+        } else {
+            "keep layer4 strict ordered attention blocked on o-proj; request a focused o-proj producer-side dtype/accumulation probe"
+        },
+    });
+    write_json(&cli.output, &status)
+}
+
 #[cfg(feature = "cuda")]
 fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let layer = cli.layer_index;
@@ -5274,6 +5618,8 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
     let raw_qk_policy = parse_raw_qk_accum_policy(&cli.raw_qk_accum_policy)?;
     let raw_qk_policy_explicit = !matches!(raw_qk_policy, RawQkSweepPolicy::CurrentSequential);
+    let oproj_policy = parse_attention_oproj_policy(&cli.attention_oproj_policy)?;
+    let oproj_policy_explicit = cli.attention_oproj_policy.as_str() != "current";
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -5529,7 +5875,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         &weighted_v_for_oproj,
         &oproj_weight,
         &oproj_bias,
-        OprojPolicy::ChunkedPairwise,
+        oproj_policy,
     );
     let oproj_metric = compare_hidden(&oproj_local, &oproj_oracle);
     let attention_to_mlp_bridge = compare_hidden(&attention_residual, &mlp_input);
@@ -5767,25 +6113,33 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let classification = if attention_shape_blocked {
         format!("{classification_prefix}_blocked_by_schema")
     } else if !attention_seams_clear {
-        if raw_qk_policy_explicit {
+        if oproj_policy_explicit {
+            format!("{classification_prefix}_oproj_policy_attention_mismatch")
+        } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_attention_mismatch")
         } else {
             format!("{classification_prefix}_attention_seam_mismatch")
         }
     } else if !bridge_clear {
-        if raw_qk_policy_explicit {
+        if oproj_policy_explicit {
+            format!("{classification_prefix}_oproj_policy_bridge_mismatch")
+        } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_bridge_mismatch")
         } else {
             format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
         }
     } else if !mlp_guards_clear {
-        if raw_qk_policy_explicit {
+        if oproj_policy_explicit {
+            format!("{classification_prefix}_oproj_policy_mlp_mismatch")
+        } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_raw_qk_policy_mlp_mismatch")
         } else {
             format!("{classification_prefix}_mlp_seam_mismatch")
         }
     } else if deterministic_clears || baseline_clears {
-        if raw_qk_policy_explicit {
+        if oproj_policy_explicit {
+            format!("{classification_prefix}_attention_cleared_mlp_cleared_with_oproj_policy")
+        } else if raw_qk_policy_explicit {
             format!("{classification_prefix}_attention_cleared_mlp_cleared_with_raw_qk_policy")
         } else {
             format!("{classification_prefix}_attention_cleared_mlp_cleared")
@@ -5809,6 +6163,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "focus_lane": lane,
         "raw_qk_accum_policy": raw_qk_policy.name(),
         "raw_qk_accum_policy_requested": cli.raw_qk_accum_policy.as_str(),
+        "attention_oproj_policy": oproj_policy.name(),
+        "attention_oproj_policy_requested": cli.attention_oproj_policy.as_str(),
+        "attention_oproj_policy_validation_only": true,
         "raw_qk_policy_source_status": if raw_qk_policy_source_status_path.exists() {
             json!(raw_qk_policy_source_status_path.display().to_string())
         } else {
@@ -5844,6 +6201,8 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "attention_metrics": {
             "raw_qk_accum_policy": raw_qk_policy.name(),
             "raw_qk_accum_policy_validation_only": true,
+            "o_proj_policy": oproj_policy.name(),
+            "o_proj_policy_validation_only": true,
             "q_pre_rope": {
                 "artifact": q_pre_status,
                 "projection_recomputed": false,
@@ -5934,6 +6293,9 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_raw_qk_policy") {
                 "record ordered layer validation under explicit validation-only raw-QK accumulation policy; do not continue the ladder in this slice"
             }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_oproj_policy") {
+                "record ordered layer validation under explicit validation-only o-proj policy; do not continue the ladder in this slice"
+            }
             else if classification.ends_with("_attention_seam_mismatch") {
                 "localize the first mismatching ordered attention seam"
             }
@@ -5950,6 +6312,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "validation_only": true,
             "layer_ladder_continued": false,
             "raw_qk_accum_policy_is_default_runtime": false,
+            "attention_oproj_policy_is_default_runtime": false,
             "source_complete_attention_claim_limited_to_ordered_bundle_surface": true,
             "all_token_v_used_by_oracle_internally_but_not_emitted_as_base_boundary": !base_all_token_v_emitted,
             "bf16_product_policy_used_as_correction": false,
@@ -15122,8 +15485,77 @@ enum OprojPolicy {
     F32Bias,
     PreBiasRound,
     Reverse,
+    Pairwise,
     ChunkedPairwise,
+    ChunkedPairwise16,
+    ChunkedPairwise32,
+    ChunkedPairwise128,
+    F64Diagnostic,
     F32InputBf16Weight,
+}
+
+impl OprojPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current_sequential_f32_accum_bf16_output",
+            Self::F32Bias => "sequential_f32_accum_f32_bias_bf16_output",
+            Self::PreBiasRound => "bf16_prebias_then_bf16_bias_bf16_output",
+            Self::Reverse => "reverse_f32_accum_f32_bias_bf16_output",
+            Self::Pairwise => "pairwise_f32_accum_f32_bias_bf16_output",
+            Self::ChunkedPairwise => "chunked_pairwise64_f32_accum_f32_bias_bf16_output",
+            Self::ChunkedPairwise16 => "chunked_pairwise16_f32_accum_f32_bias_bf16_output",
+            Self::ChunkedPairwise32 => "chunked_pairwise32_f32_accum_f32_bias_bf16_output",
+            Self::ChunkedPairwise128 => "chunked_pairwise128_f32_accum_f32_bias_bf16_output",
+            Self::F64Diagnostic => "f64_diagnostic_accum_bf16_output",
+            Self::F32InputBf16Weight => "f32_input_bf16_weight_f32_accum_bf16_output",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Current => "BF16 input, BF16 weight, sequential f32 accumulation, BF16 bias add, BF16 output",
+            Self::F32Bias => "BF16 input, BF16 weight, sequential f32 accumulation, f32 bias add, BF16 output",
+            Self::PreBiasRound => "BF16 input, BF16 weight, sequential f32 accumulation, BF16-round pre-bias, BF16 bias add, BF16 output",
+            Self::Reverse => "BF16 input, BF16 weight, reverse f32 accumulation, f32 bias add, BF16 output",
+            Self::Pairwise => "BF16 input, BF16 weight, pairwise f32 accumulation, f32 bias add, BF16 output",
+            Self::ChunkedPairwise => "BF16 input, BF16 weight, chunked pairwise f32 accumulation with chunk size 64, f32 bias add, BF16 output",
+            Self::ChunkedPairwise16 => "BF16 input, BF16 weight, chunked pairwise f32 accumulation with chunk size 16, f32 bias add, BF16 output",
+            Self::ChunkedPairwise32 => "BF16 input, BF16 weight, chunked pairwise f32 accumulation with chunk size 32, f32 bias add, BF16 output",
+            Self::ChunkedPairwise128 => "BF16 input, BF16 weight, chunked pairwise f32 accumulation with chunk size 128, f32 bias add, BF16 output",
+            Self::F64Diagnostic => "BF16 input, BF16 weight, f64 diagnostic accumulation, f32 bias add, BF16 output",
+            Self::F32InputBf16Weight => "f32 input values, BF16 weight, sequential f32 accumulation, f32 bias add, BF16 output",
+        }
+    }
+
+    fn diagnostic_only(self) -> bool {
+        matches!(self, Self::F64Diagnostic)
+    }
+
+    fn valid_candidate(self) -> bool {
+        !self.diagnostic_only()
+    }
+}
+
+fn parse_attention_oproj_policy(value: &str) -> Result<OprojPolicy> {
+    match value {
+        // Preserve the existing layer-bundle validator behavior: current means
+        // the layer0-style chunked-pairwise o-proj helper already in use.
+        "current" | "chunked-pairwise" | "chunked_pairwise64_f32_accum_f32_bias_bf16_output" => {
+            Ok(OprojPolicy::ChunkedPairwise)
+        }
+        "pairwise" | "pairwise-f32" | "pairwise_f32_accum_f32_bias_bf16_output" => {
+            Ok(OprojPolicy::Pairwise)
+        }
+        "reverse" | "reverse-f32" | "reverse_f32_accum_f32_bias_bf16_output" => {
+            Ok(OprojPolicy::Reverse)
+        }
+        "f64-diagnostic" | "f64" | "f64_diagnostic_accum_bf16_output" => {
+            Ok(OprojPolicy::F64Diagnostic)
+        }
+        other => anyhow::bail!(
+            "unsupported attention o-proj policy {other:?}; expected current, chunked-pairwise, pairwise, reverse, or f64-diagnostic"
+        ),
+    }
 }
 
 fn compute_attention_oproj_variant(
@@ -15154,11 +15586,28 @@ fn compute_attention_oproj_variant(
                 }
                 sum
             }
-            OprojPolicy::ChunkedPairwise => {
+            OprojPolicy::Pairwise => {
+                let terms = (0..q_dim)
+                    .map(|in_lane| {
+                        round_bf16(weighted_v[in_lane]) * round_bf16(weight[weight_base + in_lane])
+                    })
+                    .collect::<Vec<_>>();
+                pairwise_sum_f32(&terms)
+            }
+            OprojPolicy::ChunkedPairwise
+            | OprojPolicy::ChunkedPairwise16
+            | OprojPolicy::ChunkedPairwise32
+            | OprojPolicy::ChunkedPairwise128 => {
+                let chunk_size = match policy {
+                    OprojPolicy::ChunkedPairwise16 => 16,
+                    OprojPolicy::ChunkedPairwise32 => 32,
+                    OprojPolicy::ChunkedPairwise128 => 128,
+                    _ => 64,
+                };
                 let mut partials = Vec::new();
-                for chunk in (0..q_dim).step_by(64) {
+                for chunk in (0..q_dim).step_by(chunk_size) {
                     let mut partial = 0.0f32;
-                    for in_lane in chunk..(chunk + 64).min(q_dim) {
+                    for in_lane in chunk..(chunk + chunk_size).min(q_dim) {
                         partial += round_bf16(weighted_v[in_lane])
                             * round_bf16(weight[weight_base + in_lane]);
                     }
@@ -15173,6 +15622,14 @@ fn compute_attention_oproj_variant(
                 }
                 partials[0]
             }
+            OprojPolicy::F64Diagnostic => {
+                let mut sum = 0.0f64;
+                for in_lane in 0..q_dim {
+                    sum += (round_bf16(weighted_v[in_lane]) as f64)
+                        * (round_bf16(weight[weight_base + in_lane]) as f64);
+                }
+                sum as f32
+            }
             OprojPolicy::F32InputBf16Weight => {
                 let mut sum = 0.0f32;
                 for in_lane in 0..q_dim {
@@ -15184,6 +15641,10 @@ fn compute_attention_oproj_variant(
         output[out_lane] = match policy {
             OprojPolicy::Current => round_bf16(sum + round_bf16(bias[out_lane])),
             OprojPolicy::PreBiasRound => round_bf16(round_bf16(sum) + round_bf16(bias[out_lane])),
+            OprojPolicy::F64Diagnostic => {
+                let value = (sum as f64) + (bias[out_lane] as f64);
+                round_bf16(value as f32)
+            }
             _ => round_bf16(sum + bias[out_lane]),
         };
     }

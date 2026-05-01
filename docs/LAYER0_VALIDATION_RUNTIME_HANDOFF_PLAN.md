@@ -1699,12 +1699,94 @@ BF16-product evidence policy final-output mismatches = 484
 ```
 
 Raw-QK policy sweep and pairwise revalidation were skipped because strict
-raw-QK and masked logits already match exactly. No layer4 output was emitted,
-the ladder was not continued, no tolerance or correction metadata was applied,
-no runtime/default routing/CUDA behavior changed, and there is no final-logit,
-all-layer, server, or 4097-token claim. Next bounded step: localize the layer4
-o-proj two-lane mismatch before claiming full strict ordered layer4 attention
-surface parity.
+raw-QK and masked logits already match exactly.
+
+## Layer4 o-proj Policy Sweep Status
+
+Layer4 o-proj was localized with a focused validation-only policy sweep:
+
+```text
+/tmp/layer4_attention_oproj_policy_sweep_status.json
+classification = layer4_attention_oproj_policy_sweep_reverse_clears
+
+strict/default blocker:
+  o-proj mismatches = 2
+  o-proj max_abs_diff = 0.0000152587890625
+  first/worst lane = 884
+  local = -0.003265380859375
+  official = -0.0032806396484375
+```
+
+The sweep uses the ordered weighted-V artifact that was already validated by
+the attention audit. Upstream attention seams remain exact: raw-QK, masked
+logits, probabilities, and weighted V all have zero mismatches. Downstream,
+attention residual and the attention-to-MLP bridge remain exact when recomputed
+from the clearing o-proj candidate.
+
+Policy summary:
+
+```text
+current sequential f32:
+  o-proj mismatches = 1
+  focus lane 884 = exact
+  collateral lane = 2632
+
+sequential f32 with f32 bias:
+  o-proj mismatches = 1
+  focus lane 884 = exact
+  collateral lane = 2632
+
+reverse f32:
+  o-proj mismatches = 0
+  attention residual mismatches = 0
+  attention-to-MLP bridge mismatches = 0
+
+pairwise f32:
+  o-proj mismatches = 2
+
+chunked pairwise f32, sizes 16/32/64:
+  o-proj mismatches = 2
+
+chunked pairwise f32, size 128:
+  o-proj mismatches = 1
+
+f64 diagnostic:
+  o-proj mismatches = 1
+
+BF16 pre-bias/bias variant:
+  broad collateral mismatches
+```
+
+The full split bundle validation was then rerun with an explicit validation-only
+o-proj policy:
+
+```text
+/tmp/layer4_ordered_bundle_validate_oproj_policy_status.json
+classification =
+  layer4_ordered_bundle_validate_attention_cleared_mlp_cleared_with_oproj_policy
+attention_oproj_policy = reverse_f32_accum_f32_bias_bf16_output
+
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o-proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+MLP baseline total ordered mismatches = 0
+```
+
+Layer4 MLP remains exact under the current sequential down policy. The
+deterministic abs-ascending MLP down policy is not used on layer4 because it
+introduces three total ordered MLP mismatches; BF16-product remains
+evidence-only/rejected due broad collateral mismatches. This is explicit
+validation-only evidence, not a default runtime policy. No layer4 output was
+emitted, the ladder was not continued, no tolerance or correction metadata was
+applied, no runtime/default routing/CUDA behavior changed, and there is no
+final-logit, all-layer, server, or 4097-token claim.
+
+Next bounded step: either collect another ordered surface or decide whether
+reverse o-proj accumulation belongs in a scoped validation-only policy design
+discussion. It is not promoted here.
 
 ## Validation-Only Non-Goals
 
