@@ -21,9 +21,58 @@ for selected MLP down-projection replay:
 | 1 | `layer1_selected_mlp_down_policy_replay_full_mlp_cleared` | `deterministic_f32_abs_ascending_sum_then_bf16_output` clears selected outputs, weighted sum, and final output. |
 | 2 | `layer2_selected_mlp_down_policy_replay_full_mlp_cleared` | `deterministic_f32_abs_ascending_sum_then_bf16_output` clears selected outputs, weighted sum, and final output. |
 
-Layer2 caveat: the layer2 ordered MLP bundle is MLP-only. Its seed is the
-official/coarse attention residual seam, so this is not source-complete layer2
-attention validation.
+Layer2 note: the layer2 ordered MLP replay was originally MLP-only and seeded
+from an official/coarse attention residual seam. A later ordered attention audit
+proof gate now validates the layer2 final-token attention path through weighted
+V and residual add; see the next section. This strengthens the layer2 proof
+surface but does not turn the selected MLP down convention into a production
+policy.
+
+## Layer2 Ordered Attention Audit Proof Gate
+
+The prior preferred layer2 proof gate has now been partially satisfied for the
+final-token ordered validation surface. The validation-runtime consumer has
+source-complete layer2 ordered attention evidence for the final-token path,
+including all-token K post-RoPE history and a supplemental all-token V audit
+bundle.
+
+Relevant statuses:
+
+```text
+/tmp/layer2_ordered_attention_bundle_status.json
+/tmp/layer2_ordered_attention_audit_bundle_status.json
+/tmp/layer2_ordered_attention_audit_validate_status.json
+/tmp/layer2_ordered_bundle_validate_status.json
+/tmp/layer2_ordered_mlp_bundle_status.json
+/tmp/layer2_selected_mlp_down_policy_replay_status.json
+```
+
+Classifications:
+
+```text
+layer2_ordered_bundle_validate_attention_cleared_mlp_cleared
+layer2_ordered_attention_audit_weighted_v_and_residual_cleared
+layer2_selected_mlp_down_policy_replay_full_mlp_cleared
+```
+
+The audit bundle emits all-token V as:
+
+```text
+shape = [74, 8, 64]
+layout = all-real-token V projection tensor [token, kv_head, head_dim]
+```
+
+The consumer recomputed:
+
+- weighted V from attention probabilities plus all-token V, matching exactly
+- attention residual from layer input plus o_proj, matching exactly
+- attention residual to ordered MLP input bridge, still exact
+
+This removes the earlier layer2 consumer caveats that weighted V was only an
+official seam and that attention residual was only bridge-checked. Remaining
+limits are still material: this is final-token ordered validation only; it does
+not continue the ladder, prove final logits, prove all layers, prove
+server/runtime parity, or make any 4097-token claim.
 
 ## Candidate Convention
 
@@ -125,6 +174,9 @@ Pros:
 - Still not production behavior.
 - Can test implementation shape and performance.
 - Useful for broader selected-expert validation across more layers and lanes.
+- The layer2 ordered attention audit strengthens the case for doing this in a
+  separate validation branch, because layer2 now has ordered attention plus
+  ordered MLP evidence through the final-token MLP output.
 
 Cons:
 
@@ -171,8 +223,14 @@ Cons:
 
 Before any implementation branch promotes this beyond design, require:
 
-- replay on at least one more ordered MLP layer if available
-- preferably source-complete layer2 attention plus MLP ordered bundles
+- completed: ordered MLP replay on layer11, layer1, and layer2
+- completed for layer2 final-token ordered validation: ordered MLP surface
+- completed for layer2 final-token ordered validation: source-complete ordered
+  attention capture
+- completed for layer2 final-token ordered validation: all-token V audit
+- completed for layer2 final-token ordered validation: weighted-V recompute
+- completed for layer2 final-token ordered validation: residual-add recompute
+- completed for layer2 final-token ordered validation: attention-to-MLP bridge
 - multiple focus lanes, not only lane 1480
 - full selected-output comparison across all selected experts
 - weighted expert sum comparison
@@ -192,7 +250,7 @@ feature/selected-mlp-down-policy-validation
 ```
 
 That branch should begin as validation-only. Runtime policy discussion should
-remain explicitly disabled until the proof gates above are satisfied.
+remain explicitly disabled until the remaining proof gates above are satisfied.
 
 ## Non-Goals
 

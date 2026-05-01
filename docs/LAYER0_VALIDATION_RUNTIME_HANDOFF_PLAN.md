@@ -1355,15 +1355,24 @@ The design remains validation-only. It records three ordered MLP proof surfaces:
 - layer1: `layer1_selected_mlp_down_policy_replay_full_mlp_cleared`
 - layer2: `layer2_selected_mlp_down_policy_replay_full_mlp_cleared`
 
+It now also records the layer2 ordered attention audit proof gate:
+
+- ordered attention/MLP validation:
+  `layer2_ordered_bundle_validate_attention_cleared_mlp_cleared`
+- all-token V and residual-add audit:
+  `layer2_ordered_attention_audit_weighted_v_and_residual_cleared`
+
 The candidate policy is:
 
 ```text
 deterministic_f32_abs_ascending_sum_then_bf16_output
 ```
 
-The layer2 caveat remains active: the layer2 ordered MLP bundle uses the
-official/coarse attention residual seam and does not prove source-complete
-layer2 attention. No runtime implementation, production routing change, default
+The earlier layer2 weighted-V and residual bridge-only caveats are now cleared
+for the final-token ordered validation surface. Remaining caveats are unchanged:
+no ladder continuation, no final-logit claim, no all-layer claim, no
+server/runtime parity claim, no 4097-token claim, and no runtime performance
+assessment. No runtime implementation, production routing change, default
 model-runner behavior change, CUDA kernel change, or correction metadata is
 included in this design slice.
 
