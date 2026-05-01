@@ -3853,6 +3853,87 @@ routing, model-runner behavior, or CUDA kernels. It does not apply tolerance or
 correction metadata, does not emit/promote layer3 output, does not continue the
 ladder, and makes no final-logit, all-layer, server, or 4097-token claim.
 
+## Layer4 Ordered Surface Validation Status
+
+The layer4 ordered surface pilot is now consumed on the validation-runtime side:
+
+```text
+/tmp/layer4_ordered_surface_pilot_status.json
+/tmp/layer4_ordered_attention_bundle_status.json
+/tmp/layer4_ordered_attention_bundle/
+/tmp/layer4_ordered_attention_audit_bundle_status.json
+/tmp/layer4_ordered_attention_audit_bundle/
+/tmp/layer4_ordered_mlp_bundle_status.json
+/tmp/layer4_ordered_mlp_bundle/
+```
+
+Summary status:
+
+```text
+/tmp/layer4_ordered_consumer_surface_status.json
+classification = layer4_ordered_consumer_bundle_validation_failed
+```
+
+The layer4 attention audit validates weighted V from attention probabilities
+plus audit all-token V, and validates residual add from layer input plus o-proj:
+
+```text
+classification = layer4_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+
+weighted V mismatches = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The strict/default ordered bundle validation clears raw-QK and masked logits
+without a raw-QK policy override. It stops on o-proj:
+
+```text
+classification = layer4_ordered_bundle_validate_attention_seam_mismatch
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o-proj mismatches = 2
+o-proj max_abs_diff = 0.0000152587890625
+first/worst o-proj mismatch = hidden lane 884
+local = -0.003265380859375
+official = -0.0032806396484375
+
+attention-to-MLP bridge mismatches = 0
+MLP norm/router/top-k/selected outputs/weighted sum/final output mismatches = 0
+```
+
+The ordered MLP replay is exact under the current sequential policy. The
+deterministic abs-ascending policy is not used as a layer4 candidate because it
+introduces collateral mismatches; BF16-product remains evidence-only/rejected:
+
+```text
+classification = layer4_selected_mlp_down_policy_replay_collateral_mismatches
+selected_experts = [6, 15, 0, 24]
+routing_weights = [0.380859375, 0.255859375, 0.220703125, 0.14453125]
+
+baseline selected outputs mismatches = 0
+baseline weighted sum mismatches = 0
+baseline final output mismatches = 0
+deterministic abs-ascending selected outputs mismatches = 1
+deterministic abs-ascending weighted sum mismatches = 1
+deterministic abs-ascending final output mismatches = 1
+BF16-product evidence policy selected-output mismatches = 3292
+BF16-product evidence policy weighted-sum mismatches = 941
+BF16-product evidence policy final-output mismatches = 484
+```
+
+Layer4 raw-QK policy sweep was not run because strict/default raw-QK and masked
+logits were exact. No pairwise raw-QK revalidation was needed. No layer4 output
+was emitted, the ladder was not continued, no runtime/default routing/CUDA
+behavior changed, no tolerance or correction metadata was applied, and there is
+no final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+localize the layer4 o-proj two-lane mismatch.
+
 ## Validation Commands
 
 For the skeleton slice:

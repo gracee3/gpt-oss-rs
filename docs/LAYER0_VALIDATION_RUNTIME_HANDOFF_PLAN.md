@@ -1623,6 +1623,89 @@ metadata, layer3 output emission, ladder continuation, runtime/default routing
 change, CUDA change, final-logit claim, all-layer claim, server claim, or
 4097-token claim was made.
 
+## Layer4 Ordered Surface Validation Status
+
+The oracle lane generated a focused layer4 ordered surface pilot:
+
+```text
+/tmp/layer4_ordered_surface_pilot_status.json
+/tmp/layer4_ordered_attention_bundle_status.json
+/tmp/layer4_ordered_attention_bundle/
+/tmp/layer4_ordered_attention_audit_bundle_status.json
+/tmp/layer4_ordered_attention_audit_bundle/
+/tmp/layer4_ordered_mlp_bundle_status.json
+/tmp/layer4_ordered_mlp_bundle/
+```
+
+Consumer summary status:
+
+```text
+/tmp/layer4_ordered_consumer_surface_status.json
+classification = layer4_ordered_consumer_bundle_validation_failed
+```
+
+The layer4 attention audit clears the all-token V and residual-add checks:
+
+```text
+classification = layer4_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+
+weighted V mismatches = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+Strict/default split bundle validation did not need a raw-QK policy sweep:
+raw-QK, masked logits, probabilities, weighted V, bridge, and MLP are exact.
+The remaining blocker is a narrow o-proj seam mismatch:
+
+```text
+classification = layer4_ordered_bundle_validate_attention_seam_mismatch
+raw QK mismatches = 0
+masked logits mismatches = 0
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o-proj mismatches = 2
+o-proj max_abs_diff = 0.0000152587890625
+first/worst o-proj mismatch = hidden lane 884
+local = -0.003265380859375
+official = -0.0032806396484375
+
+attention-to-MLP bridge mismatches = 0
+MLP norm/router/top-k/selected outputs/weighted sum/final output mismatches = 0
+```
+
+Layer4 selected MLP down replay confirms the current sequential baseline is
+exact. Unlike layers 1, 2, and 3, deterministic abs-ascending is not a clearing
+candidate on this surface because it introduces a one-lane selected-output,
+weighted-sum, and final-output collateral mismatch:
+
+```text
+classification = layer4_selected_mlp_down_policy_replay_collateral_mismatches
+selected_experts = [6, 15, 0, 24]
+routing_weights = [0.380859375, 0.255859375, 0.220703125, 0.14453125]
+
+baseline selected outputs mismatches = 0
+baseline weighted sum mismatches = 0
+baseline final output mismatches = 0
+deterministic abs-ascending selected outputs mismatches = 1
+deterministic abs-ascending weighted sum mismatches = 1
+deterministic abs-ascending final output mismatches = 1
+BF16-product evidence policy selected-output mismatches = 3292
+BF16-product evidence policy weighted-sum mismatches = 941
+BF16-product evidence policy final-output mismatches = 484
+```
+
+Raw-QK policy sweep and pairwise revalidation were skipped because strict
+raw-QK and masked logits already match exactly. No layer4 output was emitted,
+the ladder was not continued, no tolerance or correction metadata was applied,
+no runtime/default routing/CUDA behavior changed, and there is no final-logit,
+all-layer, server, or 4097-token claim. Next bounded step: localize the layer4
+o-proj two-lane mismatch before claiming full strict ordered layer4 attention
+surface parity.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
