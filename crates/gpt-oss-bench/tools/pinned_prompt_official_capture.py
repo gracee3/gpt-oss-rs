@@ -3087,12 +3087,20 @@ def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) ->
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "backend": "official_torch",
         "boundary": boundary,
+        "layer_index": layer_index,
         "layer_idx": layer_index,
         "classification": "official_ordered_mlp_capture_schema_ready",
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
         "implemented": True,
         "full_capture_run": False,
         "checkpoint_loaded": False,
         "focus_lane": args.lane,
+        "model": str(args.official_model or args.model)
+        if (args.official_model or args.model)
+        else None,
+        "case": "developer-message-user-smoke",
         "expected_status_output": str(args.status_output) if args.status_output else None,
         "expected_output_dir": str(args.output_dir) if args.output_dir else None,
         "expected_boundaries": ordered_mlp_boundary_names(layer_index),
@@ -3103,7 +3111,7 @@ def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) ->
             "selected_expert_internals_included": False,
             "port_source": PORT_SOURCE,
         },
-        "next_bounded_step": "run focused layer11 MLP evidence bundle under /tmp",
+        "next_bounded_step": f"run focused layer{layer_index} MLP evidence bundle under /tmp",
     }
 
 
