@@ -451,6 +451,7 @@ enum Mode {
     SelectedExpertDownTermsCompareStatus,
     SelectedExpertDownCastPolicySweepStatus,
     SelectedMlpDownPolicyReplayStatus,
+    SelectedMlpDownPolicyCandidateStatus,
     AttentionAuditValidate,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
@@ -1436,6 +1437,9 @@ fn main() -> Result<()> {
             run_selected_expert_down_cast_policy_sweep_status(&cli)
         }
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
+        Mode::SelectedMlpDownPolicyCandidateStatus => {
+            run_selected_mlp_down_policy_candidate_status(&cli)
+        }
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -8565,6 +8569,162 @@ fn run_selected_expert_down_cast_policy_sweep_status(cli: &Cli) -> Result<()> {
 #[cfg(not(feature = "cuda"))]
 fn run_selected_expert_down_cast_policy_sweep_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected expert down-cast policy sweep requires the cuda feature")
+}
+
+fn selected_mlp_down_policy_registry_status() -> Value {
+    json!([
+        {
+            "policy": DownCastSweepPolicy::CurrentSequentialF32.name(),
+            "role": "baseline",
+            "candidate": false,
+            "evidence_only": false,
+            "rejected": false,
+            "reduction_order": DownCastSweepPolicy::CurrentSequentialF32.reduction_order(),
+        },
+        {
+            "policy": DownCastSweepPolicy::AbsAscendingF32.name(),
+            "role": "validation_candidate",
+            "candidate": true,
+            "evidence_only": false,
+            "rejected": false,
+            "reduction_order": DownCastSweepPolicy::AbsAscendingF32.reduction_order(),
+        },
+        {
+            "policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+            "role": "rejected_evidence_only",
+            "candidate": false,
+            "evidence_only": true,
+            "rejected": true,
+            "reduction_order": DownCastSweepPolicy::Bf16ProductThenF32.reduction_order(),
+            "reason": "broad collateral mismatches across ordered MLP replay surfaces",
+        },
+    ])
+}
+
+fn optional_proof_surface_status(path: &str, expected_classification: &str) -> Value {
+    let path_ref = Path::new(path);
+    if !path_ref.exists() {
+        return json!({
+            "path": path,
+            "exists": false,
+            "classification": "missing_local_artifact",
+            "expected_classification": expected_classification,
+            "matches_expected_classification": false,
+            "provenance": "committed_design_docs",
+        });
+    }
+    match fs::read(path_ref)
+        .with_context(|| format!("failed to read {}", path_ref.display()))
+        .and_then(|bytes| {
+            serde_json::from_slice::<Value>(&bytes)
+                .with_context(|| format!("failed to parse {}", path_ref.display()))
+        }) {
+        Ok(status) => {
+            let classification = status
+                .get("classification")
+                .and_then(Value::as_str)
+                .unwrap_or("missing_classification");
+            json!({
+                "path": path,
+                "exists": true,
+                "classification": classification,
+                "expected_classification": expected_classification,
+                "matches_expected_classification": classification == expected_classification,
+                "runtime_behavior_changed": status.get("runtime_behavior_changed").cloned().unwrap_or_else(|| json!(null)),
+                "production_routing_changed": status.get("production_routing_changed").cloned().unwrap_or_else(|| json!(null)),
+                "cuda_kernels_changed": status.get("cuda_kernels_changed").cloned().unwrap_or_else(|| json!(null)),
+                "validation_only": status.get("validation_only").cloned().unwrap_or_else(|| json!(null)),
+            })
+        }
+        Err(error) => json!({
+            "path": path,
+            "exists": true,
+            "classification": "local_artifact_parse_error",
+            "expected_classification": expected_classification,
+            "matches_expected_classification": false,
+            "error": error.to_string(),
+            "provenance": "committed_design_docs",
+        }),
+    }
+}
+
+fn run_selected_mlp_down_policy_candidate_status(cli: &Cli) -> Result<()> {
+    let design_doc = Path::new("docs/SELECTED_MLP_DOWN_POLICY_RUNTIME_DESIGN.md");
+    let handoff_doc = Path::new("docs/LAYER0_VALIDATION_RUNTIME_HANDOFF_PLAN.md");
+    let design_provenance_available = design_doc.exists() && handoff_doc.exists();
+    let classification = if design_provenance_available {
+        "selected_mlp_down_policy_candidate_status_emitted"
+    } else {
+        "selected_mlp_down_policy_validation_blocked_by_missing_design_provenance"
+    };
+    let proof_surfaces = json!({
+        "layer11_ordered_mlp": optional_proof_surface_status(
+            "/tmp/layer11_selected_mlp_down_policy_replay_status.json",
+            "layer11_selected_mlp_down_policy_replay_full_mlp_cleared",
+        ),
+        "layer1_ordered_mlp": optional_proof_surface_status(
+            "/tmp/layer1_selected_mlp_down_policy_replay_status.json",
+            "layer1_selected_mlp_down_policy_replay_full_mlp_cleared",
+        ),
+        "layer2_ordered_mlp": optional_proof_surface_status(
+            "/tmp/layer2_selected_mlp_down_policy_replay_status.json",
+            "layer2_selected_mlp_down_policy_replay_full_mlp_cleared",
+        ),
+        "layer2_attention_audit": optional_proof_surface_status(
+            "/tmp/layer2_ordered_attention_audit_validate_status.json",
+            "layer2_ordered_attention_audit_weighted_v_and_residual_cleared",
+        ),
+    });
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-mlp-down-policy-candidate-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "candidate_policy": DownCastSweepPolicy::AbsAscendingF32.name(),
+        "candidate_runtime_policy_discussion_allowed": false,
+        "runtime_policy_discussion_allowed": false,
+        "policy_registry": selected_mlp_down_policy_registry_status(),
+        "proof_surfaces": proof_surfaces,
+        "design_provenance": {
+            "design_doc": design_doc.display().to_string(),
+            "handoff_doc": handoff_doc.display().to_string(),
+            "available": design_provenance_available,
+        },
+        "rejected_policies": [
+            {
+                "policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+                "reason": "broad collateral mismatches across ordered MLP replay surfaces",
+                "evidence_only": true,
+                "correction_candidate": false,
+            }
+        ],
+        "required_remaining_gates": [
+            "validation-only implementation only",
+            "no production/default routing change",
+            "no CUDA kernel change",
+            "no final-logit/all-layer/server/4097 claim",
+            "multiple focus lanes, not only lane 1480",
+            "runtime performance unassessed",
+        ],
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "source_policy": {
+            "production_runtime_implementation": false,
+            "correction_metadata_applied": false,
+            "layer_ladder_continued": false,
+            "raw_tmp_or_live_artifacts_committed": false,
+        },
+        "next_bounded_step": "use this scaffold only for validation-branch status/provenance before any scoped implementation experiment",
+    });
+    write_json(&cli.output, &status)
 }
 
 #[cfg(feature = "cuda")]

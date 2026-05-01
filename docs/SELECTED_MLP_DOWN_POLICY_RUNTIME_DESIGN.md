@@ -252,6 +252,31 @@ feature/selected-mlp-down-policy-validation
 That branch should begin as validation-only. Runtime policy discussion should
 remain explicitly disabled until the remaining proof gates above are satisfied.
 
+## Implementation Branch Scaffold
+
+The first validation-only implementation branch is:
+
+```text
+feature/selected-mlp-down-policy-validation
+```
+
+The first slice on that branch is intentionally status/scaffold-only. It
+centralizes the candidate policy registry for validation reporting and adds:
+
+```text
+--mode selected-mlp-down-policy-candidate-status
+```
+
+This mode records the candidate policy, the rejected evidence-only policy, and
+the current proof-gate status. It may inspect local `/tmp` proof statuses when
+they are present, but missing local artifacts do not fail the mode because the
+committed design and handoff docs remain the provenance source.
+
+This scaffold does not implement production runtime behavior, change default
+model-runner routing, change CUDA kernels, apply correction metadata, continue
+the ladder, or make final-logit, all-layer, server, or 4097-token claims.
+Runtime performance remains unassessed.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.
