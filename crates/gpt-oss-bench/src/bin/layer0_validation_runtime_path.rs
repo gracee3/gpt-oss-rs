@@ -4218,10 +4218,7 @@ fn status_f32_array(status: &Value, key: &str) -> Result<Vec<f32>> {
 
 fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let layer = cli.layer_index;
-    anyhow::ensure!(
-        layer == 2,
-        "attention-audit-validate currently emits layer2_ordered_attention_audit_* classifications; got layer {layer}"
-    );
+    let classification_prefix = format!("layer{layer}_ordered_attention_audit");
     let lane = cli.lane;
     let hidden = 2880usize;
     let q_dim = cli.query_heads * cli.head_dim;
@@ -4233,17 +4230,22 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
     let audit_status_path = required_path(&cli.attention_audit_status, "attention audit status")?;
-    let prior_validate_status_path = required_path(
-        &cli.ordered_bundle_validate_status,
-        "ordered bundle validate status",
-    )?;
     validate_path(attention_status_path, "attention bundle status")?;
     validate_path(audit_status_path, "attention audit status")?;
-    validate_path(prior_validate_status_path, "ordered bundle validate status")?;
 
     let attention_status = load_json(attention_status_path)?;
     let audit_status = load_json(audit_status_path)?;
-    let prior_status = load_json(prior_validate_status_path)?;
+    let prior_status = if let Some(path) = cli.ordered_bundle_validate_status.as_deref() {
+        validate_path(path, "ordered bundle validate status")?;
+        let status = load_json(path)?;
+        anyhow::ensure!(
+            status_layer_index(&status)? == layer,
+            "prior ordered bundle validation layer did not match requested layer {layer}"
+        );
+        Some(status)
+    } else {
+        None
+    };
     anyhow::ensure!(
         status_layer_index(&attention_status)? == layer,
         "attention bundle layer did not match requested layer {layer}"
@@ -4252,15 +4254,13 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         status_layer_index(&audit_status)? == layer,
         "attention audit bundle layer did not match requested layer {layer}"
     );
-    anyhow::ensure!(
-        status_layer_index(&prior_status)? == layer,
-        "prior ordered bundle validation layer did not match requested layer {layer}"
-    );
 
     let mlp_status_path = if let Some(path) = cli.mlp_bundle_status.as_deref() {
         path.to_path_buf()
     } else {
         prior_status
+            .as_ref()
+            .context("attention audit validation needs --mlp-bundle-status when --ordered-bundle-validate-status is absent")?
             .get("mlp_bundle_status")
             .and_then(Value::as_str)
             .map(PathBuf::from)
@@ -4366,34 +4366,33 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
     let residual_clear = !schema_blocked && metric_mismatches(&attention_residual_metrics) == 0;
     let bridge_clear = !schema_blocked && metric_mismatches(&attention_to_mlp_bridge) == 0;
     let classification = if schema_blocked {
-        "layer2_ordered_attention_audit_blocked_by_schema"
+        format!("{classification_prefix}_blocked_by_schema")
     } else if !weighted_clear {
-        "layer2_ordered_attention_audit_weighted_v_mismatch"
+        format!("{classification_prefix}_weighted_v_mismatch")
     } else if !residual_clear {
-        "layer2_ordered_attention_audit_weighted_v_cleared_residual_mismatch"
+        format!("{classification_prefix}_weighted_v_cleared_residual_mismatch")
     } else if !bridge_clear {
-        "layer2_ordered_attention_audit_bridge_mismatch"
+        format!("{classification_prefix}_bridge_mismatch")
     } else {
-        "layer2_ordered_attention_audit_weighted_v_and_residual_cleared"
+        format!("{classification_prefix}_weighted_v_and_residual_cleared")
     };
 
-    let remaining_caveats =
-        if classification == "layer2_ordered_attention_audit_weighted_v_and_residual_cleared" {
-            vec![
-                "layer ladder not continued",
-                "no final-logit claim",
-                "no all-layer claim",
-                "no server or 4097-token claim",
-            ]
-        } else {
-            vec![
-                "resolve the reported layer2 ordered attention audit mismatch or schema blocker",
-                "layer ladder not continued",
-                "no final-logit claim",
-                "no all-layer claim",
-                "no server or 4097-token claim",
-            ]
-        };
+    let remaining_caveats = if classification.ends_with("_weighted_v_and_residual_cleared") {
+        vec![
+            "layer ladder not continued",
+            "no final-logit claim",
+            "no all-layer claim",
+            "no server or 4097-token claim",
+        ]
+    } else {
+        vec![
+            "resolve the reported ordered attention audit mismatch or schema blocker",
+            "layer ladder not continued",
+            "no final-logit claim",
+            "no all-layer claim",
+            "no server or 4097-token claim",
+        ]
+    };
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -4408,7 +4407,10 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         "focus_lane": lane,
         "attention_bundle_status": attention_status_path.display().to_string(),
         "attention_audit_status": audit_status_path.display().to_string(),
-        "ordered_bundle_validate_status": prior_validate_status_path.display().to_string(),
+        "ordered_bundle_validate_status": cli.ordered_bundle_validate_status
+            .as_deref()
+            .map(|path| json!(path.display().to_string()))
+            .unwrap_or(Value::Null),
         "mlp_bundle_status": mlp_status_path.display().to_string(),
         "source_complete_attention_capture": audit_status
             .get("source_complete_attention_capture")
@@ -4453,24 +4455,27 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
         "source_statuses": {
             "attention_classification": attention_status["classification"].clone(),
             "audit_classification": audit_status["classification"].clone(),
-            "prior_ordered_bundle_validate_classification": prior_status["classification"].clone(),
+            "prior_ordered_bundle_validate_classification": prior_status
+                .as_ref()
+                .map(|status| status["classification"].clone())
+                .unwrap_or_else(|| json!("not_provided")),
             "mlp_classification": mlp_status["classification"].clone(),
         },
-        "next_bounded_step": match classification {
-            "layer2_ordered_attention_audit_weighted_v_and_residual_cleared" => {
-                "record that layer2 weighted-V and attention residual-add audit caveats are cleared; do not continue the ladder in this slice"
+        "next_bounded_step": if classification.ends_with("_weighted_v_and_residual_cleared") {
+                "record that weighted-V and attention residual-add audit caveats are cleared; do not continue the ladder in this slice"
             }
-            "layer2_ordered_attention_audit_weighted_v_mismatch" => {
+            else if classification.ends_with("_weighted_v_mismatch") {
                 "localize weighted-V policy, sink-column handling, GQA mapping, shape/layout, or rounding before using the audit surface"
             }
-            "layer2_ordered_attention_audit_weighted_v_cleared_residual_mismatch" => {
+            else if classification.ends_with("_weighted_v_cleared_residual_mismatch") {
                 "localize BF16 residual-add policy from layer input plus o-proj"
             }
-            "layer2_ordered_attention_audit_bridge_mismatch" => {
+            else if classification.ends_with("_bridge_mismatch") {
                 "resolve attention residual versus ordered MLP input bridge mismatch"
             }
-            _ => "fix the reported layer2 ordered attention audit blocker",
-        },
+            else {
+                "fix the reported ordered attention audit blocker"
+            },
     });
     write_json(&cli.output, &status)
 }
@@ -4478,10 +4483,7 @@ fn run_attention_audit_validate(cli: &Cli) -> Result<()> {
 #[cfg(feature = "cuda")]
 fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let layer = cli.layer_index;
-    anyhow::ensure!(
-        layer == 2,
-        "split ordered bundle validation currently emits layer2_ordered_bundle_validate_* classifications; got layer {layer}"
-    );
+    let classification_prefix = format!("layer{layer}_ordered_bundle_validate");
     let lane = cli.lane;
     let hidden = 2880usize;
     let selected_count = 4usize;
@@ -4503,6 +4505,17 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
 
     let attention_status = load_json(attention_status_path)?;
     let mlp_status = load_json(mlp_status_path)?;
+    let attention_audit_status = if let Some(path) = cli.attention_audit_status.as_deref() {
+        validate_path(path, "attention audit status")?;
+        let status = load_json(path)?;
+        anyhow::ensure!(
+            status_layer_index(&status)? == layer,
+            "attention audit bundle layer did not match requested layer {layer}"
+        );
+        Some(status)
+    } else {
+        None
+    };
     anyhow::ensure!(
         status_layer_index(&attention_status)? == layer,
         "attention bundle layer did not match requested layer {layer}"
@@ -4641,28 +4654,70 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         cli.token_count + 1,
         MatrixSelection::All,
     );
-    let all_token_v_emitted = v_values.len() == k_history_count;
-    let (weighted_v_metric, weighted_v_source, weighted_v_for_oproj) = if all_token_v_emitted {
-        let weighted_v = compute_weighted_v(&attention_probs, &v_values, cli, true);
-        let metric = compare_matrix(
-            &weighted_v,
-            &weighted_v_oracle,
-            cli.query_heads,
-            cli.head_dim,
-            MatrixSelection::All,
-        );
-        (
-            Some(metric),
-            "recomputed_from_all_token_v_boundary",
-            weighted_v,
-        )
+    let base_all_token_v_emitted = v_values.len() == k_history_count;
+    let audit_all_token_v = if base_all_token_v_emitted {
+        None
+    } else if let Some(status) = attention_audit_status.as_ref() {
+        let path = status_artifact_path(status, "all_token_v_before_attention", "attention audit")?;
+        validate_path(&path, "attention audit all-token V")?;
+        let (artifact_status, values) =
+            load_tensor_artifact(&path, &[k_history_count], &["values"])?;
+        Some((artifact_status, values))
     } else {
-        (
-            None,
-            "official_weighted_v_boundary_because_all_token_v_not_emitted",
-            weighted_v_oracle.clone(),
-        )
+        None
     };
+    let all_token_v_emitted = base_all_token_v_emitted
+        || audit_all_token_v
+            .as_ref()
+            .is_some_and(|(status, _)| status.shape_or_count_matched);
+    let (weighted_v_metric, weighted_v_source, weighted_v_for_oproj, audit_all_token_v_status) =
+        if base_all_token_v_emitted {
+            let weighted_v = compute_weighted_v(&attention_probs, &v_values, cli, true);
+            let metric = compare_matrix(
+                &weighted_v,
+                &weighted_v_oracle,
+                cli.query_heads,
+                cli.head_dim,
+                MatrixSelection::All,
+            );
+            (
+                Some(metric),
+                "recomputed_from_all_token_v_boundary",
+                weighted_v,
+                Value::Null,
+            )
+        } else if let Some((artifact_status, values)) = audit_all_token_v {
+            if artifact_status.shape_or_count_matched {
+                let weighted_v = compute_weighted_v(&attention_probs, &values, cli, true);
+                let metric = compare_matrix(
+                    &weighted_v,
+                    &weighted_v_oracle,
+                    cli.query_heads,
+                    cli.head_dim,
+                    MatrixSelection::All,
+                );
+                (
+                    Some(metric),
+                    "recomputed_from_attention_audit_all_token_v_boundary",
+                    weighted_v,
+                    json!(artifact_status),
+                )
+            } else {
+                (
+                None,
+                "official_weighted_v_boundary_because_attention_audit_all_token_v_schema_blocked",
+                weighted_v_oracle.clone(),
+                json!(artifact_status),
+            )
+            }
+        } else {
+            (
+                None,
+                "official_weighted_v_boundary_because_all_token_v_not_emitted",
+                weighted_v_oracle.clone(),
+                Value::Null,
+            )
+        };
 
     let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
     let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
@@ -4910,19 +4965,19 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         && topk_ordered_match
         && routing_weights_metric.metrics.mismatches == 0;
     let classification = if attention_shape_blocked {
-        "layer2_ordered_bundle_validate_blocked_by_schema"
+        format!("{classification_prefix}_blocked_by_schema")
     } else if !attention_seams_clear {
-        "layer2_ordered_bundle_validate_attention_seam_mismatch"
+        format!("{classification_prefix}_attention_seam_mismatch")
     } else if !bridge_clear {
-        "layer2_ordered_bundle_validate_attention_to_mlp_bridge_mismatch"
+        format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
     } else if !mlp_guards_clear {
-        "layer2_ordered_bundle_validate_mlp_seam_mismatch"
+        format!("{classification_prefix}_mlp_seam_mismatch")
     } else if deterministic_clears || baseline_clears {
-        "layer2_ordered_bundle_validate_attention_cleared_mlp_cleared"
+        format!("{classification_prefix}_attention_cleared_mlp_cleared")
     } else if !baseline_clears {
-        "layer2_ordered_bundle_validate_mlp_down_policy_required"
+        format!("{classification_prefix}_mlp_down_policy_required")
     } else {
-        "layer2_ordered_bundle_validate_mlp_seam_mismatch"
+        format!("{classification_prefix}_mlp_seam_mismatch")
     };
 
     let status = json!({
@@ -4938,6 +4993,10 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "focus_lane": lane,
         "attention_bundle_status": attention_status_path.display().to_string(),
         "mlp_bundle_status": mlp_status_path.display().to_string(),
+        "attention_audit_status": cli.attention_audit_status
+            .as_deref()
+            .map(|path| json!(path.display().to_string()))
+            .unwrap_or(Value::Null),
         "attention_bundle": attention_bundle_path.display().to_string(),
         "mlp_bundle": mlp_bundle_path.display().to_string(),
         "source_complete_attention_capture": attention_status
@@ -4971,7 +5030,8 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             },
             "v_before_attention": {
                 "artifact": v_status,
-                "all_token_v_emitted_as_boundary": all_token_v_emitted,
+                "all_token_v_emitted_as_boundary": base_all_token_v_emitted,
+                "attention_audit_all_token_v": audit_all_token_v_status,
             },
             "raw_qk": raw_qk_metric,
             "masked_logits": masked_metric,
@@ -5018,6 +5078,10 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "artifacts": {
             "attention_status_classification": attention_status["classification"].clone(),
             "mlp_status_classification": mlp_status["classification"].clone(),
+            "attention_audit_status_classification": attention_audit_status
+                .as_ref()
+                .map(|status| status["classification"].clone())
+                .unwrap_or_else(|| json!("not_provided")),
         },
         "model_tensors": {
             "oproj_weight": oproj_weight_source,
@@ -5027,26 +5091,26 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "router_bias": router_bias_source,
         },
         "emitted_layer_output": serde_json::Value::Null,
-        "next_bounded_step": match classification {
-            "layer2_ordered_bundle_validate_attention_cleared_mlp_cleared" => {
-                "record layer2 source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
+        "next_bounded_step": if classification.ends_with("_attention_cleared_mlp_cleared") {
+                "record source-complete attention/ordered MLP evidence; do not continue the ladder in this slice"
             }
-            "layer2_ordered_bundle_validate_attention_seam_mismatch" => {
+            else if classification.ends_with("_attention_seam_mismatch") {
                 "localize the first mismatching ordered attention seam"
             }
-            "layer2_ordered_bundle_validate_attention_to_mlp_bridge_mismatch" => {
+            else if classification.ends_with("_attention_to_mlp_bridge_mismatch") {
                 "resolve attention residual versus MLP input bridge mismatch"
             }
-            "layer2_ordered_bundle_validate_mlp_down_policy_required" => {
+            else if classification.ends_with("_mlp_down_policy_required") {
                 "inspect selected MLP down-policy replay before any runtime-design discussion"
             }
-            _ => "resolve the reported layer2 ordered bundle validation blocker",
-        },
+            else {
+                "resolve the reported ordered bundle validation blocker"
+            },
         "caveats": {
             "validation_only": true,
             "layer_ladder_continued": false,
-            "source_complete_layer2_attention_claim_limited_to_ordered_bundle_surface": true,
-            "all_token_v_used_by_oracle_internally_but_not_emitted_as_boundary": !all_token_v_emitted,
+            "source_complete_attention_claim_limited_to_ordered_bundle_surface": true,
+            "all_token_v_used_by_oracle_internally_but_not_emitted_as_base_boundary": !base_all_token_v_emitted,
             "bf16_product_policy_used_as_correction": false,
             "runtime_policy_changed": false,
             "final_logits_claimed": false,

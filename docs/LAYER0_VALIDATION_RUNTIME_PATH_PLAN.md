@@ -3566,6 +3566,88 @@ replay. No layer output was emitted, no ladder continuation occurred, no
 runtime/default routing/CUDA behavior changed, and this makes no final-logit,
 all-layer, server, or 4097-token claim.
 
+## Layer3 Ordered Surface Validation Status
+
+The layer3 ordered surface pilot is now consumed on the validation-runtime side:
+
+```text
+/tmp/layer3_ordered_surface_pilot_status.json
+/tmp/layer3_ordered_attention_bundle_status.json
+/tmp/layer3_ordered_attention_bundle/
+/tmp/layer3_ordered_attention_audit_bundle_status.json
+/tmp/layer3_ordered_attention_audit_bundle/
+/tmp/layer3_ordered_mlp_bundle_status.json
+/tmp/layer3_ordered_mlp_bundle/
+```
+
+Summary status:
+
+```text
+/tmp/layer3_ordered_consumer_surface_status.json
+classification = layer3_ordered_consumer_bundle_validation_failed
+```
+
+The layer3 attention audit validates the remaining weighted-V and residual-add
+consumer caveats:
+
+```text
+classification = layer3_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+all_token_v_layout = all-real-token V projection tensor [token, kv_head, head_dim]
+
+weighted V max_abs_diff = 0
+weighted V mismatches = 0
+attention residual max_abs_diff = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The split ordered bundle validation reuses the audit all-token V boundary for
+weighted-V recomputation. It reaches exact probabilities and exact downstream
+attention/MLP seams, but stops on a single raw-QK/masked-logit mismatch:
+
+```text
+classification = layer3_ordered_bundle_validate_attention_seam_mismatch
+raw QK mismatches = 1
+raw QK max_abs_diff = 0.0000019073486328125
+raw QK mismatch = q_head 2 / column 1
+local = 0.000293731689453125
+official = 0.0002918243408203125
+
+masked logits mismatches = 1
+masked logits max_abs_diff = 0.0000019073486328125
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The ordered MLP bundle validates exactly from its MLP input seam:
+
+```text
+classification = layer3_selected_mlp_down_policy_replay_baseline_already_clear
+selected_experts = [0, 9, 23, 1]
+routing_weights = [0.3984375, 0.30078125, 0.1630859375, 0.1376953125]
+
+baseline selected outputs mismatches = 0
+baseline weighted sum mismatches = 0
+baseline final output mismatches = 0
+deterministic abs-ascending selected outputs mismatches = 0
+deterministic abs-ascending weighted sum mismatches = 0
+deterministic abs-ascending final output mismatches = 0
+BF16-product evidence policy selected-output mismatches = 3336
+BF16-product evidence policy weighted-sum mismatches = 974
+BF16-product evidence policy final-output mismatches = 589
+```
+
+No layer3 output was emitted, the ladder was not continued, no runtime/default
+routing/CUDA behavior changed, and this makes no final-logit, all-layer,
+server, or 4097-token claim. Next bounded step: localize the layer3 raw-QK /
+masked-logit single-entry mismatch before treating layer3 as a full ordered
+attention seam pass.
+
 ## Validation Commands
 
 For the skeleton slice:

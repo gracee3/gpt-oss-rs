@@ -1340,6 +1340,88 @@ selected MLP down policy. The ladder was not continued, no layer2 output was
 emitted, no runtime/default routing/CUDA behavior changed, and this makes no
 final-logit, all-layer, server, or 4097-token claim.
 
+## Layer3 Ordered Surface Validation Status
+
+The oracle lane generated a focused layer3 ordered surface pilot:
+
+```text
+/tmp/layer3_ordered_surface_pilot_status.json
+/tmp/layer3_ordered_attention_bundle_status.json
+/tmp/layer3_ordered_attention_bundle/
+/tmp/layer3_ordered_attention_audit_bundle_status.json
+/tmp/layer3_ordered_attention_audit_bundle/
+/tmp/layer3_ordered_mlp_bundle_status.json
+/tmp/layer3_ordered_mlp_bundle/
+```
+
+Consumer summary status:
+
+```text
+/tmp/layer3_ordered_consumer_surface_status.json
+classification = layer3_ordered_consumer_bundle_validation_failed
+```
+
+The layer3 attention audit itself cleared:
+
+```text
+classification = layer3_ordered_attention_audit_weighted_v_and_residual_cleared
+source_complete_attention_capture = true
+all_token_v_emitted = true
+all_token_v_shape = [74, 8, 64]
+all_token_v_layout = all-real-token V projection tensor [token, kv_head, head_dim]
+
+weighted V max_abs_diff = 0
+weighted V mismatches = 0
+attention residual max_abs_diff = 0
+attention residual mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+The split ordered bundle validation consumed the audit all-token V boundary for
+weighted-V recomputation, but the full attention seam check stopped on a narrow
+raw-QK/masked-logit mismatch:
+
+```text
+classification = layer3_ordered_bundle_validate_attention_seam_mismatch
+raw QK mismatches = 1
+raw QK max_abs_diff = 0.0000019073486328125
+first/worst raw QK mismatch = q_head 2, column 1
+local = 0.000293731689453125
+official = 0.0002918243408203125
+
+masked logits mismatches = 1
+masked logits max_abs_diff = 0.0000019073486328125
+attention probabilities mismatches = 0
+weighted V mismatches = 0
+o_proj mismatches = 0
+attention-to-MLP bridge mismatches = 0
+```
+
+Layer3 ordered MLP replay was exact under the current sequential policy, so the
+deterministic abs-ascending down policy was not required for this layer:
+
+```text
+classification = layer3_selected_mlp_down_policy_replay_baseline_already_clear
+selected_experts = [0, 9, 23, 1]
+routing_weights = [0.3984375, 0.30078125, 0.1630859375, 0.1376953125]
+
+baseline selected outputs mismatches = 0
+baseline weighted sum mismatches = 0
+baseline final output mismatches = 0
+deterministic abs-ascending selected outputs mismatches = 0
+deterministic abs-ascending weighted sum mismatches = 0
+deterministic abs-ascending final output mismatches = 0
+BF16-product evidence policy selected-output mismatches = 3336
+BF16-product evidence policy weighted-sum mismatches = 974
+BF16-product evidence policy final-output mismatches = 589
+```
+
+This is validation-only layer3 evidence. It does not continue the layer ladder,
+does not emit a layer3 output, does not change runtime/default routing/CUDA
+behavior, and does not claim final logits, all-layer parity, server parity, or
+4097-token coverage. Next bounded step: localize the layer3 raw-QK/masked-logit
+single-entry mismatch before claiming full ordered layer3 attention seam parity.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
