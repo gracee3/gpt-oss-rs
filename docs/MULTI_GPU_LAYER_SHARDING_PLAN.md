@@ -3404,3 +3404,166 @@ multi_gpu_layer_sharding_metadata_allocation_skeleton_complete
 Run the real-model metadata allocation smoke as an operator validation slice,
 then review the emitted status JSON. No real-model metadata command was run in
 this implementation slice.
+
+## Real-model metadata allocation smoke status
+
+The real restricted integration model was run through the bench-only split
+allocation smoke with restricted sinks override, RoPE allocation, small KV cache
+allocation, and synthetic decode metadata allocation enabled.
+
+### Command run
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_rope_kv_metadata_status.json
+```
+
+The JSON status and logs were written under `/tmp/multi_gpu_layer_sharding` and
+are not committed.
+
+### Result
+
+Primary result classification:
+
+```text
+multi_gpu_layer_sharding_real_model_metadata_allocation_smoke_complete
+```
+
+Command status classification:
+
+```text
+multi_gpu_layer_sharding_metadata_allocation_smoke_complete
+```
+
+Summary:
+
+- Model path:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`
+- Device map: `split:0-11@0,12-23@1`
+- Dtype: `f16`
+- Header merge policy: `allow_restricted_sinks_override`
+- Restricted sinks override enabled: true
+- Overridden tensor count: 24
+- Header tensor count: 459
+- Header tensor bytes: 13,761,264,768
+- `resource_construction_succeeded`: true
+- `allocation_smoke_succeeded`: true
+- `rope_metadata_allocation_attempted`: true
+- `rope_metadata_allocation_succeeded`: true
+- `kv_cache_allocation_attempted`: true
+- `kv_cache_allocation_succeeded`: true
+- `metadata_allocation_attempted`: true
+- `metadata_allocation_succeeded`: true
+- Unassigned tensor count: 0
+- Invalid tensor count: 0
+
+Metadata shape:
+
+- `metadata_mode`: `decode`
+- `metadata_num_tokens`: 1
+- `metadata_num_seqs`: 1
+- `metadata_context_len`: 1
+- `metadata_block_size`: 16
+- `metadata_graph_max_blocks`: 8192
+
+### Shard summary
+
+GPU0:
+
+- Owns embeddings and absolute layers 0..11.
+- Resource island created context, stream, cuBLAS handle, and kernel loader.
+- f16 tensors uploaded: 181
+- f16 bytes uploaded: 1,804,456,704
+- U8 host tensors retained: 48
+- U8 host bytes retained: 5,076,172,800
+- RoPE bytes: 2,097,152
+- KV layers/local indices: 0..11 / 0..11
+- KV bytes: 393,216
+- Metadata status: `allocated`
+- Metadata packed elements: 8198
+- Metadata packed bytes: 32,792
+- Metadata field lengths:
+  `token_ids=1`, `positions=1`, `context_lens=1`, `block_tables=8192`,
+  `slot_mapping=1`, `seq_start_pos=2`
+
+GPU1:
+
+- Owns absolute layers 12..23 and final head.
+- Resource island created context, stream, cuBLAS handle, and kernel loader.
+- f16 tensors uploaded: 182
+- f16 bytes uploaded: 1,804,462,464
+- U8 host tensors retained: 48
+- U8 host bytes retained: 5,076,172,800
+- RoPE bytes: 2,097,152
+- KV layers/local indices: 12..23 / 0..11
+- KV bytes: 393,216
+- Metadata status: `allocated`
+- Metadata packed elements: 8198
+- Metadata packed bytes: 32,792
+- Metadata field lengths:
+  `token_ids=1`, `positions=1`, `context_lens=1`, `block_tables=8192`,
+  `slot_mapping=1`, `seq_start_pos=2`
+
+### Stderr summary
+
+The command exited successfully. `stdout` was empty because `--output` wrote the
+status JSON to disk. `stderr` contained Cargo/CUDA build warnings already seen
+in previous validation, followed by the command invocation. No runtime smoke
+error was reported.
+
+### Non-execution boundary
+
+This success means only that the bench-only smoke created per-shard CUDA
+resources, completed manifest-owned f16/U8 allocation/retention, allocated
+shard-local RoPE tables, allocated small shard-local KV cache buffers, and
+allocated/copied synthetic decode packed metadata buffers to layer-owning
+shards.
+
+It does not mean:
+
+- metadata came from a live server request
+- prefill metadata works
+- mixed prefill/decode metadata works
+- graph output is allocated
+- transformer layers are constructed
+- `GpuModelRunner` is constructed
+- attention works
+- cache indexing is wired into attention
+- activation transfer works
+- final-token or logit parity exists
+- serving works with split maps
+
+Serve/runtime split maps remain non-executable.
+
+### Validation
+
+- `nvidia-smi`: two RTX 3090 devices visible.
+- `test -d /data/models/openai/gpt-oss-20b-full-attn-restricted-integration`:
+  passed.
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`:
+  passed with existing warnings.
+- Real-model metadata allocation smoke command: exited 0 and emitted
+  `multi_gpu_layer_sharding_metadata_allocation_smoke_complete`.
+- `git diff --check`: passed after this docs update.
+
+### Next bounded step
+
+Use the successful metadata allocation smoke as the allocation baseline for the
+next design slice. Recommended options are tied LM-head fallback design,
+activation handoff design refinement, shard-local fused/f16 scratch allocation
+skeleton, or a layer-construction skeleton without execution.
