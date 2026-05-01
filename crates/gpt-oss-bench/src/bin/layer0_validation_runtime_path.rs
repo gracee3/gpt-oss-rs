@@ -101,6 +101,22 @@ struct Cli {
     #[arg(long)]
     mlp_bundle_status: Option<PathBuf>,
 
+    /// Layer1 ordered MLP bundle status for selected down-policy candidate replay.
+    #[arg(long)]
+    layer1_ordered_mlp_status: Option<PathBuf>,
+
+    /// Layer2 ordered MLP bundle status for selected down-policy candidate replay.
+    #[arg(long)]
+    layer2_ordered_mlp_status: Option<PathBuf>,
+
+    /// Optional layer11 ordered MLP bundle status for selected down-policy candidate replay.
+    #[arg(long)]
+    optional_layer11_ordered_mlp_status: Option<PathBuf>,
+
+    /// Optional layer2 attention audit validation status for replay provenance.
+    #[arg(long)]
+    optional_layer2_attention_audit_status: Option<PathBuf>,
+
     /// Ordered MLP bundle status artifact for focused ordered-consumer diagnostics.
     #[arg(long, alias = "ordered-mlp-status")]
     ordered_mlp_bundle_status: Option<PathBuf>,
@@ -452,6 +468,7 @@ enum Mode {
     SelectedExpertDownCastPolicySweepStatus,
     SelectedMlpDownPolicyReplayStatus,
     SelectedMlpDownPolicyCandidateStatus,
+    SelectedMlpDownPolicyCandidateReplayStatus,
     AttentionAuditValidate,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
@@ -1439,6 +1456,9 @@ fn main() -> Result<()> {
         Mode::SelectedMlpDownPolicyReplayStatus => run_selected_mlp_down_policy_replay_status(&cli),
         Mode::SelectedMlpDownPolicyCandidateStatus => {
             run_selected_mlp_down_policy_candidate_status(&cli)
+        }
+        Mode::SelectedMlpDownPolicyCandidateReplayStatus => {
+            run_selected_mlp_down_policy_candidate_replay_status(&cli)
         }
         Mode::AttentionAuditValidate => run_attention_audit_validate(&cli),
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
@@ -8728,19 +8748,21 @@ fn run_selected_mlp_down_policy_candidate_status(cli: &Cli) -> Result<()> {
 }
 
 #[cfg(feature = "cuda")]
-fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
-    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
-    let layer = cli.layer_index;
+fn build_selected_mlp_down_policy_replay_status(
+    layer: usize,
+    lane: usize,
+    norm_reduction_policy: &str,
+    model: &Path,
+    ordered_status_path: &Path,
+    coarse_bundle: Option<&Path>,
+    consumer_mlp_compare_status: Option<&Path>,
+    down_cast_policy_sweep_status_path: Option<&Path>,
+) -> Result<Value> {
+    validate_norm_reduction_policy(norm_reduction_policy)?;
     let hidden = 2880usize;
     let selected_count = 4usize;
-    let lane = cli.lane;
     anyhow::ensure!(lane < hidden, "lane must be < {hidden}, got {lane}");
 
-    let default_model =
-        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
-    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
-    let ordered_status_path =
-        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
     validate_path(ordered_status_path, "ordered MLP bundle status")?;
     anyhow::ensure!(
         model.exists(),
@@ -8749,15 +8771,11 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     );
 
     let ordered_status = load_json(ordered_status_path)?;
-    let ordered_consumer_status = cli
-        .consumer_mlp_compare_status
-        .as_deref()
+    let ordered_consumer_status = consumer_mlp_compare_status
         .filter(|path| path.exists())
         .map(load_json)
         .transpose()?;
-    let down_cast_policy_sweep_status = cli
-        .down_cast_policy_sweep_status
-        .as_deref()
+    let down_cast_policy_sweep_status = down_cast_policy_sweep_status_path
         .filter(|path| path.exists())
         .map(load_json)
         .transpose()?;
@@ -8864,7 +8882,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
     {
         validate_path(&path, "ordered MLP input")?;
         load_tensor_artifact(&path, &[hidden], &["values"])?
-    } else if let Some(coarse) = cli.coarse_bundle.as_deref() {
+    } else if let Some(coarse) = coarse_bundle {
         validate_path(coarse, "coarse bundle")?;
         load_coarse_boundary_tensor(coarse, &attention_residual_boundary, &[hidden])?
     } else {
@@ -8884,7 +8902,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         &attention_residual,
         &post_norm_values,
         1e-5,
-        &cli.norm_reduction_policy,
+        norm_reduction_policy,
     )?;
     let mlp_input_guard = compare_hidden(&attention_residual, &attention_residual);
     let mlp_norm_guard = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
@@ -9200,8 +9218,7 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
         "ordered_mlp_seed_policy": ordered_mlp_seed_policy,
         "source_layer11_policy_replay_status": source_layer11_policy_replay_status,
         "source_layer1_policy_replay_status": source_layer1_policy_replay_status,
-        "source_down_cast_policy_sweep_status": cli.down_cast_policy_sweep_status
-            .as_deref()
+        "source_down_cast_policy_sweep_status": down_cast_policy_sweep_status_path
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| source_down_cast_policy_sweep_status.to_string()),
         "source_statuses": {
@@ -9264,12 +9281,349 @@ fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
             "request narrower down-projection policy evidence for all selected experts or fix the validation replay path"
         },
     });
+    Ok(status)
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_mlp_down_policy_replay_status(cli: &Cli) -> Result<()> {
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    let ordered_status_path =
+        required_path(&cli.ordered_mlp_bundle_status, "ordered MLP bundle status")?;
+    let status = build_selected_mlp_down_policy_replay_status(
+        cli.layer_index,
+        cli.lane,
+        &cli.norm_reduction_policy,
+        model,
+        ordered_status_path,
+        cli.coarse_bundle.as_deref(),
+        cli.consumer_mlp_compare_status.as_deref(),
+        cli.down_cast_policy_sweep_status.as_deref(),
+    )?;
+    write_json(&cli.output, &status)
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_result(status: &Value, policy: &str) -> Option<Value> {
+    status
+        .get("policy_results")
+        .and_then(Value::as_array)
+        .and_then(|results| {
+            results
+                .iter()
+                .find(|entry| entry.get("policy").and_then(Value::as_str) == Some(policy))
+        })
+        .cloned()
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_clears(status: &Value, policy: &str) -> bool {
+    selected_mlp_policy_result(status, policy).is_some_and(|result| {
+        result
+            .get("clears_all_selected_outputs")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && result.get("clears_weighted_sum").and_then(Value::as_bool) == Some(true)
+            && result.get("clears_final_output").and_then(Value::as_bool) == Some(true)
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_policy_has_collateral(status: &Value, policy: &str) -> bool {
+    selected_mlp_policy_result(status, policy).is_some_and(|result| {
+        result
+            .get("introduces_collateral_mismatches")
+            .and_then(Value::as_bool)
+            == Some(true)
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn selected_mlp_replay_surface_status(
+    surface: &str,
+    layer: usize,
+    required: bool,
+    path: Option<&Path>,
+    lane: usize,
+    norm_reduction_policy: &str,
+    model: &Path,
+) -> Value {
+    let Some(path) = path else {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    };
+    if !path.exists() {
+        return json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": false,
+            "path": path.display().to_string(),
+            "classification": if required { "missing_required_artifact" } else { "missing_local_artifact" },
+            "provenance": if required { "not_available" } else { "committed_design_docs" },
+        });
+    }
+
+    match build_selected_mlp_down_policy_replay_status(
+        layer,
+        lane,
+        norm_reduction_policy,
+        model,
+        path,
+        None,
+        None,
+        None,
+    ) {
+        Ok(status) => {
+            let candidate = DownCastSweepPolicy::AbsAscendingF32.name();
+            let rejected = DownCastSweepPolicy::Bf16ProductThenF32.name();
+            json!({
+                "surface": surface,
+                "layer_index": layer,
+                "required": required,
+                "available": true,
+                "path": path.display().to_string(),
+                "classification": status["classification"].clone(),
+                "selected_experts": status["selected_experts"].clone(),
+                "routing_weights": status["routing_weights"].clone(),
+                "baseline": status["baseline"].clone(),
+                "policy_results": status["policy_results"].clone(),
+                "best_policy_by_ordered_mlp_full_vector": status["best_policy_by_ordered_mlp_full_vector"].clone(),
+                "best_policy_by_focus_lane": status["best_policy_by_focus_lane"].clone(),
+                "candidate_policy": {
+                    "policy": candidate,
+                    "clears_available_surface": selected_mlp_policy_clears(&status, candidate),
+                    "introduces_collateral_mismatches": selected_mlp_policy_has_collateral(&status, candidate),
+                },
+                "bf16_product_evidence_policy": {
+                    "policy": rejected,
+                    "evidence_only": true,
+                    "rejected": true,
+                    "result": selected_mlp_policy_result(&status, rejected),
+                },
+                "runtime_policy_discussion_allowed": false,
+            })
+        }
+        Err(error) => json!({
+            "surface": surface,
+            "layer_index": layer,
+            "required": required,
+            "available": true,
+            "path": path.display().to_string(),
+            "classification": "surface_replay_error",
+            "error": error.to_string(),
+        }),
+    }
+}
+
+fn optional_local_status(path: Option<&Path>, expected_prefix: &str) -> Value {
+    let Some(path) = path else {
+        return json!({
+            "available": false,
+            "classification": "missing_optional",
+        });
+    };
+    if !path.exists() {
+        return json!({
+            "available": false,
+            "path": path.display().to_string(),
+            "classification": "missing_optional",
+        });
+    }
+    match load_json(path) {
+        Ok(status) => {
+            let classification = status
+                .get("classification")
+                .and_then(Value::as_str)
+                .unwrap_or("missing_classification");
+            json!({
+                "available": true,
+                "path": path.display().to_string(),
+                "classification": classification,
+                "matches_expected_prefix": classification.starts_with(expected_prefix),
+                "runtime_behavior_changed": status.get("runtime_behavior_changed").cloned().unwrap_or_else(|| json!(null)),
+                "production_routing_changed": status.get("production_routing_changed").cloned().unwrap_or_else(|| json!(null)),
+                "cuda_kernels_changed": status.get("cuda_kernels_changed").cloned().unwrap_or_else(|| json!(null)),
+                "validation_only": status.get("validation_only").cloned().unwrap_or_else(|| json!(null)),
+            })
+        }
+        Err(error) => json!({
+            "available": true,
+            "path": path.display().to_string(),
+            "classification": "optional_status_parse_error",
+            "error": error.to_string(),
+        }),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn run_selected_mlp_down_policy_candidate_replay_status(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    let candidate = DownCastSweepPolicy::AbsAscendingF32.name();
+
+    let mut surfaces = serde_json::Map::new();
+    surfaces.insert(
+        "layer1".to_string(),
+        selected_mlp_replay_surface_status(
+            "layer1",
+            1,
+            true,
+            cli.layer1_ordered_mlp_status.as_deref(),
+            cli.lane,
+            &cli.norm_reduction_policy,
+            model,
+        ),
+    );
+    surfaces.insert(
+        "layer2".to_string(),
+        selected_mlp_replay_surface_status(
+            "layer2",
+            2,
+            true,
+            cli.layer2_ordered_mlp_status.as_deref(),
+            cli.lane,
+            &cli.norm_reduction_policy,
+            model,
+        ),
+    );
+    surfaces.insert(
+        "layer11".to_string(),
+        selected_mlp_replay_surface_status(
+            "layer11",
+            11,
+            false,
+            cli.optional_layer11_ordered_mlp_status.as_deref(),
+            cli.lane,
+            &cli.norm_reduction_policy,
+            model,
+        ),
+    );
+
+    let required_missing = ["layer1", "layer2"].iter().any(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| surface.get("classification"))
+            .and_then(Value::as_str)
+            == Some("missing_required_artifact")
+    });
+    let schema_or_execution_error = surfaces.values().any(|surface| {
+        surface
+            .get("classification")
+            .and_then(Value::as_str)
+            .is_some_and(|classification| classification == "surface_replay_error")
+    });
+    let available_surface_values = surfaces
+        .values()
+        .filter(|surface| surface.get("available").and_then(Value::as_bool) == Some(true))
+        .collect::<Vec<_>>();
+    let candidate_clears_available_surfaces = !available_surface_values.is_empty()
+        && available_surface_values.iter().all(|surface| {
+            surface
+                .pointer("/candidate_policy/clears_available_surface")
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
+    let required_candidate_clears = ["layer1", "layer2"].iter().all(|key| {
+        surfaces
+            .get(*key)
+            .and_then(|surface| surface.pointer("/candidate_policy/clears_available_surface"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    let candidate_collateral = available_surface_values.iter().any(|surface| {
+        surface
+            .pointer("/candidate_policy/introduces_collateral_mismatches")
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    let layer11_available = surfaces
+        .get("layer11")
+        .and_then(|surface| surface.get("available"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let classification = if required_missing {
+        "selected_mlp_down_policy_candidate_replay_blocked_by_missing_required_artifact"
+    } else if schema_or_execution_error {
+        "selected_mlp_down_policy_candidate_replay_blocked_by_schema"
+    } else if candidate_collateral {
+        "selected_mlp_down_policy_candidate_replay_collateral_mismatch"
+    } else if candidate_clears_available_surfaces && layer11_available {
+        "selected_mlp_down_policy_candidate_replay_validated_on_available_surfaces"
+    } else if required_candidate_clears {
+        "selected_mlp_down_policy_candidate_replay_layer1_layer2_cleared"
+    } else {
+        "selected_mlp_down_policy_candidate_replay_no_candidate_clears"
+    };
+
+    let layer2_attention_audit = optional_local_status(
+        cli.optional_layer2_attention_audit_status.as_deref(),
+        "layer2_ordered_attention_audit_",
+    );
+    let status = json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "selected-mlp-down-policy-candidate-replay-status",
+        "classification": classification,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "validation_only": true,
+        "candidate_policy": candidate,
+        "rejected_policy": DownCastSweepPolicy::Bf16ProductThenF32.name(),
+        "policy_registry": selected_mlp_down_policy_registry_status(),
+        "surfaces": Value::Object(surfaces),
+        "layer2_attention_audit": layer2_attention_audit,
+        "candidate_clears_available_surfaces": candidate_clears_available_surfaces,
+        "runtime_policy_discussion_allowed": false,
+        "runtime_implementation_included": false,
+        "remaining_gates": [
+            "validation-only helper only",
+            "no production/default routing change",
+            "no CUDA kernel change",
+            "no correction metadata",
+            "no layer ladder continuation",
+            "no final-logit/all-layer/server/4097 claim",
+            "multiple focus lanes and runtime performance remain unassessed",
+        ],
+        "runtime_behavior": {
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "default_model_runner_behavior_changed": false,
+        },
+        "source_policy": {
+            "local_replay_surface": "validation_only",
+            "correction_metadata_applied": false,
+            "bf16_product_policy_treated_as_valid_correction": false,
+            "coarse_ladder_continued": false,
+        },
+        "next_bounded_step": if required_candidate_clears {
+            "use this validation-only helper for additional ordered MLP surfaces or focus lanes before any runtime-policy discussion"
+        } else {
+            "inspect the first non-clearing ordered MLP surface before any runtime-policy discussion"
+        },
+    });
     write_json(&cli.output, &status)
 }
 
 #[cfg(not(feature = "cuda"))]
 fn run_selected_mlp_down_policy_replay_status(_cli: &Cli) -> Result<()> {
     anyhow::bail!("selected MLP down-policy replay requires the cuda feature")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_selected_mlp_down_policy_candidate_replay_status(_cli: &Cli) -> Result<()> {
+    anyhow::bail!("selected MLP down-policy candidate replay requires the cuda feature")
 }
 
 #[cfg(not(feature = "cuda"))]

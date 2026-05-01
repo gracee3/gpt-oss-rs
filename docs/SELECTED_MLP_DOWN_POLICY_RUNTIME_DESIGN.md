@@ -277,6 +277,22 @@ model-runner routing, change CUDA kernels, apply correction metadata, continue
 the ladder, or make final-logit, all-layer, server, or 4097-token claims.
 Runtime performance remains unassessed.
 
+The next validation-only slice adds a reusable replay/status mode:
+
+```text
+--mode selected-mlp-down-policy-candidate-replay-status
+```
+
+This mode runs the centralized selected MLP down-policy registry against
+available ordered MLP surfaces, currently layer1 and layer2, with layer11 used
+only when the local ordered bundle is present. It compares selected expert
+outputs, weighted expert sum, and final MLP residual output for the baseline,
+the deterministic absolute-ascending candidate, and the rejected BF16-product
+evidence policy. The mode is still a proof harness only: runtime policy
+discussion remains disabled, production/default routing and CUDA kernels remain
+unchanged, no correction metadata is applied, and performance is still
+unassessed.
+
 ## Non-Goals
 
 - No runtime code change in this design slice.
