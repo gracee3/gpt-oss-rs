@@ -7,13 +7,13 @@ use gpt_oss_model_runner::{
     CudaLayerFusedF16AllocationStatus, CudaShardFusedF16AllocationStatus,
     CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationStatus, CudaShardResourceStatus,
     CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, F16ScratchAllocationConfig,
-    FusedF16AllocationStatus, KvCacheAllocationConfig, LateAllocationKind,
-    MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
-    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
-    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
-    ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
-    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedModelPlan,
-    ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
+    F16ScratchBufferStatus, F16ScratchBufferStatuses, FusedF16AllocationStatus,
+    KvCacheAllocationConfig, LateAllocationKind, MetadataAllocationConfig, MetadataMode,
+    RopeRuntimeBufferConfig, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
+    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+    ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan,
+    ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus,
+    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
     UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,10 @@ const FUSED_QKV_NORM_BIAS_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_bias_allocation_smoke_complete";
 const FUSED_QKV_NORM_BIAS_GLOBAL_F16_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_norm_bias_global_f16_allocation_smoke_complete";
+const FUSED_GLOBAL_F16_SCRATCH_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete";
+const F16_SCRATCH_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_f16_scratch_allocation_smoke_complete";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
@@ -59,6 +63,10 @@ const BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_bias_conversion_allocation_blocked";
 const GLOBAL_F16_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_global_f16_allocation_blocked";
+const F16_SCRATCH_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_f16_scratch_allocation_blocked";
+const F16_SCRATCH_ALLOCATION_OOM_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_f16_scratch_allocation_oom";
 
 const OMITTED_ALLOCATIONS: &[&str] = &[
     "kv_cache",
@@ -297,7 +305,10 @@ struct SplitAllocationSmokeShardReport {
     fused_error: Option<String>,
     f16_scratch_allocated: bool,
     f16_scratch_status: String,
+    f16_scratch_total_elements: usize,
     f16_scratch_bytes: usize,
+    f16_scratch_max_tokens: Option<usize>,
+    f16_scratch_buffers: Option<F16ScratchBuffersReport>,
     f16_scratch_deferred_reason: Option<String>,
     f16_scratch_error: Option<String>,
 }
@@ -339,12 +350,33 @@ struct FusedLayerReport {
     layer_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct F16ScratchBufferReport {
+    elements: usize,
+    bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct F16ScratchBuffersReport {
+    qkv: F16ScratchBufferReport,
+    attn_out: F16ScratchBufferReport,
+    o_proj: F16ScratchBufferReport,
+    normed: F16ScratchBufferReport,
+    residual: F16ScratchBufferReport,
+    gate_up: F16ScratchBufferReport,
+    silu_out: F16ScratchBufferReport,
+    down: F16ScratchBufferReport,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ModelPlanningConfig {
     num_layers: usize,
     tie_word_embeddings: bool,
+    hidden_size: Option<usize>,
+    num_attention_heads: Option<usize>,
     head_dim: Option<usize>,
     num_kv_heads: Option<usize>,
+    intermediate_size: Option<usize>,
     max_position: usize,
     rope_theta: f32,
 }
@@ -583,7 +615,7 @@ fn build_split_allocation_smoke_report(
             );
         }
     };
-    let f16_scratch_config = match build_f16_scratch_allocation_config(fused_f16_options) {
+    let f16_scratch_config = match build_f16_scratch_allocation_config(config, fused_f16_options) {
         Ok(config) => config,
         Err(error) => {
             return error_report(
@@ -901,7 +933,24 @@ fn build_split_allocation_smoke_report(
                     .as_ref()
                     .map(fused_status_succeeded)
                     .unwrap_or(false);
-            let classification = if fused_f16_succeeded {
+            let f16_scratch_succeeded = fused_f16_options.allocate_f16_scratch
+                && actual_fused_f16_status
+                    .as_ref()
+                    .map(scratch_status_succeeded)
+                    .unwrap_or(false);
+            let classification = if fused_f16_succeeded && f16_scratch_succeeded {
+                if actual_fused_f16_status
+                    .as_ref()
+                    .map(fused_status_has_global_f16)
+                    .unwrap_or(false)
+                {
+                    FUSED_GLOBAL_F16_SCRATCH_ALLOCATION_CLASSIFICATION
+                } else {
+                    F16_SCRATCH_ALLOCATION_CLASSIFICATION
+                }
+            } else if f16_scratch_succeeded {
+                F16_SCRATCH_ALLOCATION_CLASSIFICATION
+            } else if fused_f16_succeeded {
                 if actual_fused_f16_status
                     .as_ref()
                     .map(|status| {
@@ -1052,6 +1101,7 @@ fn read_model_planning_config(
             .and_then(|(hidden_size, heads)| hidden_size.checked_div(heads))
     });
     let num_kv_heads = get_usize("num_key_value_heads").or(num_attention_heads);
+    let intermediate_size = get_usize("intermediate_size");
     let max_position = get_usize("max_position_embeddings").unwrap_or(2048);
     let rope_theta = get_f32("rope_theta", 10000.0);
     let tie_word_embeddings = tie_word_embeddings_override.unwrap_or_else(|| {
@@ -1063,8 +1113,11 @@ fn read_model_planning_config(
     Ok(ModelPlanningConfig {
         num_layers,
         tie_word_embeddings,
+        hidden_size,
+        num_attention_heads,
         head_dim,
         num_kv_heads,
+        intermediate_size,
         max_position,
         rope_theta,
     })
@@ -1155,6 +1208,7 @@ fn build_metadata_allocation_config(
 }
 
 fn build_f16_scratch_allocation_config(
+    config: ModelPlanningConfig,
     options: FusedF16SmokeOptions,
 ) -> Result<Option<F16ScratchAllocationConfig>> {
     if !options.allocate_f16_scratch {
@@ -1164,7 +1218,28 @@ fn build_f16_scratch_allocation_config(
     let max_tokens = options
         .f16_scratch_max_tokens
         .context("--allocate-f16-scratch requires --f16-scratch-max-tokens <N>")?;
-    F16ScratchAllocationConfig::new(max_tokens)
+    let hidden_size = config
+        .hidden_size
+        .context("config.json missing numeric hidden_size for f16 scratch allocation")?;
+    let num_attention_heads = config
+        .num_attention_heads
+        .context("config.json missing numeric num_attention_heads for f16 scratch allocation")?;
+    let head_dim = config
+        .head_dim
+        .context("config.json missing numeric head_dim or hidden_size/num_attention_heads for f16 scratch allocation")?;
+    let num_kv_heads = config.num_kv_heads.context(
+        "config.json missing numeric num_key_value_heads or num_attention_heads for f16 scratch allocation",
+    )?;
+    let intermediate_size = config
+        .intermediate_size
+        .context("config.json missing numeric intermediate_size for f16 scratch allocation")?;
+    let q_dim = num_attention_heads
+        .checked_mul(head_dim)
+        .context("f16 scratch q_dim overflow")?;
+    let kv_dim = num_kv_heads
+        .checked_mul(head_dim)
+        .context("f16 scratch kv_dim overflow")?;
+    F16ScratchAllocationConfig::new(hidden_size, q_dim, kv_dim, intermediate_size, max_tokens)
         .map(Some)
         .map_err(anyhow::Error::msg)
 }
@@ -1197,8 +1272,8 @@ fn run_cuda_allocation_smoke(
         load_weights_to_gpu_with_shapes_filtered,
     };
     use gpt_oss_model_runner::{
-        ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers,
-        ShardedMetadataBuffers, ShardedRuntimeBuffers,
+        ShardedCudaResources, ShardedF16ScratchBuffers, ShardedFusedF16Buffers,
+        ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
     };
 
     let resources = match kernel_dir {
@@ -1346,15 +1421,24 @@ fn run_cuda_allocation_smoke(
                     .status(),
                 )
             } else {
-                let fused_plan = ShardedFusedF16AllocationPlan::from_upload_manifest(
-                    upload_manifest,
-                    f16_scratch_config,
-                );
-                Some(ShardedFusedF16AllocationStatus::from_plan(
-                    &fused_plan,
-                    false,
-                    false,
-                ))
+                Some(
+                    ShardedF16ScratchBuffers::create_for_resources(
+                        &resources,
+                        upload_manifest,
+                        f16_scratch_config.ok_or_else(|| {
+                            (
+                                CONFIG_ERROR_CLASSIFICATION,
+                                "--allocate-f16-scratch requires --f16-scratch-max-tokens <N>"
+                                    .to_string(),
+                            )
+                        })?,
+                    )
+                    .map_err(|error| {
+                        let error = error.to_string();
+                        (classify_fused_f16_error(&error), error)
+                    })?
+                    .status(),
+                )
             }
         } else {
             None
@@ -1440,6 +1524,13 @@ fn fused_status_succeeded(status: &ShardedFusedF16AllocationStatus) -> bool {
     })
 }
 
+fn scratch_status_succeeded(status: &ShardedFusedF16AllocationStatus) -> bool {
+    status.shards.iter().all(|shard| {
+        shard.f16_scratch_allocated
+            || shard.f16_scratch_status == FusedF16AllocationStatus::NotApplicable
+    })
+}
+
 fn fused_status_has_allocated_norms(status: &ShardedFusedF16AllocationStatus) -> bool {
     status.shards.iter().any(|shard| {
         shard.f16_layernorm_count > 0
@@ -1468,7 +1559,13 @@ fn fused_status_has_global_f16(status: &ShardedFusedF16AllocationStatus) -> bool
 }
 
 fn classify_fused_f16_error(error: &str) -> &'static str {
-    if error.contains("final norm") || error.contains("embedding f16") {
+    if error.contains("f16 scratch") {
+        if error.to_ascii_lowercase().contains("out of memory") || error.contains("OOM") {
+            F16_SCRATCH_ALLOCATION_OOM_CLASSIFICATION
+        } else {
+            F16_SCRATCH_ALLOCATION_BLOCKED_CLASSIFICATION
+        }
+    } else if error.contains("final norm") || error.contains("embedding f16") {
         GLOBAL_F16_ALLOCATION_BLOCKED_CLASSIFICATION
     } else if error.contains("f16 bias") || error.contains("f32 bias") {
         BIAS_CONVERSION_ALLOCATION_BLOCKED_CLASSIFICATION
@@ -1637,6 +1734,10 @@ fn render_report_with_counts(
         && fused_f16_status
             .map(fused_status_succeeded)
             .unwrap_or(false);
+    let f16_scratch_allocation_succeeded = fused_f16_options.allocate_f16_scratch
+        && fused_f16_status
+            .map(scratch_status_succeeded)
+            .unwrap_or(false);
 
     SplitAllocationSmokeReport {
         classification: classification.into(),
@@ -1673,7 +1774,7 @@ fn render_report_with_counts(
         fused_f16_allocation_attempted: fused_f16_options.allocate_fused_f16,
         fused_f16_allocation_succeeded,
         f16_scratch_allocation_attempted: fused_f16_options.allocate_f16_scratch,
-        f16_scratch_allocation_succeeded: false,
+        f16_scratch_allocation_succeeded,
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
         fused_f16_error: error
             .clone()
@@ -1899,7 +2000,10 @@ fn render_shard_report(
         fused_error,
         f16_scratch_allocated,
         f16_scratch_status,
+        f16_scratch_total_elements,
         f16_scratch_bytes,
+        f16_scratch_max_tokens,
+        f16_scratch_buffers,
         f16_scratch_deferred_reason,
         f16_scratch_error,
     ) = fused_f16
@@ -1938,7 +2042,10 @@ fn render_shard_report(
                 status.fused_error.clone(),
                 status.f16_scratch_allocated,
                 status.f16_scratch_status.as_str().to_string(),
+                status.f16_scratch_total_elements,
                 status.f16_scratch_bytes,
+                status.f16_scratch_max_tokens,
+                status.f16_scratch_buffers.map(render_f16_scratch_buffers),
                 status.f16_scratch_deferred_reason.clone(),
                 status.f16_scratch_error.clone(),
             )
@@ -1975,6 +2082,9 @@ fn render_shard_report(
                 false,
                 FusedF16AllocationStatus::NotApplicable.as_str().to_string(),
                 0,
+                0,
+                None,
+                None,
                 None,
                 None,
             )
@@ -2069,9 +2179,32 @@ fn render_shard_report(
         fused_error,
         f16_scratch_allocated,
         f16_scratch_status,
+        f16_scratch_total_elements,
         f16_scratch_bytes,
+        f16_scratch_max_tokens,
+        f16_scratch_buffers,
         f16_scratch_deferred_reason,
         f16_scratch_error,
+    }
+}
+
+fn render_f16_scratch_buffer(status: F16ScratchBufferStatus) -> F16ScratchBufferReport {
+    F16ScratchBufferReport {
+        elements: status.elements,
+        bytes: status.bytes,
+    }
+}
+
+fn render_f16_scratch_buffers(statuses: F16ScratchBufferStatuses) -> F16ScratchBuffersReport {
+    F16ScratchBuffersReport {
+        qkv: render_f16_scratch_buffer(statuses.qkv),
+        attn_out: render_f16_scratch_buffer(statuses.attn_out),
+        o_proj: render_f16_scratch_buffer(statuses.o_proj),
+        normed: render_f16_scratch_buffer(statuses.normed),
+        residual: render_f16_scratch_buffer(statuses.residual),
+        gate_up: render_f16_scratch_buffer(statuses.gate_up),
+        silu_out: render_f16_scratch_buffer(statuses.silu_out),
+        down: render_f16_scratch_buffer(statuses.down),
     }
 }
 
@@ -2371,6 +2504,7 @@ mod tests {
             "num_attention_heads": 2,
             "num_key_value_heads": 2,
             "head_dim": 4,
+            "intermediate_size": 16,
             "max_position_embeddings": max_position,
             "rope_theta": 10000.0,
         });
@@ -3021,6 +3155,17 @@ mod tests {
     }
 
     #[test]
+    fn fused_f16_error_classification_maps_scratch_errors() {
+        let classification =
+            classify_fused_f16_error("gpu error: shard 0 f16 scratch qkv alloc failed");
+
+        assert_eq!(
+            classification,
+            F16_SCRATCH_ALLOCATION_BLOCKED_CLASSIFICATION
+        );
+    }
+
+    #[test]
     fn fused_f16_error_classification_keeps_qkv_errors_distinct() {
         let classification = classify_fused_f16_error(
             "gpu error: shard 0 fused QKV q copy failed absolute layer 12",
@@ -3147,6 +3292,21 @@ mod tests {
     }
 
     #[test]
+    fn f16_scratch_flag_rejects_zero_max_tokens() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_fused(&dir, false, true, Some(0));
+
+        assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
+        assert!(report.f16_scratch_allocation_attempted);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("f16-scratch-max-tokens must be non-zero"));
+    }
+
+    #[test]
     fn fused_f16_flag_requires_f16_dtype_mode() {
         let dir = fixture_with_lm_head();
 
@@ -3184,7 +3344,7 @@ mod tests {
     }
 
     #[test]
-    fn f16_scratch_flag_surfaces_deferred_private_boundary() {
+    fn f16_scratch_flag_surfaces_deferred_plan_status() {
         let dir = fixture_with_lm_head();
 
         let report = split_report_for_fused(&dir, false, true, Some(1));
@@ -3199,11 +3359,14 @@ mod tests {
 
         for shard in &report.shards {
             assert_eq!(shard.f16_scratch_status, "deferred");
+            assert_eq!(shard.f16_scratch_total_elements, 0);
+            assert_eq!(shard.f16_scratch_bytes, 0);
+            assert!(shard.f16_scratch_buffers.is_none());
             assert!(shard
                 .f16_scratch_deferred_reason
                 .as_deref()
                 .unwrap()
-                .contains("F16LayerScratch"));
+                .contains("CUDA allocation pass"));
         }
     }
 

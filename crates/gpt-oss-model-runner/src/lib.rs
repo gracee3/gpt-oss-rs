@@ -79,17 +79,17 @@ pub use sharded_resources::{
     CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus,
     CudaShardMetadataAllocationPlan, CudaShardMetadataAllocationStatus, CudaShardResourcePlan,
     CudaShardResourceStatus, CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus,
-    F16ScratchAllocationConfig, FusedF16AllocationStatus, KvCacheAllocationConfig,
-    MetadataAllocationConfig, MetadataMode, RopeRuntimeBufferConfig, RuntimeMetadataStatus,
-    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
-    ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
-    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan,
-    ShardedRuntimeBufferStatus,
+    F16ScratchAllocationConfig, F16ScratchBufferStatus, F16ScratchBufferStatuses,
+    FusedF16AllocationStatus, KvCacheAllocationConfig, MetadataAllocationConfig, MetadataMode,
+    RopeRuntimeBufferConfig, RuntimeMetadataStatus, ShardedCudaResourcePlan,
+    ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus,
+    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan,
+    ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{
-    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardFusedF16Buffers,
-    CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources, CudaShardRuntimeBuffers,
-    ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers,
-    ShardedRuntimeBuffers,
+    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardF16ScratchBuffers,
+    CudaShardFusedF16Buffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers,
+    CudaShardResources, CudaShardRuntimeBuffers, ShardedCudaResources, ShardedF16ScratchBuffers,
+    ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
 };

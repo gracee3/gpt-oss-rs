@@ -6325,3 +6325,139 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_fused_qkv_norm_bias_global_f16_allocation_smoke_complete
+
+## Bench-only f16 scratch allocation status
+
+This implementation slice turns the previous `F16LayerScratch` deferred status
+boundary into a bench-only shard-local CUDA allocation. It does not reuse or
+expose the private runner `F16LayerScratch`; that runner-owned state remains
+unchanged and private to `GpuModelRunner`.
+
+Helpers and types added or extended:
+
+- `F16ScratchAllocationConfig` now carries model-derived `hidden_size`,
+  `q_dim`, `kv_dim`, `intermediate_size`, and explicit `max_tokens`.
+- `F16ScratchBufferStatus` and `F16ScratchBufferStatuses` report per-buffer
+  element and byte counts for the eight scratch buffers.
+- `CudaShardF16ScratchBuffers` and `ShardedF16ScratchBuffers` allocate
+  non-executing shard scratch buffers when scratch is requested without fused
+  f16 allocation.
+- `CudaShardFusedF16Buffers` now also allocates scratch when
+  `--allocate-fused-f16` and `--allocate-f16-scratch` are both requested.
+
+Sizing policy:
+
+- `f16_scratch_element_counts` remains the source of truth.
+- The bench command derives `q_dim = num_attention_heads * head_dim` and
+  `kv_dim = num_key_value_heads * head_dim` from `config.json`.
+- `--f16-scratch-max-tokens` is required with `--allocate-f16-scratch`.
+- `max_tokens=0` is rejected before CUDA allocation.
+
+Allocated scratch buffers per layer-owning shard:
+
+- `qkv`: `max_tokens * (q_dim + kv_dim + kv_dim)` elements.
+- `attn_out`: `max_tokens * q_dim` elements.
+- `o_proj`: `max_tokens * hidden_size` elements.
+- `normed`: `max_tokens * hidden_size` elements.
+- `residual`: `max_tokens * hidden_size` elements.
+- `gate_up`: `max_tokens * intermediate_size * 2` elements.
+- `silu_out`: `max_tokens * intermediate_size` elements.
+- `down`: `max_tokens * hidden_size` elements.
+
+The buffers are allocated on each shard's existing CUDA stream/resource island,
+reported, and then dropped after status collection. They are not attached to a
+layer, runner, graph, or execution path.
+
+Status JSON now includes per shard:
+
+- `f16_scratch_allocated`
+- `f16_scratch_status`
+- `f16_scratch_max_tokens`
+- `f16_scratch_total_elements`
+- `f16_scratch_bytes`
+- `f16_scratch_buffers.{qkv,attn_out,o_proj,normed,residual,gate_up,silu_out,down}.{elements,bytes}`
+- `f16_scratch_deferred_reason`
+- `f16_scratch_error`
+
+Top-level scratch success is reported through the existing fields:
+
+- `f16_scratch_allocation_attempted`
+- `f16_scratch_allocation_succeeded`
+- `f16_scratch_max_tokens`
+- `f16_scratch_error`
+
+Classification behavior:
+
+- fused-global plus scratch success:
+  `multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete`.
+- scratch-only success:
+  `multi_gpu_layer_sharding_f16_scratch_allocation_smoke_complete`.
+- scratch allocation failure:
+  `multi_gpu_layer_sharding_f16_scratch_allocation_blocked`.
+- scratch OOM:
+  `multi_gpu_layer_sharding_f16_scratch_allocation_oom`.
+
+Manual operator command, not run in this implementation slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_scratch_status.json
+```
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner fused_f16`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `git diff --check`
+
+No split execution, layer construction, `GpuModelRunner` construction,
+attention, graph output, final norm execution, LM-head execution, logits, graph
+capture, forward pass, serving behavior, BF16 parity, or parity path was added.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+Still deferred:
+
+- tied LM-head fallback.
+- f32 embedding fallback loading/casting.
+- GPT-OSS MoE GPU upload.
+- layer construction and `GpuModelRunner` construction.
+- attention, graph output, execution, serving, logits, BF16 parity, and parity
+  paths.
+
+Primary classification:
+
+multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete

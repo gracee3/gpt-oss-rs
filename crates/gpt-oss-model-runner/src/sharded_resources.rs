@@ -6,6 +6,7 @@
 //! runner.
 
 use crate::device_map::DeviceId;
+use crate::fused_f16::{f16_scratch_element_counts, F16ScratchElementCounts};
 use crate::shard_plan::{ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan};
 use std::str::FromStr;
 
@@ -16,7 +17,7 @@ pub const FUSED_F16_DEFERRED_REASON: &str =
 pub const FUSED_F16_CASTS_DEFERRED_REASON: &str =
     "fused QKV/gate-up buffers and f16 layernorm/postnorm/bias conversions allocated; final/embed conversions remain deferred by cast/helper boundary";
 pub const F16_SCRATCH_DEFERRED_REASON: &str =
-    "F16LayerScratch is private runner state and tied to GpuModelRunner allocation";
+    "bench-only f16 scratch allocation requires the CUDA allocation pass; GpuModelRunner::F16LayerScratch remains private runner state";
 
 /// CUDA-free plan for one shard's resource island.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,7 +262,31 @@ pub struct ShardedMetadataAllocationStatus {
 /// CUDA-free configuration for planned f16 scratch allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct F16ScratchAllocationConfig {
+    pub hidden_size: usize,
+    pub q_dim: usize,
+    pub kv_dim: usize,
+    pub intermediate_size: usize,
     pub max_tokens: usize,
+}
+
+/// CUDA-free status for one f16 scratch buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct F16ScratchBufferStatus {
+    pub elements: usize,
+    pub bytes: usize,
+}
+
+/// CUDA-free per-buffer status for the eight f16 scratch buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct F16ScratchBufferStatuses {
+    pub qkv: F16ScratchBufferStatus,
+    pub attn_out: F16ScratchBufferStatus,
+    pub o_proj: F16ScratchBufferStatus,
+    pub normed: F16ScratchBufferStatus,
+    pub residual: F16ScratchBufferStatus,
+    pub gate_up: F16ScratchBufferStatus,
+    pub silu_out: F16ScratchBufferStatus,
+    pub down: F16ScratchBufferStatus,
 }
 
 /// CUDA-free plan for one layer's fused/preconverted f16 boundary.
@@ -328,7 +353,9 @@ pub struct CudaShardFusedF16AllocationPlan {
     pub fused_deferred_reason: Option<String>,
     pub f16_scratch_status: FusedF16AllocationStatus,
     pub f16_scratch_max_tokens: Option<usize>,
+    pub f16_scratch_total_elements: usize,
     pub f16_scratch_bytes: usize,
+    pub f16_scratch_buffers: Option<F16ScratchBufferStatuses>,
     pub f16_scratch_deferred_reason: Option<String>,
 }
 
@@ -374,8 +401,10 @@ pub struct CudaShardFusedF16AllocationStatus {
     pub fused_error: Option<String>,
     pub f16_scratch_allocated: bool,
     pub f16_scratch_status: FusedF16AllocationStatus,
+    pub f16_scratch_total_elements: usize,
     pub f16_scratch_bytes: usize,
     pub f16_scratch_max_tokens: Option<usize>,
+    pub f16_scratch_buffers: Option<F16ScratchBufferStatuses>,
     pub f16_scratch_deferred_reason: Option<String>,
     pub f16_scratch_error: Option<String>,
 }
@@ -670,12 +699,97 @@ impl FusedF16AllocationStatus {
 }
 
 impl F16ScratchAllocationConfig {
-    pub fn new(max_tokens: usize) -> Result<Self, String> {
+    pub fn new(
+        hidden_size: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        intermediate_size: usize,
+        max_tokens: usize,
+    ) -> Result<Self, String> {
+        if hidden_size == 0 {
+            return Err("hidden_size must be non-zero for f16 scratch allocation".into());
+        }
+        if q_dim == 0 {
+            return Err("q_dim must be non-zero for f16 scratch allocation".into());
+        }
+        if kv_dim == 0 {
+            return Err("kv_dim must be non-zero for f16 scratch allocation".into());
+        }
+        if intermediate_size == 0 {
+            return Err("intermediate_size must be non-zero for f16 scratch allocation".into());
+        }
         if max_tokens == 0 {
             return Err("f16-scratch-max-tokens must be non-zero".into());
         }
 
-        Ok(Self { max_tokens })
+        Ok(Self {
+            hidden_size,
+            q_dim,
+            kv_dim,
+            intermediate_size,
+            max_tokens,
+        })
+    }
+
+    pub fn element_counts(self) -> Result<F16ScratchElementCounts, String> {
+        f16_scratch_element_counts(
+            self.hidden_size,
+            self.q_dim,
+            self.kv_dim,
+            self.intermediate_size,
+            self.max_tokens,
+        )
+    }
+
+    pub fn buffer_statuses(self) -> Result<F16ScratchBufferStatuses, String> {
+        self.element_counts()
+            .map(F16ScratchBufferStatuses::from_counts)
+    }
+}
+
+impl F16ScratchBufferStatus {
+    fn from_elements(elements: usize) -> Self {
+        Self {
+            elements,
+            bytes: elements * std::mem::size_of::<half::f16>(),
+        }
+    }
+}
+
+impl F16ScratchBufferStatuses {
+    pub fn from_counts(counts: F16ScratchElementCounts) -> Self {
+        Self {
+            qkv: F16ScratchBufferStatus::from_elements(counts.qkv),
+            attn_out: F16ScratchBufferStatus::from_elements(counts.attn_out),
+            o_proj: F16ScratchBufferStatus::from_elements(counts.o_proj),
+            normed: F16ScratchBufferStatus::from_elements(counts.normed),
+            residual: F16ScratchBufferStatus::from_elements(counts.residual),
+            gate_up: F16ScratchBufferStatus::from_elements(counts.gate_up),
+            silu_out: F16ScratchBufferStatus::from_elements(counts.silu_out),
+            down: F16ScratchBufferStatus::from_elements(counts.down),
+        }
+    }
+
+    pub fn total_elements(self) -> usize {
+        self.qkv.elements
+            + self.attn_out.elements
+            + self.o_proj.elements
+            + self.normed.elements
+            + self.residual.elements
+            + self.gate_up.elements
+            + self.silu_out.elements
+            + self.down.elements
+    }
+
+    pub fn total_bytes(self) -> usize {
+        self.qkv.bytes
+            + self.attn_out.bytes
+            + self.o_proj.bytes
+            + self.normed.bytes
+            + self.residual.bytes
+            + self.gate_up.bytes
+            + self.silu_out.bytes
+            + self.down.bytes
     }
 }
 
@@ -1103,12 +1217,20 @@ impl CudaShardFusedF16AllocationPlan {
         } else {
             FusedF16AllocationStatus::NotApplicable
         };
-        let f16_scratch_status = if scratch_config.is_some() && !manifest.absolute_layers.is_empty()
-        {
+        let f16_scratch_buffers = scratch_config
+            .filter(|_| !manifest.absolute_layers.is_empty())
+            .and_then(|config| config.buffer_statuses().ok());
+        let f16_scratch_status = if f16_scratch_buffers.is_some() {
             FusedF16AllocationStatus::Deferred
         } else {
             FusedF16AllocationStatus::NotApplicable
         };
+        let f16_scratch_total_elements = f16_scratch_buffers
+            .map(F16ScratchBufferStatuses::total_elements)
+            .unwrap_or(0);
+        let f16_scratch_bytes = f16_scratch_buffers
+            .map(F16ScratchBufferStatuses::total_bytes)
+            .unwrap_or(0);
 
         Self {
             device_id: manifest.device_id,
@@ -1137,7 +1259,9 @@ impl CudaShardFusedF16AllocationPlan {
                 .then(|| FUSED_F16_DEFERRED_REASON.into()),
             f16_scratch_status,
             f16_scratch_max_tokens: scratch_config.map(|config| config.max_tokens),
-            f16_scratch_bytes: 0,
+            f16_scratch_total_elements,
+            f16_scratch_bytes,
+            f16_scratch_buffers,
             f16_scratch_deferred_reason: (f16_scratch_status == FusedF16AllocationStatus::Deferred)
                 .then(|| F16_SCRATCH_DEFERRED_REASON.into()),
         }
@@ -1241,12 +1365,22 @@ impl CudaShardFusedF16AllocationPlan {
             fused_error: None,
             f16_scratch_allocated,
             f16_scratch_status,
+            f16_scratch_total_elements: if f16_scratch_allocated {
+                self.f16_scratch_total_elements
+            } else {
+                0
+            },
             f16_scratch_bytes: if f16_scratch_allocated {
                 self.f16_scratch_bytes
             } else {
                 0
             },
             f16_scratch_max_tokens: self.f16_scratch_max_tokens,
+            f16_scratch_buffers: if f16_scratch_allocated {
+                self.f16_scratch_buffers
+            } else {
+                None
+            },
             f16_scratch_deferred_reason: (!f16_scratch_allocated)
                 .then(|| self.f16_scratch_deferred_reason.clone())
                 .flatten(),
@@ -1470,11 +1604,11 @@ mod cuda {
         CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationPlan,
         CudaShardMetadataAllocationStatus, CudaShardResourcePlan, CudaShardResourceStatus,
         CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus, F16ScratchAllocationConfig,
-        FusedF16AllocationStatus, MetadataAllocationConfig, RopeRuntimeBufferConfig,
-        ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationStatus,
-        ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
-        ShardedMetadataAllocationStatus, ShardedRuntimeBufferStatus,
-        FUSED_F16_CASTS_DEFERRED_REASON,
+        F16ScratchBufferStatuses, FusedF16AllocationStatus, MetadataAllocationConfig,
+        RopeRuntimeBufferConfig, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+        ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan,
+        ShardedKvCacheAllocationStatus, ShardedMetadataAllocationStatus,
+        ShardedRuntimeBufferStatus, FUSED_F16_CASTS_DEFERRED_REASON,
     };
     use crate::device_map::DeviceId;
     use crate::fused_f16::{
@@ -1570,12 +1704,33 @@ mod cuda {
         pub layers: Vec<CudaLayerFusedF16Buffers>,
         pub embedding_f16: Option<CudaSlice<f16>>,
         pub final_norm_f16: Option<CudaSlice<f16>>,
+        pub f16_scratch: Option<CudaShardF16ScratchBuffers>,
         pub status: CudaShardFusedF16AllocationStatus,
     }
 
     /// Shard-local fused f16 buffers allocated from resource islands.
     pub struct ShardedFusedF16Buffers {
         pub shards: Vec<CudaShardFusedF16Buffers>,
+    }
+
+    /// One shard's non-executing f16 scratch buffers.
+    pub struct CudaShardF16ScratchBuffers {
+        pub device_id: DeviceId,
+        pub qkv: CudaSlice<f16>,
+        pub attn_out: CudaSlice<f16>,
+        pub o_proj: CudaSlice<f16>,
+        pub normed: CudaSlice<f16>,
+        pub residual: CudaSlice<f16>,
+        pub gate_up: CudaSlice<f16>,
+        pub silu_out: CudaSlice<f16>,
+        pub down: CudaSlice<f16>,
+        pub buffers: F16ScratchBufferStatuses,
+    }
+
+    /// Shard-local f16 scratch buffers allocated from resource islands.
+    pub struct ShardedF16ScratchBuffers {
+        pub shards: Vec<CudaShardF16ScratchBuffers>,
+        pub status: ShardedFusedF16AllocationStatus,
     }
 
     impl ShardedCudaResources {
@@ -1941,6 +2096,84 @@ mod cuda {
         }
     }
 
+    impl ShardedF16ScratchBuffers {
+        /// Allocate non-executing f16 scratch buffers for each layer-owning
+        /// shard. Buffers are not attached to a layer, runner, graph, or
+        /// execution path.
+        pub fn create_for_resources(
+            resources: &ShardedCudaResources,
+            upload_manifest: &crate::shard_plan::ShardedUploadManifest,
+            config: F16ScratchAllocationConfig,
+        ) -> Result<Self> {
+            let plan = super::ShardedFusedF16AllocationPlan::from_upload_manifest(
+                upload_manifest,
+                Some(config),
+            );
+            let mut shards = Vec::with_capacity(resources.shards.len());
+            let mut statuses = Vec::with_capacity(resources.shards.len());
+            for resource in &resources.shards {
+                let shard_plan = plan.shard_for_device(resource.device_id).ok_or_else(|| {
+                    LLMError::GpuError(format!(
+                        "missing f16 scratch allocation plan for device {}",
+                        resource.device_id
+                    ))
+                })?;
+                if shard_plan.f16_scratch_status == FusedF16AllocationStatus::NotApplicable {
+                    statuses.push(shard_plan.status(false, false));
+                    continue;
+                }
+                shards.push(CudaShardF16ScratchBuffers::create_for_resource(
+                    resource, shard_plan,
+                )?);
+                statuses.push(shard_plan.status(false, true));
+            }
+
+            Ok(Self {
+                shards,
+                status: ShardedFusedF16AllocationStatus { shards: statuses },
+            })
+        }
+
+        pub fn status(&self) -> ShardedFusedF16AllocationStatus {
+            self.status.clone()
+        }
+    }
+
+    impl CudaShardF16ScratchBuffers {
+        fn create_for_resource(
+            resource: &CudaShardResources,
+            plan: &CudaShardFusedF16AllocationPlan,
+        ) -> Result<Self> {
+            let buffers = plan.f16_scratch_buffers.ok_or_else(|| {
+                LLMError::GpuError(format!(
+                    "missing f16 scratch sizing for shard {}",
+                    resource.device_id
+                ))
+            })?;
+            let alloc = |name: &str, elements: usize| -> Result<CudaSlice<f16>> {
+                resource.stream.alloc_zeros::<f16>(elements).map_err(|e| {
+                    LLMError::GpuError(format!(
+                        "shard {} f16 scratch {name} alloc failed ({elements} elems): {e}",
+                        resource.device_id
+                    ))
+                })
+            };
+
+            Ok(Self {
+                device_id: resource.device_id,
+                qkv: alloc("qkv", buffers.qkv.elements)?,
+                attn_out: alloc("attn_out", buffers.attn_out.elements)?,
+                o_proj: alloc("o_proj", buffers.o_proj.elements)?,
+                normed: alloc("normed", buffers.normed.elements)?,
+                residual: alloc("residual", buffers.residual.elements)?,
+                gate_up: alloc("gate_up", buffers.gate_up.elements)?,
+                silu_out: alloc("silu_out", buffers.silu_out.elements)?,
+                down: alloc("down", buffers.down.elements)?,
+                buffers,
+            })
+        }
+    }
+
     impl CudaShardFusedF16Buffers {
         fn create_for_resource(
             resource: &CudaShardResources,
@@ -2116,6 +2349,15 @@ mod cuda {
             let conversion_work_deferred = embedding_f16.status
                 == FusedF16AllocationStatus::Deferred
                 || final_norm_f16.status == FusedF16AllocationStatus::Deferred;
+            let f16_scratch = if plan.f16_scratch_status != FusedF16AllocationStatus::NotApplicable
+            {
+                Some(CudaShardF16ScratchBuffers::create_for_resource(
+                    resource, plan,
+                )?)
+            } else {
+                None
+            };
+            let f16_scratch_allocated = f16_scratch.is_some();
 
             let status = CudaShardFusedF16AllocationStatus {
                 device_id: resource.device_id,
@@ -2155,11 +2397,31 @@ mod cuda {
                             .flatten()
                     }),
                 fused_error: None,
-                f16_scratch_allocated: false,
-                f16_scratch_status: plan.f16_scratch_status,
-                f16_scratch_bytes: 0,
+                f16_scratch_allocated,
+                f16_scratch_status: if f16_scratch_allocated {
+                    FusedF16AllocationStatus::Allocated
+                } else {
+                    plan.f16_scratch_status
+                },
+                f16_scratch_total_elements: if f16_scratch_allocated {
+                    plan.f16_scratch_total_elements
+                } else {
+                    0
+                },
+                f16_scratch_bytes: if f16_scratch_allocated {
+                    plan.f16_scratch_bytes
+                } else {
+                    0
+                },
                 f16_scratch_max_tokens: plan.f16_scratch_max_tokens,
-                f16_scratch_deferred_reason: plan.f16_scratch_deferred_reason.clone(),
+                f16_scratch_buffers: if f16_scratch_allocated {
+                    plan.f16_scratch_buffers
+                } else {
+                    None
+                },
+                f16_scratch_deferred_reason: (!f16_scratch_allocated)
+                    .then(|| plan.f16_scratch_deferred_reason.clone())
+                    .flatten(),
                 f16_scratch_error: None,
             };
 
@@ -2168,6 +2430,7 @@ mod cuda {
                 layers,
                 embedding_f16: embedding_f16.buffer,
                 final_norm_f16: final_norm_f16.buffer,
+                f16_scratch,
                 status,
             })
         }
@@ -2851,10 +3114,10 @@ mod cuda {
 
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardFusedF16Buffers,
-    CudaShardKvCacheBuffers, CudaShardMetadataBuffers, CudaShardResources, CudaShardRuntimeBuffers,
-    ShardedCudaResources, ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers,
-    ShardedRuntimeBuffers,
+    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardF16ScratchBuffers,
+    CudaShardFusedF16Buffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers,
+    CudaShardResources, CudaShardRuntimeBuffers, ShardedCudaResources, ShardedF16ScratchBuffers,
+    ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
 };
 
 #[cfg(test)]
@@ -3631,7 +3894,7 @@ mod tests {
     #[test]
     fn f16_scratch_status_requires_explicit_config_and_reports_deferred_reason() {
         let manifest = split_fused_upload_manifest();
-        let scratch_config = F16ScratchAllocationConfig::new(8).unwrap();
+        let scratch_config = F16ScratchAllocationConfig::new(8, 8, 8, 16, 1).unwrap();
         let plan =
             ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, Some(scratch_config));
         let status = ShardedFusedF16AllocationStatus::from_plan(&plan, false, false);
@@ -3639,18 +3902,43 @@ mod tests {
         for shard in &status.shards {
             assert!(!shard.f16_scratch_allocated);
             assert_eq!(shard.f16_scratch_status, FusedF16AllocationStatus::Deferred);
-            assert_eq!(shard.f16_scratch_max_tokens, Some(8));
+            assert_eq!(shard.f16_scratch_max_tokens, Some(1));
+            assert_eq!(shard.f16_scratch_total_elements, 0);
+            assert!(shard.f16_scratch_buffers.is_none());
             assert!(shard
                 .f16_scratch_deferred_reason
                 .as_deref()
                 .unwrap()
-                .contains("F16LayerScratch"));
+                .contains("CUDA allocation pass"));
+        }
+    }
+
+    #[test]
+    fn f16_scratch_allocated_status_reports_per_buffer_counts() {
+        let manifest = split_fused_upload_manifest();
+        let scratch_config = F16ScratchAllocationConfig::new(8, 8, 8, 16, 1).unwrap();
+        let expected = scratch_config.buffer_statuses().unwrap();
+        let plan =
+            ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, Some(scratch_config));
+        let status = ShardedFusedF16AllocationStatus::from_plan(&plan, false, true);
+
+        for shard in &status.shards {
+            assert!(shard.f16_scratch_allocated);
+            assert_eq!(
+                shard.f16_scratch_status,
+                FusedF16AllocationStatus::Allocated
+            );
+            assert_eq!(shard.f16_scratch_max_tokens, Some(1));
+            assert_eq!(shard.f16_scratch_total_elements, expected.total_elements());
+            assert_eq!(shard.f16_scratch_bytes, expected.total_bytes());
+            assert_eq!(shard.f16_scratch_buffers, Some(expected));
+            assert_eq!(shard.f16_scratch_deferred_reason, None);
         }
     }
 
     #[test]
     fn f16_scratch_config_rejects_zero_max_tokens() {
-        let err = F16ScratchAllocationConfig::new(0).unwrap_err();
+        let err = F16ScratchAllocationConfig::new(8, 8, 8, 16, 0).unwrap_err();
 
         assert!(err.contains("f16-scratch-max-tokens"));
     }
