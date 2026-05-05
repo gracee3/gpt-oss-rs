@@ -4,10 +4,12 @@
 
 `cross_layer_validation_policy_design_recorded`
 
+Layer6 update: `cross_layer_validation_policy_design_layer6_updated`
+
 ## Scope
 
 This document records final-token ordered validation evidence only. It covers
-layers 2, 3, 4, and 5, plus focused layer11 MLP evidence. It is not a
+layers 2, 3, 4, 5, and 6, plus focused layer11 MLP evidence. It is not a
 production runtime design, not a default routing proposal, not a CUDA kernel
 proposal, and not a final-logit, all-layer, server, or 4097-token claim.
 
@@ -23,6 +25,7 @@ layer-sensitive.
 | 3 | Source-complete final-token ordered attention audit cleared. | Raw-QK requires explicit `pairwise_f32_scale_after_sum_bf16_output`; reverse also clears. Weighted-V and o-proj are current/default exact. MLP down baseline current sequential is exact; deterministic abs-ascending is exact but not required. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only raw-QK policy, not default/runtime parity. |
 | 4 | Source-complete final-token ordered attention audit cleared. | Raw-QK and weighted-V are current/default exact. o-proj requires `reverse_f32_accum_f32_bias_bf16_output`. MLP down baseline current sequential is exact. | Deterministic abs-ascending regresses layer4 MLP down; BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only o-proj reverse policy. |
 | 5 | Source-complete final-token ordered attention audit clears only with explicit weighted-V policy. | Raw-QK is current/default exact. Weighted-V clears under `pairwise_f32_bf16_output`; reverse also clears. o-proj requires `reverse_f32_accum_f32_bias_bf16_output` after weighted-V policy. MLP down clears under deterministic abs-ascending. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only weighted-V plus o-proj policies. |
+| 6 | Source-complete final-token ordered attention audit cleared. | Raw-QK and weighted-V are current/default exact. Attention o-proj remains blocked under current/default: no bounded consumer o-proj sweep policy clears the full vector without collateral mismatches. Producer-side dtype probe confirms official live `attn.out` and `torch.nn.functional.linear` match the o-proj artifact; simpler matmul/einsum full-vector replay has 826 mismatches. MLP down baseline current sequential is exact; deterministic abs-ascending is exact but not required. | BF16-product rejected with broad MLP collateral mismatches; lane-local o-proj focus fixes are rejected because they introduce other o-proj mismatches. | false | Layer6 remains blocked pending an official-linear-backend discriminator; not a runtime/default policy. |
 | 11 | Focused ordered MLP evidence only. | Attention source is a coarse official attention residual seam, not source-complete attention. MLP norm needs pairwise in coarse mode. Selected MLP down chain clears under validation-only candidates including deterministic abs-ascending. | BF16-product rejected with broad collateral mismatches. | false | Not a full ordered attention plus MLP surface. |
 
 ## Operator-Specific Conclusions
@@ -30,16 +33,16 @@ layer-sensitive.
 ### Raw-QK
 
 Layer3 needs pairwise or reverse raw-QK accumulation to clear the full raw-QK
-and masked-logit matrices. Layers4 and 5 are current/default exact for raw-QK.
-No global raw-QK policy is justified. Any raw-QK policy must remain explicit
-and validation-only until additional layers prove it is needed and
+and masked-logit matrices. Layers4, 5, and 6 are current/default exact for
+raw-QK. No global raw-QK policy is justified. Any raw-QK policy must remain
+explicit and validation-only until additional layers prove it is needed and
 non-regressive.
 
 ### Weighted-V
 
-Layer5 needs pairwise or reverse weighted-V accumulation. Layers2, 3, and 4
-clear with current/default weighted-V behavior. The layer5 debug localized the
-single weighted-V mismatch to accumulation/output rounding; sink handling,
+Layer5 needs pairwise or reverse weighted-V accumulation. Layers2, 3, 4, and
+6 clear with current/default weighted-V behavior. The layer5 debug localized
+the single weighted-V mismatch to accumulation/output rounding; sink handling,
 GQA mapping, and source layout were not the cause. No global weighted-V policy
 is justified.
 
@@ -47,13 +50,27 @@ is justified.
 
 Layers4 and 5 need reverse o-proj accumulation to clear their ordered o-proj,
 attention residual, and bridge checks. Layers2 and 3 are current/default exact.
-Layer0 had earlier chunked-pairwise o-proj discriminator evidence, so even
-o-proj is not uniform yet. No global o-proj policy is justified.
+Layer6 is different: reverse, pairwise, chunked-pairwise, f64 diagnostic, and
+bias variants do not clear the full layer6 o-proj vector without collateral
+mismatches.
+
+The layer6 producer-side dtype probe
+(`/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json`) confirms that
+official live `attn.out(weighted_flat)` and `torch.nn.functional.linear` match
+the prior o-proj artifact exactly, while simpler matmul/einsum full-vector
+replay has 826 mismatches. The layer6 focus mismatch is lane `22`: consumer
+local `9.125`, official `9.0625`, diff `0.0625`; weighted-V live versus prior
+artifact has zero mismatches and the official output dtype is BF16.
+
+Therefore o-proj is not merely a reverse-accumulation policy problem. It may
+require an official BF16 linear backend discriminator for validation. Layer0
+had earlier chunked-pairwise o-proj discriminator evidence, so even o-proj is
+not uniform yet. No global o-proj policy is justified.
 
 ### Selected MLP down
 
-Deterministic abs-ascending MLP down clears layer1, layer2, layer5, and
-layer11 evidence. Layer4 baseline current sequential is exact, and
+Deterministic abs-ascending MLP down clears layer1, layer2, layer5, layer6,
+and layer11 evidence. Layer4 baseline current sequential is exact, and
 deterministic abs-ascending regresses layer4 with collateral mismatches.
 Therefore deterministic abs-ascending is not globally safe. BF16-product
 remains rejected.
@@ -70,6 +87,9 @@ change is authorized.
 - "Just switch everything to reverse."
 - "Just use deterministic abs-ascending everywhere."
 - "BF16-product is a correction."
+- "Layer4/layer5 reverse o-proj should be applied globally."
+- "Layer6 can be fixed by lane-local focus correction."
+- "Matmul/einsum equivalence is sufficient for official F.linear parity."
 - "These exact layers authorize runtime parity."
 - "Layer outputs can now be emitted or promoted."
 - "This proves final logits or all-layer parity."
@@ -102,24 +122,33 @@ design approval.
 - Disabled-by-default validation feature flag design.
 - Rollback and no-default-routing guarantee.
 - Clear statement of which operator each policy applies to.
+- A validation-only official-linear-backend discriminator before any o-proj
+  policy implementation discussion.
+- Layer6 producer-side F.linear evidence consumed as source proof before any
+  future o-proj backend experiment.
 - No raw `/tmp` or `.live` artifact commitment.
 
 ## Recommended Next Options
 
-### Option A - layer6 ordered surface
+### Option A - layer7 ordered surface
 
-Generate a layer6 ordered surface if the goal is more evidence. It should
+Generate a layer7 ordered surface only if the goal is more evidence. It should
 follow the same audit-first pattern and must not emit or promote a layer
-output.
+output. This is not preferred until the layer6 o-proj official-backend
+boundary is documented.
 
-### Option B - validation-only implementation design
+### Option B - validation-only official-linear-backend design
 
-Create a docs/design-only branch first. It may propose disabled-by-default
-knobs for raw-QK, weighted-V, o-proj, and selected MLP down validation, but it
-must not touch production defaults.
+Create a docs/design-only branch first to scope a BF16 `F.linear` /
+`attn.out` discriminator for attention o-proj. It must not touch production
+defaults, must not change runtime/default routing/CUDA behavior, and must not
+add a Torch runtime dependency in Rust. A later code branch, if separately
+authorized, may compare existing cuBLAS BF16 tensor-op validation helpers
+against the official F.linear boundary.
 
-Recommended: Option B first, because the matrix already shows enough
-variation to make policy design necessary before more layer collection.
+Recommended: Option B first, because layer6 showed the existing o-proj policy
+family is insufficient before more layer collection or implementation
+scaffolding.
 
 ## Disabled-by-Default Validation Feature Design
 
@@ -232,6 +261,10 @@ next_bounded_step
 6. Rollback story.
 7. Exact command examples for each operator.
 8. Status JSON schema agreed before code.
+9. Validation-only official-linear-backend discriminator scoped before any
+   attention o-proj policy implementation discussion.
+10. Layer6 producer-side F.linear evidence consumed as source proof for any
+    future o-proj backend experiment.
 
 ### Suggested Implementation Order, if later authorized
 
@@ -247,7 +280,14 @@ Implementation is not authorized by this document alone.
 
 ### Open Questions
 
-- Should layer6 be generated before code?
+- Does layer6 o-proj require a validation-only BF16 F.linear backend rather
+  than accumulation-order variants?
+- Should the producer-side F.linear probe be repeated for layer4/layer5 to
+  distinguish reverse policy from official backend coincidence?
+- Can existing cuBLAS BF16 tensor-op validation helpers approximate official
+  F.linear on o-proj, or is CPU BF16 F.linear fundamentally different?
+- Should layer7 be generated before code, or only after the layer6 o-proj
+  backend boundary is documented?
 - Should layer4/layer5 reverse o-proj get a PyTorch dtype probe?
 - Should selected MLP down abs-ascending be demoted to proof-oracle only
   because of cost and layer4 regression?
@@ -258,12 +298,15 @@ Implementation is not authorized by this document alone.
 
 The recommended next step after this document is either:
 
-- Generate layer6 ordered surface.
+- Generate layer7 ordered surface for pure evidence collection.
 - Create a tiny status-schema-only branch if the team wants implementation
   scaffolding.
+- Create a docs-only official-linear-backend discriminator design for layer6
+  attention o-proj.
 
-Preferred: layer6 before code, unless operator-policy implementation
-scaffolding is urgently needed.
+Preferred: docs-only official-linear-backend discriminator design before code
+or layer7. Do not generate layer7 yet unless the goal is pure evidence
+collection.
 
 ## Caveats
 
