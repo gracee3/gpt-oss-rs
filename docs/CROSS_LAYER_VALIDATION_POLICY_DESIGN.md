@@ -15,6 +15,14 @@ Official-linear discriminator follow-up:
   discriminator before any layer6 o-proj implementation or runtime-policy
   discussion.
 
+Ordered-surface batch orchestration follow-up:
+
+- Branch: `design/ordered-surface-batch-orchestration`
+- Doc: `docs/ORDERED_SURFACE_BATCH_ORCHESTRATION_DESIGN.md`
+- Classification: `ordered_surface_batch_orchestration_design_recorded`
+- Purpose: batch artifact, validation, classification, and reporting workflow
+  scaffolding without batching layer/operator-specific math conclusions.
+
 ## Scope
 
 This document records final-token ordered validation evidence only. It covers
