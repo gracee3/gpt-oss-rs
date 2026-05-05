@@ -1996,6 +1996,88 @@ correction was applied, no runtime/default routing/CUDA behavior changed, no
 layer5 output was emitted, the ladder was not continued, and there is no
 final-logit, all-layer, server, or 4097-token claim.
 
+## Layer6 Ordered Surface Validation Status
+
+Layer6 ordered surface validation was run strict/default first, without
+preemptively applying layer3/layer4/layer5 policies.
+
+```text
+oracle attention:
+  /tmp/layer6_ordered_attention_bundle_status.json
+  classification =
+    layer6_ordered_attention_bundle_generated_without_all_token_v_boundary
+
+oracle attention audit:
+  /tmp/layer6_ordered_attention_audit_bundle_status.json
+  classification =
+    layer6_ordered_attention_audit_bundle_generated_with_all_token_v
+
+oracle MLP:
+  /tmp/layer6_ordered_mlp_bundle_status.json
+  classification =
+    layer6_ordered_mlp_bundle_generated_without_internals
+
+attention audit:
+  /tmp/layer6_ordered_attention_audit_validate_status.json
+  classification =
+    layer6_ordered_attention_audit_weighted_v_and_residual_cleared
+
+strict/default ordered bundle:
+  /tmp/layer6_ordered_bundle_validate_status.json
+  classification =
+    layer6_ordered_bundle_validate_attention_seam_mismatch
+
+selected MLP down replay:
+  /tmp/layer6_selected_mlp_down_policy_replay_status.json
+  classification =
+    layer6_selected_mlp_down_policy_replay_baseline_already_clear
+
+o-proj sweep:
+  /tmp/layer6_attention_oproj_policy_sweep_status.json
+  classification =
+    layer6_attention_oproj_policy_sweep_collateral_mismatches
+
+summary:
+  /tmp/layer6_ordered_consumer_surface_status.json
+  classification =
+    layer6_ordered_consumer_bundle_validation_failed
+```
+
+The layer6 audit is source-complete for final-token attention: the audit
+bundle emits all-token V with shape `[74,8,64]`. Weighted-V recomputation,
+attention residual recomputation, and the attention-to-MLP bridge are exact
+under the default/current weighted-V policy.
+
+Strict/default ordered bundle validation clears raw QK, masked logits,
+attention probabilities, weighted V, MLP norm, router/top-k/routing weights,
+selected expert outputs, weighted expert sum, and final MLP residual output.
+It remains blocked on attention o-proj:
+
+```text
+o-proj mismatches = 2
+o-proj max_abs_diff = 0.0625
+first/worst lane = 22
+local = 9.125
+official = 9.0625
+```
+
+The o-proj sweep used the exact default weighted-V input. Reverse, pairwise,
+chunked-pairwise, f64 diagnostic, BF16 prebias, and f32-input variants do not
+clear the full o-proj vector. Several policies clear the focus lane, but each
+bounded candidate that fixes lane `22` introduces collateral o-proj
+mismatches. No policy-specific full bundle revalidation was run.
+
+The layer6 selected MLP down replay is exact under the current sequential
+baseline; deterministic abs-ascending is also exact but not required.
+BF16-product remains evidence-only/rejected with broad collateral mismatches:
+3497 selected-output, 896 weighted-sum, and 456 final-output mismatches.
+
+No tolerance or correction was applied. No runtime/default routing/CUDA
+behavior changed, no layer6 output was emitted, the ladder was not continued,
+and there is no final-logit, all-layer, server, or 4097-token claim. Next
+bounded step: request a focused layer6 o-proj producer-side
+dtype/accumulation probe before any layer6 revalidation or output emission.
+
 ## Cross-Layer Ordered Surface Policy Matrix
 
 This matrix pauses new ordered surface collection and consolidates the current
@@ -2008,19 +2090,21 @@ plan.
 | 3 | Source-complete final-token ordered attention audit cleared. | `pairwise_f32_scale_after_sum_bf16_output` clears full raw-QK/masked logits; reverse also clears. | Current/default exact. | Current/default exact. | Baseline current sequential already exact; deterministic abs-ascending exact but not required. | Attention default raw-QK has one mismatch; MLP down baseline exact. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only raw-QK policy; not default/runtime parity. |
 | 4 | Source-complete final-token ordered attention audit cleared. | Current/default exact. | Current/default exact. | `reverse_f32_accum_f32_bias_bf16_output` clears full o-proj, residual, and bridge. | Baseline current sequential exact; deterministic abs-ascending causes collateral mismatch and is not a layer4 candidate. | Attention default o-proj blocks strict pass; MLP down baseline exact. | Deterministic abs-ascending regresses layer4 MLP down; BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only o-proj reverse policy. |
 | 5 | Source-complete final-token ordered attention audit cleared under explicit weighted-V policy. | Current/default exact. | `pairwise_f32_bf16_output` clears audit; reverse also clears. | `reverse_f32_accum_f32_bias_bf16_output` clears full o-proj, residual, and bridge. | `deterministic_f32_abs_ascending_sum_then_bf16_output` clears selected outputs, weighted sum, and final output. | Default weighted-V/o-proj path blocked; MLP down baseline has selected-output and weighted-sum mismatch, final output exact. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only weighted-V plus o-proj policies. |
+| 6 | Source-complete final-token ordered attention audit cleared. | Current/default exact. | Current/default exact. | Default o-proj blocked; no bounded swept policy clears the full o-proj vector without collateral mismatches. | Baseline current sequential exact; deterministic abs-ascending exact but not required. | Attention default o-proj blocks strict pass; MLP down baseline exact. | Focus-lane o-proj fixes introduce collateral mismatches; BF16-product rejected with broad MLP collateral mismatches. | false | Strict ordered bundle remains blocked on layer6 o-proj; no output emission or policy revalidation. |
 | 11 | Coarse official attention residual seam only; not source-complete attention. | Not claimed. | Not claimed. | Not claimed. | Ordered expert30/lane1480 MLP chain supports several validation-only clearing policies; selected MLP replay clears under deterministic abs-ascending among others. | Baseline selected expert output, weighted sum, and final output mismatch at lane1480. | BF16-product rejected with broad collateral mismatches. | false | Focused ordered MLP evidence only, not a full ordered attention+MLP surface. |
 
 ### Policy Pattern Summary
 
 - Raw-QK policy is not globally required: layer3 needed pairwise/reverse,
-  while layers4 and 5 were default exact.
+  while layers4, 5, and 6 were default exact.
 - Weighted-V policy is not globally required: layer5 needed pairwise, while
-  layers2, 3, and 4 cleared without it.
-- Attention o-proj policy is not uniform: layers4 and 5 needed reverse, while
-  layers2 and 3 did not.
+  layers2, 3, 4, and 6 cleared without it.
+- Attention o-proj policy is not uniform: layers4 and 5 needed reverse,
+  layers2 and 3 did not, and layer6 remains blocked after bounded o-proj
+  sweeps.
 - Selected MLP down policy is not globally safe: deterministic abs-ascending
-  clears layer1/layer2/layer5/layer11 evidence, but layer4 baseline is exact
-  and abs-ascending regresses.
+  clears layer1/layer2/layer5/layer6/layer11 evidence, but layer4 baseline is
+  exact and abs-ascending regresses.
 - BF16-product remains broadly rejected across attention and MLP experiments.
 - No single global policy switch is justified.
 
@@ -2028,16 +2112,12 @@ plan.
 
 Current recommendation: do not open a production runtime implementation branch,
 do not continue ladder/output emission, and do not promote any global policy
-switch. The two bounded options are:
+switch. Layer6 added another operator-specific blocker rather than confirming
+a safe global o-proj policy. The bounded next actions are:
 
-- Generate one more ordered surface, layer6, to test whether the layer5 pattern
-  repeats.
-- Open a docs-only policy-design branch that explicitly scopes
-  validation-only attention policies and selected MLP down policies.
-
-Preferred next action: create the docs-only policy-design branch before layer6,
-because the matrix now shows multiple operator-specific conventions and no
-safe global switch.
+- Request a focused layer6 o-proj producer-side dtype/accumulation probe.
+- Update the docs-only policy-design branch with layer6 evidence before any
+  implementation scaffold or further surface collection.
 
 ## Validation-Only Non-Goals
 
