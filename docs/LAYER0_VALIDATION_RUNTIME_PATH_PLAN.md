@@ -4254,6 +4254,49 @@ evidence-only/rejected, no tolerance or correction was applied, no layer5
 output was emitted, the ladder was not continued, and there is no final-logit,
 all-layer, server, or 4097-token claim.
 
+## Cross-Layer Ordered Surface Policy Matrix
+
+The current ordered evidence is strong enough to pause layer collection and
+record the operator-specific policy shape before deciding between layer6 and a
+design branch.
+
+| Layer | Attention source completeness | Raw-QK policy | Weighted-V policy | Attention o-proj policy | MLP down policy | Baseline exact? | Collateral/rejected policies | Output emitted? | Claim status / caveats |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | Source-complete final-token ordered attention audit cleared. | Current/default exact. | Current/default audit exact after all-token V audit. | Current/default exact. | `deterministic_f32_abs_ascending_sum_then_bf16_output` clears selected outputs, weighted sum, and final output. | MLP down baseline has selected-output and weighted-sum mismatch; final output exact. | BF16-product rejected with broad collateral mismatches. | false | Final-token ordered validation only; no ladder/final-logit/all-layer/server/4097 claim. |
+| 3 | Source-complete final-token ordered attention audit cleared. | `pairwise_f32_scale_after_sum_bf16_output` clears full raw-QK/masked logits; reverse also clears. | Current/default exact. | Current/default exact. | Baseline current sequential already exact; deterministic abs-ascending exact but not required. | Attention default raw-QK has one mismatch; MLP down baseline exact. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only raw-QK policy; not default/runtime parity. |
+| 4 | Source-complete final-token ordered attention audit cleared. | Current/default exact. | Current/default exact. | `reverse_f32_accum_f32_bias_bf16_output` clears full o-proj, residual, and bridge. | Baseline current sequential exact; deterministic abs-ascending causes collateral mismatch and is not a layer4 candidate. | Attention default o-proj blocks strict pass; MLP down baseline exact. | Deterministic abs-ascending regresses layer4 MLP down; BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only o-proj reverse policy. |
+| 5 | Source-complete final-token ordered attention audit cleared under explicit weighted-V policy. | Current/default exact. | `pairwise_f32_bf16_output` clears audit; reverse also clears. | `reverse_f32_accum_f32_bias_bf16_output` clears full o-proj, residual, and bridge. | `deterministic_f32_abs_ascending_sum_then_bf16_output` clears selected outputs, weighted sum, and final output. | Default weighted-V/o-proj path blocked; MLP down baseline has selected-output and weighted-sum mismatch, final output exact. | BF16-product rejected with broad collateral mismatches. | false | Clears only under explicit validation-only weighted-V plus o-proj policies. |
+| 11 | Coarse official attention residual seam only; not source-complete attention. | Not claimed. | Not claimed. | Not claimed. | Ordered expert30/lane1480 MLP chain supports several validation-only clearing policies; selected MLP replay clears under deterministic abs-ascending among others. | Baseline selected expert output, weighted sum, and final output mismatch at lane1480. | BF16-product rejected with broad collateral mismatches. | false | Focused ordered MLP evidence only, not a full ordered attention+MLP surface. |
+
+### Policy Pattern Summary
+
+- Raw-QK policy is not globally required: layer3 needed pairwise/reverse,
+  while layers4 and 5 were default exact.
+- Weighted-V policy is not globally required: layer5 needed pairwise, while
+  layers2, 3, and 4 cleared without it.
+- Attention o-proj policy is not uniform: layers4 and 5 needed reverse, while
+  layers2 and 3 did not.
+- Selected MLP down policy is not globally safe: deterministic abs-ascending
+  clears layer1/layer2/layer5/layer11 evidence, but layer4 baseline is exact
+  and abs-ascending regresses.
+- BF16-product remains broadly rejected across attention and MLP experiments.
+- No single global policy switch is justified.
+
+### Decision Point
+
+Current recommendation: do not open a production runtime implementation branch,
+do not continue ladder/output emission, and do not promote any global policy
+switch. The two bounded options are:
+
+- Generate one more ordered surface, layer6, to test whether the layer5 pattern
+  repeats.
+- Open a docs-only policy-design branch that explicitly scopes
+  validation-only attention policies and selected MLP down policies.
+
+Preferred next action: create the docs-only policy-design branch before layer6,
+because the matrix now shows multiple operator-specific conventions and no
+safe global switch.
+
 ## Validation Commands
 
 For the skeleton slice:
