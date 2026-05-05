@@ -67,6 +67,123 @@ switch.
 
 Together, these surfaces rule out a single global o-proj accumulation switch.
 
+## Stage 2 Backend Probe Result
+
+Status:
+
+```text
+/tmp/layer6_official_linear_backend_discriminator_probe_status.json
+```
+
+Classification:
+
+```text
+layer6_oproj_backend_discriminator_collateral_mismatches
+```
+
+Implementation branch and commit:
+
+```text
+validation/official-linear-backend-discriminator
+6e9643071ea07dcef1768ffc8ae1a05ba1697aad
+```
+
+Result: no backend selected.
+
+| Backend | Full-vector result | Focus lane 22 | Candidate status |
+| --- | --- | --- | --- |
+| current sequential | 3 mismatches | not cleared | rejected |
+| reverse | 2 mismatches | cleared | rejected due collateral |
+| pairwise | 2 mismatches | cleared | rejected due collateral |
+| chunked pairwise 16/32/64/128 | best chunk 128 has 1 mismatch | cleared | rejected due collateral |
+| f64 diagnostic | 2 mismatches | cleared | diagnostic only |
+| cuBLAS BF16 tensor-op | 1368 mismatches | cleared | rejected for layer6 o-proj |
+| cuBLAS BF16 pedantic | 826 mismatches | cleared | rejected for layer6 o-proj |
+| BF16-product guard | 1445 mismatches | cleared | evidence-only/rejected |
+
+## Stage 2 Interpretation
+
+Focus-lane clearing is not meaningful unless the full vector clears. Stage 2
+confirms that local changes which repair lane `22` introduce or preserve
+collateral o-proj mismatches.
+
+cuBLAS tensor-op is not a layer6 o-proj parity backend. cuBLAS pedantic also
+does not clear the official artifact; its 826 mismatches match the producer
+matmul/einsum mismatch scale, which is evidence that pedantic-style replay is
+closer to matmul/einsum than to official `F.linear` for this case.
+
+Existing Rust accumulation families are exhausted for this layer6 surface:
+current, reverse, pairwise, chunked pairwise, f64 diagnostic, and the
+BF16-product negative guard all fail full-vector parity. Layer6 remains
+blocked, and no runtime-policy or o-proj implementation discussion is
+authorized from Stage 2.
+
+## Narrower Official Linear Backend Discriminator
+
+The next discriminator should be producer/API/source-focused, not another
+Rust backend sweep. It should answer:
+
+1. What exact PyTorch operator path does `attn.out(weighted_flat)` use?
+2. Is `torch.nn.functional.linear` dispatching to a different backend than
+   explicit matmul/einsum?
+3. Does `torch._C._nn.linear` match `F.linear`?
+4. Does `torch.addmm` match `F.linear`?
+5. Do tensor strides, contiguity, transposition, or memory layout affect the
+   result?
+6. Does forcing contiguous input or weight change the result?
+7. Does disabling or enabling MKLDNN or oneDNN change the CPU BF16 result?
+8. Does thread count affect determinism?
+9. Does the official module call use fused bias behavior that explicit
+   matmul/einsum misses?
+10. Can a producer-side operator-API matrix explain the 826 matmul/einsum
+    mismatches?
+
+## Proposed Stage 3 Producer-Side API Probe
+
+Stage 3 should be an oracle/producer-side probe, not a Rust implementation.
+
+Inputs:
+
+- Layer6 weighted-V live tensor.
+- Layer6 o-proj weight and bias.
+- Official layer6 o-proj artifact.
+- Producer dtype probe status:
+  `/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json`.
+
+Operator variants:
+
+- Module call: `attn.out(weighted_flat)`.
+- `torch.nn.functional.linear`.
+- `torch._C._nn.linear`, if accessible.
+- `torch.addmm`.
+- `weight @ input + bias`.
+- `input @ weight.T + bias`.
+- `torch.matmul`.
+- `torch.einsum`.
+- Contiguous and non-contiguous variants.
+- MKLDNN enabled/disabled if applicable.
+- Single-thread versus default-thread CPU, if applicable.
+
+Required metrics:
+
+- Full-vector mismatches.
+- max_abs_diff.
+- mean_abs_diff.
+- Focus lane `22`.
+- First/worst mismatch.
+- Tensor dtype, device, stride, and contiguity.
+- Determinism over repeated runs.
+
+Expected classifications:
+
+- `layer6_oproj_producer_api_probe_flinear_unique`
+- `layer6_oproj_producer_api_probe_addmm_matches`
+- `layer6_oproj_producer_api_probe_layout_sensitive`
+- `layer6_oproj_producer_api_probe_thread_sensitive`
+- `layer6_oproj_producer_api_probe_mkldnn_sensitive`
+- `layer6_oproj_producer_api_probe_no_operator_explains`
+- `layer6_oproj_producer_api_probe_execution_failed`
+
 ## Discriminator Goal
 
 The discriminator should answer:
@@ -181,6 +298,7 @@ next_bounded_step
 - No tolerance pass.
 - No layer output emission.
 - No ladder continuation.
+- No producer result may be turned into a Rust Torch runtime dependency.
 - No raw `/tmp` or `.live` commits.
 - No Torch runtime dependency in Rust.
 - No final-logit, all-layer, server, or 4097-token claim.
@@ -213,6 +331,6 @@ This design does not authorize implementation by itself.
 ## Recommendation
 
 Do not generate layer7 yet unless the goal is pure evidence collection. Do not
-open a runtime implementation branch. The next best step after this doc is a
-small validation-only discriminator implementation branch, but only if it is
-accepted separately.
+open a runtime implementation branch. The recommended next action is a
+producer-side API probe in the oracle lane before any new Rust backend
+experiment.
