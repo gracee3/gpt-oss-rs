@@ -2119,6 +2119,41 @@ ladder continuation, and no final-logit, all-layer, server, or 4097-token
 claim. Next bounded step: a separately authorized backend-probe slice that
 compares existing validation helpers against the official F.linear reference.
 
+## Official Linear Backend Discriminator Backend Probe Status
+
+Stage 2 adds the validation-only backend probe mode:
+
+```text
+mode:
+  official-linear-backend-discriminator-probe
+
+status:
+  /tmp/layer6_official_linear_backend_discriminator_probe_status.json
+
+classification:
+  layer6_oproj_backend_discriminator_collateral_mismatches
+```
+
+The probe consumes the Stage 1 discriminator status plus the layer6 attention,
+audit, ordered-bundle validation, o-proj policy sweep, and producer dtype probe
+statuses. It reuses the Stage 1 source contract: layer6 o-proj is the blocker,
+producer `attn.out` / `torch.nn.functional.linear` matches the artifact, and
+producer matmul/einsum replay has 826 mismatches.
+
+Backends tested: current sequential Rust replay, reverse, pairwise, chunked
+pairwise sizes 16/32/64/128, f64 diagnostic, BF16-product evidence guard,
+cuBLAS BF16 tensor-op validation, and cuBLAS BF16 pedantic validation. No
+backend clears the full o-proj vector. Several policies clear focus lane `22`
+but leave collateral mismatches. cuBLAS tensor-op has 1368 full-vector
+mismatches; cuBLAS pedantic has 826 full-vector mismatches. No backend is
+selected.
+
+No runtime/default routing/CUDA behavior changed, no correction metadata or
+tolerance pass is applied, no layer6 output is emitted, and there is no ladder,
+final-logit, all-layer, server, or 4097-token claim. Next bounded step: keep
+layer6 blocked and design a narrower official-linear backend discriminator
+before any runtime-policy discussion.
+
 ## Cross-Layer Ordered Surface Policy Matrix
 
 This matrix pauses new ordered surface collection and consolidates the current

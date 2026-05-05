@@ -95,6 +95,10 @@ struct Cli {
     #[arg(long)]
     ordered_bundle_validate_status: Option<PathBuf>,
 
+    /// Stage-1 official-linear discriminator status for backend probe provenance.
+    #[arg(long)]
+    discriminator_status: Option<PathBuf>,
+
     /// Prior attention o-proj policy sweep status for official-linear discriminator provenance.
     #[arg(long)]
     oproj_policy_sweep_status: Option<PathBuf>,
@@ -503,6 +507,7 @@ enum Mode {
     RawQkPolicySweepStatus,
     AttentionOprojPolicySweepStatus,
     OfficialLinearBackendDiscriminatorStatus,
+    OfficialLinearBackendDiscriminatorProbe,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1494,6 +1499,9 @@ fn main() -> Result<()> {
         Mode::AttentionOprojPolicySweepStatus => run_attention_oproj_policy_sweep_status(&cli),
         Mode::OfficialLinearBackendDiscriminatorStatus => {
             run_official_linear_backend_discriminator_status(&cli)
+        }
+        Mode::OfficialLinearBackendDiscriminatorProbe => {
+            run_official_linear_backend_discriminator_probe(&cli)
         }
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
@@ -6844,6 +6852,977 @@ fn official_linear_backend_discriminator_status_json(
         "server_claim": false,
         "context_length_claim": false,
         "next_bounded_step": "Implement a separate validation-only backend probe comparing current/reverse/pairwise/chunked and existing cuBLAS BF16 validation helpers against the official F.linear reference.",
+    })
+}
+
+fn run_official_linear_backend_discriminator_probe(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let lane = cli.lane;
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let v_history_count = cli.token_count * cli.kv_heads * cli.head_dim;
+    let probs_count = cli.query_heads * (cli.token_count + 1);
+    anyhow::ensure!(lane < hidden, "focus lane must be < {hidden}, got {lane}");
+
+    let discriminator_status_path =
+        required_path(&cli.discriminator_status, "discriminator status")?;
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let attention_audit_status_path =
+        required_path(&cli.attention_audit_status, "attention audit status")?;
+    let attention_audit_validate_status_path = required_path(
+        &cli.attention_audit_validate_status,
+        "attention audit validate status",
+    )?;
+    let ordered_bundle_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    let oproj_policy_sweep_status_path =
+        required_path(&cli.oproj_policy_sweep_status, "oproj policy sweep status")?;
+    let producer_dtype_probe_status_path = required_path(
+        &cli.producer_dtype_probe_status,
+        "producer dtype probe status",
+    )?;
+
+    let required_files = [
+        ("discriminator_status", discriminator_status_path),
+        ("attention_bundle_status", attention_status_path),
+        ("attention_audit_status", attention_audit_status_path),
+        (
+            "attention_audit_validate_status",
+            attention_audit_validate_status_path,
+        ),
+        (
+            "ordered_bundle_validate_status",
+            ordered_bundle_validate_status_path,
+        ),
+        ("oproj_policy_sweep_status", oproj_policy_sweep_status_path),
+        (
+            "producer_dtype_probe_status",
+            producer_dtype_probe_status_path,
+        ),
+    ];
+    let mut missing_artifacts = Vec::new();
+    for (label, path) in required_files {
+        if !path.exists() {
+            missing_artifacts.push(format!("{label}: {}", path.display()));
+        }
+    }
+    if !missing_artifacts.is_empty() {
+        let status = official_linear_backend_discriminator_probe_status_json(
+            "layer6_oproj_backend_discriminator_blocked_by_missing_artifact",
+            layer,
+            lane,
+            discriminator_status_path,
+            attention_status_path,
+            attention_audit_status_path,
+            attention_audit_validate_status_path,
+            ordered_bundle_validate_status_path,
+            oproj_policy_sweep_status_path,
+            producer_dtype_probe_status_path,
+            Value::Null,
+            Value::Null,
+            Vec::new(),
+            Value::Null,
+            Value::Null,
+            false,
+            missing_artifacts,
+            Vec::new(),
+        );
+        return write_json(&cli.output, &status);
+    }
+
+    let discriminator_status = load_json(discriminator_status_path)?;
+    let attention_status = load_json(attention_status_path)?;
+    let attention_audit_status = load_json(attention_audit_status_path)?;
+    let attention_audit_validate_status = load_json(attention_audit_validate_status_path)?;
+    let ordered_bundle_validate_status = load_json(ordered_bundle_validate_status_path)?;
+    let oproj_policy_sweep_status = load_json(oproj_policy_sweep_status_path)?;
+    let producer_dtype_probe_status = load_json(producer_dtype_probe_status_path)?;
+
+    let mut schema_issues = Vec::new();
+    let mut referenced_missing = Vec::new();
+    expect_json_string(
+        &mut schema_issues,
+        &discriminator_status,
+        "/classification",
+        "layer6_oproj_official_linear_backend_discriminator_ready",
+        "stage-1 discriminator classification",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &discriminator_status,
+        "/backend_probe_executed",
+        false,
+        "stage-1 backend_probe_executed",
+    );
+    for (label, status) in [
+        ("stage-1 discriminator", &discriminator_status),
+        ("attention bundle", &attention_status),
+        ("attention audit", &attention_audit_status),
+        ("attention audit validate", &attention_audit_validate_status),
+        ("ordered bundle validate", &ordered_bundle_validate_status),
+        ("o-proj policy sweep", &oproj_policy_sweep_status),
+        ("producer dtype probe", &producer_dtype_probe_status),
+    ] {
+        expect_json_usize(
+            &mut schema_issues,
+            status,
+            "/layer_index",
+            layer,
+            &format!("{label} layer_index"),
+        );
+    }
+    expect_json_usize(
+        &mut schema_issues,
+        &discriminator_status,
+        "/focus_lane",
+        lane,
+        "stage-1 focus_lane",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &oproj_policy_sweep_status,
+        "/focus_lane",
+        lane,
+        "o-proj policy sweep focus_lane",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/output_lane",
+        lane,
+        "producer dtype probe output_lane",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_status,
+        "/source_complete_attention_capture",
+        true,
+        "attention source_complete_attention_capture",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/source_complete_attention_capture",
+        true,
+        "attention audit source_complete_attention_capture",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/all_token_v/emitted",
+        true,
+        "attention audit all_token_v emitted",
+    );
+    expect_json_usize_vec(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/all_token_v/shape",
+        &[74, 8, 64],
+        "attention audit all_token_v shape",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/weighted_v_metrics/metrics/mismatches",
+        0,
+        "attention audit weighted-V",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/attention_residual_metrics/metrics/mismatches",
+        0,
+        "attention audit residual",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/attention_to_mlp_bridge/metrics/mismatches",
+        0,
+        "attention-to-MLP bridge",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/metrics/mismatches",
+        2,
+        "default o-proj",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/metrics/max_abs_diff",
+        0.0625,
+        "default o-proj max_abs_diff",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/hidden_lane",
+        lane,
+        "default o-proj focus lane",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/actual",
+        9.125,
+        "default o-proj local value",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/expected",
+        9.0625,
+        "default o-proj official value",
+    );
+    expect_json_string(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/classification",
+        "layer6_attention_oproj_dtype_probe_confirms_accumulation_boundary",
+        "producer dtype probe classification",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/official_full_expression_vs_prior_o_proj_artifact/metrics/mismatches",
+        0,
+        "producer attn.out full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/functional_linear_vs_prior_o_proj_artifact/metrics/mismatches",
+        0,
+        "producer F.linear full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/matmul_vs_prior_o_proj_artifact/metrics/mismatches",
+        826,
+        "producer matmul full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/einsum_vs_prior_o_proj_artifact/metrics/mismatches",
+        826,
+        "producer einsum full-vector guard",
+    );
+
+    for (label, value, pointers) in [
+        (
+            "attention bundle",
+            &attention_status,
+            &[
+                "/artifacts/weighted_v",
+                "/artifacts/o_proj",
+                "/artifacts/attention_probs",
+                "/artifacts/attention_residual",
+            ][..],
+        ),
+        (
+            "attention audit",
+            &attention_audit_status,
+            &[
+                "/artifacts/all_token_v_before_attention",
+                "/artifacts/layer_input_before_attention_norm",
+            ][..],
+        ),
+    ] {
+        for pointer in pointers {
+            check_json_path_exists(
+                &mut schema_issues,
+                &mut referenced_missing,
+                value,
+                pointer,
+                label,
+            );
+        }
+    }
+
+    if !referenced_missing.is_empty() || !schema_issues.is_empty() {
+        let classification = if !referenced_missing.is_empty() {
+            "layer6_oproj_backend_discriminator_blocked_by_missing_artifact"
+        } else {
+            "layer6_oproj_backend_discriminator_blocked_by_schema"
+        };
+        let status = official_linear_backend_discriminator_probe_status_json(
+            classification,
+            layer,
+            lane,
+            discriminator_status_path,
+            attention_status_path,
+            attention_audit_status_path,
+            attention_audit_validate_status_path,
+            ordered_bundle_validate_status_path,
+            oproj_policy_sweep_status_path,
+            producer_dtype_probe_status_path,
+            discriminator_status
+                .get("official_backend_reference")
+                .cloned()
+                .unwrap_or(Value::Null),
+            Value::Null,
+            Vec::new(),
+            Value::Null,
+            Value::Null,
+            false,
+            referenced_missing,
+            schema_issues,
+        );
+        return write_json(&cli.output, &status);
+    }
+
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let probs_path = status_artifact_path(&attention_status, "attention_probs", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    let attention_residual_path =
+        status_artifact_path(&attention_status, "attention_residual", "attention")?;
+    let all_token_v_path = status_artifact_path(
+        &attention_audit_status,
+        "all_token_v_before_attention",
+        "attention audit",
+    )?;
+    let layer_input_path = status_artifact_path(
+        &attention_audit_status,
+        "layer_input_before_attention_norm",
+        "attention audit",
+    )?;
+    let (weighted_status, ordered_weighted_v) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (probs_status, attention_probs) =
+        load_tensor_artifact(&probs_path, &[probs_count], &["values"])?;
+    let (all_token_v_status, all_token_v) =
+        load_tensor_artifact(&all_token_v_path, &[v_history_count], &["values"])?;
+    let (oproj_status, oproj_oracle) = load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+    let (layer_input_status, layer_input) =
+        load_tensor_artifact(&layer_input_path, &[hidden], &["values"])?;
+    let (residual_status, residual_oracle) =
+        load_tensor_artifact(&attention_residual_path, &[hidden], &["values"])?;
+
+    let schema_blocked = !weighted_status.shape_or_count_matched
+        || !probs_status.shape_or_count_matched
+        || !all_token_v_status.shape_or_count_matched
+        || !oproj_status.shape_or_count_matched
+        || !layer_input_status.shape_or_count_matched
+        || !residual_status.shape_or_count_matched;
+    if schema_blocked {
+        let status = official_linear_backend_discriminator_probe_status_json(
+            "layer6_oproj_backend_discriminator_blocked_by_schema",
+            layer,
+            lane,
+            discriminator_status_path,
+            attention_status_path,
+            attention_audit_status_path,
+            attention_audit_validate_status_path,
+            ordered_bundle_validate_status_path,
+            oproj_policy_sweep_status_path,
+            producer_dtype_probe_status_path,
+            discriminator_status
+                .get("official_backend_reference")
+                .cloned()
+                .unwrap_or(Value::Null),
+            Value::Null,
+            Vec::new(),
+            Value::Null,
+            Value::Null,
+            false,
+            Vec::new(),
+            vec!["one or more source tensors failed expected shape/count validation".to_string()],
+        );
+        return write_json(&cli.output, &status);
+    }
+
+    let recomputed_weighted_v = compute_weighted_v_with_policy(
+        &attention_probs,
+        &all_token_v,
+        cli,
+        true,
+        WeightedVAccumPolicy::CurrentSequential,
+    );
+    let recomputed_weighted_v_metric = compare_matrix(
+        &recomputed_weighted_v,
+        &ordered_weighted_v,
+        cli.query_heads,
+        cli.head_dim,
+        MatrixSelection::All,
+    );
+    let (weighted_v_for_oproj, weighted_v_source_name, weighted_v_matches_prior_artifact) =
+        if recomputed_weighted_v_metric.metrics.mismatches == 0 {
+            (
+                recomputed_weighted_v,
+                "recomputed_from_attention_probs_and_audit_all_token_v_current_policy",
+                Some(true),
+            )
+        } else {
+            (
+                ordered_weighted_v.clone(),
+                "ordered_attention_bundle_weighted_v_artifact_fallback",
+                Some(false),
+            )
+        };
+
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    anyhow::ensure!(
+        model.exists(),
+        "restricted integration model path does not exist: {}",
+        model.display()
+    );
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+
+    let mlp_input = ordered_bundle_validate_status
+        .get("mlp_bundle_status")
+        .and_then(Value::as_str)
+        .and_then(|path| {
+            let status = load_json(Path::new(path)).ok()?;
+            let mlp_input_path = status_artifact_path(&status, "mlp_input", "MLP").ok()?;
+            load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])
+                .ok()
+                .filter(|(status, _)| status.shape_or_count_matched)
+                .map(|(_, values)| values)
+        });
+
+    let mut backend_results = Vec::new();
+    let mut selected_backend = None::<String>;
+    let mut selected_metrics = Value::Null;
+    let mut selected_backend_kind = None::<OfficialLinearBackendKind>;
+    let mut any_focus_only = false;
+    let mut any_available_full_clear = false;
+
+    let local_policies = [
+        ("current", OprojPolicy::Current, false),
+        ("reverse", OprojPolicy::Reverse, false),
+        ("pairwise", OprojPolicy::Pairwise, false),
+        ("chunked_pairwise64", OprojPolicy::ChunkedPairwise, false),
+        ("chunked_pairwise16", OprojPolicy::ChunkedPairwise16, false),
+        ("chunked_pairwise32", OprojPolicy::ChunkedPairwise32, false),
+        (
+            "chunked_pairwise128",
+            OprojPolicy::ChunkedPairwise128,
+            false,
+        ),
+        ("f64_diagnostic", OprojPolicy::F64Diagnostic, true),
+    ];
+    for (family, policy, diagnostic_only) in local_policies {
+        let output = compute_attention_oproj_variant(
+            &weighted_v_for_oproj,
+            &oproj_weight,
+            &oproj_bias,
+            policy,
+        );
+        let (result, metric, clears_full, clears_focus) = official_linear_backend_result_json(
+            policy.name(),
+            family,
+            true,
+            diagnostic_only,
+            Some(output),
+            &oproj_oracle,
+            lane,
+            None,
+            Some(&layer_input),
+            Some(&residual_oracle),
+            mlp_input.as_deref(),
+        );
+        if clears_full && !diagnostic_only {
+            any_available_full_clear = true;
+            if selected_backend.is_none() {
+                selected_backend = Some(policy.name().to_string());
+                selected_metrics = metric_to_json(metric.as_ref());
+                selected_backend_kind = Some(OfficialLinearBackendKind::Local);
+            }
+        } else if clears_focus {
+            any_focus_only = true;
+        }
+        backend_results.push(result);
+    }
+
+    let bf16_product_output = compute_attention_oproj_bf16_product_guard(
+        &weighted_v_for_oproj,
+        &oproj_weight,
+        &oproj_bias,
+    );
+    let (bf16_product_result, _, _, bf16_product_focus) = official_linear_backend_result_json(
+        "bf16_product_then_f32_sum_then_bf16_output",
+        "bf16_product_guard",
+        true,
+        true,
+        Some(bf16_product_output),
+        &oproj_oracle,
+        lane,
+        None,
+        Some(&layer_input),
+        Some(&residual_oracle),
+        mlp_input.as_deref(),
+    );
+    if bf16_product_focus {
+        any_focus_only = true;
+    }
+    backend_results.push(bf16_product_result);
+
+    let cublas_tensor_result =
+        run_cublas_bf16_oproj_backend(&weighted_v_for_oproj, &oproj_weight, &oproj_bias, false);
+    let (result, metric, clears_full, clears_focus) = match cublas_tensor_result {
+        Ok((output, restore_status)) => official_linear_backend_result_json(
+            "cublas_bf16_tensor_op_validation",
+            "cublas_tensor_op",
+            true,
+            false,
+            Some(output),
+            &oproj_oracle,
+            lane,
+            None,
+            Some(&layer_input),
+            Some(&residual_oracle),
+            mlp_input.as_deref(),
+        )
+        .with_extra(json!({
+            "cublas_restore_status": restore_status,
+        })),
+        Err(reason) => official_linear_backend_result_json(
+            "cublas_bf16_tensor_op_validation",
+            "cublas_tensor_op",
+            false,
+            false,
+            None,
+            &oproj_oracle,
+            lane,
+            Some(reason),
+            None,
+            None,
+            None,
+        ),
+    };
+    if clears_full {
+        any_available_full_clear = true;
+        selected_backend = Some("cublas_bf16_tensor_op_validation".to_string());
+        selected_metrics = metric_to_json(metric.as_ref());
+        selected_backend_kind = Some(OfficialLinearBackendKind::CublasTensorOp);
+    } else if clears_focus {
+        any_focus_only = true;
+    }
+    backend_results.push(result);
+
+    let cublas_pedantic_result =
+        run_cublas_bf16_oproj_backend(&weighted_v_for_oproj, &oproj_weight, &oproj_bias, true);
+    let (result, metric, clears_full, clears_focus) = match cublas_pedantic_result {
+        Ok((output, restore_status)) => official_linear_backend_result_json(
+            "cublas_bf16_pedantic_validation",
+            "cublas_pedantic",
+            true,
+            false,
+            Some(output),
+            &oproj_oracle,
+            lane,
+            None,
+            Some(&layer_input),
+            Some(&residual_oracle),
+            mlp_input.as_deref(),
+        )
+        .with_extra(json!({
+            "cublas_restore_status": restore_status,
+        })),
+        Err(reason) => official_linear_backend_result_json(
+            "cublas_bf16_pedantic_validation",
+            "cublas_pedantic",
+            false,
+            false,
+            None,
+            &oproj_oracle,
+            lane,
+            Some(reason),
+            None,
+            None,
+            None,
+        ),
+    };
+    if clears_full {
+        any_available_full_clear = true;
+        if !matches!(
+            selected_backend_kind,
+            Some(OfficialLinearBackendKind::CublasTensorOp)
+        ) {
+            selected_backend = Some("cublas_bf16_pedantic_validation".to_string());
+            selected_metrics = metric_to_json(metric.as_ref());
+            selected_backend_kind = Some(OfficialLinearBackendKind::CublasPedantic);
+        }
+    } else if clears_focus {
+        any_focus_only = true;
+    }
+    backend_results.push(result);
+
+    let classification = match selected_backend_kind {
+        Some(OfficialLinearBackendKind::CublasTensorOp) => {
+            "layer6_oproj_cublas_tensor_op_matches_official"
+        }
+        Some(OfficialLinearBackendKind::CublasPedantic) => {
+            "layer6_oproj_cublas_pedantic_matches_official"
+        }
+        _ if any_focus_only => "layer6_oproj_backend_discriminator_collateral_mismatches",
+        _ if any_available_full_clear => "layer6_oproj_backend_discriminator_collateral_mismatches",
+        _ => "layer6_oproj_no_validation_backend_matches_official",
+    };
+
+    let weighted_v_source = json!({
+        "source": weighted_v_source_name,
+        "matches_prior_artifact": weighted_v_matches_prior_artifact,
+        "metric_vs_prior_artifact": recomputed_weighted_v_metric,
+        "ordered_weighted_v_artifact": weighted_status,
+        "attention_probs_artifact": probs_status,
+        "attention_audit_all_token_v_artifact": all_token_v_status,
+    });
+    let artifacts = json!({
+        "o_proj_oracle": oproj_status,
+        "layer_input_before_attention_norm": layer_input_status,
+        "attention_residual_oracle": residual_status,
+    });
+    let model_tensors = json!({
+        "oproj_weight": oproj_weight_source,
+        "oproj_bias": oproj_bias_source,
+    });
+    let official_backend_reference = discriminator_status
+        .get("official_backend_reference")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "producer_attn_out_matches_artifact": true,
+                "producer_f_linear_matches_artifact": true,
+                "producer_matmul_einsum_mismatches": 826,
+                "official_output_dtype": "torch.bfloat16",
+            })
+        });
+    let collateral_mismatches = backend_results
+        .iter()
+        .any(|result| json_bool_at(result, "/collateral_mismatches").unwrap_or(false));
+    let status = official_linear_backend_discriminator_probe_status_json(
+        classification,
+        layer,
+        lane,
+        discriminator_status_path,
+        attention_status_path,
+        attention_audit_status_path,
+        attention_audit_validate_status_path,
+        ordered_bundle_validate_status_path,
+        oproj_policy_sweep_status_path,
+        producer_dtype_probe_status_path,
+        official_backend_reference,
+        weighted_v_source,
+        backend_results,
+        selected_backend.map(Value::String).unwrap_or(Value::Null),
+        selected_metrics,
+        collateral_mismatches,
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut status = status;
+    status["artifacts"] = artifacts;
+    status["model_tensors"] = model_tensors;
+    write_json(&cli.output, &status)
+}
+
+#[derive(Clone, Copy)]
+enum OfficialLinearBackendKind {
+    Local,
+    CublasTensorOp,
+    CublasPedantic,
+}
+
+trait BackendResultWithExtra {
+    fn with_extra(self, extra: Value) -> (Value, Option<HiddenComparisonStatus>, bool, bool);
+}
+
+impl BackendResultWithExtra for (Value, Option<HiddenComparisonStatus>, bool, bool) {
+    fn with_extra(mut self, extra: Value) -> (Value, Option<HiddenComparisonStatus>, bool, bool) {
+        if let (Some(object), Some(extra_object)) = (self.0.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra_object {
+                object.insert(key.clone(), value.clone());
+            }
+        }
+        self
+    }
+}
+
+fn official_linear_backend_result_json(
+    backend: &str,
+    backend_family: &str,
+    backend_available: bool,
+    diagnostic_only: bool,
+    output: Option<Vec<f32>>,
+    oracle: &[f32],
+    lane: usize,
+    reason_unavailable: Option<String>,
+    residual_input: Option<&[f32]>,
+    residual_oracle: Option<&[f32]>,
+    mlp_input: Option<&[f32]>,
+) -> (Value, Option<HiddenComparisonStatus>, bool, bool) {
+    let Some(output) = output else {
+        return (
+            json!({
+                "backend": backend,
+                "backend_family": backend_family,
+                "backend_available": backend_available,
+                "diagnostic_only": diagnostic_only,
+                "full_vector_metrics": Value::Null,
+                "focus_lane_metrics": Value::Null,
+                "attention_residual": Value::Null,
+                "attention_to_mlp_bridge": Value::Null,
+                "collateral_mismatches": false,
+                "clears_full_vector": false,
+                "clears_focus_lane": false,
+                "reason_unavailable": reason_unavailable,
+            }),
+            None,
+            false,
+            false,
+        );
+    };
+
+    let metric = compare_hidden(&output, oracle);
+    let clears_full_vector = metric.metrics.mismatches == 0;
+    let focus_abs_diff = (output[lane] - oracle[lane]).abs();
+    let clears_focus_lane = focus_abs_diff == 0.0;
+    let residual_metric = if clears_full_vector {
+        residual_input
+            .zip(residual_oracle)
+            .map(|(input, residual)| {
+                let residual_output = compute_attention_residual(input, &output);
+                compare_hidden(&residual_output, residual)
+            })
+    } else {
+        None
+    };
+    let bridge_metric = if clears_full_vector {
+        residual_input.zip(mlp_input).map(|(input, mlp)| {
+            let residual_output = compute_attention_residual(input, &output);
+            compare_hidden(&residual_output, mlp)
+        })
+    } else {
+        None
+    };
+    let collateral_mismatches = metric.metrics.mismatches > 0;
+    let full_vector_metrics = json!({
+        "metrics": metric.metrics,
+        "first_mismatch": metric.first_mismatch,
+        "worst_mismatch": metric.worst_mismatch,
+        "mismatch_samples": hidden_mismatch_samples(&output, oracle, 4),
+    });
+    let result = json!({
+        "backend": backend,
+        "backend_family": backend_family,
+        "backend_available": backend_available,
+        "diagnostic_only": diagnostic_only,
+        "full_vector_metrics": full_vector_metrics,
+        "focus_lane_metrics": {
+            "lane": lane,
+            "local": output[lane],
+            "official": oracle[lane],
+            "abs_diff": focus_abs_diff,
+            "matched": clears_focus_lane,
+        },
+        "attention_residual": residual_metric,
+        "attention_to_mlp_bridge": bridge_metric,
+        "collateral_mismatches": collateral_mismatches,
+        "clears_full_vector": clears_full_vector,
+        "clears_focus_lane": clears_focus_lane,
+        "reason_unavailable": reason_unavailable,
+    });
+    (result, Some(metric), clears_full_vector, clears_focus_lane)
+}
+
+fn metric_to_json(metric: Option<&HiddenComparisonStatus>) -> Value {
+    metric
+        .map(|metric| {
+            json!({
+                "metrics": metric.metrics,
+                "first_mismatch": metric.first_mismatch,
+                "worst_mismatch": metric.worst_mismatch,
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn compute_attention_oproj_bf16_product_guard(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+) -> Vec<f32> {
+    let hidden = bias.len();
+    let q_dim = weighted_v.len();
+    let mut output = vec![0.0f32; hidden];
+    for out_lane in 0..hidden {
+        let weight_base = out_lane * q_dim;
+        let mut sum = 0.0f32;
+        for in_lane in 0..q_dim {
+            let product =
+                round_bf16(weighted_v[in_lane]) * round_bf16(weight[weight_base + in_lane]);
+            sum += round_bf16(product);
+        }
+        output[out_lane] = round_bf16(sum + round_bf16(bias[out_lane]));
+    }
+    output
+}
+
+#[cfg(feature = "cuda")]
+fn run_cublas_bf16_oproj_backend(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    pedantic: bool,
+) -> std::result::Result<(Vec<f32>, Value), String> {
+    let context = CudaContext::new(0).map_err(|err| format!("CUDA context init failed: {err}"))?;
+    let stream = context
+        .new_stream()
+        .map_err(|err| format!("CUDA stream init failed: {err}"))?;
+    let blas = CublasHandle::new(stream.clone())
+        .map_err(|err| format!("cuBLAS handle init failed: {err}"))?;
+    let input_bf16 = weighted_v
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let weight_bf16 = weight
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let input_gpu = stream
+        .clone_htod(&input_bf16)
+        .map_err(|err| format!("o-proj BF16 input upload failed: {err}"))?;
+    let weight_gpu = stream
+        .clone_htod(&weight_bf16)
+        .map_err(|err| format!("o-proj BF16 weight upload failed: {err}"))?;
+    let mut output_gpu = stream
+        .alloc_zeros::<bf16>(bias.len())
+        .map_err(|err| format!("o-proj BF16 output allocation failed: {err}"))?;
+    let restore_status = if pedantic {
+        let status = blas
+            .bf16_gemm_pedantic_into(
+                1,
+                bias.len(),
+                weighted_v.len(),
+                1.0,
+                &input_gpu,
+                &weight_gpu,
+                0.0,
+                &mut output_gpu,
+            )
+            .map_err(|err| format!("o-proj pedantic BF16 GEMM failed: {err}"))?;
+        json!({
+            "math_mode": status.math_mode,
+            "atomics_mode": status.atomics_mode,
+            "math_mode_restored": status.math_mode_restored,
+            "atomics_mode_restored": status.atomics_mode_restored,
+        })
+    } else {
+        blas.bf16_gemm_into(
+            1,
+            bias.len(),
+            weighted_v.len(),
+            1.0,
+            &input_gpu,
+            &weight_gpu,
+            0.0,
+            &mut output_gpu,
+        )
+        .map_err(|err| format!("o-proj BF16 tensor-op GEMM failed: {err}"))?;
+        Value::Null
+    };
+    stream
+        .synchronize()
+        .map_err(|err| format!("o-proj BF16 GEMM synchronize failed: {err}"))?;
+    let pre_bias = stream
+        .clone_dtoh(&output_gpu)
+        .map_err(|err| format!("o-proj BF16 output download failed: {err}"))?
+        .iter()
+        .map(|value| value.to_f32())
+        .collect::<Vec<_>>();
+    Ok((
+        add_bf16_bias_to_bf16_output(&pre_bias, bias),
+        restore_status,
+    ))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn run_cublas_bf16_oproj_backend(
+    _weighted_v: &[f32],
+    _weight: &[f32],
+    _bias: &[f32],
+    _pedantic: bool,
+) -> std::result::Result<(Vec<f32>, Value), String> {
+    Err("cuda feature is not enabled; cuBLAS BF16 validation helper unavailable".to_string())
+}
+
+fn official_linear_backend_discriminator_probe_status_json(
+    classification: &str,
+    layer: usize,
+    lane: usize,
+    discriminator_status_path: &Path,
+    attention_status_path: &Path,
+    attention_audit_status_path: &Path,
+    attention_audit_validate_status_path: &Path,
+    ordered_bundle_validate_status_path: &Path,
+    oproj_policy_sweep_status_path: &Path,
+    producer_dtype_probe_status_path: &Path,
+    official_backend_reference: Value,
+    weighted_v_source: Value,
+    backend_results: Vec<Value>,
+    selected_backend: Value,
+    full_vector_metrics: Value,
+    collateral_mismatches: bool,
+    missing_artifacts: Vec<String>,
+    schema_issues: Vec<String>,
+) -> Value {
+    let next_bounded_step = if selected_backend.is_null() {
+        "No Stage 2 validation backend reproduced official F.linear exactly; keep layer6 blocked and design a narrower official-linear backend discriminator before runtime discussion."
+    } else {
+        "Use the selected backend only as validation evidence in a separately authorized revalidation slice; do not change production/default routing or emit layer output."
+    };
+    json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "official-linear-backend-discriminator-probe",
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layer_index": layer,
+        "operator": "attention_o_proj",
+        "focus_lane": lane,
+        "backend_probe_executed": true,
+        "source_statuses": {
+            "discriminator_status": discriminator_status_path.display().to_string(),
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "attention_audit_status": attention_audit_status_path.display().to_string(),
+            "attention_audit_validate_status": attention_audit_validate_status_path.display().to_string(),
+            "ordered_bundle_validate_status": ordered_bundle_validate_status_path.display().to_string(),
+            "oproj_policy_sweep_status": oproj_policy_sweep_status_path.display().to_string(),
+            "producer_dtype_probe_status": producer_dtype_probe_status_path.display().to_string(),
+        },
+        "official_backend_reference": official_backend_reference,
+        "weighted_v_source": weighted_v_source,
+        "backend_results": backend_results,
+        "selected_backend": selected_backend,
+        "full_vector_metrics": full_vector_metrics,
+        "collateral_mismatches": collateral_mismatches,
+        "missing_artifacts": missing_artifacts,
+        "schema_issues": schema_issues,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": next_bounded_step,
     })
 }
 
