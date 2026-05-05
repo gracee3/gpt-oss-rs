@@ -58,6 +58,13 @@ const F16_SCRATCH_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_f16_scratch_allocation_smoke_complete";
 const MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_moe_gpu_upload_plan_status_complete";
+const MOE_GPU_UPLOAD_ALLOCATION_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete";
+const MOE_GPU_UPLOAD_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_moe_gpu_upload_allocation_blocked";
+const MOE_GPU_UPLOAD_PARTIAL_U8_BLOCKED_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_moe_gpu_upload_blocked_by_partial_u8_payload";
+const MOE_GPU_UPLOAD_OOM_CLASSIFICATION: &str = "multi_gpu_layer_sharding_moe_gpu_upload_oom";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
@@ -972,6 +979,7 @@ fn build_split_allocation_smoke_report(
         model_path,
         &plan,
         &upload_manifest,
+        &header_bytes,
         kernel_dir,
         dtype_mode,
         runtime_buffer_config,
@@ -979,6 +987,7 @@ fn build_split_allocation_smoke_report(
         metadata_config,
         fused_f16_options,
         f16_scratch_config,
+        upload_gpt_oss_moe_gpu,
     ) {
         Ok((
             resource_status,
@@ -987,6 +996,7 @@ fn build_split_allocation_smoke_report(
             kv_cache_status,
             metadata_status,
             actual_fused_f16_status,
+            actual_moe_gpu_upload_status,
         )) => {
             let runtime_buffer_succeeded =
                 allocate_rope_metadata && runtime_buffer_status.is_some();
@@ -1002,7 +1012,14 @@ fn build_split_allocation_smoke_report(
                     .as_ref()
                     .map(scratch_status_succeeded)
                     .unwrap_or(false);
-            let classification = if fused_f16_succeeded && f16_scratch_succeeded {
+            let moe_gpu_upload_succeeded = upload_gpt_oss_moe_gpu
+                && actual_moe_gpu_upload_status
+                    .as_ref()
+                    .map(moe_status_succeeded)
+                    .unwrap_or(false);
+            let classification = if moe_gpu_upload_succeeded {
+                MOE_GPU_UPLOAD_ALLOCATION_CLASSIFICATION
+            } else if fused_f16_succeeded && f16_scratch_succeeded {
                 if actual_fused_f16_status
                     .as_ref()
                     .map(fused_status_has_global_f16)
@@ -1086,7 +1103,9 @@ fn build_split_allocation_smoke_report(
                     .as_ref()
                     .or(fused_f16_status.as_ref()),
                 upload_gpt_oss_moe_gpu,
-                moe_gpu_upload_status.as_ref(),
+                actual_moe_gpu_upload_status
+                    .as_ref()
+                    .or(moe_gpu_upload_status.as_ref()),
                 None,
             )
         }
@@ -1319,6 +1338,7 @@ fn run_cuda_allocation_smoke(
     model_path: &Path,
     plan: &ShardedModelPlan,
     upload_manifest: &gpt_oss_model_runner::ShardedUploadManifest,
+    header_bytes: &BTreeMap<String, usize>,
     kernel_dir: Option<&Path>,
     dtype_mode: DTypeMode,
     runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
@@ -1326,6 +1346,7 @@ fn run_cuda_allocation_smoke(
     metadata_config: Option<MetadataAllocationConfig>,
     fused_f16_options: FusedF16SmokeOptions,
     f16_scratch_config: Option<F16ScratchAllocationConfig>,
+    upload_gpt_oss_moe_gpu: bool,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
@@ -1334,6 +1355,7 @@ fn run_cuda_allocation_smoke(
         Option<ShardedKvCacheAllocationStatus>,
         Option<ShardedMetadataAllocationStatus>,
         Option<ShardedFusedF16AllocationStatus>,
+        Option<ShardedMoeGpuUploadStatus>,
     ),
     (&'static str, String),
 > {
@@ -1343,7 +1365,8 @@ fn run_cuda_allocation_smoke(
     };
     use gpt_oss_model_runner::{
         ShardedCudaResources, ShardedF16ScratchBuffers, ShardedFusedF16Buffers,
-        ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
+        ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedMoeGpuUploadBuffers,
+        ShardedRuntimeBuffers,
     };
 
     let resources = match kernel_dir {
@@ -1357,6 +1380,7 @@ fn run_cuda_allocation_smoke(
     let mut f32_shapes_by_device = BTreeMap::new();
     let mut f16_weights_by_device = BTreeMap::new();
     let mut f16_shapes_by_device = BTreeMap::new();
+    let mut u8_host_by_device = BTreeMap::new();
     for resource in &resources.shards {
         let manifest = upload_manifest
             .shards
@@ -1424,6 +1448,9 @@ fn run_cuda_allocation_smoke(
         let u8_map = load_u8_weights_to_host_filtered(model_path, |name| host_u8.contains(name))
             .map_err(|error| (LOADER_ERROR_CLASSIFICATION, error.to_string()))?;
         let host_u8_total_bytes = u8_map.values().map(Vec::len).sum();
+        if upload_gpt_oss_moe_gpu {
+            u8_host_by_device.insert(resource.device_id, u8_map);
+        }
 
         upload_counts.insert(
             resource.device_id,
@@ -1514,6 +1541,24 @@ fn run_cuda_allocation_smoke(
             None
         };
 
+    let moe_gpu_upload_status = if upload_gpt_oss_moe_gpu {
+        Some(
+            ShardedMoeGpuUploadBuffers::create_for_resources(
+                &resources,
+                upload_manifest,
+                header_bytes,
+                &u8_host_by_device,
+            )
+            .map_err(|error| {
+                let error = error.to_string();
+                (classify_moe_gpu_upload_error(&error), error)
+            })?
+            .status(),
+        )
+    } else {
+        None
+    };
+
     Ok((
         resources.status(),
         upload_counts,
@@ -1521,6 +1566,7 @@ fn run_cuda_allocation_smoke(
         kv_cache_status,
         metadata_status,
         fused_f16_status,
+        moe_gpu_upload_status,
     ))
 }
 
@@ -1529,6 +1575,7 @@ fn run_cuda_allocation_smoke(
     _model_path: &Path,
     _plan: &ShardedModelPlan,
     _upload_manifest: &gpt_oss_model_runner::ShardedUploadManifest,
+    _header_bytes: &BTreeMap<String, usize>,
     _kernel_dir: Option<&Path>,
     _dtype_mode: DTypeMode,
     _runtime_buffer_config: Option<RopeRuntimeBufferConfig>,
@@ -1536,6 +1583,7 @@ fn run_cuda_allocation_smoke(
     _metadata_config: Option<MetadataAllocationConfig>,
     _fused_f16_options: FusedF16SmokeOptions,
     _f16_scratch_config: Option<F16ScratchAllocationConfig>,
+    _upload_gpt_oss_moe_gpu: bool,
 ) -> std::result::Result<
     (
         ShardedCudaResourceStatus,
@@ -1544,6 +1592,7 @@ fn run_cuda_allocation_smoke(
         Option<ShardedKvCacheAllocationStatus>,
         Option<ShardedMetadataAllocationStatus>,
         Option<ShardedFusedF16AllocationStatus>,
+        Option<ShardedMoeGpuUploadStatus>,
     ),
     (&'static str, String),
 > {
@@ -1653,6 +1702,17 @@ fn classify_fused_f16_error(error: &str) -> &'static str {
         FUSED_QKV_NORM_ALLOCATION_CAST_ERROR_CLASSIFICATION
     } else {
         FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION
+    }
+}
+
+fn classify_moe_gpu_upload_error(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if error.contains("partial GPT-OSS MoE U8 payload") {
+        MOE_GPU_UPLOAD_PARTIAL_U8_BLOCKED_CLASSIFICATION
+    } else if lower.contains("out of memory") || error.contains("OOM") {
+        MOE_GPU_UPLOAD_OOM_CLASSIFICATION
+    } else {
+        MOE_GPU_UPLOAD_ALLOCATION_BLOCKED_CLASSIFICATION
     }
 }
 
@@ -3535,6 +3595,32 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("partial GPT-OSS MoE U8"));
+        assert!(layer23
+            .layer_error
+            .as_deref()
+            .unwrap()
+            .contains("model.layers.23.mlp.experts.gate_up_proj_blocks"));
+    }
+
+    #[test]
+    fn moe_gpu_upload_error_classification_maps_partial_u8_payloads() {
+        let classification = classify_moe_gpu_upload_error(
+            "gpu error: shard 1 partial GPT-OSS MoE U8 payload absolute layer 23 missing tensors: model.layers.23.mlp.experts.gate_up_proj_blocks",
+        );
+
+        assert_eq!(
+            classification,
+            MOE_GPU_UPLOAD_PARTIAL_U8_BLOCKED_CLASSIFICATION
+        );
+    }
+
+    #[test]
+    fn moe_gpu_upload_error_classification_maps_oom() {
+        let classification = classify_moe_gpu_upload_error(
+            "gpu error: shard 0 GPT-OSS MoE U8 upload failed: out of memory",
+        );
+
+        assert_eq!(classification, MOE_GPU_UPLOAD_OOM_CLASSIFICATION);
     }
 
     #[test]

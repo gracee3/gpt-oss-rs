@@ -7098,3 +7098,165 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_moe_gpu_upload_plan_status_complete
+
+## Bench-only MoE GPU upload allocation status
+
+This slice turns `--upload-gpt-oss-moe-gpu` from plan/status-only into a
+bench-only U8 upload allocation smoke. It still does not construct
+`GptOssMoeLayerWeights`, `GpuTransformerLayer`, or `GpuModelRunner`, and it
+does not run router, expert, MXFP4 dequant, graph decode, attention, logits, or
+any forward pass.
+
+Module/type names added:
+
+- `ShardedMoeGpuUploadBuffers`
+- `CudaShardMoeGpuUploadBuffers`
+- `CudaLayerMoeGpuUploadBuffers`
+
+The existing `MoeGpuUploadStatus::Uploaded` status now renders as `allocated`
+in JSON for U8 GPU payloads. `supports_gpu_decode_status` does not report an
+execution-ready true state; uploaded layers report
+`gpu_u8_uploaded_but_not_evaluated_without_layer_construction`.
+
+### U8 host retention and upload policy
+
+Default behavior is unchanged when `--upload-gpt-oss-moe-gpu` is absent. When
+the flag is present, the split smoke retains only each shard's manifest-owned
+U8 host map through the MoE upload stage, uploads from that retained shard map,
+then drops host and GPU buffers after status collection.
+
+For each shard-owned absolute layer, the bench path checks these GPT-OSS expert
+payloads:
+
+- `model.layers.<N>.mlp.experts.gate_up_proj_blocks`
+- `model.layers.<N>.mlp.experts.gate_up_proj_scales`
+- `model.layers.<N>.mlp.experts.down_proj_blocks`
+- `model.layers.<N>.mlp.experts.down_proj_scales`
+
+If none are present, the layer is `not_applicable`. If some but not all are
+present, upload is blocked with `partial_u8_payload` semantics and the exact
+missing tensor names. If all four are present, the four `Vec<u8>` payloads are
+copied to the owning shard's CUDA stream and reported as allocated with exact
+byte counts. Public status preserves absolute layer ids; GPU1 layer 12 remains
+`model.layers.12.*`, never `model.layers.0.*`.
+
+### Router / bias / decode status
+
+Router and expert-bias tensors remain deferred prerequisites in this slice.
+The upload smoke does not selectively load router or expert-bias f32 tensors,
+does not construct executable MoE state, and does not evaluate real
+`supports_gpu_decode`. Complete U8 upload therefore proves only that the
+expert block/scale payloads can be copied to the owning GPU resource island.
+
+### Status JSON and classification
+
+Top-level MoE fields now reflect actual upload when the flag is used:
+
+- `moe_gpu_upload_attempted`
+- `moe_gpu_upload_succeeded`
+- `moe_gpu_upload_error`
+
+Per-shard fields report:
+
+- `moe_gpu_uploaded`
+- `moe_gpu_status`
+- `moe_layer_count`
+- `moe_u8_host_tensor_count`
+- `moe_u8_gpu_tensor_count`
+- `moe_u8_host_bytes`
+- `moe_u8_gpu_bytes`
+- `moe_router_tensor_count`
+- `moe_bias_tensor_count`
+- `moe_layer_statuses`
+- `moe_gpu_error`
+
+Per-layer fields continue to report the four U8 tensor statuses/bytes,
+router/bias status, `supports_gpu_decode_status`, and `layer_error`.
+
+Primary success classification:
+
+`multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete`
+
+Blocked classifications added:
+
+- `multi_gpu_layer_sharding_moe_gpu_upload_allocation_blocked`
+- `multi_gpu_layer_sharding_moe_gpu_upload_blocked_by_partial_u8_payload`
+- `multi_gpu_layer_sharding_moe_gpu_upload_oom`
+
+### Manual operator commands
+
+Minimal MoE upload smoke, not run in this slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --upload-gpt-oss-moe-gpu \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_moe_upload_status.json
+```
+
+Full current allocation baseline plus MoE upload, not run in this slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --upload-gpt-oss-moe-gpu \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_full_moe_upload_status.json
+```
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner fused_f16`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `git diff --check`
+
+No real-model CUDA smoke was run in this implementation slice.
+
+No executable MoE layer state, layers, runner, attention, graph decode, graph
+output, execution, serving, BF16 parity, or parity path was added.
+Serve/runtime split maps remain non-executable.
+
+Next bounded step:
+
+- Run the real-model MoE GPU upload allocation smoke.
+- Then choose between a non-executing layer-construction skeleton, tied
+  LM-head fallback design/status, or a BF16/dtype-policy checkpoint before any
+  execution work.
+
+Primary classification:
+
+multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete

@@ -91,8 +91,10 @@ pub use sharded_resources::{
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{
-    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaShardF16ScratchBuffers,
-    CudaShardFusedF16Buffers, CudaShardKvCacheBuffers, CudaShardMetadataBuffers,
-    CudaShardResources, CudaShardRuntimeBuffers, ShardedCudaResources, ShardedF16ScratchBuffers,
-    ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers, ShardedRuntimeBuffers,
+    CudaLayerFusedF16Buffers, CudaLayerKvCacheBuffers, CudaLayerMoeGpuUploadBuffers,
+    CudaShardF16ScratchBuffers, CudaShardFusedF16Buffers, CudaShardKvCacheBuffers,
+    CudaShardMetadataBuffers, CudaShardMoeGpuUploadBuffers, CudaShardResources,
+    CudaShardRuntimeBuffers, ShardedCudaResources, ShardedF16ScratchBuffers,
+    ShardedFusedF16Buffers, ShardedKvCacheBuffers, ShardedMetadataBuffers,
+    ShardedMoeGpuUploadBuffers, ShardedRuntimeBuffers,
 };
