@@ -2039,6 +2039,14 @@ Preferred next action: create the docs-only policy-design branch before layer6,
 because the matrix now shows multiple operator-specific conventions and no
 safe global switch.
 
+## Cross-Layer Validation Policy Design Pointer
+
+- Branch: `design/cross-layer-validation-policy-matrix`
+- Design doc: `docs/CROSS_LAYER_VALIDATION_POLICY_DESIGN.md`
+- Classification: `cross_layer_validation_policy_design_recorded`
+- Decision: no global policy switch is justified, and no runtime/default/CUDA
+  implementation is authorized from the current matrix.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
