@@ -95,6 +95,14 @@ struct Cli {
     #[arg(long)]
     ordered_bundle_validate_status: Option<PathBuf>,
 
+    /// Prior attention o-proj policy sweep status for official-linear discriminator provenance.
+    #[arg(long)]
+    oproj_policy_sweep_status: Option<PathBuf>,
+
+    /// Producer-side dtype/backend probe status for official-linear discriminator provenance.
+    #[arg(long)]
+    producer_dtype_probe_status: Option<PathBuf>,
+
     /// Prior attention audit validation status artifact for focused audit diagnostics.
     #[arg(long)]
     attention_audit_validate_status: Option<PathBuf>,
@@ -494,6 +502,7 @@ enum Mode {
     RawQkSingleMismatchDebug,
     RawQkPolicySweepStatus,
     AttentionOprojPolicySweepStatus,
+    OfficialLinearBackendDiscriminatorStatus,
     Layer2AttnNormDebug,
     LayerBundleValidateFromCoarse,
     Expert3Lane1990Debug,
@@ -1483,6 +1492,9 @@ fn main() -> Result<()> {
         Mode::RawQkSingleMismatchDebug => run_raw_qk_single_mismatch_debug(&cli),
         Mode::RawQkPolicySweepStatus => run_raw_qk_policy_sweep_status(&cli),
         Mode::AttentionOprojPolicySweepStatus => run_attention_oproj_policy_sweep_status(&cli),
+        Mode::OfficialLinearBackendDiscriminatorStatus => {
+            run_official_linear_backend_discriminator_status(&cli)
+        }
         Mode::Layer2AttnNormDebug => run_layer2_attn_norm_debug(&cli),
         Mode::LayerBundleValidateFromCoarse => run_layer_bundle_validate_from_coarse(&cli),
         Mode::Expert3Lane1990Debug => run_expert3_lane1990_debug(&cli),
@@ -6314,6 +6326,527 @@ fn run_attention_oproj_policy_sweep_status(cli: &Cli) -> Result<()> {
     write_json(&cli.output, &status)
 }
 
+fn run_official_linear_backend_discriminator_status(cli: &Cli) -> Result<()> {
+    let layer = cli.layer_index;
+    let lane = cli.lane;
+    let attention_status_path =
+        required_path(&cli.attention_bundle_status, "attention bundle status")?;
+    let attention_audit_status_path =
+        required_path(&cli.attention_audit_status, "attention audit status")?;
+    let attention_audit_validate_status_path = required_path(
+        &cli.attention_audit_validate_status,
+        "attention audit validate status",
+    )?;
+    let ordered_bundle_validate_status_path = required_path(
+        &cli.ordered_bundle_validate_status,
+        "ordered bundle validate status",
+    )?;
+    let oproj_policy_sweep_status_path =
+        required_path(&cli.oproj_policy_sweep_status, "oproj policy sweep status")?;
+    let producer_dtype_probe_status_path = required_path(
+        &cli.producer_dtype_probe_status,
+        "producer dtype probe status",
+    )?;
+
+    let required_files = [
+        ("attention_bundle_status", attention_status_path),
+        ("attention_audit_status", attention_audit_status_path),
+        (
+            "attention_audit_validate_status",
+            attention_audit_validate_status_path,
+        ),
+        (
+            "ordered_bundle_validate_status",
+            ordered_bundle_validate_status_path,
+        ),
+        ("oproj_policy_sweep_status", oproj_policy_sweep_status_path),
+        (
+            "producer_dtype_probe_status",
+            producer_dtype_probe_status_path,
+        ),
+    ];
+    let mut missing_artifacts = Vec::new();
+    for (label, path) in required_files {
+        if !path.exists() {
+            missing_artifacts.push(format!("{label}: {}", path.display()));
+        }
+    }
+
+    if !missing_artifacts.is_empty() {
+        let status = official_linear_backend_discriminator_status_json(
+            "layer6_oproj_backend_discriminator_blocked_by_missing_artifact",
+            layer,
+            lane,
+            attention_status_path,
+            attention_audit_status_path,
+            attention_audit_validate_status_path,
+            ordered_bundle_validate_status_path,
+            oproj_policy_sweep_status_path,
+            producer_dtype_probe_status_path,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            true,
+            missing_artifacts,
+            Vec::new(),
+        );
+        return write_json(&cli.output, &status);
+    }
+
+    let attention_status = load_json(attention_status_path)?;
+    let attention_audit_status = load_json(attention_audit_status_path)?;
+    let attention_audit_validate_status = load_json(attention_audit_validate_status_path)?;
+    let ordered_bundle_validate_status = load_json(ordered_bundle_validate_status_path)?;
+    let oproj_policy_sweep_status = load_json(oproj_policy_sweep_status_path)?;
+    let producer_dtype_probe_status = load_json(producer_dtype_probe_status_path)?;
+
+    let mut schema_issues = Vec::new();
+    let mut referenced_missing = Vec::new();
+    expect_json_usize(
+        &mut schema_issues,
+        &attention_status,
+        "/layer_index",
+        layer,
+        "attention bundle layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/layer_index",
+        layer,
+        "attention audit layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/layer_index",
+        layer,
+        "attention audit validate layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/layer_index",
+        layer,
+        "ordered bundle validate layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &oproj_policy_sweep_status,
+        "/layer_index",
+        layer,
+        "o-proj policy sweep layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/layer_index",
+        layer,
+        "producer dtype probe layer_index",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &oproj_policy_sweep_status,
+        "/focus_lane",
+        lane,
+        "o-proj policy sweep focus_lane",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/output_lane",
+        lane,
+        "producer dtype probe output_lane",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_status,
+        "/source_complete_attention_capture",
+        true,
+        "attention source_complete_attention_capture",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/source_complete_attention_capture",
+        true,
+        "attention audit source_complete_attention_capture",
+    );
+    expect_json_bool(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/all_token_v/emitted",
+        true,
+        "attention audit all_token_v emitted",
+    );
+    expect_json_usize_vec(
+        &mut schema_issues,
+        &attention_audit_status,
+        "/all_token_v/shape",
+        &[74, 8, 64],
+        "attention audit all_token_v shape",
+    );
+
+    for (label, value, pointers) in [
+        (
+            "attention bundle",
+            &attention_status,
+            &[
+                "/artifacts/bundle_dir",
+                "/artifacts/weighted_v",
+                "/artifacts/o_proj",
+                "/artifacts/attention_probs",
+            ][..],
+        ),
+        (
+            "attention audit",
+            &attention_audit_status,
+            &[
+                "/artifacts/bundle_dir",
+                "/artifacts/all_token_v_before_attention",
+                "/artifacts/weighted_v",
+                "/artifacts/o_proj",
+            ][..],
+        ),
+    ] {
+        for pointer in pointers {
+            check_json_path_exists(
+                &mut schema_issues,
+                &mut referenced_missing,
+                value,
+                pointer,
+                label,
+            );
+        }
+    }
+
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/weighted_v_metrics/metrics/mismatches",
+        0,
+        "attention audit weighted-V",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/attention_residual_metrics/metrics/mismatches",
+        0,
+        "attention audit residual",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &attention_audit_validate_status,
+        "/attention_to_mlp_bridge/metrics/mismatches",
+        0,
+        "attention-to-MLP bridge",
+    );
+    expect_json_string(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/classification",
+        "layer6_ordered_bundle_validate_attention_seam_mismatch",
+        "ordered bundle validation classification",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/raw_qk/metrics/mismatches",
+        0,
+        "raw QK",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/masked_logits/metrics/mismatches",
+        0,
+        "masked logits",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/attention_probabilities/metrics/mismatches",
+        0,
+        "attention probabilities",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/weighted_v/metric/metrics/mismatches",
+        0,
+        "weighted V",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/metrics/mismatches",
+        2,
+        "default o-proj",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/metrics/max_abs_diff",
+        0.0625,
+        "default o-proj max_abs_diff",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/hidden_lane",
+        lane,
+        "default o-proj first mismatch lane",
+    );
+    expect_json_usize(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/worst_mismatch/hidden_lane",
+        lane,
+        "default o-proj worst mismatch lane",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/actual",
+        9.125,
+        "default o-proj local value",
+    );
+    expect_json_f64(
+        &mut schema_issues,
+        &ordered_bundle_validate_status,
+        "/attention_metrics/o_proj/first_mismatch/expected",
+        9.0625,
+        "default o-proj official value",
+    );
+
+    expect_json_string(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/classification",
+        "layer6_attention_oproj_dtype_probe_confirms_accumulation_boundary",
+        "producer dtype probe classification",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/official_full_expression_vs_prior_o_proj_artifact/metrics/mismatches",
+        0,
+        "producer attn.out full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/functional_linear_vs_prior_o_proj_artifact/metrics/mismatches",
+        0,
+        "producer F.linear full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/matmul_vs_prior_o_proj_artifact/metrics/mismatches",
+        826,
+        "producer matmul full-vector guard",
+    );
+    expect_json_metric_mismatches(
+        &mut schema_issues,
+        &producer_dtype_probe_status,
+        "/full_vector_guard/einsum_vs_prior_o_proj_artifact/metrics/mismatches",
+        826,
+        "producer einsum full-vector guard",
+    );
+    if producer_dtype_probe_status
+        .pointer("/full_vector_guard/weighted_v_live_vs_prior_artifact")
+        .is_some()
+    {
+        expect_json_metric_mismatches(
+            &mut schema_issues,
+            &producer_dtype_probe_status,
+            "/full_vector_guard/weighted_v_live_vs_prior_artifact/metrics/mismatches",
+            0,
+            "producer weighted-V live guard",
+        );
+    }
+
+    let full_vector_clearing_policy_found = oproj_policy_sweep_status
+        .get("policy_results")
+        .and_then(Value::as_array)
+        .map(|results| {
+            results
+                .iter()
+                .any(|result| json_bool_at(result, "/clears_full_oproj").unwrap_or(false))
+        })
+        .unwrap_or(false);
+    if full_vector_clearing_policy_found {
+        schema_issues.push(
+            "o-proj policy sweep unexpectedly reports a full-vector clearing policy".to_string(),
+        );
+    }
+    let collateral_mismatches = json_string_at(&oproj_policy_sweep_status, "/classification")
+        .map(|classification| classification.contains("collateral_mismatches"))
+        .unwrap_or(false)
+        || oproj_policy_sweep_status
+            .get("policy_results")
+            .and_then(Value::as_array)
+            .map(|results| {
+                results.iter().any(|result| {
+                    json_bool_at(result, "/introduces_collateral_mismatches").unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+    if !collateral_mismatches {
+        schema_issues.push("o-proj policy sweep did not record collateral mismatches".to_string());
+    }
+
+    let producer_attn_out_matches_artifact = json_usize_at(
+        &producer_dtype_probe_status,
+        "/full_vector_guard/official_full_expression_vs_prior_o_proj_artifact/metrics/mismatches",
+    ) == Some(0);
+    let producer_f_linear_matches_artifact = json_usize_at(
+        &producer_dtype_probe_status,
+        "/full_vector_guard/functional_linear_vs_prior_o_proj_artifact/metrics/mismatches",
+    ) == Some(0);
+    let producer_matmul_mismatches = json_usize_at(
+        &producer_dtype_probe_status,
+        "/full_vector_guard/matmul_vs_prior_o_proj_artifact/metrics/mismatches",
+    );
+    let producer_einsum_mismatches = json_usize_at(
+        &producer_dtype_probe_status,
+        "/full_vector_guard/einsum_vs_prior_o_proj_artifact/metrics/mismatches",
+    );
+    let weighted_v_live_mismatches = json_usize_at(
+        &producer_dtype_probe_status,
+        "/full_vector_guard/weighted_v_live_vs_prior_artifact/metrics/mismatches",
+    );
+
+    let official_backend_reference = json!({
+        "producer_attn_out_matches_artifact": producer_attn_out_matches_artifact,
+        "producer_f_linear_matches_artifact": producer_f_linear_matches_artifact,
+        "producer_matmul_einsum_mismatches": producer_matmul_mismatches,
+        "producer_matmul_mismatches": producer_matmul_mismatches,
+        "producer_einsum_mismatches": producer_einsum_mismatches,
+        "weighted_v_live_vs_prior_artifact_mismatches": weighted_v_live_mismatches,
+        "official_output_dtype": producer_dtype_probe_status
+            .pointer("/official_expression_results/full_expression/dtype")
+            .cloned()
+            .unwrap_or(Value::Null),
+    });
+    let default_policy_result = json!({
+        "o_proj_mismatches": json_usize_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/metrics/mismatches"),
+        "max_abs_diff": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/metrics/max_abs_diff"),
+        "first_worst_lane": json_usize_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/worst_mismatch/hidden_lane"),
+        "local": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/first_mismatch/actual"),
+        "official": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/first_mismatch/expected"),
+    });
+    let bounded_policy_sweep_result = json!({
+        "full_vector_clearing_policy_found": full_vector_clearing_policy_found,
+        "collateral_mismatches": collateral_mismatches,
+        "classification": oproj_policy_sweep_status
+            .get("classification")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "best_policy_by_full_oproj": oproj_policy_sweep_status
+            .get("best_policy_by_full_oproj")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "best_policy_by_focus_lane": oproj_policy_sweep_status
+            .get("best_policy_by_focus_lane")
+            .cloned()
+            .unwrap_or(Value::Null),
+    });
+    let focus_lane_metrics = json!({
+        "lane": lane,
+        "local": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/first_mismatch/actual"),
+        "official": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/first_mismatch/expected"),
+        "abs_diff": json_f64_at(&ordered_bundle_validate_status, "/attention_metrics/o_proj/first_mismatch/abs_diff"),
+    });
+
+    let classification = if !referenced_missing.is_empty() {
+        "layer6_oproj_backend_discriminator_blocked_by_missing_artifact"
+    } else if schema_issues.is_empty() {
+        "layer6_oproj_official_linear_backend_discriminator_ready"
+    } else {
+        "layer6_oproj_backend_discriminator_blocked_by_schema"
+    };
+    let status = official_linear_backend_discriminator_status_json(
+        classification,
+        layer,
+        lane,
+        attention_status_path,
+        attention_audit_status_path,
+        attention_audit_validate_status_path,
+        ordered_bundle_validate_status_path,
+        oproj_policy_sweep_status_path,
+        producer_dtype_probe_status_path,
+        official_backend_reference,
+        default_policy_result,
+        bounded_policy_sweep_result,
+        focus_lane_metrics,
+        collateral_mismatches,
+        referenced_missing,
+        schema_issues,
+    );
+    write_json(&cli.output, &status)
+}
+
+fn official_linear_backend_discriminator_status_json(
+    classification: &str,
+    layer: usize,
+    lane: usize,
+    attention_status_path: &Path,
+    attention_audit_status_path: &Path,
+    attention_audit_validate_status_path: &Path,
+    ordered_bundle_validate_status_path: &Path,
+    oproj_policy_sweep_status_path: &Path,
+    producer_dtype_probe_status_path: &Path,
+    official_backend_reference: Value,
+    default_policy_result: Value,
+    bounded_policy_sweep_result: Value,
+    focus_lane_metrics: Value,
+    collateral_mismatches: bool,
+    missing_artifacts: Vec<String>,
+    schema_issues: Vec<String>,
+) -> Value {
+    json!({
+        "mode": "layer0_validation_runtime_path",
+        "submode": "official-linear-backend-discriminator-status",
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "model_runner_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layer_index": layer,
+        "operator": "attention_o_proj",
+        "focus_lane": lane,
+        "selected_backend": Value::Null,
+        "backend_probe_executed": false,
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+            "attention_audit_status": attention_audit_status_path.display().to_string(),
+            "attention_audit_validate_status": attention_audit_validate_status_path.display().to_string(),
+            "ordered_bundle_validate_status": ordered_bundle_validate_status_path.display().to_string(),
+            "oproj_policy_sweep_status": oproj_policy_sweep_status_path.display().to_string(),
+            "producer_dtype_probe_status": producer_dtype_probe_status_path.display().to_string(),
+        },
+        "official_backend_reference": official_backend_reference,
+        "default_policy_result": default_policy_result,
+        "bounded_policy_sweep_result": bounded_policy_sweep_result,
+        "full_vector_metrics": Value::Null,
+        "focus_lane_metrics": focus_lane_metrics,
+        "collateral_mismatches": collateral_mismatches,
+        "missing_artifacts": missing_artifacts,
+        "schema_issues": schema_issues,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "Implement a separate validation-only backend probe comparing current/reverse/pairwise/chunked and existing cuBLAS BF16 validation helpers against the official F.linear reference.",
+    })
+}
+
 #[cfg(feature = "cuda")]
 fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let layer = cli.layer_index;
@@ -7474,6 +8007,128 @@ fn load_json(path: &Path) -> Result<Value> {
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn json_bool_at(value: &Value, pointer: &str) -> Option<bool> {
+    value.pointer(pointer).and_then(Value::as_bool)
+}
+
+fn json_f64_at(value: &Value, pointer: &str) -> Option<f64> {
+    value.pointer(pointer).and_then(Value::as_f64)
+}
+
+fn json_usize_at(value: &Value, pointer: &str) -> Option<usize> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn json_string_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
+    value.pointer(pointer).and_then(Value::as_str)
+}
+
+fn json_usize_vec_at(value: &Value, pointer: &str) -> Option<Vec<usize>> {
+    value
+        .pointer(pointer)?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_u64().and_then(|value| usize::try_from(value).ok()))
+        .collect()
+}
+
+fn expect_json_bool(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: bool,
+    label: &str,
+) {
+    match json_bool_at(value, pointer) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => issues.push(format!("{label} expected {expected}, got {actual}")),
+        None => issues.push(format!("{label} missing or non-boolean at {pointer}")),
+    }
+}
+
+fn expect_json_f64(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: f64,
+    label: &str,
+) {
+    match json_f64_at(value, pointer) {
+        Some(actual) if (actual - expected).abs() <= f64::EPSILON => {}
+        Some(actual) => issues.push(format!("{label} expected {expected}, got {actual}")),
+        None => issues.push(format!("{label} missing or non-number at {pointer}")),
+    }
+}
+
+fn expect_json_metric_mismatches(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: usize,
+    label: &str,
+) {
+    expect_json_usize(issues, value, pointer, expected, label);
+}
+
+fn expect_json_string(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: &str,
+    label: &str,
+) {
+    match json_string_at(value, pointer) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => issues.push(format!("{label} expected {expected:?}, got {actual:?}")),
+        None => issues.push(format!("{label} missing or non-string at {pointer}")),
+    }
+}
+
+fn expect_json_usize(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: usize,
+    label: &str,
+) {
+    match json_usize_at(value, pointer) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => issues.push(format!("{label} expected {expected}, got {actual}")),
+        None => issues.push(format!("{label} missing or non-integer at {pointer}")),
+    }
+}
+
+fn expect_json_usize_vec(
+    issues: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    expected: &[usize],
+    label: &str,
+) {
+    match json_usize_vec_at(value, pointer) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => issues.push(format!("{label} expected {expected:?}, got {actual:?}")),
+        None => issues.push(format!("{label} missing or non-integer array at {pointer}")),
+    }
+}
+
+fn check_json_path_exists(
+    issues: &mut Vec<String>,
+    missing: &mut Vec<String>,
+    value: &Value,
+    pointer: &str,
+    label: &str,
+) {
+    match json_string_at(value, pointer) {
+        Some(path) if Path::new(path).exists() => {}
+        Some(path) => missing.push(format!("{label} {pointer}: {path}")),
+        None => issues.push(format!("{label} path missing or non-string at {pointer}")),
+    }
 }
 
 fn coarse_boundary_objects(value: &Value) -> Vec<&Value> {

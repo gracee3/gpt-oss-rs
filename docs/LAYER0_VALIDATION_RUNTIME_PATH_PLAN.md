@@ -4336,6 +4336,47 @@ and there is no final-logit, all-layer, server, or 4097-token claim. Next
 bounded step: request a focused layer6 o-proj producer-side
 dtype/accumulation probe before any layer6 revalidation or output emission.
 
+## Official Linear Backend Discriminator Stage 1 Status
+
+The first validation-only official-linear-backend discriminator slice adds a
+status/schema mode only:
+
+```text
+mode:
+  official-linear-backend-discriminator-status
+
+status:
+  /tmp/layer6_official_linear_backend_discriminator_status.json
+
+classification:
+  layer6_oproj_official_linear_backend_discriminator_ready
+```
+
+The mode consumes these existing source statuses:
+
+```text
+/tmp/layer6_ordered_attention_bundle_status.json
+/tmp/layer6_ordered_attention_audit_bundle_status.json
+/tmp/layer6_ordered_attention_audit_validate_status.json
+/tmp/layer6_ordered_bundle_validate_status.json
+/tmp/layer6_attention_oproj_policy_sweep_status.json
+/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json
+```
+
+Stage 1 verifies artifact presence, layer/focus-lane schema, source-complete
+attention capture, all-token V shape `[74,8,64]`, exact weighted-V/residual
+audit metrics, the strict/default o-proj blocker at lane `22`, and the
+producer-side official `attn.out` / `torch.nn.functional.linear` evidence.
+It also records that producer matmul/einsum full-vector replay has 826
+mismatches while weighted-V live versus prior artifact has 0 mismatches.
+
+No backend probe is executed in this slice. There is no cuBLAS tensor-op run,
+no pedantic cuBLAS run, no new CUDA kernel, no runtime/default routing change,
+no correction metadata, no tolerance pass, no layer6 output emission, no
+ladder continuation, and no final-logit, all-layer, server, or 4097-token
+claim. Next bounded step: a separately authorized backend-probe slice that
+compares existing validation helpers against the official F.linear reference.
+
 ## Cross-Layer Ordered Surface Policy Matrix
 
 The current ordered evidence is strong enough to pause layer collection and
