@@ -111,6 +111,16 @@ def parse_args() -> argparse.Namespace:
         help="Consumer o-proj policy sweep status for focused dtype probes.",
     )
     parser.add_argument(
+        "--source-producer-dtype-probe-status",
+        type=Path,
+        help="Prior producer dtype probe status used as provenance for API probes.",
+    )
+    parser.add_argument(
+        "--source-backend-discriminator-probe-status",
+        type=Path,
+        help="Consumer/backend discriminator probe status used as provenance for API probes.",
+    )
+    parser.add_argument(
         "--source-ordered-mlp-status",
         type=Path,
         help="Prior ordered MLP oracle status used as provenance for internal capture.",
@@ -317,6 +327,24 @@ def parse_attention_oproj_dtype_probe_selector(boundary: str, layer_idx: int | N
             )
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_attention_oproj_dtype_probe", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_attention_oproj_api_probe_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_attention_oproj_api_probe":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_attention_oproj_api_probe requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_final_token_attention_oproj_api_probe", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -2944,6 +2972,816 @@ def capture_layer_attention_oproj_dtype_probe(
     }
 
 
+def capture_layer_attention_oproj_api_probe(
+    model: Any,
+    input_token_ids: list[int],
+    torch: Any,
+    layer_index: int,
+    output_lane: int,
+    *,
+    source_attention_status: Path | None,
+    source_attention_audit_status: Path | None,
+    source_consumer_bundle_validate_status: Path | None,
+    source_consumer_oproj_sweep_status: Path | None,
+    source_producer_dtype_probe_status: Path | None,
+    source_backend_discriminator_probe_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    source_attention = (
+        load_json(source_attention_status) if source_attention_status else {}
+    )
+    source_dtype_probe = (
+        load_json(source_producer_dtype_probe_status)
+        if source_producer_dtype_probe_status
+        else {}
+    )
+    source_backend_probe = (
+        load_json(source_backend_discriminator_probe_status)
+        if source_backend_discriminator_probe_status
+        else {}
+    )
+    source_artifacts = source_attention.get("artifacts", {})
+    prior_o_proj_path = source_artifacts.get("o_proj")
+    if not prior_o_proj_path:
+        raise ValueError("source attention status is missing artifacts.o_proj")
+    prior_o_proj = load_json(Path(prior_o_proj_path))
+    prior_o_proj_values = [
+        float(value) for value in prior_o_proj.get("values", [])
+    ]
+    if output_lane < 0 or output_lane >= len(prior_o_proj_values):
+        raise ValueError(
+            f"output lane {output_lane} outside prior o-proj artifact length {len(prior_o_proj_values)}"
+        )
+    official_lane_value = prior_o_proj_values[output_lane]
+    prior_weighted_v_values = []
+    prior_weighted_v_path = source_artifacts.get("weighted_v")
+    if prior_weighted_v_path:
+        prior_weighted_v_values = [
+            float(value)
+            for value in load_json(Path(prior_weighted_v_path)).get("values", [])
+        ]
+
+    def extended_tensor_metadata(tensor: Any | None) -> dict[str, Any]:
+        if tensor is None:
+            return {
+                "present": False,
+                "dtype": None,
+                "device": None,
+                "shape": None,
+                "stride": None,
+                "contiguous": None,
+                "storage_offset": None,
+            }
+        return {
+            "present": True,
+            **tensor_metadata(tensor),
+            "storage_offset": int(tensor.storage_offset())
+            if hasattr(tensor, "storage_offset")
+            else None,
+        }
+
+    def focus_lane(values: list[float]) -> dict[str, Any]:
+        actual = values[output_lane]
+        return {
+            "lane": output_lane,
+            "actual": actual,
+            "official": official_lane_value,
+            "abs_diff": abs(actual - official_lane_value),
+            "matched": actual == official_lane_value,
+        }
+
+    def stable_over_repeats(repeated_values: list[list[float]]) -> bool | None:
+        if len(repeated_values) < 2:
+            return None
+        first = repeated_values[0]
+        return all(
+            compare_vectors(values, first)["metrics"]["mismatches"] == 0
+            for values in repeated_values[1:]
+        )
+
+    def unavailable_operator_result(
+        name: str,
+        reason: str,
+        *,
+        diagnostic_only: bool,
+        input_layout: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "operator": name,
+            "available": False,
+            "diagnostic_only": diagnostic_only,
+            "input_layout": input_layout or {},
+            "metrics": None,
+            "focus_lane": None,
+            "clears_full_vector": False,
+            "clears_focus_lane": False,
+            "deterministic": None,
+            "dtype": None,
+            "device": None,
+            "shape": None,
+            "reason_unavailable": reason,
+        }
+
+    def operator_result(
+        name: str,
+        fn: Any,
+        *,
+        diagnostic_only: bool = False,
+        input_layout: dict[str, Any] | None = None,
+        repeats: int = 3,
+    ) -> dict[str, Any]:
+        try:
+            outputs = [fn() for _ in range(repeats)]
+            values_by_repeat = [
+                [float(value) for value in output.float().cpu().reshape(-1).tolist()]
+                for output in outputs
+            ]
+            first_values = values_by_repeat[0]
+            metrics = compare_vectors(first_values, prior_o_proj_values)
+            focus = focus_lane(first_values)
+            return {
+                "operator": name,
+                "available": True,
+                "diagnostic_only": diagnostic_only,
+                "input_layout": input_layout or {},
+                "metrics": metrics,
+                "focus_lane": focus,
+                "clears_full_vector": metrics["metrics"]["mismatches"] == 0,
+                "clears_focus_lane": focus["matched"],
+                "deterministic": stable_over_repeats(values_by_repeat),
+                "dtype": str(outputs[0].dtype),
+                "device": str(outputs[0].device),
+                "shape": list(outputs[0].shape),
+                "reason_unavailable": None,
+            }
+        except Exception as exc:  # pragma: no cover - probe matrix records failures.
+            return unavailable_operator_result(
+                name,
+                str(exc),
+                diagnostic_only=diagnostic_only,
+                input_layout=input_layout,
+            )
+
+    with torch.inference_mode():
+        tokens = torch.as_tensor(
+            input_token_ids, dtype=torch.int64, device=model.embedding.weight.device
+        )
+        hidden = model.embedding(tokens)
+        for block_index in range(layer_index):
+            hidden = model.block[block_index](hidden)
+        attn = model.block[layer_index].attn
+        normed = attn.norm(hidden)
+        qkv = attn.qkv(normed)
+
+        token_count = len(input_token_ids)
+        final_token_index = token_count - 1
+        q_dim = attn.num_attention_heads * attn.head_dim
+        kv_dim = attn.num_key_value_heads * attn.head_dim
+        heads_per_kv = attn.num_attention_heads // attn.num_key_value_heads
+        q_flat = qkv[:, :q_dim].contiguous()
+        k_flat = qkv[:, q_dim : q_dim + kv_dim].contiguous()
+        v_flat = qkv[:, q_dim + kv_dim : q_dim + 2 * kv_dim].contiguous()
+        q = q_flat.view(
+            token_count,
+            attn.num_key_value_heads,
+            heads_per_kv,
+            attn.head_dim,
+        )
+        k = k_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        v = v_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        q_post_rope, k_post_rope = attn.rope(q, k)
+        q_post_final = q_post_rope[final_token_index]
+        k_expanded = k_post_rope[:, :, None, :].expand(
+            -1, -1, heads_per_kv, -1
+        )
+        v_expanded = v[:, :, None, :].expand(-1, -1, heads_per_kv, -1)
+        raw = torch.einsum(
+            "qhmd,khmd->hmqk",
+            q_post_final.unsqueeze(0),
+            k_expanded,
+        )
+        raw *= attn.sm_scale
+        raw = raw.squeeze(2).reshape(attn.num_attention_heads, token_count)
+        mask = torch.triu(
+            raw.new_full((token_count, token_count), -float("inf")),
+            diagonal=1,
+        )
+        if attn.sliding_window > 0:
+            mask += torch.tril(
+                mask.new_full((token_count, token_count), -float("inf")),
+                diagonal=-attn.sliding_window,
+            )
+        masked_key_logits = raw + mask[final_token_index][None, :]
+        sinks = attn.sinks.reshape(attn.num_key_value_heads, heads_per_kv)
+        pre_softmax = torch.cat([masked_key_logits, sinks.reshape(-1, 1)], dim=-1)
+        probs = torch.softmax(pre_softmax, dim=-1)
+        probs_real_keys = probs[:, :token_count].reshape(
+            attn.num_key_value_heads,
+            heads_per_kv,
+            1,
+            token_count,
+        )
+        weighted = torch.einsum("hmqk,khmd->qhmd", probs_real_keys, v_expanded)
+        weighted_flat = weighted.reshape(attn.num_attention_heads * attn.head_dim)
+        weight = attn.out.weight
+        bias = attn.out.bias
+        if output_lane >= int(weight.shape[0]):
+            raise ValueError(
+                f"output lane {output_lane} outside o-proj output dimension {weight.shape[0]}"
+            )
+        zero_bias = torch.zeros(weight.shape[0], dtype=weight.dtype, device=weight.device)
+        effective_bias = bias if bias is not None else zero_bias
+        module_output = attn.out(weighted_flat)
+        weighted_values = weighted_flat.float().cpu().tolist()
+        weight_row_values = weight[output_lane, :].float().cpu().tolist()
+        output_values = module_output.float().cpu().tolist()
+
+        input_noncontiguous_storage = torch.empty(
+            weighted_flat.numel() * 2,
+            dtype=weighted_flat.dtype,
+            device=weighted_flat.device,
+        )
+        input_noncontiguous_storage[::2] = weighted_flat
+        input_noncontiguous = input_noncontiguous_storage[::2]
+        weight_transposed_view = weight.t()
+        weight_noncontiguous_same_shape = weight.t().contiguous().t()
+        bias_contiguous = effective_bias.contiguous()
+        weight_contiguous = weight.contiguous()
+        weighted_contiguous = weighted_flat.contiguous()
+
+        c_nn_linear = getattr(getattr(torch, "_C", None), "_nn", None)
+        c_nn_linear_fn = getattr(c_nn_linear, "linear", None) if c_nn_linear else None
+
+        operator_results = [
+            operator_result(
+                "module_attn_out",
+                lambda: attn.out(weighted_flat),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(bias),
+                    "module_weight_preserved": True,
+                },
+            ),
+            operator_result(
+                "torch_nn_functional_linear",
+                lambda: torch.nn.functional.linear(weighted_flat, weight, bias),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            ),
+            operator_result(
+                "torch_C_nn_linear",
+                lambda: c_nn_linear_fn(weighted_flat, weight, bias),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            )
+            if c_nn_linear_fn is not None
+            else unavailable_operator_result(
+                "torch_C_nn_linear",
+                "torch._C._nn.linear is not accessible",
+                diagnostic_only=False,
+            ),
+            operator_result(
+                "torch_addmm_fused_bias",
+                lambda: torch.addmm(
+                    effective_bias.unsqueeze(0),
+                    weighted_flat.unsqueeze(0),
+                    weight.t(),
+                ).squeeze(0),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat.unsqueeze(0)),
+                    "weight_t": extended_tensor_metadata(weight.t()),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "weight_at_input_plus_bias",
+                lambda: weight @ weighted_flat + effective_bias,
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "input_at_weight_t_plus_bias",
+                lambda: weighted_flat @ weight.t() + effective_bias,
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight_t": extended_tensor_metadata(weight.t()),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "torch_matmul_weight_input_plus_bias",
+                lambda: torch.matmul(weight, weighted_flat) + effective_bias,
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "torch_einsum_hk_k_to_h_plus_bias",
+                lambda: torch.einsum("hk,k->h", weight, weighted_flat) + effective_bias,
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "elementwise_product_sum_full_vector",
+                lambda: (weight * weighted_flat.unsqueeze(0)).sum(dim=1) + effective_bias,
+                diagnostic_only=True,
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "flinear_input_contiguous",
+                lambda: torch.nn.functional.linear(weighted_contiguous, weight, bias),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_contiguous),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            ),
+            operator_result(
+                "flinear_weight_contiguous",
+                lambda: torch.nn.functional.linear(weighted_flat, weight_contiguous, bias),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight_contiguous),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            ),
+            operator_result(
+                "flinear_all_contiguous",
+                lambda: torch.nn.functional.linear(
+                    weighted_contiguous, weight_contiguous, bias_contiguous
+                ),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_contiguous),
+                    "weight": extended_tensor_metadata(weight_contiguous),
+                    "bias": extended_tensor_metadata(bias_contiguous),
+                },
+            ),
+            operator_result(
+                "flinear_input_noncontiguous_view",
+                lambda: torch.nn.functional.linear(input_noncontiguous, weight, bias),
+                input_layout={
+                    "input": extended_tensor_metadata(input_noncontiguous),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            ),
+            operator_result(
+                "flinear_weight_noncontiguous_same_shape",
+                lambda: torch.nn.functional.linear(
+                    weighted_flat, weight_noncontiguous_same_shape, bias
+                ),
+                input_layout={
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight_noncontiguous_same_shape),
+                    "bias": extended_tensor_metadata(bias),
+                },
+            ),
+            operator_result(
+                "flinear_input_clone_weight_clone",
+                lambda: torch.nn.functional.linear(
+                    weighted_flat.clone(), weight.clone(), bias.clone() if bias is not None else None
+                ),
+                input_layout={
+                    "input_kind": "clone",
+                    "weight_kind": "clone",
+                    "bias_kind": "clone" if bias is not None else None,
+                },
+            ),
+            operator_result(
+                "flinear_no_bias_then_add_bias",
+                lambda: torch.nn.functional.linear(weighted_flat, weight, None)
+                + effective_bias,
+                input_layout={
+                    "bias_handling": "unfused add after F.linear(..., bias=None)",
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+            operator_result(
+                "flinear_no_bias_then_bf16_add_bias",
+                lambda: (
+                    torch.nn.functional.linear(weighted_flat, weight, None)
+                    .to(torch.bfloat16)
+                    + effective_bias.to(torch.bfloat16)
+                ).to(torch.bfloat16),
+                diagnostic_only=True,
+                input_layout={
+                    "bias_handling": "pre-bias BF16 output plus BF16 bias",
+                    "input": extended_tensor_metadata(weighted_flat),
+                    "weight": extended_tensor_metadata(weight),
+                    "bias": extended_tensor_metadata(effective_bias),
+                },
+            ),
+        ]
+
+        def run_sensitivity_variant(
+            name: str,
+            configure: Any,
+            restore: Any,
+        ) -> dict[str, Any]:
+            try:
+                configure()
+                return operator_result(
+                    name,
+                    lambda: torch.nn.functional.linear(weighted_flat, weight, bias),
+                    input_layout={
+                        "input": extended_tensor_metadata(weighted_flat),
+                        "weight": extended_tensor_metadata(weight),
+                        "bias": extended_tensor_metadata(bias),
+                    },
+                )
+            finally:
+                restore()
+
+        sensitivity_results = {}
+        mkldnn_backend = getattr(torch.backends, "mkldnn", None)
+        if mkldnn_backend is not None and hasattr(mkldnn_backend, "enabled"):
+            prior_mkldnn_enabled = bool(mkldnn_backend.enabled)
+            sensitivity_results["mkldnn_enabled"] = run_sensitivity_variant(
+                "flinear_mkldnn_enabled",
+                lambda: setattr(mkldnn_backend, "enabled", True),
+                lambda: setattr(mkldnn_backend, "enabled", prior_mkldnn_enabled),
+            )
+            sensitivity_results["mkldnn_disabled"] = run_sensitivity_variant(
+                "flinear_mkldnn_disabled",
+                lambda: setattr(mkldnn_backend, "enabled", False),
+                lambda: setattr(mkldnn_backend, "enabled", prior_mkldnn_enabled),
+            )
+        else:
+            sensitivity_results["mkldnn_enabled"] = unavailable_operator_result(
+                "flinear_mkldnn_enabled",
+                "torch.backends.mkldnn.enabled is unavailable",
+                diagnostic_only=True,
+            )
+            sensitivity_results["mkldnn_disabled"] = unavailable_operator_result(
+                "flinear_mkldnn_disabled",
+                "torch.backends.mkldnn.enabled is unavailable",
+                diagnostic_only=True,
+            )
+
+        prior_num_threads = torch.get_num_threads()
+        sensitivity_results["default_thread"] = operator_result(
+            "flinear_default_thread_count",
+            lambda: torch.nn.functional.linear(weighted_flat, weight, bias),
+            input_layout={"torch_num_threads": prior_num_threads},
+        )
+        sensitivity_results["single_thread"] = run_sensitivity_variant(
+            "flinear_single_thread",
+            lambda: torch.set_num_threads(1),
+            lambda: torch.set_num_threads(prior_num_threads),
+        )
+
+        deterministic_state = (
+            torch.are_deterministic_algorithms_enabled()
+            if hasattr(torch, "are_deterministic_algorithms_enabled")
+            else None
+        )
+        environment = {
+            "python_executable": sys.executable,
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "device_used": str(weighted_flat.device),
+            "gpu_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "python_cpu_thread_count": prior_num_threads,
+            "torch_num_threads": prior_num_threads,
+            "torch_num_interop_threads": torch.get_num_interop_threads()
+            if hasattr(torch, "get_num_interop_threads")
+            else None,
+            "torch_backends_mkldnn_enabled": bool(mkldnn_backend.enabled)
+            if mkldnn_backend is not None and hasattr(mkldnn_backend, "enabled")
+            else None,
+            "torch_deterministic_algorithms_enabled": deterministic_state,
+            "torch_backends_cuda_matmul_allow_tf32": getattr(
+                torch.backends.cuda.matmul, "allow_tf32", None
+            ),
+            "torch_backends_cuda_matmul_allow_bf16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_bf16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_backends_cuda_matmul_allow_fp16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_fp16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision()
+            if hasattr(torch, "get_float32_matmul_precision")
+            else None,
+            "autocast_enabled": bool(torch.is_autocast_enabled())
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+            "autocast_cpu_enabled": bool(torch.is_autocast_enabled("cpu"))
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+        }
+        tensor_meta = {
+            "weighted_v": {
+                **extended_tensor_metadata(weighted_flat),
+                "summary": finite_summary(weighted_values),
+            },
+            "o_proj_weight": extended_tensor_metadata(weight),
+            "o_proj_weight_transposed_view": extended_tensor_metadata(weight_transposed_view),
+            "o_proj_weight_noncontiguous_same_shape": extended_tensor_metadata(
+                weight_noncontiguous_same_shape
+            ),
+            "o_proj_bias": extended_tensor_metadata(bias),
+            "o_proj_output": {
+                **extended_tensor_metadata(module_output),
+                "lane22_value": output_values[output_lane],
+                "summary": finite_summary(output_values),
+            },
+            "orientation": {
+                "statement": (
+                    "output[h] = dot(weight[h, :], weighted_v[:]) + bias[h]"
+                ),
+                "weight_shape": list(weight.shape),
+                "input_shape": list(weighted_flat.shape),
+                "output_shape": list(module_output.shape),
+            },
+        }
+
+    def result_by_operator(name: str) -> dict[str, Any] | None:
+        for result in operator_results:
+            if result.get("operator") == name:
+                return result
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    operator_results_path = output_dir / "operator_results.json"
+    tensor_summary_path = output_dir / "tensor_metadata.json"
+    artifact_path = output_dir / "attention_oproj_api_probe.json"
+    write_json(operator_results_path, {"operator_results": operator_results})
+    write_json(tensor_summary_path, tensor_meta)
+
+    module_result = result_by_operator("module_attn_out")
+    flinear_result = result_by_operator("torch_nn_functional_linear")
+    c_nn_result = result_by_operator("torch_C_nn_linear")
+    addmm_result = result_by_operator("torch_addmm_fused_bias")
+    matmul_names = {
+        "weight_at_input_plus_bias",
+        "input_at_weight_t_plus_bias",
+        "torch_matmul_weight_input_plus_bias",
+        "torch_einsum_hk_k_to_h_plus_bias",
+        "elementwise_product_sum_full_vector",
+    }
+    full_vector_clear_operators = [
+        result["operator"]
+        for result in operator_results
+        if result.get("available") and result.get("clears_full_vector")
+    ]
+    flinear_family = {
+        "module_attn_out",
+        "torch_nn_functional_linear",
+        "torch_C_nn_linear",
+        "flinear_input_contiguous",
+        "flinear_weight_contiguous",
+        "flinear_all_contiguous",
+        "flinear_input_noncontiguous_view",
+        "flinear_weight_noncontiguous_same_shape",
+        "flinear_input_clone_weight_clone",
+        "flinear_no_bias_then_add_bias",
+        "flinear_no_bias_then_bf16_add_bias",
+    }
+    addmm_matches = bool(addmm_result and addmm_result.get("clears_full_vector"))
+    matmul_einsum_explains = any(
+        result.get("operator") in matmul_names and result.get("clears_full_vector")
+        for result in operator_results
+    )
+    flinear_unique = bool(
+        module_result
+        and module_result.get("clears_full_vector")
+        and flinear_result
+        and flinear_result.get("clears_full_vector")
+        and not addmm_matches
+        and not matmul_einsum_explains
+        and all(operator in flinear_family for operator in full_vector_clear_operators)
+    )
+    layout_variant_names = {
+        "flinear_input_contiguous",
+        "flinear_weight_contiguous",
+        "flinear_all_contiguous",
+        "flinear_input_noncontiguous_view",
+        "flinear_weight_noncontiguous_same_shape",
+        "flinear_input_clone_weight_clone",
+    }
+    layout_variants = [
+        result
+        for result in operator_results
+        if result.get("operator") in layout_variant_names
+    ]
+    baseline_clear = bool(flinear_result and flinear_result.get("clears_full_vector"))
+    layout_sensitive = any(
+        result.get("available")
+        and result.get("clears_full_vector") != baseline_clear
+        for result in layout_variants
+    )
+    mkldnn_enabled = sensitivity_results.get("mkldnn_enabled")
+    mkldnn_disabled = sensitivity_results.get("mkldnn_disabled")
+    mkldnn_sensitive = (
+        None
+        if not (
+            mkldnn_enabled
+            and mkldnn_enabled.get("available")
+            and mkldnn_disabled
+            and mkldnn_disabled.get("available")
+        )
+        else mkldnn_enabled.get("clears_full_vector")
+        != mkldnn_disabled.get("clears_full_vector")
+        or mkldnn_enabled.get("metrics") != mkldnn_disabled.get("metrics")
+    )
+    default_thread = sensitivity_results.get("default_thread")
+    single_thread = sensitivity_results.get("single_thread")
+    thread_sensitive = (
+        None
+        if not (
+            default_thread
+            and default_thread.get("available")
+            and single_thread
+            and single_thread.get("available")
+        )
+        else default_thread.get("clears_full_vector")
+        != single_thread.get("clears_full_vector")
+        or default_thread.get("metrics") != single_thread.get("metrics")
+    )
+    fused_bias_result = result_by_operator("flinear_no_bias_then_add_bias")
+    fused_bias_sensitive = bool(
+        fused_bias_result
+        and flinear_result
+        and fused_bias_result.get("available")
+        and flinear_result.get("available")
+        and fused_bias_result.get("metrics") != flinear_result.get("metrics")
+    )
+
+    classification = (
+        f"layer{layer_index}_oproj_producer_api_probe_mkldnn_sensitive"
+        if mkldnn_sensitive
+        else f"layer{layer_index}_oproj_producer_api_probe_thread_sensitive"
+        if thread_sensitive
+        else f"layer{layer_index}_oproj_producer_api_probe_layout_sensitive"
+        if layout_sensitive
+        else f"layer{layer_index}_oproj_producer_api_probe_addmm_matches"
+        if addmm_matches
+        else f"layer{layer_index}_oproj_producer_api_probe_flinear_unique"
+        if flinear_unique
+        else f"layer{layer_index}_oproj_producer_api_probe_no_operator_explains"
+    )
+    interpretation = {
+        "flinear_unique": flinear_unique,
+        "c_nn_linear_matches_flinear": (
+            None
+            if c_nn_result is None or not c_nn_result.get("available")
+            else c_nn_result.get("clears_full_vector") == flinear_result.get("clears_full_vector")
+            and c_nn_result.get("metrics") == flinear_result.get("metrics")
+        ),
+        "addmm_matches_flinear": (
+            None
+            if addmm_result is None or not addmm_result.get("available")
+            else addmm_result.get("clears_full_vector") == flinear_result.get("clears_full_vector")
+            and addmm_result.get("metrics") == flinear_result.get("metrics")
+        ),
+        "layout_sensitive": layout_sensitive,
+        "mkldnn_sensitive": mkldnn_sensitive,
+        "thread_sensitive": thread_sensitive,
+        "fused_bias_sensitive": fused_bias_sensitive,
+        "matmul_einsum_explains_official": matmul_einsum_explains,
+        "full_vector_clear_operators": full_vector_clear_operators,
+        "module_matches_prior": bool(module_result and module_result.get("clears_full_vector")),
+        "flinear_matches_prior": bool(flinear_result and flinear_result.get("clears_full_vector")),
+        "source_dtype_probe_classification": source_dtype_probe.get("classification"),
+        "source_backend_discriminator_classification": source_backend_probe.get(
+            "classification"
+        ),
+        "next_bounded_step": (
+            "Use this producer-side PyTorch API matrix to decide whether the "
+            "consumer/backend discriminator should model F.linear/addmm/module "
+            "semantics directly before any Rust runtime backend experiment."
+        ),
+    }
+    status = {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": classification,
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "layer_index": layer_index,
+        "operator": "attention_o_proj",
+        "output_lane": output_lane,
+        "model": None,
+        "source_statuses": {
+            "producer_dtype_probe_status": str(source_producer_dtype_probe_status)
+            if source_producer_dtype_probe_status
+            else None,
+            "backend_discriminator_probe_status": str(
+                source_backend_discriminator_probe_status
+            )
+            if source_backend_discriminator_probe_status
+            else None,
+            "attention_bundle_status": str(source_attention_status)
+            if source_attention_status
+            else None,
+            "attention_audit_status": str(source_attention_audit_status)
+            if source_attention_audit_status
+            else None,
+            "consumer_bundle_validate_status": str(
+                source_consumer_bundle_validate_status
+            )
+            if source_consumer_bundle_validate_status
+            else None,
+            "consumer_oproj_sweep_status": str(source_consumer_oproj_sweep_status)
+            if source_consumer_oproj_sweep_status
+            else None,
+        },
+        "environment": environment,
+        "tensor_metadata": tensor_meta,
+        "baseline_facts": {
+            "module_matches_prior_o_proj_artifact": bool(
+                module_result and module_result.get("clears_full_vector")
+            ),
+            "flinear_matches_prior_o_proj_artifact": bool(
+                flinear_result and flinear_result.get("clears_full_vector")
+            ),
+            "matmul_mismatches_from_prior_dtype_probe": get_nested(
+                source_dtype_probe,
+                [
+                    "full_vector_guard",
+                    "matmul_vs_prior_o_proj_artifact",
+                    "metrics",
+                    "mismatches",
+                ],
+            ),
+            "einsum_mismatches_from_prior_dtype_probe": get_nested(
+                source_dtype_probe,
+                [
+                    "full_vector_guard",
+                    "einsum_vs_prior_o_proj_artifact",
+                    "metrics",
+                    "mismatches",
+                ],
+            ),
+            "weighted_v_live_vs_prior_artifact": compare_vectors(
+                weighted_values, prior_weighted_v_values
+            )
+            if prior_weighted_v_values
+            else None,
+        },
+        "operator_results": operator_results,
+        "sensitivity_results": sensitivity_results,
+        "interpretation": interpretation,
+        "artifacts": {
+            "bundle_dir": str(output_dir) + "/",
+            "api_probe": str(artifact_path),
+            "operator_results": str(operator_results_path),
+            "tensor_metadata": str(tensor_summary_path),
+        },
+        "producer_metadata": {
+            "producer_function": "capture_layer_attention_oproj_api_probe",
+            "boundary_selector": "layerN_final_token_attention_oproj_api_probe",
+            "requested_layer_index": layer_index,
+            "port_source": PORT_SOURCE,
+        },
+    }
+    write_json(
+        artifact_path,
+        {
+            "environment": environment,
+            "tensor_metadata": tensor_meta,
+            "baseline_facts": status["baseline_facts"],
+            "operator_results": operator_results,
+            "sensitivity_results": sensitivity_results,
+            "interpretation": interpretation,
+        },
+    )
+    return status
+
+
 def capture_layer_selected_expert_internal_boundary_bundle(
     model: Any,
     input_token_ids: list[int] | None,
@@ -4237,6 +5075,69 @@ def build_ordered_attention_audit_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    oproj_api_probe_layer = parse_attention_oproj_api_probe_selector(boundary, layer_index)
+    if oproj_api_probe_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": oproj_api_probe_layer,
+            "layer_idx": oproj_api_probe_layer,
+            "classification": f"layer{oproj_api_probe_layer}_attention_oproj_api_probe_schema_ready",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "operator": "attention_o_proj",
+            "output_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "source_statuses": {
+                "producer_dtype_probe_status": str(args.source_producer_dtype_probe_status)
+                if args.source_producer_dtype_probe_status
+                else None,
+                "backend_discriminator_probe_status": str(
+                    args.source_backend_discriminator_probe_status
+                )
+                if args.source_backend_discriminator_probe_status
+                else None,
+                "attention_bundle_status": str(args.source_attention_status)
+                if args.source_attention_status
+                else None,
+                "attention_audit_status": str(args.source_attention_audit_status)
+                if args.source_attention_audit_status
+                else None,
+                "consumer_bundle_validate_status": (
+                    str(args.source_consumer_bundle_validate_status)
+                    if args.source_consumer_bundle_validate_status
+                    else None
+                ),
+                "consumer_oproj_sweep_status": (
+                    str(args.source_consumer_oproj_sweep_status)
+                    if args.source_consumer_oproj_sweep_status
+                    else None
+                ),
+            },
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_artifacts": [
+                "api_probe",
+                "operator_results",
+                "tensor_metadata",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_attention_oproj_api_probe",
+                "boundary_selector": boundary,
+                "requested_layer_index": oproj_api_probe_layer,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": (
+                f"run focused layer{oproj_api_probe_layer} attention o-proj API matrix under /tmp"
+            ),
+        }
     oproj_probe_layer = parse_attention_oproj_dtype_probe_selector(boundary, layer_index)
     if oproj_probe_layer is not None:
         return {
@@ -4582,6 +5483,9 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    oproj_api_probe_layer_index = parse_attention_oproj_api_probe_selector(
+        boundary, args.layer_idx
+    )
     oproj_probe_layer_index = parse_attention_oproj_dtype_probe_selector(
         boundary, args.layer_idx
     )
@@ -4593,7 +5497,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
-        oproj_probe_layer_index is None
+        oproj_api_probe_layer_index is None
+        and oproj_probe_layer_index is None
         and raw_qk_probe_layer_index is None
         and attention_audit_layer_index is None
         and attention_layer_index is None
@@ -4606,7 +5511,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run_schema:
         return dry_run_schema(
             boundary,
-            oproj_probe_layer_index
+            oproj_api_probe_layer_index
+            or oproj_probe_layer_index
             or raw_qk_probe_layer_index
             or attention_audit_layer_index
             or attention_layer_index
@@ -4616,6 +5522,64 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             or layer_index,
             args,
         )
+    if oproj_api_probe_layer_index is not None:
+        if args.lane is None:
+            raise ValueError("attention o-proj API probe requires --lane")
+        if args.source_attention_status is None:
+            raise ValueError("attention o-proj API probe requires --source-attention-status")
+        if args.source_attention_audit_status is None:
+            raise ValueError(
+                "attention o-proj API probe requires --source-attention-audit-status"
+            )
+        if args.source_consumer_bundle_validate_status is None:
+            raise ValueError(
+                "attention o-proj API probe requires --source-consumer-bundle-validate-status"
+            )
+        if args.source_consumer_oproj_sweep_status is None:
+            raise ValueError(
+                "attention o-proj API probe requires --source-consumer-oproj-sweep-status"
+            )
+        if args.source_producer_dtype_probe_status is None:
+            raise ValueError(
+                "attention o-proj API probe requires --source-producer-dtype-probe-status"
+            )
+        if args.source_backend_discriminator_probe_status is None:
+            raise ValueError(
+                "attention o-proj API probe requires --source-backend-discriminator-probe-status"
+            )
+        if args.output_dir is None:
+            raise ValueError("attention o-proj API probe requires --output-dir")
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        source_status = load_json(args.source_attention_status)
+        token_source_path = args.layer_input
+        if token_source_path is None:
+            token_source = source_status.get("input_token_source", {})
+            token_source_path_value = token_source.get("path")
+            if not token_source_path_value:
+                raise ValueError(
+                    "source attention status is missing input_token_source.path"
+                )
+            token_source_path = Path(token_source_path_value)
+        input_token_ids, _token_source_metadata = input_token_ids_from_source(token_source_path)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_attention_oproj_api_probe(
+            model,
+            input_token_ids,
+            torch,
+            oproj_api_probe_layer_index,
+            args.lane,
+            source_attention_status=args.source_attention_status,
+            source_attention_audit_status=args.source_attention_audit_status,
+            source_consumer_bundle_validate_status=args.source_consumer_bundle_validate_status,
+            source_consumer_oproj_sweep_status=args.source_consumer_oproj_sweep_status,
+            source_producer_dtype_probe_status=args.source_producer_dtype_probe_status,
+            source_backend_discriminator_probe_status=args.source_backend_discriminator_probe_status,
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     if oproj_probe_layer_index is not None:
         if args.lane is None:
             raise ValueError("attention o-proj dtype probe requires --lane")
@@ -4874,6 +5838,9 @@ def main() -> int:
         oproj_probe_like = (
             args.boundary is not None and "attention_oproj_dtype_probe" in args.boundary
         )
+        oproj_api_probe_like = (
+            args.boundary is not None and "attention_oproj_api_probe" in args.boundary
+        )
         attention_like = (
             args.boundary is not None
             and "attention_ordered_boundary_bundle" in args.boundary
@@ -4887,7 +5854,16 @@ def main() -> int:
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
-                f"layer{layer_label}_attention_oproj_dtype_probe_blocked_by_memory"
+                f"layer{layer_label}_oproj_producer_api_probe_execution_failed"
+                if oproj_api_probe_like and memory_like
+                else f"layer{layer_label}_oproj_producer_api_probe_blocked_by_schema"
+                if oproj_api_probe_like and "requires" in message
+                else f"layer{layer_label}_oproj_producer_api_probe_blocked_by_tensor_access"
+                if oproj_api_probe_like
+                and ("missing artifacts" in message or "outside" in message)
+                else f"layer{layer_label}_oproj_producer_api_probe_execution_failed"
+                if oproj_api_probe_like
+                else f"layer{layer_label}_attention_oproj_dtype_probe_blocked_by_memory"
                 if oproj_probe_like and memory_like
                 else f"layer{layer_label}_attention_oproj_dtype_probe_blocked_by_schema"
                 if oproj_probe_like and "requires" in message
