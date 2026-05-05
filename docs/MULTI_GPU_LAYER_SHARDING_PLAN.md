@@ -6461,3 +6461,142 @@ Still deferred:
 Primary classification:
 
 multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete
+
+## Real-model fused global + scratch allocation smoke status
+
+This operator validation slice ran the restricted real model through the current
+bench-only f16 allocation surface, including shard-local scratch buffers sized
+with `--f16-scratch-max-tokens 1`.
+
+Command run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_scratch_status.json
+```
+
+The emitted JSON path is
+`/tmp/multi_gpu_layer_sharding/split_allocation_f16_scratch_status.json`; it is
+not committed.
+
+Result summary:
+
+- primary result classification:
+  `multi_gpu_layer_sharding_real_model_fused_global_f16_scratch_allocation_smoke_complete`.
+- command status classification:
+  `multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete`.
+- model path:
+  `/data/models/openai/gpt-oss-20b-full-attn-restricted-integration`.
+- dtype: `f16`.
+- device map: `split:0-11@0,12-23@1`.
+- header policy: `allow_restricted_sinks_override`.
+- restricted sinks overrides: 24.
+- resource construction: succeeded.
+- manifest-owned f16/U8 allocation and retention: succeeded.
+- selective f32 norm/bias/final-norm loading: succeeded.
+- RoPE allocation: succeeded.
+- KV allocation: succeeded with 1 block and block size 16.
+- synthetic decode metadata allocation: succeeded with shape 1 token, 1 seq,
+  context length 1, block size 16.
+- fused f16 allocation: succeeded.
+- f16 scratch allocation: succeeded.
+- scratch `max_tokens`: 1.
+- unassigned tensor count: 0.
+- invalid tensor count: 0.
+- top-level fused f16 error: none.
+- top-level f16 scratch error: none.
+
+Shard summary:
+
+- GPU0 owns embeddings and absolute layers 0..11:
+  - f16 tensors: 181.
+  - f32 norm/bias/final-norm tensors: 72.
+  - U8 host tensors: 48.
+  - RoPE: 2,097,152 bytes.
+  - KV: 393,216 bytes.
+  - metadata: 32,792 bytes.
+  - fused f16 status: `allocated`.
+  - fused QKV: 12 buffers, 353,894,400 bytes.
+  - dense gate/up: `not_applicable`, 0 buffers.
+  - embedding f16: `available_from_uploaded_f16`, 1,158,266,880 bytes,
+    source `uploaded_f16`; no extra side-buffer copy was made.
+  - final norm f16: `not_applicable`.
+  - fused total: 354,224,640 bytes.
+  - scratch: `allocated`, 29,376 elements, 58,752 bytes.
+- GPU1 owns absolute layers 12..23 and the final head:
+  - f16 tensors: 182.
+  - f32 norm/bias/final-norm tensors: 73.
+  - U8 host tensors: 48.
+  - RoPE: 2,097,152 bytes.
+  - KV: 393,216 bytes.
+  - metadata: 32,792 bytes.
+  - fused f16 status: `allocated`.
+  - fused QKV: 12 buffers, 353,894,400 bytes.
+  - dense gate/up: `not_applicable`, 0 buffers.
+  - embedding f16: `not_applicable`.
+  - final norm f16: `allocated`, 5,760 bytes, source `f32_cast`.
+  - fused total: 354,230,400 bytes.
+  - scratch: `allocated`, 29,376 elements, 58,752 bytes.
+
+Per-shard scratch buffer summary for both GPU0 and GPU1:
+
+- `qkv`: 5,120 elements, 10,240 bytes.
+- `attn_out`: 4,096 elements, 8,192 bytes.
+- `o_proj`: 2,880 elements, 5,760 bytes.
+- `normed`: 2,880 elements, 5,760 bytes.
+- `residual`: 2,880 elements, 5,760 bytes.
+- `gate_up`: 5,760 elements, 11,520 bytes.
+- `silu_out`: 2,880 elements, 5,760 bytes.
+- `down`: 2,880 elements, 5,760 bytes.
+
+The tied LM-head fallback remains deferred. GPT-OSS MoE GPU upload remains
+deferred.
+
+Stderr contained existing Rust/CUDA build warnings and the cargo command line;
+the status JSON reported no top-level error, no fused f16 error, and no f16
+scratch error.
+
+This is f16 allocation-surface validation only. It is not BF16 parity, model
+parity, execution readiness, final-token parity, logit parity, or serving
+support for split maps.
+
+No split execution, layer construction, `GpuModelRunner` construction,
+attention, graph output, final norm execution, LM-head execution, logits, graph
+capture, forward pass, serving behavior, BF16 parity, or parity path was added
+or exercised.
+
+Serve/runtime split maps remain non-executable and continue to be rejected
+before CUDA allocation.
+
+Validation after this docs update:
+
+- `git diff --check`
+
+Next bounded step:
+
+- GPT-OSS MoE GPU upload design.
+- layer-construction skeleton without execution.
+- tied LM-head fallback design/status.
+- BF16/dtype-policy checkpoint before execution work.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_fused_global_f16_scratch_allocation_smoke_complete
