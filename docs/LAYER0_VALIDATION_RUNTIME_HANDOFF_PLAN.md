@@ -2119,6 +2119,35 @@ a safe global o-proj policy. The bounded next actions are:
 - Update the docs-only policy-design branch with layer6 evidence before any
   implementation scaffold or further surface collection.
 
+## Ordered Surface Batch Status Stage 1
+
+Stage 1 adds a validation-only status/matrix mode:
+`ordered-surface-batch-status`.
+
+```text
+status:
+  /tmp/ordered_surface_batch_status.json
+
+classification:
+  ordered_surface_batch_status_recorded
+
+layers consumed:
+  2..6
+```
+
+This mode only reads existing ordered-surface statuses. It does not generate
+oracle artifacts, run consumer validation, run backend or producer probes,
+emit layer outputs, or continue the ladder.
+
+The normalized matrix records layers2..5 as explicit-policy-cleared and layer6
+as blocked on the official-linear/fused-addmm o-proj boundary. Layer6 remains
+blocked pending a fused-linear/addmm validation discriminator design.
+
+No runtime/default routing/CUDA behavior changed, no tolerance/correction was
+applied, no output was emitted, and there is no final-logit, all-layer,
+server, or 4097-token claim. Next bounded step: review the matrix, then pilot
+layer7..9 generation/validation only if approved.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

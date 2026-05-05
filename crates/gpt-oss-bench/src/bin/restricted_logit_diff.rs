@@ -18,7 +18,10 @@ struct Cli {
     #[arg(long)]
     model: String,
 
-    #[arg(long, default_value = "Explain tensor parallelism in one short sentence.")]
+    #[arg(
+        long,
+        default_value = "Explain tensor parallelism in one short sentence."
+    )]
     prompt: String,
 
     #[arg(long, default_value_t = 128)]
@@ -158,7 +161,11 @@ fn run_child(cli: &Cli, mode: ChildMode) -> Result<()> {
     Ok(())
 }
 
-fn spawn_child(cli: &Cli, mode: ChildMode, forced_output_tokens: &[TokenId]) -> Result<ChildSummary> {
+fn spawn_child(
+    cli: &Cli,
+    mode: ChildMode,
+    forced_output_tokens: &[TokenId],
+) -> Result<ChildSummary> {
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let output = Command::new(current_exe)
         .env(
@@ -246,7 +253,9 @@ fn capture_summary(
             input_token_ids: if kind == "prefill" {
                 prompt_token_ids.to_vec()
             } else {
-                vec![*forced_output_token_ids.last().expect("decode step must have a forced token")]
+                vec![*forced_output_token_ids
+                    .last()
+                    .expect("decode step must have a forced token")]
             },
             forced_output_token_ids: forced_output_token_ids.clone(),
             chosen_token_id,
@@ -297,10 +306,8 @@ fn build_worker_config(
     gpu_memory_utilization: f32,
 ) -> Result<WorkerConfig> {
     let config_path = model_path.join("config.json");
-    let value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path)?).with_context(|| {
-            format!("failed to parse {}", config_path.display())
-        })?;
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path)?)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
     let get_usize = |key: &str, default: usize| -> usize {
         value
             .get(key)
@@ -445,7 +452,11 @@ fn build_single_sequence_metadata(
 
 fn last_token_logits<'a>(logits: &'a [f32], vocab_size: usize) -> Result<&'a [f32]> {
     if logits.len() < vocab_size {
-        bail!("logits buffer too small: {} < vocab {}", logits.len(), vocab_size);
+        bail!(
+            "logits buffer too small: {} < vocab {}",
+            logits.len(),
+            vocab_size
+        );
     }
     let num_tokens = logits.len() / vocab_size;
     let last_offset = (num_tokens - 1) * vocab_size;
@@ -479,7 +490,11 @@ fn top_k_logits(logits: &[f32], top_k: usize, tokenizer: &Tokenizer) -> Result<V
         .collect())
 }
 
-fn build_report(worker: &ChildSummary, runner: &ChildSummary, top_k: usize) -> Result<DifferentialReport> {
+fn build_report(
+    worker: &ChildSummary,
+    runner: &ChildSummary,
+    top_k: usize,
+) -> Result<DifferentialReport> {
     if worker.prompt_token_ids != runner.prompt_token_ids {
         bail!("prompt token ids differ between worker and runner captures");
     }
@@ -513,7 +528,11 @@ fn build_report(worker: &ChildSummary, runner: &ChildSummary, top_k: usize) -> R
         } else {
             largest.iter().map(|entry| entry.abs_diff).sum::<f32>() / largest.len() as f32
         };
-        largest.sort_by(|a, b| b.abs_diff.partial_cmp(&a.abs_diff).unwrap_or(std::cmp::Ordering::Equal));
+        largest.sort_by(|a, b| {
+            b.abs_diff
+                .partial_cmp(&a.abs_diff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         largest.truncate(top_k.min(8));
 
         let matched = max_abs_diff <= tolerance;

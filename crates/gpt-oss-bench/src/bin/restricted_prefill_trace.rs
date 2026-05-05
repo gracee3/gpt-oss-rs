@@ -17,7 +17,10 @@ struct Cli {
     #[arg(long)]
     model: String,
 
-    #[arg(long, default_value = "Explain tensor parallelism in one short sentence.")]
+    #[arg(
+        long,
+        default_value = "Explain tensor parallelism in one short sentence."
+    )]
     prompt: String,
 
     #[arg(long, default_value_t = 128)]
@@ -97,10 +100,8 @@ fn build_worker_config(
     gpu_memory_utilization: f32,
 ) -> Result<WorkerConfig> {
     let config_path = model_path.join("config.json");
-    let value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path)?).with_context(|| {
-            format!("failed to parse {}", config_path.display())
-        })?;
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path)?)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
     let get_usize = |key: &str, default: usize| -> usize {
         value
             .get(key)

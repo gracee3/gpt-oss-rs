@@ -4377,6 +4377,30 @@ a safe global o-proj policy. The bounded next actions are:
 - Update the docs-only policy-design branch with layer6 evidence before any
   implementation scaffold or further surface collection.
 
+## Ordered Surface Batch Status Stage 1
+
+Stage 1 adds the validation-only `ordered-surface-batch-status` mode, writing:
+
+```text
+/tmp/ordered_surface_batch_status.json
+```
+
+The expected classification is:
+
+```text
+ordered_surface_batch_status_recorded
+```
+
+The mode consumes existing layer2..6 statuses only. It does not generate new
+artifacts, run validation, run backend or producer probes, emit outputs, or
+continue the ladder.
+
+The matrix records layers2..5 as explicit-policy-cleared and layer6 as blocked
+on official-linear/fused-addmm semantics. No runtime/default routing/CUDA
+behavior changed, no tolerance/correction was applied, and there is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step: review
+the matrix, then pilot layer7..9 generation/validation only if approved.
+
 ## Validation Commands
 
 For the skeleton slice:

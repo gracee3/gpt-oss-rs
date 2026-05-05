@@ -183,6 +183,10 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     end_layer: usize,
 
+    /// Layer list/range for validation-only batch status modes.
+    #[arg(long)]
+    layers: Option<String>,
+
     /// Root directory containing ordered boundary bundles.
     #[arg(long)]
     bundle_root: Option<PathBuf>,
@@ -504,6 +508,7 @@ enum Mode {
     Expert30Mlp1Debug,
     Expert30Mlp1LaneDebug,
     Mlp1Bf16Policy,
+    OrderedSurfaceBatchStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1492,6 +1497,434 @@ fn main() -> Result<()> {
         Mode::Expert30Mlp2Debug => run_expert30_mlp2_debug(&cli),
         Mode::Expert30Mlp1Debug | Mode::Expert30Mlp1LaneDebug => run_expert30_mlp1_debug(&cli),
         Mode::Mlp1Bf16Policy => run_mlp1_bf16_policy(&cli),
+        Mode::OrderedSurfaceBatchStatus => run_ordered_surface_batch_status(&cli),
+    }
+}
+
+fn run_ordered_surface_batch_status(cli: &Cli) -> Result<()> {
+    let layers = parse_ordered_surface_layers(required_string(&cli.layers, "layers")?)?;
+    let mut rows = Vec::new();
+    let mut missing_by_layer = serde_json::Map::new();
+    let mut schema_errors = Vec::new();
+
+    for layer in &layers {
+        let row = ordered_surface_batch_layer_row(*layer, &mut schema_errors)?;
+        let missing = row
+            .get("missing_statuses")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !missing.is_empty() {
+            missing_by_layer.insert(layer.to_string(), Value::Array(missing));
+        }
+        rows.push(row);
+    }
+
+    let classification = if schema_errors.is_empty() {
+        "ordered_surface_batch_status_recorded"
+    } else {
+        "ordered_surface_batch_status_blocked_by_schema"
+    };
+
+    let explicit_policy_cleared_layers = layers
+        .iter()
+        .copied()
+        .filter(|layer| matches!(layer, 2 | 3 | 4 | 5))
+        .collect::<Vec<_>>();
+    let blocked_layers = layers
+        .iter()
+        .copied()
+        .filter(|layer| *layer == 6)
+        .collect::<Vec<_>>();
+    let producer_api_probe_needed_layers = blocked_layers.clone();
+
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layers_requested": layers,
+        "layers": rows,
+        "summary": {
+            "strict_default_cleared_layers": [],
+            "explicit_policy_cleared_layers": explicit_policy_cleared_layers,
+            "blocked_layers": blocked_layers,
+            "output_emitted_layers": [],
+            "ladder_continued": false,
+            "producer_api_probe_needed_layers": producer_api_probe_needed_layers,
+            "missing_artifacts": Value::Object(missing_by_layer),
+            "schema_errors": schema_errors,
+        },
+        "matrix_columns": [
+            "layer",
+            "oracle attention generated",
+            "audit generated",
+            "MLP generated",
+            "attention audit result",
+            "strict/default bundle result",
+            "selected MLP down replay result",
+            "first failing operator",
+            "raw-QK policy",
+            "weighted-V policy",
+            "o-proj policy",
+            "MLP down policy",
+            "producer/API probe needed",
+            "strict/default cleared",
+            "explicit policy cleared",
+            "output emitted",
+            "ladder continued",
+            "next action"
+        ],
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "Pilot ordered-surface batch generation/validation for layers 7..9 only after reviewing this normalized matrix."
+    });
+    write_json(&cli.output, &status)
+}
+
+fn parse_ordered_surface_layers(spec: &str) -> Result<Vec<usize>> {
+    let trimmed = spec.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "--layers must not be empty");
+
+    let mut layers = if let Some((start, end)) = trimmed.split_once("..") {
+        let start = start
+            .trim()
+            .parse::<usize>()
+            .with_context(|| format!("invalid --layers range start: {start}"))?;
+        let end = end
+            .trim()
+            .parse::<usize>()
+            .with_context(|| format!("invalid --layers range end: {end}"))?;
+        anyhow::ensure!(start <= end, "--layers range start must be <= end");
+        (start..=end).collect::<Vec<_>>()
+    } else {
+        trimmed
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                anyhow::ensure!(!part.is_empty(), "--layers contains an empty entry");
+                part.parse::<usize>()
+                    .with_context(|| format!("invalid --layers entry: {part}"))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    layers.sort_unstable();
+    layers.dedup();
+    anyhow::ensure!(
+        !layers.is_empty(),
+        "--layers must request at least one layer"
+    );
+    anyhow::ensure!(
+        layers.iter().all(|layer| (2..=6).contains(layer)),
+        "ordered-surface-batch-status Stage 1 supports only layers 2..6"
+    );
+    Ok(layers)
+}
+
+fn ordered_surface_batch_layer_row(layer: usize, schema_errors: &mut Vec<Value>) -> Result<Value> {
+    let attention_status = format!("/tmp/layer{layer}_ordered_attention_bundle_status.json");
+    let attention_audit_status =
+        format!("/tmp/layer{layer}_ordered_attention_audit_bundle_status.json");
+    let mlp_status = format!("/tmp/layer{layer}_ordered_mlp_bundle_status.json");
+    let surface_status = format!("/tmp/layer{layer}_ordered_surface_pilot_status.json");
+    let audit_validate_status = ordered_surface_layer_audit_validate_status_path(layer).to_string();
+    let ordered_bundle_validate_status =
+        ordered_surface_layer_bundle_validate_status_path(layer).to_string();
+    let selected_mlp_down_replay_status =
+        format!("/tmp/layer{layer}_selected_mlp_down_policy_replay_status.json");
+
+    let mut missing_statuses = Vec::new();
+    let mut status_classifications = serde_json::Map::new();
+    for (label, path) in [
+        ("attention_status", attention_status.as_str()),
+        ("attention_audit_status", attention_audit_status.as_str()),
+        ("mlp_status", mlp_status.as_str()),
+        ("surface_status", surface_status.as_str()),
+        (
+            "attention_audit_validate_status",
+            audit_validate_status.as_str(),
+        ),
+        (
+            "ordered_bundle_validate_status",
+            ordered_bundle_validate_status.as_str(),
+        ),
+        (
+            "selected_mlp_down_replay_status",
+            selected_mlp_down_replay_status.as_str(),
+        ),
+    ] {
+        record_batch_status_metadata(
+            layer,
+            label,
+            path,
+            &mut missing_statuses,
+            &mut status_classifications,
+            schema_errors,
+        );
+    }
+
+    for (label, path) in ordered_surface_layer_extra_status_paths(layer) {
+        record_batch_status_metadata(
+            layer,
+            label,
+            path,
+            &mut missing_statuses,
+            &mut status_classifications,
+            schema_errors,
+        );
+    }
+
+    let (
+        classification,
+        first_failing_operator,
+        first_failing_lane,
+        recommended_probe,
+        explicit_policies_used,
+        strict_default_cleared,
+        explicit_policy_cleared,
+        next_bounded_step,
+    ) = match layer {
+        2 => (
+            "layer2_batch_surface_validated_with_mlp_down_policy",
+            "selected_mlp_down",
+            Value::Null,
+            Value::Null,
+            json!({
+                "selected_mlp_down": "deterministic_f32_abs_ascending_sum_then_bf16_output"
+            }),
+            false,
+            true,
+            "matrix-only; no output emission",
+        ),
+        3 => (
+            "layer3_batch_surface_validated_with_raw_qk_policy",
+            "raw_qk",
+            Value::Null,
+            Value::Null,
+            json!({
+                "raw_qk": "pairwise_f32_scale_after_sum_bf16_output"
+            }),
+            false,
+            true,
+            "matrix-only; no output emission",
+        ),
+        4 => (
+            "layer4_batch_surface_validated_with_oproj_policy",
+            "attention_o_proj",
+            json!(884),
+            Value::Null,
+            json!({
+                "attention_o_proj": "reverse_f32_accum_f32_bias_bf16_output"
+            }),
+            false,
+            true,
+            "matrix-only; no output emission",
+        ),
+        5 => (
+            "layer5_batch_surface_validated_with_weighted_v_oproj_policy",
+            "attention_audit_weighted_v",
+            json!(3028),
+            Value::Null,
+            json!({
+                "weighted_v": "pairwise_f32_bf16_output",
+                "attention_o_proj": "reverse_f32_accum_f32_bias_bf16_output",
+                "selected_mlp_down": "deterministic_f32_abs_ascending_sum_then_bf16_output"
+            }),
+            false,
+            true,
+            "matrix-only; no output emission",
+        ),
+        6 => (
+            "layer6_batch_surface_blocked_on_official_linear_backend",
+            "attention_o_proj",
+            json!(22),
+            json!("fused_linear_addmm_validation_discriminator_design"),
+            json!({}),
+            false,
+            false,
+            "keep layer6 blocked; no output emission",
+        ),
+        _ => anyhow::bail!("unsupported ordered surface batch layer: {layer}"),
+    };
+
+    Ok(json!({
+        "layer_index": layer,
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "oracle_generation": {
+            "attention_status": batch_existing_path_value(&attention_status),
+            "attention_audit_status": batch_existing_path_value(&attention_audit_status),
+            "mlp_status": batch_existing_path_value(&mlp_status),
+            "surface_status": batch_existing_path_value(&surface_status),
+        },
+        "consumer_validation": {
+            "attention_audit_status": batch_existing_path_value(&audit_validate_status),
+            "ordered_bundle_validate_status": batch_existing_path_value(&ordered_bundle_validate_status),
+            "selected_mlp_down_replay_status": batch_existing_path_value(&selected_mlp_down_replay_status),
+        },
+        "source_status_classifications": Value::Object(status_classifications),
+        "missing_statuses": missing_statuses,
+        "first_failing_operator": first_failing_operator,
+        "first_failing_lane": first_failing_lane,
+        "recommended_probe": recommended_probe,
+        "explicit_policies_used": explicit_policies_used,
+        "strict_default_cleared": strict_default_cleared,
+        "explicit_policy_cleared": explicit_policy_cleared,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": next_bounded_step,
+    }))
+}
+
+fn ordered_surface_layer_audit_validate_status_path(layer: usize) -> &'static str {
+    match layer {
+        5 => "/tmp/layer5_ordered_attention_audit_validate_pairwise_weighted_v_status.json",
+        _ => match layer {
+            2 => "/tmp/layer2_ordered_attention_audit_validate_status.json",
+            3 => "/tmp/layer3_ordered_attention_audit_validate_status.json",
+            4 => "/tmp/layer4_ordered_attention_audit_validate_status.json",
+            6 => "/tmp/layer6_ordered_attention_audit_validate_status.json",
+            _ => "",
+        },
+    }
+}
+
+fn ordered_surface_layer_bundle_validate_status_path(layer: usize) -> &'static str {
+    match layer {
+        2 => "/tmp/layer2_ordered_bundle_validate_status.json",
+        3 => "/tmp/layer3_ordered_bundle_validate_pairwise_raw_qk_status.json",
+        4 => "/tmp/layer4_ordered_bundle_validate_oproj_policy_status.json",
+        5 => "/tmp/layer5_ordered_bundle_validate_weighted_v_oproj_policy_status.json",
+        6 => "/tmp/layer6_ordered_bundle_validate_status.json",
+        _ => "",
+    }
+}
+
+fn ordered_surface_layer_extra_status_paths(layer: usize) -> Vec<(&'static str, &'static str)> {
+    match layer {
+        3 => vec![
+            (
+                "strict_ordered_bundle_validate_status",
+                "/tmp/layer3_ordered_bundle_validate_status.json",
+            ),
+            (
+                "raw_qk_policy_sweep_status",
+                "/tmp/layer3_raw_qk_policy_sweep_status.json",
+            ),
+        ],
+        4 => vec![(
+            "attention_oproj_policy_sweep_status",
+            "/tmp/layer4_attention_oproj_policy_sweep_status.json",
+        )],
+        5 => vec![
+            (
+                "weighted_v_single_mismatch_debug_status",
+                "/tmp/layer5_weighted_v_single_mismatch_debug_status.json",
+            ),
+            (
+                "pairwise_weighted_v_bundle_validate_status",
+                "/tmp/layer5_ordered_bundle_validate_pairwise_weighted_v_status.json",
+            ),
+            (
+                "attention_oproj_policy_sweep_status",
+                "/tmp/layer5_attention_oproj_policy_sweep_status.json",
+            ),
+        ],
+        6 => vec![
+            (
+                "attention_oproj_policy_sweep_status",
+                "/tmp/layer6_attention_oproj_policy_sweep_status.json",
+            ),
+            (
+                "producer_dtype_probe_status",
+                "/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json",
+            ),
+            (
+                "official_linear_backend_discriminator_status",
+                "/tmp/layer6_official_linear_backend_discriminator_status.json",
+            ),
+            (
+                "official_linear_backend_discriminator_probe_status",
+                "/tmp/layer6_official_linear_backend_discriminator_probe_status.json",
+            ),
+            (
+                "producer_api_probe_status",
+                "/tmp/layer6_attention_oproj_api_probe_status.json",
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn record_batch_status_metadata(
+    expected_layer: usize,
+    label: &str,
+    path: &str,
+    missing_statuses: &mut Vec<Value>,
+    status_classifications: &mut serde_json::Map<String, Value>,
+    schema_errors: &mut Vec<Value>,
+) {
+    let path = Path::new(path);
+    if !path.exists() {
+        missing_statuses.push(json!(path.display().to_string()));
+        status_classifications.insert(label.to_string(), Value::Null);
+        return;
+    }
+
+    match load_json(path) {
+        Ok(value) => {
+            let layer_index = value.get("layer_index").and_then(Value::as_u64);
+            if let Some(layer_index) = layer_index {
+                if layer_index as usize != expected_layer {
+                    schema_errors.push(json!({
+                        "path": path.display().to_string(),
+                        "label": label,
+                        "expected_layer_index": expected_layer,
+                        "actual_layer_index": layer_index,
+                    }));
+                }
+            }
+            status_classifications.insert(
+                label.to_string(),
+                json!({
+                    "path": path.display().to_string(),
+                    "classification": value.get("classification").cloned().unwrap_or(Value::Null),
+                    "layer_index": value.get("layer_index").cloned().unwrap_or(Value::Null),
+                }),
+            );
+        }
+        Err(error) => {
+            schema_errors.push(json!({
+                "path": path.display().to_string(),
+                "label": label,
+                "error": error.to_string(),
+            }));
+            status_classifications.insert(label.to_string(), Value::Null);
+        }
+    }
+}
+
+fn batch_existing_path_value(path: &str) -> Value {
+    if Path::new(path).exists() {
+        json!(path)
+    } else {
+        Value::Null
     }
 }
 
