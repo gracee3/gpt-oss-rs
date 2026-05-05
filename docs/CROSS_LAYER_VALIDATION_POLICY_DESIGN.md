@@ -6,6 +6,15 @@
 
 Layer6 update: `cross_layer_validation_policy_design_layer6_updated`
 
+Official-linear discriminator follow-up:
+
+- Branch: `design/official-linear-backend-discriminator`
+- Doc: `docs/OFFICIAL_LINEAR_BACKEND_DISCRIMINATOR_DESIGN.md`
+- Classification: `official_linear_backend_discriminator_design_recorded`
+- Purpose: scope a validation-only BF16 `attn.out` / `F.linear`
+  discriminator before any layer6 o-proj implementation or runtime-policy
+  discussion.
+
 ## Scope
 
 This document records final-token ordered validation evidence only. It covers
