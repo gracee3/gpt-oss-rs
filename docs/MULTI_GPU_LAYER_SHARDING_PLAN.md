@@ -6600,3 +6600,340 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_fused_global_f16_scratch_allocation_smoke_complete
+
+## GPT-OSS MoE GPU upload design
+
+This design/recon slice identifies the GPT-OSS routed-MoE GPU upload boundary
+needed after the current f16 allocation-surface work. It is intentionally
+non-executing: no MoE upload implementation, layer construction, runner
+construction, attention, graph decode, logits, serving behavior, or parity path
+is added in this slice.
+
+### Current single-device MoE state and upload path
+
+Current single-device ownership centers on:
+
+- `GpuModelRunner::build_gpt_oss_moe_layers`
+- `GpuModelRunner::prepare_gpt_oss_graph_decode`
+- `GptOssMoeLayerWeights`
+- `GptOssMoeLayerWeights::supports_gpu_decode`
+- `GptOssMoeLayerWeights::forward_decode_gpu`
+
+`GpuModelRunner::new` validates a single-device executable map, constructs
+`GpuTransformerLayer` shells, then calls `build_gpt_oss_moe_layers` once for
+the full model. The MoE vector is `Vec<Option<GptOssMoeLayerWeights>>`, indexed
+by the full runner layer id `0..config.num_layers`.
+
+`GptOssMoeLayerWeights` currently contains:
+
+- host U8 payloads:
+  - `gate_up_blocks`
+  - `gate_up_scales`
+  - `down_blocks`
+  - `down_scales`
+- host f32 payloads:
+  - `router_weight`
+  - `router_bias`
+  - `gate_up_bias`
+  - `down_bias`
+- CPU metadata:
+  - `hidden_size`
+  - `intermediate_size`
+  - `num_local_experts`
+  - `num_experts_per_tok`
+- GPU f32 references or buffers:
+  - `router_weight_gpu`
+  - `router_bias_gpu`
+  - `gate_up_bias_gpu`
+  - `down_bias_gpu`
+- graph-decode-only GPU U8 upload state:
+  - `gate_up_blocks_gpu`
+  - `gate_up_scales_gpu`
+  - `down_blocks_gpu`
+  - `down_scales_gpu`
+
+`build_gpt_oss_moe_layers` treats missing
+`model.layers.<N>.mlp.experts.gate_up_proj_blocks` as "no MoE state for this
+layer" and pushes `None`. If gate/up blocks are present, the remaining U8
+expert block/scale tensors are required, as are router and expert-bias f32
+tensors. The build step copies router and expert-bias f32 state to host for the
+CPU fallback path, keeps router GPU tensors by cloning existing f32
+`CudaSlice`s, uploads per-expert gate/up and down bias slices to GPU, and leaves
+U8 expert block/scale GPU buffers as `None`.
+
+`prepare_gpt_oss_graph_decode` is the current deferred upload boundary. It runs
+only for `GptOssForCausalLM` while f16 is enabled, prunes unused f32 projection
+weights, then loops over full-model layer ids. For each layer with MoE state, it
+uploads the four U8 expert block/scale payloads from `GpuModelWeights::get_u8`
+to the runner stream if they are not already uploaded.
+
+`supports_gpu_decode` returns true only when router GPU tensors, GPU expert
+biases, and all four GPU U8 block/scale payloads are present. The decode path
+then uses `gpt_oss_moe` kernels for route top-k, expert input selection, MXFP4
+expert dequant, and weighted add. Those kernels are execution boundaries and
+are out of scope for the bench-only upload smoke.
+
+### Tensor names and ownership
+
+GPT-OSS U8 expert payload names:
+
+- `model.layers.<N>.mlp.experts.gate_up_proj_blocks`
+- `model.layers.<N>.mlp.experts.gate_up_proj_scales`
+- `model.layers.<N>.mlp.experts.down_proj_blocks`
+- `model.layers.<N>.mlp.experts.down_proj_scales`
+
+Current router and expert-bias tensor names:
+
+- `model.layers.<N>.mlp.router.weight`
+- `model.layers.<N>.mlp.router.bias`
+- `model.layers.<N>.mlp.experts.gate_up_proj_bias`
+- `model.layers.<N>.mlp.experts.down_proj_bias`
+
+The split manifest already classifies the four U8 expert block/scale tensors as
+`host_u8_tensor_names`, not normal required f32/f16 uploads. `LateAllocationKind`
+already includes `GptOssMoeGpuUpload { layer_idx }` for each shard-owned
+absolute layer.
+
+Future split ownership rules:
+
+- MoE state exists only for shard-owned absolute layers.
+- GPU0 owns MoE state for absolute layers 0..11 in
+  `split:0-11@0,12-23@1`.
+- GPU1 owns MoE state for absolute layers 12..23 in that split.
+- Public status must report absolute layer ids.
+- Internal local indices are allowed only after ownership validation.
+- GPU1 layer 12 must remain `model.layers.12.*`, never
+  `model.layers.0.*`.
+- `ShardWeightStore` should validate owned layer names before either U8 host
+  lookup or f32 router/bias lookup.
+
+### Host U8 retention vs GPU U8 upload
+
+There are three distinct boundaries today:
+
+- Initial U8 host retention: `load_u8_weights_to_host_filtered` loads raw U8
+  safetensor payloads into `HashMap<String, Vec<u8>>`.
+- Current single-device runner construction: `GpuWorker::load_weights` stores
+  raw U8 payloads in `raw_weight_map_u8`; `build_gpu_model_runner` inserts them
+  into `GpuModelWeights` with `insert_u8`; `build_gpt_oss_moe_layers` copies
+  them into host fields on `GptOssMoeLayerWeights`.
+- Graph-decode preparation: `prepare_gpt_oss_graph_decode` uploads the four U8
+  block/scale tensors to `CudaSlice<u8>` fields on each MoE layer.
+
+The current split allocation smoke loads shard-owned host U8 payloads to count
+bytes and prove the manifest filter, but it does not retain a per-shard U8 map
+for later allocation stages. A future MoE upload smoke must retain that map long
+enough to upload shard-owned U8 tensors and report status, then drop the GPU
+buffers after status collection.
+
+### Shard-local MoE ownership rules
+
+The future split path should build a shard-local upload/status boundary, not a
+full `GptOssMoeLayerWeights` execution object. For each shard:
+
+- Iterate `shard.absolute_layers`, never `0..config.num_layers` as the source
+  of truth.
+- Use `ShardWeightStore::u8_owned_layer_tensor_name` for the four U8 expert
+  payloads.
+- Use `ShardWeightStore::require_owned_layer_tensor_name` for router and
+  expert-bias f32 tensors if they are needed for upload/readiness status.
+- Reject non-owned absolute layers before constructing tensor names.
+- Treat local layer ids as status-only/internal indices after ownership is
+  validated.
+- Keep dense MLP models and layers without GPT-OSS U8 expert tensors as
+  `not_applicable`, not errors.
+
+### Future bench-only MoE GPU upload smoke
+
+Recommended explicit flag:
+
+- `--upload-gpt-oss-moe-gpu`
+
+This should be independent from `--allocate-fused-f16` and
+`--allocate-f16-scratch`, because GPT-OSS MoE upload is U8/MXFP4 expert state,
+not f16 fused/preconverted state.
+
+The future smoke should:
+
+- use the existing `ShardedModelPlan`, `ShardTensorManifest`, and
+  `ShardWeightStore` ownership boundaries.
+- retain per-shard host U8 maps for shard-owned expert payloads.
+- selectively load f32 router and expert-bias tensors for shard-owned layers
+  only if status/readiness needs them.
+- upload only shard-owned layer U8 expert block/scale payloads to that shard's
+  CUDA stream.
+- create per-layer MoE upload status.
+- drop GPU U8 buffers after status collection.
+- avoid constructing `GpuModelRunner`.
+- avoid constructing `GpuTransformerLayer`.
+- avoid running router/gating kernels, expert dequant kernels, experts, decode,
+  graph capture, or any forward pass.
+- avoid claiming `supports_gpu_decode` is executable; at most report
+  `supports_gpu_decode_status=prerequisites_present` or
+  `not_evaluated_without_layer_construction`.
+
+### Required input state
+
+A future MoE upload smoke needs:
+
+- `ShardedModelPlan`.
+- `ShardTensorManifest`.
+- `ShardWeightStore`.
+- per-shard U8 host map retained from `load_u8_weights_to_host_filtered`.
+- per-shard f32 router/bias map if readiness/status includes router and expert
+  bias state.
+- global shape/header metadata for owned and unowned visibility checks.
+- model config fields:
+  - architecture.
+  - `num_layers`.
+  - `hidden_size`.
+  - `intermediate_size`.
+  - `num_local_experts`.
+  - `num_experts_per_tok`.
+  - any shape-derived block/scale dimensions used for byte validation.
+- shard CUDA stream/resource island.
+- kernel loader only for future readiness checks that inspect kernel
+  availability; U8 HtoD upload itself does not require launching kernels.
+
+Selective f32 loading should expand only under the future MoE flag to:
+
+- `model.layers.<N>.mlp.router.weight`
+- `model.layers.<N>.mlp.router.bias`
+- `model.layers.<N>.mlp.experts.gate_up_proj_bias`
+- `model.layers.<N>.mlp.experts.down_proj_bias`
+
+This mirrors the current single-device GPT-OSS f16 startup filter while keeping
+the split bench path shard-local.
+
+### Status JSON design
+
+Future top-level fields:
+
+- `moe_gpu_upload_attempted`
+- `moe_gpu_upload_succeeded`
+- `moe_gpu_upload_error`
+
+Future per-shard fields:
+
+- `moe_gpu_uploaded`
+- `moe_gpu_status`
+- `moe_layer_count`
+- `moe_u8_host_tensor_count`
+- `moe_u8_gpu_tensor_count`
+- `moe_u8_host_bytes`
+- `moe_u8_gpu_bytes`
+- `moe_router_tensor_count`
+- `moe_bias_tensor_count`
+- `moe_layer_statuses`
+- `moe_gpu_error`
+
+Future per-layer fields:
+
+- `absolute_layer_idx`
+- `local_layer_idx`
+- `gate_up_proj_blocks_status`
+- `gate_up_proj_scales_status`
+- `down_proj_blocks_status`
+- `down_proj_scales_status`
+- `gate_up_proj_blocks_bytes`
+- `gate_up_proj_scales_bytes`
+- `down_proj_blocks_bytes`
+- `down_proj_scales_bytes`
+- `router_status`
+- `expert_bias_status`
+- `supports_gpu_decode_status`
+- `layer_error`
+
+Recommended status values:
+
+- `allocated`
+- `not_applicable`
+- `missing_required_tensor`
+- `partial_u8_payload`
+- `deferred`
+- `error`
+
+### Required-vs-optional tensor semantics
+
+For GPT-OSS MoE layers where
+`model.layers.<N>.mlp.experts.gate_up_proj_blocks` is present, these U8 tensors
+are required as a complete set:
+
+- `gate_up_proj_blocks`
+- `gate_up_proj_scales`
+- `down_proj_blocks`
+- `down_proj_scales`
+
+Partial U8 block/scale presence should be reported as `partial_u8_payload` or
+`missing_required_tensor` with exact missing names. It should not silently fall
+back to dense MLP semantics.
+
+For owned GPT-OSS MoE layers, router and expert-bias f32 state should be treated
+as required for a readiness-equivalent status:
+
+- `mlp.router.weight`
+- `mlp.router.bias`
+- `mlp.experts.gate_up_proj_bias`
+- `mlp.experts.down_proj_bias`
+
+For dense MLP layers or non-GPT-OSS architectures, MoE upload is
+`not_applicable`. For unowned layer tensors, the status should be
+`TensorNotOwned`/ownership error, not missing. Shape visibility for unowned
+tensors must not make them loadable.
+
+### Interaction with fused f16 / scratch path
+
+MoE GPU upload should not depend on `--allocate-fused-f16`. The fused path owns
+f16 QKV, f16 norm/bias conversions, embedding/final-norm side buffers, and f16
+scratch. GPT-OSS MoE upload owns U8/MXFP4 expert block/scale GPU payloads plus
+router/bias readiness status.
+
+The only current coupling is in the single-device runtime: GPT-OSS graph-decode
+support requires f16 mode, MoE GPU readiness, and existing runner/layer state.
+The bench smoke should keep this separate by reporting upload prerequisites
+without asserting graph decode or execution readiness.
+
+### Interaction with layer-construction skeleton
+
+A future non-executing layer-construction skeleton can consume MoE upload status
+or a shard-local MoE upload container for owned absolute layers only. It should
+not call `forward_decode_gpu`, router kernels, expert kernels, attention, or
+activation transfer. The layer skeleton should also preserve absolute layer ids
+in public status and only use local indices inside shard-local containers after
+ownership validation.
+
+### BF16/dtype-policy note
+
+This design remains part of the current f16 allocation-surface lane. It does
+not answer BF16 runtime policy, BF16 parity, model parity, final-token parity,
+logit parity, execution readiness, or serving support. A separate BF16/dtype
+policy checkpoint should happen before any execution slice.
+
+### Risks / blockers
+
+- The split bench currently counts U8 host payloads but does not retain the
+  per-shard U8 map for later upload.
+- There is no shard-local MoE upload container/status type yet.
+- `GptOssMoeLayerWeights` is an execution-capable object with CPU fallback and
+  GPU decode methods; reusing it directly risks crossing the non-execution
+  boundary.
+- The current single-device path indexes MoE state by full-runner layer id.
+- Router and expert-bias f32 selective loading is not wired into the split bench
+  except for existing fused f16 tensors.
+- `supports_gpu_decode` today is a method on executable layer state; the bench
+  path should report prerequisite status rather than claiming executable graph
+  decode readiness.
+- Kernel availability for `gpt_oss_moe` should remain a separate readiness
+  signal unless an implementation slice explicitly needs it.
+
+### Next bounded step
+
+- Add a bench-only MoE GPU upload plan/status skeleton with
+  `--upload-gpt-oss-moe-gpu`.
+- Retain per-shard U8 host maps long enough for that skeleton/status.
+- Add no-GPU tests for absolute-layer MoE tensor naming, host U8 ownership, and
+  required-vs-optional status classification.
+
+Primary classification:
+
+multi_gpu_layer_sharding_gpt_oss_moe_gpu_upload_design_complete
