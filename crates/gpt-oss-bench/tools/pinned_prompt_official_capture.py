@@ -91,9 +91,24 @@ def parse_args() -> argparse.Namespace:
         help="Prior ordered attention oracle status used as provenance for raw-QK probes.",
     )
     parser.add_argument(
+        "--source-attention-audit-status",
+        type=Path,
+        help="Prior ordered attention audit oracle status used as provenance for o-proj probes.",
+    )
+    parser.add_argument(
         "--source-consumer-debug-status",
         type=Path,
         help="Consumer debug status requesting a focused raw-QK probe.",
+    )
+    parser.add_argument(
+        "--source-consumer-bundle-validate-status",
+        type=Path,
+        help="Consumer bundle validation status requesting an attention o-proj probe.",
+    )
+    parser.add_argument(
+        "--source-consumer-oproj-sweep-status",
+        type=Path,
+        help="Consumer o-proj policy sweep status for focused dtype probes.",
     )
     parser.add_argument(
         "--source-ordered-mlp-status",
@@ -284,6 +299,24 @@ def parse_raw_qk_dtype_probe_selector(boundary: str, layer_idx: int | None) -> i
             raise ValueError("layerN_final_token_raw_qk_dtype_probe requires --layer-idx")
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_raw_qk_dtype_probe", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_attention_oproj_dtype_probe_selector(boundary: str, layer_idx: int | None) -> int | None:
+    if boundary == "layerN_final_token_attention_oproj_dtype_probe":
+        if layer_idx is None:
+            raise ValueError(
+                "layerN_final_token_attention_oproj_dtype_probe requires --layer-idx"
+            )
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_final_token_attention_oproj_dtype_probe", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -1572,6 +1605,16 @@ def pairwise_f32_sum(values: list[float]) -> float:
     return round_f32(current[0])
 
 
+def chunked_pairwise_f32_sum(values: list[float], chunk_size: int) -> float:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    chunk_sums = [
+        pairwise_f32_sum(values[index : index + chunk_size])
+        for index in range(0, len(values), chunk_size)
+    ]
+    return sequential_f32_sum(chunk_sums)
+
+
 def write_vector_terms_artifact(
     output_dir: Path,
     name: str,
@@ -1661,6 +1704,50 @@ def vector_lane_result(tensor: Any, lane: int) -> dict[str, Any]:
         "dtype": str(tensor.dtype),
         "device": str(tensor.device),
         "shape": list(tensor.shape),
+    }
+
+
+def compare_vectors(actual: list[float], expected: list[float]) -> dict[str, Any]:
+    count = min(len(actual), len(expected))
+    mismatches = []
+    max_abs_diff = 0.0
+    mean_abs_diff = 0.0
+    worst_mismatch = None
+    for index in range(count):
+        diff = abs(float(actual[index]) - float(expected[index]))
+        mean_abs_diff += diff
+        if diff > max_abs_diff:
+            max_abs_diff = diff
+            worst_mismatch = {
+                "index": index,
+                "actual": float(actual[index]),
+                "expected": float(expected[index]),
+                "abs_diff": diff,
+            }
+        if float(actual[index]) != float(expected[index]):
+            mismatches.append(
+                {
+                    "index": index,
+                    "actual": float(actual[index]),
+                    "expected": float(expected[index]),
+                    "abs_diff": diff,
+                }
+            )
+    first_mismatch = mismatches[0] if mismatches else None
+    if count > 0:
+        mean_abs_diff /= count
+    return {
+        "value_count": count,
+        "actual_count": len(actual),
+        "expected_count": len(expected),
+        "metrics": {
+            "max_abs_diff": max_abs_diff,
+            "mean_abs_diff": mean_abs_diff,
+            "mismatches": len(mismatches) + abs(len(actual) - len(expected)),
+        },
+        "first_mismatch": first_mismatch,
+        "worst_mismatch": worst_mismatch,
+        "mismatch_samples": mismatches[:8],
     }
 
 
@@ -2185,6 +2272,676 @@ def capture_layer_raw_qk_dtype_probe(
         },
     )
     return status
+
+
+def capture_layer_attention_oproj_dtype_probe(
+    model: Any,
+    input_token_ids: list[int],
+    torch: Any,
+    layer_index: int,
+    output_lane: int,
+    *,
+    source_attention_status: Path | None,
+    source_attention_audit_status: Path | None,
+    source_consumer_bundle_validate_status: Path | None,
+    source_consumer_oproj_sweep_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    source_attention = (
+        load_json(source_attention_status) if source_attention_status else {}
+    )
+    source_attention_audit = (
+        load_json(source_attention_audit_status) if source_attention_audit_status else {}
+    )
+    source_validate = (
+        load_json(source_consumer_bundle_validate_status)
+        if source_consumer_bundle_validate_status
+        else {}
+    )
+    source_sweep = (
+        load_json(source_consumer_oproj_sweep_status)
+        if source_consumer_oproj_sweep_status
+        else {}
+    )
+    source_artifacts = source_attention.get("artifacts", {})
+    validate_oproj = get_nested(source_validate, ["attention_metrics", "o_proj"], {})
+    baseline = source_sweep.get("baseline", {})
+    first_mismatch = (
+        validate_oproj.get("first_mismatch")
+        or baseline.get("first_mismatch")
+        or baseline.get("worst_mismatch")
+        or {}
+    )
+    official_prior = first_mismatch.get("expected")
+    consumer_local_value = first_mismatch.get("actual")
+    policy_results = [
+        item
+        for item in source_sweep.get("policy_results", [])
+        if isinstance(item, dict)
+    ]
+
+    def bf16_round(value: float) -> dict[str, Any]:
+        f32_tensor = torch.tensor(float(value), dtype=torch.float32)
+        bf16_tensor = f32_tensor.to(torch.bfloat16)
+        return {
+            "float32_input": float(f32_tensor.item()),
+            "bfloat16_output": float(bf16_tensor.float().item()),
+            "output_dtype": str(bf16_tensor.dtype),
+        }
+
+    def maybe_tensor_metadata(tensor: Any | None) -> dict[str, Any]:
+        if tensor is None:
+            return {"present": False, "dtype": None, "device": None, "shape": None}
+        return {"present": True, **tensor_metadata(tensor)}
+
+    def lane_tensor_result(tensor: Any) -> dict[str, Any]:
+        result = vector_lane_result(tensor, output_lane)
+        result["matches_prior_official"] = (
+            official_prior is not None
+            and result["lane_value"] == float(official_prior)
+        )
+        result["matches_consumer_local"] = (
+            consumer_local_value is not None
+            and result["lane_value"] == float(consumer_local_value)
+        )
+        return result
+
+    def scalar_result(tensor: Any) -> dict[str, Any]:
+        result = scalar_tensor_result(tensor)
+        result["matches_prior_official"] = (
+            official_prior is not None and result["value"] == float(official_prior)
+        )
+        result["matches_consumer_local"] = (
+            consumer_local_value is not None
+            and result["value"] == float(consumer_local_value)
+        )
+        return result
+
+    with torch.inference_mode():
+        tokens = torch.as_tensor(
+            input_token_ids, dtype=torch.int64, device=model.embedding.weight.device
+        )
+        hidden = model.embedding(tokens)
+        for block_index in range(layer_index):
+            hidden = model.block[block_index](hidden)
+        attn = model.block[layer_index].attn
+        normed = attn.norm(hidden)
+        qkv = attn.qkv(normed)
+
+        token_count = len(input_token_ids)
+        final_token_index = token_count - 1
+        q_dim = attn.num_attention_heads * attn.head_dim
+        kv_dim = attn.num_key_value_heads * attn.head_dim
+        heads_per_kv = attn.num_attention_heads // attn.num_key_value_heads
+        q_flat = qkv[:, :q_dim].contiguous()
+        k_flat = qkv[:, q_dim : q_dim + kv_dim].contiguous()
+        v_flat = qkv[:, q_dim + kv_dim : q_dim + 2 * kv_dim].contiguous()
+        q = q_flat.view(
+            token_count,
+            attn.num_key_value_heads,
+            heads_per_kv,
+            attn.head_dim,
+        )
+        k = k_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        v = v_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        q_post_rope, k_post_rope = attn.rope(q, k)
+        q_post_final = q_post_rope[final_token_index]
+        k_expanded = k_post_rope[:, :, None, :].expand(
+            -1, -1, heads_per_kv, -1
+        )
+        v_expanded = v[:, :, None, :].expand(-1, -1, heads_per_kv, -1)
+        raw = torch.einsum(
+            "qhmd,khmd->hmqk",
+            q_post_final.unsqueeze(0),
+            k_expanded,
+        )
+        raw *= attn.sm_scale
+        raw = raw.squeeze(2).reshape(attn.num_attention_heads, token_count)
+
+        mask = torch.triu(
+            raw.new_full((token_count, token_count), -float("inf")),
+            diagonal=1,
+        )
+        if attn.sliding_window > 0:
+            mask += torch.tril(
+                mask.new_full((token_count, token_count), -float("inf")),
+                diagonal=-attn.sliding_window,
+            )
+        final_mask_row = mask[final_token_index]
+        masked_key_logits = raw + final_mask_row[None, :]
+        sinks = attn.sinks.reshape(attn.num_key_value_heads, heads_per_kv)
+        pre_softmax = torch.cat([masked_key_logits, sinks.reshape(-1, 1)], dim=-1)
+        probs = torch.softmax(pre_softmax, dim=-1)
+        probs_real_keys = probs[:, :token_count].reshape(
+            attn.num_key_value_heads,
+            heads_per_kv,
+            1,
+            token_count,
+        )
+        weighted = torch.einsum("hmqk,khmd->qhmd", probs_real_keys, v_expanded)
+        weighted_flat = weighted.reshape(attn.num_attention_heads * attn.head_dim)
+        oproj_weight = attn.out.weight
+        oproj_bias = attn.out.bias
+        if output_lane < 0 or output_lane >= int(oproj_weight.shape[0]):
+            raise ValueError(
+                f"output lane {output_lane} outside o-proj output dimension {oproj_weight.shape[0]}"
+            )
+        weight_row = oproj_weight[output_lane, :]
+        bias_lane = (
+            oproj_weight.new_zeros(())
+            if oproj_bias is None
+            else oproj_bias[output_lane]
+        )
+
+        repeated_full = [attn.out(weighted_flat) for _ in range(3)]
+        official_output = repeated_full[0]
+        f_linear_full = torch.nn.functional.linear(
+            weighted_flat.unsqueeze(0), oproj_weight, oproj_bias
+        ).squeeze(0)
+        matmul_full = oproj_weight @ weighted_flat
+        if oproj_bias is not None:
+            matmul_full = matmul_full + oproj_bias
+        einsum_full = torch.einsum("hd,d->h", oproj_weight, weighted_flat)
+        if oproj_bias is not None:
+            einsum_full = einsum_full + oproj_bias
+        isolated_lane = torch.einsum("d,d->", weight_row, weighted_flat) + bias_lane
+        elementwise_product_sum = (weight_row * weighted_flat).sum() + bias_lane
+
+        source_values = weighted_flat.float().cpu().tolist()
+        weight_values = weight_row.float().cpu().tolist()
+        bias_value = float(bias_lane.float().cpu().item())
+        product_values = [
+            round_f32(float(left) * float(right))
+            for left, right in zip(weight_values, source_values)
+        ]
+        sequential_prebias = sequential_f32_sum(product_values)
+        reverse_prebias = sequential_f32_sum(list(reversed(product_values)))
+        pairwise_prebias = pairwise_f32_sum(product_values)
+        chunked_prebias = {
+            str(chunk_size): chunked_pairwise_f32_sum(product_values, chunk_size)
+            for chunk_size in (16, 32, 64, 128)
+        }
+        f64_prebias = float(
+            sum(
+                float(left) * float(right)
+                for left, right in zip(weight_values, source_values)
+            )
+        )
+        f32_input_bf16_weight_prebias = float(
+            torch.dot(weight_row.float(), weighted_flat.float()).cpu().item()
+        )
+        bf16_product_values = (
+            weight_row.to(torch.bfloat16) * weighted_flat.to(torch.bfloat16)
+        ).float().cpu().tolist()
+        bf16_product_prebias = sequential_f32_sum(bf16_product_values)
+        explicit_f32_full = torch.nn.functional.linear(
+            weighted_flat.float().unsqueeze(0),
+            oproj_weight.float(),
+            oproj_bias.float() if oproj_bias is not None else None,
+        ).squeeze(0)
+        explicit_f32_lane = (
+            torch.dot(weight_row.float(), weighted_flat.float())
+            + bias_lane.float()
+        )
+        cpu_f32_full = torch.nn.functional.linear(
+            weighted_flat.float().cpu().unsqueeze(0),
+            oproj_weight.float().cpu(),
+            oproj_bias.float().cpu() if oproj_bias is not None else None,
+        ).squeeze(0)
+        cpu_bf16_full = torch.nn.functional.linear(
+            weighted_flat.to(torch.bfloat16).cpu().unsqueeze(0),
+            oproj_weight.to(torch.bfloat16).cpu(),
+            oproj_bias.to(torch.bfloat16).cpu() if oproj_bias is not None else None,
+        ).squeeze(0)
+        official_values = official_output.float().cpu().tolist()
+        f_linear_values = f_linear_full.float().cpu().tolist()
+        matmul_values = matmul_full.float().cpu().tolist()
+        einsum_values = einsum_full.float().cpu().tolist()
+        weighted_values = weighted_flat.float().cpu().tolist()
+
+        environment = {
+            "python_executable": sys.executable,
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "device_used": str(weighted_flat.device),
+            "gpu_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "torch_backends_cuda_matmul_allow_tf32": getattr(
+                torch.backends.cuda.matmul, "allow_tf32", None
+            ),
+            "torch_backends_cuda_matmul_allow_bf16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_bf16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_backends_cuda_matmul_allow_fp16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_fp16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision()
+            if hasattr(torch, "get_float32_matmul_precision")
+            else None,
+            "autocast_enabled": bool(torch.is_autocast_enabled())
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+            "autocast_cpu_enabled": bool(torch.is_autocast_enabled("cpu"))
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+        }
+
+        tensor_meta = {
+            "weighted_v": tensor_metadata(weighted_flat),
+            "o_proj_weight": tensor_metadata(oproj_weight),
+            "o_proj_bias": maybe_tensor_metadata(oproj_bias),
+            "o_proj_output": tensor_metadata(official_output),
+        }
+        official_expression_results = {
+            "full_expression": lane_tensor_result(official_output),
+            "repeated_full_expression": [
+                lane_tensor_result(output) for output in repeated_full
+            ],
+            "isolated_lane": scalar_result(isolated_lane),
+            "functional_linear": lane_tensor_result(f_linear_full),
+            "matmul": lane_tensor_result(matmul_full),
+            "einsum": lane_tensor_result(einsum_full),
+            "elementwise_product_sum": scalar_result(elementwise_product_sum),
+        }
+        dtype_variant_tensors = {
+            "explicit_f32_full_linear": lane_tensor_result(explicit_f32_full),
+            "explicit_f32_lane_dot": scalar_result(explicit_f32_lane),
+            "cpu_f32_linear": lane_tensor_result(cpu_f32_full),
+            "cpu_bfloat16_linear": lane_tensor_result(cpu_bf16_full),
+        }
+
+    def variant_result(name: str, prebias: float, *, bias: float = bias_value) -> dict[str, Any]:
+        prebias_f32 = round_f32(prebias)
+        bias_f32 = round_f32(bias)
+        before_output = round_f32(prebias_f32 + bias_f32)
+        rounded = bf16_round(before_output)
+        return {
+            "name": name,
+            "prebias_sum": float(prebias),
+            "prebias_sum_f32": float(prebias_f32),
+            "bias_value": float(bias),
+            "before_output_round": float(before_output),
+            "bf16_output": rounded["bfloat16_output"],
+            "rounding": rounded,
+            "matches_prior_official": (
+                official_prior is not None
+                and rounded["bfloat16_output"] == float(official_prior)
+            ),
+            "matches_consumer_local": (
+                consumer_local_value is not None
+                and rounded["bfloat16_output"] == float(consumer_local_value)
+            ),
+        }
+
+    dtype_variant_results = {
+        "original_tensors_unchanged": {
+            "full_expression": official_expression_results["full_expression"],
+            "isolated_lane": official_expression_results["isolated_lane"],
+            "functional_linear": official_expression_results["functional_linear"],
+            "matmul": official_expression_results["matmul"],
+            "einsum": official_expression_results["einsum"],
+            "elementwise_product_sum": official_expression_results[
+                "elementwise_product_sum"
+            ],
+        },
+        "explicit_f32_dot_sequential": variant_result(
+            "explicit_f32_dot_sequential", sequential_prebias
+        ),
+        "explicit_f32_dot_reverse": variant_result(
+            "explicit_f32_dot_reverse", reverse_prebias
+        ),
+        "explicit_f32_dot_pairwise": variant_result(
+            "explicit_f32_dot_pairwise", pairwise_prebias
+        ),
+        "explicit_f32_dot_chunked_pairwise": {
+            chunk_size: variant_result(
+                f"explicit_f32_dot_chunked_pairwise{chunk_size}",
+                prebias,
+            )
+            for chunk_size, prebias in chunked_prebias.items()
+        },
+        "f64_diagnostic_dot": {
+            **variant_result("f64_diagnostic_dot", f64_prebias),
+            "prebias_sum_f64": f64_prebias,
+        },
+        "bf16_product_then_f32_sum_evidence_only": variant_result(
+            "bf16_product_then_f32_sum_evidence_only",
+            bf16_product_prebias,
+        ),
+        "bf16_prebias_then_bf16_bias_evidence_only": {
+            "prebias_f32_source": sequential_prebias,
+            "prebias_bf16": bf16_round(sequential_prebias)["bfloat16_output"],
+            "bias_f32_source": bias_value,
+            "bias_bf16": bf16_round(bias_value)["bfloat16_output"],
+            "bf16_output": bf16_round(
+                bf16_round(sequential_prebias)["bfloat16_output"]
+                + bf16_round(bias_value)["bfloat16_output"]
+            )["bfloat16_output"],
+        },
+        "f32_input_bf16_weight": variant_result(
+            "f32_input_bf16_weight", f32_input_bf16_weight_prebias
+        ),
+        "torch_tensor_variants": dtype_variant_tensors,
+        "consumer_policy_sweep": policy_results,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    weighted_path = output_dir / "weighted_v_source_summary.json"
+    weight_path = output_dir / f"oproj_weight_row{output_lane}_summary.json"
+    terms_path = output_dir / f"dot_terms_lane{output_lane}.json"
+    artifact_path = output_dir / "attention_oproj_dtype_probe.json"
+    term_values = [
+        {
+            "input_index": index,
+            "weighted_v": weighted_values[index],
+            "weight": weight_values[index],
+            "product_f32": product_values[index],
+            "product_bf16_then_f32": bf16_product_values[index],
+            "abs_product": abs(product_values[index]),
+        }
+        for index in range(len(product_values))
+    ]
+    top_terms = sorted(
+        term_values, key=lambda item: item["abs_product"], reverse=True
+    )[:32]
+    positive_term_sum = float(sum(value for value in product_values if value > 0.0))
+    negative_term_sum = float(sum(value for value in product_values if value < 0.0))
+    write_json(
+        weighted_path,
+        {
+            "boundary": (
+                f"layer{layer_index}_final_token_attention_weighted_value_sum_"
+                "before_output_projection"
+            ),
+            "shape": [len(weighted_values)],
+            "dtype": tensor_meta["weighted_v"]["dtype"],
+            "summary": finite_summary(weighted_values),
+            "lane_window": lane_window(
+                weighted_values, min(output_lane, len(weighted_values) - 1)
+            ),
+            "values": weighted_values,
+        },
+    )
+    write_json(
+        weight_path,
+        {
+            "boundary": f"layer{layer_index}_attention_o_proj_weight_row{output_lane}",
+            "tensor_path": f"model.block[{layer_index}].attn.out.weight[{output_lane}, :]",
+            "shape": [len(weight_values)],
+            "dtype": tensor_meta["o_proj_weight"]["dtype"],
+            "orientation": "row_output_lane_by_input_dim",
+            "summary": finite_summary(weight_values),
+            "top_abs_values": sorted(
+                (
+                    {"input_index": index, "value": value, "abs_value": abs(value)}
+                    for index, value in enumerate(weight_values)
+                ),
+                key=lambda item: item["abs_value"],
+                reverse=True,
+            )[:32],
+            "values": weight_values,
+        },
+    )
+    write_json(
+        terms_path,
+        {
+            "boundary": f"layer{layer_index}_attention_o_proj_lane{output_lane}_dot_terms",
+            "output_lane": output_lane,
+            "input_dim": len(product_values),
+            "term_count": len(product_values),
+            "summary": finite_summary(product_values),
+            "positive_term_sum": positive_term_sum,
+            "negative_term_sum": negative_term_sum,
+            "top_abs_product_terms": top_terms,
+            "terms": term_values,
+        },
+    )
+
+    prior_o_proj_values = []
+    prior_o_proj_path = source_artifacts.get("o_proj")
+    if prior_o_proj_path:
+        prior_o_proj_values = [
+            float(value)
+            for value in load_json(Path(prior_o_proj_path)).get("values", [])
+        ]
+    prior_weighted_v_values = []
+    prior_weighted_v_path = source_artifacts.get("weighted_v")
+    if prior_weighted_v_path:
+        prior_weighted_v_values = [
+            float(value)
+            for value in load_json(Path(prior_weighted_v_path)).get("values", [])
+        ]
+    full_vector_guard = {
+        "official_full_expression_vs_prior_o_proj_artifact": compare_vectors(
+            official_values, prior_o_proj_values
+        )
+        if prior_o_proj_values
+        else None,
+        "functional_linear_vs_prior_o_proj_artifact": compare_vectors(
+            f_linear_values, prior_o_proj_values
+        )
+        if prior_o_proj_values
+        else None,
+        "matmul_vs_prior_o_proj_artifact": compare_vectors(
+            matmul_values, prior_o_proj_values
+        )
+        if prior_o_proj_values
+        else None,
+        "einsum_vs_prior_o_proj_artifact": compare_vectors(
+            einsum_values, prior_o_proj_values
+        )
+        if prior_o_proj_values
+        else None,
+        "weighted_v_live_vs_prior_artifact": compare_vectors(
+            weighted_values, prior_weighted_v_values
+        )
+        if prior_weighted_v_values
+        else None,
+        "lane_local_policy_warning": (
+            "Consumer sweep showed lane-clearing variants introduced collateral "
+            "o-proj mismatches; this probe does not promote a full-vector runtime policy."
+        ),
+    }
+
+    official_lane = official_expression_results["full_expression"]["lane_value"]
+    if official_prior is None and prior_o_proj_values:
+        official_prior = prior_o_proj_values[output_lane]
+    official_matches_prior = (
+        official_prior is not None and official_lane == float(official_prior)
+    )
+    matching_consumer_variants = [
+        item.get("policy")
+        for item in policy_results
+        if get_nested(item, ["focus_lane", "matched"], False)
+    ]
+    rounding_inputs = {
+        "official_full_expression_output": official_lane,
+        "consumer_local_output": consumer_local_value,
+        "explicit_f32_sequential_before_output": dtype_variant_results[
+            "explicit_f32_dot_sequential"
+        ]["before_output_round"],
+        "explicit_f32_reverse_before_output": dtype_variant_results[
+            "explicit_f32_dot_reverse"
+        ]["before_output_round"],
+        "explicit_f32_pairwise_before_output": dtype_variant_results[
+            "explicit_f32_dot_pairwise"
+        ]["before_output_round"],
+        "f64_diagnostic_before_output": dtype_variant_results["f64_diagnostic_dot"][
+            "before_output_round"
+        ],
+    }
+    for chunk_size, result in dtype_variant_results[
+        "explicit_f32_dot_chunked_pairwise"
+    ].items():
+        rounding_inputs[f"chunked_pairwise{chunk_size}_before_output"] = result[
+            "before_output_round"
+        ]
+    bf16_rounding_probe = {
+        name: bf16_round(float(value))
+        for name, value in rounding_inputs.items()
+        if value is not None
+    }
+    source_vector_summaries = {
+        "weighted_v": {
+            "artifact": str(weighted_path),
+            "summary": finite_summary(weighted_values),
+        },
+        f"oproj_weight_row{output_lane}": {
+            "artifact": str(weight_path),
+            "summary": finite_summary(weight_values),
+        },
+        "oproj_bias_lane": {
+            "value": bias_value,
+            "dtype": tensor_meta["o_proj_bias"]["dtype"],
+            "present": bool(tensor_meta["o_proj_bias"]["present"]),
+        },
+        "dot_terms": {
+            "artifact": str(terms_path),
+            "summary": finite_summary(product_values),
+            "top_abs_product_terms": top_terms,
+            "positive_term_sum": positive_term_sum,
+            "negative_term_sum": negative_term_sum,
+        },
+    }
+    full_official_exact = (
+        full_vector_guard["official_full_expression_vs_prior_o_proj_artifact"] is not None
+        and full_vector_guard["official_full_expression_vs_prior_o_proj_artifact"][
+            "metrics"
+        ]["mismatches"]
+        == 0
+    )
+    adjacent_bf16_values = (
+        consumer_local_value is not None
+        and official_prior is not None
+        and abs(float(consumer_local_value) - float(official_prior)) == 0.0625
+    )
+    consistent_with_accumulation_boundary = bool(
+        official_matches_prior
+        and consumer_local_value is not None
+        and float(consumer_local_value) != official_lane
+        and matching_consumer_variants
+    )
+    consistent_with_artifact_precision_boundary = bool(
+        official_matches_prior and full_official_exact
+    )
+    classification = (
+        f"layer{layer_index}_attention_oproj_dtype_probe_confirms_accumulation_boundary"
+        if consistent_with_accumulation_boundary
+        else f"layer{layer_index}_attention_oproj_dtype_probe_confirms_artifact_precision_boundary"
+        if consistent_with_artifact_precision_boundary
+        else f"layer{layer_index}_attention_oproj_dtype_probe_generated_without_precise_precast"
+    )
+    interpretation = {
+        "official_output_dtype": official_expression_results["full_expression"]["dtype"],
+        "official_expression_matches_prior": official_matches_prior,
+        "consumer_local_value": consumer_local_value,
+        "official_value": official_prior,
+        "matches_any_consumer_variant": bool(matching_consumer_variants),
+        "matching_consumer_variants": matching_consumer_variants,
+        "consistent_with_accumulation_boundary": consistent_with_accumulation_boundary,
+        "consistent_with_artifact_precision_boundary": consistent_with_artifact_precision_boundary,
+        "local_and_official_are_adjacent_bf16_lattice_values": adjacent_bf16_values,
+        "precise_precast_accumulator_available": False,
+        "suggested_consumer_next_step": (
+            "Use the live official attn.out/F.linear replay and full-vector guard "
+            "to decide whether an o-proj validation-only policy needs more surfaces; "
+            "do not promote lane-local variants to runtime/default behavior."
+        ),
+    }
+    mapping = {
+        "layer_index": layer_index,
+        "output_lane": output_lane,
+        "input_dim": int(oproj_weight.shape[1]),
+        "output_dim": int(oproj_weight.shape[0]),
+        "expression_orientation": (
+            "output[h] = dot(model.block[layer].attn.out.weight[h, :], "
+            "weighted_v[:]) + model.block[layer].attn.out.bias[h]"
+        ),
+        "official_expression": "model.block[layer_index].attn.out(weighted_flat)",
+        "functional_linear_equivalent": (
+            "torch.nn.functional.linear(weighted_flat.unsqueeze(0), "
+            "attn.out.weight, attn.out.bias).squeeze(0)"
+        ),
+        "input_layout": "weighted_v flattened [query_head, head_dim] head-major",
+    }
+    artifact = {
+        "environment": environment,
+        "tensor_metadata": tensor_meta,
+        "mapping": mapping,
+        "official_expression_results": official_expression_results,
+        "dtype_variant_results": dtype_variant_results,
+        "bf16_rounding_probe": bf16_rounding_probe,
+        "source_vector_summaries": source_vector_summaries,
+        "full_vector_guard": full_vector_guard,
+        "interpretation": interpretation,
+    }
+    write_json(artifact_path, artifact)
+
+    return {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": classification,
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "layer_index": layer_index,
+        "output_lane": output_lane,
+        "model": None,
+        "source_statuses": {
+            "attention_bundle_status": str(source_attention_status)
+            if source_attention_status
+            else None,
+            "attention_audit_status": str(source_attention_audit_status)
+            if source_attention_audit_status
+            else None,
+            "consumer_bundle_validate_status": (
+                str(source_consumer_bundle_validate_status)
+                if source_consumer_bundle_validate_status
+                else None
+            ),
+            "consumer_oproj_sweep_status": (
+                str(source_consumer_oproj_sweep_status)
+                if source_consumer_oproj_sweep_status
+                else None
+            ),
+        },
+        "source_attention_classification": source_attention.get("classification"),
+        "source_attention_audit_classification": source_attention_audit.get(
+            "classification"
+        ),
+        "artifacts": {
+            "bundle_dir": str(output_dir) + "/",
+            "oproj_dtype_probe": str(artifact_path),
+            "weighted_v_source_summary": str(weighted_path),
+            f"oproj_weight_row{output_lane}_summary": str(weight_path),
+            f"dot_terms_lane{output_lane}": str(terms_path),
+        },
+        "environment": environment,
+        "tensor_metadata": tensor_meta,
+        "mapping": mapping,
+        "official_expression_results": official_expression_results,
+        "dtype_variant_results": dtype_variant_results,
+        "bf16_rounding_probe": bf16_rounding_probe,
+        "source_vector_summaries": source_vector_summaries,
+        "full_vector_guard": full_vector_guard,
+        "interpretation": interpretation,
+        "producer_metadata": {
+            "producer_function": "capture_layer_attention_oproj_dtype_probe",
+            "boundary_selector": "layerN_final_token_attention_oproj_dtype_probe",
+            "requested_layer_index": layer_index,
+            "port_source": PORT_SOURCE,
+        },
+    }
 
 
 def capture_layer_selected_expert_internal_boundary_bundle(
@@ -3480,6 +4237,61 @@ def build_ordered_attention_audit_status(
 
 
 def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) -> dict[str, Any]:
+    oproj_probe_layer = parse_attention_oproj_dtype_probe_selector(boundary, layer_index)
+    if oproj_probe_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": oproj_probe_layer,
+            "layer_idx": oproj_probe_layer,
+            "classification": f"layer{oproj_probe_layer}_attention_oproj_dtype_probe_schema_ready",
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "output_lane": args.lane,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "source_statuses": {
+                "attention_bundle_status": str(args.source_attention_status)
+                if args.source_attention_status
+                else None,
+                "attention_audit_status": str(args.source_attention_audit_status)
+                if args.source_attention_audit_status
+                else None,
+                "consumer_bundle_validate_status": (
+                    str(args.source_consumer_bundle_validate_status)
+                    if args.source_consumer_bundle_validate_status
+                    else None
+                ),
+                "consumer_oproj_sweep_status": (
+                    str(args.source_consumer_oproj_sweep_status)
+                    if args.source_consumer_oproj_sweep_status
+                    else None
+                ),
+            },
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_artifacts": [
+                "oproj_dtype_probe",
+                "weighted_v_source_summary",
+                "oproj_weight_row",
+                "dot_terms",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_attention_oproj_dtype_probe",
+                "boundary_selector": boundary,
+                "requested_layer_index": oproj_probe_layer,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": (
+                f"run focused layer{oproj_probe_layer} attention o-proj dtype probe under /tmp"
+            ),
+        }
     raw_qk_probe_layer = parse_raw_qk_dtype_probe_selector(boundary, layer_index)
     if raw_qk_probe_layer is not None:
         return {
@@ -3770,6 +4582,9 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return build_intermediate_output(capture_input, body)
 
     boundary = args.boundary or "layerN_final_token_mlp_ordered_boundary_bundle"
+    oproj_probe_layer_index = parse_attention_oproj_dtype_probe_selector(
+        boundary, args.layer_idx
+    )
     raw_qk_probe_layer_index = parse_raw_qk_dtype_probe_selector(boundary, args.layer_idx)
     attention_audit_layer_index = parse_ordered_attention_audit_selector(boundary, args.layer_idx)
     attention_layer_index = parse_ordered_attention_selector(boundary, args.layer_idx)
@@ -3778,7 +4593,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     internal_layer_index = parse_selected_expert_internal_selector(boundary, args.layer_idx)
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
-        raw_qk_probe_layer_index is None
+        oproj_probe_layer_index is None
+        and raw_qk_probe_layer_index is None
         and attention_audit_layer_index is None
         and attention_layer_index is None
         and dtype_probe_layer_index is None
@@ -3790,7 +4606,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run_schema:
         return dry_run_schema(
             boundary,
-            raw_qk_probe_layer_index
+            oproj_probe_layer_index
+            or raw_qk_probe_layer_index
             or attention_audit_layer_index
             or attention_layer_index
             or dtype_probe_layer_index
@@ -3799,6 +4616,54 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             or layer_index,
             args,
         )
+    if oproj_probe_layer_index is not None:
+        if args.lane is None:
+            raise ValueError("attention o-proj dtype probe requires --lane")
+        if args.source_attention_status is None:
+            raise ValueError("attention o-proj dtype probe requires --source-attention-status")
+        if args.source_attention_audit_status is None:
+            raise ValueError(
+                "attention o-proj dtype probe requires --source-attention-audit-status"
+            )
+        if args.source_consumer_bundle_validate_status is None:
+            raise ValueError(
+                "attention o-proj dtype probe requires --source-consumer-bundle-validate-status"
+            )
+        if args.source_consumer_oproj_sweep_status is None:
+            raise ValueError(
+                "attention o-proj dtype probe requires --source-consumer-oproj-sweep-status"
+            )
+        if args.output_dir is None:
+            raise ValueError("attention o-proj dtype probe requires --output-dir")
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        source_status = load_json(args.source_attention_status)
+        token_source_path = args.layer_input
+        if token_source_path is None:
+            token_source = source_status.get("input_token_source", {})
+            token_source_path_value = token_source.get("path")
+            if not token_source_path_value:
+                raise ValueError(
+                    "source attention status is missing input_token_source.path"
+                )
+            token_source_path = Path(token_source_path_value)
+        input_token_ids, _token_source_metadata = input_token_ids_from_source(token_source_path)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_attention_oproj_dtype_probe(
+            model,
+            input_token_ids,
+            torch,
+            oproj_probe_layer_index,
+            args.lane,
+            source_attention_status=args.source_attention_status,
+            source_attention_audit_status=args.source_attention_audit_status,
+            source_consumer_bundle_validate_status=args.source_consumer_bundle_validate_status,
+            source_consumer_oproj_sweep_status=args.source_consumer_oproj_sweep_status,
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     if raw_qk_probe_layer_index is not None:
         if args.q_head is None or args.key_column is None:
             raise ValueError("raw-QK dtype probe requires --q-head and --key-column")
@@ -4006,6 +4871,9 @@ def main() -> int:
         raw_qk_probe_like = (
             args.boundary is not None and "raw_qk_dtype_probe" in args.boundary
         )
+        oproj_probe_like = (
+            args.boundary is not None and "attention_oproj_dtype_probe" in args.boundary
+        )
         attention_like = (
             args.boundary is not None
             and "attention_ordered_boundary_bundle" in args.boundary
@@ -4019,7 +4887,13 @@ def main() -> int:
         layer_label = args.layer_idx if args.layer_idx is not None else 11
         output = {
             "classification": (
-                f"layer{layer_label}_raw_qk_dtype_probe_blocked_by_memory"
+                f"layer{layer_label}_attention_oproj_dtype_probe_blocked_by_memory"
+                if oproj_probe_like and memory_like
+                else f"layer{layer_label}_attention_oproj_dtype_probe_blocked_by_schema"
+                if oproj_probe_like and "requires" in message
+                else f"layer{layer_label}_attention_oproj_dtype_probe_execution_failed"
+                if oproj_probe_like
+                else f"layer{layer_label}_raw_qk_dtype_probe_blocked_by_memory"
                 if raw_qk_probe_like and memory_like
                 else f"layer{layer_label}_raw_qk_dtype_probe_blocked_by_schema"
                 if raw_qk_probe_like and "requires" in message
