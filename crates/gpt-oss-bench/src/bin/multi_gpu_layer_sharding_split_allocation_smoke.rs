@@ -4,17 +4,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
-    CudaLayerFusedF16AllocationStatus, CudaShardFusedF16AllocationStatus,
-    CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationStatus, CudaShardResourceStatus,
+    CudaLayerFusedF16AllocationStatus, CudaLayerMoeGpuUploadStatus,
+    CudaShardFusedF16AllocationStatus, CudaShardKvCacheAllocationStatus,
+    CudaShardMetadataAllocationStatus, CudaShardMoeGpuUploadStatus, CudaShardResourceStatus,
     CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, F16ScratchAllocationConfig,
     F16ScratchBufferStatus, F16ScratchBufferStatuses, FusedF16AllocationStatus,
     KvCacheAllocationConfig, LateAllocationKind, MetadataAllocationConfig, MetadataMode,
-    RopeRuntimeBufferConfig, SafetensorHeaderManifest, SafetensorHeaderMergePolicy,
-    ShardAllocationReport, ShardTensorManifest, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
-    ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan,
-    ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus,
-    ShardedModelPlan, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus, SplitAllocationReport,
-    UploadManifestOptions,
+    MoeGpuUploadStatus, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
+    SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
+    ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
+    ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
+    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedModelPlan,
+    ShardedMoeGpuUploadPlan, ShardedMoeGpuUploadStatus, ShardedRuntimeBufferPlan,
+    ShardedRuntimeBufferStatus, SplitAllocationReport, UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +56,8 @@ const FUSED_GLOBAL_F16_SCRATCH_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_global_f16_scratch_allocation_smoke_complete";
 const F16_SCRATCH_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_f16_scratch_allocation_smoke_complete";
+const MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_moe_gpu_upload_plan_status_complete";
 #[allow(dead_code)]
 const FUSED_QKV_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_fused_qkv_allocation_blocked";
@@ -152,6 +156,9 @@ struct Cli {
 
     #[arg(long)]
     f16_scratch_max_tokens: Option<usize>,
+
+    #[arg(long)]
+    upload_gpt_oss_moe_gpu: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -214,8 +221,11 @@ struct SplitAllocationSmokeReport {
     f16_scratch_allocation_attempted: bool,
     f16_scratch_allocation_succeeded: bool,
     f16_scratch_max_tokens: Option<usize>,
+    moe_gpu_upload_attempted: bool,
+    moe_gpu_upload_succeeded: bool,
     fused_f16_error: Option<String>,
     f16_scratch_error: Option<String>,
+    moe_gpu_upload_error: Option<String>,
     kernel_dir: Option<String>,
     omitted_allocations: Vec<String>,
     shards: Vec<SplitAllocationSmokeShardReport>,
@@ -311,6 +321,18 @@ struct SplitAllocationSmokeShardReport {
     f16_scratch_buffers: Option<F16ScratchBuffersReport>,
     f16_scratch_deferred_reason: Option<String>,
     f16_scratch_error: Option<String>,
+    moe_gpu_uploaded: bool,
+    moe_gpu_status: String,
+    moe_layer_count: usize,
+    moe_u8_host_tensor_count: usize,
+    moe_u8_gpu_tensor_count: usize,
+    moe_u8_host_bytes: usize,
+    moe_u8_gpu_bytes: usize,
+    moe_router_tensor_count: usize,
+    moe_bias_tensor_count: usize,
+    moe_layer_statuses: Vec<MoeLayerReport>,
+    moe_gpu_deferred_reason: Option<String>,
+    moe_gpu_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -366,6 +388,24 @@ struct F16ScratchBuffersReport {
     gate_up: F16ScratchBufferReport,
     silu_out: F16ScratchBufferReport,
     down: F16ScratchBufferReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct MoeLayerReport {
+    absolute_layer_idx: usize,
+    local_layer_idx: usize,
+    gate_up_proj_blocks_status: String,
+    gate_up_proj_scales_status: String,
+    down_proj_blocks_status: String,
+    down_proj_scales_status: String,
+    gate_up_proj_blocks_bytes: usize,
+    gate_up_proj_scales_bytes: usize,
+    down_proj_blocks_bytes: usize,
+    down_proj_scales_bytes: usize,
+    router_status: String,
+    expert_bias_status: String,
+    supports_gpu_decode_status: String,
+    layer_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -443,6 +483,7 @@ fn main() -> Result<()> {
         cli.allocate_fused_f16,
         cli.allocate_f16_scratch,
         cli.f16_scratch_max_tokens,
+        cli.upload_gpt_oss_moe_gpu,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -486,6 +527,7 @@ fn build_split_allocation_smoke_report(
     allocate_fused_f16: bool,
     allocate_f16_scratch: bool,
     f16_scratch_max_tokens: Option<usize>,
+    upload_gpt_oss_moe_gpu: bool,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let fused_f16_options = FusedF16SmokeOptions {
@@ -515,6 +557,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 None,
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -542,6 +585,7 @@ fn build_split_allocation_smoke_report(
                     metadata_block_size,
                     None,
                     fused_f16_options,
+                    upload_gpt_oss_moe_gpu,
                     Some(error.to_string()),
                 );
             }
@@ -576,6 +620,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 None,
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -611,6 +656,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 None,
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -637,6 +683,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -663,6 +710,7 @@ fn build_split_allocation_smoke_report(
             metadata_block_size,
             metadata_config.map(|config| config.graph_max_blocks()),
             fused_f16_options,
+            upload_gpt_oss_moe_gpu,
             Some("--allocate-fused-f16 requires --dtype f16 or --dtype both".to_string()),
         );
     }
@@ -694,6 +742,7 @@ fn build_split_allocation_smoke_report(
                     metadata_block_size,
                     metadata_config.map(|config| config.graph_max_blocks()),
                     fused_f16_options,
+                    upload_gpt_oss_moe_gpu,
                     Some(error.to_string()),
                 );
             }
@@ -728,6 +777,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -758,6 +808,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -793,6 +844,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -824,6 +876,7 @@ fn build_split_allocation_smoke_report(
                 metadata_block_size,
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
+                upload_gpt_oss_moe_gpu,
                 Some(error.to_string()),
             );
         }
@@ -849,6 +902,13 @@ fn build_split_allocation_smoke_report(
         } else {
             None
         };
+    let moe_gpu_upload_status = if upload_gpt_oss_moe_gpu {
+        let moe_plan =
+            ShardedMoeGpuUploadPlan::from_upload_manifest(&upload_manifest, &header_bytes);
+        Some(ShardedMoeGpuUploadStatus::from_plan(&moe_plan, false))
+    } else {
+        None
+    };
 
     if !construct_and_upload {
         let resource_plan = ShardedCudaResourcePlan::from_model_plan(&plan);
@@ -867,6 +927,8 @@ fn build_split_allocation_smoke_report(
         });
         let classification = if fused_f16_status.is_some() {
             FUSED_F16_PLAN_STATUS_CLASSIFICATION
+        } else if moe_gpu_upload_status.is_some() {
+            MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION
         } else {
             SUCCESS_CLASSIFICATION
         };
@@ -900,6 +962,8 @@ fn build_split_allocation_smoke_report(
             metadata_status.as_ref(),
             fused_f16_options,
             fused_f16_status.as_ref(),
+            upload_gpt_oss_moe_gpu,
+            moe_gpu_upload_status.as_ref(),
             None,
         );
     }
@@ -977,6 +1041,8 @@ fn build_split_allocation_smoke_report(
                 }
             } else if fused_f16_status.is_some() {
                 FUSED_F16_PLAN_STATUS_CLASSIFICATION
+            } else if upload_gpt_oss_moe_gpu {
+                MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION
             } else if metadata_succeeded {
                 METADATA_ALLOCATION_CLASSIFICATION
             } else if kv_cache_succeeded {
@@ -1019,6 +1085,8 @@ fn build_split_allocation_smoke_report(
                 actual_fused_f16_status
                     .as_ref()
                     .or(fused_f16_status.as_ref()),
+                upload_gpt_oss_moe_gpu,
+                moe_gpu_upload_status.as_ref(),
                 None,
             )
         }
@@ -1055,6 +1123,8 @@ fn build_split_allocation_smoke_report(
                 None,
                 fused_f16_options,
                 fused_f16_status.as_ref(),
+                upload_gpt_oss_moe_gpu,
+                moe_gpu_upload_status.as_ref(),
                 Some(error),
             )
         }
@@ -1558,6 +1628,13 @@ fn fused_status_has_global_f16(status: &ShardedFusedF16AllocationStatus) -> bool
     })
 }
 
+fn moe_status_succeeded(status: &ShardedMoeGpuUploadStatus) -> bool {
+    status.shards.iter().all(|shard| {
+        shard.moe_gpu_status == MoeGpuUploadStatus::Uploaded
+            || shard.moe_gpu_status == MoeGpuUploadStatus::NotApplicable
+    })
+}
+
 fn classify_fused_f16_error(error: &str) -> &'static str {
     if error.contains("f16 scratch") {
         if error.to_ascii_lowercase().contains("out of memory") || error.contains("OOM") {
@@ -1609,6 +1686,8 @@ fn render_report(
     metadata_status: Option<&ShardedMetadataAllocationStatus>,
     fused_f16_options: FusedF16SmokeOptions,
     fused_f16_status: Option<&ShardedFusedF16AllocationStatus>,
+    moe_gpu_upload_attempted: bool,
+    moe_gpu_upload_status: Option<&ShardedMoeGpuUploadStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let upload_counts = manifest_by_device
@@ -1652,6 +1731,8 @@ fn render_report(
         metadata_status,
         fused_f16_options,
         fused_f16_status,
+        moe_gpu_upload_attempted,
+        moe_gpu_upload_status,
         error,
     )
 }
@@ -1687,6 +1768,8 @@ fn render_report_with_counts(
     metadata_status: Option<&ShardedMetadataAllocationStatus>,
     fused_f16_options: FusedF16SmokeOptions,
     fused_f16_status: Option<&ShardedFusedF16AllocationStatus>,
+    moe_gpu_upload_attempted: bool,
+    moe_gpu_upload_status: Option<&ShardedMoeGpuUploadStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let resource_by_device = resource_status
@@ -1730,6 +1813,15 @@ fn render_report_with_counts(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
+    let moe_gpu_by_device = moe_gpu_upload_status
+        .map(|status| {
+            status
+                .shards
+                .iter()
+                .map(|status| (status.device_id, status))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     let fused_f16_allocation_succeeded = fused_f16_options.allocate_fused_f16
         && fused_f16_status
             .map(fused_status_succeeded)
@@ -1737,6 +1829,10 @@ fn render_report_with_counts(
     let f16_scratch_allocation_succeeded = fused_f16_options.allocate_f16_scratch
         && fused_f16_status
             .map(scratch_status_succeeded)
+            .unwrap_or(false);
+    let moe_gpu_upload_succeeded = moe_gpu_upload_attempted
+        && moe_gpu_upload_status
+            .map(moe_status_succeeded)
             .unwrap_or(false);
 
     SplitAllocationSmokeReport {
@@ -1776,12 +1872,15 @@ fn render_report_with_counts(
         f16_scratch_allocation_attempted: fused_f16_options.allocate_f16_scratch,
         f16_scratch_allocation_succeeded,
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
+        moe_gpu_upload_attempted,
+        moe_gpu_upload_succeeded,
         fused_f16_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_fused_f16),
         f16_scratch_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_f16_scratch),
+        moe_gpu_upload_error: error.clone().filter(|_| moe_gpu_upload_attempted),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
         omitted_allocations: omitted_allocations(
             rope_metadata_allocation_succeeded,
@@ -1789,6 +1888,7 @@ fn render_report_with_counts(
             metadata_allocation_attempted,
             fused_f16_options.allocate_fused_f16,
             fused_f16_options.allocate_f16_scratch,
+            moe_gpu_upload_attempted,
         ),
         shards: allocation_report
             .shards
@@ -1806,6 +1906,7 @@ fn render_report_with_counts(
                 let kv_cache = kv_cache_by_device.get(&shard.device_id).copied();
                 let metadata = metadata_by_device.get(&shard.device_id).copied();
                 let fused_f16 = fused_f16_by_device.get(&shard.device_id).copied();
+                let moe_gpu = moe_gpu_by_device.get(&shard.device_id).copied();
                 render_shard_report(
                     shard,
                     counts,
@@ -1815,6 +1916,7 @@ fn render_report_with_counts(
                     kv_cache,
                     metadata,
                     fused_f16,
+                    moe_gpu,
                 )
             })
             .collect(),
@@ -1833,6 +1935,7 @@ fn render_shard_report(
     kv_cache: Option<&CudaShardKvCacheAllocationStatus>,
     metadata: Option<&CudaShardMetadataAllocationStatus>,
     fused_f16: Option<&CudaShardFusedF16AllocationStatus>,
+    moe_gpu: Option<&CudaShardMoeGpuUploadStatus>,
 ) -> SplitAllocationSmokeShardReport {
     let (
         rope_allocated,
@@ -2089,6 +2192,56 @@ fn render_shard_report(
                 None,
             )
         });
+    let (
+        moe_gpu_uploaded,
+        moe_gpu_status,
+        moe_layer_count,
+        moe_u8_host_tensor_count,
+        moe_u8_gpu_tensor_count,
+        moe_u8_host_bytes,
+        moe_u8_gpu_bytes,
+        moe_router_tensor_count,
+        moe_bias_tensor_count,
+        moe_layer_statuses,
+        moe_gpu_deferred_reason,
+        moe_gpu_error,
+    ) = moe_gpu
+        .map(|status| {
+            (
+                status.moe_gpu_uploaded,
+                status.moe_gpu_status.as_str().to_string(),
+                status.moe_layer_count,
+                status.moe_u8_host_tensor_count,
+                status.moe_u8_gpu_tensor_count,
+                status.moe_u8_host_bytes,
+                status.moe_u8_gpu_bytes,
+                status.moe_router_tensor_count,
+                status.moe_bias_tensor_count,
+                status
+                    .moe_layer_statuses
+                    .iter()
+                    .map(render_moe_layer_report)
+                    .collect::<Vec<_>>(),
+                status.moe_gpu_deferred_reason.clone(),
+                status.moe_gpu_error.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                false,
+                MoeGpuUploadStatus::NotApplicable.as_str().to_string(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Vec::new(),
+                None,
+                None,
+            )
+        });
 
     SplitAllocationSmokeShardReport {
         device_id: shard.device_id.0,
@@ -2185,6 +2338,18 @@ fn render_shard_report(
         f16_scratch_buffers,
         f16_scratch_deferred_reason,
         f16_scratch_error,
+        moe_gpu_uploaded,
+        moe_gpu_status,
+        moe_layer_count,
+        moe_u8_host_tensor_count,
+        moe_u8_gpu_tensor_count,
+        moe_u8_host_bytes,
+        moe_u8_gpu_bytes,
+        moe_router_tensor_count,
+        moe_bias_tensor_count,
+        moe_layer_statuses,
+        moe_gpu_deferred_reason,
+        moe_gpu_error,
     }
 }
 
@@ -2230,6 +2395,25 @@ fn render_fused_layer_report(status: &CudaLayerFusedF16AllocationStatus) -> Fuse
     }
 }
 
+fn render_moe_layer_report(status: &CudaLayerMoeGpuUploadStatus) -> MoeLayerReport {
+    MoeLayerReport {
+        absolute_layer_idx: status.absolute_layer_idx,
+        local_layer_idx: status.local_layer_idx,
+        gate_up_proj_blocks_status: status.gate_up_proj_blocks_status.as_str().to_string(),
+        gate_up_proj_scales_status: status.gate_up_proj_scales_status.as_str().to_string(),
+        down_proj_blocks_status: status.down_proj_blocks_status.as_str().to_string(),
+        down_proj_scales_status: status.down_proj_scales_status.as_str().to_string(),
+        gate_up_proj_blocks_bytes: status.gate_up_proj_blocks_bytes,
+        gate_up_proj_scales_bytes: status.gate_up_proj_scales_bytes,
+        down_proj_blocks_bytes: status.down_proj_blocks_bytes,
+        down_proj_scales_bytes: status.down_proj_scales_bytes,
+        router_status: status.router_status.as_str().to_string(),
+        expert_bias_status: status.expert_bias_status.as_str().to_string(),
+        supports_gpu_decode_status: status.supports_gpu_decode_status.clone(),
+        layer_error: status.layer_error.clone(),
+    }
+}
+
 fn error_report(
     classification: &str,
     model_path: &Path,
@@ -2249,6 +2433,7 @@ fn error_report(
     metadata_block_size: Option<usize>,
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
+    upload_gpt_oss_moe_gpu: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     SplitAllocationSmokeReport {
@@ -2290,12 +2475,15 @@ fn error_report(
         f16_scratch_allocation_attempted: fused_f16_options.allocate_f16_scratch,
         f16_scratch_allocation_succeeded: false,
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
+        moe_gpu_upload_attempted: upload_gpt_oss_moe_gpu,
+        moe_gpu_upload_succeeded: false,
         fused_f16_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_fused_f16),
         f16_scratch_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_f16_scratch),
+        moe_gpu_upload_error: error.clone().filter(|_| upload_gpt_oss_moe_gpu),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
         omitted_allocations: omitted_allocations(
             false,
@@ -2303,6 +2491,7 @@ fn error_report(
             metadata_allocation_attempted,
             fused_f16_options.allocate_fused_f16,
             fused_f16_options.allocate_f16_scratch,
+            upload_gpt_oss_moe_gpu,
         ),
         shards: Vec::new(),
         unassigned_tensor_names: Vec::new(),
@@ -2332,6 +2521,7 @@ fn error_report_with_config(
     metadata_block_size: Option<usize>,
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
+    upload_gpt_oss_moe_gpu: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -2353,6 +2543,7 @@ fn error_report_with_config(
         metadata_block_size,
         metadata_graph_max_blocks,
         fused_f16_options,
+        upload_gpt_oss_moe_gpu,
         error,
     );
     report.num_layers = Some(config.num_layers);
@@ -2386,6 +2577,7 @@ fn error_report_with_config_and_headers(
     metadata_block_size: Option<usize>,
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
+    upload_gpt_oss_moe_gpu: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -2409,6 +2601,7 @@ fn error_report_with_config_and_headers(
         metadata_block_size,
         metadata_graph_max_blocks,
         fused_f16_options,
+        upload_gpt_oss_moe_gpu,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
@@ -2436,6 +2629,7 @@ fn omitted_allocations(
     metadata_attempted: bool,
     fused_f16_attempted: bool,
     f16_scratch_attempted: bool,
+    moe_gpu_upload_attempted: bool,
 ) -> Vec<String> {
     OMITTED_ALLOCATIONS
         .iter()
@@ -2446,6 +2640,7 @@ fn omitted_allocations(
                 && !(fused_f16_attempted
                     && (**name == "fused_qkv_weights" || **name == "fused_gate_up_weights"))
                 && !(f16_scratch_attempted && **name == "f16_scratch")
+                && !(moe_gpu_upload_attempted && **name == "moe_gpu_weights")
         })
         .map(|name| (*name).to_string())
         .collect()
@@ -2573,6 +2768,76 @@ mod tests {
         dir
     }
 
+    fn fixture_with_moe_tensors() -> PathBuf {
+        let dir = unique_temp_model_dir("with_moe_tensors");
+        write_config(&dir, 24, true);
+        write_safetensors(
+            &dir.join("model.safetensors"),
+            &[
+                ("model.embed_tokens.weight", "F16", &[2, 4], 16),
+                ("model.norm.weight", "F32", &[4], 16),
+                ("lm_head.weight", "F16", &[2, 4], 16),
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj_scales",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                ("model.layers.0.mlp.experts.down_proj_blocks", "U8", &[4], 4),
+                ("model.layers.0.mlp.experts.down_proj_scales", "U8", &[4], 4),
+                ("model.layers.0.mlp.router.weight", "F32", &[2], 8),
+                ("model.layers.0.mlp.router.bias", "F32", &[2], 8),
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj_bias",
+                    "F32",
+                    &[2],
+                    8,
+                ),
+                ("model.layers.0.mlp.experts.down_proj_bias", "F32", &[2], 8),
+                (
+                    "model.layers.12.mlp.experts.gate_up_proj_blocks",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                (
+                    "model.layers.12.mlp.experts.gate_up_proj_scales",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                (
+                    "model.layers.12.mlp.experts.down_proj_blocks",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                (
+                    "model.layers.12.mlp.experts.down_proj_scales",
+                    "U8",
+                    &[4],
+                    4,
+                ),
+                ("model.layers.12.mlp.router.weight", "F32", &[2], 8),
+                ("model.layers.12.mlp.router.bias", "F32", &[2], 8),
+                (
+                    "model.layers.12.mlp.experts.gate_up_proj_bias",
+                    "F32",
+                    &[2],
+                    8,
+                ),
+                ("model.layers.12.mlp.experts.down_proj_bias", "F32", &[2], 8),
+            ],
+        );
+        dir
+    }
+
     fn split_report_for(
         dir: &Path,
         tie_word_embeddings: Option<bool>,
@@ -2607,6 +2872,7 @@ mod tests {
             false,
             None,
             false,
+            false,
         )
     }
 
@@ -2638,6 +2904,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false,
         )
     }
@@ -2674,6 +2941,7 @@ mod tests {
             false,
             None,
             false,
+            false,
         )
     }
 
@@ -2704,6 +2972,37 @@ mod tests {
             allocate_fused_f16,
             allocate_f16_scratch,
             f16_scratch_max_tokens,
+            false,
+            false,
+        )
+    }
+
+    fn split_report_for_moe_gpu(
+        dir: &Path,
+        upload_gpt_oss_moe_gpu: bool,
+    ) -> SplitAllocationSmokeReport {
+        build_split_allocation_smoke_report(
+            dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F16,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            upload_gpt_oss_moe_gpu,
             false,
         )
     }
@@ -3122,6 +3421,123 @@ mod tests {
     }
 
     #[test]
+    fn default_split_allocation_smoke_does_not_attempt_moe_gpu_upload() {
+        let dir = fixture_with_moe_tensors();
+
+        let report = split_report_for(&dir, None);
+
+        assert!(!report.moe_gpu_upload_attempted);
+        assert!(!report.moe_gpu_upload_succeeded);
+        assert!(report
+            .omitted_allocations
+            .contains(&"moe_gpu_weights".to_string()));
+        for shard in &report.shards {
+            assert!(!shard.moe_gpu_uploaded);
+            assert_eq!(shard.moe_gpu_status, "not_applicable");
+            assert_eq!(shard.moe_layer_count, 0);
+            assert!(shard.moe_layer_statuses.is_empty());
+        }
+    }
+
+    #[test]
+    fn moe_gpu_flag_surfaces_deferred_plan_status_per_shard() {
+        let dir = fixture_with_moe_tensors();
+
+        let report = split_report_for_moe_gpu(&dir, true);
+
+        assert_eq!(
+            report.classification,
+            MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION
+        );
+        assert!(report.moe_gpu_upload_attempted);
+        assert!(!report.moe_gpu_upload_succeeded);
+        assert!(!report
+            .omitted_allocations
+            .contains(&"moe_gpu_weights".to_string()));
+
+        let gpu0 = shard(&report, 0);
+        assert!(!gpu0.moe_gpu_uploaded);
+        assert_eq!(gpu0.moe_gpu_status, "deferred");
+        assert_eq!(gpu0.moe_layer_count, 1);
+        assert_eq!(gpu0.moe_u8_host_tensor_count, 4);
+        assert_eq!(gpu0.moe_u8_gpu_tensor_count, 0);
+        assert_eq!(gpu0.moe_u8_host_bytes, 16);
+        assert_eq!(gpu0.moe_u8_gpu_bytes, 0);
+        assert_eq!(gpu0.moe_router_tensor_count, 2);
+        assert_eq!(gpu0.moe_bias_tensor_count, 2);
+        assert!(gpu0
+            .moe_gpu_deferred_reason
+            .as_deref()
+            .unwrap()
+            .contains("plan/status only"));
+        let gpu0_layer0 = gpu0
+            .moe_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(gpu0_layer0.local_layer_idx, 0);
+        assert_eq!(gpu0_layer0.gate_up_proj_blocks_status, "deferred");
+        assert_eq!(gpu0_layer0.gate_up_proj_scales_status, "deferred");
+        assert_eq!(gpu0_layer0.down_proj_blocks_status, "deferred");
+        assert_eq!(gpu0_layer0.down_proj_scales_status, "deferred");
+        assert_eq!(gpu0_layer0.gate_up_proj_blocks_bytes, 4);
+        assert_eq!(gpu0_layer0.gate_up_proj_scales_bytes, 4);
+        assert_eq!(gpu0_layer0.down_proj_blocks_bytes, 4);
+        assert_eq!(gpu0_layer0.down_proj_scales_bytes, 4);
+        assert_eq!(gpu0_layer0.router_status, "deferred");
+        assert_eq!(gpu0_layer0.expert_bias_status, "deferred");
+        assert_eq!(
+            gpu0_layer0.supports_gpu_decode_status,
+            "not_evaluated_without_layer_construction"
+        );
+        assert!(gpu0_layer0.layer_error.is_none());
+
+        let gpu1 = shard(&report, 1);
+        assert_eq!(gpu1.moe_gpu_status, "deferred");
+        assert_eq!(gpu1.moe_layer_count, 1);
+        assert_eq!(gpu1.moe_u8_host_tensor_count, 4);
+        assert_eq!(gpu1.moe_u8_host_bytes, 16);
+        assert_eq!(gpu1.moe_router_tensor_count, 2);
+        assert_eq!(gpu1.moe_bias_tensor_count, 2);
+        let gpu1_layer12 = gpu1
+            .moe_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(gpu1_layer12.local_layer_idx, 0);
+        assert_eq!(gpu1_layer12.gate_up_proj_blocks_status, "deferred");
+        assert!(gpu1
+            .moe_layer_statuses
+            .iter()
+            .all(|layer| layer.absolute_layer_idx >= 12));
+    }
+
+    #[test]
+    fn moe_gpu_status_distinguishes_partial_u8_payloads() {
+        let dir = fixture_with_lm_head();
+
+        let report = split_report_for_moe_gpu(&dir, true);
+
+        let gpu1 = shard(&report, 1);
+        assert_eq!(gpu1.moe_gpu_status, "deferred");
+        assert_eq!(gpu1.moe_layer_count, 1);
+        assert_eq!(gpu1.moe_u8_host_tensor_count, 1);
+        assert_eq!(gpu1.moe_u8_host_bytes, 4);
+        let layer23 = gpu1
+            .moe_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 23)
+            .unwrap();
+        assert_eq!(layer23.down_proj_scales_status, "deferred");
+        assert_eq!(layer23.gate_up_proj_blocks_status, "not_applicable");
+        assert!(layer23
+            .layer_error
+            .as_deref()
+            .unwrap()
+            .contains("partial GPT-OSS MoE U8"));
+    }
+
+    #[test]
     fn fused_f16_error_classification_maps_norm_cast_errors() {
         let classification = classify_fused_f16_error(
             "gpu error: shard 0 f16 norm cast kernel load failed: gpu error: module 'cast_fp' not loaded",
@@ -3332,6 +3748,7 @@ mod tests {
             false,
             None,
             false,
+            false,
         );
 
         assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
@@ -3477,6 +3894,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false,
         );
 

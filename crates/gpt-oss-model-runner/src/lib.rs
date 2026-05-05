@@ -74,17 +74,20 @@ pub use shard_plan::{
 };
 pub use sharded_resources::{
     CudaLayerFusedF16AllocationPlan, CudaLayerFusedF16AllocationStatus,
-    CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus,
-    CudaShardFusedF16AllocationPlan, CudaShardFusedF16AllocationStatus,
-    CudaShardKvCacheAllocationPlan, CudaShardKvCacheAllocationStatus,
-    CudaShardMetadataAllocationPlan, CudaShardMetadataAllocationStatus, CudaShardResourcePlan,
-    CudaShardResourceStatus, CudaShardRuntimeBufferPlan, CudaShardRuntimeBufferStatus,
-    F16ScratchAllocationConfig, F16ScratchBufferStatus, F16ScratchBufferStatuses,
-    FusedF16AllocationStatus, KvCacheAllocationConfig, MetadataAllocationConfig, MetadataMode,
-    RopeRuntimeBufferConfig, RuntimeMetadataStatus, ShardedCudaResourcePlan,
-    ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus,
-    ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan,
-    ShardedMetadataAllocationStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
+    CudaLayerKvCacheAllocationPlan, CudaLayerKvCacheAllocationStatus, CudaLayerMoeGpuUploadPlan,
+    CudaLayerMoeGpuUploadStatus, CudaShardFusedF16AllocationPlan,
+    CudaShardFusedF16AllocationStatus, CudaShardKvCacheAllocationPlan,
+    CudaShardKvCacheAllocationStatus, CudaShardMetadataAllocationPlan,
+    CudaShardMetadataAllocationStatus, CudaShardMoeGpuUploadPlan, CudaShardMoeGpuUploadStatus,
+    CudaShardResourcePlan, CudaShardResourceStatus, CudaShardRuntimeBufferPlan,
+    CudaShardRuntimeBufferStatus, F16ScratchAllocationConfig, F16ScratchBufferStatus,
+    F16ScratchBufferStatuses, FusedF16AllocationStatus, KvCacheAllocationConfig,
+    MetadataAllocationConfig, MetadataMode, MoeGpuUploadStatus, RopeRuntimeBufferConfig,
+    RuntimeMetadataStatus, ShardedCudaResourcePlan, ShardedCudaResourceStatus,
+    ShardedFusedF16AllocationPlan, ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan,
+    ShardedKvCacheAllocationStatus, ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus,
+    ShardedMoeGpuUploadPlan, ShardedMoeGpuUploadStatus, ShardedRuntimeBufferPlan,
+    ShardedRuntimeBufferStatus,
 };
 #[cfg(feature = "cuda")]
 pub use sharded_resources::{

@@ -6937,3 +6937,164 @@ policy checkpoint should happen before any execution slice.
 Primary classification:
 
 multi_gpu_layer_sharding_gpt_oss_moe_gpu_upload_design_complete
+
+## Bench-only MoE GPU upload plan/status skeleton
+
+This slice added a non-executing GPT-OSS MoE GPU upload status boundary. It is
+plan/status only: it does not upload U8/MXFP4 expert payloads to GPU, construct
+`GpuModelRunner`, construct `GpuTransformerLayer`, call router or expert
+kernels, run graph decode, run attention, or make execution/parity claims.
+
+Module/type names added:
+
+- `MoeGpuUploadStatus`
+- `ShardedMoeGpuUploadPlan`
+- `CudaShardMoeGpuUploadPlan`
+- `CudaLayerMoeGpuUploadPlan`
+- `ShardedMoeGpuUploadStatus`
+- `CudaShardMoeGpuUploadStatus`
+- `CudaLayerMoeGpuUploadStatus`
+
+Bench flag added:
+
+- `--upload-gpt-oss-moe-gpu`
+
+The flag is independent from `--allocate-fused-f16` and
+`--allocate-f16-scratch`. In this slice it produces shard-local plan/status JSON
+from `ShardedUploadManifest` plus safetensor header byte metadata. It removes
+`moe_gpu_weights` from `omitted_allocations` when requested, but still reports
+`moe_gpu_upload_succeeded=false` because actual GPU upload remains deferred.
+
+### Ownership and tensor policy
+
+MoE status is created only for shard-owned absolute layers. For
+`split:0-11@0,12-23@1`, GPU0 reports layer 0 as
+`model.layers.0.*` with local layer index 0, while GPU1 reports layer 12 as
+`model.layers.12.*` with local layer index 0. GPU1 never rewrites layer 12 to
+`model.layers.0.*`.
+
+The skeleton tracks the GPT-OSS U8 expert payload names:
+
+- `model.layers.<N>.mlp.experts.gate_up_proj_blocks`
+- `model.layers.<N>.mlp.experts.gate_up_proj_scales`
+- `model.layers.<N>.mlp.experts.down_proj_blocks`
+- `model.layers.<N>.mlp.experts.down_proj_scales`
+
+It also tracks router and expert-bias prerequisite presence through the existing
+required tensor manifest:
+
+- `model.layers.<N>.mlp.router.weight`
+- `model.layers.<N>.mlp.router.bias`
+- `model.layers.<N>.mlp.experts.gate_up_proj_bias`
+- `model.layers.<N>.mlp.experts.down_proj_bias`
+
+Complete U8 block/scale presence is deferred. Missing all U8 payloads is
+`not_applicable`; partial U8 payload presence reports a layer error explaining
+that upload requires all four U8 tensors. Router and expert-bias tensors are
+reported as deferred prerequisites when present. `supports_gpu_decode_status`
+remains `not_evaluated_without_layer_construction` for MoE layers because the
+real readiness predicate lives on executable layer state.
+
+### Status JSON fields
+
+Top-level fields now include:
+
+- `moe_gpu_upload_attempted`
+- `moe_gpu_upload_succeeded`
+- `moe_gpu_upload_error`
+
+Per-shard fields now include:
+
+- `moe_gpu_uploaded`
+- `moe_gpu_status`
+- `moe_layer_count`
+- `moe_u8_host_tensor_count`
+- `moe_u8_gpu_tensor_count`
+- `moe_u8_host_bytes`
+- `moe_u8_gpu_bytes`
+- `moe_router_tensor_count`
+- `moe_bias_tensor_count`
+- `moe_layer_statuses`
+- `moe_gpu_deferred_reason`
+- `moe_gpu_error`
+
+Per-layer fields now include:
+
+- `absolute_layer_idx`
+- `local_layer_idx`
+- `gate_up_proj_blocks_status`
+- `gate_up_proj_scales_status`
+- `down_proj_blocks_status`
+- `down_proj_scales_status`
+- `gate_up_proj_blocks_bytes`
+- `gate_up_proj_scales_bytes`
+- `down_proj_blocks_bytes`
+- `down_proj_scales_bytes`
+- `router_status`
+- `expert_bias_status`
+- `supports_gpu_decode_status`
+- `layer_error`
+
+### Deferred boundary
+
+Actual MoE GPU upload remains deferred. The exact current deferred reason is:
+
+`bench-only GPT-OSS MoE GPU upload is plan/status only; per-shard U8 host maps are counted but not retained/uploaded yet`
+
+The split bench still loads U8 host payloads to count bytes in the CUDA smoke,
+then drops them. A future allocation implementation should retain those
+per-shard host maps long enough to upload only shard-owned U8 expert payloads.
+
+Manual operator command to exercise the status skeleton, not run in this slice:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --upload-gpt-oss-moe-gpu \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_moe_plan_status.json
+```
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner fused_f16`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `git diff --check`
+
+No real-model CUDA smoke was run in this implementation slice.
+
+No layers, runner, attention, graph output, execution, serving, BF16 parity, or
+parity path was added. Serve/runtime split maps remain non-executable.
+
+Next bounded step:
+
+- Implement bench-only MoE GPU upload allocation using retained per-shard U8
+  host maps.
+- Keep router/bias loading and executable `supports_gpu_decode` checks as
+  explicit later boundaries.
+
+Primary classification:
+
+multi_gpu_layer_sharding_moe_gpu_upload_plan_status_complete

@@ -8,6 +8,7 @@
 use crate::device_map::DeviceId;
 use crate::fused_f16::{f16_scratch_element_counts, F16ScratchElementCounts};
 use crate::shard_plan::{ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 pub const RUNTIME_METADATA_DEFERRED_REASON: &str =
@@ -18,6 +19,8 @@ pub const FUSED_F16_CASTS_DEFERRED_REASON: &str =
     "fused QKV/gate-up buffers and f16 layernorm/postnorm/bias conversions allocated; final/embed conversions remain deferred by cast/helper boundary";
 pub const F16_SCRATCH_DEFERRED_REASON: &str =
     "bench-only f16 scratch allocation requires the CUDA allocation pass; GpuModelRunner::F16LayerScratch remains private runner state";
+pub const MOE_GPU_UPLOAD_DEFERRED_REASON: &str =
+    "bench-only GPT-OSS MoE GPU upload is plan/status only; per-shard U8 host maps are counted but not retained/uploaded yet";
 
 /// CUDA-free plan for one shard's resource island.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +99,14 @@ pub enum RuntimeMetadataStatus {
 pub enum FusedF16AllocationStatus {
     Allocated,
     AvailableFromUploadedF16,
+    Deferred,
+    NotApplicable,
+}
+
+/// Upload state for the non-executing GPT-OSS MoE GPU upload skeleton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoeGpuUploadStatus {
+    Uploaded,
     Deferred,
     NotApplicable,
 }
@@ -415,6 +426,88 @@ pub struct ShardedFusedF16AllocationStatus {
     pub shards: Vec<CudaShardFusedF16AllocationStatus>,
 }
 
+/// CUDA-free plan for one GPT-OSS MoE layer's future GPU upload boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerMoeGpuUploadPlan {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub gate_up_proj_blocks_planned: bool,
+    pub gate_up_proj_scales_planned: bool,
+    pub down_proj_blocks_planned: bool,
+    pub down_proj_scales_planned: bool,
+    pub gate_up_proj_blocks_bytes: usize,
+    pub gate_up_proj_scales_bytes: usize,
+    pub down_proj_blocks_bytes: usize,
+    pub down_proj_scales_bytes: usize,
+    pub router_planned: bool,
+    pub expert_bias_planned: bool,
+    pub partial_u8_payload: bool,
+}
+
+/// Public status for one GPT-OSS MoE layer's future GPU upload boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerMoeGpuUploadStatus {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub gate_up_proj_blocks_status: MoeGpuUploadStatus,
+    pub gate_up_proj_scales_status: MoeGpuUploadStatus,
+    pub down_proj_blocks_status: MoeGpuUploadStatus,
+    pub down_proj_scales_status: MoeGpuUploadStatus,
+    pub gate_up_proj_blocks_bytes: usize,
+    pub gate_up_proj_scales_bytes: usize,
+    pub down_proj_blocks_bytes: usize,
+    pub down_proj_scales_bytes: usize,
+    pub router_status: MoeGpuUploadStatus,
+    pub expert_bias_status: MoeGpuUploadStatus,
+    pub supports_gpu_decode_status: String,
+    pub layer_error: Option<String>,
+}
+
+/// CUDA-free plan for one shard's future GPT-OSS MoE GPU upload boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardMoeGpuUploadPlan {
+    pub device_id: DeviceId,
+    pub absolute_layers: Vec<usize>,
+    pub moe_layer_count: usize,
+    pub moe_u8_host_tensor_count: usize,
+    pub moe_u8_host_bytes: usize,
+    pub moe_router_tensor_count: usize,
+    pub moe_bias_tensor_count: usize,
+    pub moe_layer_plans: Vec<CudaLayerMoeGpuUploadPlan>,
+    pub moe_gpu_status: MoeGpuUploadStatus,
+    pub moe_gpu_deferred_reason: Option<String>,
+}
+
+/// CUDA-free plan for future shard-local GPT-OSS MoE GPU upload status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedMoeGpuUploadPlan {
+    pub shards: Vec<CudaShardMoeGpuUploadPlan>,
+}
+
+/// Public status for one shard's future GPT-OSS MoE GPU upload boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardMoeGpuUploadStatus {
+    pub device_id: DeviceId,
+    pub moe_gpu_uploaded: bool,
+    pub moe_gpu_status: MoeGpuUploadStatus,
+    pub moe_layer_count: usize,
+    pub moe_u8_host_tensor_count: usize,
+    pub moe_u8_gpu_tensor_count: usize,
+    pub moe_u8_host_bytes: usize,
+    pub moe_u8_gpu_bytes: usize,
+    pub moe_router_tensor_count: usize,
+    pub moe_bias_tensor_count: usize,
+    pub moe_layer_statuses: Vec<CudaLayerMoeGpuUploadStatus>,
+    pub moe_gpu_deferred_reason: Option<String>,
+    pub moe_gpu_error: Option<String>,
+}
+
+/// Public status for all future shard-local GPT-OSS MoE GPU upload boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedMoeGpuUploadStatus {
+    pub shards: Vec<CudaShardMoeGpuUploadStatus>,
+}
+
 impl RopeRuntimeBufferConfig {
     pub fn new(head_dim: usize, max_position: usize, rope_theta: f32) -> Result<Self, String> {
         if head_dim == 0 {
@@ -694,6 +787,16 @@ impl FusedF16AllocationStatus {
             FusedF16AllocationStatus::AvailableFromUploadedF16 => "available_from_uploaded_f16",
             FusedF16AllocationStatus::Deferred => "deferred",
             FusedF16AllocationStatus::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+impl MoeGpuUploadStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MoeGpuUploadStatus::Uploaded => "uploaded",
+            MoeGpuUploadStatus::Deferred => "deferred",
+            MoeGpuUploadStatus::NotApplicable => "not_applicable",
         }
     }
 }
@@ -1547,6 +1650,311 @@ impl ShardedFusedF16AllocationStatus {
                 .collect(),
         }
     }
+}
+
+impl ShardedMoeGpuUploadPlan {
+    /// Build a non-executing GPT-OSS MoE GPU upload plan from the shard tensor
+    /// manifest. This only records shard-owned U8 expert payloads and f32
+    /// router/bias readiness state; it does not retain host maps, upload U8
+    /// payloads, construct layers, or evaluate executable graph-decode support.
+    pub fn from_upload_manifest(
+        manifest: &crate::shard_plan::ShardedUploadManifest,
+        header_bytes: &BTreeMap<String, usize>,
+    ) -> Self {
+        Self {
+            shards: manifest
+                .shards
+                .iter()
+                .map(|shard| CudaShardMoeGpuUploadPlan::from_manifest(shard, header_bytes))
+                .collect(),
+        }
+    }
+
+    pub fn shard_for_device(&self, device_id: DeviceId) -> Option<&CudaShardMoeGpuUploadPlan> {
+        self.shards
+            .iter()
+            .find(|shard| shard.device_id == device_id)
+    }
+}
+
+impl CudaShardMoeGpuUploadPlan {
+    fn from_manifest(
+        manifest: &ShardTensorManifest,
+        header_bytes: &BTreeMap<String, usize>,
+    ) -> Self {
+        let moe_layer_plans = manifest
+            .absolute_layers
+            .iter()
+            .enumerate()
+            .map(|(local_layer_idx, &absolute_layer_idx)| {
+                CudaLayerMoeGpuUploadPlan::from_manifest(
+                    manifest,
+                    absolute_layer_idx,
+                    local_layer_idx,
+                    header_bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        let planned_layers = moe_layer_plans
+            .iter()
+            .filter(|layer| layer.has_any_u8_payload())
+            .count();
+        let moe_u8_host_tensor_count = moe_layer_plans
+            .iter()
+            .map(CudaLayerMoeGpuUploadPlan::u8_tensor_count)
+            .sum();
+        let moe_u8_host_bytes = moe_layer_plans
+            .iter()
+            .map(CudaLayerMoeGpuUploadPlan::u8_host_bytes)
+            .sum();
+        let moe_router_tensor_count = moe_layer_plans
+            .iter()
+            .filter(|layer| layer.router_planned)
+            .count()
+            * 2;
+        let moe_bias_tensor_count = moe_layer_plans
+            .iter()
+            .filter(|layer| layer.expert_bias_planned)
+            .count()
+            * 2;
+        let moe_gpu_status = if planned_layers > 0 {
+            MoeGpuUploadStatus::Deferred
+        } else {
+            MoeGpuUploadStatus::NotApplicable
+        };
+
+        Self {
+            device_id: manifest.device_id,
+            absolute_layers: manifest.absolute_layers.clone(),
+            moe_layer_count: planned_layers,
+            moe_u8_host_tensor_count,
+            moe_u8_host_bytes,
+            moe_router_tensor_count,
+            moe_bias_tensor_count,
+            moe_layer_plans,
+            moe_gpu_status,
+            moe_gpu_deferred_reason: (moe_gpu_status == MoeGpuUploadStatus::Deferred)
+                .then(|| MOE_GPU_UPLOAD_DEFERRED_REASON.into()),
+        }
+    }
+
+    pub fn status(&self, moe_gpu_uploaded: bool) -> CudaShardMoeGpuUploadStatus {
+        let moe_gpu_uploaded =
+            moe_gpu_uploaded && self.moe_gpu_status != MoeGpuUploadStatus::NotApplicable;
+        let moe_gpu_status = if moe_gpu_uploaded {
+            MoeGpuUploadStatus::Uploaded
+        } else {
+            self.moe_gpu_status
+        };
+
+        CudaShardMoeGpuUploadStatus {
+            device_id: self.device_id,
+            moe_gpu_uploaded,
+            moe_gpu_status,
+            moe_layer_count: self.moe_layer_count,
+            moe_u8_host_tensor_count: self.moe_u8_host_tensor_count,
+            moe_u8_gpu_tensor_count: if moe_gpu_uploaded {
+                self.moe_u8_host_tensor_count
+            } else {
+                0
+            },
+            moe_u8_host_bytes: self.moe_u8_host_bytes,
+            moe_u8_gpu_bytes: if moe_gpu_uploaded {
+                self.moe_u8_host_bytes
+            } else {
+                0
+            },
+            moe_router_tensor_count: self.moe_router_tensor_count,
+            moe_bias_tensor_count: self.moe_bias_tensor_count,
+            moe_layer_statuses: self
+                .moe_layer_plans
+                .iter()
+                .map(|layer| layer.status(moe_gpu_uploaded))
+                .collect(),
+            moe_gpu_deferred_reason: (!moe_gpu_uploaded)
+                .then(|| self.moe_gpu_deferred_reason.clone())
+                .flatten(),
+            moe_gpu_error: None,
+        }
+    }
+}
+
+impl CudaLayerMoeGpuUploadPlan {
+    fn from_manifest(
+        manifest: &ShardTensorManifest,
+        absolute_layer_idx: usize,
+        local_layer_idx: usize,
+        header_bytes: &BTreeMap<String, usize>,
+    ) -> Self {
+        let gate_up_proj_blocks_name =
+            moe_layer_tensor_name(absolute_layer_idx, "experts.gate_up_proj_blocks");
+        let gate_up_proj_scales_name =
+            moe_layer_tensor_name(absolute_layer_idx, "experts.gate_up_proj_scales");
+        let down_proj_blocks_name =
+            moe_layer_tensor_name(absolute_layer_idx, "experts.down_proj_blocks");
+        let down_proj_scales_name =
+            moe_layer_tensor_name(absolute_layer_idx, "experts.down_proj_scales");
+        let router_weight_name = moe_layer_tensor_name(absolute_layer_idx, "router.weight");
+        let router_bias_name = moe_layer_tensor_name(absolute_layer_idx, "router.bias");
+        let gate_up_bias_name =
+            moe_layer_tensor_name(absolute_layer_idx, "experts.gate_up_proj_bias");
+        let down_bias_name = moe_layer_tensor_name(absolute_layer_idx, "experts.down_proj_bias");
+
+        let gate_up_proj_blocks_planned =
+            manifest.should_load_host_u8_tensor(&gate_up_proj_blocks_name);
+        let gate_up_proj_scales_planned =
+            manifest.should_load_host_u8_tensor(&gate_up_proj_scales_name);
+        let down_proj_blocks_planned = manifest.should_load_host_u8_tensor(&down_proj_blocks_name);
+        let down_proj_scales_planned = manifest.should_load_host_u8_tensor(&down_proj_scales_name);
+        let u8_count = [
+            gate_up_proj_blocks_planned,
+            gate_up_proj_scales_planned,
+            down_proj_blocks_planned,
+            down_proj_scales_planned,
+        ]
+        .into_iter()
+        .filter(|planned| *planned)
+        .count();
+        let router_planned = manifest.should_load_required_tensor(&router_weight_name)
+            && manifest.should_load_required_tensor(&router_bias_name);
+        let expert_bias_planned = manifest.should_load_required_tensor(&gate_up_bias_name)
+            && manifest.should_load_required_tensor(&down_bias_name);
+
+        Self {
+            absolute_layer_idx,
+            local_layer_idx,
+            gate_up_proj_blocks_planned,
+            gate_up_proj_scales_planned,
+            down_proj_blocks_planned,
+            down_proj_scales_planned,
+            gate_up_proj_blocks_bytes: header_bytes
+                .get(&gate_up_proj_blocks_name)
+                .copied()
+                .unwrap_or(0),
+            gate_up_proj_scales_bytes: header_bytes
+                .get(&gate_up_proj_scales_name)
+                .copied()
+                .unwrap_or(0),
+            down_proj_blocks_bytes: header_bytes
+                .get(&down_proj_blocks_name)
+                .copied()
+                .unwrap_or(0),
+            down_proj_scales_bytes: header_bytes
+                .get(&down_proj_scales_name)
+                .copied()
+                .unwrap_or(0),
+            router_planned,
+            expert_bias_planned,
+            partial_u8_payload: u8_count > 0 && u8_count < 4,
+        }
+    }
+
+    fn status(&self, moe_gpu_uploaded: bool) -> CudaLayerMoeGpuUploadStatus {
+        let has_any_u8_payload = self.has_any_u8_payload();
+        let layer_error = self.partial_u8_payload.then(|| {
+            "partial GPT-OSS MoE U8 block/scale payload; upload requires all four U8 tensors"
+                .to_string()
+        });
+        let supports_gpu_decode_status = if moe_gpu_uploaded && self.has_complete_prerequisites() {
+            "prerequisites_present".to_string()
+        } else if has_any_u8_payload {
+            "not_evaluated_without_layer_construction".to_string()
+        } else {
+            "not_applicable".to_string()
+        };
+
+        CudaLayerMoeGpuUploadStatus {
+            absolute_layer_idx: self.absolute_layer_idx,
+            local_layer_idx: self.local_layer_idx,
+            gate_up_proj_blocks_status: moe_status_for_planned(
+                self.gate_up_proj_blocks_planned,
+                moe_gpu_uploaded,
+            ),
+            gate_up_proj_scales_status: moe_status_for_planned(
+                self.gate_up_proj_scales_planned,
+                moe_gpu_uploaded,
+            ),
+            down_proj_blocks_status: moe_status_for_planned(
+                self.down_proj_blocks_planned,
+                moe_gpu_uploaded,
+            ),
+            down_proj_scales_status: moe_status_for_planned(
+                self.down_proj_scales_planned,
+                moe_gpu_uploaded,
+            ),
+            gate_up_proj_blocks_bytes: self.gate_up_proj_blocks_bytes,
+            gate_up_proj_scales_bytes: self.gate_up_proj_scales_bytes,
+            down_proj_blocks_bytes: self.down_proj_blocks_bytes,
+            down_proj_scales_bytes: self.down_proj_scales_bytes,
+            router_status: moe_status_for_planned(self.router_planned, false),
+            expert_bias_status: moe_status_for_planned(self.expert_bias_planned, false),
+            supports_gpu_decode_status,
+            layer_error,
+        }
+    }
+
+    fn has_any_u8_payload(&self) -> bool {
+        self.gate_up_proj_blocks_planned
+            || self.gate_up_proj_scales_planned
+            || self.down_proj_blocks_planned
+            || self.down_proj_scales_planned
+    }
+
+    fn has_complete_u8_payload(&self) -> bool {
+        self.gate_up_proj_blocks_planned
+            && self.gate_up_proj_scales_planned
+            && self.down_proj_blocks_planned
+            && self.down_proj_scales_planned
+    }
+
+    fn has_complete_prerequisites(&self) -> bool {
+        self.has_complete_u8_payload() && self.router_planned && self.expert_bias_planned
+    }
+
+    fn u8_tensor_count(&self) -> usize {
+        [
+            self.gate_up_proj_blocks_planned,
+            self.gate_up_proj_scales_planned,
+            self.down_proj_blocks_planned,
+            self.down_proj_scales_planned,
+        ]
+        .into_iter()
+        .filter(|planned| *planned)
+        .count()
+    }
+
+    fn u8_host_bytes(&self) -> usize {
+        self.gate_up_proj_blocks_bytes
+            + self.gate_up_proj_scales_bytes
+            + self.down_proj_blocks_bytes
+            + self.down_proj_scales_bytes
+    }
+}
+
+impl ShardedMoeGpuUploadStatus {
+    pub fn from_plan(plan: &ShardedMoeGpuUploadPlan, moe_gpu_uploaded: bool) -> Self {
+        Self {
+            shards: plan
+                .shards
+                .iter()
+                .map(|shard| shard.status(moe_gpu_uploaded))
+                .collect(),
+        }
+    }
+}
+
+fn moe_status_for_planned(planned: bool, uploaded: bool) -> MoeGpuUploadStatus {
+    if uploaded && planned {
+        MoeGpuUploadStatus::Uploaded
+    } else if planned {
+        MoeGpuUploadStatus::Deferred
+    } else {
+        MoeGpuUploadStatus::NotApplicable
+    }
+}
+
+fn moe_layer_tensor_name(layer_idx: usize, suffix: &str) -> String {
+    format!("model.layers.{layer_idx}.mlp.{suffix}")
 }
 
 fn manifest_has_layer_tensors(
@@ -3290,6 +3698,53 @@ mod tests {
             .unwrap()
     }
 
+    fn split_moe_upload_manifest() -> crate::shard_plan::ShardedUploadManifest {
+        split_plan()
+            .upload_manifest_for_tensor_names(
+                [
+                    "model.embed_tokens.weight",
+                    "model.norm.weight",
+                    "lm_head.weight",
+                    "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                    "model.layers.0.mlp.experts.gate_up_proj_scales",
+                    "model.layers.0.mlp.experts.down_proj_blocks",
+                    "model.layers.0.mlp.experts.down_proj_scales",
+                    "model.layers.0.mlp.router.weight",
+                    "model.layers.0.mlp.router.bias",
+                    "model.layers.0.mlp.experts.gate_up_proj_bias",
+                    "model.layers.0.mlp.experts.down_proj_bias",
+                    "model.layers.12.mlp.experts.gate_up_proj_blocks",
+                    "model.layers.12.mlp.experts.gate_up_proj_scales",
+                    "model.layers.12.mlp.experts.down_proj_blocks",
+                    "model.layers.12.mlp.experts.down_proj_scales",
+                    "model.layers.12.mlp.router.weight",
+                    "model.layers.12.mlp.router.bias",
+                    "model.layers.12.mlp.experts.gate_up_proj_bias",
+                    "model.layers.12.mlp.experts.down_proj_bias",
+                ],
+                UploadManifestOptions {
+                    tie_word_embeddings: true,
+                },
+            )
+            .unwrap()
+    }
+
+    fn moe_header_bytes() -> BTreeMap<String, usize> {
+        [
+            "model.layers.0.mlp.experts.gate_up_proj_blocks",
+            "model.layers.0.mlp.experts.gate_up_proj_scales",
+            "model.layers.0.mlp.experts.down_proj_blocks",
+            "model.layers.0.mlp.experts.down_proj_scales",
+            "model.layers.12.mlp.experts.gate_up_proj_blocks",
+            "model.layers.12.mlp.experts.gate_up_proj_scales",
+            "model.layers.12.mlp.experts.down_proj_blocks",
+            "model.layers.12.mlp.experts.down_proj_scales",
+        ]
+        .into_iter()
+        .map(|name| (name.to_string(), 4))
+        .collect()
+    }
+
     #[test]
     fn resource_plan_single_has_one_shard() {
         let plan = ShardedCudaResourcePlan::from_model_plan(&single_plan());
@@ -3355,6 +3810,85 @@ mod tests {
         assert_eq!(
             status.shards,
             plan.shards.iter().map(|s| s.status()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn moe_gpu_upload_plan_preserves_absolute_layer_ownership() {
+        let manifest = split_moe_upload_manifest();
+        let plan = ShardedMoeGpuUploadPlan::from_upload_manifest(&manifest, &moe_header_bytes());
+
+        let gpu0 = plan.shard_for_device(DeviceId(0)).unwrap();
+        assert_eq!(gpu0.absolute_layers, (0..12).collect::<Vec<_>>());
+        assert_eq!(gpu0.moe_gpu_status, MoeGpuUploadStatus::Deferred);
+        assert_eq!(gpu0.moe_layer_count, 1);
+        assert_eq!(gpu0.moe_u8_host_tensor_count, 4);
+        assert_eq!(gpu0.moe_u8_host_bytes, 16);
+        assert_eq!(gpu0.moe_router_tensor_count, 2);
+        assert_eq!(gpu0.moe_bias_tensor_count, 2);
+        let gpu0_layer0 = gpu0
+            .moe_layer_plans
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(gpu0_layer0.local_layer_idx, 0);
+        assert!(gpu0_layer0.gate_up_proj_blocks_planned);
+        assert!(gpu0_layer0.gate_up_proj_scales_planned);
+        assert!(gpu0_layer0.down_proj_blocks_planned);
+        assert!(gpu0_layer0.down_proj_scales_planned);
+        assert!(gpu0_layer0.router_planned);
+        assert!(gpu0_layer0.expert_bias_planned);
+        assert!(!gpu0_layer0.partial_u8_payload);
+
+        let gpu1 = plan.shard_for_device(DeviceId(1)).unwrap();
+        assert_eq!(gpu1.absolute_layers, (12..24).collect::<Vec<_>>());
+        assert_eq!(gpu1.moe_gpu_status, MoeGpuUploadStatus::Deferred);
+        assert_eq!(gpu1.moe_layer_count, 1);
+        assert_eq!(gpu1.moe_u8_host_tensor_count, 4);
+        assert_eq!(gpu1.moe_u8_host_bytes, 16);
+        assert!(gpu1
+            .moe_layer_plans
+            .iter()
+            .all(|layer| layer.absolute_layer_idx >= 12));
+        let gpu1_layer12 = gpu1
+            .moe_layer_plans
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(gpu1_layer12.local_layer_idx, 0);
+        assert!(gpu1_layer12.gate_up_proj_blocks_planned);
+    }
+
+    #[test]
+    fn moe_gpu_upload_status_is_deferred_until_explicit_upload() {
+        let manifest = split_moe_upload_manifest();
+        let plan = ShardedMoeGpuUploadPlan::from_upload_manifest(&manifest, &moe_header_bytes());
+        let status = ShardedMoeGpuUploadStatus::from_plan(&plan, false);
+
+        let gpu0 = status
+            .shards
+            .iter()
+            .find(|shard| shard.device_id == DeviceId(0))
+            .unwrap();
+        assert!(!gpu0.moe_gpu_uploaded);
+        assert_eq!(gpu0.moe_gpu_status, MoeGpuUploadStatus::Deferred);
+        assert_eq!(gpu0.moe_u8_gpu_tensor_count, 0);
+        assert_eq!(gpu0.moe_u8_gpu_bytes, 0);
+        assert!(gpu0.moe_gpu_deferred_reason.is_some());
+        let layer0 = gpu0
+            .moe_layer_statuses
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(
+            layer0.gate_up_proj_blocks_status,
+            MoeGpuUploadStatus::Deferred
+        );
+        assert_eq!(layer0.router_status, MoeGpuUploadStatus::Deferred);
+        assert_eq!(layer0.expert_bias_status, MoeGpuUploadStatus::Deferred);
+        assert_eq!(
+            layer0.supports_gpu_decode_status,
+            "not_evaluated_without_layer_construction"
         );
     }
 
