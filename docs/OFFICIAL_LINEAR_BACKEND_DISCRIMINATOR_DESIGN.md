@@ -118,85 +118,104 @@ BF16-product negative guard all fail full-vector parity. Layer6 remains
 blocked, and no runtime-policy or o-proj implementation discussion is
 authorized from Stage 2.
 
+## Stage 3 Producer-Side API Probe Result
+
+Status:
+
+```text
+/tmp/layer6_attention_oproj_api_probe_status.json
+```
+
+Artifact directory:
+
+```text
+/tmp/layer6_attention_oproj_api_probe/
+```
+
+Oracle branch and commit:
+
+```text
+oracle/ordered-bundle-generation
+0ae58d3617d62941c6a4e68624c83a2bf9ff21dd
+```
+
+Classification:
+
+```text
+layer6_oproj_producer_api_probe_layout_sensitive
+```
+
+Result: producer-side PyTorch API behavior is layout/fused-bias sensitive.
+`F.linear` is not unique: module `attn.out`, `F.linear`,
+`torch._C._nn.linear`, and fused `torch.addmm` all clear the full vector.
+Explicit matmul/einsum forms do not explain the official artifact.
+
+| Producer/API variant | Full-vector result | Focus lane 22 | Interpretation |
+| --- | --- | --- | --- |
+| module attn.out(weighted_flat) | 0 mismatches | clears | official module path |
+| torch.nn.functional.linear | 0 mismatches | clears | matches artifact |
+| torch._C._nn.linear | 0 mismatches | clears | matches F.linear |
+| fused torch.addmm | 0 mismatches | clears | matches F.linear |
+| weight @ input + bias | 826 mismatches | clears | not official-equivalent |
+| input @ weight.T + bias | 826 mismatches | clears | not official-equivalent |
+| torch.matmul | 826 mismatches | clears | not official-equivalent |
+| torch.einsum | 826 mismatches | clears | not official-equivalent |
+| stride-2 input view into F.linear | 826 mismatches | clears | layout-sensitive failure |
+| F.linear(..., bias=None) + bias | 826 mismatches | clears | fused-bias-sensitive failure |
+
+## Stage 3 Interpretation
+
+The official artifact is explained by fused linear/addmm semantics with the
+original contiguous BF16 input, weight, and bias layout. `F.linear` is not
+unique: `_C._nn.linear` and fused `addmm` also match.
+
+Explicit matmul/einsum are not sufficient proxies for official `F.linear`
+parity. Unfused bias addition reproduces the 826-mismatch pattern. A stride-2
+input view into `F.linear` also reproduces the 826-mismatch pattern, so input
+layout matters.
+
+MKLDNN enabled/disabled variants both clear, and default-thread vs
+single-thread variants both clear; neither is the differentiator in the Stage
+3 evidence. This remains producer evidence only and does not authorize
+Rust/runtime implementation.
+
 ## Narrower Official Linear Backend Discriminator
 
-The next discriminator should be producer/API/source-focused, not another
-Rust backend sweep. It should answer:
+The next discriminator is no longer "which PyTorch operator matches?" Stage 3
+answered that: fused linear/addmm semantics match, while explicit
+matmul/einsum and unfused-bias forms do not.
 
-1. What exact PyTorch operator path does `attn.out(weighted_flat)` use?
-2. Is `torch.nn.functional.linear` dispatching to a different backend than
-   explicit matmul/einsum?
-3. Does `torch._C._nn.linear` match `F.linear`?
-4. Does `torch.addmm` match `F.linear`?
-5. Do tensor strides, contiguity, transposition, or memory layout affect the
-   result?
-6. Does forcing contiguous input or weight change the result?
-7. Does disabling or enabling MKLDNN or oneDNN change the CPU BF16 result?
-8. Does thread count affect determinism?
-9. Does the official module call use fused bias behavior that explicit
-   matmul/einsum misses?
-10. Can a producer-side operator-API matrix explain the 826 matmul/einsum
-    mismatches?
+The next design should model fused linear/addmm semantics in a validation
+discriminator, preserve layout/fused-bias constraints, and compare Rust/CUDA
+candidates against fused addmm-like semantics only after that design update.
+Avoid further blind accumulation sweeps.
 
-## Proposed Stage 3 Producer-Side API Probe
+Questions now:
 
-Stage 3 should be an oracle/producer-side probe, not a Rust implementation.
-
-Inputs:
-
-- Layer6 weighted-V live tensor.
-- Layer6 o-proj weight and bias.
-- Official layer6 o-proj artifact.
-- Producer dtype probe status:
-  `/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json`.
-
-Operator variants:
-
-- Module call: `attn.out(weighted_flat)`.
-- `torch.nn.functional.linear`.
-- `torch._C._nn.linear`, if accessible.
-- `torch.addmm`.
-- `weight @ input + bias`.
-- `input @ weight.T + bias`.
-- `torch.matmul`.
-- `torch.einsum`.
-- Contiguous and non-contiguous variants.
-- MKLDNN enabled/disabled if applicable.
-- Single-thread versus default-thread CPU, if applicable.
-
-Required metrics:
-
-- Full-vector mismatches.
-- max_abs_diff.
-- mean_abs_diff.
-- Focus lane `22`.
-- First/worst mismatch.
-- Tensor dtype, device, stride, and contiguity.
-- Determinism over repeated runs.
-
-Expected classifications:
-
-- `layer6_oproj_producer_api_probe_flinear_unique`
-- `layer6_oproj_producer_api_probe_addmm_matches`
-- `layer6_oproj_producer_api_probe_layout_sensitive`
-- `layer6_oproj_producer_api_probe_thread_sensitive`
-- `layer6_oproj_producer_api_probe_mkldnn_sensitive`
-- `layer6_oproj_producer_api_probe_no_operator_explains`
-- `layer6_oproj_producer_api_probe_execution_failed`
+1. Can a validation-only Rust/CUDA path reproduce fused addmm semantics
+   without changing production defaults?
+2. Which existing helper is closest to fused addmm semantics?
+3. Can input layout and fused bias be represented explicitly in status/schema?
+4. Should layer4/layer5 reverse o-proj be re-probed with producer API variants
+   to see whether reverse was only coincidentally matching fused-linear
+   semantics?
+5. Should layer6 remain blocked until a fused-linear/addmm-specific
+   discriminator is designed?
 
 ## Discriminator Goal
 
 The discriminator should answer:
 
-1. Is official BF16 `F.linear` parity reproducible by an existing Rust/CUDA
-   validation backend?
-2. Does cuBLAS BF16 tensor-op reproduce the official layer6 o-proj artifact?
-3. Does pedantic cuBLAS BF16 reproduce it?
-4. Is the mismatch CPU-vs-GPU BF16 backend behavior?
-5. Is the mismatch due to operator API choice: `F.linear` / module call vs
-   matmul/einsum?
-6. Is the issue full-vector or lane-local?
-7. Which policy, if any, clears without collateral mismatches?
+1. Is official fused BF16 linear/addmm parity reproducible by an existing
+   validation-only Rust/CUDA helper?
+2. Can the validation schema represent input layout, weight layout, and fused
+   bias handling explicitly?
+3. Can a candidate backend clear the full layer6 o-proj vector without
+   collateral mismatches?
+4. Does the same fused-linear/addmm interpretation explain layer4/layer5
+   reverse o-proj evidence?
+5. Can any future candidate stay disabled-by-default and avoid production
+   routing, CUDA kernel, or Torch runtime dependency changes?
 
 ## Proposed Evidence Inputs
 
@@ -209,6 +228,8 @@ Layer6 primary inputs:
 - Official layer6 o-proj artifact.
 - Producer dtype probe status:
   `/tmp/layer6_attention_oproj_lane22_dtype_probe_status.json`.
+- Producer API probe status:
+  `/tmp/layer6_attention_oproj_api_probe_status.json`.
 
 Optional comparison surfaces:
 
@@ -220,13 +241,11 @@ Optional comparison surfaces:
 
 These are conceptual only:
 
-- Current sequential Rust f32 accumulation.
-- Reverse f32 accumulation.
-- Pairwise f32 accumulation.
-- Chunked-pairwise f32 accumulation.
-- Existing cuBLAS BF16 tensor-op validation helper.
-- Existing cuBLAS pedantic BF16 validation helper, if available.
-- CPU BF16 reference replay, diagnostic only.
+- Fused-addmm-like validation helper, if one is explicitly designed.
+- Existing validation helpers only if they can model fused bias and layout
+  constraints.
+- Current/reverse/pairwise/chunked Rust replays as negative guards, not as new
+  blind sweeps.
 - Producer-side PyTorch BF16 `F.linear`, source proof only, not a Rust
   dependency.
 
@@ -308,7 +327,7 @@ next_bounded_step
 1. Accepted design doc.
 2. Exact command examples.
 3. Schema for status JSON.
-4. Source proof status for the layer6 producer probe.
+4. Source proof status for the layer6 producer dtype and API probes.
 5. Clear list of candidate backends.
 6. Existing helper availability check.
 7. Full-vector collateral metrics.
@@ -319,18 +338,21 @@ next_bounded_step
 ## Suggested Future Implementation Order
 
 1. Status-schema-only mode.
-2. Artifact/source loader validation.
-3. Current/reverse/pairwise/chunked replay reuse.
-4. cuBLAS BF16 tensor-op validation backend probe.
-5. cuBLAS pedantic validation backend probe.
-6. Optional layer0/layer4/layer5 comparison mode.
+2. Fused-linear/addmm schema design for layout and fused-bias fields.
+3. Artifact/source loader validation against that schema.
+4. Status contract update for producer dtype/API source proof.
+5. Existing helper comparison only if mapped to fused-addmm semantics.
+6. Optional layer4/layer5 producer API re-probe.
 7. Matrix summary update.
 
 This design does not authorize implementation by itself.
 
 ## Recommendation
 
-Do not generate layer7 yet unless the goal is pure evidence collection. Do not
-open a runtime implementation branch. The recommended next action is a
-producer-side API probe in the oracle lane before any new Rust backend
-experiment.
+Recommended next action: create a docs-only ordered-surface batch
+orchestration design, and separately create a docs-only fused-linear/addmm
+validation discriminator design before any new Rust backend experiment.
+
+Do not implement fused addmm semantics yet, select a runtime backend, generate
+layer7 unless the goal is pure evidence collection, or emit/promote layer6
+output.
