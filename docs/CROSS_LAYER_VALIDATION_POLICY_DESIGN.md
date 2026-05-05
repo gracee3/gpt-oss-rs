@@ -121,6 +121,150 @@ must not touch production defaults.
 Recommended: Option B first, because the matrix already shows enough
 variation to make policy design necessary before more layer collection.
 
+## Disabled-by-Default Validation Feature Design
+
+Classification: `cross_layer_validation_policy_feature_design_recorded`
+
+### Design Intent
+
+This feature design is for validation replay only. Policies must be explicit
+per operator, and defaults must remain current behavior. It authorizes no
+production runtime change, no default model-runner routing change, no CUDA
+kernel change, no output emission, no ladder continuation, and no
+tolerance-based pass criteria.
+
+### Proposed Validation Knobs
+
+These knobs are conceptual only and are not implemented by this document.
+
+Raw-QK:
+
+```text
+--raw-qk-accum-policy current|pairwise|reverse|f64-diagnostic
+```
+
+Weighted-V:
+
+```text
+--weighted-v-accum-policy current|pairwise|reverse|f64-diagnostic
+```
+
+Attention o-proj:
+
+```text
+--attention-oproj-policy current|reverse|pairwise|chunked-pairwise|f64-diagnostic
+```
+
+Selected MLP down:
+
+```text
+--selected-mlp-down-policy current|deterministic-abs-ascending|pairwise-f32|pairwise-f64|f64-diagnostic
+```
+
+RMSNorm:
+
+```text
+--norm-reduction-policy current|pairwise|f64
+```
+
+`f64` variants are diagnostic only. BF16-product is intentionally excluded as
+a candidate knob; if it is exposed for evidence, it must be marked
+evidence-only/rejected. Any unsupported policy/layer combination should fail
+closed rather than silently falling back.
+
+### Policy Scope Rules
+
+- Every policy result must name the operator and layer.
+- Every status JSON must record `runtime_behavior_changed = false`,
+  `production_routing_changed = false`, and `cuda_kernels_changed = false`.
+- Every explicit policy must record the source proof status that justified it.
+- Pairwise, reverse, deterministic abs-ascending, and related variants must
+  never be inferred globally.
+- Exact full-vector or full-matrix metrics remain authoritative.
+- Focus-lane checks are diagnostic only.
+
+### Status JSON Contract
+
+Future status JSONs should include at least:
+
+```text
+classification
+validation_only
+runtime_behavior_changed
+production_routing_changed
+cuda_kernels_changed
+layer_index
+operator
+selected_policy
+default_policy_result
+explicit_policy_result
+source_statuses
+full_vector_or_matrix_metrics
+collateral_mismatches
+output_emitted
+ladder_continued
+final_logit_claim
+all_layer_claim
+server_claim
+context_length_claim
+next_bounded_step
+```
+
+### Runtime Guardrails
+
+- Compile-time or CLI-only validation path.
+- No default route change.
+- No production CUDA replacement.
+- No correction metadata.
+- No tolerance pass.
+- No raw `/tmp` or `.live` commits.
+- No Torch runtime dependency in Rust.
+- No layer output emission unless a separate output-emission design is
+  approved.
+
+### Proof Gates Before Code Implementation
+
+1. Accepted design doc.
+2. One additional ordered surface, or an explicit rationale not to collect one.
+3. Release/performance characterization for costly policies.
+4. Collateral sweeps over full matrices/vectors.
+5. Explicit unsupported-policy behavior.
+6. Rollback story.
+7. Exact command examples for each operator.
+8. Status JSON schema agreed before code.
+
+### Suggested Implementation Order, if later authorized
+
+1. Status-schema helper only.
+2. Parser-only CLI knobs that still execute current behavior.
+3. Raw-QK policy hook in validation bundle path.
+4. Weighted-V policy hook.
+5. o-proj policy hook.
+6. Selected MLP down policy hook.
+7. Matrix summary mode.
+
+Implementation is not authorized by this document alone.
+
+### Open Questions
+
+- Should layer6 be generated before code?
+- Should layer4/layer5 reverse o-proj get a PyTorch dtype probe?
+- Should selected MLP down abs-ascending be demoted to proof-oracle only
+  because of cost and layer4 regression?
+- Should attention policies be split into separate docs from MLP policies?
+- What release/perf budget would be acceptable for validation-only replay?
+
+### Recommendation
+
+The recommended next step after this document is either:
+
+- Generate layer6 ordered surface.
+- Create a tiny status-schema-only branch if the team wants implementation
+  scaffolding.
+
+Preferred: layer6 before code, unless operator-policy implementation
+scaffolding is urgently needed.
+
 ## Caveats
 
 - Final-token only.
