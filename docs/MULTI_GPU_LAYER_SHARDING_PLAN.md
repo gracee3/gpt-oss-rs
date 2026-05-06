@@ -7496,3 +7496,121 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_full_allocation_moe_upload_smoke_complete
+
+## BF16 / dtype-policy checkpoint
+
+This checkpoint separates the current branch's allocation evidence from future
+runtime dtype and parity policy. The current lane has validated the repo's
+existing f16 CUDA allocation surface across a split whole-layer plan; it has not
+validated BF16 runtime behavior, model parity, final-token parity, logit parity,
+graph-decode readiness, or serving support.
+
+Source dtype vs allocation dtype:
+
+- The `GpuDType::F16` loader path is the repo's existing half/f16 CUDA
+  allocation path. It is not a statement that the source model's parity dtype is
+  f16, nor a BF16 runtime claim.
+- `load_weights_to_gpu_f16` and its filtered/shape-preserving variants keep
+  source `F16` tensors as f16, narrow source `BF16` tensors through f32 into
+  f16 on the host, and narrow source `F32` tensors into f16 on the host before
+  CUDA upload.
+- The f16 GPU loader skips `U8` tensors while retaining shape metadata for
+  skipped tensors where requested.
+- The f32 loader widens source `F16` and `BF16` tensors into f32 and keeps
+  source `F32` tensors as f32.
+- GPT-OSS U8/MXFP4 expert payloads bypass the normal f16/f32 GPU loaders. They
+  are loaded through the U8 host-retention path first and, in this lane's bench
+  smoke, copied to shard-local GPU U8 buffers only under
+  `--upload-gpt-oss-moe-gpu`.
+
+Current f16 allocation surface validated:
+
+- Manifest-owned f16 tensor upload for shard-owned whole tensors.
+- Selective f32 norm/bias/final-norm loading for f32-to-f16 side buffers.
+- Fused QKV f16 allocation.
+- Per-layer input/post-attention norm f16 conversion.
+- QKV/O bias f16 conversion.
+- Embedding f16 availability on the embedding shard from the uploaded f16
+  tensor.
+- Final norm f16 allocation on the final shard from f32 cast.
+- Shard-local f16 scratch allocation with explicit max tokens.
+- GPT-OSS MoE U8 expert payload GPU upload for shard-owned absolute layers.
+
+Current BF16 support findings:
+
+- Safetensor dtype metadata includes `BF16`, and the loaders can decode BF16
+  source tensors into f32 or narrow them into f16.
+- `crates/gpt-oss-gpu` contains cuBLAS BF16 helper APIs that use
+  `CUDA_R_16BF`, and validation/runtime-oracle tools contain BF16 experiment
+  paths.
+- The serving/runtime worker treats `Dtype::BFloat16` as a half dtype for the
+  existing hgemm path and calls the same f16 runner enable/fuse path.
+- The split allocation surface in this branch does not contain a complete BF16
+  device-buffer, fused-buffer, scratch, MoE, execution, or parity path.
+- BF16 helper APIs and validation experiments are not enough to claim BF16
+  runtime support for split maps.
+
+Allowed claims for this branch:
+
+- f16 allocation-surface validation.
+- Split whole-layer tensor ownership.
+- Per-shard CUDA resource ownership.
+- Filtered whole-tensor upload.
+- Shard-local late allocation status.
+- U8 MoE expert payload upload allocation.
+
+Disallowed claims for this branch:
+
+- BF16 parity.
+- Model parity.
+- Final-token parity.
+- Logit parity.
+- Execution readiness.
+- Graph-decode readiness.
+- Serving support for split maps.
+
+Integration implications:
+
+- The current scaffold can be merged only as inert, non-executing
+  infrastructure if its status/docs remain explicit about the f16 allocation
+  boundary and default serve/runtime behavior remains unchanged.
+- Before split runtime execution is enabled, the branch needs an explicit dtype
+  policy for BF16 vs f16 weights, activations, fused side buffers, scratch, MoE
+  router/bias readiness, tied LM-head/final-head behavior, and oracle-backed
+  validation.
+- A non-executing layer-construction skeleton does not require BF16 runtime
+  support if it is kept f16-surface-only and does not run kernels or make
+  readiness/parity claims.
+- Any final-token or logit claim depends on the validation-runtime/oracle lane,
+  including BF16 projection policy, RMSNorm/RoPE/MLP/MoE policy checks, and
+  runtime-vs-oracle comparison artifacts.
+
+Recommended dtype policy before execution:
+
+- Use Option A: continue with a non-executing layer-construction skeleton as
+  f16 allocation-surface-only, while gating all execution, serving, and parity
+  claims behind a later BF16 runtime policy checkpoint.
+- This keeps the next slice inert and aligned with the allocation evidence
+  already gathered, while preventing the f16 scaffold from being mistaken for
+  BF16 model parity.
+
+Optional header-only dry-run note:
+
+- A restricted-model dry-run completed with classification
+  `multi_gpu_layer_sharding_dry_run_report_complete`, 459 tensors,
+  13,761,264,768 bytes, 24 restricted-sink overrides, 0 unassigned tensors, and
+  0 invalid tensors.
+- The dry-run status did not expose dtype counts, so this checkpoint relies on
+  loader/code recon for dtype-policy conclusions rather than model-header dtype
+  counts.
+
+Next bounded slice:
+
+- Non-executing layer-construction skeleton, f16-surface-only. This is the
+  smallest execution-adjacent step that can consume the validated allocation
+  islands without running math, constructing a runner, enabling serve/runtime
+  split maps, or making BF16/parity claims.
+
+Primary classification:
+
+multi_gpu_layer_sharding_bf16_dtype_policy_checkpoint_complete
