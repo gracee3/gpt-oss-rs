@@ -941,6 +941,27 @@ Decision:
 - Rust/CUDA policy synthesis remains closed.
 - The `default` output is not promoted as a new artifact or production policy.
 
+## PyTorch CPU Instrumentation Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_CPU_INSTRUMENTATION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_plan_recorded
+```
+
+The future instrumentation branch would be CPU-only and source-attribution
+only. It should instrument the `linear -> addmm -> addmm_impl_cpu_ ->
+cpublas::gemm` path and lower GEMM candidates just enough to identify whether
+baseline and `ATEN_CPU_CAPABILITY=default` take different optimized BF16 paths
+for layer18 lane 1641. It must not rebaseline, select a backend, run consumer
+revalidation, or change runtime/default/CUDA behavior.
+
 ## Non-Goals
 
 - No runtime implementation.

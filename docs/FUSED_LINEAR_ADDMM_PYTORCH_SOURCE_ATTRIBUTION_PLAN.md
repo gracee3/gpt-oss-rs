@@ -541,3 +541,24 @@ Interpretation:
 - The `default` output is not a new oracle artifact and does not authorize a
   rebaseline, backend selection, consumer revalidation, output emission,
   ladder continuation, or runtime/default/CUDA behavior change.
+
+## PyTorch CPU Instrumentation Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_CPU_INSTRUMENTATION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_plan_recorded
+```
+
+The next bounded source-attribution option is a future CPU-only instrumented
+PyTorch build under a separate source-build venv. Its focus is the Workstream A
+addmm/GEMM path and the layer18 lane1641 `ATEN_CPU_CAPABILITY=default`
+differential. This docs branch does not build or patch PyTorch, create a venv,
+run probes, select a backend, authorize consumer revalidation, or reopen
+Rust/CUDA policy synthesis.

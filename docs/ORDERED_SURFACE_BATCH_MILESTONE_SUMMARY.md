@@ -834,6 +834,27 @@ operator-facing milestone: preserve the official CPU Torch API seam and do not
 rebaseline, select a backend, run consumer revalidation, emit outputs, continue
 the ladder, or change runtime/default/CUDA behavior.
 
+## PyTorch CPU Instrumentation Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_CPU_INSTRUMENTATION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_plan_recorded
+```
+
+The milestone now includes a docs-only plan for a possible future CPU-only
+instrumented PyTorch build. The plan targets the optimized CPU BF16
+addmm/GEMM path and the layer18 lane1641 capability differential, but it keeps
+the milestone guardrails intact: no build or patch in this branch, no
+rebaseline, no backend selection, no consumer revalidation, no Rust/CUDA
+policy synthesis reopening, and no runtime/default/CUDA behavior change.
+
 ## Guardrails
 
 - Validation-only.

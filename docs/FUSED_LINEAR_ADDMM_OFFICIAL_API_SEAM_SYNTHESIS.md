@@ -459,6 +459,27 @@ The finding is still not a replayable arithmetic or microkernel rule. It does
 not replace the official artifacts, select a backend, authorize consumer
 revalidation, or permit runtime/default/CUDA behavior changes.
 
+## PyTorch CPU Instrumentation Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_CPU_INSTRUMENTATION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_plan_recorded
+```
+
+The planned future branch is
+`oracle/fused-linear-addmm-pytorch-source-cpu-build-instrumentation`. It would
+use a separate `/home/emmy/openai/.venvs/pytorch-src-cpu` build environment
+and gate minimal addmm/GEMM logs behind `GPT_OSS_TRACE_ADDMM=1`. The branch is
+only justified as source attribution; backend/path identification alone would
+not reopen Rust/CUDA policy synthesis or authorize implementation.
+
 ## Guardrails
 
 - No backend selected.
