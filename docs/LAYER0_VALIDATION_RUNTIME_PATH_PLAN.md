@@ -4745,6 +4745,36 @@ final-logit, all-layer, server, or 4097-token claim. Next bounded step:
 review the raw-QK batch status before separately authorizing layer21 o-proj
 probing or layer23 source precision analysis.
 
+## Ordered Surface Batch Matrix 7..23
+
+The final docs-only ordered-surface batch matrix is recorded at:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MATRIX_7_23.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_matrix_7_23_recorded
+```
+
+Summary:
+
+- Strict/default cleared: layers 12, 14, 15, and 22.
+- Explicit-policy full-bundle cleared: layers 8, 9, and 10 under
+  attention o-proj `pairwise_f32_accum_f32_bias_bf16_output`.
+- Partial seam-cleared but full-bundle-blocked: layer20 o-proj pairwise then
+  selected-MLP-down support gap; layer21 raw-QK reverse then o-proj blocked.
+- Blocked classes: raw-QK artifact/source or collateral classes for layers
+  7/17/23, o-proj bounded-family classes for layers 13/16/18/21, and
+  selected-MLP-down classes for layers 11/19/20.
+
+Recommended next step: create a backlog/design pass from the matrix rather
+than continuing broad layer collection or implementing runtime/default/CUDA
+policy changes. No output emission, ladder continuation, correction metadata,
+tolerance pass, final-logit, all-layer, server, or 4097-token claim is made.
+
 ## Validation Commands
 
 For the skeleton slice:

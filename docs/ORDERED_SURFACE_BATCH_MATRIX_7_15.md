@@ -95,6 +95,16 @@ Layer21 clears the raw-QK seam under reverse f32 validation-only accumulation
 but remains full-bundle blocked at attention o-proj. Layers 17 and 23 remain
 blocked on raw-QK without a selected policy.
 
+## Superseded / Extended
+
+The final post-pivot layer7..23 matrix is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MATRIX_7_23.md
+```
+
+This layer7..15 document remains the first-batch anchor.
+
 ## Guardrails
 
 - No output emission.
