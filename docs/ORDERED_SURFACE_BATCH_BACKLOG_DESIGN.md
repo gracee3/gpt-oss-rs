@@ -157,6 +157,17 @@ Proof gates:
 - Layer19 remains blocked unless a full-vector no-collateral policy exists.
 - BF16-product remains rejected if collateral appears.
 
+Design status:
+
+- Workstream B design is recorded in
+  `docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md`.
+- Classification:
+  `selected_mlp_down_bundle_revalidation_design_recorded`.
+- Implementation remains unauthorized.
+- Layer11 and layer20 are support-gap targets.
+- Layer19 is the collateral negative control and must not be forced into the
+  layer11/layer20 pattern.
+
 ### Workstream C - Raw-QK Artifact/Source Boundary Analysis
 
 Priority: medium.

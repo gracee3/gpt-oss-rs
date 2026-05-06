@@ -4945,6 +4945,40 @@ No probes, backend selection, runtime/default/CUDA change, output emission,
 ladder continuation, correction metadata, tolerance pass, final-logit,
 all-layer, server, or 4097-token claim is made.
 
+## Selected-MLP-Down Bundle Revalidation Design
+
+The docs-only Workstream B design is recorded at:
+
+```text
+docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md
+```
+
+Classification:
+
+```text
+selected_mlp_down_bundle_revalidation_design_recorded
+```
+
+Target layers:
+
+- Layer11: selected MLP down lane 1480; replay clears full MLP, but full bundle
+  revalidation needs a validation-only selected-MLP-down policy flag.
+- Layer20: o-proj pairwise clears first, then full bundle revalidation stops at
+  selected MLP down; future support must compose the o-proj policy source with
+  a replay-proven selected-MLP-down policy source.
+- Layer19: selected MLP down lane 3005 with replay collateral mismatches; this
+  is the negative control and must not be forced.
+
+Future branch name, only if explicitly approved:
+
+```text
+validation/selected-mlp-down-bundle-revalidation
+```
+
+Implementation is not authorized by this design. No runtime/default/CUDA
+change, output emission, ladder continuation, correction metadata, tolerance
+pass, final-logit, all-layer, server, or 4097-token claim is authorized.
+
 ## Validation Commands
 
 For the skeleton slice:

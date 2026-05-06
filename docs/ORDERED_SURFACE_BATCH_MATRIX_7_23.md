@@ -106,6 +106,15 @@ docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 - Layer19: replay collateral mismatches.
 - Layer20: selected-MLP-down support gap after o-proj clears.
 
+Workstream B selected-MLP-down bundle revalidation design is recorded in:
+
+```text
+docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md
+```
+
+It keeps layer11/layer20 as support-gap targets, layer19 as the collateral
+negative control, and does not authorize implementation.
+
 ### Evidence-only / rejected policies
 
 - BF16-product remains rejected wherever it introduces broad collateral
