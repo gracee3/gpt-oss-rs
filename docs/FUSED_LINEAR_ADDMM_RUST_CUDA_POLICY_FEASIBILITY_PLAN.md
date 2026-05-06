@@ -369,3 +369,25 @@ not authorized. The official CPU Torch module/F.linear/_C/addmm seam remains
 the Workstream A oracle boundary. No backend is selected, no implementation is
 authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change follows.
+
+## Producer/API Artifact Reuse Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PRODUCER_API_ARTIFACT_REUSE_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_producer_api_artifact_reuse_plan_recorded
+```
+
+Because Gate B closure found no global Rust CPU policy, the next stable
+Workstream A state is artifact reuse: preserve CPU Torch
+module/F.linear/_C/addmm outputs as validation-only oracle seam artifacts.
+Producer/API artifacts may be consumed for blocked-family attribution and
+downstream comparison, but they do not select a backend, authorize consumer
+revalidation, authorize CUDA mirror work, or change runtime/default/CUDA
+behavior.

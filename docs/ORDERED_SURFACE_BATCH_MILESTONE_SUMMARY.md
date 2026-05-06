@@ -601,6 +601,28 @@ Torch API seam unless a new design review authorizes a different lane. CUDA
 mirror work, consumer revalidation, backend selection, runtime/default/CUDA
 behavior changes, output emission, and ladder continuation remain unauthorized.
 
+## Producer/API Artifact Reuse Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PRODUCER_API_ARTIFACT_REUSE_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_producer_api_artifact_reuse_plan_recorded
+```
+
+The milestone now records the Workstream A stop state as producer/API artifact
+reuse. Official CPU Torch module/F.linear/_C/addmm o-proj artifacts may be
+kept as validation-only oracle seams for attribution and downstream comparison.
+This closes the current Rust/CUDA policy feasibility lane while preserving the
+ordered-surface taxonomy. No backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change follows.
+
 ## Guardrails
 
 - Validation-only.

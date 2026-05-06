@@ -775,6 +775,27 @@ oracle boundary, not to a Rust CPU backend candidate. No backend is selected,
 no implementation is authorized, and no runtime/default/CUDA behavior changes
 are authorized.
 
+## Producer/API Artifact Reuse Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PRODUCER_API_ARTIFACT_REUSE_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_producer_api_artifact_reuse_plan_recorded
+```
+
+The backend-discriminator path should now treat Workstream A producer/API
+outputs as reusable oracle artifacts unless a new design review reopens
+Rust/CUDA policy work. Artifact reuse supports validation-only attribution and
+downstream comparison, but it does not identify a backend, authorize consumer
+revalidation, authorize CUDA mirror work, or change runtime/default/CUDA
+behavior.
+
 ## Non-Goals
 
 - No runtime implementation.

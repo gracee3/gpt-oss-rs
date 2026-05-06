@@ -222,6 +222,27 @@ Torch API seam, not a Rust/CUDA backend identity. No backend is selected, no
 implementation is authorized, no consumer revalidation is authorized, and no
 runtime/default/CUDA behavior change follows.
 
+## Producer/API Artifact Reuse Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PRODUCER_API_ARTIFACT_REUSE_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_producer_api_artifact_reuse_plan_recorded
+```
+
+The reuse plan records the post-closure decision: Workstream A remains an
+official CPU Torch module/F.linear/_C/addmm artifact seam. Future validation
+may consume producer/API o-proj artifacts as oracle references, but this is
+artifact consumption only. It does not select a Rust/CUDA backend, authorize
+consumer revalidation, authorize CUDA mirror work, emit outputs, or change
+runtime/default/CUDA behavior.
+
 ## Guardrails
 
 - No backend selected.

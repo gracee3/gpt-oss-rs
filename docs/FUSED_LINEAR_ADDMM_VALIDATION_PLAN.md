@@ -712,6 +712,27 @@ This closes the current Rust CPU policy synthesis lane. Continue treating the
 CPU Torch module/F.linear/_C/addmm seam as the oracle reference; do not proceed
 to CUDA mirror work or consumer revalidation from this result.
 
+## Producer/API Artifact Reuse Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PRODUCER_API_ARTIFACT_REUSE_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_producer_api_artifact_reuse_plan_recorded
+```
+
+The validation plan now preserves Workstream A through producer/API artifact
+reuse. Future validation-only consumers may compare against official o-proj
+artifact seams, with full-vector exactness and negative controls preserved.
+This does not authorize backend selection, consumer revalidation from the plan
+alone, CUDA mirror work, runtime/default/CUDA changes, output emission, or
+ladder continuation.
+
 ## Non-Goals
 
 - No runtime implementation.
