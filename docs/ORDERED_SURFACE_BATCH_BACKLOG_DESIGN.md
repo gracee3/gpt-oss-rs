@@ -163,10 +163,21 @@ Design status:
   `docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md`.
 - Classification:
   `selected_mlp_down_bundle_revalidation_design_recorded`.
-- Implementation remains unauthorized.
-- Layer11 and layer20 are support-gap targets.
+- Implementation slice is recorded on
+  `validation/selected-mlp-down-bundle-revalidation`.
+- Batch status:
+  `/tmp/selected_mlp_down_bundle_revalidation_status.json`.
+- Classification:
+  `selected_mlp_down_bundle_revalidation_partial`.
+- Layer11 accepts the replay-proven `naive_f64_sum_then_bf16_output` policy for
+  selected-down outputs, but full bundle revalidation remains blocked by one
+  router-logit mismatch.
+- Layer20 composes o-proj pairwise with replay-proven
+  `pairwise_f32_sum_then_bf16_output` and clears the full bundle.
 - Layer19 is the collateral negative control and must not be forced into the
   layer11/layer20 pattern.
+- Runtime/default/CUDA behavior remains unchanged; no outputs are emitted and
+  the ladder is not continued.
 
 ### Workstream C - Raw-QK Artifact/Source Boundary Analysis
 

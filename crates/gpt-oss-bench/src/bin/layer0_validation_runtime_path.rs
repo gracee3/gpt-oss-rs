@@ -143,6 +143,10 @@ struct Cli {
     #[arg(long)]
     down_cast_policy_sweep_status: Option<PathBuf>,
 
+    /// Validation-only selected-MLP-down policy provenance for full bundle revalidation.
+    #[arg(long)]
+    selected_mlp_down_policy_from_replay: Option<PathBuf>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
@@ -531,6 +535,7 @@ enum Mode {
     Mlp1Bf16Policy,
     OrderedSurfaceBatchStatus,
     FusedLinearAddmmStatusScaffold,
+    SelectedMlpDownBundleRevalidationStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1521,6 +1526,9 @@ fn main() -> Result<()> {
         Mode::Mlp1Bf16Policy => run_mlp1_bf16_policy(&cli),
         Mode::OrderedSurfaceBatchStatus => run_ordered_surface_batch_status(&cli),
         Mode::FusedLinearAddmmStatusScaffold => run_fused_linear_addmm_status_scaffold(&cli),
+        Mode::SelectedMlpDownBundleRevalidationStatus => {
+            run_selected_mlp_down_bundle_revalidation_status(&cli)
+        }
     }
 }
 
@@ -1713,6 +1721,305 @@ fn json_path_u64(value: &Value, path: &[&str]) -> Option<u64> {
 
 fn json_path_str<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
     json_path(value, path).and_then(Value::as_str)
+}
+
+#[derive(Clone, Debug)]
+struct SelectedMlpDownReplayGate {
+    source_status: String,
+    replay_classification: String,
+    selected_policy: String,
+    replay_had_collateral: bool,
+    rejected_reason: Option<String>,
+    selected_outputs_mismatches: Option<u64>,
+    weighted_sum_mismatches: Option<u64>,
+    final_output_mismatches: Option<u64>,
+}
+
+impl SelectedMlpDownReplayGate {
+    fn accepted(&self) -> bool {
+        self.rejected_reason.is_none()
+    }
+}
+
+fn run_selected_mlp_down_bundle_revalidation_status(cli: &Cli) -> Result<()> {
+    let layer11_status =
+        PathBuf::from("/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json");
+    let layer20_status = PathBuf::from(
+        "/tmp/layer20_ordered_bundle_validate_oproj_selected_mlp_down_policy_status.json",
+    );
+    let layer19_status = PathBuf::from(
+        "/tmp/layer19_ordered_bundle_validate_selected_mlp_down_negative_guard_status.json",
+    );
+
+    let mut missing = Vec::new();
+    let mut layers = Vec::new();
+    for (layer, path) in [
+        (11usize, &layer11_status),
+        (20usize, &layer20_status),
+        (19usize, &layer19_status),
+    ] {
+        if !path.exists() {
+            missing.push(path.display().to_string());
+            layers.push(json!({
+                "layer_index": layer,
+                "status_path": path.display().to_string(),
+                "classification": "selected_mlp_down_bundle_revalidation_missing_layer_status",
+            }));
+            continue;
+        }
+        let status = load_json(path)?;
+        let classification = status
+            .get("classification")
+            .and_then(Value::as_str)
+            .unwrap_or("missing_classification");
+        layers.push(json!({
+            "layer_index": layer,
+            "status_path": path.display().to_string(),
+            "classification": classification,
+            "selected_mlp_down_policy": status.get("selected_mlp_down_policy").cloned().unwrap_or(Value::Null),
+            "selected_mlp_down_policy_applied": status
+                .get("selected_mlp_down_policy_applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "selected_mlp_down_policy_rejected_reason": status
+                .get("selected_mlp_down_policy_rejected_reason")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "full_bundle_cleared": status
+                .get("full_bundle_cleared")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }));
+    }
+
+    let layer11_clear = layer_bundle_status_full_bundle_cleared(&layer11_status)?;
+    let layer20_clear = layer_bundle_status_full_bundle_cleared(&layer20_status)?;
+    let layer19_rejected = layer_bundle_status_policy_rejected(&layer19_status)?;
+    let classification = if !missing.is_empty() {
+        "selected_mlp_down_bundle_revalidation_blocked_by_missing_artifacts"
+    } else if layer11_clear && layer20_clear && layer19_rejected {
+        "selected_mlp_down_bundle_revalidation_recorded"
+    } else if layer19_rejected {
+        "selected_mlp_down_bundle_revalidation_partial"
+    } else {
+        "selected_mlp_down_bundle_revalidation_blocked_by_collateral_mismatches"
+    };
+
+    let selected_policies = layers
+        .iter()
+        .filter_map(|layer| {
+            let applied = layer
+                .get("selected_mlp_down_policy_applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            applied.then(|| {
+                json!({
+                    "layer_index": layer.get("layer_index").cloned().unwrap_or(Value::Null),
+                    "policy": layer.get("selected_mlp_down_policy").cloned().unwrap_or(Value::Null),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let blocked_layers = layers
+        .iter()
+        .filter_map(|layer| {
+            let full_bundle_cleared = layer
+                .get("full_bundle_cleared")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            (!full_bundle_cleared).then(|| layer.get("layer_index").cloned().unwrap_or(Value::Null))
+        })
+        .collect::<Vec<_>>();
+
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layers_requested": [11, 20, 19],
+        "layers": layers,
+        "layer11_status": layer11_status.display().to_string(),
+        "layer20_status": layer20_status.display().to_string(),
+        "layer19_status": layer19_status.display().to_string(),
+        "selected_policies": selected_policies,
+        "blocked_layers": blocked_layers,
+        "negative_controls": [19],
+        "missing_statuses": missing,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "Review selected-MLP-down bundle revalidation results before any output emission, ladder continuation, or runtime policy discussion."
+    });
+    write_json(&cli.output, &status)
+}
+
+fn layer_bundle_status_full_bundle_cleared(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let status = load_json(path)?;
+    Ok(status
+        .get("full_bundle_cleared")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+fn layer_bundle_status_policy_rejected(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let status = load_json(path)?;
+    Ok(status
+        .get("selected_mlp_down_policy_rejected_reason")
+        .is_some_and(|reason| !reason.is_null()))
+}
+
+fn load_selected_mlp_down_replay_gate(
+    path: Option<&Path>,
+    layer: usize,
+) -> Result<Option<SelectedMlpDownReplayGate>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    validate_path(path, "selected MLP down replay status")?;
+    let status = load_json(path)?;
+    anyhow::ensure!(
+        status_layer_index(&status)? == layer,
+        "selected MLP down replay layer did not match requested layer {layer}"
+    );
+    let replay_classification = status
+        .get("classification")
+        .and_then(Value::as_str)
+        .unwrap_or("missing_classification")
+        .to_string();
+    let selected_policy = status
+        .get("best_policy_by_ordered_mlp_full_vector")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_string();
+    let policy_result = status
+        .get("policy_results")
+        .and_then(Value::as_array)
+        .and_then(|results| {
+            results.iter().find(|result| {
+                result
+                    .get("policy")
+                    .and_then(Value::as_str)
+                    .is_some_and(|policy| policy == selected_policy)
+            })
+        });
+
+    let selected_outputs_mismatches = policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "selected_outputs"));
+    let weighted_sum_mismatches = policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "weighted_sum"));
+    let final_output_mismatches = policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "final_output"));
+    let replay_had_collateral = policy_result
+        .and_then(|result| {
+            result
+                .get("introduces_collateral_mismatches")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
+        || replay_classification.ends_with("_collateral_mismatches");
+
+    let rejected_reason = if !replay_classification.ends_with("_full_mlp_cleared") {
+        Some("replay_status_did_not_classify_full_mlp_cleared".to_string())
+    } else if selected_policy == "none" {
+        Some("replay_status_missing_best_full_mlp_policy".to_string())
+    } else if !selected_mlp_down_policy_allowed(&selected_policy) {
+        Some("selected_policy_not_allowed_for_bundle_revalidation".to_string())
+    } else if policy_result.is_none() {
+        Some("selected_policy_missing_from_replay_policy_results".to_string())
+    } else if policy_result
+        .and_then(|result| result.get("evidence_only").and_then(Value::as_bool))
+        .unwrap_or(false)
+    {
+        Some("selected_policy_is_evidence_only".to_string())
+    } else if replay_had_collateral {
+        Some("selected_policy_has_collateral_mismatches".to_string())
+    } else if selected_outputs_mismatches != Some(0)
+        || weighted_sum_mismatches != Some(0)
+        || final_output_mismatches != Some(0)
+    {
+        Some("selected_policy_does_not_clear_full_ordered_mlp".to_string())
+    } else {
+        None
+    };
+
+    Ok(Some(SelectedMlpDownReplayGate {
+        source_status: path.display().to_string(),
+        replay_classification,
+        selected_policy,
+        replay_had_collateral,
+        rejected_reason,
+        selected_outputs_mismatches,
+        weighted_sum_mismatches,
+        final_output_mismatches,
+    }))
+}
+
+fn selected_mlp_down_policy_allowed(policy: &str) -> bool {
+    matches!(
+        policy,
+        "naive_f64_sum_then_bf16_output"
+            | "pairwise_f64_sum_then_bf16_output"
+            | "pairwise_f32_sum_then_bf16_output"
+            | "deterministic_f32_abs_ascending_sum_then_bf16_output"
+    )
+}
+
+fn selected_mlp_down_policy_mismatches(result: &Value, section: &str) -> Option<u64> {
+    json_path_u64(result, &[section, "full_vector_metrics", "mismatches"]).or_else(|| {
+        if section == "selected_outputs" {
+            json_path_u64(
+                result,
+                &[
+                    "selected_outputs_all_ranks",
+                    "full_vector_metrics",
+                    "mismatches",
+                ],
+            )
+        } else {
+            None
+        }
+    })
+}
+
+fn selected_mlp_down_local_policy_result<'a>(
+    policy_results: &'a [Value],
+    gate: Option<&SelectedMlpDownReplayGate>,
+) -> Option<&'a Value> {
+    let policy = gate?.selected_policy.as_str();
+    policy_results.iter().find(|result| {
+        result
+            .get("policy")
+            .and_then(Value::as_str)
+            .is_some_and(|candidate| candidate == policy)
+    })
+}
+
+fn selected_mlp_down_local_policy_clears(result: Option<&Value>) -> bool {
+    result.is_some_and(|result| {
+        selected_mlp_down_policy_mismatches(result, "selected_outputs") == Some(0)
+            && selected_mlp_down_policy_mismatches(result, "weighted_sum") == Some(0)
+            && selected_mlp_down_policy_mismatches(result, "final_output") == Some(0)
+            && !result
+                .get("evidence_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            && !result
+                .get("introduces_collateral_mismatches")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    })
 }
 
 fn run_ordered_surface_batch_status(cli: &Cli) -> Result<()> {
@@ -6977,6 +7284,10 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let weighted_v_policy_explicit =
         !matches!(weighted_v_policy, WeightedVAccumPolicy::CurrentSequential);
     let weighted_v_oproj_policy_explicit = weighted_v_policy_explicit && oproj_policy_explicit;
+    let selected_mlp_down_replay_gate = load_selected_mlp_down_replay_gate(
+        cli.selected_mlp_down_policy_from_replay.as_deref(),
+        layer,
+    )?;
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -7468,6 +7779,12 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "/selected_outputs/full_vector_metrics/mismatches",
         ) && metric_zero(&baseline, "/weighted_sum/full_vector_metrics/mismatches")
             && metric_zero(&baseline, "/final_output/full_vector_metrics/mismatches");
+    let selected_mlp_down_policy_result = selected_mlp_down_local_policy_result(
+        &policy_results,
+        selected_mlp_down_replay_gate.as_ref(),
+    );
+    let selected_mlp_down_policy_clears =
+        selected_mlp_down_local_policy_clears(selected_mlp_down_policy_result);
 
     let attention_shape_blocked = !q_pre_status.shape_or_count_matched
         || !k_pre_status.shape_or_count_matched
@@ -7495,6 +7812,17 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         && router_logits_metric.metrics.mismatches == 0
         && topk_ordered_match
         && routing_weights_metric.metrics.mismatches == 0;
+    let selected_mlp_down_policy_rejected = selected_mlp_down_replay_gate
+        .as_ref()
+        .is_some_and(|gate| gate.rejected_reason.is_some());
+    let selected_mlp_down_policy_applied = selected_mlp_down_replay_gate
+        .as_ref()
+        .is_some_and(SelectedMlpDownReplayGate::accepted)
+        && selected_mlp_down_policy_result.is_some();
+    let full_bundle_cleared = attention_seams_clear
+        && bridge_clear
+        && mlp_guards_clear
+        && (baseline_clears || deterministic_clears || selected_mlp_down_policy_clears);
     let classification = if attention_shape_blocked {
         if weighted_v_oproj_policy_explicit {
             format!("{classification_prefix}_weighted_v_oproj_policy_blocked_by_schema")
@@ -7539,6 +7867,30 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         } else {
             format!("{classification_prefix}_mlp_seam_mismatch")
         }
+    } else if selected_mlp_down_policy_rejected {
+        format!("{classification_prefix}_selected_mlp_down_policy_rejected")
+    } else if selected_mlp_down_policy_clears {
+        if weighted_v_oproj_policy_explicit {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_oproj_selected_mlp_down_policy"
+            )
+        } else if weighted_v_policy_explicit {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_selected_mlp_down_policy"
+            )
+        } else if oproj_policy_explicit {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_oproj_selected_mlp_down_policy"
+            )
+        } else if raw_qk_policy_explicit {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_raw_qk_selected_mlp_down_policy"
+            )
+        } else {
+            format!("{classification_prefix}_attention_cleared_mlp_cleared_with_selected_mlp_down_policy")
+        }
+    } else if selected_mlp_down_replay_gate.is_some() {
+        format!("{classification_prefix}_selected_mlp_down_policy_mismatch")
     } else if deterministic_clears || baseline_clears {
         if weighted_v_oproj_policy_explicit {
             format!(
@@ -7559,6 +7911,58 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         format!("{classification_prefix}_mlp_seam_mismatch")
     };
 
+    let selected_mlp_down_policy = selected_mlp_down_replay_gate
+        .as_ref()
+        .map(|gate| json!(gate.selected_policy))
+        .unwrap_or(Value::Null);
+    let selected_mlp_down_policy_source_status = selected_mlp_down_replay_gate
+        .as_ref()
+        .map(|gate| json!(gate.source_status))
+        .unwrap_or(Value::Null);
+    let selected_mlp_down_replay_classification = selected_mlp_down_replay_gate
+        .as_ref()
+        .map(|gate| json!(gate.replay_classification))
+        .unwrap_or(Value::Null);
+    let selected_mlp_down_replay_had_collateral = selected_mlp_down_replay_gate
+        .as_ref()
+        .map(|gate| gate.replay_had_collateral)
+        .unwrap_or(false);
+    let selected_mlp_down_policy_rejected_reason = selected_mlp_down_replay_gate
+        .as_ref()
+        .and_then(|gate| gate.rejected_reason.as_ref())
+        .map(|reason| json!(reason))
+        .unwrap_or(Value::Null);
+    let selected_outputs_mismatches = selected_mlp_down_policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "selected_outputs"))
+        .or_else(|| {
+            selected_mlp_down_replay_gate
+                .as_ref()
+                .and_then(|gate| gate.selected_outputs_mismatches)
+        })
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let weighted_sum_mismatches = selected_mlp_down_policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "weighted_sum"))
+        .or_else(|| {
+            selected_mlp_down_replay_gate
+                .as_ref()
+                .and_then(|gate| gate.weighted_sum_mismatches)
+        })
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let final_output_mismatches = selected_mlp_down_policy_result
+        .and_then(|result| selected_mlp_down_policy_mismatches(result, "final_output"))
+        .or_else(|| {
+            selected_mlp_down_replay_gate
+                .as_ref()
+                .and_then(|gate| gate.final_output_mismatches)
+        })
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let selected_mlp_down_policy_result = selected_mlp_down_policy_result
+        .cloned()
+        .unwrap_or(Value::Null);
+
     let status = json!({
         "mode": "layer0_validation_runtime_path",
         "submode": "layer-bundle-validate",
@@ -7568,6 +7972,14 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "model_runner_routing_changed": false,
         "cuda_kernels_changed": false,
         "validation_only": true,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
         "layer_index": layer,
         "focus_lane": lane,
         "raw_qk_accum_policy": raw_qk_policy.name(),
@@ -7578,6 +7990,16 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "attention_oproj_policy": oproj_policy.name(),
         "attention_oproj_policy_requested": cli.attention_oproj_policy.as_str(),
         "attention_oproj_policy_validation_only": true,
+        "selected_mlp_down_policy": selected_mlp_down_policy,
+        "selected_mlp_down_policy_source_status": selected_mlp_down_policy_source_status,
+        "selected_mlp_down_policy_applied": selected_mlp_down_policy_applied,
+        "selected_mlp_down_replay_classification": selected_mlp_down_replay_classification,
+        "selected_mlp_down_replay_had_collateral": selected_mlp_down_replay_had_collateral,
+        "selected_mlp_down_policy_rejected_reason": selected_mlp_down_policy_rejected_reason,
+        "selected_outputs_mismatches": selected_outputs_mismatches,
+        "weighted_sum_mismatches": weighted_sum_mismatches,
+        "final_output_mismatches": final_output_mismatches,
+        "full_bundle_cleared": full_bundle_cleared,
         "raw_qk_policy_source_status": if raw_qk_policy_source_status_path.exists() {
             json!(raw_qk_policy_source_status_path.display().to_string())
         } else {
@@ -7687,6 +8109,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             "deterministic_abs_ascending": deterministic_result,
             "bf16_product_evidence_policy": bf16_product_result,
             "policy_results": policy_results,
+            "selected_mlp_down_policy_result": selected_mlp_down_policy_result,
         },
         "selected_experts": selected_experts,
         "routing_weights": routing_weights,
@@ -7729,6 +8152,19 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             }
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_oproj_policy") {
                 "record ordered layer validation under explicit validation-only o-proj policy; do not continue the ladder in this slice"
+            }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_selected_mlp_down_policy")
+                || classification.ends_with("_attention_cleared_mlp_cleared_with_oproj_selected_mlp_down_policy")
+                || classification.ends_with("_attention_cleared_mlp_cleared_with_weighted_v_selected_mlp_down_policy")
+                || classification.ends_with("_attention_cleared_mlp_cleared_with_weighted_v_oproj_selected_mlp_down_policy")
+                || classification.ends_with("_attention_cleared_mlp_cleared_with_raw_qk_selected_mlp_down_policy") {
+                "record full bundle validation under replay-proven validation-only selected-MLP-down policy; do not emit output or continue the ladder"
+            }
+            else if classification.ends_with("_selected_mlp_down_policy_rejected") {
+                "keep selected-MLP-down policy blocked by replay collateral or insufficient full-vector evidence"
+            }
+            else if classification.ends_with("_selected_mlp_down_policy_mismatch") {
+                "inspect selected-MLP-down replay provenance versus full bundle recomputation before any policy promotion"
             }
             else if classification.ends_with("_attention_seam_mismatch") {
                 "localize the first mismatching ordered attention seam"

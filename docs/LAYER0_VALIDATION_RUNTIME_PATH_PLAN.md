@@ -4979,6 +4979,43 @@ Implementation is not authorized by this design. No runtime/default/CUDA
 change, output emission, ladder continuation, correction metadata, tolerance
 pass, final-logit, all-layer, server, or 4097-token claim is authorized.
 
+## Selected-MLP-Down Bundle Revalidation
+
+Branch:
+
+```text
+validation/selected-mlp-down-bundle-revalidation
+```
+
+Status path:
+
+```text
+/tmp/selected_mlp_down_bundle_revalidation_status.json
+```
+
+Classification:
+
+```text
+selected_mlp_down_bundle_revalidation_partial
+```
+
+Results:
+
+- Layer11: replay provenance accepts `naive_f64_sum_then_bf16_output`; the
+  selected-down policy clears selected outputs, weighted sum, and final output,
+  but full bundle revalidation remains blocked by one router-logit mismatch.
+- Layer20: full bundle revalidation composes explicit o-proj pairwise with the
+  replay-proven selected-MLP-down policy from
+  `/tmp/layer20_selected_mlp_down_policy_replay_status.json` and clears the
+  full bundle with `pairwise_f32_sum_then_bf16_output`.
+- Layer19: negative guard consumes
+  `/tmp/layer19_selected_mlp_down_policy_replay_status.json` and rejects policy
+  application because replay collateral is present.
+
+Guardrails: no output emission, ladder continuation, correction metadata,
+tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

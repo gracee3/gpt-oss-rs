@@ -277,3 +277,43 @@ the selected-MLP-down bundle revalidation code slice next.
 - No tolerance pass.
 - No final-logit/all-layer/server/4097 claim.
 - No Torch runtime dependency.
+
+## Implementation Status
+
+Mode/flag:
+
+```text
+--mode layer-bundle-validate
+--selected-mlp-down-policy-from-replay
+```
+
+Batch status:
+
+```text
+/tmp/selected_mlp_down_bundle_revalidation_status.json
+```
+
+Classification:
+
+```text
+selected_mlp_down_bundle_revalidation_partial
+```
+
+Recorded behavior:
+
+- Layer11 consumes `/tmp/layer11_selected_mlp_down_policy_replay_status.json`
+  and accepts `naive_f64_sum_then_bf16_output` from replay provenance. The
+  selected-down policy clears selected outputs, weighted sum, and final output,
+  but full bundle revalidation remains blocked by a one-lane router-logit seam.
+- Layer20 composes the explicit attention o-proj pairwise policy with the
+  replay-proven selected-MLP-down policy from
+  `/tmp/layer20_selected_mlp_down_policy_replay_status.json`; the composed
+  validation clears the full bundle with
+  `pairwise_f32_sum_then_bf16_output`.
+- Layer19 consumes `/tmp/layer19_selected_mlp_down_policy_replay_status.json`
+  as a negative guard and rejects policy application when replay collateral is
+  present.
+- Selected policies are read from replay status provenance, not manually named.
+- No output emission, ladder continuation, correction metadata, tolerance pass,
+  runtime/default/CUDA change, final-logit, all-layer, server, or 4097-token
+  claim is authorized.
