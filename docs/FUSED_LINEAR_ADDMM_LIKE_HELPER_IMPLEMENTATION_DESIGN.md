@@ -241,6 +241,61 @@ Prototype scope:
 - no correction metadata or tolerance pass
 - no final-logit/all-layer/server/4097 claim
 
+## Prototype Implementation Status
+
+Mode:
+
+```text
+--mode fused-linear-addmm-like-helper-prototype
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_like_helper_prototype_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_candidate_no_candidate_selected
+```
+
+The validation-only prototype exposed the existing cuBLASLt wrapper through
+`gpt-oss-bench` and added the narrow helper candidate
+`cublaslt_bf16_matmul_bias_epilogue`. The candidate uses BF16 input, BF16
+weight, BF16 bias, a cuBLASLt bias epilogue, and BF16 output. It records the
+layout, leading dimensions, compute type, scale type, epilogue type, and
+determinism metadata.
+
+cuBLASLt was available and the candidate executed for the full sampled set, but
+it did not clear any sampled layer full-vector exactly:
+
+| Layer | Role | Full-vector mismatches | Max abs diff | Focus lane clear |
+| --- | --- | ---: | ---: | --- |
+| 6 | historical blocker | 1368 | 0.125 | yes |
+| 10 | pairwise-clear control | 1478 | 1.0 | no |
+| 13 | blocked-family | 1492 | 1.0 | yes |
+| 16 | blocked-family | 1430 | 1.0 | no |
+| 18 | blocked-family | 1367 | 2.0 | no |
+| 21 | raw-QK-solved / o-proj-blocked | 1297 | 8.0 | no |
+
+Result:
+
+- Full sampled set cleared: false.
+- Candidate execution: true.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+- Runtime/default/CUDA behavior changed: false.
+- Output emitted: false.
+- Ladder continued: false.
+
+The result confirms that simply adding cuBLASLt fused-bias epilogue execution is
+not enough to reproduce the producer/API module/F.linear/_C/addmm reference.
+Focus-lane clears on layer6 and layer13 are rejected because full-vector
+collateral remains.
+
 ## Recommended Next Step
 
 Prefer a small design review before implementation, specifically choosing

@@ -302,6 +302,43 @@ directly. Proposed executable branch:
 No backend selection, consumer revalidation, runtime/default/CUDA behavior
 change, output emission, or ladder continuation is authorized.
 
+## Fused-AddMM-Like Helper Prototype
+
+The validation-only prototype is recorded in:
+
+```text
+/tmp/fused_linear_addmm_like_helper_prototype_status.json
+```
+
+Mode:
+
+```text
+--mode fused-linear-addmm-like-helper-prototype
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_candidate_no_candidate_selected
+```
+
+The prototype exposed a narrow cuBLASLt BF16 matmul plus fused-bias epilogue
+candidate:
+
+```text
+cublaslt_bf16_matmul_bias_epilogue
+```
+
+cuBLASLt was available and the candidate executed for layers
+6/10/13/16/18/21, but no sampled layer cleared full-vector exactly. Total
+sampled mismatches: 8432. Focus-lane clears on layer6 and layer13 remain
+diagnostic only because both layers still have full-vector collateral.
+
+No backend is selected. No implementation, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction metadata, tolerance pass, final-logit, all-layer, server, or
+4097-token claim is authorized.
+
 ## Guardrails
 
 - No runtime/default/CUDA behavior change.

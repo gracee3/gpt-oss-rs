@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[cfg(feature = "cuda")]
-use gpt_oss_gpu::{cublas::CublasHandle, CudaContext};
+use gpt_oss_gpu::{cublas::CublasHandle, cublaslt_ops::CublasLtOps, CudaContext};
 #[cfg(feature = "cuda")]
 use gpt_oss_model_runner::mxfp4_validation::{
     load_gate_up_row_mxfp4_validation, load_selected_experts_mxfp4_validation,
@@ -578,6 +578,7 @@ enum Mode {
     FusedLinearAddmmBackendDiscriminatorStatus,
     FusedLinearAddmmBackendDiscriminator,
     FusedLinearAddmmHelperCandidate,
+    FusedLinearAddmmLikeHelperPrototype,
     SelectedMlpDownBundleRevalidationStatus,
     Layer11RouterLogitInspectStatus,
     RouterLogitPolicyDebug,
@@ -1580,6 +1581,9 @@ fn main() -> Result<()> {
             run_fused_linear_addmm_backend_discriminator(&cli)
         }
         Mode::FusedLinearAddmmHelperCandidate => run_fused_linear_addmm_helper_candidate(&cli),
+        Mode::FusedLinearAddmmLikeHelperPrototype => {
+            run_fused_linear_addmm_like_helper_prototype(&cli)
+        }
         Mode::SelectedMlpDownBundleRevalidationStatus => {
             run_selected_mlp_down_bundle_revalidation_status(&cli)
         }
@@ -2156,6 +2160,205 @@ fn run_fused_linear_addmm_helper_candidate(cli: &Cli) -> Result<()> {
         "server_claim": false,
         "context_length_claim": false,
         "next_bounded_step": "Review helper candidate matrix before any backend selection, consumer revalidation, or promotion proof plan.",
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_fused_linear_addmm_like_helper_prototype(cli: &Cli) -> Result<()> {
+    let requested_layers = if let Some(layers) = cli.layers.as_deref() {
+        parse_comma_or_range_layers(layers)?
+    } else {
+        vec![6, 10, 13, 16, 18, 21]
+    };
+    let required_layers = [6usize, 10, 13, 16, 18, 21];
+    anyhow::ensure!(
+        requested_layers == required_layers,
+        "fused-linear/addmm-like helper prototype requires layers 6,10,13,16,18,21; got {:?}",
+        requested_layers
+    );
+
+    let helper_candidate_status =
+        PathBuf::from("/tmp/fused_linear_addmm_helper_candidate_status.json");
+    let required_statuses = [
+        ("helper_candidate_status", &helper_candidate_status),
+        (
+            "backend_discriminator_candidate_matrix",
+            &cli.fused_linear_addmm_backend_discriminator_candidate_status,
+        ),
+        ("producer_api_13_16_10", &cli.producer_api_status_13_16_10),
+        ("producer_api_18_21", &cli.producer_api_status_18_21),
+        ("layer6_api_probe", &cli.layer6_api_probe_status),
+    ];
+    let missing_required_statuses = required_statuses
+        .iter()
+        .filter_map(|(_, path)| (!path.exists()).then(|| path.display().to_string()))
+        .collect::<Vec<_>>();
+    let mut missing_optional_statuses = Vec::new();
+    if !cli.layer6_backend_discriminator_status.exists() {
+        missing_optional_statuses.push(
+            cli.layer6_backend_discriminator_status
+                .display()
+                .to_string(),
+        );
+    }
+
+    let helper_candidate_source = if missing_required_statuses.is_empty() {
+        load_json(&helper_candidate_status)?
+    } else {
+        Value::Null
+    };
+
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    let mut layers_evaluated = Vec::new();
+    let mut layers_blocked = Vec::new();
+    if missing_required_statuses.is_empty() {
+        anyhow::ensure!(
+            model.exists(),
+            "model artifact does not exist: {}",
+            model.display()
+        );
+        for layer in requested_layers.iter().copied() {
+            match evaluate_fused_linear_addmm_like_helper_layer(layer, model, cli) {
+                Ok(layer_status) => layers_evaluated.push(layer_status),
+                Err(err) => layers_blocked.push(json!({
+                    "layer_index": layer,
+                    "reason": err.to_string(),
+                })),
+            }
+        }
+    }
+
+    let full_sampled_set_clear = layers_evaluated.len() == requested_layers.len()
+        && layers_blocked.is_empty()
+        && layers_evaluated.iter().all(|layer| {
+            layer
+                .get("candidate_result")
+                .and_then(|candidate| candidate.get("full_vector_cleared"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && layer
+                    .get("candidate_result")
+                    .and_then(|candidate| candidate.get("max_abs_diff"))
+                    .and_then(Value::as_f64)
+                    .is_some_and(|max_abs_diff| max_abs_diff == 0.0)
+        });
+    let candidate_executed_any = layers_evaluated.iter().any(|layer| {
+        layer
+            .get("candidate_result")
+            .and_then(|candidate| candidate.get("candidate_executed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let classification = if !missing_required_statuses.is_empty() {
+        "fused_linear_addmm_like_helper_candidate_blocked_by_missing_reference"
+    } else if !candidate_executed_any {
+        "fused_linear_addmm_like_helper_candidate_blocked_by_missing_cublaslt_api"
+    } else if full_sampled_set_clear {
+        "fused_linear_addmm_like_helper_candidate_full_sampled_set_clear"
+    } else if layers_blocked.is_empty() && layers_evaluated.len() == requested_layers.len() {
+        "fused_linear_addmm_like_helper_candidate_no_candidate_selected"
+    } else {
+        "fused_linear_addmm_like_helper_candidate_execution_failed"
+    };
+    let total_mismatches = layers_evaluated
+        .iter()
+        .filter_map(|layer| {
+            layer
+                .get("candidate_result")
+                .and_then(|candidate| candidate.get("full_vector_mismatches"))
+                .and_then(Value::as_u64)
+        })
+        .sum::<u64>();
+
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "candidate_execution": candidate_executed_any,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "operator": "attention_o_proj",
+        "candidate": "cublaslt_bf16_matmul_bias_epilogue",
+        "reference": {
+            "api": "module/F.linear/_C/addmm",
+            "dtype": "torch.bfloat16",
+            "fused_bias": true,
+            "layout_sensitive": true,
+            "full_vector_required": true,
+            "focus_lane_only_accepted": false,
+        },
+        "cublaslt_api": {
+            "repo_wrapper_present": true,
+            "toolchain_header_hint": "/usr/include/cublasLt.h",
+            "bench_cuda_feature_enables_gpt_oss_gpu_cublaslt": true,
+            "helper": "CublasLtOps::bf16_matmul_bias_epilogue_a_bt",
+        },
+        "source_statuses": {
+            "helper_candidate_status": helper_candidate_status.display().to_string(),
+            "backend_discriminator_candidate_matrix": cli.fused_linear_addmm_backend_discriminator_candidate_status.display().to_string(),
+            "producer_api_13_16_10": cli.producer_api_status_13_16_10.display().to_string(),
+            "producer_api_18_21": cli.producer_api_status_18_21.display().to_string(),
+            "layer6_api_probe": cli.layer6_api_probe_status.display().to_string(),
+            "layer6_backend_discriminator": cli.layer6_backend_discriminator_status.display().to_string(),
+        },
+        "source_classification": helper_candidate_source
+            .get("classification")
+            .and_then(Value::as_str)
+            .unwrap_or("missing"),
+        "missing_required_statuses": missing_required_statuses,
+        "missing_optional_statuses": missing_optional_statuses,
+        "layers_requested": requested_layers,
+        "layers_evaluated": layers_evaluated,
+        "layers_blocked": layers_blocked,
+        "candidate_matrix": [{
+            "candidate": "cublaslt_bf16_matmul_bias_epilogue",
+            "layers": prototype_layer_matrix(&layers_evaluated),
+            "total_mismatches": total_mismatches,
+            "candidate_full_vector_cleared_sampled_set": full_sampled_set_clear,
+            "candidate_selected": false,
+            "classification": if full_sampled_set_clear {
+                "candidate_full_vector_cleared_sampled_set"
+            } else if candidate_executed_any {
+                "candidate_collateral_mismatches"
+            } else {
+                "candidate_unavailable"
+            },
+        }],
+        "candidate_outcome": {
+            "full_sampled_set_clear": full_sampled_set_clear,
+            "no_candidate_selected": !full_sampled_set_clear,
+            "total_mismatches": total_mismatches,
+        },
+        "decision_rules": {
+            "full_vector_required": true,
+            "zero_mismatches_required": true,
+            "max_abs_diff_zero_required": true,
+            "focus_lane_only_selection_allowed": false,
+            "collateral_mismatch_promotion_allowed": false,
+            "diagnostic_candidates_selectable": false,
+            "evidence_only_candidates_selectable": false,
+            "backend_selection_authorized": false,
+            "separate_promotion_proof_required": true,
+        },
+        "selected_backend": Value::Null,
+        "backend_selected": false,
+        "implementation_authorized": false,
+        "consumer_revalidation_authorized": false,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": if full_sampled_set_clear {
+            "Review a separate promotion proof plan before any backend selection, consumer revalidation, or runtime discussion."
+        } else {
+            "Review cuBLASLt fused-bias prototype mismatches before any additional helper design."
+        },
     });
     write_json(&cli.output, &status)
 }
@@ -2751,6 +2954,103 @@ fn evaluate_fused_linear_addmm_helper_layer_candidates(
     }))
 }
 
+fn evaluate_fused_linear_addmm_like_helper_layer(
+    layer: usize,
+    model: &Path,
+    cli: &Cli,
+) -> Result<Value> {
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let role = fused_linear_addmm_layer_role(layer);
+    let focus_lane = fused_linear_addmm_layer_focus_lane(layer);
+    anyhow::ensure!(
+        focus_lane < hidden,
+        "layer {layer} focus lane {focus_lane} must be < {hidden}"
+    );
+
+    let attention_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_ordered_attention_bundle_status.json"
+    ));
+    let attention_status = load_json(&attention_status_path)
+        .with_context(|| format!("failed to load {}", attention_status_path.display()))?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    validate_path(&weighted_v_path, "attention weighted V")?;
+    validate_path(&oproj_path, "attention o-proj reference")?;
+    let (weighted_v_status, weighted_v) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (oproj_status, oproj_reference) =
+        load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+
+    let candidate_result = match compute_attention_oproj_cublaslt_bf16_bias_epilogue(
+        &weighted_v,
+        &oproj_weight,
+        &oproj_bias,
+    ) {
+        Ok((output, metadata)) => fused_linear_addmm_like_helper_candidate_result(
+            &output,
+            &oproj_reference,
+            focus_lane,
+            &attention_status_path,
+            metadata,
+        ),
+        Err(err) => fused_linear_addmm_like_helper_unavailable_result(
+            focus_lane,
+            oproj_reference[focus_lane],
+            &attention_status_path,
+            format!("cublaslt_bf16_matmul_bias_epilogue_unavailable: {err}"),
+        ),
+    };
+
+    Ok(json!({
+        "layer_index": layer,
+        "role": role,
+        "focus_lane": focus_lane,
+        "reference": {
+            "api": "module/F.linear/_C/addmm",
+            "dtype": "torch.bfloat16",
+            "fused_bias": true,
+            "layout_sensitive": true,
+            "full_vector_required": true,
+            "focus_lane_only_accepted": false,
+        },
+        "artifacts": {
+            "weighted_v": weighted_v_status,
+            "o_proj_reference": oproj_status,
+        },
+        "tensor_metadata": {
+            "input": tensor_layout_metadata("weighted_v", "torch.bfloat16", &[1, q_dim], &[q_dim, 1]),
+            "weight": tensor_layout_metadata("o_proj_weight", "torch.bfloat16", &[hidden, q_dim], &[q_dim, 1]),
+            "bias": tensor_layout_metadata("o_proj_bias", "torch.bfloat16", &[hidden], &[1]),
+            "output": tensor_layout_metadata("o_proj_output", "torch.bfloat16", &[1, hidden], &[hidden, 1]),
+        },
+        "model_tensors": {
+            "oproj_weight": oproj_weight_source,
+            "oproj_bias": oproj_bias_source,
+        },
+        "source_statuses": fused_linear_addmm_layer_source_statuses(layer, cli),
+        "candidate_result": candidate_result,
+    }))
+}
+
+fn tensor_layout_metadata(name: &str, dtype: &str, shape: &[usize], stride: &[usize]) -> Value {
+    json!({
+        "name": name,
+        "dtype": dtype,
+        "shape": shape,
+        "stride": stride,
+        "contiguous": true,
+        "layout": "row_major_original_artifact_order",
+    })
+}
+
 fn fused_linear_addmm_helper_candidate_result(
     candidate: FusedLinearAddmmHelperCandidate,
     policy: Option<&str>,
@@ -2806,6 +3106,84 @@ fn fused_linear_addmm_helper_candidate_result(
         "source_statuses": {
             "attention_bundle_status": attention_status_path.display().to_string(),
             "backend_discriminator_candidate_matrix": cli.fused_linear_addmm_backend_discriminator_candidate_status.display().to_string(),
+        },
+    })
+}
+
+fn fused_linear_addmm_like_helper_candidate_result(
+    output: &[f32],
+    reference: &[f32],
+    focus_lane: usize,
+    attention_status_path: &Path,
+    helper_metadata: Value,
+) -> Value {
+    let metric = compare_hidden(output, reference);
+    let focus_lane_local = output[focus_lane];
+    let focus_lane_reference = reference[focus_lane];
+    let focus_lane_abs_diff = (focus_lane_local - focus_lane_reference).abs();
+    let full_vector_cleared = metric.metrics.mismatches == 0 && metric.metrics.max_abs_diff == 0.0;
+    json!({
+        "candidate": "cublaslt_bf16_matmul_bias_epilogue",
+        "candidate_available": true,
+        "candidate_executed": true,
+        "selectable": full_vector_cleared,
+        "rejection_reason": if full_vector_cleared {
+            Value::Null
+        } else {
+            json!("full_vector_mismatches")
+        },
+        "full_vector_mismatches": metric.metrics.mismatches,
+        "max_abs_diff": metric.metrics.max_abs_diff,
+        "mean_abs_diff": metric.metrics.mean_abs_diff,
+        "first_mismatch_lane": metric.first_mismatch.as_ref().map(|diff| diff.hidden_lane),
+        "worst_mismatch_lane": metric.worst_mismatch.as_ref().map(|diff| diff.hidden_lane),
+        "first_mismatch": metric.first_mismatch,
+        "worst_mismatch": metric.worst_mismatch,
+        "focus_lane": focus_lane,
+        "focus_lane_local": focus_lane_local,
+        "focus_lane_reference": focus_lane_reference,
+        "focus_lane_abs_diff": focus_lane_abs_diff,
+        "focus_lane_cleared": focus_lane_abs_diff == 0.0,
+        "full_vector_cleared": full_vector_cleared,
+        "collateral_mismatches": !full_vector_cleared,
+        "diagnostic_only": false,
+        "evidence_only": false,
+        "helper_metadata": helper_metadata,
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
+        },
+    })
+}
+
+fn fused_linear_addmm_like_helper_unavailable_result(
+    focus_lane: usize,
+    focus_lane_reference: f32,
+    attention_status_path: &Path,
+    reason: String,
+) -> Value {
+    json!({
+        "candidate": "cublaslt_bf16_matmul_bias_epilogue",
+        "candidate_available": false,
+        "candidate_executed": false,
+        "selectable": false,
+        "rejection_reason": reason,
+        "full_vector_mismatches": Value::Null,
+        "max_abs_diff": Value::Null,
+        "mean_abs_diff": Value::Null,
+        "first_mismatch_lane": Value::Null,
+        "worst_mismatch_lane": Value::Null,
+        "focus_lane": focus_lane,
+        "focus_lane_local": Value::Null,
+        "focus_lane_reference": focus_lane_reference,
+        "focus_lane_abs_diff": Value::Null,
+        "focus_lane_cleared": false,
+        "full_vector_cleared": false,
+        "collateral_mismatches": false,
+        "diagnostic_only": false,
+        "evidence_only": false,
+        "helper_metadata": Value::Null,
+        "source_statuses": {
+            "attention_bundle_status": attention_status_path.display().to_string(),
         },
     })
 }
@@ -2981,6 +3359,47 @@ fn build_fused_linear_addmm_candidate_matrix(
             })
         })
         .collect()
+}
+
+fn prototype_layer_matrix(layers: &[Value]) -> Value {
+    let mut layer_map = serde_json::Map::new();
+    for layer in layers {
+        let layer_index = layer
+            .get("layer_index")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let candidate = layer.get("candidate_result").unwrap_or(&Value::Null);
+        layer_map.insert(
+            layer_index.to_string(),
+            json!({
+                "full_vector_cleared": candidate
+                    .get("full_vector_cleared")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "mismatches": candidate
+                    .get("full_vector_mismatches")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "max_abs_diff": candidate
+                    .get("max_abs_diff")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "focus_lane_cleared": candidate
+                    .get("focus_lane_cleared")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "candidate_available": candidate
+                    .get("candidate_available")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "candidate_executed": candidate
+                    .get("candidate_executed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            }),
+        );
+    }
+    Value::Object(layer_map)
 }
 
 fn build_fused_linear_addmm_helper_candidate_matrix(
@@ -20302,6 +20721,125 @@ fn compute_attention_oproj_cublas_bf16(
     _pedantic: bool,
 ) -> Result<(Vec<f32>, Value)> {
     anyhow::bail!("cuBLAS BF16 o-proj helper requires the cuda feature")
+}
+
+#[cfg(feature = "cuda")]
+fn compute_attention_oproj_cublaslt_bf16_bias_epilogue(
+    weighted_v: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+) -> Result<(Vec<f32>, Value)> {
+    let hidden = bias.len();
+    let q_dim = weighted_v.len();
+    anyhow::ensure!(
+        weight.len() == hidden * q_dim,
+        "o-proj weight len {} does not match hidden*q_dim {}",
+        weight.len(),
+        hidden * q_dim
+    );
+    let context =
+        CudaContext::new(0).map_err(|err| anyhow::anyhow!("CUDA context init failed: {err}"))?;
+    let stream = context
+        .new_stream()
+        .map_err(|err| anyhow::anyhow!("CUDA stream init failed: {err}"))?;
+    let lt = CublasLtOps::new(stream.clone())
+        .map_err(|err| anyhow::anyhow!("cuBLASLt handle init failed: {err}"))?;
+    let input_bf16 = weighted_v
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let weight_bf16 = weight
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let bias_bf16 = bias
+        .iter()
+        .map(|&value| bf16::from_f32(value))
+        .collect::<Vec<_>>();
+    let output_zero = vec![bf16::from_f32(0.0); hidden];
+    let input_gpu = stream
+        .clone_htod(&input_bf16)
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj input upload failed: {err}"))?;
+    let weight_gpu = stream
+        .clone_htod(&weight_bf16)
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj weight upload failed: {err}"))?;
+    let bias_gpu = stream
+        .clone_htod(&bias_bf16)
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj bias upload failed: {err}"))?;
+    let mut output_gpu = stream
+        .clone_htod(&output_zero)
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj output upload failed: {err}"))?;
+
+    lt.bf16_matmul_bias_epilogue_a_bt(
+        1,
+        hidden,
+        q_dim,
+        1.0,
+        &input_gpu,
+        &weight_gpu,
+        &bias_gpu,
+        0.0,
+        &mut output_gpu,
+    )
+    .map_err(|err| anyhow::anyhow!("cuBLASLt BF16 fused-bias o-proj failed: {err}"))?;
+    stream
+        .synchronize()
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj cuBLASLt sync failed: {err}"))?;
+    let output = stream
+        .clone_dtoh(&output_gpu)
+        .map_err(|err| anyhow::anyhow!("BF16 o-proj cuBLASLt output download failed: {err}"))?
+        .iter()
+        .map(|value| value.to_f32())
+        .collect::<Vec<_>>();
+    let metadata = json!({
+        "helper": "cublaslt_bf16_matmul_bias_epilogue",
+        "api": "CublasLtOps::bf16_matmul_bias_epilogue_a_bt",
+        "m": 1,
+        "n": hidden,
+        "k": q_dim,
+        "input_dtype": "CUDA_R_16BF",
+        "weight_dtype": "CUDA_R_16BF",
+        "bias_pointer_dtype": "CUDA_R_16BF",
+        "output_dtype": "CUDA_R_16BF",
+        "compute_type": "CUBLAS_COMPUTE_32F",
+        "scale_type": "CUDA_R_32F",
+        "epilogue_type": "CUBLASLT_EPILOGUE_BIAS",
+        "alpha": 1.0,
+        "beta": 0.0,
+        "layout": {
+            "logical_expression": "row_major_output[1,hidden] = weighted_v[1,q_dim] @ weight[hidden,q_dim]^T + fused_bias[hidden]",
+            "cublaslt_mapping": "C_col[hidden,1] = weight_col[q_dim,hidden]^T @ input_col[q_dim,1]",
+            "lda": q_dim,
+            "ldb": q_dim,
+            "ldc": hidden,
+            "transa": true,
+            "transb": false,
+            "stride_a": Value::Null,
+            "stride_b": Value::Null,
+            "stride_c": Value::Null,
+            "stride_bias": Value::Null,
+        },
+        "algorithm": {
+            "selection": "cudarc_cublaslt_heuristic_fastest_available",
+            "heuristic_id": Value::Null,
+            "note": "cudarc safe Matmul wrapper selects one heuristic but does not expose the algorithm id"
+        },
+        "determinism": {
+            "atomics_mode": "not_explicitly_controlled_by_cudarc_cublaslt_wrapper",
+            "nondeterministic_behavior_allowed": false,
+        },
+        "cuda_kernel_added": false,
+    });
+    Ok((output, metadata))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn compute_attention_oproj_cublaslt_bf16_bias_epilogue(
+    _weighted_v: &[f32],
+    _weight: &[f32],
+    _bias: &[f32],
+) -> Result<(Vec<f32>, Value)> {
+    anyhow::bail!("cuBLASLt BF16 fused-bias o-proj helper requires the cuda feature")
 }
 
 fn compute_attention_residual(residual_input: &[f32], oproj_output: &[f32]) -> Vec<f32> {

@@ -511,6 +511,47 @@ Backend selected: false. Consumer revalidation authorized: false. No
 runtime/default/CUDA behavior change, output emission, or ladder continuation
 is authorized.
 
+## Fused-AddMM-Like Helper Prototype
+
+The validation-only cuBLASLt fused-bias prototype is recorded in:
+
+```text
+/tmp/fused_linear_addmm_like_helper_prototype_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_candidate_no_candidate_selected
+```
+
+Mode:
+
+```text
+--mode fused-linear-addmm-like-helper-prototype
+```
+
+The prototype added a narrow validation-only candidate,
+`cublaslt_bf16_matmul_bias_epilogue`, using BF16 input/weight/bias, cuBLASLt
+bias epilogue, and BF16 output. cuBLASLt was available and the candidate
+executed for layers 6/10/13/16/18/21.
+
+Result:
+
+- Full sampled set clear: false.
+- Full-vector clear on any sampled layer: false.
+- Total sampled mismatches: 8432.
+- Focus-lane-only clears on layer6 and layer13 remain rejected.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+The backend-discriminator conclusion is unchanged: existing helpers plus the
+cuBLASLt fused-bias epilogue prototype do not reproduce the producer/API
+module/F.linear/_C/addmm reference across the sampled set. No
+runtime/default/CUDA behavior change, output emission, ladder continuation, or
+final-logit/all-layer/server/4097 claim follows from this result.
+
 ## Non-Goals
 
 - No runtime implementation.

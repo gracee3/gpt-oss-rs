@@ -6,7 +6,7 @@
 
 use cudarc::cublaslt::{CudaBlasLT, Matmul, MatmulConfig};
 use cudarc::driver::{CudaSlice, CudaStream};
-use half::f16;
+use half::{bf16, f16};
 use std::sync::Arc;
 
 use crate::{LLMError, Result};
@@ -77,6 +77,56 @@ impl CublasLtOps {
             self.handle
                 .matmul(cfg, b, a, c, None, None)
                 .map_err(|e| LLMError::GpuError(format!("cublasLt hgemm_a_bt failed: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Row-major BF16 GEMM with fused BF16 bias epilogue:
+    /// `C[m,n] = alpha * A[m,k] @ B^T[k,n] + bias[n] + beta * C[m,n]`.
+    ///
+    /// This is intentionally a narrow validation helper for decode-sized
+    /// fused-linear/addmm evidence. Production routing does not call it.
+    pub fn bf16_matmul_bias_epilogue_a_bt(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: f32,
+        a: &CudaSlice<bf16>,
+        b: &CudaSlice<bf16>,
+        bias: &CudaSlice<bf16>,
+        beta: f32,
+        c: &mut CudaSlice<bf16>,
+    ) -> Result<()> {
+        // Same row-major layout mapping as hgemm_a_bt. Bias is length n and
+        // applies across the output columns through the cuBLASLt bias epilogue.
+        let cfg = MatmulConfig {
+            transa: true,
+            transb: false,
+            transc: false,
+            m: n as u64,
+            n: m as u64,
+            k: k as u64,
+            alpha,
+            lda: k as i64,
+            ldb: k as i64,
+            beta,
+            ldc: n as i64,
+            stride_a: None,
+            stride_b: None,
+            stride_c: None,
+            stride_bias: None,
+            batch_size: None,
+        };
+
+        unsafe {
+            self.handle
+                .matmul(cfg, b, a, c, Some(bias), None)
+                .map_err(|e| {
+                    LLMError::GpuError(format!(
+                        "cublasLt bf16_matmul_bias_epilogue_a_bt failed: {e}"
+                    ))
+                })?;
         }
         Ok(())
     }

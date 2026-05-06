@@ -334,6 +334,35 @@ Milestone claims remain unchanged: no backend selection, runtime/default/CUDA
 behavior change, consumer revalidation, output emission, ladder continuation,
 final-logit, all-layer, server, or 4097-token claim.
 
+## Fused-AddMM-Like Helper Prototype
+
+The validation-only cuBLASLt fused-bias prototype is recorded in:
+
+```text
+/tmp/fused_linear_addmm_like_helper_prototype_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_candidate_no_candidate_selected
+```
+
+Result:
+
+- cuBLASLt was available through the validation binary.
+- `cublaslt_bf16_matmul_bias_epilogue` executed for layers
+  6/10/13/16/18/21.
+- No layer cleared full-vector exactly.
+- Total sampled mismatches: 8432.
+- Full sampled set cleared: false.
+- Backend selected: false.
+- Consumer revalidation authorized: false.
+
+Milestone claims remain unchanged: no runtime/default/CUDA behavior change,
+output emission, ladder continuation, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Guardrails
 
 - Validation-only.

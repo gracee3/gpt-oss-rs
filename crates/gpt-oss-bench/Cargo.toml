@@ -19,7 +19,7 @@ half.workspace = true
 
 [features]
 default = []
-cuda = ["dep:gpt-oss-gpu", "dep:gpt-oss-model-runner", "gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "gpt-oss-model-runner/cuda"]
+cuda = ["dep:gpt-oss-gpu", "dep:gpt-oss-model-runner", "gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-model-runner/cuda"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 
 [dev-dependencies]

@@ -436,6 +436,42 @@ revalidation, output emission, ladder continuation, correction metadata,
 tolerance pass, final-logit, all-layer, server, or 4097-token claim is
 authorized.
 
+## Fused-AddMM-Like Helper Prototype
+
+The validation-only cuBLASLt fused-bias prototype is recorded in:
+
+```text
+/tmp/fused_linear_addmm_like_helper_prototype_status.json
+```
+
+Mode:
+
+```text
+--mode fused-linear-addmm-like-helper-prototype
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_candidate_no_candidate_selected
+```
+
+The prototype candidate `cublaslt_bf16_matmul_bias_epilogue` executed on the
+minimum sampled set 6/10/13/16/18/21. It did not clear the full sampled set and
+did not clear any sampled layer full-vector exactly. The matrix recorded
+collateral mismatches on all six layers, with total sampled mismatches 8432.
+
+Conclusion:
+
+- cuBLASLt API availability is confirmed for this validation binary.
+- A plain BF16 cuBLASLt matmul plus bias epilogue is not sufficient to match
+  the producer/API module/F.linear/_C/addmm reference.
+- No backend is selected.
+- No consumer revalidation is authorized.
+- No runtime/default/CUDA behavior change, output emission, ladder
+  continuation, correction metadata, tolerance pass, final-logit, all-layer,
+  server, or 4097-token claim follows from this result.
+
 ## Non-Goals
 
 - No runtime implementation.
