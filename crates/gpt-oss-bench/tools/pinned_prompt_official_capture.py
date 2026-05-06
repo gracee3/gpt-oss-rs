@@ -93,7 +93,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-attention-audit-status",
         type=Path,
-        help="Prior ordered attention audit oracle status used as provenance for o-proj probes.",
+        help=(
+            "Prior ordered attention audit oracle status used as provenance for "
+            "attention probes."
+        ),
     )
     parser.add_argument(
         "--source-consumer-debug-status",
@@ -1788,6 +1791,19 @@ def get_nested(container: dict[str, Any], path: list[str], default: Any = None) 
     return current
 
 
+def metric_mismatches(container: dict[str, Any], path: list[str]) -> int | None:
+    metric = get_nested(container, path)
+    if not isinstance(metric, dict):
+        return None
+    direct = get_nested(metric, ["metrics", "mismatches"])
+    if direct is not None:
+        return int(direct)
+    nested = get_nested(metric, ["metric", "metrics", "mismatches"])
+    if nested is not None:
+        return int(nested)
+    return None
+
+
 def capture_layer_raw_qk_dtype_probe(
     model: Any,
     input_token_ids: list[int],
@@ -1798,7 +1814,9 @@ def capture_layer_raw_qk_dtype_probe(
     *,
     lane: int | None,
     source_attention_status: Path | None,
+    source_attention_audit_status: Path | None,
     source_consumer_debug_status: Path | None,
+    source_consumer_bundle_validate_status: Path | None,
     output_dir: Path,
 ) -> dict[str, Any]:
     if layer_index < 0 or layer_index >= len(model.block):
@@ -1809,17 +1827,68 @@ def capture_layer_raw_qk_dtype_probe(
     source_attention = (
         load_json(source_attention_status) if source_attention_status else {}
     )
+    source_attention_audit = (
+        load_json(source_attention_audit_status)
+        if source_attention_audit_status
+        else {}
+    )
     source_debug = (
         load_json(source_consumer_debug_status) if source_consumer_debug_status else {}
     )
+    source_bundle_validate = (
+        load_json(source_consumer_bundle_validate_status)
+        if source_consumer_bundle_validate_status
+        else {}
+    )
+    source_attention_metrics = (
+        source_bundle_validate.get("attention_results")
+        or source_bundle_validate.get("attention_metrics")
+        or {}
+    )
+    raw_qk_mismatch = (
+        get_nested(
+            source_attention_metrics,
+            ["raw_qk", "first_mismatch"],
+        )
+        or get_nested(
+            source_attention_metrics,
+            ["raw_qk", "worst_mismatch"],
+        )
+        or {}
+    )
     official_prior = source_debug.get("official_value")
+    if official_prior is None:
+        official_prior = raw_qk_mismatch.get("expected")
     current_local_value = source_debug.get("current_local_value")
+    if current_local_value is None:
+        current_local_value = raw_qk_mismatch.get("actual")
     consumer_variants = {
         item.get("name"): item
         for item in source_debug.get("dot_variants", [])
         if isinstance(item, dict)
     }
     downstream = source_debug.get("downstream_propagation", {})
+    if not downstream and source_bundle_validate:
+        attention_prob_mismatches = metric_mismatches(
+            source_attention_metrics,
+            ["attention_probabilities"],
+        )
+        weighted_v_mismatches = metric_mismatches(
+            source_attention_metrics,
+            ["weighted_v"],
+        )
+        o_proj_mismatches = metric_mismatches(
+            source_attention_metrics,
+            ["o_proj"],
+        )
+        downstream = {
+            "attention_probs_exact": attention_prob_mismatches == 0,
+            "weighted_v_exact": weighted_v_mismatches == 0,
+            "o_proj_exact": o_proj_mismatches == 0,
+            "attention_probabilities_mismatches": attention_prob_mismatches,
+            "weighted_v_mismatches": weighted_v_mismatches,
+            "o_proj_mismatches": o_proj_mismatches,
+        }
 
     def bf16_round(value: float) -> dict[str, Any]:
         f32_tensor = torch.tensor(float(value), dtype=torch.float32)
@@ -2141,9 +2210,7 @@ def capture_layer_raw_qk_dtype_probe(
             "q_head": q_head,
             "key_column": key_column,
             "kv_head": kv_head,
-            "scale": float(source_debug.get("scale", 0.0) or 0.0)
-            if source_debug
-            else None,
+            "scale": float(attn.sm_scale),
             "term_count": len(term_values),
             "summary": finite_summary(product_f32_values),
             "positive_term_sum": float(
@@ -2183,21 +2250,26 @@ def capture_layer_raw_qk_dtype_probe(
         official_matches_prior
         and matching_variant_names
         and current_local_value is not None
-        and current_rounds_to == float(current_local_value)
+        and (
+            current_rounds_to is None
+            or current_rounds_to == float(current_local_value)
+        )
     )
-    classification = (
-        "layer3_raw_qk_dtype_probe_confirms_accumulation_boundary"
-        if consistent_with_boundary
-        else "layer3_raw_qk_dtype_probe_generated_without_precise_precast"
-    )
+    if consistent_with_boundary:
+        classification_suffix = "confirms_accumulation_boundary"
+    elif official_matches_prior:
+        classification_suffix = "confirms_artifact_precision_boundary"
+    else:
+        classification_suffix = "confirms_source_boundary_mismatch"
+    classification = f"layer{layer_index}_raw_qk_dtype_probe_{classification_suffix}"
 
     artifact_path = output_dir / "raw_qk_dtype_probe.json"
     source_vector_summaries = {
-        "q_vector_head2": {
+        f"q_vector_head{q_head}": {
             "artifact": str(q_vector_path),
             "summary": finite_summary(q_values),
         },
-        "k_vector_token1_kvhead0": {
+        f"k_vector_token{key_column}_kvhead{kv_head}": {
             "artifact": str(k_vector_path),
             "summary": finite_summary(k_values),
         },
@@ -2242,12 +2314,14 @@ def capture_layer_raw_qk_dtype_probe(
         "downstream_nonpropagating": downstream_nonpropagating,
         "next_consumer_step": (
             "Use this live-tensor raw-QK probe to choose a validation-only "
-            "accumulation/output-cast policy for the single layer3 raw-QK seam."
+            f"accumulation/output-cast policy for the layer{layer_index} "
+            "raw-QK seam."
         ),
     }
     status = {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "classification": classification,
+        "validation_only": True,
         "runtime_behavior_changed": False,
         "production_routing_changed": False,
         "cuda_kernels_changed": False,
@@ -2260,10 +2334,40 @@ def capture_layer_raw_qk_dtype_probe(
         "source_attention_status": str(source_attention_status)
         if source_attention_status
         else None,
+        "source_attention_audit_status": str(source_attention_audit_status)
+        if source_attention_audit_status
+        else None,
         "source_consumer_debug_status": str(source_consumer_debug_status)
         if source_consumer_debug_status
         else None,
+        "source_consumer_bundle_validate_status": (
+            str(source_consumer_bundle_validate_status)
+            if source_consumer_bundle_validate_status
+            else None
+        ),
+        "source_statuses": {
+            "attention_bundle_status": str(source_attention_status)
+            if source_attention_status
+            else None,
+            "attention_audit_status": str(source_attention_audit_status)
+            if source_attention_audit_status
+            else None,
+            "consumer_debug_status": str(source_consumer_debug_status)
+            if source_consumer_debug_status
+            else None,
+            "consumer_bundle_validate_status": str(
+                source_consumer_bundle_validate_status
+            )
+            if source_consumer_bundle_validate_status
+            else None,
+        },
         "source_attention_classification": source_attention.get("classification"),
+        "source_attention_audit_classification": source_attention_audit.get(
+            "classification"
+        ),
+        "source_consumer_bundle_validate_classification": (
+            source_bundle_validate.get("classification")
+        ),
         "environment": environment,
         "tensor_metadata": tensor_meta,
         "mapping": mapping,
@@ -5633,8 +5737,14 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("raw-QK dtype probe requires --q-head and --key-column")
         if args.source_attention_status is None:
             raise ValueError("raw-QK dtype probe requires --source-attention-status")
-        if args.source_consumer_debug_status is None:
-            raise ValueError("raw-QK dtype probe requires --source-consumer-debug-status")
+        if (
+            args.source_consumer_debug_status is None
+            and args.source_consumer_bundle_validate_status is None
+        ):
+            raise ValueError(
+                "raw-QK dtype probe requires --source-consumer-debug-status "
+                "or --source-consumer-bundle-validate-status"
+            )
         if args.output_dir is None:
             raise ValueError("raw-QK dtype probe requires --output-dir")
         model_path = args.official_model or args.model
@@ -5661,7 +5771,11 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             args.key_column,
             lane=args.lane,
             source_attention_status=args.source_attention_status,
+            source_attention_audit_status=args.source_attention_audit_status,
             source_consumer_debug_status=args.source_consumer_debug_status,
+            source_consumer_bundle_validate_status=(
+                args.source_consumer_bundle_validate_status
+            ),
             output_dir=args.output_dir,
         )
         body["model"] = str(model_path)
