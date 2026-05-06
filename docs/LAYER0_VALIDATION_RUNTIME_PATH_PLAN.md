@@ -5115,16 +5115,48 @@ Target layers:
   o-proj.
 - Layer23: current artifact precision/source boundary.
 
-Future branch, only if separately authorized:
+Probe branch, now recorded below:
 
 ```text
 oracle/raw-qk-producer-api-probes-23-17-21
 ```
 
-Guardrails: no implementation or probes are authorized by this docs-only
-design. No output emission, ladder continuation, correction metadata, tolerance
-pass, runtime/default/CUDA change, final-logit, all-layer, server, or
-4097-token claim.
+Guardrails: the docs-only design did not authorize implementation. No output
+emission, ladder continuation, correction metadata, tolerance pass,
+runtime/default/CUDA change, final-logit, all-layer, server, or 4097-token
+claim.
+
+## Raw-QK Producer/API Probe 23/17/21
+
+The oracle-side raw-QK producer/API probe set ran on branch
+`oracle/raw-qk-producer-api-probes-23-17-21` at commit
+`17e69f43fdec02a794c1f437c19cf5f033df55d6`.
+
+Status:
+
+```text
+/tmp/raw_qk_producer_api_probes_23_17_21_status.json
+```
+
+Classification:
+
+```text
+raw_qk_producer_api_probes_23_17_21_generated
+```
+
+- Layer23: `q_head 33 / key col 27` artifact/source boundary is explained by
+  the official full/einsum/batched producer expression; isolated dot and local
+  variants do not explain the official artifact.
+- Layer17: `q_head 35 / key col 65` focus-entry clears exist, but full-matrix
+  collateral persists, so focus-only policy selection is rejected.
+- Layer21: `q_head 52 / key col 55` remains the positive raw-QK full-matrix
+  clear control; reverse clears raw-QK/masked logits, and full bundle
+  revalidation still stops later at o-proj.
+
+No consumer revalidation, implementation, output emission, ladder continuation,
+correction metadata, tolerance pass, runtime/default/CUDA change,
+final-logit/all-layer/server/4097 claim, or global raw-QK policy is authorized
+by this result.
 
 ## Ordered Surface Batch Final Claims Summary
 
@@ -5149,22 +5181,21 @@ Can claim:
 - Workstream A narrowed o-proj to fused-linear/addmm validation modeling.
 - Workstream B retired layer11/layer20 support gaps while preserving layer19
   as a collateral negative control.
-- Workstream C is scoped for raw-QK source/artifact analysis, but not executed.
+- Workstream C's producer/API probe set is executed and recorded; layer23 is
+  an explained artifact/source-boundary case, layer17 rejects focus-only
+  policy selection, and layer21 remains the positive raw-QK clear control before
+  o-proj blocks.
 
 Cannot claim: production/default runtime parity, CUDA correctness, output
 promotion, ladder continuation, final-logit parity, all-layer parity, server
 parity, 4097-token behavior, global policy safety, or backend identity for
 local pairwise/reverse/current policies.
 
-Next executable branch, only if separately authorized:
-
-```text
-oracle/raw-qk-producer-api-probes-23-17-21
-```
-
-Guardrails: no runtime/default/CUDA change, output emission, ladder
-continuation, correction metadata promotion, tolerance pass, final-logit,
-all-layer, server, or 4097-token claim.
+Next bounded decision: update final taxonomy and decide whether layer21's
+post-raw-QK o-proj blocker belongs under Workstream A. Guardrails: no
+runtime/default/CUDA change, output emission, ladder continuation, correction
+metadata promotion, tolerance pass, final-logit, all-layer, server, or
+4097-token claim.
 
 ## Validation Commands
 

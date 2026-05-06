@@ -52,6 +52,7 @@ Batch statuses:
 - `/tmp/ordered_surface_batch_probe_status.json`
 - `/tmp/raw_qk_dtype_probes_17_21_23_status.json`
 - `/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json`
+- `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`
 
 ## Evidence Matrix
 
@@ -168,9 +169,9 @@ The discriminator should compare per target layer:
    - artifact/source boundary suspected.
    - producer/API mismatch suspected.
 
-## Target Layers for Future Producer/API Probe
+## Target Layers for Producer/API Probe
 
-Recommended minimal future probe set:
+Executed minimal probe set:
 
 1. Layer23 artifact precision boundary.
 2. Layer17 accumulation-boundary collateral case.
@@ -187,17 +188,112 @@ Reason:
 - Layer7 can be historical context but may not need rerun if provenance is
   sufficient.
 
-Suggested future branch:
+Oracle branch:
 
 ```text
 oracle/raw-qk-producer-api-probes-23-17-21
 ```
 
-This branch does not authorize that probe.
+The result is recorded below.
+
+## Raw-QK Producer/API Probe Results 23/17/21
+
+Result classification:
+
+```text
+raw_qk_producer_api_result_update_recorded
+```
+
+Source status:
+
+```text
+/tmp/raw_qk_producer_api_probes_23_17_21_status.json
+```
+
+Oracle branch:
+
+```text
+oracle/raw-qk-producer-api-probes-23-17-21
+```
+
+Oracle commit:
+
+```text
+17e69f43fdec02a794c1f437c19cf5f033df55d6
+```
+
+| Layer | Class | Focus | Producer/API result | Consumer sweep result | Interpretation |
+| --- | --- | --- | --- | --- | --- |
+| 23 | artifact/source boundary | q_head 33 / key col 27 | official full/einsum/batched = artifact; isolated dot/matmul/local variants differ | no candidate clears | official expression explains artifact/source boundary |
+| 17 | accumulation-boundary collateral | q_head 35 / key col 65 | official full/matmul/einsum/batched and pairwise/f64 focus agree | full-matrix collateral under focus-clearing policies | focus-only policy rejected |
+| 21 | positive clear control | q_head 52 / key col 55 | official full/matmul/einsum/batched match reverse/f64 focus | reverse clears full raw-QK/masked logits; revalidation stops at o-proj | positive raw-QK clear control confirmed |
+
+Layer23:
+
+- Classification:
+  `layer23_raw_qk_producer_api_probe_official_expression_explains_artifact`.
+- Official focus: `-0.0011749267578125`.
+- Dtype probe:
+  `layer23_raw_qk_dtype_probe_confirms_artifact_precision_boundary`.
+- Consumer sweep: `layer23_raw_qk_policy_sweep_collateral_mismatches`.
+- Official full / einsum / batched: `-0.0011749267578125`.
+- Isolated dot / matmul / sequential / reverse / pairwise / f64:
+  `-0.00116729736328125`.
+- BF16-product evidence: `-0.00616455078125`.
+- Interpretation: artifact/source-boundary case confirmed; do not run another
+  blind consumer sweep.
+
+Layer17:
+
+- Classification: `layer17_raw_qk_producer_api_probe_focus_only_rejected`.
+- Official focus: `0.8984375`.
+- Dtype probe:
+  `layer17_raw_qk_dtype_probe_confirms_accumulation_boundary`.
+- Consumer sweep: `layer17_raw_qk_policy_sweep_collateral_mismatches`.
+- Official full / matmul focus / einsum / batched: `0.8984375`.
+- Isolated dot / sequential / reverse: `0.90234375`.
+- Pairwise / f64: `0.8984375`.
+- Focus-clearing policies introduce full-matrix collateral.
+- Interpretation: focus-entry evidence is insufficient; no policy selected.
+
+Layer21:
+
+- Classification:
+  `layer21_raw_qk_producer_api_probe_reverse_full_matrix_clear_confirmed`.
+- Official focus: `-0.00005555152893066406`.
+- Dtype probe:
+  `layer21_raw_qk_dtype_probe_confirms_accumulation_boundary`.
+- Consumer sweep: `layer21_raw_qk_policy_sweep_reverse_clears_full_matrix`.
+- Raw-QK revalidation:
+  `layer21_ordered_bundle_validate_raw_qk_policy_attention_mismatch`.
+- Official full / matmul / einsum / batched: `-0.00005555152893066406`.
+- Reverse / f64: `-0.00005555152893066406`.
+- Isolated dot / sequential / pairwise: `-0.0000553131103515625`.
+- Interpretation: positive full-matrix raw-QK clear control confirmed; layer21
+  next blocker remains o-proj.
+
+Revised interpretation:
+
+- Workstream C has now executed its minimal producer/API probe set.
+- Layer23 confirms that the artifact/source-boundary class can be explained by
+  the official full/einsum/batched producer expression, not by isolated dot or
+  local accumulation variants.
+- Layer17 confirms that focus-entry agreement is not sufficient; full-matrix
+  collateral must reject the policy.
+- Layer21 confirms the positive control: reverse can be a valid full-matrix
+  raw-QK policy for that layer, but only for raw-QK; full bundle still stops
+  later at o-proj.
+- Therefore Workstream C does not justify a new global raw-QK policy.
+- The correct next action is a docs-only final taxonomy update or a scoped
+  decision about whether layer21 should join the o-proj backlog, not
+  implementation.
+
+No implementation is authorized. No runtime/default/CUDA behavior change is
+authorized. No output emission or ladder continuation is authorized.
 
 ## Status JSON Contract
 
-Future status shape:
+Status shape:
 
 ```json
 {
@@ -216,7 +312,7 @@ Future status shape:
       "key_column": 27,
       "dtype_probe_status": "/tmp/layer23_raw_qk_qhead33_col27_dtype_probe_status.json",
       "sweep_status": "/tmp/layer23_raw_qk_policy_sweep_status.json",
-      "producer_api_probe_status": null,
+      "producer_api_probe_status": "/tmp/layer23_raw_qk_qhead33_col27_api_probe_status.json",
       "full_raw_qk_cleared": false,
       "full_masked_logits_cleared": false,
       "focus_lane_only": false,
@@ -270,20 +366,14 @@ Require:
 
 ## Recommended Immediate Next Step
 
-Docs-only raw-QK source boundary design is enough for now.
+The minimal producer/API probe set for layers 23, 17, and 21 is complete.
 
 The conservative final claims summary for the ordered-surface batch pivot is
 recorded in `docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md`.
 
-Next executable branch only if separately approved:
-
-```text
-oracle/raw-qk-producer-api-probes-23-17-21
-```
-
-This should mirror the successful o-proj approach: use a minimal producer/API
-probe set with a blocked artifact/source case, a collateral accumulation case,
-and a positive clear control before any implementation or more sweeps.
+Next bounded decision: update the final taxonomy and decide whether layer21's
+post-raw-QK o-proj blocker belongs in Workstream A. Do not promote a raw-QK
+policy from this result set.
 
 ## Non-Goals
 

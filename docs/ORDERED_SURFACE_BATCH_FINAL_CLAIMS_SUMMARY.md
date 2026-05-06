@@ -38,6 +38,7 @@ Key statuses:
 - `/tmp/ordered_surface_batch_probe_16_23_oproj_status.json`
 - `/tmp/raw_qk_dtype_probes_17_21_23_status.json`
 - `/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json`
+- `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`
 - `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
 - `/tmp/fused_linear_addmm_status_scaffold.json`
 - `/tmp/selected_mlp_down_bundle_revalidation_status.json`
@@ -62,10 +63,13 @@ Key statuses:
    - layer11 full bundle clears with router-logit pairwise plus replay-proven
      selected-MLP-down policy;
    - layer19 remains a collateral negative control.
-6. Workstream C is scoped but not executed:
-   - layer7 and layer23 are artifact/source-boundary raw-QK cases;
-   - layer17 is accumulation-boundary with full-matrix collateral;
-   - layer21 is the positive raw-QK control where reverse clears full
+6. Workstream C's minimal producer/API probe set executed:
+   - layer23's artifact/source-boundary case is explained by the official
+     full/einsum/batched producer expression, not isolated dot or local
+     accumulation variants;
+   - layer17 rejects focus-only policy selection because full-matrix collateral
+     persists under focus-clearing policies;
+   - layer21 remains the positive raw-QK control where reverse clears full
      raw-QK/masked logits before o-proj blocks.
 7. No single global policy switch is justified.
 8. The project has moved from unknown mismatch to an operator-specific backlog:
@@ -121,15 +125,20 @@ Status: support-gap cases retired.
 
 ### Workstream C - Raw-QK Source Boundary
 
-Status: design recorded; probes not yet authorized.
+Status: producer/API probe set recorded; no implementation authorized.
 
 - Design doc: `docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md`.
-- Future branch: `oracle/raw-qk-producer-api-probes-23-17-21`.
-- Intended probe set:
-  - layer23 artifact/source boundary;
-  - layer17 accumulation-boundary collateral;
-  - layer21 positive full-matrix clear control.
+- Result status: `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`.
+- Oracle branch: `oracle/raw-qk-producer-api-probes-23-17-21`.
+- Oracle commit: `17e69f43fdec02a794c1f437c19cf5f033df55d6`.
+- Result classification: `raw_qk_producer_api_probes_23_17_21_generated`.
+- Layer23 artifact/source boundary explained by official full/einsum/batched
+  producer expression.
+- Layer17 focus-only policy rejected because full-matrix collateral persists.
+- Layer21 positive raw-QK full-matrix clear control confirmed; full bundle
+  still stops later at o-proj.
 - Layer7 remains historical artifact/source-boundary context.
+- No global raw-QK policy is justified.
 
 ## Current Layer Taxonomy
 
@@ -139,25 +148,16 @@ Status: design recorded; probes not yet authorized.
 | explicit-policy full-bundle cleared | 8, 9, 10 | validation-only o-proj pairwise |
 | Workstream B retired | 11, 20 | validation-only composed policies; no output promotion |
 | selected-MLP collateral negative control | 19 | policy rejected |
-| raw-QK blocked/source/collateral | 7, 17, 23 | Workstream C design recorded |
+| raw-QK blocked/source/collateral | 7, 17, 23 | Workstream C producer/API result recorded; layer17/23 still not policy-selected |
 | raw-QK partial positive control | 21 | raw-QK reverse clears; o-proj remains |
 | o-proj blocked-family | 13, 16, 18, 21 | producer/API pattern known for 13/16; 18/21 pending if needed |
 
 ## Recommended Next Step
 
-Next executable lane, only after this claims summary is recorded:
-
-```text
-oracle/raw-qk-producer-api-probes-23-17-21
-```
-
-Purpose:
-
-- Test layer23 artifact/source-boundary class.
-- Test layer17 accumulation-boundary collateral class.
-- Test layer21 positive raw-QK clear control.
-
-Do not run it from this branch.
+Next bounded decision: update the final taxonomy with the Workstream C
+producer/API result and decide whether layer21's post-raw-QK o-proj blocker
+belongs in Workstream A. Do not start implementation or select a runtime
+raw-QK policy from this evidence.
 
 ## Guardrails
 

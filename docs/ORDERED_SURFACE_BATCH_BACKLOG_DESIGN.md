@@ -218,17 +218,28 @@ Problem statement: raw-QK splits into accumulation-boundary cases and
 artifact/source precision cases. Some focus-entry evidence does not become a
 safe full-matrix policy.
 
-Potential next design: raw-QK source/artifact precision discriminator.
+Producer/API result status: the minimal Workstream C probe set is complete for
+layers 23, 17, and 21.
 
 Design status:
 
 - Workstream C raw-QK source boundary analysis design is recorded in
   `docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md`.
 - Classification: `raw_qk_source_boundary_analysis_design_recorded`.
-- Implementation and probes remain unauthorized.
-- Recommended future probe set, only if separately approved: layer23
-  artifact/source boundary, layer17 accumulation-boundary collateral, and
-  layer21 raw-QK clear positive control.
+- Producer/API probe set completed on branch
+  `oracle/raw-qk-producer-api-probes-23-17-21`.
+- Oracle commit: `17e69f43fdec02a794c1f437c19cf5f033df55d6`.
+- Status: `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`.
+- Classification: `raw_qk_producer_api_probes_23_17_21_generated`.
+- Layer23 artifact/source boundary is explained by the official
+  full/einsum/batched producer expression; isolated dot and local variants do
+  not explain it.
+- Layer17 focus-entry clears exist, but full-matrix collateral persists, so
+  focus-only policy selection is rejected.
+- Layer21 positive raw-QK full-matrix clear control is confirmed; full bundle
+  still stops later at o-proj.
+- No global raw-QK policy is justified.
+- Implementation remains unauthorized.
 - Layer7 remains historical artifact/source-boundary context.
 
 Do not:
@@ -286,16 +297,16 @@ Proof gates:
 
 ## Recommended Immediate Next Step
 
-Start with Workstream A docs-only o-proj blocked-family discriminator design.
+Update the final taxonomy with the Workstream C producer/API result and decide
+whether layer21's post-raw-QK o-proj blocker belongs under Workstream A.
 
 Reason:
 
-- O-proj is the largest remaining class.
-- Layer6 already has fused-linear/addmm evidence.
-- Layer13/16/18/21 may reveal whether the blocked class shares layer6
-  semantics.
-- This is more likely to shape a useful discriminator than another blind
-  sweep.
+- Layer23 is now explained as an artifact/source-boundary case.
+- Layer17 is now a clear focus-only rejection case.
+- Layer21 is now the positive raw-QK full-matrix clear control, but the full
+  bundle still stops later at o-proj.
+- No raw-QK runtime/default policy follows from this evidence.
 
 ## Workstream A Design Pointer
 
@@ -332,10 +343,10 @@ Status:
 - Workstream B: layer11 and layer20 support-gap cases retired under
   validation-only composed policies; layer19 remains the collateral negative
   control.
-- Workstream C: raw-QK source-boundary design recorded; probes are not yet
-  authorized.
-- Next executable lane, only after separate approval:
-  `oracle/raw-qk-producer-api-probes-23-17-21`.
+- Workstream C: raw-QK producer/API result recorded for layers 23/17/21; no
+  global policy or implementation authorized.
+- Next bounded decision: update final taxonomy and decide whether layer21's
+  o-proj blocker belongs under Workstream A.
 
 Guardrails: no implementation authorization, runtime/default/CUDA change,
 output emission, ladder continuation, correction metadata promotion, tolerance

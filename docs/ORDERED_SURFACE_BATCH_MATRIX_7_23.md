@@ -25,6 +25,7 @@ all-layer, server, or 4097-token claims.
 /tmp/ordered_surface_batch_probe_16_23_oproj_status.json
 /tmp/raw_qk_dtype_probes_17_21_23_status.json
 /tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json
+/tmp/raw_qk_producer_api_probes_23_17_21_status.json
 ```
 
 Historically relevant layer6 context lives outside this 7..23 matrix:
@@ -83,7 +84,17 @@ docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md
 
 It preserves layer7/23 as artifact/source-boundary cases, layer17 as an
 accumulation-boundary collateral case, and layer21 as the positive raw-QK
-full-matrix clear control. It does not authorize implementation or probes.
+full-matrix clear control.
+
+Post-matrix update: Workstream C producer/API probe results are now recorded in
+`/tmp/raw_qk_producer_api_probes_23_17_21_status.json`. Layer23's
+artifact/source boundary is explained by the official full/einsum/batched
+producer expression. Layer17 focus-only clears are rejected because full-matrix
+collateral persists. Layer21 remains the positive raw-QK clear control, but its
+full bundle still stops at o-proj. The result does not authorize
+implementation, runtime/default/CUDA changes, output emission, ladder
+continuation, correction metadata, tolerance, or any final-logit/all-layer/
+server/4097 claim.
 
 ### O-proj bounded-family blocked
 
