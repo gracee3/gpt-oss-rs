@@ -184,6 +184,24 @@ The final sampled o-proj producer/API matrix is now recorded in
 same fused-linear/addmm pattern as layer6, layer13, layer16, and layer10
 control. No backend is selected.
 
+## Milestone Summary
+
+The operator-facing milestone summary is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
+```
+
+Classification: `ordered_surface_batch_milestone_summary_recorded`.
+
+It records that the final o-proj matrix is complete for sampled cases,
+Workstream B support-gap cases are retired, Workstream C's minimal producer/API
+evidence set is complete, and the next recommended decision is Option B: a
+docs-only fused-linear/addmm backend-discriminator design update. No
+implementation, backend selection, runtime/default/CUDA change, output
+emission, ladder continuation, correction metadata, tolerance pass, or
+final-logit/all-layer/server/4097 claim is authorized.
+
 ## Recommended Next Step
 
 Next bounded decision: pause and preserve this taxonomy as the milestone

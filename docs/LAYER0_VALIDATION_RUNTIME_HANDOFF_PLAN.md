@@ -2994,6 +2994,38 @@ taxonomy. Option B is a docs-only fused-linear/addmm backend-discriminator
 design update. Option C is a validation-only backend-discriminator/status plan
 only if explicitly approved. Do not jump directly to runtime implementation.
 
+## Ordered Surface Batch Milestone Summary
+
+Milestone summary doc:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_milestone_summary_recorded
+```
+
+Key milestone conclusion: the layer7..23 ordered-surface batch pivot produced a
+bounded validation-only operator taxonomy for the `developer-message-user-smoke`
+final-token case. Workstream A's sampled o-proj matrix is complete for current
+evidence, Workstream B support-gap cases are retired, and Workstream C's
+minimal producer/API set is complete. No single global policy switch is
+justified.
+
+Recommended next branch:
+
+```text
+docs/fused-linear-addmm-backend-discriminator-design-update
+```
+
+Guardrails: no implementation, backend selection, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction metadata, tolerance pass, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:

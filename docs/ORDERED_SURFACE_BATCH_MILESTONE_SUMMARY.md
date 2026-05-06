@@ -1,0 +1,206 @@
+# Ordered Surface Batch Milestone Summary
+
+Classification: `ordered_surface_batch_milestone_summary_recorded`
+
+## Scope
+
+- Docs-only milestone summary.
+- Prompt/case: `developer-message-user-smoke`.
+- Final-token ordered-surface evidence only.
+- Layers covered: 7..23, plus historical layer6 context.
+- No implementation is authorized.
+- No backend is selected.
+- No runtime/default/CUDA behavior change is authorized.
+- No output emission or ladder continuation is authorized.
+
+## Source Documents
+
+- `docs/ORDERED_SURFACE_BATCH_MATRIX_7_23.md`
+- `docs/ORDERED_SURFACE_BATCH_BACKLOG_DESIGN.md`
+- `docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md`
+- `docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md`
+- `docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md`
+- `docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md`
+- `docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`
+- `docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md`
+- `docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md`
+- `docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md`
+
+Key statuses:
+
+- `/tmp/ordered_surface_batch_consumer_status.json`
+- `/tmp/ordered_surface_batch_probe_status.json`
+- `/tmp/ordered_surface_batch_consumer_10_15_status.json`
+- `/tmp/ordered_surface_batch_probe_10_15_status.json`
+- `/tmp/ordered_surface_batch_consumer_16_23_status.json`
+- `/tmp/ordered_surface_batch_probe_16_23_oproj_status.json`
+- `/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json`
+- `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/o_proj_producer_api_probes_18_21_status.json`
+- `/tmp/fused_linear_addmm_status_scaffold.json`
+- `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`
+- `/tmp/selected_mlp_down_bundle_revalidation_status.json`
+- `/tmp/layer11_router_logit_bundle_revalidation_status.json`
+
+## Milestone Claim
+
+The ordered-surface batch pivot produced a bounded, validation-only taxonomy
+for the `developer-message-user-smoke` final-token case across layers 7..23. It
+moved the project from a broad mismatch hunt into operator-specific evidence
+classes. The strongest current conclusion is that no single global policy
+switch is justified.
+
+## Final Taxonomy
+
+| Class | Layers | Status |
+| --- | --- | --- |
+| strict/default cleared | 12, 14, 15, 22 | preserve as negative controls |
+| explicit o-proj policy full-bundle cleared | 8, 9, 10 | validation-only pairwise o-proj |
+| composed validation-policy full-bundle cleared | 11, 20 | layer11 router+selected-MLP; layer20 o-proj+selected-MLP |
+| selected-MLP collateral negative control | 19 | policy rejected |
+| raw-QK artifact/source boundary | 7, 23 | layer23 explained by producer/API; layer7 historical |
+| raw-QK accumulation collateral | 17 | focus-only clears rejected |
+| raw-QK positive control now o-proj blocked | 21 | raw-QK reverse clears; remaining blocker is o-proj |
+| o-proj fused-linear/addmm evidence class | 6, 10, 13, 16, 18, 21 | sampled cases match producer/API fused-linear/addmm pattern |
+
+## Workstream A - O-Proj / Fused Linear AddMM
+
+Status: evidence matrix complete for sampled cases.
+
+Matrix doc:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Sampled coverage:
+
+- Layer6 historical context.
+- Layer10 pairwise-clear control.
+- Layers 13, 16, 18, and 21 blocked-family or o-proj-blocked cases.
+
+All sampled cases match module/F.linear/_C/addmm fused-bias
+original-layout producer/API semantics. Explicit matmul/einsum/unfused-bias
+forms are negative controls. Local pairwise, reverse, and current policies are
+not backend identity. No backend is selected, and no runtime implementation is
+authorized.
+
+| Layer | Role | Result |
+| --- | --- | --- |
+| 6 | historical blocker | fused-linear/addmm producer/API pattern |
+| 10 | pairwise-clear control | same fused-linear/addmm pattern |
+| 13 | blocked-family | same fused-linear/addmm pattern |
+| 16 | blocked-family | same fused-linear/addmm pattern |
+| 18 | blocked-family | same fused-linear/addmm pattern |
+| 21 | raw-QK-solved / o-proj-blocked | same fused-linear/addmm pattern |
+
+Conclusion: Workstream A is ready for a docs-only fused-linear/addmm
+backend-discriminator design update, not runtime implementation.
+
+## Workstream B - Selected-MLP-Down / Router Support
+
+Status: support-gap class retired for layer11/layer20.
+
+- Layer20 clears the full bundle with o-proj pairwise plus replay-proven
+  selected-MLP-down policy.
+- Layer11 clears the full bundle with router-logit pairwise plus replay-proven
+  selected-MLP-down policy.
+- Layer19 remains the collateral negative control.
+- No output was emitted.
+- No runtime/default/CUDA behavior changed.
+
+Conclusion: Workstream B no longer blocks the milestone; keep layer19 as the
+negative control.
+
+## Workstream C - Raw-QK Source Boundary
+
+Status: minimal producer/API evidence set complete.
+
+- Layer23 artifact/source boundary is explained by the official
+  full/einsum/batched producer expression.
+- Layer17 focus-only clears are rejected because full-matrix collateral
+  persists.
+- Layer21 positive raw-QK full-matrix clear is confirmed; the remaining blocker
+  is o-proj.
+- Layer7 remains historical artifact/source-boundary context.
+- No global raw-QK policy is justified.
+
+Conclusion: Workstream C does not require more raw-QK sweeps for this
+prompt/case. Layer21 belongs under Workstream A.
+
+## What We Can Claim
+
+- A layer7..23 validation-only ordered-surface taxonomy exists for this one
+  prompt/case.
+- Strict/default clears exist for layers 12/14/15/22.
+- Explicit validation-only full-bundle clears exist for layers 8/9/10.
+- Layer11 and layer20 support-gap cases are retired under validation-only
+  composed policies.
+- Layer19 remains a negative control.
+- Workstream A's sampled o-proj class coheres around fused-linear/addmm
+  producer/API semantics.
+- Workstream C's raw-QK source-boundary evidence is recorded.
+- No single global policy switch is justified.
+
+## What We Cannot Claim
+
+- Production runtime parity.
+- Default model-runner parity.
+- CUDA kernel correctness.
+- Runtime policy promotion.
+- Backend identity for local policies.
+- Final-logit parity.
+- All-layer parity.
+- Server parity.
+- 4097-token or long-context behavior.
+- Output promotion.
+- Ladder continuation.
+- Correction metadata as production semantics.
+- Tolerance-based parity.
+- Global policy safety.
+
+## Recommended Next Decision
+
+### Option A - Pause and Preserve Milestone
+
+Use this doc as the operator-facing milestone summary before implementation
+design.
+
+### Option B - Docs-Only Backend-Discriminator Design Update
+
+Next branch:
+
+```text
+docs/fused-linear-addmm-backend-discriminator-design-update
+```
+
+Purpose:
+
+- Turn Workstream A producer/API matrix into backend-discriminator design
+  requirements.
+- Define full-vector metrics.
+- Define source/layout/fused-bias metadata.
+- Define candidate backend comparison contract.
+- Explicitly prohibit backend selection from focus-lane clears.
+
+### Option C - Validation-Only Backend-Discriminator/Status Plan
+
+Only if explicitly approved after Option B.
+
+Recommended: Option B next if preparing for implementation design. Do not jump
+directly to runtime implementation.
+
+## Guardrails
+
+- Validation-only.
+- No implementation authorization.
+- No backend selected.
+- No production runtime routing.
+- No default model-runner behavior changes.
+- No CUDA kernel changes.
+- No Torch runtime dependency.
+- No output emission.
+- No ladder continuation.
+- No correction metadata promotion.
+- No tolerance pass.
+- No final-logit/all-layer/server/4097 claim.

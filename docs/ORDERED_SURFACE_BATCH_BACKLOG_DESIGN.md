@@ -403,6 +403,26 @@ Workstream A update:
   preservation, not more blind sweeps.
 - No backend is selected and no implementation is authorized.
 
+## Milestone Summary
+
+The ordered-surface batch milestone summary is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
+```
+
+Classification: `ordered_surface_batch_milestone_summary_recorded`.
+
+Milestone status:
+
+- Workstream A evidence matrix is complete for sampled cases.
+- Workstream B support-gap cases are retired for layer11/layer20, with layer19
+  preserved as the collateral negative control.
+- Workstream C minimal producer/API evidence is complete and does not justify a
+  global raw-QK policy.
+- Next design branch, if preparing for implementation design:
+  `docs/fused-linear-addmm-backend-discriminator-design-update`.
+
 ## Non-Goals
 
 - No implementation authorization.

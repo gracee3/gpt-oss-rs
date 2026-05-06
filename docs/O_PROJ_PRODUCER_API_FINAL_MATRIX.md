@@ -70,6 +70,12 @@ Options:
 Recommended: Option A if preparing an operator milestone. Option B if preparing
 for implementation design. Do not jump directly to runtime implementation.
 
+Milestone summary:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
+```
+
 ## Guardrails
 
 - Validation-only.

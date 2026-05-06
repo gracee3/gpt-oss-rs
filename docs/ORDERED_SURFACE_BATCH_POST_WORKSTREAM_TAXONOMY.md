@@ -168,6 +168,24 @@ Cannot claim:
 - 4097-token behavior.
 - Output promotion or ladder continuation.
 
+## Milestone Summary
+
+The operator-facing milestone summary is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
+```
+
+Classification: `ordered_surface_batch_milestone_summary_recorded`.
+
+It preserves the post-workstream taxonomy, records that Workstream A's sampled
+o-proj matrix is complete, and recommends
+`docs/fused-linear-addmm-backend-discriminator-design-update` as the next
+docs-only branch if preparing for implementation design. It does not authorize
+implementation, backend selection, runtime/default/CUDA changes, output
+emission, ladder continuation, correction metadata, tolerance pass, or
+final-logit/all-layer/server/4097 claims.
+
 ## Recommended Next Decision
 
 Option A - pause and preserve taxonomy:
