@@ -168,3 +168,33 @@ before any further CUDA/helper or backend-discriminator work.
 - No correction metadata promotion.
 - No tolerance pass.
 - No final-logit/all-layer/server/4097 claim.
+
+## First Use Case Result
+
+The first CPU producer attribution implementation writes:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_backend_attribution_inconclusive
+```
+
+Pipeline interpretation:
+
+- The seam attribution pipeline successfully reconstructed the sampled
+  attention o-proj seam on CPU for layers 6, 10, 13, 16, 18, and 21.
+- The official producer/API class is reproduced by module call,
+  `torch.nn.functional.linear`, `torch._C._nn.linear`, and fused `torch.addmm`.
+- Explicit matmul/einsum/unfused-bias remain negative controls.
+- CPU profiler evidence is informative but does not identify the backend
+  strongly enough to select one.
+- The result supports pipeline attribution before backend work, not another
+  CUDA/helper sweep.
+
+Guardrails remain: no backend selected, no consumer revalidation authorized, no
+runtime/default/CUDA behavior change, no output emission, and no ladder
+continuation.

@@ -582,6 +582,31 @@ No backend is selected. No implementation is authorized by the docs branch. No
 consumer revalidation, runtime/default/CUDA behavior change, output emission,
 or ladder continuation is authorized.
 
+## CPU Producer Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_backend_attribution_inconclusive
+```
+
+The CPU-first attribution probe confirms that the producer/API fused-linear
+class is reproducible from CPU tensors across layers 6, 10, 13, 16, 18, and
+21. Module call, `torch.nn.functional.linear`, `torch._C._nn.linear`, and fused
+`torch.addmm` clear the full vector for every sampled layer; explicit
+matmul/einsum/unfused-bias remain negative controls.
+
+Backend attribution remains inconclusive: profiler evidence records ATen
+operators, but does not prove backend identity strongly enough to select a
+backend. This result should feed any future status-only discriminator update,
+not runtime implementation or consumer revalidation.
+
 ## Non-Goals
 
 - No runtime implementation.

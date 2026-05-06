@@ -503,6 +503,31 @@ The next step is CPU-first producer attribution, not another CUDA/helper sweep.
 No backend is selected. No implementation is authorized by this docs branch. No
 consumer revalidation or runtime/default/CUDA behavior change is authorized.
 
+## CPU Producer Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_backend_attribution_inconclusive
+```
+
+The CPU-first probe confirms the producer/API reference class on CPU: module
+call, `torch.nn.functional.linear`, `torch._C._nn.linear`, and fused
+`torch.addmm` clear the full official o-proj vector for layers 6, 10, 13, 16,
+18, and 21. Explicit matmul/einsum/unfused-bias forms remain full-vector
+negative controls. CPU profiler output records ATen-level operators but does
+not identify a concrete CPU backend strongly enough to select one.
+
+This records oracle evidence only. No backend is selected, no consumer
+revalidation is authorized, and no runtime/default/CUDA behavior change follows
+from the result.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -262,3 +262,46 @@ unless an explicitly authorized future GPU attribution run is requested.
 - No correction metadata promotion.
 - No tolerance pass.
 - No final-logit/all-layer/server/4097 claim.
+
+## CPU Producer Attribution Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-impl
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_backend_attribution_inconclusive
+```
+
+The CPU-first probe reconstructs sampled o-proj seams from ordered attention
+bundle JSON vectors plus checkpoint o-proj weights/biases on CPU. It records
+`oracle_device = "cpu"` and `cuda_used = false`.
+
+Result:
+
+- Layers 6, 10, 13, 16, 18, and 21 reproduce the official o-proj full vector
+  exactly through module call, `torch.nn.functional.linear`,
+  `torch._C._nn.linear`, and fused `torch.addmm`.
+- Explicit matmul, explicit einsum, and explicit unfused-bias forms remain
+  negative controls for every sampled layer.
+- CPU profiler records ATen operator names including `aten::linear`,
+  `aten::addmm`, `aten::matmul`, and `aten::einsum`.
+- Backend verbose capture was attempted, but backend identity remains
+  inconclusive.
+- Layout perturbations are attribution guards only; focus-lane-only results
+  remain diagnostic and are not promoted.
+
+The result explains the producer/API versus explicit matmul/einsum/unfused-bias
+split on CPU, but it does not identify or select a backend. It does not
+authorize consumer revalidation, runtime/default/CUDA behavior changes, output
+emission, or ladder continuation.

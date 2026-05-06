@@ -400,6 +400,30 @@ authorized by this docs branch, no consumer revalidation is authorized, and no
 runtime/default/CUDA behavior change, output emission, ladder continuation,
 final-logit, all-layer, server, or 4097-token claim is made.
 
+## CPU Producer Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_backend_attribution_inconclusive
+```
+
+The CPU-first attribution probe reproduces the official o-proj full vector for
+all sampled Workstream A layers through module/F.linear/_C/addmm CPU Torch
+paths, while explicit matmul/einsum/unfused-bias remain negative controls.
+Profiler evidence is informative but inconclusive for backend identity.
+
+Milestone claims remain unchanged: no backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change, output emission, ladder continuation, final-logit, all-layer,
+server, or 4097-token claim is made.
+
 ## Guardrails
 
 - Validation-only.
