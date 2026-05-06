@@ -5539,14 +5539,6 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(
                 "attention o-proj API probe requires --source-consumer-oproj-sweep-status"
             )
-        if args.source_producer_dtype_probe_status is None:
-            raise ValueError(
-                "attention o-proj API probe requires --source-producer-dtype-probe-status"
-            )
-        if args.source_backend_discriminator_probe_status is None:
-            raise ValueError(
-                "attention o-proj API probe requires --source-backend-discriminator-probe-status"
-            )
         if args.output_dir is None:
             raise ValueError("attention o-proj API probe requires --output-dir")
         model_path = args.official_model or args.model
