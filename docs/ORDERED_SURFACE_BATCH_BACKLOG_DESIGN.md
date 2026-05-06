@@ -181,9 +181,17 @@ Design status:
   `layer11_router_logit_localization_recorded`.
 - Layer11 selected-down support works; the remaining seam is router logit
   expert 7, local `0.0693359375` vs official `0.06884765625`.
-- Router-logit debug finds full-vector clears under pairwise, reverse, and
-  chunked-pairwise policies, but full bundle revalidation with a router policy
-  is not supported in this slice.
+- Router-logit localization found full-vector clears under pairwise, reverse,
+  and chunked-pairwise policies; the localization slice stopped before bundle
+  router-policy revalidation.
+- Layer11 router-logit bundle revalidation is recorded in
+  `/tmp/layer11_router_logit_bundle_revalidation_status.json` with
+  classification `layer11_router_logit_bundle_revalidation_full_bundle_cleared`.
+- Layer11 now clears full bundle with router policy
+  `pairwise_f32_bf16_bias_bf16_output` and selected-MLP-down policy
+  `naive_f64_sum_then_bf16_output`.
+- Workstream B support-gap cases are retired for layer11 and layer20; layer19
+  remains the collateral negative control.
 - Runtime/default/CUDA behavior remains unchanged; no outputs are emitted and
   the ladder is not continued.
 

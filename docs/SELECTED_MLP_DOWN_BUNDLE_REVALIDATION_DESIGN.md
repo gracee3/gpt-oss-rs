@@ -360,3 +360,49 @@ Result:
 Guardrails: no output emission, ladder continuation, correction metadata,
 tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
 4097-token claim.
+
+## Layer11 Router-Logit Bundle Revalidation
+
+Source statuses:
+
+```text
+/tmp/layer11_router_logit_localization_status.json
+/tmp/layer11_router_logit_policy_debug_status.json
+/tmp/layer11_selected_mlp_down_policy_replay_status.json
+```
+
+Revalidation status:
+
+```text
+/tmp/layer11_ordered_bundle_validate_router_selected_mlp_down_policy_status.json
+```
+
+Final status:
+
+```text
+/tmp/layer11_router_logit_bundle_revalidation_status.json
+```
+
+Classification:
+
+```text
+layer11_router_logit_bundle_revalidation_full_bundle_cleared
+```
+
+Result:
+
+- The narrow validation-only router-logit policy flag consumes
+  `/tmp/layer11_router_logit_policy_debug_status.json`.
+- Selected router policy:
+  `pairwise_f32_bf16_bias_bf16_output`.
+- Selected-MLP-down policy:
+  `naive_f64_sum_then_bf16_output`.
+- Full bundle revalidation classifies
+  `layer11_ordered_bundle_validate_attention_cleared_mlp_cleared_with_router_logit_selected_mlp_down_policy`.
+- Router logits, selected logits, routing weights, selected outputs, weighted
+  sum, and final output all report zero mismatches.
+- Remaining blocker: none.
+
+Guardrails: no output emission, ladder continuation, correction metadata,
+tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.

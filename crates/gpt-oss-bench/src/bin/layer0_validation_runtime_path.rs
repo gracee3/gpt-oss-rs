@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -150,6 +150,10 @@ struct Cli {
     /// Focused router-logit expert index for router policy diagnostics.
     #[arg(long, alias = "focus-expert")]
     focus_router_logit_index: Option<usize>,
+
+    /// Validation-only router-logit policy provenance for full bundle revalidation.
+    #[arg(long)]
+    router_logit_policy_from_debug: Option<PathBuf>,
 
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
@@ -543,6 +547,7 @@ enum Mode {
     Layer11RouterLogitInspectStatus,
     RouterLogitPolicyDebug,
     Layer11RouterLogitLocalizationStatus,
+    Layer11RouterLogitBundleRevalidationStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1541,6 +1546,9 @@ fn main() -> Result<()> {
         Mode::Layer11RouterLogitLocalizationStatus => {
             run_layer11_router_logit_localization_status(&cli)
         }
+        Mode::Layer11RouterLogitBundleRevalidationStatus => {
+            run_layer11_router_logit_bundle_revalidation_status(&cli)
+        }
     }
 }
 
@@ -1753,6 +1761,24 @@ impl SelectedMlpDownReplayGate {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RouterLogitDebugGate {
+    source_status: String,
+    debug_classification: String,
+    selected_policy: String,
+    rejected_reason: Option<String>,
+    router_logits_mismatches: Option<u64>,
+    selected_logits_mismatches: Option<u64>,
+    routing_weights_mismatches: Option<u64>,
+    topk_unchanged: bool,
+}
+
+impl RouterLogitDebugGate {
+    fn accepted(&self) -> bool {
+        self.rejected_reason.is_none()
+    }
+}
+
 fn run_selected_mlp_down_bundle_revalidation_status(cli: &Cli) -> Result<()> {
     let layer11_status =
         PathBuf::from("/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json");
@@ -1890,6 +1916,189 @@ fn layer_bundle_status_policy_rejected(path: &Path) -> Result<bool> {
     Ok(status
         .get("selected_mlp_down_policy_rejected_reason")
         .is_some_and(|reason| !reason.is_null()))
+}
+
+fn run_layer11_router_logit_bundle_revalidation_status(cli: &Cli) -> Result<()> {
+    let localization_path = PathBuf::from("/tmp/layer11_router_logit_localization_status.json");
+    let debug_path = PathBuf::from("/tmp/layer11_router_logit_policy_debug_status.json");
+    let selected_mlp_down_path =
+        PathBuf::from("/tmp/layer11_selected_mlp_down_policy_replay_status.json");
+    let revalidation_path = PathBuf::from(
+        "/tmp/layer11_ordered_bundle_validate_router_selected_mlp_down_policy_status.json",
+    );
+
+    let mut missing = Vec::new();
+    for path in [
+        &localization_path,
+        &debug_path,
+        &selected_mlp_down_path,
+        &revalidation_path,
+    ] {
+        if !path.exists() {
+            missing.push(path.display().to_string());
+        }
+    }
+
+    let localization = if localization_path.exists() {
+        load_json(&localization_path)?
+    } else {
+        Value::Null
+    };
+    let debug = if debug_path.exists() {
+        load_json(&debug_path)?
+    } else {
+        Value::Null
+    };
+    let revalidation = if revalidation_path.exists() {
+        load_json(&revalidation_path)?
+    } else {
+        Value::Null
+    };
+
+    let full_bundle_cleared = revalidation
+        .get("full_bundle_cleared")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let policy_rejected = revalidation
+        .get("router_logit_policy_rejected_reason")
+        .is_some_and(|reason| !reason.is_null());
+    let classification = if !missing.is_empty() {
+        "layer11_router_logit_bundle_revalidation_blocked_by_missing_artifacts"
+    } else if policy_rejected {
+        "layer11_router_logit_bundle_revalidation_blocked_by_policy_rejection"
+    } else if full_bundle_cleared {
+        "layer11_router_logit_bundle_revalidation_full_bundle_cleared"
+    } else {
+        "layer11_router_logit_bundle_revalidation_exposes_next_seam"
+    };
+    let remaining_blocker = if full_bundle_cleared {
+        json!("none")
+    } else if !missing.is_empty() {
+        json!("missing_artifacts")
+    } else {
+        layer_bundle_remaining_blocker(&revalidation)
+    };
+
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "source_router_localization_status": localization_path.display().to_string(),
+        "source_router_localization_classification": localization.get("classification").cloned().unwrap_or(Value::Null),
+        "router_policy_source_status": debug_path.display().to_string(),
+        "router_policy_debug_classification": debug.get("classification").cloned().unwrap_or(Value::Null),
+        "selected_mlp_down_policy_source_status": selected_mlp_down_path.display().to_string(),
+        "revalidation_status": revalidation_path.display().to_string(),
+        "revalidation_classification": revalidation.get("classification").cloned().unwrap_or(Value::Null),
+        "selected_router_policy": revalidation.get("router_logit_policy").cloned().unwrap_or_else(|| {
+            debug.get("selected_policy").cloned().unwrap_or(Value::Null)
+        }),
+        "selected_mlp_down_policy": revalidation.get("selected_mlp_down_policy").cloned().unwrap_or(Value::Null),
+        "router_logit_policy_applied": revalidation
+            .get("router_logit_policy_applied")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "selected_mlp_down_policy_applied": revalidation
+            .get("selected_mlp_down_policy_applied")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "full_bundle_cleared": full_bundle_cleared,
+        "remaining_blocker": remaining_blocker,
+        "missing_statuses": missing,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": if full_bundle_cleared {
+            "record Workstream B layer11 resolved under explicit validation-only router-logit and selected-MLP-down policies; do not emit output or continue the ladder"
+        } else {
+            "localize the remaining layer11 ordered bundle seam before any output emission or ladder continuation"
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn layer_bundle_remaining_blocker(status: &Value) -> Value {
+    let mismatches = |path: &[&str]| json_path_u64(status, path).unwrap_or(0);
+    if mismatches(&["attention_metrics", "raw_qk", "metrics", "mismatches"]) > 0
+        || mismatches(&[
+            "attention_metrics",
+            "masked_logits",
+            "metrics",
+            "mismatches",
+        ]) > 0
+        || mismatches(&[
+            "attention_metrics",
+            "attention_probabilities",
+            "metrics",
+            "mismatches",
+        ]) > 0
+        || mismatches(&[
+            "attention_metrics",
+            "weighted_v",
+            "metric",
+            "metrics",
+            "mismatches",
+        ]) > 0
+        || mismatches(&["attention_metrics", "o_proj", "metrics", "mismatches"]) > 0
+    {
+        return json!("attention");
+    }
+    if mismatches(&["attention_to_mlp_bridge", "metric", "metrics", "mismatches"]) > 0 {
+        return json!("attention_to_mlp_bridge");
+    }
+    if mismatches(&["mlp_metrics", "mlp_norm", "metrics", "mismatches"]) > 0 {
+        return json!("mlp_norm");
+    }
+    if mismatches(&["mlp_metrics", "router_logits", "metrics", "mismatches"]) > 0 {
+        return json!("router_logits");
+    }
+    if !status
+        .pointer("/mlp_metrics/topk/ordered_match")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        return json!("router_topk");
+    }
+    if mismatches(&[
+        "mlp_metrics",
+        "topk",
+        "selected_logits_metric",
+        "metrics",
+        "mismatches",
+    ]) > 0
+    {
+        return json!("selected_router_logits");
+    }
+    if mismatches(&[
+        "mlp_metrics",
+        "topk",
+        "routing_weights_metric",
+        "metrics",
+        "mismatches",
+    ]) > 0
+    {
+        return json!("routing_weights");
+    }
+    if mismatches(&["selected_outputs_mismatches"]) > 0 {
+        return json!("selected_outputs");
+    }
+    if mismatches(&["weighted_sum_mismatches"]) > 0 {
+        return json!("weighted_sum");
+    }
+    if mismatches(&["final_output_mismatches"]) > 0 {
+        return json!("final_output");
+    }
+    status
+        .get("classification")
+        .cloned()
+        .unwrap_or_else(|| json!("unknown"))
 }
 
 fn run_layer11_router_logit_inspect_status(cli: &Cli) -> Result<()> {
@@ -2517,6 +2726,142 @@ fn selected_mlp_down_local_policy_clears(result: Option<&Value>) -> bool {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
     })
+}
+
+fn load_router_logit_debug_gate(
+    path: Option<&Path>,
+    layer: usize,
+) -> Result<Option<RouterLogitDebugGate>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    validate_path(path, "router-logit policy debug status")?;
+    let status = load_json(path)?;
+    anyhow::ensure!(
+        status_layer_index(&status)? == layer,
+        "router-logit policy debug layer did not match requested layer {layer}"
+    );
+    let debug_classification = status
+        .get("classification")
+        .and_then(Value::as_str)
+        .unwrap_or("missing_classification")
+        .to_string();
+    let selected_policy = status
+        .get("selected_policy")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_string();
+    let variant = status
+        .get("variants")
+        .and_then(Value::as_array)
+        .and_then(|variants| {
+            variants.iter().find(|variant| {
+                variant
+                    .get("policy")
+                    .and_then(Value::as_str)
+                    .is_some_and(|policy| policy == selected_policy)
+            })
+        });
+    let full_vector_result = status
+        .get("full_vector_results")
+        .and_then(Value::as_array)
+        .and_then(|results| {
+            results.iter().find(|result| {
+                result
+                    .get("policy")
+                    .and_then(Value::as_str)
+                    .is_some_and(|policy| policy == selected_policy)
+            })
+        });
+    let router_logits_mismatches = variant
+        .and_then(|variant| {
+            json_path_u64(variant, &["full_vector_metrics", "metrics", "mismatches"])
+        })
+        .or_else(|| full_vector_result.and_then(|result| json_path_u64(result, &["mismatches"])));
+    let selected_logits_mismatches = variant.and_then(|variant| {
+        json_path_u64(
+            variant,
+            &[
+                "topk_impact",
+                "selected_logits_metric",
+                "metrics",
+                "mismatches",
+            ],
+        )
+    });
+    let routing_weights_mismatches = variant.and_then(|variant| {
+        json_path_u64(
+            variant,
+            &[
+                "routing_weight_impact",
+                "routing_weights_metric",
+                "metrics",
+                "mismatches",
+            ],
+        )
+    });
+    let topk_unchanged = variant
+        .and_then(|variant| json_path_bool(variant, &["topk_impact", "ordered_match"]))
+        .unwrap_or(false);
+    let selected_policy_diagnostic = variant
+        .and_then(|variant| variant.get("diagnostic_only").and_then(Value::as_bool))
+        .or_else(|| {
+            full_vector_result
+                .and_then(|result| result.get("diagnostic_only").and_then(Value::as_bool))
+        })
+        .unwrap_or(false);
+    let selected_policy_evidence = variant
+        .and_then(|variant| variant.get("evidence_only").and_then(Value::as_bool))
+        .or_else(|| {
+            full_vector_result
+                .and_then(|result| result.get("evidence_only").and_then(Value::as_bool))
+        })
+        .unwrap_or(false);
+    let full_vector_cleared = full_vector_result
+        .and_then(|result| result.get("full_vector_cleared").and_then(Value::as_bool))
+        .unwrap_or(router_logits_mismatches == Some(0));
+
+    let rejected_reason = if selected_policy == "none" {
+        Some("router_debug_status_missing_selected_policy".to_string())
+    } else if !router_logit_policy_allowed(&selected_policy) {
+        Some("router_policy_not_allowed_for_bundle_revalidation".to_string())
+    } else if variant.is_none() || full_vector_result.is_none() {
+        Some("router_policy_missing_full_vector_metrics".to_string())
+    } else if selected_policy_diagnostic {
+        Some("router_policy_is_diagnostic_only".to_string())
+    } else if selected_policy_evidence {
+        Some("router_policy_is_evidence_only".to_string())
+    } else if !full_vector_cleared || router_logits_mismatches != Some(0) {
+        Some("router_policy_does_not_clear_full_vector".to_string())
+    } else if !topk_unchanged {
+        Some("router_policy_changes_topk".to_string())
+    } else if selected_logits_mismatches != Some(0) || routing_weights_mismatches != Some(0) {
+        Some("router_policy_changes_selected_logits_or_routing_weights".to_string())
+    } else if debug_classification.ends_with("_focus_only_clear") {
+        Some("router_policy_was_focus_only_clear".to_string())
+    } else {
+        None
+    };
+
+    Ok(Some(RouterLogitDebugGate {
+        source_status: path.display().to_string(),
+        debug_classification,
+        selected_policy,
+        rejected_reason,
+        router_logits_mismatches,
+        selected_logits_mismatches,
+        routing_weights_mismatches,
+        topk_unchanged,
+    }))
+}
+
+fn router_logit_policy_allowed(policy: &str) -> bool {
+    matches!(
+        policy,
+        "pairwise_f32_bf16_bias_bf16_output"
+            | "reverse_f32_bf16_bias_bf16_output"
+            | "chunked_pairwise_f32_bf16_bias_bf16_output"
+    )
 }
 
 fn run_ordered_surface_batch_status(cli: &Cli) -> Result<()> {
@@ -7785,6 +8130,8 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         cli.selected_mlp_down_policy_from_replay.as_deref(),
         layer,
     )?;
+    let router_logit_debug_gate =
+        load_router_logit_debug_gate(cli.router_logit_policy_from_debug.as_deref(), layer)?;
 
     let attention_status_path =
         required_path(&cli.attention_bundle_status, "attention bundle status")?;
@@ -8107,15 +8454,37 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         load_model_tensor_f32(model, &[router_weight_name.as_str()])?;
     let (router_bias_source, router_bias) =
         load_model_tensor_f32(model, &[router_bias_name.as_str()])?;
-    let router_logits =
-        compute_router_logits_bf16_linear(&mlp_norm_values, &router_weight, &router_bias);
+    let router_logit_policy_rejected = router_logit_debug_gate
+        .as_ref()
+        .is_some_and(|gate| gate.rejected_reason.is_some());
+    let router_logit_policy_applied = router_logit_debug_gate
+        .as_ref()
+        .is_some_and(RouterLogitDebugGate::accepted);
+    let router_logits = if let Some(gate) = router_logit_debug_gate
+        .as_ref()
+        .filter(|gate| gate.accepted())
+    {
+        compute_router_logits_variant(
+            &mlp_norm_values,
+            &router_weight,
+            &router_bias,
+            &gate.selected_policy,
+        )
+    } else {
+        compute_router_logits_bf16_linear(&mlp_norm_values, &router_weight, &router_bias)
+    };
     let local_topk = compute_router_topk(&router_logits, selected_count);
     let ordered_topk_indices = selected_experts
         .iter()
         .copied()
         .map(|expert| expert as i64)
         .collect::<Vec<_>>();
+    let ordered_selected_logits = selected_experts
+        .iter()
+        .map(|expert| ordered_router_logits[*expert])
+        .collect::<Vec<_>>();
     let router_logits_metric = compare_hidden(&router_logits, &ordered_router_logits);
+    let selected_logits_metric = compare_hidden(&local_topk.logits, &ordered_selected_logits);
     let routing_weights_metric = compare_hidden(&local_topk.routing_weights, &routing_weights);
     let topk_ordered_match = local_topk.indices == ordered_topk_indices;
 
@@ -8308,6 +8677,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let mlp_guards_clear = mlp_norm_metric.metrics.mismatches == 0
         && router_logits_metric.metrics.mismatches == 0
         && topk_ordered_match
+        && selected_logits_metric.metrics.mismatches == 0
         && routing_weights_metric.metrics.mismatches == 0;
     let selected_mlp_down_policy_rejected = selected_mlp_down_replay_gate
         .as_ref()
@@ -8353,7 +8723,11 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             format!("{classification_prefix}_attention_to_mlp_bridge_mismatch")
         }
     } else if !mlp_guards_clear {
-        if weighted_v_oproj_policy_explicit {
+        if router_logit_policy_rejected {
+            format!("{classification_prefix}_router_logit_policy_rejected")
+        } else if router_logit_policy_applied {
+            format!("{classification_prefix}_router_logit_policy_mismatch")
+        } else if weighted_v_oproj_policy_explicit {
             format!("{classification_prefix}_weighted_v_oproj_policy_mlp_mismatch")
         } else if weighted_v_policy_explicit {
             format!("{classification_prefix}_weighted_v_policy_mlp_mismatch")
@@ -8367,7 +8741,11 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     } else if selected_mlp_down_policy_rejected {
         format!("{classification_prefix}_selected_mlp_down_policy_rejected")
     } else if selected_mlp_down_policy_clears {
-        if weighted_v_oproj_policy_explicit {
+        if router_logit_policy_applied {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_router_logit_selected_mlp_down_policy"
+            )
+        } else if weighted_v_oproj_policy_explicit {
             format!(
                 "{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_oproj_selected_mlp_down_policy"
             )
@@ -8389,7 +8767,11 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     } else if selected_mlp_down_replay_gate.is_some() {
         format!("{classification_prefix}_selected_mlp_down_policy_mismatch")
     } else if deterministic_clears || baseline_clears {
-        if weighted_v_oproj_policy_explicit {
+        if router_logit_policy_applied {
+            format!(
+                "{classification_prefix}_attention_cleared_mlp_cleared_with_router_logit_policy"
+            )
+        } else if weighted_v_oproj_policy_explicit {
             format!(
                 "{classification_prefix}_attention_cleared_mlp_cleared_with_weighted_v_oproj_policy"
             )
@@ -8459,6 +8841,42 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
     let selected_mlp_down_policy_result = selected_mlp_down_policy_result
         .cloned()
         .unwrap_or(Value::Null);
+    let router_logit_policy = router_logit_debug_gate
+        .as_ref()
+        .map(|gate| json!(gate.selected_policy))
+        .unwrap_or(Value::Null);
+    let router_logit_policy_source_status = router_logit_debug_gate
+        .as_ref()
+        .map(|gate| json!(gate.source_status))
+        .unwrap_or(Value::Null);
+    let router_logit_debug_classification = router_logit_debug_gate
+        .as_ref()
+        .map(|gate| json!(gate.debug_classification))
+        .unwrap_or(Value::Null);
+    let router_logit_policy_rejected_reason = router_logit_debug_gate
+        .as_ref()
+        .and_then(|gate| gate.rejected_reason.as_ref())
+        .map(|reason| json!(reason))
+        .unwrap_or(Value::Null);
+    let router_debug_mismatches = router_logit_debug_gate
+        .as_ref()
+        .and_then(|gate| gate.router_logits_mismatches)
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let router_debug_selected_logits_mismatches = router_logit_debug_gate
+        .as_ref()
+        .and_then(|gate| gate.selected_logits_mismatches)
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let router_debug_routing_weights_mismatches = router_logit_debug_gate
+        .as_ref()
+        .and_then(|gate| gate.routing_weights_mismatches)
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null);
+    let router_debug_topk_unchanged = router_logit_debug_gate
+        .as_ref()
+        .map(|gate| gate.topk_unchanged)
+        .unwrap_or(false);
 
     let status = json!({
         "mode": "layer0_validation_runtime_path",
@@ -8496,6 +8914,19 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
         "selected_outputs_mismatches": selected_outputs_mismatches,
         "weighted_sum_mismatches": weighted_sum_mismatches,
         "final_output_mismatches": final_output_mismatches,
+        "router_logit_policy": router_logit_policy,
+        "router_logit_policy_source_status": router_logit_policy_source_status,
+        "router_logit_policy_applied": router_logit_policy_applied,
+        "router_logit_debug_classification": router_logit_debug_classification,
+        "router_logit_policy_rejected_reason": router_logit_policy_rejected_reason,
+        "router_logits_mismatches": router_logits_metric.metrics.mismatches,
+        "router_logit_debug_mismatches": router_debug_mismatches,
+        "selected_logits_mismatches": selected_logits_metric.metrics.mismatches,
+        "router_logit_debug_selected_logits_mismatches": router_debug_selected_logits_mismatches,
+        "routing_weights_mismatches": routing_weights_metric.metrics.mismatches,
+        "router_logit_debug_routing_weights_mismatches": router_debug_routing_weights_mismatches,
+        "router_topk_unchanged": topk_ordered_match,
+        "router_logit_debug_topk_unchanged": router_debug_topk_unchanged,
         "full_bundle_cleared": full_bundle_cleared,
         "raw_qk_policy_source_status": if raw_qk_policy_source_status_path.exists() {
             json!(raw_qk_policy_source_status_path.display().to_string())
@@ -8600,6 +9031,7 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
                 "ordered_match": topk_ordered_match,
                 "selected_experts_local": local_topk.indices,
                 "selected_experts_ordered": selected_experts,
+                "selected_logits_metric": selected_logits_metric,
                 "routing_weights_metric": routing_weights_metric,
             },
             "baseline": baseline,
@@ -8649,6 +9081,18 @@ fn run_layer2_ordered_bundle_validate(cli: &Cli) -> Result<()> {
             }
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_oproj_policy") {
                 "record ordered layer validation under explicit validation-only o-proj policy; do not continue the ladder in this slice"
+            }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_router_logit_selected_mlp_down_policy") {
+                "record full bundle validation under explicit validation-only router-logit and selected-MLP-down policies; do not emit output or continue the ladder"
+            }
+            else if classification.ends_with("_attention_cleared_mlp_cleared_with_router_logit_policy") {
+                "record full bundle validation under explicit validation-only router-logit policy; do not emit output or continue the ladder"
+            }
+            else if classification.ends_with("_router_logit_policy_rejected") {
+                "keep router-logit policy blocked by debug collateral or insufficient full-vector evidence"
+            }
+            else if classification.ends_with("_router_logit_policy_mismatch") {
+                "inspect router-logit debug provenance versus full bundle recomputation before any policy promotion"
             }
             else if classification.ends_with("_attention_cleared_mlp_cleared_with_selected_mlp_down_policy")
                 || classification.ends_with("_attention_cleared_mlp_cleared_with_oproj_selected_mlp_down_policy")

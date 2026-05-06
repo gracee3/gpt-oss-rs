@@ -5056,6 +5056,43 @@ Guardrails: no output emission, ladder continuation, correction metadata,
 tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
 4097-token claim.
 
+## Layer11 Router-Logit Bundle Revalidation
+
+Branch:
+
+```text
+validation/layer11-router-logit-bundle-revalidation
+```
+
+Status path:
+
+```text
+/tmp/layer11_router_logit_bundle_revalidation_status.json
+```
+
+Classification:
+
+```text
+layer11_router_logit_bundle_revalidation_full_bundle_cleared
+```
+
+Result:
+
+- Full bundle revalidation consumes router-logit policy provenance from
+  `/tmp/layer11_router_logit_policy_debug_status.json` and selected-MLP-down
+  policy provenance from `/tmp/layer11_selected_mlp_down_policy_replay_status.json`.
+- Router policy: `pairwise_f32_bf16_bias_bf16_output`.
+- Selected-MLP-down policy: `naive_f64_sum_then_bf16_output`.
+- Revalidation status:
+  `/tmp/layer11_ordered_bundle_validate_router_selected_mlp_down_policy_status.json`.
+- Revalidation classification:
+  `layer11_ordered_bundle_validate_attention_cleared_mlp_cleared_with_router_logit_selected_mlp_down_policy`.
+- Full bundle cleared; remaining blocker is `none`.
+
+Guardrails: no output emission, ladder continuation, correction metadata,
+tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:
