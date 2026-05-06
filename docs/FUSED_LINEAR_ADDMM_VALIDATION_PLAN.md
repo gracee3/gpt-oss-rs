@@ -528,6 +528,30 @@ This records oracle evidence only. No backend is selected, no consumer
 revalidation is authorized, and no runtime/default/CUDA behavior change follows
 from the result.
 
+## AddMM Boundary Localization Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_addmm_boundary_localization_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_addmm_boundary_inconclusive
+```
+
+The boundary-localization probe decomposes addmm on CPU across layers 6, 10,
+13, 16, 18, and 21. Fused addmm with bias clears the full vector everywhere;
+zero-bias addmm plus a separate bias add does not. Explicit matmul/einsum plus
+bias and explicit unfused-bias remain negative controls. Because additional
+small core/einsum and layout guard signals are present, the result remains
+inconclusive rather than selecting a single boundary or backend.
+
+No backend is selected and no consumer revalidation, runtime/default/CUDA
+behavior change, output emission, or ladder continuation is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

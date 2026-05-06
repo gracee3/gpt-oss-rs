@@ -305,3 +305,41 @@ The result explains the producer/API versus explicit matmul/einsum/unfused-bias
 split on CPU, but it does not identify or select a backend. It does not
 authorize consumer revalidation, runtime/default/CUDA behavior changes, output
 emission, or ladder continuation.
+
+## AddMM Boundary Localization Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-addmm-boundary-localization
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_addmm_boundary_localization_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_addmm_boundary_inconclusive
+```
+
+Result:
+
+- `torch.addmm(bias, input_2d, weight_t_2d)` clears the full official vector
+  for layers 6, 10, 13, 16, 18, and 21.
+- `torch.addmm(zero_bias, input_2d, weight_t_2d) + bias` does not clear any
+  sampled layer and matches the explicit unfused-bias negative-control class.
+- The zero-bias addmm core matches `input @ weight.T` for every sampled layer,
+  but small addmm/einsum-core differences appear on layers 10, 13, 16, 18, and
+  21.
+- Noncontiguous same-shape weight layout remains a guard signal on layers 10,
+  13, 16, and 18.
+
+Interpretation: fused-bias handling is the strongest localization signal, but
+core/einsum and layout guard signals are also present. The probe therefore
+records inconclusive localization rather than claiming a single mechanism. No
+backend is selected and no consumer revalidation or runtime/default/CUDA change
+is authorized.

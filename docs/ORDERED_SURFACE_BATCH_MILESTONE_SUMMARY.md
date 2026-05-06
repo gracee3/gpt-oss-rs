@@ -424,6 +424,32 @@ authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change, output emission, ladder continuation, final-logit, all-layer,
 server, or 4097-token claim is made.
 
+## AddMM Boundary Localization Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_addmm_boundary_localization_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_addmm_boundary_inconclusive
+```
+
+The CPU-only localization probe shows that fused addmm-with-bias clears every
+sampled o-proj vector, while zero-bias addmm plus a separate bias add,
+explicit matmul/einsum plus bias, and explicit unfused-bias do not. The result
+supports the milestone taxonomy's fused-linear/addmm evidence class, but it
+does not select a backend because core/einsum and layout guard signals are also
+present.
+
+Milestone claims remain unchanged: no backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change, output emission, ladder continuation, final-logit, all-layer,
+server, or 4097-token claim is made.
+
 ## Guardrails
 
 - Validation-only.

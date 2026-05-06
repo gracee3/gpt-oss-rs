@@ -607,6 +607,35 @@ operators, but does not prove backend identity strongly enough to select a
 backend. This result should feed any future status-only discriminator update,
 not runtime implementation or consumer revalidation.
 
+## AddMM Boundary Localization Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_addmm_boundary_localization_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_addmm_boundary_inconclusive
+```
+
+The CPU-only boundary-localization probe strengthens the discriminator
+requirements:
+
+- Candidate comparisons must distinguish fused addmm-with-bias from zero-bias
+  addmm followed by a separate bias add.
+- The separate-bias form remains in the explicit unfused-bias negative-control
+  class.
+- Zero-bias addmm matches `input @ weight.T` across sampled layers, while
+  einsum-core and layout guards still expose small differences on some layers.
+- Focus-lane-only results remain diagnostic only.
+
+The future discriminator should therefore keep fused-bias, core API, and layout
+metadata as separate fields and reject any candidate that clears only one
+subcase. No backend is selected.
+
 ## Non-Goals
 
 - No runtime implementation.

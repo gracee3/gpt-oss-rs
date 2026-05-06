@@ -198,3 +198,32 @@ Pipeline interpretation:
 Guardrails remain: no backend selected, no consumer revalidation authorized, no
 runtime/default/CUDA behavior change, no output emission, and no ladder
 continuation.
+
+## AddMM Boundary Localization Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_addmm_boundary_localization_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_addmm_boundary_inconclusive
+```
+
+Pipeline interpretation:
+
+- The addmm boundary-localization step confirms that fused addmm-with-bias is
+  the only addmm decomposition tested that clears all sampled official o-proj
+  vectors.
+- Zero-bias addmm plus a separate bias add reproduces the unfused-bias
+  negative-control class, so fused-bias behavior is the strongest signal.
+- Small einsum-core differences and noncontiguous-weight layout guard failures
+  mean the mechanism should remain classified as inconclusive rather than
+  single-cause.
+
+This is exactly the intended pipeline behavior: record full-vector evidence and
+guardrail-preserving uncertainty before choosing any implementation or backend
+work.
