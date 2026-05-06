@@ -227,3 +227,35 @@ Pipeline interpretation:
 This is exactly the intended pipeline behavior: record full-vector evidence and
 guardrail-preserving uncertainty before choosing any implementation or backend
 work.
+
+## Fused-Bias Arithmetic Contract Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+Pipeline interpretation:
+
+- The arithmetic-contract probe narrows the addmm boundary by testing selected
+  focus, first-mismatch, worst-mismatch, and representative mismatch lanes for
+  layers 6, 10, 13, 16, 18, and 21.
+- The strongest reusable signal is pre-round fused-bias behavior: addmm with
+  bias clears everywhere, while zero-bias addmm plus a separate bias add and
+  explicit matmul/einsum/unfused-bias forms remain negative controls.
+- Some explicit pre-round-bias arithmetic variants clear selected lanes, and
+  some clear full vectors for layers 10, 13, and 16, but no variant clears the
+  full sampled matrix.
+- Layer18 keeps the contract inconclusive and prevents an implementation or
+  backend conclusion.
+
+This continues the seam pipeline pattern: collect sharper producer evidence,
+record the unresolved boundary honestly, and preserve all guardrails before any
+future discriminator or candidate execution.

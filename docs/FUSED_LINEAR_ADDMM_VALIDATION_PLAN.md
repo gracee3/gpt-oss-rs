@@ -552,6 +552,40 @@ inconclusive rather than selecting a single boundary or backend.
 No backend is selected and no consumer revalidation, runtime/default/CUDA
 behavior change, output emission, or ladder continuation is authorized.
 
+## Fused-Bias Arithmetic Contract Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+The CPU-only arithmetic-contract probe tests whether the clearing fused addmm
+result can be reconstructed by explicit bias-placement and BF16-rounding
+models. It supports bias entering before the final observable BF16 rounding,
+but does not localize a complete accumulation/product policy across all
+sampled layers.
+
+Summary:
+
+- Addmm with fused bias still clears every sampled full vector.
+- Zero-bias addmm plus bias, explicit matmul plus bias, explicit einsum plus
+  bias, and explicit unfused BF16 bias remain negative controls.
+- Pre-round-bias variants provide lane-level support on layers 6, 10, 13, 16,
+  and 21 and full-vector support on layers 10, 13, and 16.
+- No explicit arithmetic contract clears layers 6, 10, 13, 16, 18, and 21 as a
+  set, so no backend or runtime policy is selected.
+
+This result should feed future validation-only discriminator requirements. It
+does not authorize consumer revalidation, output emission, ladder continuation,
+or runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.

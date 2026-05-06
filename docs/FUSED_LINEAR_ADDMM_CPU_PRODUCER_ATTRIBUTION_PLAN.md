@@ -343,3 +343,43 @@ core/einsum and layout guard signals are also present. The probe therefore
 records inconclusive localization rather than claiming a single mechanism. No
 backend is selected and no consumer revalidation or runtime/default/CUDA change
 is authorized.
+
+## Fused-Bias Arithmetic Contract Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-fused-bias-arithmetic-contract
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+Result:
+
+- The CPU-only arithmetic-contract probe confirms the previous universal
+  signal: fused `torch.addmm(bias, input_2d, weight_t_2d)` clears all sampled
+  layers, while zero-bias addmm plus a separate bias add, explicit matmul plus
+  bias, explicit einsum plus bias, and explicit unfused BF16 bias remain
+  full-vector negative controls.
+- Bias-before-output-rounding is supported as the strongest arithmetic signal.
+  Lane-level support appears on layers 6, 10, 13, 16, and 21, and full-vector
+  pre-round-bias support appears on layers 10, 13, and 16.
+- No explicit arithmetic model clears all selected lanes and full vectors
+  across layers 6, 10, 13, 16, 18, and 21. Layer18 remains the key non-clearing
+  sampled case for this contract.
+
+Interpretation: Torch addmm behaves consistently with bias participating before
+the final observable BF16 rounding, but the exact accumulation/product policy
+is not localized. No backend is selected, no implementation is authorized, and
+no consumer revalidation or runtime/default/CUDA change follows from this
+oracle evidence.

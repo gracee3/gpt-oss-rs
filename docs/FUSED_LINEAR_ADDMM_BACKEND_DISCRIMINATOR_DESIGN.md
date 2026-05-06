@@ -636,6 +636,40 @@ The future discriminator should therefore keep fused-bias, core API, and layout
 metadata as separate fields and reject any candidate that clears only one
 subcase. No backend is selected.
 
+## Fused-Bias Arithmetic Contract Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+The arithmetic-contract probe adds a more precise discriminator requirement:
+candidate backends must be compared against fused-bias addmm behavior, not just
+against a separately rounded core plus a separate bias add.
+
+Discriminator implications:
+
+- Bias-before-output-rounding is the strongest arithmetic signal and should be
+  explicit metadata in any future candidate status.
+- Lane-level clears are insufficient: no explicit arithmetic model clears all
+  selected lanes and full vectors across the sampled set.
+- Full-vector replay remains mandatory because layers 10, 13, and 16 show some
+  full-vector arithmetic clears while layer18 does not.
+- Product-policy and f64 diagnostic variants remain evidence only unless a
+  future full-vector candidate clears the required blocked/control set without
+  collateral.
+
+No backend is selected. No implementation, consumer revalidation, runtime
+routing, default routing, CUDA kernel change, output emission, or ladder
+continuation is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

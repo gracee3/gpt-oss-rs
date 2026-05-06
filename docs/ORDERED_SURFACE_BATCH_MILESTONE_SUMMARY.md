@@ -450,6 +450,34 @@ authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change, output emission, ladder continuation, final-logit, all-layer,
 server, or 4097-token claim is made.
 
+## Fused-Bias Arithmetic Contract Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+The CPU-only arithmetic-contract probe supports the milestone's fused-bias
+interpretation: addmm with bias clears all sampled o-proj vectors, while
+zero-bias addmm plus a separate bias add and explicit matmul/einsum/unfused
+bias remain negative controls. Explicit pre-round-bias arithmetic variants
+clear selected lanes on most sampled layers and full vectors on layers 10, 13,
+and 16, but no variant clears the entire sampled set.
+
+Milestone claims remain unchanged: bias-before-output-rounding is supported,
+the exact accumulation/product policy remains unresolved, no backend is
+selected, no implementation is authorized, no consumer revalidation is
+authorized, and no runtime/default/CUDA behavior change, output emission,
+ladder continuation, final-logit, all-layer, server, or 4097-token claim is
+made.
+
 ## Guardrails
 
 - Validation-only.
