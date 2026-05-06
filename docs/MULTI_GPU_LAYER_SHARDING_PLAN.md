@@ -7792,3 +7792,115 @@ Next bounded step:
   `--construct-layer-skeletons` as an operator validation slice. This validates
   the new JSON contract against the restricted model without constructing
   executable layers or changing serve/runtime behavior.
+
+## Real-model full allocation baseline plus layer skeleton status
+
+Operator validation was run against the restricted real model with the full
+current bench-only allocation baseline plus `--construct-layer-skeletons`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --upload-gpt-oss-moe-gpu \
+  --construct-layer-skeletons \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_full_layer_skeleton_status.json
+```
+
+The output JSON was written to
+`/tmp/multi_gpu_layer_sharding/split_allocation_full_layer_skeleton_status.json`
+and is not committed.
+
+Primary result classification:
+
+multi_gpu_layer_sharding_real_model_full_allocation_layer_skeleton_smoke_complete
+
+Command status classification emitted by the bench:
+
+multi_gpu_layer_sharding_layer_construction_skeleton_status_complete
+
+Top-level result:
+
+- `resource_construction_succeeded=true`
+- `allocation_smoke_succeeded=true`
+- `rope_metadata_allocation_succeeded=true`
+- `kv_cache_allocation_succeeded=true`
+- `metadata_allocation_succeeded=true`
+- `fused_f16_allocation_succeeded=true`
+- `f16_scratch_allocation_succeeded=true`
+- `moe_gpu_upload_attempted=true`
+- `moe_gpu_upload_succeeded=true`
+- `layer_skeleton_attempted=true`
+- `layer_skeleton_succeeded=true`
+- `layer_skeleton_status=skeleton_complete`
+- `layer_skeleton_error=null`
+- unassigned tensors: 0
+- invalid tensors: 0
+
+Shard summary:
+
+- GPU0 owns layers 0..11 and embeddings. It reported 181 f16 tensors, 72 f32
+  tensors, 48 U8 host tensors, RoPE 2,097,152 bytes, KV 393,216 bytes,
+  metadata 32,792 bytes, fused f16 status `allocated`, fused total
+  354,224,640 bytes, embedding f16 `available_from_uploaded_f16`, scratch
+  `allocated` with 58,752 bytes, MoE upload `allocated` with 12 applicable
+  layers and 48 U8 GPU tensors / 5,076,172,800 bytes, and 12 layer skeletons.
+- GPU1 owns layers 12..23 and final head. It reported 182 f16 tensors, 73 f32
+  tensors, 48 U8 host tensors, RoPE 2,097,152 bytes, KV 393,216 bytes,
+  metadata 32,792 bytes, fused f16 status `allocated`, fused total
+  354,230,400 bytes, final norm f16 `allocated`, scratch `allocated` with
+  58,752 bytes, MoE upload `allocated` with 12 applicable layers and 48 U8 GPU
+  tensors / 5,076,172,800 bytes, and 12 layer skeletons.
+
+Layer skeleton result:
+
+- GPU0 reported 12 skeletons, 12 ready, 0 blocked, and 12 deferred.
+- GPU1 reported 12 skeletons, 12 ready, 0 blocked, and 12 deferred.
+- GPU0 skeletons preserve absolute layer ids 0..11 with local ids 0..11.
+- GPU1 skeletons preserve absolute layer ids 12..23 with local ids 0..11;
+  GPU1 layer 12 remains `absolute_layer_idx=12`, `local_layer_idx=0`, and is
+  derived from `model.layers.12.*`.
+- Every skeleton surfaced the requested allocation statuses as allocated for
+  RoPE, KV, metadata, fused QKV/norm/bias/global f16, f16 scratch, and MoE U8
+  upload.
+- `executable_layer_status` remained `not_constructed` for every layer.
+- `supports_gpu_decode_status` remained
+  `gpu_u8_uploaded_but_not_evaluated_without_layer_construction` for every
+  layer and was never true.
+- MoE router and expert-bias status remained `deferred` for every applicable
+  layer.
+- The common blockers remained
+  `moe_router_or_expert_bias_deferred`, `supports_gpu_decode_not_evaluated`,
+  and `executable_layer_not_constructed`.
+
+Stderr contained existing compile/runtime warnings only and no fused, scratch,
+MoE upload, or layer-skeleton errors.
+
+This validation is f16 allocation-surface validation only. It is not BF16
+parity, model parity, final-token parity, logit parity, execution readiness,
+graph-decode readiness, or serving support. No `GpuTransformerLayer`,
+`GpuModelRunner`, executable `GptOssMoeLayerWeights`, attention, graph decode,
+execution, parity, or serve/runtime behavior was added or changed. Serve/runtime
+split maps remain non-executable.
+
+Next bounded step:
+
+- Tied LM-head fallback design/status. This keeps the next slice non-executing
+  and resolves the remaining global head/embedding boundary before any future
+  executable layer-shell or activation-handoff design.
