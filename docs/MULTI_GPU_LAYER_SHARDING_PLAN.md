@@ -7904,3 +7904,142 @@ Next bounded step:
 - Tied LM-head fallback design/status. This keeps the next slice non-executing
   and resolves the remaining global head/embedding boundary before any future
   executable layer-shell or activation-handoff design.
+
+## Tied LM-head fallback design/status
+
+This slice makes the tied LM-head fallback boundary explicit in dry-run and
+split allocation smoke status. It remains bench/status-only: no embedding copy,
+no fallback upload, no final norm or LM-head execution, and no serve/runtime
+behavior is changed.
+
+Current restricted-model case:
+
+- The restricted real model used in this lane reports `has_lm_head_weight=true`
+  and `tie_word_embeddings=false`.
+- Because `lm_head.weight` exists, tied LM-head fallback is not required,
+  not attempted, not allocated, and not a layer-skeleton blocker for the current
+  model.
+- On the final shard, the new status reports
+  `tied_lm_head_fallback_status=available_lm_head_weight` with source
+  `lm_head.weight`.
+- On non-final shards, including the embedding shard, the fallback status is
+  `not_applicable`.
+
+Fallback-required scenario:
+
+- If `lm_head.weight` is absent and `tie_word_embeddings=true`, the embedding
+  shard remains the only owner of `model.embed_tokens.weight`.
+- The final shard reports `tied_lm_head_fallback_required=true`,
+  `tied_lm_head_fallback_status=required_deferred`, source
+  `model.embed_tokens.weight`, `tied_lm_head_fallback_bytes=0`, and a deferred
+  reason saying explicit final-shard fallback allocation is not implemented.
+- The final shard does not load or use `model.embed_tokens.weight` merely
+  because global shapes are visible.
+- `LateAllocationKind::TiedLmHeadFallback` remains the pure manifest marker for
+  the future final-shard fallback boundary.
+- Layer skeletons are unchanged by this boundary because it is a
+  final-head/global-output issue, not per-transformer-layer construction.
+- The future executable final-head path remains deferred until an explicit
+  fallback allocation/execution policy exists.
+
+Missing untied LM-head scenario:
+
+- If `lm_head.weight` is absent and `tie_word_embeddings=false`, dry-run and
+  split allocation smoke report
+  `tied_lm_head_fallback_status=blocked_missing_lm_head_and_not_tied`.
+- This is a status/reporting blocker for a future executable final-head path,
+  not an allocation-smoke failure by itself.
+
+Status fields added:
+
+- Top level:
+  - `tied_lm_head_fallback_required`
+  - `tied_lm_head_fallback_status`
+  - `tied_lm_head_fallback_error`
+- Per shard:
+  - `has_lm_head_weight`
+  - `tie_word_embeddings`
+  - `tied_lm_head_fallback_required`
+  - `tied_lm_head_fallback_status`
+  - `tied_lm_head_fallback_source`
+  - `tied_lm_head_fallback_bytes`
+  - `tied_lm_head_fallback_deferred_reason`
+
+Status values:
+
+- `not_required`: top-level status when concrete `lm_head.weight` exists.
+- `available_lm_head_weight`: final-shard status when concrete
+  `lm_head.weight` is present.
+- `required_deferred`: final-shard status when `lm_head.weight` is absent and
+  `tie_word_embeddings=true`.
+- `blocked_missing_lm_head_and_not_tied`: final-shard/top-level status when no
+  concrete LM head exists and the model is not tied.
+- `not_applicable`: non-final shards.
+
+Future implementation options:
+
+- Option A: final shard performs a second filtered upload of
+  `model.embed_tokens.weight` as LM-head-compatible weight. This preserves
+  final-head ownership on GPU1 and avoids inference-time cross-device reads, but
+  requires explicit memory accounting and dtype policy.
+- Option B: final shard receives an explicit DtoH/HtoD or DtoD copy from the
+  embedding shard. This keeps one source of truth but introduces transfer
+  ordering and possible peer-copy policy work.
+- Option C: final/head execution stays on the embedding shard, requiring a
+  post-layer activation handoff back to GPU0. This avoids duplicating embedding
+  weights but moves the final-output boundary across devices.
+- Option D: forbid tied-head split execution unless the final shard has a
+  concrete `lm_head.weight`. This is simplest but rejects legitimate tied-head
+  models.
+
+Recommended future option:
+
+- Prefer Option A for the first implementation slice because it keeps final norm
+  and LM-head ownership on the final shard and avoids an inference-time
+  cross-device dependency. Keep it deferred until fallback memory accounting and
+  BF16/f16 dtype policy are explicit.
+
+Interaction notes:
+
+- Layer skeleton status remains non-executing and per-layer only; tied LM-head
+  fallback status is a final-head/global-output boundary.
+- Activation handoff design still needs to decide where the final hidden state
+  lands before final norm / LM head.
+- This remains f16 allocation-surface/status work, not BF16 runtime support or
+  BF16 parity.
+
+Risks and blockers:
+
+- A fallback upload can be large because it duplicates embedding-compatible
+  vocabulary weights on the final shard.
+- A copy-based fallback needs explicit transfer policy and must not imply NCCL,
+  collectives, tensor parallelism, or serving support.
+- The final executable path still needs router/bias readiness, real
+  `supports_gpu_decode` evaluation, activation handoff, dtype policy, and oracle
+  validation before any parity claim.
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_tied_lm_head_fallback_status_complete
+
+Next bounded step:
+
+- Router/bias readiness design for future executable MoE state. The tied-head
+  boundary is now explicit and deferred, while MoE router/bias readiness remains
+  the most precise execution-adjacent blocker surfaced by the current skeleton
+  statuses.

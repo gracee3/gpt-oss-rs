@@ -207,6 +207,9 @@ struct SplitAllocationSmokeReport {
     dtype_mode: DTypeMode,
     has_lm_head_weight: Option<bool>,
     tie_word_embeddings: Option<bool>,
+    tied_lm_head_fallback_required: bool,
+    tied_lm_head_fallback_status: String,
+    tied_lm_head_fallback_error: Option<String>,
     tensor_count_from_headers: Option<usize>,
     total_header_tensor_bytes: Option<usize>,
     header_merge_policy: String,
@@ -258,6 +261,13 @@ struct SplitAllocationSmokeShardReport {
     absolute_layers: Vec<usize>,
     owns_embeddings: bool,
     owns_final_head: bool,
+    has_lm_head_weight: Option<bool>,
+    tie_word_embeddings: Option<bool>,
+    tied_lm_head_fallback_required: bool,
+    tied_lm_head_fallback_status: String,
+    tied_lm_head_fallback_source: Option<String>,
+    tied_lm_head_fallback_bytes: usize,
+    tied_lm_head_fallback_deferred_reason: Option<String>,
     required_tensor_count: usize,
     required_tensor_names: Vec<String>,
     uploaded_f32_tensor_count: usize,
@@ -2067,6 +2077,9 @@ fn render_report_with_counts(
                     .to_string()
             }
         });
+    let has_lm_head_weight = header_manifest.has_lm_head_weight();
+    let tied_lm_head_fallback_required =
+        tied_lm_head_fallback_required(has_lm_head_weight, config.tie_word_embeddings);
 
     SplitAllocationSmokeReport {
         classification: classification.into(),
@@ -2075,8 +2088,18 @@ fn render_report_with_counts(
         selected_device,
         num_layers: Some(config.num_layers),
         dtype_mode,
-        has_lm_head_weight: Some(header_manifest.has_lm_head_weight()),
+        has_lm_head_weight: Some(has_lm_head_weight),
         tie_word_embeddings: Some(config.tie_word_embeddings),
+        tied_lm_head_fallback_required,
+        tied_lm_head_fallback_status: tied_lm_head_top_status(
+            has_lm_head_weight,
+            config.tie_word_embeddings,
+        )
+        .into(),
+        tied_lm_head_fallback_error: tied_lm_head_top_error(
+            has_lm_head_weight,
+            config.tie_word_embeddings,
+        ),
         tensor_count_from_headers: Some(header_manifest.tensors.len()),
         total_header_tensor_bytes: Some(header_manifest.tensors.iter().map(|t| t.byte_size).sum()),
         header_merge_policy: header_manifest.merge_policy.as_str().into(),
@@ -2156,6 +2179,8 @@ fn render_report_with_counts(
                     fused_f16,
                     moe_gpu,
                     layer_skeleton,
+                    has_lm_head_weight,
+                    config.tie_word_embeddings,
                 )
             })
             .collect(),
@@ -2176,6 +2201,8 @@ fn render_shard_report(
     fused_f16: Option<&CudaShardFusedF16AllocationStatus>,
     moe_gpu: Option<&CudaShardMoeGpuUploadStatus>,
     layer_skeleton: Option<&CudaShardLayerConstructionStatus>,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
 ) -> SplitAllocationSmokeShardReport {
     let (
         rope_allocated,
@@ -2528,6 +2555,30 @@ fn render_shard_report(
         absolute_layers: shard.absolute_layers.clone(),
         owns_embeddings: shard.owns_embeddings,
         owns_final_head: shard.owns_final_head,
+        has_lm_head_weight: Some(has_lm_head_weight),
+        tie_word_embeddings: Some(tie_word_embeddings),
+        tied_lm_head_fallback_required: shard_tied_lm_head_fallback_required(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
+        tied_lm_head_fallback_status: shard_tied_lm_head_fallback_status(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        )
+        .into(),
+        tied_lm_head_fallback_source: shard_tied_lm_head_fallback_source(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
+        tied_lm_head_fallback_bytes: 0,
+        tied_lm_head_fallback_deferred_reason: shard_tied_lm_head_fallback_deferred_reason(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
         required_tensor_count: shard.required_tensor_count,
         required_tensor_names: shard.required_tensor_names.clone(),
         uploaded_f32_tensor_count: counts.uploaded_f32_tensor_count,
@@ -2774,6 +2825,9 @@ fn error_report(
         dtype_mode,
         has_lm_head_weight: None,
         tie_word_embeddings: None,
+        tied_lm_head_fallback_required: false,
+        tied_lm_head_fallback_status: "not_applicable".into(),
+        tied_lm_head_fallback_error: None,
         tensor_count_from_headers: None,
         total_header_tensor_bytes: None,
         header_merge_policy: SafetensorHeaderMergePolicy::RejectDuplicates
@@ -2949,7 +3003,14 @@ fn error_report_with_config_and_headers(
         construct_layer_skeletons,
         error,
     );
-    report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
+    let has_lm_head_weight = header_manifest.has_lm_head_weight();
+    report.has_lm_head_weight = Some(has_lm_head_weight);
+    report.tied_lm_head_fallback_required =
+        tied_lm_head_fallback_required(has_lm_head_weight, config.tie_word_embeddings);
+    report.tied_lm_head_fallback_status =
+        tied_lm_head_top_status(has_lm_head_weight, config.tie_word_embeddings).into();
+    report.tied_lm_head_fallback_error =
+        tied_lm_head_top_error(has_lm_head_weight, config.tie_word_embeddings);
     report.tensor_count_from_headers = Some(header_manifest.tensors.len());
     report.total_header_tensor_bytes =
         Some(header_manifest.tensors.iter().map(|t| t.byte_size).sum());
@@ -2966,6 +3027,91 @@ fn tensor_byte_map(header_manifest: &SafetensorHeaderManifest) -> BTreeMap<Strin
         .iter()
         .map(|tensor| (tensor.name.clone(), tensor.byte_size))
         .collect()
+}
+
+fn tied_lm_head_fallback_required(has_lm_head_weight: bool, tie_word_embeddings: bool) -> bool {
+    !has_lm_head_weight && tie_word_embeddings
+}
+
+fn tied_lm_head_top_status(has_lm_head_weight: bool, tie_word_embeddings: bool) -> &'static str {
+    if has_lm_head_weight {
+        "not_required"
+    } else if tie_word_embeddings {
+        "required_deferred"
+    } else {
+        "blocked_missing_lm_head_and_not_tied"
+    }
+}
+
+fn tied_lm_head_top_error(has_lm_head_weight: bool, tie_word_embeddings: bool) -> Option<String> {
+    (!has_lm_head_weight && !tie_word_embeddings).then(|| {
+        "lm_head.weight is absent and tie_word_embeddings=false; no tied LM-head source is declared"
+            .to_string()
+    })
+}
+
+fn shard_tied_lm_head_fallback_required(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> bool {
+    shard.owns_final_head && tied_lm_head_fallback_required(has_lm_head_weight, tie_word_embeddings)
+        || shard
+            .late_allocations
+            .iter()
+            .any(|allocation| allocation == &LateAllocationKind::TiedLmHeadFallback)
+}
+
+fn shard_tied_lm_head_fallback_status(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> &'static str {
+    if !shard.owns_final_head {
+        "not_applicable"
+    } else if has_lm_head_weight {
+        "available_lm_head_weight"
+    } else if tie_word_embeddings {
+        "required_deferred"
+    } else {
+        "blocked_missing_lm_head_and_not_tied"
+    }
+}
+
+fn shard_tied_lm_head_fallback_source(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> Option<String> {
+    if !shard.owns_final_head {
+        None
+    } else if has_lm_head_weight {
+        Some("lm_head.weight".to_string())
+    } else if tie_word_embeddings {
+        Some("model.embed_tokens.weight".to_string())
+    } else {
+        None
+    }
+}
+
+fn shard_tied_lm_head_fallback_deferred_reason(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> Option<String> {
+    if !shard.owns_final_head || has_lm_head_weight {
+        None
+    } else if tie_word_embeddings {
+        Some(
+            "lm_head.weight is absent and tie_word_embeddings=true; explicit final-shard fallback allocation is deferred"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "lm_head.weight is absent and tie_word_embeddings=false; no tied LM-head fallback source is declared"
+                .to_string(),
+        )
+    }
 }
 
 fn omitted_allocations(
@@ -4283,12 +4429,35 @@ mod tests {
         let report = split_report_for(&dir, None);
 
         assert_eq!(report.has_lm_head_weight, Some(false));
+        assert_eq!(report.tie_word_embeddings, Some(true));
+        assert!(report.tied_lm_head_fallback_required);
+        assert_eq!(report.tied_lm_head_fallback_status, "required_deferred");
         assert!(shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
         assert!(!shard(&report, 1)
             .required_tensor_names
             .contains(&"model.embed_tokens.weight".to_string()));
+        assert_eq!(
+            shard(&report, 0).tied_lm_head_fallback_status,
+            "not_applicable"
+        );
+        assert!(!shard(&report, 0).tied_lm_head_fallback_required);
+        assert!(shard(&report, 1).tied_lm_head_fallback_required);
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_status,
+            "required_deferred"
+        );
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_source.as_deref(),
+            Some("model.embed_tokens.weight")
+        );
+        assert_eq!(shard(&report, 1).tied_lm_head_fallback_bytes, 0);
+        assert!(shard(&report, 1)
+            .tied_lm_head_fallback_deferred_reason
+            .as_deref()
+            .unwrap()
+            .contains("explicit final-shard fallback allocation is deferred"));
     }
 
     #[test]
@@ -4298,9 +4467,61 @@ mod tests {
         let report = split_report_for(&dir, None);
 
         assert_eq!(report.has_lm_head_weight, Some(true));
+        assert_eq!(report.tie_word_embeddings, Some(true));
+        assert!(!report.tied_lm_head_fallback_required);
+        assert_eq!(report.tied_lm_head_fallback_status, "not_required");
         assert!(!shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_status,
+            "available_lm_head_weight"
+        );
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_source.as_deref(),
+            Some("lm_head.weight")
+        );
+        assert_eq!(shard(&report, 1).tied_lm_head_fallback_bytes, 0);
+    }
+
+    #[test]
+    fn tied_lm_head_missing_without_tie_reports_blocked_status_without_embedding_loadability() {
+        let dir = unique_temp_model_dir("untied_missing_lm_head");
+        write_config(&dir, 24, false);
+        write_safetensors(
+            &dir.join("model.safetensors"),
+            &[
+                ("model.embed_tokens.weight", "F16", &[2, 4], 16),
+                ("model.norm.weight", "F32", &[4], 16),
+            ],
+        );
+
+        let report = split_report_for(&dir, None);
+
+        assert_eq!(report.has_lm_head_weight, Some(false));
+        assert_eq!(report.tie_word_embeddings, Some(false));
+        assert!(!report.tied_lm_head_fallback_required);
+        assert_eq!(
+            report.tied_lm_head_fallback_status,
+            "blocked_missing_lm_head_and_not_tied"
+        );
+        assert!(report
+            .tied_lm_head_fallback_error
+            .as_deref()
+            .unwrap()
+            .contains("no tied LM-head source is declared"));
+        assert!(!shard(&report, 1)
+            .late_allocations
+            .contains(&"tied_lm_head_fallback".to_string()));
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_status,
+            "blocked_missing_lm_head_and_not_tied"
+        );
+        assert!(!shard(&report, 1).tied_lm_head_fallback_required);
+        assert_eq!(shard(&report, 1).tied_lm_head_fallback_source, None);
+        assert!(!shard(&report, 1)
+            .required_tensor_names
+            .contains(&"model.embed_tokens.weight".to_string()));
     }
 
     #[test]

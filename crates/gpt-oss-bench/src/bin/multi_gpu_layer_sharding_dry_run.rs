@@ -45,6 +45,9 @@ struct DryRunReport {
     invalid_tensor_count: usize,
     has_lm_head_weight: bool,
     tie_word_embeddings: bool,
+    tied_lm_head_fallback_required: bool,
+    tied_lm_head_fallback_status: String,
+    tied_lm_head_fallback_error: Option<String>,
     header_merge_policy: String,
     restricted_sinks_override_enabled: bool,
     overridden_tensor_count: usize,
@@ -60,6 +63,13 @@ struct DryRunShardReport {
     absolute_layers: Vec<usize>,
     owns_embeddings: bool,
     owns_final_head: bool,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+    tied_lm_head_fallback_required: bool,
+    tied_lm_head_fallback_status: String,
+    tied_lm_head_fallback_source: Option<String>,
+    tied_lm_head_fallback_bytes: usize,
+    tied_lm_head_fallback_deferred_reason: Option<String>,
     required_tensor_count: usize,
     optional_tensor_count: usize,
     host_u8_tensor_count: usize,
@@ -208,6 +218,7 @@ fn render_dry_run_report(
     allocation_report: SplitAllocationReport,
     allow_restricted_sinks_override: bool,
 ) -> DryRunReport {
+    let has_lm_head_weight = header_manifest.has_lm_head_weight();
     DryRunReport {
         classification: SUCCESS_CLASSIFICATION.into(),
         model_path: model_path.display().to_string(),
@@ -222,8 +233,21 @@ fn render_dry_run_report(
             .sum(),
         unassigned_tensor_count: allocation_report.unassigned_tensor_count,
         invalid_tensor_count: allocation_report.invalid_tensor_count,
-        has_lm_head_weight: header_manifest.has_lm_head_weight(),
+        has_lm_head_weight,
         tie_word_embeddings: config.tie_word_embeddings,
+        tied_lm_head_fallback_required: tied_lm_head_fallback_required(
+            has_lm_head_weight,
+            config.tie_word_embeddings,
+        ),
+        tied_lm_head_fallback_status: tied_lm_head_top_status(
+            has_lm_head_weight,
+            config.tie_word_embeddings,
+        )
+        .into(),
+        tied_lm_head_fallback_error: tied_lm_head_top_error(
+            has_lm_head_weight,
+            config.tie_word_embeddings,
+        ),
         header_merge_policy: header_manifest.merge_policy.as_str().into(),
         restricted_sinks_override_enabled: allow_restricted_sinks_override,
         overridden_tensor_count: header_manifest.overridden_tensor_count(),
@@ -231,19 +255,47 @@ fn render_dry_run_report(
         shards: allocation_report
             .shards
             .iter()
-            .map(render_shard_report)
+            .map(|shard| render_shard_report(shard, has_lm_head_weight, config.tie_word_embeddings))
             .collect(),
         unassigned_tensor_names: allocation_report.unassigned_tensor_names,
         invalid_tensor_names: allocation_report.invalid_tensor_names,
     }
 }
 
-fn render_shard_report(shard: &ShardAllocationReport) -> DryRunShardReport {
+fn render_shard_report(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> DryRunShardReport {
     DryRunShardReport {
         device_id: shard.device_id.0,
         absolute_layers: shard.absolute_layers.clone(),
         owns_embeddings: shard.owns_embeddings,
         owns_final_head: shard.owns_final_head,
+        has_lm_head_weight,
+        tie_word_embeddings,
+        tied_lm_head_fallback_required: shard_tied_lm_head_fallback_required(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
+        tied_lm_head_fallback_status: shard_tied_lm_head_fallback_status(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        )
+        .into(),
+        tied_lm_head_fallback_source: shard_tied_lm_head_fallback_source(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
+        tied_lm_head_fallback_bytes: 0,
+        tied_lm_head_fallback_deferred_reason: shard_tied_lm_head_fallback_deferred_reason(
+            shard,
+            has_lm_head_weight,
+            tie_word_embeddings,
+        ),
         required_tensor_count: shard.required_tensor_count,
         optional_tensor_count: shard.optional_tensor_count,
         host_u8_tensor_count: shard.host_u8_tensor_count,
@@ -257,6 +309,91 @@ fn render_shard_report(shard: &ShardAllocationReport) -> DryRunShardReport {
             .iter()
             .map(format_late_allocation)
             .collect(),
+    }
+}
+
+fn tied_lm_head_fallback_required(has_lm_head_weight: bool, tie_word_embeddings: bool) -> bool {
+    !has_lm_head_weight && tie_word_embeddings
+}
+
+fn tied_lm_head_top_status(has_lm_head_weight: bool, tie_word_embeddings: bool) -> &'static str {
+    if has_lm_head_weight {
+        "not_required"
+    } else if tie_word_embeddings {
+        "required_deferred"
+    } else {
+        "blocked_missing_lm_head_and_not_tied"
+    }
+}
+
+fn tied_lm_head_top_error(has_lm_head_weight: bool, tie_word_embeddings: bool) -> Option<String> {
+    (!has_lm_head_weight && !tie_word_embeddings).then(|| {
+        "lm_head.weight is absent and tie_word_embeddings=false; no tied LM-head source is declared"
+            .to_string()
+    })
+}
+
+fn shard_tied_lm_head_fallback_required(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> bool {
+    shard.owns_final_head && tied_lm_head_fallback_required(has_lm_head_weight, tie_word_embeddings)
+        || shard
+            .late_allocations
+            .iter()
+            .any(|allocation| allocation == &LateAllocationKind::TiedLmHeadFallback)
+}
+
+fn shard_tied_lm_head_fallback_status(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> &'static str {
+    if !shard.owns_final_head {
+        "not_applicable"
+    } else if has_lm_head_weight {
+        "available_lm_head_weight"
+    } else if tie_word_embeddings {
+        "required_deferred"
+    } else {
+        "blocked_missing_lm_head_and_not_tied"
+    }
+}
+
+fn shard_tied_lm_head_fallback_source(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> Option<String> {
+    if !shard.owns_final_head {
+        None
+    } else if has_lm_head_weight {
+        Some("lm_head.weight".to_string())
+    } else if tie_word_embeddings {
+        Some("model.embed_tokens.weight".to_string())
+    } else {
+        None
+    }
+}
+
+fn shard_tied_lm_head_fallback_deferred_reason(
+    shard: &ShardAllocationReport,
+    has_lm_head_weight: bool,
+    tie_word_embeddings: bool,
+) -> Option<String> {
+    if !shard.owns_final_head || has_lm_head_weight {
+        None
+    } else if tie_word_embeddings {
+        Some(
+            "lm_head.weight is absent and tie_word_embeddings=true; explicit final-shard fallback allocation is deferred"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "lm_head.weight is absent and tie_word_embeddings=false; no tied LM-head fallback source is declared"
+                .to_string(),
+        )
     }
 }
 
@@ -382,6 +519,9 @@ mod tests {
         assert_eq!(report.tensor_count, 8);
         assert!(report.has_lm_head_weight);
         assert!(report.tie_word_embeddings);
+        assert!(!report.tied_lm_head_fallback_required);
+        assert_eq!(report.tied_lm_head_fallback_status, "not_required");
+        assert_eq!(report.tied_lm_head_fallback_error, None);
         assert_eq!(report.shards.len(), 2);
     }
 
@@ -402,6 +542,15 @@ mod tests {
         assert!(gpu1.owns_final_head);
         assert_eq!(gpu1.absolute_layers, (12..=23).collect::<Vec<_>>());
         assert_eq!(gpu1.kv_cache_layers, (12..=23).collect::<Vec<_>>());
+        assert!(!gpu1.tied_lm_head_fallback_required);
+        assert_eq!(
+            gpu1.tied_lm_head_fallback_status,
+            "available_lm_head_weight"
+        );
+        assert_eq!(
+            gpu1.tied_lm_head_fallback_source.as_deref(),
+            Some("lm_head.weight")
+        );
     }
 
     #[test]
@@ -466,9 +615,29 @@ mod tests {
         let report = split_report_for(&dir, None);
 
         assert!(!report.has_lm_head_weight);
+        assert!(report.tie_word_embeddings);
+        assert!(report.tied_lm_head_fallback_required);
+        assert_eq!(report.tied_lm_head_fallback_status, "required_deferred");
         assert!(shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
+        let gpu0 = shard(&report, 0);
+        assert_eq!(gpu0.tied_lm_head_fallback_status, "not_applicable");
+        assert!(!gpu0.tied_lm_head_fallback_required);
+
+        let gpu1 = shard(&report, 1);
+        assert!(gpu1.tied_lm_head_fallback_required);
+        assert_eq!(gpu1.tied_lm_head_fallback_status, "required_deferred");
+        assert_eq!(
+            gpu1.tied_lm_head_fallback_source.as_deref(),
+            Some("model.embed_tokens.weight")
+        );
+        assert_eq!(gpu1.tied_lm_head_fallback_bytes, 0);
+        assert!(gpu1
+            .tied_lm_head_fallback_deferred_reason
+            .as_deref()
+            .unwrap()
+            .contains("explicit final-shard fallback allocation is deferred"));
     }
 
     #[test]
@@ -480,6 +649,12 @@ mod tests {
         assert!(!shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
+        assert!(!report.tied_lm_head_fallback_required);
+        assert_eq!(report.tied_lm_head_fallback_status, "not_required");
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_status,
+            "available_lm_head_weight"
+        );
     }
 
     #[test]
@@ -516,9 +691,19 @@ mod tests {
         let report = split_report_for(&dir, Some(false));
 
         assert!(!report.tie_word_embeddings);
+        assert_eq!(
+            report.tied_lm_head_fallback_status,
+            "blocked_missing_lm_head_and_not_tied"
+        );
+        assert!(!report.tied_lm_head_fallback_required);
         assert!(!shard(&report, 1)
             .late_allocations
             .contains(&"tied_lm_head_fallback".to_string()));
+        assert_eq!(
+            shard(&report, 1).tied_lm_head_fallback_status,
+            "blocked_missing_lm_head_and_not_tied"
+        );
+        assert!(!shard(&report, 1).tied_lm_head_fallback_required);
     }
 
     #[test]
