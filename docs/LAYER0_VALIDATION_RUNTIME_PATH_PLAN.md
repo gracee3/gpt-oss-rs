@@ -4453,10 +4453,21 @@ ordered_surface_batch_probe_recorded
 ```
 
 The pilot only attempted the classified first failing seam per layer. Layer7
-raw-QK probing was blocked before sweep execution because
-`raw-qk-policy-sweep-status` requires an
-`--oracle-raw-qk-dtype-probe-status`; no layer7 raw-QK dtype-probe status was
-present, and no producer probe was run in this slice.
+raw-QK now has the oracle dtype-probe prerequisite:
+
+```text
+/tmp/layer7_raw_qk_qhead50_col57_dtype_probe_status.json
+```
+
+The prerequisite classification is
+`layer7_raw_qk_dtype_probe_confirms_artifact_precision_boundary`. The layer7
+raw-QK sweep then ran with that status and produced
+`layer7_raw_qk_policy_sweep_collateral_mismatches`: current, reverse, pairwise,
+f64 diagnostic, scale-per-term, and deterministic abs-ascending variants do
+not clear the focus entry or full raw-QK/masked-logit matrices. BF16-product
+clears the focus entry only, but remains evidence-only and introduces broad
+collateral mismatches, so no raw-QK policy was selected and no full bundle
+revalidation was run for layer7.
 
 Layer8 and layer9 attention o-proj sweeps both found
 `pairwise_f32_accum_f32_bias_bf16_output` as a full-vector, residual, and
@@ -4465,16 +4476,16 @@ cleared for both layers under `--attention-oproj-policy pairwise`.
 
 | Layer | Source classify seam | Probe result | Revalidation result | Selected policy |
 | --- | --- | --- | --- | --- |
-| 7 | raw-QK q_head 50 / key column 57 | blocked by missing raw-QK dtype-probe status | not run | none |
+| 7 | raw-QK q_head 50 / key column 57 | dtype prerequisite present; raw-QK sweep found no valid full-matrix clearing policy | not run | none |
 | 8 | attention o-proj lane 2578 | o-proj sweep full-vector clear | attention and MLP cleared | `pairwise_f32_accum_f32_bias_bf16_output` |
 | 9 | attention o-proj lane 446 | o-proj sweep full-vector clear | attention and MLP cleared | `pairwise_f32_accum_f32_bias_bf16_output` |
 
 No output was emitted, the ladder was not continued, no correction metadata or
-tolerance pass was applied, no producer/API probe was run, and no
-runtime/default routing/CUDA behavior changed. There is no final-logit,
-all-layer, server, or 4097-token claim. Next bounded step: review the probe
-matrix and provide or authorize the missing layer7 raw-QK dtype-probe
-prerequisite only if continuing layer7 localization.
+tolerance pass was applied, no producer/API probe was run in this consumer
+slice, and no runtime/default routing/CUDA behavior changed. There is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step: keep
+layer7 blocked on the raw-QK artifact-precision / producer boundary and pursue
+producer/source analysis or design before any runtime-policy discussion.
 
 ## Validation Commands
 
