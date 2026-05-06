@@ -466,6 +466,34 @@ Status:
 Next branch would be `validation/fused-linear-addmm-backend-discriminator` only
 if candidate execution is explicitly approved.
 
+## Fused Linear/AddMM Backend Candidate Comparator
+
+Workstream A candidate comparator is recorded in:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification: `fused_linear_addmm_backend_discriminator_no_candidate_selected`.
+
+Status:
+
+- Layers evaluated: 6, 10, 13, 16, 18, and 21.
+- Existing helper candidates ran where available: current, reverse, pairwise,
+  chunked pairwise, f64 diagnostic, and BF16-prebias evidence guard.
+- BF16-product and cuBLAS candidate helpers were recorded unavailable, not
+  failed.
+- No selectable candidate clears the full sampled set.
+- Best partial candidate is `pairwise_f32_bf16_output`: it clears layer10 and
+  layer21, but has collateral mismatches on layer6/13/16/18.
+- Backend selected: false.
+- Runtime/default/CUDA behavior changed: false.
+
+Next step if continuing Workstream A: `docs/fused-linear-addmm-helper-design`.
+If a future candidate ever clears the sampled set, use
+`docs/backend-candidate-promotion-proof-plan` before any consumer revalidation
+or runtime work.
+
 ## Non-Goals
 
 - No implementation authorization.

@@ -233,6 +233,30 @@ The status consumes existing producer/API evidence and the scaffold for layers
 selected, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior changes are made.
 
+## Backend Candidate Comparator
+
+The validation-only candidate comparator phase is recorded in:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_no_candidate_selected
+```
+
+Result:
+
+- Candidate execution ran only existing validation helpers.
+- No selectable candidate clears the full sampled fused-linear/addmm reference
+  set.
+- `pairwise_f32_bf16_output` is the best partial candidate, preserving layer10
+  and clearing layer21, but retaining collateral on layer6/13/16/18.
+- Milestone claims are unchanged: no production backend, final-logit,
+  all-layer, server, or 4097-token claim is made.
+
 ## Guardrails
 
 - Validation-only.

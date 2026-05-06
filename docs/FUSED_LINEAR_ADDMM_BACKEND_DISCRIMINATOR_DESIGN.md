@@ -361,6 +361,64 @@ Guardrails: no runtime/default/CUDA behavior change, output emission, ladder
 continuation, correction metadata, tolerance pass, final-logit, all-layer,
 server, or 4097-token claim.
 
+## Candidate Comparator Implementation
+
+Mode:
+
+```text
+--mode fused-linear-addmm-backend-discriminator
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_no_candidate_selected
+```
+
+Layers evaluated:
+
+- Layer6 historical blocker/context.
+- Layer10 pairwise-clear control.
+- Layers13/16/18 blocked-family.
+- Layer21 raw-QK-solved / o-proj-blocked.
+
+Candidates evaluated where helpers exist:
+
+- `current_sequential_f32_bf16_output`
+- `reverse_f32_bf16_output`
+- `pairwise_f32_bf16_output`
+- `chunked_pairwise_f32_bf16_output`
+- `f64_diagnostic`
+- `bf16_prebias_evidence_guard`
+
+Unavailable helpers recorded, not failed:
+
+- `bf16_product_evidence_guard`
+- `cublas_bf16_tensor_op_if_available`
+- `cublas_bf16_pedantic_if_available`
+
+Outcome:
+
+- No existing selectable helper clears the full sampled set.
+- Best partial local candidate by blocked layers is `pairwise_f32_bf16_output`:
+  it clears layer10 and layer21, but still has collateral mismatches on
+  layer6, layer13, layer16, and layer18.
+- `f64_diagnostic` remains diagnostic-only.
+- `bf16_prebias_evidence_guard` remains evidence-only and has broad collateral
+  mismatches.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+Next bounded step: review the candidate matrix before any fused-addmm helper
+design, backend design, or consumer revalidation.
+
 ## Non-Goals
 
 - No runtime implementation.

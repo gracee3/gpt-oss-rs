@@ -99,6 +99,28 @@ It consumes this final matrix's producer/API statuses and the fused-linear/addmm
 scaffold. Candidate execution, backend selection, consumer revalidation, and
 runtime/default/CUDA changes remain unapproved.
 
+The final matrix has now also been consumed by the validation-only backend
+candidate comparator:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_no_candidate_selected
+```
+
+Result:
+
+- Layers evaluated: 6, 10, 13, 16, 18, and 21.
+- No existing selectable candidate clears the full sampled set.
+- `pairwise_f32_bf16_output` is the best partial candidate: it clears layer10
+  and layer21, but not layer6/13/16/18.
+- Backend selected: false.
+- Runtime/default/CUDA behavior changed: false.
+
 ## Guardrails
 
 - Validation-only.

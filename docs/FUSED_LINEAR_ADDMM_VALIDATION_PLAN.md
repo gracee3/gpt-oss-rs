@@ -326,6 +326,35 @@ producer/API statuses. It records readiness, candidate families, and decision
 rules only: no candidate execution, backend selection, consumer revalidation,
 runtime/default/CUDA change, output emission, or ladder continuation.
 
+## Backend Candidate Comparator
+
+The validation-only candidate comparator is recorded as:
+
+```text
+--mode fused-linear-addmm-backend-discriminator
+```
+
+It emits:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_no_candidate_selected
+```
+
+The comparator executed existing local o-proj candidate helpers against the
+producer/API fused-linear/addmm references for layers 6, 10, 13, 16, 18, and
+21. No selectable candidate cleared the full sampled set. Pairwise is the best
+partial local candidate, clearing layer10 and layer21 while retaining
+collateral mismatches on layer6/13/16/18.
+
+No production backend is selected. No runtime/default/CUDA behavior change,
+consumer revalidation, output emission, or ladder continuation is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

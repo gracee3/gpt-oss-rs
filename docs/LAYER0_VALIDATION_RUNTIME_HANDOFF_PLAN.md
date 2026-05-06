@@ -3092,6 +3092,42 @@ Guardrails: no runtime/default/CUDA change, output emission, ladder
 continuation, correction metadata, tolerance pass, final-logit, all-layer,
 server, or 4097-token claim.
 
+## Fused Linear/AddMM Backend Candidate Comparator
+
+Mode:
+
+```text
+--mode fused-linear-addmm-backend-discriminator
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_no_candidate_selected
+```
+
+Result:
+
+- Layers evaluated: 6, 10, 13, 16, 18, and 21.
+- Candidate helpers evaluated where available: current, reverse, pairwise,
+  chunked pairwise, f64 diagnostic, and BF16-prebias evidence guard.
+- BF16-product and cuBLAS helper families were recorded unavailable.
+- No selectable candidate clears the full sampled set.
+- Best partial candidate: `pairwise_f32_bf16_output`, which clears layer10 and
+  layer21 but not layer6/13/16/18.
+- Backend selected: false.
+- Consumer revalidation authorized: false.
+
+Guardrails: no runtime/default/CUDA change, output emission, ladder
+continuation, correction metadata, tolerance pass, final-logit, all-layer,
+server, or 4097-token claim.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:
