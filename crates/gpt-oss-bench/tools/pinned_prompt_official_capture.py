@@ -109,6 +109,26 @@ def parse_args() -> argparse.Namespace:
         help="Consumer bundle validation status requesting an attention o-proj probe.",
     )
     parser.add_argument(
+        "--source-consumer-surface-status",
+        type=Path,
+        help="Consumer ordered surface status used as provenance for API probes.",
+    )
+    parser.add_argument(
+        "--source-raw-qk-dtype-probe-status",
+        type=Path,
+        help="Prior raw-QK dtype probe status used as provenance for API probes.",
+    )
+    parser.add_argument(
+        "--source-raw-qk-policy-sweep-status",
+        type=Path,
+        help="Consumer raw-QK policy sweep status used as provenance for API probes.",
+    )
+    parser.add_argument(
+        "--source-raw-qk-policy-revalidate-status",
+        type=Path,
+        help="Consumer raw-QK policy revalidation status used as provenance for API probes.",
+    )
+    parser.add_argument(
         "--source-consumer-oproj-sweep-status",
         type=Path,
         help="Consumer o-proj policy sweep status for focused dtype probes.",
@@ -312,6 +332,27 @@ def parse_raw_qk_dtype_probe_selector(boundary: str, layer_idx: int | None) -> i
             raise ValueError("layerN_final_token_raw_qk_dtype_probe requires --layer-idx")
         return layer_idx
     match = re.fullmatch(r"layer(\d+)_final_token_raw_qk_dtype_probe", boundary)
+    if match:
+        selector_layer = int(match.group(1))
+        if layer_idx is not None and layer_idx != selector_layer:
+            raise ValueError(
+                f"boundary selector layer {selector_layer} conflicts with layer_idx {layer_idx}"
+            )
+        return selector_layer
+    return None
+
+
+def parse_raw_qk_producer_api_probe_selector(
+    boundary: str, layer_idx: int | None
+) -> int | None:
+    if boundary in {
+        "layerN_raw_qk_producer_api_probe",
+        "raw_qk_producer_api_probe",
+    }:
+        if layer_idx is None:
+            raise ValueError("raw_qk_producer_api_probe requires --layer-idx")
+        return layer_idx
+    match = re.fullmatch(r"layer(\d+)_raw_qk_producer_api_probe", boundary)
     if match:
         selector_layer = int(match.group(1))
         if layer_idx is not None and layer_idx != selector_layer:
@@ -2400,6 +2441,650 @@ def capture_layer_raw_qk_dtype_probe(
             "dtype_variant_results": dtype_variant_results,
             "bf16_rounding_probe": bf16_rounding_probe,
             "source_vector_summaries": source_vector_summaries,
+            "interpretation": interpretation,
+        },
+    )
+    return status
+
+
+def capture_layer_raw_qk_producer_api_probe(
+    model: Any,
+    input_token_ids: list[int],
+    torch: Any,
+    layer_index: int,
+    q_head: int,
+    key_column: int,
+    *,
+    source_attention_status: Path | None,
+    source_consumer_surface_status: Path | None,
+    source_raw_qk_dtype_probe_status: Path | None,
+    source_raw_qk_policy_sweep_status: Path | None,
+    source_raw_qk_policy_revalidate_status: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if layer_index < 0 or layer_index >= len(model.block):
+        raise ValueError(
+            f"layer_idx {layer_index} is out of range for {len(model.block)} blocks"
+        )
+
+    source_attention = (
+        load_json(source_attention_status) if source_attention_status else {}
+    )
+    source_surface = (
+        load_json(source_consumer_surface_status)
+        if source_consumer_surface_status
+        else {}
+    )
+    source_dtype_probe = (
+        load_json(source_raw_qk_dtype_probe_status)
+        if source_raw_qk_dtype_probe_status
+        else {}
+    )
+    source_policy_sweep = (
+        load_json(source_raw_qk_policy_sweep_status)
+        if source_raw_qk_policy_sweep_status
+        else {}
+    )
+    source_policy_revalidation = (
+        load_json(source_raw_qk_policy_revalidate_status)
+        if source_raw_qk_policy_revalidate_status
+        else {}
+    )
+
+    layer_classes = {
+        23: "artifact_source_boundary",
+        17: "accumulation_boundary_collateral",
+        21: "positive_full_matrix_clear_control",
+    }
+    layer_class = layer_classes.get(layer_index, "raw_qk_api_probe")
+
+    def bf16_round(value: float) -> dict[str, Any]:
+        f32_tensor = torch.tensor(float(value), dtype=torch.float32)
+        bf16_tensor = f32_tensor.to(torch.bfloat16)
+        return {
+            "float32_input": float(f32_tensor.item()),
+            "bfloat16_output": float(bf16_tensor.float().item()),
+            "output_dtype": str(bf16_tensor.dtype),
+        }
+
+    def flatten_tensor_values(tensor: Any) -> list[float]:
+        return tensor.float().detach().cpu().reshape(-1).tolist()
+
+    def tensor_focus_value(tensor: Any) -> float:
+        return float(tensor[q_head, key_column].float().cpu().item())
+
+    def operator_matrix_result(
+        name: str,
+        tensor: Any,
+        *,
+        expression: str,
+        diagnostic_only: bool = False,
+    ) -> dict[str, Any]:
+        values = flatten_tensor_values(tensor)
+        compare = compare_vectors(values, official_artifact_values)
+        focus_value = tensor_focus_value(tensor)
+        return {
+            "operator": name,
+            "available": True,
+            "diagnostic_only": diagnostic_only,
+            "expression": expression,
+            "dtype": str(tensor.dtype),
+            "device": str(tensor.device),
+            "shape": list(tensor.shape),
+            "focus_entry": {
+                "q_head": q_head,
+                "key_column": key_column,
+                "actual": focus_value,
+                "official_artifact": official_artifact_focus,
+                "abs_diff": abs(focus_value - official_artifact_focus),
+            },
+            "artifact_compare": compare,
+            "clears_focus_entry": focus_value == official_artifact_focus,
+            "clears_full_matrix": compare["metrics"]["mismatches"] == 0,
+        }
+
+    def scalar_operator_result(
+        name: str,
+        tensor: Any,
+        *,
+        expression: str,
+        diagnostic_only: bool = False,
+    ) -> dict[str, Any]:
+        value = float(tensor.float().cpu().item())
+        return {
+            "operator": name,
+            "available": True,
+            "diagnostic_only": diagnostic_only,
+            "expression": expression,
+            "value": value,
+            "dtype": str(tensor.dtype),
+            "device": str(tensor.device),
+            "shape": list(tensor.shape),
+            "official_artifact": official_artifact_focus,
+            "abs_diff": abs(value - official_artifact_focus),
+            "clears_focus_entry": value == official_artifact_focus,
+            "clears_full_matrix": None,
+        }
+
+    def reduction_variant_result(
+        name: str,
+        unscaled_sum: float,
+        scaled_before_output_round: float,
+        *,
+        diagnostic_only: bool = False,
+        evidence_only: bool = False,
+    ) -> dict[str, Any]:
+        rounded = bf16_round(scaled_before_output_round)
+        value = rounded["bfloat16_output"]
+        return {
+            "operator": name,
+            "available": True,
+            "diagnostic_only": diagnostic_only,
+            "evidence_only": evidence_only,
+            "unscaled_sum": float(unscaled_sum),
+            "scaled_before_output_round": float(scaled_before_output_round),
+            "bf16_output": value,
+            "rounding": rounded,
+            "official_artifact": official_artifact_focus,
+            "abs_diff": abs(value - official_artifact_focus),
+            "clears_focus_entry": value == official_artifact_focus,
+            "clears_full_matrix": None,
+        }
+
+    def policy_sweep_summary() -> dict[str, Any]:
+        policy_results = []
+        for result in source_policy_sweep.get("policy_results", []):
+            if not isinstance(result, dict):
+                continue
+            policy_results.append(
+                {
+                    "policy": result.get("policy"),
+                    "valid_candidate": result.get("valid_candidate"),
+                    "diagnostic_only": result.get("diagnostic_only"),
+                    "evidence_only": result.get("evidence_only"),
+                    "clears_focus_entry": result.get("clears_focus_entry"),
+                    "clears_full_raw_qk": result.get("clears_full_raw_qk"),
+                    "clears_full_masked_logits": result.get(
+                        "clears_full_masked_logits"
+                    ),
+                    "introduces_collateral_mismatches": result.get(
+                        "introduces_collateral_mismatches"
+                    ),
+                    "raw_qk_metrics": get_nested(result, ["raw_qk", "metrics"]),
+                    "focus_entry": result.get("focus_entry"),
+                }
+            )
+        return {
+            "classification": source_policy_sweep.get("classification"),
+            "focus": source_policy_sweep.get("focus"),
+            "policy_results": policy_results,
+            "focus_clear_policies": [
+                item["policy"]
+                for item in policy_results
+                if item.get("clears_focus_entry")
+            ],
+            "full_matrix_clear_policies": [
+                item["policy"]
+                for item in policy_results
+                if item.get("clears_full_raw_qk")
+                and item.get("clears_full_masked_logits")
+            ],
+            "collateral_policies": [
+                item["policy"]
+                for item in policy_results
+                if item.get("introduces_collateral_mismatches")
+            ],
+        }
+
+    with torch.inference_mode():
+        tokens = torch.as_tensor(
+            input_token_ids, dtype=torch.int64, device=model.embedding.weight.device
+        )
+        hidden = model.embedding(tokens)
+        for block_index in range(layer_index):
+            hidden = model.block[block_index](hidden)
+        attn = model.block[layer_index].attn
+        normed = attn.norm(hidden)
+        qkv = attn.qkv(normed)
+
+        token_count = len(input_token_ids)
+        final_token_index = token_count - 1
+        q_dim = attn.num_attention_heads * attn.head_dim
+        kv_dim = attn.num_key_value_heads * attn.head_dim
+        heads_per_kv = attn.num_attention_heads // attn.num_key_value_heads
+        if q_head < 0 or q_head >= attn.num_attention_heads:
+            raise ValueError(f"q_head {q_head} outside 0..{attn.num_attention_heads - 1}")
+        if key_column < 0 or key_column >= token_count:
+            raise ValueError(f"key_column {key_column} outside 0..{token_count - 1}")
+
+        kv_head = q_head // heads_per_kv
+        head_within_kv = q_head % heads_per_kv
+        q_flat = qkv[:, :q_dim].contiguous()
+        k_flat = qkv[:, q_dim : q_dim + kv_dim].contiguous()
+        q = q_flat.view(
+            token_count,
+            attn.num_key_value_heads,
+            heads_per_kv,
+            attn.head_dim,
+        )
+        k = k_flat.view(token_count, attn.num_key_value_heads, attn.head_dim)
+        q_post_rope, k_post_rope = attn.rope(q, k)
+        q_post_final = q_post_rope[final_token_index]
+        k_expanded = k_post_rope[:, :, None, :].expand(
+            -1, -1, heads_per_kv, -1
+        )
+        q_heads = q_post_final.reshape(attn.num_attention_heads, attn.head_dim)
+        k_heads = k_expanded.reshape(
+            token_count, attn.num_attention_heads, attn.head_dim
+        ).permute(1, 0, 2)
+
+        raw_qk_path = Path(source_attention.get("artifacts", {}).get("raw_qk", ""))
+        if not raw_qk_path:
+            raise ValueError("source attention status is missing artifacts.raw_qk")
+        raw_qk_artifact = load_json(raw_qk_path)
+        official_artifact_values = [
+            float(value) for value in raw_qk_artifact.get("values", [])
+        ]
+        official_artifact_shape = raw_qk_artifact.get("shape", [])
+        focus_offset = q_head * token_count + key_column
+        if focus_offset >= len(official_artifact_values):
+            raise ValueError(
+                f"focus offset {focus_offset} outside raw-QK artifact length "
+                f"{len(official_artifact_values)}"
+            )
+        official_artifact_focus = official_artifact_values[focus_offset]
+
+        repeated_raw = []
+        for _ in range(3):
+            raw_unscaled = torch.einsum(
+                "qhmd,khmd->hmqk",
+                q_post_final.unsqueeze(0),
+                k_expanded,
+            )
+            raw_scaled = raw_unscaled * attn.sm_scale
+            repeated_raw.append(
+                raw_scaled.squeeze(2).reshape(attn.num_attention_heads, token_count)
+            )
+        official_full = repeated_raw[0]
+        matmul_full = (
+            torch.matmul(k_heads, q_heads.unsqueeze(-1)).squeeze(-1)
+            * attn.sm_scale
+        )
+        einsum_full = torch.einsum("hd,hkd->hk", q_heads, k_heads) * attn.sm_scale
+        batched_expression = official_full
+
+        q_vector = q_post_final[kv_head, head_within_kv, :]
+        k_vector = k_post_rope[key_column, kv_head, :]
+        key_matrix = k_post_rope[:, kv_head, :]
+        isolated_dot = torch.einsum("d,d->", q_vector, k_vector) * attn.sm_scale
+        per_head_matmul = (key_matrix @ q_vector) * attn.sm_scale
+        elementwise_product_sum = (q_vector * k_vector).sum() * attn.sm_scale
+
+        q_f32 = q_vector.float()
+        k_f32 = k_vector.float()
+        product_values = [
+            round_f32(float(left) * float(right))
+            for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist())
+        ]
+        sequential_unscaled = sequential_f32_sum(product_values)
+        reverse_unscaled = sequential_f32_sum(list(reversed(product_values)))
+        pairwise_unscaled = pairwise_f32_sum(product_values)
+        abs_ascending_unscaled = sequential_f32_sum(
+            sorted(product_values, key=lambda value: abs(value))
+        )
+        f64_unscaled = float(
+            sum(
+                float(left) * float(right)
+                for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist())
+            )
+        )
+        scale = float(attn.sm_scale)
+        sequential_scaled = round_f32(sequential_unscaled * scale)
+        reverse_scaled = round_f32(reverse_unscaled * scale)
+        pairwise_scaled = round_f32(pairwise_unscaled * scale)
+        abs_ascending_scaled = round_f32(abs_ascending_unscaled * scale)
+        f64_scaled = float(f64_unscaled * scale)
+        scale_per_term_scaled = sequential_f32_sum(
+            [round_f32(value * scale) for value in product_values]
+        )
+        bf16_product_values = [
+            bf16_round(float(left) * float(right))["bfloat16_output"]
+            for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist())
+        ]
+        bf16_product_unscaled = sequential_f32_sum(bf16_product_values)
+        bf16_product_scaled = round_f32(bf16_product_unscaled * scale)
+
+        deterministic_repeats = [
+            operator_matrix_result(
+                f"official_full_expression_repeat_{index}",
+                tensor,
+                expression=(
+                    "torch.einsum('qhmd,khmd->hmqk', "
+                    "q_post_final.unsqueeze(0), k_expanded) * scale"
+                ),
+            )
+            for index, tensor in enumerate(repeated_raw)
+        ]
+        operator_results = {
+            "official_artifact_focus": {
+                "operator": "official_artifact_focus",
+                "available": True,
+                "source": str(raw_qk_path),
+                "dtype": raw_qk_artifact.get("dtype"),
+                "shape": official_artifact_shape,
+                "q_head": q_head,
+                "key_column": key_column,
+                "value": official_artifact_focus,
+            },
+            "official_full_expression": operator_matrix_result(
+                "official_full_expression",
+                official_full,
+                expression=(
+                    "torch.einsum('qhmd,khmd->hmqk', "
+                    "q_post_final.unsqueeze(0), k_expanded) * scale"
+                ),
+            ),
+            "repeated_official_full_expression": deterministic_repeats,
+            "isolated_dot": scalar_operator_result(
+                "isolated_scaled_dot",
+                isolated_dot,
+                expression="torch.einsum('d,d->', q_vector, k_vector) * scale",
+            ),
+            "per_head_matmul_focus_column": {
+                **vector_lane_result(per_head_matmul, key_column),
+                "operator": "per_head_key_matrix_at_q_vector",
+                "official_artifact": official_artifact_focus,
+                "abs_diff": abs(
+                    float(per_head_matmul[key_column].float().cpu().item())
+                    - official_artifact_focus
+                ),
+                "clears_focus_entry": (
+                    float(per_head_matmul[key_column].float().cpu().item())
+                    == official_artifact_focus
+                ),
+                "expression": "(k_post_rope[:, kv_head, :] @ q_vector) * scale",
+            },
+            "matmul": operator_matrix_result(
+                "torch_matmul_batched_heads",
+                matmul_full,
+                expression=(
+                    "torch.matmul(k_heads, q_heads.unsqueeze(-1)).squeeze(-1) * scale"
+                ),
+            ),
+            "einsum": operator_matrix_result(
+                "torch_einsum_hd_hkd_to_hk",
+                einsum_full,
+                expression="torch.einsum('hd,hkd->hk', q_heads, k_heads) * scale",
+            ),
+            "batched_expression": operator_matrix_result(
+                "official_batched_expression",
+                batched_expression,
+                expression=(
+                    "torch.einsum('qhmd,khmd->hmqk', "
+                    "q_post_final.unsqueeze(0), k_expanded) * scale"
+                ),
+            ),
+            "elementwise_product_sum": scalar_operator_result(
+                "elementwise_product_sum",
+                elementwise_product_sum,
+                expression="(q_vector * k_vector).sum() * scale",
+                diagnostic_only=True,
+            ),
+            "scale_after_vs_scale_per_term_guard": {
+                "scale_after_sequential_bf16_output": bf16_round(sequential_scaled),
+                "scale_per_term_sequential_bf16_output": bf16_round(
+                    scale_per_term_scaled
+                ),
+                "scale_after_matches_artifact": (
+                    bf16_round(sequential_scaled)["bfloat16_output"]
+                    == official_artifact_focus
+                ),
+                "scale_per_term_matches_artifact": (
+                    bf16_round(scale_per_term_scaled)["bfloat16_output"]
+                    == official_artifact_focus
+                ),
+            },
+            "sequential_f32": reduction_variant_result(
+                "current_sequential_f32_scale_after_sum_bf16_output",
+                sequential_unscaled,
+                sequential_scaled,
+            ),
+            "reverse_f32": reduction_variant_result(
+                "reverse_f32_scale_after_sum_bf16_output",
+                reverse_unscaled,
+                reverse_scaled,
+            ),
+            "pairwise_f32": reduction_variant_result(
+                "pairwise_f32_scale_after_sum_bf16_output",
+                pairwise_unscaled,
+                pairwise_scaled,
+            ),
+            "f64_diagnostic": reduction_variant_result(
+                "f64_diagnostic_scale_after_sum_bf16_output",
+                f64_unscaled,
+                f64_scaled,
+                diagnostic_only=True,
+            ),
+            "abs_ascending": reduction_variant_result(
+                "deterministic_abs_ascending_f32_bf16_output",
+                abs_ascending_unscaled,
+                abs_ascending_scaled,
+                evidence_only=True,
+            ),
+            "bf16_product": reduction_variant_result(
+                "bf16_product_then_f32_sum_bf16_output",
+                bf16_product_unscaled,
+                bf16_product_scaled,
+                evidence_only=True,
+            ),
+        }
+
+        deterministic_full_expression = all(
+            repeat["focus_entry"]["actual"]
+            == operator_results["official_full_expression"]["focus_entry"]["actual"]
+            and repeat["artifact_compare"]["metrics"]["mismatches"]
+            == operator_results["official_full_expression"]["artifact_compare"][
+                "metrics"
+            ]["mismatches"]
+            for repeat in deterministic_repeats
+        )
+
+        mkldnn_backend = getattr(torch.backends, "mkldnn", None)
+        environment = {
+            "python_executable": sys.executable,
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "device_used": str(q_post_rope.device),
+            "gpu_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "torch_num_threads": torch.get_num_threads(),
+            "torch_num_interop_threads": torch.get_num_interop_threads()
+            if hasattr(torch, "get_num_interop_threads")
+            else None,
+            "torch_backends_mkldnn_enabled": bool(mkldnn_backend.enabled)
+            if mkldnn_backend is not None and hasattr(mkldnn_backend, "enabled")
+            else None,
+            "torch_backends_cuda_matmul_allow_tf32": getattr(
+                torch.backends.cuda.matmul, "allow_tf32", None
+            ),
+            "torch_backends_cuda_matmul_allow_bf16_reduced_precision_reduction": getattr(
+                torch.backends.cuda.matmul,
+                "allow_bf16_reduced_precision_reduction",
+                None,
+            ),
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision()
+            if hasattr(torch, "get_float32_matmul_precision")
+            else None,
+            "autocast_enabled": bool(torch.is_autocast_enabled())
+            if hasattr(torch, "is_autocast_enabled")
+            else None,
+        }
+        tensor_meta = {
+            "q_post_rope": tensor_metadata(q_post_rope),
+            "grouped_k_post_rope": tensor_metadata(k_post_rope),
+            "official_raw_qk": tensor_metadata(official_full),
+        }
+
+    sweep_summary = policy_sweep_summary()
+    full_matrix_clear_policies = sweep_summary["full_matrix_clear_policies"]
+    focus_clear_policies = sweep_summary["focus_clear_policies"]
+    collateral_policies = sweep_summary["collateral_policies"]
+    full_expression_clears = bool(
+        operator_results["official_full_expression"]["clears_full_matrix"]
+    )
+    producer_api_explains_artifact = bool(
+        operator_results["official_full_expression"]["clears_focus_entry"]
+    )
+    matches_dtype_probe_classification = bool(
+        source_dtype_probe.get("classification")
+        and (
+            (
+                "accumulation_boundary" in source_dtype_probe.get("classification", "")
+                and layer_class != "artifact_source_boundary"
+            )
+            or (
+                "artifact_precision_boundary"
+                in source_dtype_probe.get("classification", "")
+                and layer_class == "artifact_source_boundary"
+            )
+        )
+    )
+
+    if layer_index == 23:
+        classification = (
+            "layer23_raw_qk_producer_api_probe_official_expression_explains_artifact"
+            if producer_api_explains_artifact
+            else "layer23_raw_qk_producer_api_probe_no_api_variant_explains_artifact"
+        )
+        recommended_next = (
+            "Treat layer23 as an artifact/source-boundary case and review the "
+            "producer API matrix before attempting another consumer policy sweep."
+        )
+    elif layer_index == 17:
+        classification = (
+            "layer17_raw_qk_producer_api_probe_focus_only_rejected"
+            if focus_clear_policies and collateral_policies
+            else "layer17_raw_qk_producer_api_probe_accumulation_collateral_recorded"
+        )
+        recommended_next = (
+            "Do not promote a focus-entry-clearing policy for layer17; consumer "
+            "policy selection must account for full-matrix collateral."
+        )
+    elif layer_index == 21:
+        classification = (
+            "layer21_raw_qk_producer_api_probe_reverse_full_matrix_clear_confirmed"
+            if any("reverse_f32" in policy for policy in full_matrix_clear_policies)
+            else "layer21_raw_qk_producer_api_probe_positive_control_recorded"
+        )
+        recommended_next = (
+            "Use layer21 as the positive full-matrix clear control for bounded "
+            "consumer raw-QK policy revalidation."
+        )
+    else:
+        classification = f"layer{layer_index}_raw_qk_producer_api_probe_recorded"
+        recommended_next = "Review raw-QK producer API evidence."
+
+    interpretation = {
+        "matches_dtype_probe_classification": matches_dtype_probe_classification,
+        "producer_api_explains_artifact": producer_api_explains_artifact,
+        "official_full_expression_clears_artifact_matrix": full_expression_clears,
+        "deterministic_full_expression": deterministic_full_expression,
+        "focus_entry_policy_clear_is_sufficient": False,
+        "full_matrix_policy_already_known_from_consumer": bool(
+            full_matrix_clear_policies or collateral_policies
+        ),
+        "consumer_focus_clear_policies": focus_clear_policies,
+        "consumer_full_matrix_clear_policies": full_matrix_clear_policies,
+        "consumer_collateral_policies": collateral_policies,
+        "dtype_probe_classification": source_dtype_probe.get("classification"),
+        "consumer_sweep_classification": source_policy_sweep.get("classification"),
+        "policy_revalidation_classification": source_policy_revalidation.get(
+            "classification"
+        ),
+        "recommended_consumer_next_step": recommended_next,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    operator_results_path = output_dir / "operator_results.json"
+    tensor_metadata_path = output_dir / "tensor_metadata.json"
+    artifact_path = output_dir / "raw_qk_producer_api_probe.json"
+    write_json(operator_results_path, {"operator_results": operator_results})
+    write_json(tensor_metadata_path, tensor_meta)
+
+    status = {
+        "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+        "classification": classification,
+        "validation_only": True,
+        "runtime_behavior_changed": False,
+        "production_routing_changed": False,
+        "cuda_kernels_changed": False,
+        "backend": "official_torch",
+        "layer_index": layer_index,
+        "layer_class": layer_class,
+        "q_head": q_head,
+        "kv_head": kv_head,
+        "key_column": key_column,
+        "key_column_source": "real_token",
+        "scale": scale,
+        "model": None,
+        "source_statuses": {
+            "attention_bundle": str(source_attention_status)
+            if source_attention_status
+            else None,
+            "consumer_surface": str(source_consumer_surface_status)
+            if source_consumer_surface_status
+            else None,
+            "dtype_probe": str(source_raw_qk_dtype_probe_status)
+            if source_raw_qk_dtype_probe_status
+            else None,
+            "policy_sweep": str(source_raw_qk_policy_sweep_status)
+            if source_raw_qk_policy_sweep_status
+            else None,
+            "policy_revalidation": str(source_raw_qk_policy_revalidate_status)
+            if source_raw_qk_policy_revalidate_status
+            else None,
+        },
+        "source_classifications": {
+            "attention_bundle": source_attention.get("classification"),
+            "consumer_surface": source_surface.get("classification"),
+            "dtype_probe": source_dtype_probe.get("classification"),
+            "policy_sweep": source_policy_sweep.get("classification"),
+            "policy_revalidation": source_policy_revalidation.get("classification"),
+        },
+        "environment": environment,
+        "tensor_metadata": tensor_meta,
+        "operator_results": operator_results,
+        "consumer_full_matrix_result": sweep_summary,
+        "interpretation": interpretation,
+        "output_emitted": False,
+        "ladder_continued": False,
+        "correction_metadata_applied": False,
+        "tolerance_pass": False,
+        "final_logit_claim": False,
+        "all_layer_claim": False,
+        "server_claim": False,
+        "context_length_claim": False,
+        "artifacts": {
+            "bundle_dir": str(output_dir) + "/",
+            "api_probe": str(artifact_path),
+            "operator_results": str(operator_results_path),
+            "tensor_metadata": str(tensor_metadata_path),
+        },
+        "producer_metadata": {
+            "producer_function": "capture_layer_raw_qk_producer_api_probe",
+            "boundary_selector": "layerN_raw_qk_producer_api_probe",
+            "requested_layer_index": layer_index,
+            "port_source": PORT_SOURCE,
+        },
+    }
+    write_json(
+        artifact_path,
+        {
+            "environment": environment,
+            "tensor_metadata": tensor_meta,
+            "operator_results": operator_results,
+            "consumer_full_matrix_result": sweep_summary,
             "interpretation": interpretation,
         },
     )
@@ -5242,6 +5927,67 @@ def dry_run_schema(boundary: str, layer_index: int, args: argparse.Namespace) ->
                 f"run focused layer{oproj_api_probe_layer} attention o-proj API matrix under /tmp"
             ),
         }
+    raw_qk_api_probe_layer = parse_raw_qk_producer_api_probe_selector(
+        boundary, layer_index
+    )
+    if raw_qk_api_probe_layer is not None:
+        return {
+            "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
+            "backend": "official_torch",
+            "boundary": boundary,
+            "layer_index": raw_qk_api_probe_layer,
+            "layer_idx": raw_qk_api_probe_layer,
+            "classification": (
+                f"layer{raw_qk_api_probe_layer}_raw_qk_producer_api_probe_schema_ready"
+            ),
+            "validation_only": True,
+            "runtime_behavior_changed": False,
+            "production_routing_changed": False,
+            "cuda_kernels_changed": False,
+            "implemented": True,
+            "full_capture_run": False,
+            "checkpoint_loaded": False,
+            "q_head": args.q_head,
+            "key_column": args.key_column,
+            "model": str(args.official_model or args.model)
+            if (args.official_model or args.model)
+            else None,
+            "source_statuses": {
+                "attention_bundle": str(args.source_attention_status)
+                if args.source_attention_status
+                else None,
+                "consumer_surface": str(args.source_consumer_surface_status)
+                if args.source_consumer_surface_status
+                else None,
+                "dtype_probe": str(args.source_raw_qk_dtype_probe_status)
+                if args.source_raw_qk_dtype_probe_status
+                else None,
+                "policy_sweep": str(args.source_raw_qk_policy_sweep_status)
+                if args.source_raw_qk_policy_sweep_status
+                else None,
+                "policy_revalidation": str(
+                    args.source_raw_qk_policy_revalidate_status
+                )
+                if args.source_raw_qk_policy_revalidate_status
+                else None,
+            },
+            "expected_status_output": str(args.status_output) if args.status_output else None,
+            "expected_output_dir": str(args.output_dir) if args.output_dir else None,
+            "expected_artifacts": [
+                "api_probe",
+                "operator_results",
+                "tensor_metadata",
+            ],
+            "producer_metadata": {
+                "producer_function": "capture_layer_raw_qk_producer_api_probe",
+                "boundary_selector": boundary,
+                "requested_layer_index": raw_qk_api_probe_layer,
+                "port_source": PORT_SOURCE,
+            },
+            "next_bounded_step": (
+                f"run focused layer{raw_qk_api_probe_layer} raw-QK producer/API matrix under /tmp"
+            ),
+        }
     oproj_probe_layer = parse_attention_oproj_dtype_probe_selector(boundary, layer_index)
     if oproj_probe_layer is not None:
         return {
@@ -5590,6 +6336,9 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     oproj_api_probe_layer_index = parse_attention_oproj_api_probe_selector(
         boundary, args.layer_idx
     )
+    raw_qk_api_probe_layer_index = parse_raw_qk_producer_api_probe_selector(
+        boundary, args.layer_idx
+    )
     oproj_probe_layer_index = parse_attention_oproj_dtype_probe_selector(
         boundary, args.layer_idx
     )
@@ -5602,6 +6351,7 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     layer_index = parse_ordered_mlp_selector(boundary, args.layer_idx)
     if (
         oproj_api_probe_layer_index is None
+        and raw_qk_api_probe_layer_index is None
         and oproj_probe_layer_index is None
         and raw_qk_probe_layer_index is None
         and attention_audit_layer_index is None
@@ -5616,6 +6366,7 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         return dry_run_schema(
             boundary,
             oproj_api_probe_layer_index
+            or raw_qk_api_probe_layer_index
             or oproj_probe_layer_index
             or raw_qk_probe_layer_index
             or attention_audit_layer_index
@@ -5626,6 +6377,62 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             or layer_index,
             args,
         )
+    if raw_qk_api_probe_layer_index is not None:
+        if args.q_head is None or args.key_column is None:
+            raise ValueError(
+                "raw-QK producer API probe requires --q-head and --key-column"
+            )
+        if args.source_attention_status is None:
+            raise ValueError(
+                "raw-QK producer API probe requires --source-attention-status"
+            )
+        if args.source_consumer_surface_status is None:
+            raise ValueError(
+                "raw-QK producer API probe requires --source-consumer-surface-status"
+            )
+        if args.source_raw_qk_dtype_probe_status is None:
+            raise ValueError(
+                "raw-QK producer API probe requires --source-raw-qk-dtype-probe-status"
+            )
+        if args.source_raw_qk_policy_sweep_status is None:
+            raise ValueError(
+                "raw-QK producer API probe requires --source-raw-qk-policy-sweep-status"
+            )
+        if args.output_dir is None:
+            raise ValueError("raw-QK producer API probe requires --output-dir")
+        model_path = args.official_model or args.model
+        if model_path is None:
+            raise ValueError("--model or --official-model is required for non-dry-run capture")
+        source_status = load_json(args.source_attention_status)
+        token_source_path = args.layer_input
+        if token_source_path is None:
+            token_source = source_status.get("input_token_source", {})
+            token_source_path_value = token_source.get("path")
+            if not token_source_path_value:
+                raise ValueError(
+                    "source attention status is missing input_token_source.path"
+                )
+            token_source_path = Path(token_source_path_value)
+        input_token_ids, _token_source_metadata = input_token_ids_from_source(token_source_path)
+        model, torch = load_model(model_path, args.official_checkout)
+        body = capture_layer_raw_qk_producer_api_probe(
+            model,
+            input_token_ids,
+            torch,
+            raw_qk_api_probe_layer_index,
+            args.q_head,
+            args.key_column,
+            source_attention_status=args.source_attention_status,
+            source_consumer_surface_status=args.source_consumer_surface_status,
+            source_raw_qk_dtype_probe_status=args.source_raw_qk_dtype_probe_status,
+            source_raw_qk_policy_sweep_status=args.source_raw_qk_policy_sweep_status,
+            source_raw_qk_policy_revalidate_status=(
+                args.source_raw_qk_policy_revalidate_status
+            ),
+            output_dir=args.output_dir,
+        )
+        body["model"] = str(model_path)
+        return body
     if oproj_api_probe_layer_index is not None:
         if args.lane is None:
             raise ValueError("attention o-proj API probe requires --lane")
