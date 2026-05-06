@@ -25,6 +25,7 @@ Primary docs:
 - `docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md`
 - `docs/SELECTED_MLP_DOWN_BUNDLE_REVALIDATION_DESIGN.md`
 - `docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md`
+- `docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md`
 
 Key statuses:
 
@@ -145,18 +146,39 @@ Status: producer/API probe set recorded; no implementation authorized.
 | Class | Layers | Status |
 | --- | --- | --- |
 | strict/default cleared | 12, 14, 15, 22 | preserve as negative controls |
-| explicit-policy full-bundle cleared | 8, 9, 10 | validation-only o-proj pairwise |
-| Workstream B retired | 11, 20 | validation-only composed policies; no output promotion |
+| explicit o-proj policy full-bundle cleared | 8, 9, 10 | validation-only pairwise o-proj |
+| composed validation-policy full-bundle cleared | 11, 20 | layer11 router+selected-MLP; layer20 o-proj+selected-MLP |
 | selected-MLP collateral negative control | 19 | policy rejected |
-| raw-QK blocked/source/collateral | 7, 17, 23 | Workstream C producer/API result recorded; layer17/23 still not policy-selected |
-| raw-QK partial positive control | 21 | raw-QK reverse clears; o-proj remains |
+| raw-QK artifact/source boundary | 7, 23 | layer23 explained by producer/API; layer7 historical |
+| raw-QK accumulation collateral | 17 | focus-only clears rejected |
+| raw-QK positive control now o-proj blocked | 21 | raw-QK reverse clears; remaining blocker is o-proj |
 | o-proj blocked-family | 13, 16, 18, 21 | producer/API pattern known for 13/16; 18/21 pending if needed |
+| historical o-proj fused-linear/addmm context | 6 | non-row context |
+
+## Post-Workstream Taxonomy
+
+The final post-workstream taxonomy refresh is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_post_workstream_taxonomy_recorded
+```
+
+Workstream C's result update is complete. Layer21 is now classified as
+raw-QK-solved for this prompt/case and o-proj-blocked for any next bounded
+work. No global raw-QK policy is justified, and no implementation or
+runtime/default/CUDA behavior change is authorized.
 
 ## Recommended Next Step
 
-Next bounded decision: update the final taxonomy with the Workstream C
-producer/API result and decide whether layer21's post-raw-QK o-proj blocker
-belongs in Workstream A. Do not start implementation or select a runtime
+Next bounded decision: pause and preserve this taxonomy as the milestone
+summary, or continue Workstream A evidence coverage with o-proj producer/API
+probes for layers 18 and 21. Do not start implementation or select a runtime
 raw-QK policy from this evidence.
 
 ## Guardrails

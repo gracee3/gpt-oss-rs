@@ -2910,6 +2910,43 @@ correction metadata, tolerance pass, runtime/default/CUDA change,
 final-logit/all-layer/server/4097 claim, or global raw-QK policy is authorized
 by this result.
 
+## Ordered Surface Batch Post-Workstream Taxonomy
+
+Taxonomy doc:
+
+```text
+docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_post_workstream_taxonomy_recorded
+```
+
+Current workstream status:
+
+- Workstream A remains active as an o-proj/fused-linear/addmm evidence class,
+  not runtime implementation. Layer18 and layer21 are the remaining o-proj
+  follow-up candidates if more coverage is needed.
+- Workstream B support-gap cases are retired for layer11 and layer20; layer19
+  remains the collateral negative control.
+- Workstream C's minimal producer/API evidence set is complete. Layer23 is
+  explained as artifact/source boundary, layer17 rejects focus-only policy, and
+  layer21 is raw-QK-solved for this prompt/case.
+
+Layer21 decision: track layer21 under Workstream A, not Workstream C. Raw-QK
+reverse clears the full raw-QK/masked-logit matrices, and the remaining full
+bundle blocker is o-proj.
+
+Next options: pause and preserve this taxonomy as the milestone summary, or
+run oracle-only o-proj producer/API probes for layers 18 and 21. This doc does
+not authorize those probes.
+
+Guardrails: no implementation, consumer revalidation, output emission, ladder
+continuation, correction metadata, tolerance pass, runtime/default/CUDA change,
+or final-logit/all-layer/server/4097 claim.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:

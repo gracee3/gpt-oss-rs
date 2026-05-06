@@ -371,9 +371,17 @@ The minimal producer/API probe set for layers 23, 17, and 21 is complete.
 The conservative final claims summary for the ordered-surface batch pivot is
 recorded in `docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md`.
 
-Next bounded decision: update the final taxonomy and decide whether layer21's
-post-raw-QK o-proj blocker belongs in Workstream A. Do not promote a raw-QK
-policy from this result set.
+## Post-Result Decision
+
+The post-workstream taxonomy refresh is recorded in
+`docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md` with classification
+`ordered_surface_batch_post_workstream_taxonomy_recorded`.
+
+Workstream C is complete for the current minimal producer/API evidence set.
+No more raw-QK policy sweeps are recommended from this result. Layer21 is
+transferred to the o-proj backlog because raw-QK reverse clears the full
+raw-QK/masked-logit matrices and the remaining full-bundle blocker is o-proj.
+Do not promote a global raw-QK policy from this result set.
 
 ## Non-Goals
 

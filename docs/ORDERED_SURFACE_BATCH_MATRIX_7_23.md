@@ -208,6 +208,19 @@ recorded in:
 docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md
 ```
 
+The post-workstream taxonomy refresh is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md
+```
+
+Post-workstream pointer: layer21's remaining blocker is o-proj, not raw-QK.
+Raw-QK reverse clears the full raw-QK/masked-logit matrices for layer21, and
+the producer/API probe confirms it as the positive raw-QK clear control. Any
+next layer21 evidence work belongs under Workstream A o-proj/fused-linear/addmm
+classification, not another raw-QK sweep. No implementation or runtime/default/
+CUDA behavior change is authorized.
+
 ## Guardrails
 
 - No output emission.

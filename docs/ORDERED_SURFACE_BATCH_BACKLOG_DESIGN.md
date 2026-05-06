@@ -352,6 +352,30 @@ Guardrails: no implementation authorization, runtime/default/CUDA change,
 output emission, ladder continuation, correction metadata promotion, tolerance
 pass, final-logit, all-layer, server, or 4097-token claim.
 
+## Post-Workstream Taxonomy Pointer
+
+The final post-workstream taxonomy refresh is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_POST_WORKSTREAM_TAXONOMY.md
+```
+
+Classification: `ordered_surface_batch_post_workstream_taxonomy_recorded`.
+
+Current status:
+
+- Workstream A remains active only as an o-proj blocked-family evidence class.
+  Layer18 remains unprobed, and layer21 joins this backlog after raw-QK reverse
+  clears.
+- Workstream B's selected-MLP-down support-gap class is retired for layer11
+  and layer20; layer19 remains the collateral negative control.
+- Workstream C's minimal producer/API evidence set is complete. Layer23 is
+  explained as artifact/source boundary, layer17 rejects focus-only policy, and
+  layer21 is no longer a raw-QK blocker.
+- No implementation, runtime/default/CUDA change, output emission, ladder
+  continuation, correction metadata, tolerance pass, or global raw-QK policy is
+  authorized.
+
 ## Non-Goals
 
 - No implementation authorization.
