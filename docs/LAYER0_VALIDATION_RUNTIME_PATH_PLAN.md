@@ -4578,6 +4578,26 @@ changed, and there is no final-logit, all-layer, server, or 4097-token claim.
 Next bounded step: review layer11 selected-MLP-down revalidation support and
 the layer13 o-proj blocker before authorizing additional probes or design work.
 
+## Ordered Surface Batch Matrix 7..15
+
+The consolidated docs-only matrix is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_MATRIX_7_15.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_matrix_7_15_recorded
+```
+
+The matrix records layers 12/14/15 as strict/default cleared, layers 8/9/10 as
+explicit o-proj pairwise cleared, and layers 7/11/13 as distinct blocked or
+support-missing classes. It is a taxonomy/provenance update only; no runtime,
+default routing, CUDA, correction, tolerance, output, ladder, final-logit,
+all-layer, server, or 4097 claim is made.
+
 ## Validation Commands
 
 For the skeleton slice:
