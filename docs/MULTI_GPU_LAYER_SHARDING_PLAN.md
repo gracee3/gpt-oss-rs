@@ -8043,3 +8043,270 @@ Next bounded step:
   boundary is now explicit and deferred, while MoE router/bias readiness remains
   the most precise execution-adjacent blocker surfaced by the current skeleton
   statuses.
+
+## MoE router/bias readiness design
+
+This is a docs/recon checkpoint for future shard-local GPT-OSS MoE
+router/bias readiness. It does not load router/bias tensors in the split bench
+path, does not upload expert bias chunks, does not construct
+`GptOssMoeLayerWeights`, does not call `supports_gpu_decode`, and does not run
+router, expert, MXFP4 dequant, attention, graph decode, execution, serving, or
+parity paths.
+
+### Current single-device router/bias contract
+
+The current single-device CUDA runner builds GPT-OSS MoE state in
+`GpuModelRunner::build_gpt_oss_moe_layers`. For `GptOssForCausalLM`, it loops
+over `0..config.num_layers` and constructs one optional
+`GptOssMoeLayerWeights` entry per absolute model layer.
+
+For a layer with GPT-OSS U8 expert payloads, the builder requires these U8
+expert tensors:
+
+- `model.layers.<N>.mlp.experts.gate_up_proj_blocks`
+- `model.layers.<N>.mlp.experts.gate_up_proj_scales`
+- `model.layers.<N>.mlp.experts.down_proj_blocks`
+- `model.layers.<N>.mlp.experts.down_proj_scales`
+
+If `gate_up_proj_blocks` is absent, the layer is treated as non-MoE and the
+runner records `None`. If `gate_up_proj_blocks` is present, the remaining three
+U8 tensors are required; missing any of them is a hard GPU runner error.
+
+The same builder also requires four f32 router/bias tensors:
+
+- `model.layers.<N>.mlp.router.weight`
+- `model.layers.<N>.mlp.router.bias`
+- `model.layers.<N>.mlp.experts.gate_up_proj_bias`
+- `model.layers.<N>.mlp.experts.down_proj_bias`
+
+The current single-device state uses those tensors in three ways:
+
+- Router f32 tensors are cloned DtoH into CPU fallback vectors and also retained
+  as GPU f32 references through `router_weight_gpu` and `router_bias_gpu`.
+- Expert bias f32 tensors are cloned DtoH into CPU fallback vectors.
+- Expert bias f32 tensors are split into per-expert chunks and uploaded HtoD
+  into `gate_up_bias_gpu` and `down_bias_gpu`.
+
+`GpuModelRunner::prepare_gpt_oss_graph_decode` is the current upload point for
+U8 block/scale GPU payloads. It skips non-GPT-OSS and non-f16 runs, prunes f32
+projection weights for fp16, iterates the full runner MoE vector by full model
+index, and uploads the four U8 expert block/scale tensors when the executable
+layer state does not already support GPU decode.
+
+### supports_gpu_decode prerequisites
+
+`GptOssMoeLayerWeights::supports_gpu_decode` returns true only when all GPU-side
+decode prerequisites are present on the executable MoE object:
+
+- `router_weight_gpu`
+- `router_bias_gpu`
+- `gate_up_blocks_gpu`
+- `gate_up_scales_gpu`
+- `gate_up_bias_gpu`
+- `down_blocks_gpu`
+- `down_scales_gpu`
+- `down_bias_gpu`
+
+The predicate is not a pure manifest check. It is a method on
+`GptOssMoeLayerWeights`, which is execution-capable state and is consumed by
+`forward_decode_gpu`. The split bench path must not call it until an explicit
+future layer-shell implementation constructs safe shard-local executable state.
+
+Kernel/module availability is also part of real decode behavior because
+`forward_decode_gpu` launches GPT-OSS MoE routing, expert, dequant, activation,
+matmul, and weighted-add work. This checkpoint does not treat kernel
+availability as a readiness claim because no executable MoE object or decode
+path is constructed.
+
+### Current split status behavior
+
+The split bench path already validates and reports allocation-only MoE U8 upload
+state:
+
+- `--upload-gpt-oss-moe-gpu` retains each shard-owned U8 host map long enough
+  to upload the four GPT-OSS expert block/scale payloads to the owning shard's
+  CUDA stream.
+- Public status preserves absolute layer ids. GPU1 layer 12 remains
+  `model.layers.12.*`, with local layer index 0.
+- Complete U8 block/scale sets are reported as allocated/uploaded.
+- Missing all U8 payloads is `not_applicable`.
+- Partial U8 payloads are a blocked layer status with exact missing names.
+- Router and expert-bias status remains `deferred`.
+- `supports_gpu_decode_status` remains
+  `gpu_u8_uploaded_but_not_evaluated_without_layer_construction` or equivalent,
+  never true.
+- Layer skeletons therefore surface the expected blockers:
+  `moe_router_or_expert_bias_deferred`,
+  `supports_gpu_decode_not_evaluated`, and `executable_layer_not_constructed`.
+
+### Future router/bias readiness status
+
+The next status-only slice should add an explicit flag such as:
+
+```text
+--check-gpt-oss-moe-readiness
+```
+
+This flag should stay independent from `--allocate-fused-f16`,
+`--allocate-f16-scratch`, and `--upload-gpt-oss-moe-gpu`. It should report
+router/bias prerequisites for shard-owned absolute MoE layers without
+constructing `GptOssMoeLayerWeights`.
+
+Suggested top-level status:
+
+- `moe_router_bias_readiness_attempted`
+- `moe_router_bias_readiness_succeeded`
+- `moe_router_bias_readiness_status`
+- `moe_router_bias_readiness_error`
+
+Suggested per-shard status:
+
+- `moe_router_bias_readiness_checked`
+- `moe_router_bias_readiness_status`
+- `moe_router_bias_layer_count`
+- `moe_router_bias_ready_count`
+- `moe_router_bias_blocked_count`
+- `moe_router_bias_deferred_count`
+- `moe_router_bias_error`
+
+Suggested per-layer status:
+
+- `absolute_layer_idx`
+- `local_layer_idx`
+- `router_weight_status`
+- `router_bias_status`
+- `gate_up_proj_bias_status`
+- `down_proj_bias_status`
+- `router_gpu_reference_status`
+- `expert_bias_gpu_upload_status`
+- `cpu_fallback_clone_status`
+- `supports_gpu_decode_prerequisite_status`
+- `supports_gpu_decode_status`
+- `layer_error`
+
+For a status-only first slice, `router_gpu_reference_status`,
+`expert_bias_gpu_upload_status`, and `cpu_fallback_clone_status` may report
+`not_allocated_status_only` or `deferred`. A later explicit allocation slice can
+upload per-expert bias chunks and report byte counts.
+
+### Selective f32 loading policy
+
+Future router/bias readiness should selectively load only shard-owned f32
+router/bias tensors for absolute layers that are owned by the shard and have
+complete GPT-OSS U8 MoE payloads:
+
+- `model.layers.<N>.mlp.router.weight`
+- `model.layers.<N>.mlp.router.bias`
+- `model.layers.<N>.mlp.experts.gate_up_proj_bias`
+- `model.layers.<N>.mlp.experts.down_proj_bias`
+
+The first recommended flag is status-only,
+`--check-gpt-oss-moe-readiness`, which can initially validate header/manifest
+presence without retaining or uploading f32 payloads. If payload-level readiness
+is needed, a later explicit flag such as `--allocate-gpt-oss-moe-router-bias`
+should selectively retain or upload only these four f32 tensors for
+shard-owned MoE layers.
+
+This loading policy should not depend on `--allocate-fused-f16`. Router/bias
+readiness belongs to executable GPT-OSS MoE state, while fused f16 allocation
+belongs to the current f16 projection/norm/bias/global side-buffer surface.
+
+### Required-vs-optional semantics
+
+For GPT-OSS MoE layers:
+
+- Complete U8 block/scale payloads plus all four router/bias tensors present:
+  `supports_gpu_decode_prerequisite_status=prerequisites_present`, but
+  `supports_gpu_decode_status` remains not true until executable state is built
+  and evaluated.
+- Missing `router.weight`: `missing_required_tensor` with the exact canonical
+  name.
+- Missing `router.bias`: `missing_required_tensor` with the exact canonical
+  name.
+- Missing `gate_up_proj_bias`: `missing_required_tensor` with the exact
+  canonical name.
+- Missing `down_proj_bias`: `missing_required_tensor` with the exact canonical
+  name.
+- Some but not all router/bias tensors present:
+  `partial_router_bias_state` with exact missing names.
+- Complete U8 upload but router/bias readiness not requested:
+  `deferred` or `not_requested`, not a failed allocation.
+- No U8 expert payload set on an owned layer:
+  `not_applicable`, matching dense MLP or non-MoE behavior.
+- Partial U8 block/scale presence:
+  keep the existing U8 partial-payload blocker before router/bias readiness.
+
+Router/bias tensors are required for current executable GPT-OSS MoE decode
+readiness. They are not optional for `supports_gpu_decode=true` in the existing
+single-device object model.
+
+### Future executable MoE state boundary
+
+Before constructing executable shard-local MoE state, a future slice must have:
+
+- shard-owned complete U8 block/scale GPU upload;
+- shard-owned f32 router/bias payloads loaded or referenced on the owning GPU;
+- per-expert `gate_up_proj_bias` and `down_proj_bias` GPU chunk uploads when
+  matching the single-device decode contract;
+- CPU fallback clone policy, if the executable shell still includes CPU
+  fallback fields;
+- layer-local config for hidden size, intermediate size, local expert count,
+  and experts-per-token;
+- absolute-to-local layer mapping that never renames GPU1 layer 12 to
+  `model.layers.0.*`;
+- a shard-local construction loop over owned absolute layers, not a full-runner
+  `0..num_layers` loop;
+- kernel/module readiness policy for the future executable path.
+
+`GptOssMoeLayerWeights` construction remains deferred in this checkpoint. The
+existing type is execution-capable, includes CPU fallback and GPU decode state,
+and is not safe to reuse as a split bench status object.
+
+### Interaction with layer skeletons
+
+When router/bias readiness status exists, layer skeleton JSON can change the
+current blocker from `moe_router_or_expert_bias_deferred` to
+`moe_router_or_expert_bias_prerequisites_present` for layers with complete U8
+upload and complete router/bias status.
+
+Even then:
+
+- `executable_layer_status` remains `not_constructed`;
+- `supports_gpu_decode_status` remains not true until a real shard-local
+  executable MoE object is built and evaluated;
+- router/bias readiness is a prerequisite report, not a layer construction,
+  graph-decode, execution, or parity result.
+
+### BF16/dtype-policy note
+
+This remains f16 allocation/status-surface work. Router/bias f32 readiness does
+not answer BF16 runtime policy, BF16 allocation design, model parity, final-token
+parity, logit parity, graph-decode readiness, or serving support. Any execution
+slice still needs the later BF16/runtime policy gate and validation-runtime
+oracle dependency described in the dtype-policy checkpoint.
+
+### Risks / blockers
+
+- Router/bias f32 selective loading is not wired for split MoE readiness yet.
+- The current single-device helper loops over the full model and assumes a
+  full-runner layer vector indexed by absolute layer id.
+- `GptOssMoeLayerWeights` is execution-capable and should not be reused directly
+  for status-only split work.
+- `supports_gpu_decode` lives on executable state, so a pure status object can
+  only report prerequisites, not the real predicate result.
+- Status-only readiness can drift from executable readiness unless future
+  implementation shares small pure prerequisite helpers with the executable
+  constructor.
+- Expert-bias chunk upload adds nontrivial memory accounting and should remain
+  explicit instead of hidden behind U8 upload or fused f16 allocation flags.
+
+### Next bounded step
+
+Add a bench-only MoE router/bias readiness status skeleton. It should check
+header/manifest presence for shard-owned router/bias f32 tensors, preserve
+absolute layer ids, keep `supports_gpu_decode_status` not true, and avoid any
+router/bias payload upload or `GptOssMoeLayerWeights` construction.
+
+### Primary classification
+
+multi_gpu_layer_sharding_moe_router_bias_readiness_design_complete
