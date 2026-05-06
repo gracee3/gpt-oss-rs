@@ -71,6 +71,17 @@ It should be reviewed as a separate 16..23 classify matrix before any bounded
 probe work is authorized. This 7..15 document remains the stable taxonomy
 anchor for comparing the next batch.
 
+## Layer16..23 O-Proj/MLP Probe Pointer
+
+The follow-on o-proj/MLP bounded-probe status is recorded at:
+
+```text
+/tmp/ordered_surface_batch_probe_16_23_oproj_status.json
+```
+
+It covers only layers 16, 18, 19, and 20. Raw-QK layers 17, 21, and 23 remain
+deferred to oracle dtype-probe prerequisites.
+
 ## Guardrails
 
 - No output emission.

@@ -2394,6 +2394,55 @@ all-layer, server, or 4097-token claim. Next bounded step: review the
 classify-only matrix, then authorize bounded probes only for the first failing
 seams.
 
+## Ordered Surface Batch Bounded-Probe 16..23 O-Proj/MLP Review
+
+The layer16..23 o-proj/MLP bounded-probe slice ran on branch
+`validation/ordered-surface-batch-probes-16-23-oproj` from the classify-only
+consumer branch. Source classify status:
+
+```text
+/tmp/ordered_surface_batch_consumer_16_23_status.json
+```
+
+Batch probe status:
+
+```text
+/tmp/ordered_surface_batch_probe_16_23_oproj_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_probe_16_23_oproj_recorded
+```
+
+The slice only touched the attention o-proj first failures for layers 16, 18,
+and 20, plus the selected-MLP-down replay review for layer 19. Layer20
+attention o-proj cleared under `pairwise_f32_accum_f32_bias_bf16_output`;
+full bundle revalidation with `--attention-oproj-policy pairwise` then stopped
+at selected MLP down, so the full layer remains blocked on a separate
+selected-MLP-down bundle-policy support gap. Layers 16 and 18 had no
+non-diagnostic full-vector clearing o-proj policy. Layer19 replay did not find
+a no-collateral selected-output clearing policy; BF16-product remains
+evidence-only with broad collateral mismatches.
+
+| Layer | Source classify seam | Probe/replay result | Revalidation result | Selected policy |
+| --- | --- | --- | --- | --- |
+| 16 | attention o-proj lane 2666 | no full-vector clearing candidate; focus-only clears have collateral | not run | none |
+| 18 | attention o-proj lane 63 | no full-vector clearing candidate | not run | none |
+| 19 | selected MLP down lane 3005 | replay collateral mismatches; baseline has four ordered MLP mismatches | not supported in this slice | none |
+| 20 | attention o-proj lane 2212 | o-proj full-vector clear | revalidation stopped at selected MLP down | `pairwise_f32_accum_f32_bias_bf16_output` for o-proj only |
+
+Layers 17, 21, and 23 are raw-QK cases and were intentionally deferred to the
+oracle dtype-probe prerequisite lane. No raw-QK sweep, weighted-V debug,
+producer/API probe, fused-linear/addmm probe, selected-MLP-down policy flag,
+correction metadata, tolerance pass, output emission, or ladder continuation
+was run. No runtime/default routing/CUDA behavior changed, and there is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+review the blocked o-proj class for layers 16/18, the layer20 selected-MLP
+support gap, and the deferred raw-QK oracle prerequisites before authorizing
+more probes.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
