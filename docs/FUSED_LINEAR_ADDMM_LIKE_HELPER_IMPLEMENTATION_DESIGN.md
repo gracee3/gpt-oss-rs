@@ -296,6 +296,37 @@ not enough to reproduce the producer/API module/F.linear/_C/addmm reference.
 Focus-lane clears on layer6 and layer13 are rejected because full-vector
 collateral remains.
 
+## CPU-First Producer Attribution Follow-Up
+
+The next docs-only plans are recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_CPU_PRODUCER_ATTRIBUTION_PLAN.md
+docs/ORACLE_PRODUCER_SEAM_PIPELINE_AND_SCALING_PLAN.md
+```
+
+Classifications:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_plan_recorded
+oracle_producer_seam_pipeline_and_scaling_plan_recorded
+```
+
+The cuBLASLt prototype result remains validation evidence only. Plain cuBLASLt
+fused-bias epilogue did not reproduce the producer/API reference. The next step
+is CPU-first producer attribution of the Torch oracle seam, not another
+CUDA/helper sweep.
+
+Future implementation branch, only after review:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-impl
+```
+
+No backend is selected. No implementation is authorized by the docs branch. No
+consumer revalidation, runtime/default/CUDA behavior change, output emission,
+or ladder continuation is authorized.
+
 ## Recommended Next Step
 
 Prefer a small design review before implementation, specifically choosing

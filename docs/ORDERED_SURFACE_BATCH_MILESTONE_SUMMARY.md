@@ -363,6 +363,43 @@ Milestone claims remain unchanged: no runtime/default/CUDA behavior change,
 output emission, ladder continuation, final-logit, all-layer, server, or
 4097-token claim.
 
+## CPU Producer Attribution Plans
+
+CPU-first producer attribution for the fused-linear/addmm o-proj seam is
+recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_CPU_PRODUCER_ATTRIBUTION_PLAN.md
+```
+
+Reusable oracle producer-seam pipeline and scaling guidance is recorded in:
+
+```text
+docs/ORACLE_PRODUCER_SEAM_PIPELINE_AND_SCALING_PLAN.md
+```
+
+Classifications:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_plan_recorded
+oracle_producer_seam_pipeline_and_scaling_plan_recorded
+```
+
+The cuBLASLt prototype result remains validation evidence only. Plain cuBLASLt
+fused-bias epilogue did not reproduce the producer/API reference. The next step
+is CPU-first producer attribution, not another CUDA/helper sweep.
+
+Future implementation branch, only after review:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-impl
+```
+
+Milestone claims remain unchanged: no backend is selected, no implementation is
+authorized by this docs branch, no consumer revalidation is authorized, and no
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+final-logit, all-layer, server, or 4097-token claim is made.
+
 ## Guardrails
 
 - Validation-only.

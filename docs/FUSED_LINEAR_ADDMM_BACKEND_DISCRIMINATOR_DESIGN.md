@@ -552,6 +552,36 @@ module/F.linear/_C/addmm reference across the sampled set. No
 runtime/default/CUDA behavior change, output emission, ladder continuation, or
 final-logit/all-layer/server/4097 claim follows from this result.
 
+## CPU Producer Attribution Plan
+
+The next Workstream A plan is CPU-first producer attribution:
+
+```text
+docs/FUSED_LINEAR_ADDMM_CPU_PRODUCER_ATTRIBUTION_PLAN.md
+```
+
+Reusable oracle seam pipeline/scaling guidance is recorded in:
+
+```text
+docs/ORACLE_PRODUCER_SEAM_PIPELINE_AND_SCALING_PLAN.md
+```
+
+Classifications:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_plan_recorded
+oracle_producer_seam_pipeline_and_scaling_plan_recorded
+```
+
+The cuBLASLt prototype result remains validation evidence only. Plain cuBLASLt
+fused-bias epilogue did not reproduce the producer/API reference. The next step
+is to inspect the CPU Torch producer path for the official fused-linear/addmm
+seam, not continue GPU/cuBLAS backend guessing.
+
+No backend is selected. No implementation is authorized by the docs branch. No
+consumer revalidation, runtime/default/CUDA behavior change, output emission,
+or ladder continuation is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

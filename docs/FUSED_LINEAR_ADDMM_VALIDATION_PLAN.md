@@ -472,6 +472,37 @@ Conclusion:
   continuation, correction metadata, tolerance pass, final-logit, all-layer,
   server, or 4097-token claim follows from this result.
 
+## CPU Producer Attribution Plan
+
+CPU-first producer attribution and reusable oracle seam planning are recorded
+in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_CPU_PRODUCER_ATTRIBUTION_PLAN.md
+docs/ORACLE_PRODUCER_SEAM_PIPELINE_AND_SCALING_PLAN.md
+```
+
+Classifications:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_plan_recorded
+oracle_producer_seam_pipeline_and_scaling_plan_recorded
+```
+
+The cuBLASLt prototype result remains validation evidence only. Plain cuBLASLt
+fused-bias epilogue did not reproduce the producer/API reference. Treat the
+Torch oracle as CPU-first unless a future probe proves otherwise.
+
+Next implementation branch, only after review:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-impl
+```
+
+The next step is CPU-first producer attribution, not another CUDA/helper sweep.
+No backend is selected. No implementation is authorized by this docs branch. No
+consumer revalidation or runtime/default/CUDA behavior change is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.
