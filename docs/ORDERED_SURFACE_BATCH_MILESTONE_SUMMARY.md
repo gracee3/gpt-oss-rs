@@ -697,6 +697,30 @@ environment is available for future explicitly scoped oracle/source-attribution
 work, not for silent rebaseline, consumer revalidation, CUDA mirror work, or
 runtime/default/CUDA behavior changes.
 
+## Forward Environment Smoke
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_forward_env_smoke_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_forward_env_smoke_matched
+```
+
+The forward Python 3.12.12 / Torch `2.11.0+cu130` environment reproduced the
+existing official Workstream A o-proj seam for required layers 6 and 18 with
+CPU `torch.addmm(bias, input_2d, weight_t_2d)`. Optional layer10 also matched.
+Zero-bias addmm plus separate bias, explicit matmul plus bias, and explicit
+einsum plus bias remained diagnostic negative controls.
+
+This is not a full rebaseline and does not replace historical artifacts. It
+does not authorize consumer revalidation, backend selection, runtime/default
+or CUDA behavior changes, output emission, or ladder continuation.
+
 ## Guardrails
 
 - Validation-only.

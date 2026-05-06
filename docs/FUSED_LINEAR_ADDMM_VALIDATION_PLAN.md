@@ -803,6 +803,29 @@ This enables future forward-env smoke planning, but does not authorize
 Workstream A artifact reruns, model loading, consumer revalidation, CUDA mirror
 work, runtime/default/CUDA changes, or cross-env artifact comparisons.
 
+## Forward Environment Smoke Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_forward_env_smoke_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_forward_env_smoke_matched
+```
+
+The forward environment reproduced the existing official o-proj artifact seam
+for required layers 6 and 18 with CPU `torch.addmm(bias, input_2d,
+weight_t_2d)`. Optional layer10 also matched. The diagnostic negative controls
+remained negative under the forward environment.
+
+This is a smoke-only cross-env compatibility check. It does not perform a full
+rebaseline, replace historical artifacts, run consumer validation, select a
+backend, or authorize runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -303,6 +303,41 @@ No apt sources were modified, no sudo was used, no historical environment was
 modified, no PyTorch clone/build/patch was performed, and no model weights,
 Workstream A artifacts, or cross-env artifact comparisons were loaded.
 
+## Forward Environment Smoke Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-forward-env-smoke
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_forward_env_smoke_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_forward_env_smoke_matched
+```
+
+Result:
+
+- The uv-managed forward environment reproduced the existing official
+  attention o-proj producer/API artifacts for required layers 6 and 18 through
+  CPU `torch.addmm(bias, input_2d, weight_t_2d)`.
+- Optional layer10 was also evaluated and matched full-vector exactly.
+- Diagnostic negative controls remained negative: zero-bias addmm plus
+  separate bias, explicit matmul plus bias, and explicit einsum plus bias.
+- The smoke is a cross-env comparison against historical official artifacts,
+  not a replacement for those artifacts and not a full rebaseline.
+- No model forward pass, full model load, CUDA tensor creation, package
+  installation, virtual environment modification, consumer revalidation,
+  backend selection, output emission, or runtime/default/CUDA behavior change
+  was performed.
+
 ## Guardrails
 
 - Validation-only environment baseline.

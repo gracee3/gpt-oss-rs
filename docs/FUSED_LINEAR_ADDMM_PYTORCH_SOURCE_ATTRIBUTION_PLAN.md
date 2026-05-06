@@ -344,3 +344,29 @@ requirements files were written, and pip freeze was stored under
 Historical environments were observed for provenance only and left untouched.
 No PyTorch clone/build/patch, Workstream A artifact rerun, model loading,
 consumer revalidation, or cross-env artifact comparison was performed.
+
+## Forward Environment Seam Smoke
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_forward_env_smoke_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_forward_env_smoke_matched
+```
+
+The validated forward Python 3.12.12 / Torch `2.11.0+cu130` environment
+reproduced the existing official o-proj producer/API artifacts for required
+layers 6 and 18 with CPU `torch.addmm(bias, input_2d, weight_t_2d)`. Optional
+layer10 was also evaluated and matched. Diagnostic zero-bias-plus-bias,
+explicit matmul-plus-bias, and explicit einsum-plus-bias controls remained
+negative.
+
+This smoke compares forward-env outputs to historical official artifacts only
+to check compatibility. It does not clone/build/patch PyTorch, load the full
+model, rerun a Workstream A rebaseline, replace artifacts, authorize consumer
+revalidation, select a backend, or change runtime/default/CUDA behavior.

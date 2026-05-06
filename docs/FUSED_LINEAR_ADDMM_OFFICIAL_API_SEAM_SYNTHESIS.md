@@ -313,6 +313,33 @@ not silently replace prior exactness evidence.
 No PyTorch clone/build/patch, model loading, Workstream A artifact rerun,
 consumer revalidation, or cross-env artifact comparison was performed.
 
+## Forward Environment Smoke
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_forward_env_smoke_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_forward_env_smoke_matched
+```
+
+The uv-managed Python 3.12.12 / Torch `2.11.0+cu130` forward environment
+matched the existing official attention o-proj artifacts for required layers 6
+and 18 using CPU `torch.addmm(bias, input_2d, weight_t_2d)`. Optional layer10
+also matched. The same forward-env run preserved the known negative controls:
+zero-bias addmm plus separate bias, explicit matmul plus bias, and explicit
+einsum plus bias did not clear full-vector exactness.
+
+This supports the official API seam as portable across the historical and
+forward Torch `2.11.0+cu130` environments for the smoke subset only. It is not
+a full rebaseline and does not authorize implementation, consumer
+revalidation, backend selection, output emission, ladder continuation, or
+runtime/default/CUDA behavior changes.
+
 ## Guardrails
 
 - No backend selected.
