@@ -802,6 +802,38 @@ The milestone state is unchanged: preserve the official CPU Torch API seam and
 do not select a backend, run consumer revalidation, emit outputs, continue the
 ladder, or change runtime/default/CUDA behavior from this evidence.
 
+## CPU Capability Differential
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_capability_differential_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_capability_differential_official_depends_on_cpu_capability
+```
+
+The capability differential tested baseline/no override, `default`, `avx2`,
+`avx512`, `avx512_bf16`, and `avx512_vnni` in fresh CPU-only processes. Only
+`ATEN_CPU_CAPABILITY=default` changed the official seam, and only on layer18.
+The layer18 differential is one BF16 ULP at lane 1641 and overlaps a prior
+Rust CPU policy residual lane.
+
+Milestone interpretation:
+
+- `official_baseline_requires_optimized_cpu_capability = true`.
+- `active_backend_inference = optimized_cpu_kernel_likely`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+
+This strengthens source/backend attribution, but it does not change the
+operator-facing milestone: preserve the official CPU Torch API seam and do not
+rebaseline, select a backend, run consumer revalidation, emit outputs, continue
+the ladder, or change runtime/default/CUDA behavior.
+
 ## Guardrails
 
 - Validation-only.

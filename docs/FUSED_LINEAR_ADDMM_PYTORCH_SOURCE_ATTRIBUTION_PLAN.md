@@ -503,3 +503,41 @@ Interpretation:
 - No PyTorch build, PyTorch patch, CUDA use, model forward, consumer
   revalidation, backend selection, output emission, ladder continuation, or
   runtime/default/CUDA behavior change was performed.
+
+## CPU Capability Differential Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_capability_differential_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_capability_differential_official_depends_on_cpu_capability
+```
+
+The CPU capability differential ran fresh CPU-only workers for the no-override
+baseline, `ATEN_CPU_CAPABILITY=default`, and optional `avx2`, `avx512`,
+`avx512_bf16`, and `avx512_vnni` settings. All optional named optimized
+settings matched the baseline and official artifacts for sampled layers
+6/10/13/16/18/21. The `default` setting changed only layer18 for
+`torch.addmm`, `torch.nn.functional.linear`, and `torch._C._nn.linear`.
+
+Layer18 signal:
+
+- one mismatch versus baseline and official at hidden lane 1641;
+- max absolute difference `0.0001220703125`;
+- difference is no more than one BF16 ULP at that magnitude;
+- changed lane overlaps a prior Rust CPU closure-audit residual lane.
+
+Interpretation:
+
+- `official_baseline_requires_optimized_cpu_capability = true`.
+- `active_backend_inference = optimized_cpu_kernel_likely`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+- The `default` output is not a new oracle artifact and does not authorize a
+  rebaseline, backend selection, consumer revalidation, output emission,
+  ladder continuation, or runtime/default/CUDA behavior change.

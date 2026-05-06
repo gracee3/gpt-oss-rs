@@ -428,6 +428,37 @@ Current decision:
 - The official seam remains CPU Torch API artifact/provenance, not a selected
   Rust/CUDA backend.
 
+## CPU Capability Differential
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_capability_differential_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_capability_differential_official_depends_on_cpu_capability
+```
+
+The CPU capability differential confirmed that `ATEN_CPU_CAPABILITY=default`
+changes the official seam on layer18 only, while the no-override baseline and
+optional `avx2`, `avx512`, `avx512_bf16`, and `avx512_vnni` settings preserve
+the sampled official artifacts. The layer18 change is one BF16 ULP or less at
+hidden lane 1641 and overlaps a prior Rust CPU closure-audit residual lane.
+
+This narrows attribution toward an optimized CPU capability path:
+
+- `official_baseline_requires_optimized_cpu_capability = true`.
+- `active_backend_inference = optimized_cpu_kernel_likely`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+
+The finding is still not a replayable arithmetic or microkernel rule. It does
+not replace the official artifacts, select a backend, authorize consumer
+revalidation, or permit runtime/default/CUDA behavior changes.
+
 ## Guardrails
 
 - No backend selected.

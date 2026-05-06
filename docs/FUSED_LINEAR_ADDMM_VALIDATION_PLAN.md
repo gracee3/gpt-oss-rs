@@ -912,6 +912,35 @@ No backend was selected, Rust/CUDA policy synthesis remains closed, and this
 does not authorize consumer revalidation, output emission, ladder
 continuation, or runtime/default/CUDA behavior changes.
 
+## CPU Capability Differential Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_capability_differential_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_capability_differential_official_depends_on_cpu_capability
+```
+
+Fresh-process `ATEN_CPU_CAPABILITY` testing found a material differential only
+for `default`: layer18 changes by one BF16 ULP at lane 1641 for the official
+`torch.addmm`, `torch.nn.functional.linear`, and `torch._C._nn.linear`
+variants. The no-override baseline and optional `avx2`, `avx512`,
+`avx512_bf16`, and `avx512_vnni` settings match the sampled official artifacts.
+The changed lane overlaps prior Rust CPU closure-audit residual evidence.
+
+Decision:
+
+- CPU capability dispatch explains part of the lower-GEMM attribution signal.
+- The official baseline appears to require an optimized CPU capability path.
+- No concrete replayable arithmetic or microkernel rule was identified.
+- Rust/CUDA policy synthesis remains closed.
+- The `default` output is not promoted as a new artifact or production policy.
+
 ## Non-Goals
 
 - No runtime implementation.
