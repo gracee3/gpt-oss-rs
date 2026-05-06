@@ -390,6 +390,27 @@ No production backend was selected. No runtime/default/CUDA behavior change,
 consumer revalidation, rebaseline, output emission, or ladder continuation was
 authorized.
 
+## GEMM Stub Global Replay Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_GLOBAL_REPLAY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_global_replay_plan_recorded
+```
+
+The lane18 GEMM-stub dispatch-internals result now feeds a docs-only plan for
+sampled-set/global verification. The plan asks whether the source-derived
+AVX2-selected `cpublas_gemm_impl` rule can clear layers 6, 10, 13, 16, 18,
+and 21 full-vector exactly as one validation policy. It does not modify,
+reset, build, or probe PyTorch, and it does not reopen Rust/CUDA policy
+synthesis in this branch.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.

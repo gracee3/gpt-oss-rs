@@ -1040,6 +1040,33 @@ For now `reopen_rust_policy_synthesis = false`, `backend_selected = false`,
 and no consumer revalidation, CUDA mirror, rebaseline, output emission, ladder
 continuation, or runtime/default/CUDA behavior change is authorized.
 
+## GEMM Stub Global Replay Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_GLOBAL_REPLAY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_global_replay_plan_recorded
+```
+
+The validation plan now includes a docs-only ladder for verifying whether the
+GEMM-stub-derived rule can clear the full sampled Workstream A set as one
+validation policy. Acceptance requires full-vector exactness across layers 6,
+10, 13, 16, 18, and 21; a single source-derived target-selection rule; no
+tolerance; no correction metadata; no per-layer or focus-lane promotion; and
+preserved negative controls.
+
+The proposed future sequence is sampled tracing, source-derived replay design,
+then a validation-only prototype. This branch runs none of those probes and
+does not reopen Rust/CUDA policy synthesis or authorize backend selection,
+consumer revalidation, CUDA mirror work, output emission, ladder continuation,
+or runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.

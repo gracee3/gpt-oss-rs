@@ -651,3 +651,32 @@ for the traced lane18 split, but not yet a sampled-set Rust/CUDA validation
 policy. Therefore `reopen_rust_policy_synthesis = false`, no backend is
 selected, and no implementation, consumer revalidation, CUDA mirror,
 rebaseline, or runtime/default/CUDA behavior change is authorized.
+
+## GEMM Stub Global Replay Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_GLOBAL_REPLAY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_global_replay_plan_recorded
+```
+
+The next source-attribution step is planning-only sampled-set verification of
+the GEMM-stub-derived rule. The required ladder is:
+
+- `oracle/fused-linear-addmm-gemm-stub-sampled-trace` for all sampled layers
+  and diagnostic residual lanes;
+- `docs/fused-linear-addmm-gemm-stub-source-replay-design` for an explicit
+  source-derived replay design;
+- `validation/fused-linear-addmm-gemm-stub-source-replay-prototype` only if the
+  design can define a validation-only replay candidate.
+
+This plan keeps `reopen_rust_policy_synthesis = false` until one global
+source-derived policy clears layers 6, 10, 13, 16, 18, and 21 full-vector
+exactly without tolerance, correction metadata, per-layer policy choice, CUDA,
+consumer revalidation, or runtime/default/CUDA behavior changes.

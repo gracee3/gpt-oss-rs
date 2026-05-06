@@ -929,6 +929,32 @@ No backend is selected. No implementation, consumer revalidation, CUDA mirror,
 rebaseline, output emission, ladder continuation, or runtime/default/CUDA
 behavior change is authorized.
 
+## GEMM Stub Global Replay Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_GLOBAL_REPLAY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_global_replay_plan_recorded
+```
+
+The milestone now records a docs-only plan for sampled-set/global replay
+verification of the GEMM-stub-derived source rule. The plan preserves the
+current stop condition unless a future ladder verifies one global source-derived
+policy across layers 6, 10, 13, 16, 18, and 21 full-vector exactly.
+
+Future branches are limited to sampled tracing, replay design, and a
+validation-only prototype if separately approved. This docs branch performs no
+PyTorch modification, reset, build, or probe, and it does not reopen
+Rust/CUDA policy synthesis, select a backend, authorize implementation,
+authorize consumer revalidation, emit outputs, continue the ladder, or change
+runtime/default/CUDA behavior.
+
 ## Guardrails
 
 - Validation-only.

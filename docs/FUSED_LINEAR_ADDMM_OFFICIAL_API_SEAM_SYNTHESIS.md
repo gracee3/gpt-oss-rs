@@ -559,6 +559,30 @@ approved design verifies global sampled-set replay. No backend is selected,
 and no consumer revalidation, CUDA mirror, rebaseline, or runtime/default/CUDA
 behavior change is authorized.
 
+## GEMM Stub Global Replay Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_GLOBAL_REPLAY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_global_replay_plan_recorded
+```
+
+The official seam synthesis now records a docs-only plan to test whether the
+GEMM-stub-derived rule can become a global sampled-set validation policy. The
+plan requires layers 6, 10, 13, 16, 18, and 21, full-vector exactness, one
+target-selection rule, preserved negative controls, and no tolerance or
+correction metadata.
+
+This branch performs no PyTorch modification, reset, build, or probe. It does
+not select a backend, reopen Rust/CUDA policy synthesis, authorize consumer
+revalidation, or change runtime/default/CUDA behavior.
+
 ## Guardrails
 
 - No backend selected.
