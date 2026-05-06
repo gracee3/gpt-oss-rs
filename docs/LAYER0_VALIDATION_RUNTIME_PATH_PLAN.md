@@ -4487,6 +4487,51 @@ final-logit, all-layer, server, or 4097-token claim. Next bounded step: keep
 layer7 blocked on the raw-QK artifact-precision / producer boundary and pursue
 producer/source analysis or design before any runtime-policy discussion.
 
+## Ordered Surface Batch Consumer Classify-Only 10..15
+
+The layer10..15 consumer classify-only pilot ran on branch
+`validation/ordered-surface-batch-consumer-10-15` from
+`origin/validation/ordered-surface-batch-probes`. Source oracle status:
+
+```text
+/tmp/ordered_surface_batch_generation_10_15_status.json
+```
+
+Batch classify status:
+
+```text
+/tmp/ordered_surface_batch_consumer_10_15_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_consumer_10_15_classify_recorded
+```
+
+All six attention audits cleared weighted-V, residual, and attention-to-MLP
+bridge under strict/default validation. The strict/default ordered bundle
+cleared layers 12, 14, and 15. Layers 10 and 13 stopped at attention o-proj,
+and layer 11 stopped at selected MLP down. Selected MLP down replay was run
+for every layer because each bridge was exact.
+
+| Layer | Attention audit | Strict/default first failure | Selected MLP down replay | Recommended probe |
+| --- | --- | --- | --- | --- |
+| 10 | cleared | attention o-proj lane 915 | baseline already clear | attention o-proj policy sweep |
+| 11 | cleared | selected MLP down lane 1480 | full MLP cleared by replay; baseline has three ordered MLP mismatches | selected MLP down policy review |
+| 12 | cleared | none, strict/default clear | baseline already clear | none |
+| 13 | cleared | attention o-proj lane 151 | baseline already clear | attention o-proj policy sweep |
+| 14 | cleared | none, strict/default clear | baseline already clear | none |
+| 15 | cleared | none, strict/default clear | baseline already clear | none |
+
+No bounded raw-QK, weighted-V, o-proj, producer/API, or fused-linear probes
+were run in this classify-only slice. No explicit policies were applied. No
+output was emitted, the ladder was not continued, no correction metadata or
+tolerance pass was applied, and no runtime/default routing/CUDA behavior
+changed. There is no final-logit, all-layer, server, or 4097-token claim. Next
+bounded step: review the classify-only matrix, then authorize bounded probes
+only for the first failing seams.
+
 ## Validation Commands
 
 For the skeleton slice:
