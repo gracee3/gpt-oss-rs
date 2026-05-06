@@ -267,6 +267,29 @@ This supports Stage 2 source mapping, but it does not identify the concrete
 active CPU BF16 addmm backend or authorize Rust/CUDA policy work. No PyTorch
 clone/build/source patch was performed.
 
+## Forward Python Environment Baseline Plan
+
+Plan:
+
+```text
+docs/ORACLE_FORWARD_PYTHON_ENV_BASELINE_PLAN.md
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_plan_recorded
+```
+
+The official API seam synthesis now distinguishes historical/provenance
+environments from future oracle/source-attribution environments. The recorded
+Torch `2.11.0+cu130` wheel in `/home/emmy/openai/gpt-oss/.venv` remains tied
+to prior artifacts; future work should validate a separate Python 3.12 forward
+baseline before producing new oracle evidence.
+
+This is docs-only and does not create a venv, install packages, clone/build
+PyTorch, rerun probes, or authorize implementation.
+
 ## Guardrails
 
 - No backend selected.

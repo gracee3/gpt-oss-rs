@@ -423,3 +423,27 @@ identity.
 No PyTorch clone/build/source patch was performed, no venv was created, and no
 consumer revalidation, CUDA mirror work, backend selection, implementation, or
 runtime/default/CUDA behavior change is authorized.
+
+## Forward Python Environment Baseline Plan
+
+Plan:
+
+```text
+docs/ORACLE_FORWARD_PYTHON_ENV_BASELINE_PLAN.md
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_plan_recorded
+```
+
+Future Workstream A source-attribution or oracle work should move to a clean,
+validated Python 3.12 forward environment while preserving prior environments
+as provenance. The plan explicitly keeps source editable PyTorch builds out of
+the forward oracle environment and requires status metadata before any future
+cross-env comparison or rebaseline.
+
+This docs branch creates no environment, installs no packages, changes no
+requirements, clones/builds no PyTorch source, and authorizes no CUDA mirror,
+consumer revalidation, or runtime/default/CUDA behavior change.

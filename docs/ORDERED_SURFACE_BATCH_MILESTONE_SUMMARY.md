@@ -647,6 +647,31 @@ The milestone remains unchanged: no backend is selected, no implementation is
 authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change, output emission, or ladder continuation follows.
 
+## Forward Python Environment Baseline Plan
+
+Plan:
+
+```text
+docs/ORACLE_FORWARD_PYTHON_ENV_BASELINE_PLAN.md
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_plan_recorded
+```
+
+The milestone now records that future oracle/source-attribution work should
+use a clean forward Python baseline while preserving historical environments
+for artifact reproducibility. The intended future branch is
+`oracle/forward-python-env-baseline`; it should create and validate
+`/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130` and write a status JSON
+before any later smoke or rebaseline work.
+
+This docs branch performs no venv/package/PyTorch clone/build work and does
+not authorize implementation, consumer revalidation, CUDA mirror work,
+runtime/default/CUDA behavior changes, output emission, or ladder continuation.
+
 ## Guardrails
 
 - Validation-only.

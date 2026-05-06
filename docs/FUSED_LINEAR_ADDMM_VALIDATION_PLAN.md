@@ -756,6 +756,29 @@ No PyTorch source checkout, build, source patch, venv creation, consumer
 revalidation, CUDA mirror work, or runtime/default/CUDA behavior change was
 performed or authorized.
 
+## Forward Python Environment Baseline Plan
+
+Plan:
+
+```text
+docs/ORACLE_FORWARD_PYTHON_ENV_BASELINE_PLAN.md
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_plan_recorded
+```
+
+Forward validation/oracle work should use a separately validated Python 3.12
+environment rather than repurposing historical environments that produced
+prior artifacts. The future baseline branch must create the environment,
+validate imports and a tiny CPU BF16 `torch.addmm` sanity check, freeze
+known-good versions, and emit `/tmp/oracle_forward_python_env_baseline_status.json`.
+
+No environment, package, requirements, PyTorch source, probe, consumer
+revalidation, CUDA mirror, or runtime/default/CUDA change is made here.
+
 ## Non-Goals
 
 - No runtime implementation.

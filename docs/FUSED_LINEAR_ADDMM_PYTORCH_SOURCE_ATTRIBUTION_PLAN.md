@@ -295,3 +295,27 @@ seam and do not proceed to CUDA mirror work.
 - No tolerance pass.
 - No final-logit/all-layer/server/4097 claim.
 - No Torch runtime dependency in Rust.
+
+## Forward Python Environment Baseline Plan
+
+Plan:
+
+```text
+docs/ORACLE_FORWARD_PYTHON_ENV_BASELINE_PLAN.md
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_plan_recorded
+```
+
+The source-attribution lane should preserve `/home/emmy/openai/gpt-oss/.venv`
+and `/data/models/.venv-awq` as historical/provenance environments. Future
+oracle/source-attribution work should use a separately validated forward
+environment, planned as `/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130`,
+with PyTorch source work isolated under `/home/emmy/openai/pytorch*`.
+
+This planning branch creates no virtual environment, installs no packages,
+clones or builds no PyTorch source, reruns no oracle probes, and authorizes no
+runtime/default/CUDA behavior changes.
