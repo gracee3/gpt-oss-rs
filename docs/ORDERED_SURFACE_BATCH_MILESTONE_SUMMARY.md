@@ -257,6 +257,30 @@ Result:
 - Milestone claims are unchanged: no production backend, final-logit,
   all-layer, server, or 4097-token claim is made.
 
+## Fused Linear/AddMM Helper Design
+
+The docs-only helper design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_HELPER_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_design_recorded
+```
+
+It defines the missing validation-only helper work after the comparator found
+no selectable candidate. It keeps pairwise as partial evidence, requires
+full-vector exactness across layers 6/10/13/16/18/21, and points to
+`validation/fused-linear-addmm-helper-candidate` only if a future helper
+candidate slice is explicitly approved.
+
+Milestone claims remain unchanged: no backend selection, runtime/default/CUDA
+behavior change, consumer revalidation, output emission, ladder continuation,
+final-logit, all-layer, server, or 4097-token claim.
+
 ## Guardrails
 
 - Validation-only.

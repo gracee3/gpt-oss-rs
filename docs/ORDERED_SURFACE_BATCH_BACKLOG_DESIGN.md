@@ -494,6 +494,28 @@ If a future candidate ever clears the sampled set, use
 `docs/backend-candidate-promotion-proof-plan` before any consumer revalidation
 or runtime work.
 
+## Fused Linear/AddMM Helper Design
+
+Workstream A helper design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_HELPER_DESIGN.md
+```
+
+Classification: `fused_linear_addmm_helper_design_recorded`.
+
+Status:
+
+- Existing helper policies are exhausted for the sampled set.
+- `pairwise_f32_bf16_output` remains a partial/local candidate, not a backend.
+- The future helper contract requires full-vector exactness across layers
+  6/10/13/16/18/21.
+- The next executable branch is
+  `validation/fused-linear-addmm-helper-candidate` only if separately approved.
+- Backend selected: false.
+- Consumer revalidation authorized: false.
+- Runtime/default/CUDA behavior changed: false.
+
 ## Non-Goals
 
 - No implementation authorization.

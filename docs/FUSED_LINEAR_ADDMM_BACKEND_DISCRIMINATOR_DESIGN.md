@@ -419,6 +419,33 @@ Outcome:
 Next bounded step: review the candidate matrix before any fused-addmm helper
 design, backend design, or consumer revalidation.
 
+## Helper Design Follow-Up
+
+The no-candidate-selected result is converted into a docs-only helper design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_HELPER_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_design_recorded
+```
+
+The helper design records why existing local policies are exhausted, why
+`pairwise_f32_bf16_output` remains partial evidence, and what a future
+validation-only helper candidate slice would need to prove. The next executable
+branch, only if separately approved, is:
+
+```text
+validation/fused-linear-addmm-helper-candidate
+```
+
+It does not authorize implementation, backend selection, consumer
+revalidation, runtime/default/CUDA behavior changes, output emission, or ladder
+continuation.
+
 ## Non-Goals
 
 - No runtime implementation.

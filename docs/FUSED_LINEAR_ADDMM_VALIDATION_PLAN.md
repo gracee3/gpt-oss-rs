@@ -355,6 +355,30 @@ collateral mismatches on layer6/13/16/18.
 No production backend is selected. No runtime/default/CUDA behavior change,
 consumer revalidation, output emission, or ladder continuation is authorized.
 
+## Helper Design Follow-Up
+
+The missing validation-only helper work after the no-candidate-selected result
+is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_HELPER_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_design_recorded
+```
+
+It defines the official reference contract, minimum sampled set, future helper
+families, status JSON contract, and decision rules for any future helper
+candidate run. The next branch is
+`validation/fused-linear-addmm-helper-candidate` only if separately approved.
+
+No implementation, backend selection, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, or ladder continuation
+is authorized by the helper design.
+
 ## Non-Goals
 
 - No runtime implementation.
