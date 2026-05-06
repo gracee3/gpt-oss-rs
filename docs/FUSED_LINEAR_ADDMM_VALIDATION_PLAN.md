@@ -1,0 +1,246 @@
+# Fused Linear/AddMM Validation Plan Update
+
+Classification:
+
+```text
+fused_linear_addmm_validation_plan_update_recorded
+```
+
+## Scope
+
+- Docs-only plan update.
+- Validation modeling only.
+- Target operator: attention o-proj BF16 linear with bias.
+- Target evidence: layers 13/16 blocked-family, layer10 pairwise-clear
+  control, and layer6 historical context.
+- No implementation authorized.
+- No runtime/default/CUDA behavior change.
+- No output emission.
+- No ladder continuation.
+
+## Source Evidence
+
+Docs:
+
+```text
+docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
+docs/ORDERED_SURFACE_BATCH_MATRIX_7_23.md
+docs/ORDERED_SURFACE_BATCH_BACKLOG_DESIGN.md
+docs/FUSED_LINEAR_ADDMM_DISCRIMINATOR_DESIGN.md
+docs/OFFICIAL_LINEAR_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Note: `docs/FUSED_LINEAR_ADDMM_DISCRIMINATOR_DESIGN.md` is not present on
+this branch. This active plan is recorded as:
+
+```text
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
+```
+
+Statuses:
+
+```text
+/tmp/o_proj_producer_api_probes_13_16_10_status.json
+/tmp/layer13_attention_oproj_api_probe_status.json
+/tmp/layer16_attention_oproj_api_probe_status.json
+/tmp/layer10_attention_oproj_api_probe_status.json
+/tmp/layer6_attention_oproj_api_probe_status.json
+/tmp/layer6_official_linear_backend_discriminator_probe_status.json
+```
+
+## Confirmed Producer/API Pattern
+
+| Layer | Class | Focus lane | module/F.linear/_C/addmm | matmul/einsum/unfused bias | Layout/fused-bias sensitive | Interpretation |
+| --- | --- | ---: | --- | --- | --- | --- |
+| 13 | blocked-family | 151 | 0 mismatches | 819 mismatches | yes | fused-linear/addmm pattern |
+| 16 | blocked-family | 2666 | 0 mismatches | 763 mismatches | yes | fused-linear/addmm pattern |
+| 10 | pairwise-clear control | 915 | 0 mismatches | 822 mismatches | yes | fused-linear/addmm pattern |
+| 6 | historical blocker | 22 | 0 mismatches in producer API probe | 826 mismatches in matmul/einsum/unfused class | yes | original fused-linear/addmm pattern |
+
+The producer API result is the same for blocked and pairwise-clear classes.
+Local pairwise, reverse, and current sweep results are local approximations,
+not producer-backend identities. Explicit matmul/einsum and unfused-bias forms
+are not valid official references for sampled o-proj layers. The official
+reference should be treated as fused linear/addmm semantics with original BF16
+layout and fused bias.
+
+## Revised Interpretation
+
+The question is no longer whether blocked layers match layer6. They do. The
+next question is how to model official fused-linear/addmm semantics in
+validation without changing production runtime.
+
+- Pairwise-clear layers may clear because their local approximation happens to
+  land on the fused-linear/addmm BF16 result.
+- Blocked layers may fail because the local approximation lands on adjacent
+  BF16 values or creates collateral mismatches.
+- Both cases may share the same true official backend.
+- Therefore a local policy taxonomy is not an official backend taxonomy.
+
+## Validation Modeling Problem
+
+Need a validation-only representation of official BF16 fused linear/addmm
+semantics for:
+
+```text
+y = linear(weighted_v, o_proj_weight, o_proj_bias)
+```
+
+where:
+
+- Input is BF16 weighted-V.
+- Weight is BF16 o-proj weight.
+- Bias is BF16 o-proj bias.
+- Output boundary is BF16.
+- Fused bias matters.
+- Input layout/contiguity matters.
+- Matmul/einsum/unfused-bias cannot be used as reference.
+
+## Candidate Validation Modeling Paths
+
+### Option 1 - Producer/API Reference Oracle
+
+Use producer-side F.linear/addmm outputs as explicit oracle seams for o-proj
+blocked-family validation.
+
+Pros:
+
+- Exact official semantics.
+- Avoids guessing Rust backend.
+- Useful for design/proof.
+
+Cons:
+
+- Not a Rust backend.
+- Not production implementation.
+- Requires producer artifacts per layer/operator.
+
+### Option 2 - Validation-Only Fused-AddMM Backend Discriminator
+
+Add a Rust status mode that compares existing Rust/CUDA candidate helpers
+against the producer/API fused-addmm reference.
+
+Pros:
+
+- Keeps Torch out of runtime.
+- Can classify candidate backends without changing production.
+
+Cons:
+
+- May still not reproduce exact fused-addmm semantics.
+- Must not choose a backend from focus-lane-only clears.
+
+### Option 3 - Explicit API/Source Metadata Contract First
+
+Before new backend work, require every o-proj status to record:
+
+- Input/weight/bias contiguity.
+- Fused vs unfused bias.
+- Source API class.
+- Layout perturbation guards.
+- Full-vector mismatch metrics.
+- Focus-lane metrics only as secondary.
+
+Pros:
+
+- Low-risk.
+- Prevents overclaiming.
+- Improves later implementation discipline.
+
+Cons:
+
+- Does not clear blocked layers by itself.
+
+Recommended plan: Option 3 first, then Option 2, while keeping Option 1 as
+oracle reference.
+
+## Future Status Contract
+
+Future validation status shape:
+
+```json
+{
+  "classification": "fused_linear_addmm_validation_status_recorded",
+  "validation_only": true,
+  "runtime_behavior_changed": false,
+  "production_routing_changed": false,
+  "cuda_kernels_changed": false,
+  "operator": "attention_o_proj",
+  "layers": [13, 16, 10],
+  "official_reference": {
+    "api": "module/F.linear/_C/addmm",
+    "fused_bias": true,
+    "layout_sensitive": true,
+    "dtype": "torch.bfloat16"
+  },
+  "source_metadata_required": [
+    "weighted_v dtype/shape/stride/contiguity",
+    "weight dtype/shape/stride/contiguity",
+    "bias dtype/shape/stride/contiguity",
+    "official output dtype/shape"
+  ],
+  "candidate_results": [],
+  "full_vector_required": true,
+  "focus_lane_only_accepted": false,
+  "output_emitted": false,
+  "ladder_continued": false,
+  "correction_metadata_applied": false,
+  "tolerance_pass": false,
+  "final_logit_claim": false,
+  "all_layer_claim": false,
+  "server_claim": false,
+  "context_length_claim": false
+}
+```
+
+## Proof Gates Before Any Code Implementation
+
+1. Producer/API reference statuses for at least one blocked layer and one
+   pairwise-clear control.
+2. Full-vector comparison only.
+3. Explicit fused-bias metadata.
+4. Explicit layout/contiguity metadata.
+5. Negative controls preserved: strict/default cleared layers 12/14/15/22.
+6. No focus-lane-only backend selection.
+7. No collateral mismatch promotion.
+8. No production/default routing change.
+9. No CUDA kernel change.
+10. No output emission.
+
+## Recommended Next Branch
+
+Recommend docs/status-only next, not backend implementation:
+
+```text
+validation/fused-linear-addmm-status-scaffold
+```
+
+Scope:
+
+- Status/scaffold only.
+- Consume existing producer/API probe statuses.
+- Emit normalized fused-linear/addmm validation status.
+- No new probes.
+- No consumer revalidation.
+- No backend selection.
+- No runtime/default/CUDA changes.
+
+Alternative:
+
+```text
+docs/fused-linear-addmm-status-scaffold-design
+```
+
+Use the alternative if implementation is not explicitly approved.
+
+## Non-Goals
+
+- No runtime implementation.
+- No default routing change.
+- No CUDA kernel change.
+- No output emission.
+- No ladder continuation.
+- No correction metadata.
+- No tolerance pass.
+- No final-logit/all-layer/server/4097 claim.
+- No Torch runtime dependency in Rust.

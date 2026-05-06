@@ -4850,6 +4850,40 @@ revalidation, implementation, output emission, ladder continuation,
 correction/tolerance, runtime/default/CUDA change, final-logit, all-layer,
 server, or 4097-token claim is authorized.
 
+## Fused Linear/AddMM Validation Plan Update
+
+The docs-only fused-linear/addmm validation plan is recorded at:
+
+```text
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
+```
+
+Source status:
+
+```text
+/tmp/o_proj_producer_api_probes_13_16_10_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_validation_plan_update_recorded
+```
+
+Key conclusion: official o-proj reference behavior should be modeled as
+module/F.linear/_C/addmm BF16 fused-bias semantics with original layout, not
+as explicit matmul/einsum or a local pairwise/reverse policy identity.
+
+Recommended next branch, only if explicitly approved:
+
+```text
+validation/fused-linear-addmm-status-scaffold
+```
+
+No implementation is authorized by this plan update. No runtime/default/CUDA
+change, output emission, ladder continuation, correction metadata, tolerance
+pass, final-logit, all-layer, server, or 4097-token claim is authorized.
+
 ## Validation Commands
 
 For the skeleton slice:

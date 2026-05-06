@@ -276,6 +276,15 @@ validation/fused-linear-addmm-status-scaffold
 
 Neither implementation path is authorized by this branch.
 
+The fused-linear/addmm validation modeling plan is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
+```
+
+It turns the layer13/layer16/layer10 producer/API probe matrix into a
+validation-modeling plan. It does not authorize implementation.
+
 ## Status JSON Contract
 
 Future status shape:
@@ -355,10 +364,10 @@ layerN_oproj_producer_api_probe_blocked_by_source_access
 
 The producer/API probe set for layer13, layer16, and layer10 is now recorded
 above. The next docs-only step is to update the fused-linear/addmm validation
-plan around the confirmed producer/API pattern:
+plan around the confirmed producer/API pattern. That plan is recorded in:
 
 ```text
-docs/fused-linear-addmm-validation-plan-update
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 ```
 
 Do not implement it in this branch.

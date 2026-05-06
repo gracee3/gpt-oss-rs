@@ -94,6 +94,12 @@ Result: blocked layers 13/16 and pairwise-clear control layer10 all match the
 same fused-linear/addmm producer pattern. Consequence: pairwise local clearing
 remains validation-only evidence, not official backend identity.
 
+The validation modeling follow-up from this evidence is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
+```
+
 ### Selected-MLP-down blocked or support gap
 
 - Layer11: replay clears but bundle revalidation flag missing.
@@ -157,6 +163,12 @@ The follow-up producer/API matrix for layers 13/16/10 is recorded in:
 
 ```text
 /tmp/o_proj_producer_api_probes_13_16_10_status.json
+```
+
+The fused-linear/addmm validation plan update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 ```
 
 ## Guardrails

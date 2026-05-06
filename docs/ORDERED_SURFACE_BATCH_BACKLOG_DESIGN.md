@@ -104,6 +104,11 @@ Producer/API probe update:
   local clearing is validation-only evidence, not backend identity proof.
 - Workstream A's next design target is fused-linear/addmm validation modeling,
   not another blind local accumulation sweep.
+- The fused-linear/addmm validation plan is recorded in
+  `docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`.
+- Recommended next branch is
+  `validation/fused-linear-addmm-status-scaffold` only if explicitly approved;
+  otherwise use `docs/fused-linear-addmm-status-scaffold-design`.
 
 ### Workstream B - Selected-MLP-Down Revalidation Support
 
@@ -252,7 +257,9 @@ docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
 It targets layers 13, 16, 18, and 21. The first minimal producer/API probe set
 for layer13, layer16, and the layer10 pairwise-clear control has now confirmed
 that all three sampled layers follow the fused-linear/addmm producer pattern.
-No implementation is authorized by that design or by the probe result.
+The fused-linear/addmm validation modeling plan is recorded in
+`docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`. No implementation is authorized
+by the design, probe result, or plan update.
 
 ## Non-Goals
 
