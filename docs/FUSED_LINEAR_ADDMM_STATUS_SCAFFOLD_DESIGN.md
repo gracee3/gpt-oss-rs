@@ -209,6 +209,36 @@ jq guard
 git diff --check
 ```
 
+## Status Scaffold Implementation
+
+Mode:
+
+```text
+--mode fused-linear-addmm-status-scaffold
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_status_scaffold.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_status_scaffold_recorded
+```
+
+Scope:
+
+- Status-only.
+- Reads existing JSON statuses.
+- Does not load raw tensors.
+- Does not execute model code.
+- Does not run CUDA or import Torch.
+- Does not run probes or consumer revalidation.
+- Does not select a backend.
+
 ## Recommended Next Step
 
 Option A: authorize `validation/fused-linear-addmm-status-scaffold` as a

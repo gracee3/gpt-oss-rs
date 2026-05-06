@@ -4910,6 +4910,41 @@ status. No runtime/default/CUDA change, output emission, ladder continuation,
 correction metadata, tolerance pass, final-logit, all-layer, server, or
 4097-token claim is authorized.
 
+## Fused Linear/AddMM Status Scaffold
+
+Mode:
+
+```text
+--mode fused-linear-addmm-status-scaffold
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_status_scaffold.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_status_scaffold_recorded
+```
+
+Consumed statuses:
+
+- `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/layer6_attention_oproj_api_probe_status.json`
+- `/tmp/layer6_official_linear_backend_discriminator_probe_status.json`
+
+Key conclusion: the scaffold normalizes producer/API evidence for the
+module/F.linear/_C/addmm BF16 fused-bias original-layout reference pattern
+without selecting a backend. Pairwise/reverse/current local policies remain
+validation-only evidence, not backend identity.
+
+No probes, backend selection, runtime/default/CUDA change, output emission,
+ladder continuation, correction metadata, tolerance pass, final-logit,
+all-layer, server, or 4097-token claim is made.
+
 ## Validation Commands
 
 For the skeleton slice:

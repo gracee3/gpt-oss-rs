@@ -187,6 +187,27 @@ struct Cli {
     #[arg(long)]
     layers: Option<String>,
 
+    /// Producer/API probe batch status for fused-linear/addmm status scaffolding.
+    #[arg(
+        long,
+        default_value = "/tmp/o_proj_producer_api_probes_13_16_10_status.json"
+    )]
+    producer_api_probe_status: PathBuf,
+
+    /// Layer6 producer/API probe status for fused-linear/addmm historical context.
+    #[arg(
+        long,
+        default_value = "/tmp/layer6_attention_oproj_api_probe_status.json"
+    )]
+    layer6_api_probe_status: PathBuf,
+
+    /// Layer6 backend discriminator status for fused-linear/addmm historical context.
+    #[arg(
+        long,
+        default_value = "/tmp/layer6_official_linear_backend_discriminator_probe_status.json"
+    )]
+    layer6_backend_discriminator_status: PathBuf,
+
     /// Root directory containing ordered boundary bundles.
     #[arg(long)]
     bundle_root: Option<PathBuf>,
@@ -509,6 +530,7 @@ enum Mode {
     Expert30Mlp1LaneDebug,
     Mlp1Bf16Policy,
     OrderedSurfaceBatchStatus,
+    FusedLinearAddmmStatusScaffold,
 }
 
 #[derive(Debug, Serialize)]
@@ -1498,7 +1520,199 @@ fn main() -> Result<()> {
         Mode::Expert30Mlp1Debug | Mode::Expert30Mlp1LaneDebug => run_expert30_mlp1_debug(&cli),
         Mode::Mlp1Bf16Policy => run_mlp1_bf16_policy(&cli),
         Mode::OrderedSurfaceBatchStatus => run_ordered_surface_batch_status(&cli),
+        Mode::FusedLinearAddmmStatusScaffold => run_fused_linear_addmm_status_scaffold(&cli),
     }
+}
+
+fn run_fused_linear_addmm_status_scaffold(cli: &Cli) -> Result<()> {
+    for (label, path) in [
+        ("producer API probe batch", &cli.producer_api_probe_status),
+        ("layer6 API probe", &cli.layer6_api_probe_status),
+        (
+            "layer6 backend discriminator",
+            &cli.layer6_backend_discriminator_status,
+        ),
+    ] {
+        anyhow::ensure!(
+            path.exists(),
+            "required fused-linear/addmm source status {label} does not exist: {}",
+            path.display()
+        );
+    }
+
+    let producer_api_batch = load_json(&cli.producer_api_probe_status)?;
+    let layer6_api_probe = load_json(&cli.layer6_api_probe_status)?;
+    let layer6_backend_discriminator = load_json(&cli.layer6_backend_discriminator_status)?;
+
+    let producer_layers = producer_api_batch
+        .get("layers")
+        .and_then(Value::as_array)
+        .context("producer API probe batch status is missing layers array")?;
+
+    let mut layers = Vec::new();
+    for layer in [13usize, 16, 10] {
+        let source = producer_layers
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("layer_index")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|index| index as usize == layer)
+            })
+            .with_context(|| {
+                format!("producer API probe batch status is missing layer {layer} entry")
+            })?;
+        layers.push(fused_linear_addmm_scaffold_layer(source, layer)?);
+    }
+    layers.push(fused_linear_addmm_scaffold_layer6(
+        &cli.layer6_api_probe_status,
+        &cli.layer6_backend_discriminator_status,
+        &layer6_api_probe,
+        &layer6_backend_discriminator,
+    ));
+
+    let status = json!({
+        "classification": "fused_linear_addmm_status_scaffold_recorded",
+        "source_classification": producer_api_batch.get("classification").cloned().unwrap_or(Value::Null),
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "operator": "attention_o_proj",
+        "source_statuses": {
+            "producer_api_batch": cli.producer_api_probe_status.display().to_string(),
+            "layer6_api_probe": cli.layer6_api_probe_status.display().to_string(),
+            "layer6_backend_discriminator": cli.layer6_backend_discriminator_status.display().to_string(),
+        },
+        "official_reference": {
+            "api": "module/F.linear/_C/addmm",
+            "dtype": "torch.bfloat16",
+            "fused_bias": true,
+            "layout_sensitive": true,
+        },
+        "layers": layers,
+        "summary": {
+            "official_reference_pattern": "fused_linear_addmm_bf16_fused_bias_original_layout",
+            "producer_api_reference_available_layers": [13, 16, 10],
+            "historical_context_layers": [6],
+            "pairwise_local_clearing_is_backend_identity": false,
+            "backend_selected": false,
+            "implementation_authorized": false,
+        },
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "Review status scaffold before any backend discriminator, consumer revalidation, or implementation."
+    });
+    write_json(&cli.output, &status)
+}
+
+fn fused_linear_addmm_scaffold_layer(source: &Value, layer: usize) -> Result<Value> {
+    let class = json_path_str(source, &["layer_class"]).unwrap_or("unknown");
+    let focus_lane = json_path_u64(source, &["focus_lane"]);
+    let producer_api_classification = json_path_str(source, &["classification"]);
+    let module_attn_out_clears =
+        json_path_bool(source, &["module_attn_out", "clears_full_vector"]).unwrap_or(false);
+    let f_linear_clears =
+        json_path_bool(source, &["F_linear", "clears_full_vector"]).unwrap_or(false);
+    let c_nn_linear_clears =
+        json_path_bool(source, &["C_nn_linear", "clears_full_vector"]).unwrap_or(false);
+    let fused_addmm_clears =
+        json_path_bool(source, &["fused_addmm", "clears_full_vector"]).unwrap_or(false);
+    let matmul_mismatches = json_path_u64(source, &["matmul", "mismatches"]);
+    let einsum_mismatches = json_path_u64(source, &["einsum", "mismatches"]);
+    let unfused_bias_mismatches = json_path_u64(source, &["unfused_bias", "mismatches"]);
+    let matmul_einsum_unfused_bias_mismatches = [
+        matmul_mismatches,
+        einsum_mismatches,
+        unfused_bias_mismatches,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .context("producer API layer entry is missing negative-control mismatch counts")?;
+    let layout_sensitive = json_path_bool(source, &["layout_sensitive"]).unwrap_or(false);
+    let fused_bias_sensitive = json_path_bool(source, &["fused_bias_sensitive"]).unwrap_or(false);
+    let producer_api_full_vector_cleared =
+        module_attn_out_clears && f_linear_clears && c_nn_linear_clears && fused_addmm_clears;
+
+    anyhow::ensure!(
+        producer_api_full_vector_cleared,
+        "layer {layer} producer API status does not record full-vector fused-linear/addmm clear"
+    );
+
+    Ok(json!({
+        "layer_index": layer,
+        "class": class,
+        "focus_lane": focus_lane,
+        "official_reference": "module/F.linear/_C/addmm",
+        "producer_api_classification": producer_api_classification,
+        "producer_api_full_vector_cleared": producer_api_full_vector_cleared,
+        "module_attn_out_full_vector_cleared": module_attn_out_clears,
+        "F_linear_full_vector_cleared": f_linear_clears,
+        "C_nn_linear_full_vector_cleared": c_nn_linear_clears,
+        "fused_addmm_full_vector_cleared": fused_addmm_clears,
+        "matmul_mismatches": matmul_mismatches,
+        "einsum_mismatches": einsum_mismatches,
+        "unfused_bias_mismatches": unfused_bias_mismatches,
+        "matmul_einsum_unfused_bias_mismatches": matmul_einsum_unfused_bias_mismatches,
+        "layout_sensitive": layout_sensitive,
+        "fused_bias_sensitive": fused_bias_sensitive,
+        "local_policy_identity_proven": false,
+        "runtime_backend_selected": Value::Null,
+    }))
+}
+
+fn fused_linear_addmm_scaffold_layer6(
+    layer6_api_probe_status: &Path,
+    layer6_backend_discriminator_status: &Path,
+    api_probe: &Value,
+    backend_discriminator: &Value,
+) -> Value {
+    let interpretation = api_probe.get("interpretation").unwrap_or(&Value::Null);
+    let producer_api_fused_linear_addmm_pattern_present =
+        json_path_bool(interpretation, &["addmm_matches_flinear"]).unwrap_or(false)
+            && !json_path_bool(interpretation, &["matmul_einsum_explains_official"])
+                .unwrap_or(true)
+            && json_path_bool(interpretation, &["layout_sensitive"]).unwrap_or(false)
+            && json_path_bool(interpretation, &["fused_bias_sensitive"]).unwrap_or(false);
+
+    json!({
+        "layer_index": 6,
+        "class": "historical_fused_linear_addmm_context",
+        "official_reference": "module/F.linear/_C/addmm",
+        "api_probe_status": layer6_api_probe_status.display().to_string(),
+        "backend_discriminator_status": layer6_backend_discriminator_status.display().to_string(),
+        "producer_api_classification": json_path_str(api_probe, &["classification"]),
+        "backend_discriminator_classification": json_path_str(backend_discriminator, &["classification"]),
+        "producer_api_fused_linear_addmm_pattern_present": producer_api_fused_linear_addmm_pattern_present,
+        "layout_sensitive": json_path_bool(interpretation, &["layout_sensitive"]),
+        "fused_bias_sensitive": json_path_bool(interpretation, &["fused_bias_sensitive"]),
+        "local_backend_selected": backend_discriminator.get("selected_backend").cloned().unwrap_or(Value::Null),
+        "runtime_backend_selected": Value::Null,
+    })
+}
+
+fn json_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+}
+
+fn json_path_bool(value: &Value, path: &[&str]) -> Option<bool> {
+    json_path(value, path).and_then(Value::as_bool)
+}
+
+fn json_path_u64(value: &Value, path: &[&str]) -> Option<u64> {
+    json_path(value, path).and_then(Value::as_u64)
+}
+
+fn json_path_str<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    json_path(value, path).and_then(Value::as_str)
 }
 
 fn run_ordered_surface_batch_status(cli: &Cli) -> Result<()> {

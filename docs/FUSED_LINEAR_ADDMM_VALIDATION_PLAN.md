@@ -243,8 +243,32 @@ docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md
 
 It defines the future status-only contract for consuming existing
 producer/API probe statuses and emitting a normalized fused-linear/addmm
-validation status. The next approved step is still required before creating
-`validation/fused-linear-addmm-status-scaffold`.
+validation status.
+
+## Status Scaffold Mode
+
+The validation-only scaffold mode is available as:
+
+```text
+--mode fused-linear-addmm-status-scaffold
+```
+
+It emits:
+
+```text
+/tmp/fused_linear_addmm_status_scaffold.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_status_scaffold_recorded
+```
+
+The mode reads existing JSON probe statuses only. It remains
+non-implementation and non-backend-selecting: no model execution, no CUDA
+execution, no consumer revalidation, no runtime/default/CUDA behavior change,
+and no output emission or ladder continuation.
 
 ## Non-Goals
 
