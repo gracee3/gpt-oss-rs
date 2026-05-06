@@ -198,6 +198,84 @@ Recommended first producer/API probe set:
 Reason: this distinguishes blocked vs pairwise-clear classes with minimal
 scope before touching layer21 or 18.
 
+## Producer/API Probe Result 13/16/10
+
+Status:
+
+```text
+/tmp/o_proj_producer_api_probes_13_16_10_status.json
+```
+
+Classification:
+
+```text
+o_proj_producer_api_probes_13_16_10_generated
+```
+
+Oracle branch:
+
+```text
+oracle/o-proj-producer-api-probes-13-16-10
+```
+
+Oracle commit:
+
+```text
+d8e46edd0f1c12a6946abc7da1d452c77c932a7e
+```
+
+| Layer | Class | Focus lane | module/F.linear/_C/addmm | matmul/einsum/unfused bias | Layout/fused-bias sensitive | Interpretation |
+| --- | --- | ---: | --- | --- | --- | --- |
+| 13 | blocked-family | 151 | full-vector clear | 819 mismatches | yes | matches layer6 fused-linear/addmm pattern |
+| 16 | blocked-family | 2666 | full-vector clear | 763 mismatches | yes | matches layer6 fused-linear/addmm pattern |
+| 10 | pairwise-clear control | 915 | full-vector clear | 822 mismatches | yes | also matches fused-linear/addmm pattern |
+
+Interpretation:
+
+- The blocked-family hypothesis is confirmed for layers 13 and 16.
+- The pairwise-clear control layer10 also follows the same producer/API
+  pattern.
+- Therefore local pairwise clearing is not backend identity proof.
+- The distinction between pairwise local clear and blocked local sweep appears
+  to be whether the local approximation happens to land on the official
+  fused-linear/addmm result for that tensor, not whether the producer backend
+  differs.
+- Explicit matmul/einsum and unfused-bias forms are insufficient official
+  references for all sampled layers.
+- The next discriminator should model fused linear/addmm semantics directly,
+  not run more blind local accumulation sweeps.
+
+## Decision
+
+Workstream A should pivot from "is the blocked class like layer6?" to:
+
+```text
+how do we model official fused-linear/addmm semantics in validation without production/runtime changes?
+```
+
+Do not:
+
+- Rerun blind Rust local sweeps for layers 13 or 16.
+- Treat pairwise as official backend identity.
+- Select pairwise globally.
+- Select reverse globally.
+- Use focus-lane clears.
+- Implement runtime behavior.
+
+Recommended next docs/design branch:
+
+```text
+docs/fused-linear-addmm-validation-plan-update
+```
+
+If a code scaffold is later authorized, a possible branch is:
+
+```text
+validation/fused-linear-addmm-status-scaffold
+```
+
+Neither implementation path is authorized by this branch.
+
 ## Status JSON Contract
 
 Future status shape:
@@ -275,18 +353,15 @@ layerN_oproj_producer_api_probe_blocked_by_source_access
 
 ## Recommended Immediate Next Step
 
-Run a producer/API probe design follow-up for layer13 and layer16, with layer10
-as a pairwise-clear control.
-
-Do not implement it in this branch.
-
-Suggested next branch:
+The producer/API probe set for layer13, layer16, and layer10 is now recorded
+above. The next docs-only step is to update the fused-linear/addmm validation
+plan around the confirmed producer/API pattern:
 
 ```text
-oracle/o-proj-producer-api-probes-13-16-10
+docs/fused-linear-addmm-validation-plan-update
 ```
 
-Only after the user separately authorizes probe execution.
+Do not implement it in this branch.
 
 ## Non-Goals
 

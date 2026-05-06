@@ -93,6 +93,18 @@ Proof gates:
 - Require source/layout/fused-bias metadata.
 - Do not promote focus-lane-only clears.
 
+Producer/API probe update:
+
+- The layer13/layer16/layer10 producer/API probe set is complete:
+  `/tmp/o_proj_producer_api_probes_13_16_10_status.json`.
+- Blocked layers 13 and 16 match the layer6 fused-linear/addmm pattern.
+- Pairwise-clear control layer10 also matches the same fused-linear/addmm
+  pattern.
+- Local policy classes are therefore not official backend classes: pairwise
+  local clearing is validation-only evidence, not backend identity proof.
+- Workstream A's next design target is fused-linear/addmm validation modeling,
+  not another blind local accumulation sweep.
+
 ### Workstream B - Selected-MLP-Down Revalidation Support
 
 Priority: high.
@@ -237,9 +249,10 @@ The docs-only o-proj blocked-family discriminator design is recorded in:
 docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
 ```
 
-It targets layers 13, 16, 18, and 21, with layer10 as the recommended
-pairwise-clear control for the first minimal future producer/API probe set. No
-implementation is authorized by that design.
+It targets layers 13, 16, 18, and 21. The first minimal producer/API probe set
+for layer13, layer16, and the layer10 pairwise-clear control has now confirmed
+that all three sampled layers follow the fused-linear/addmm producer pattern.
+No implementation is authorized by that design or by the probe result.
 
 ## Non-Goals
 

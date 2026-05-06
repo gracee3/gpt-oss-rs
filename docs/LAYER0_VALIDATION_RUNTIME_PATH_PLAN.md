@@ -4821,6 +4821,35 @@ runtime/default routing, CUDA change, output emission, ladder continuation,
 correction metadata, tolerance pass, final-logit, all-layer, server, or
 4097-token claim is authorized.
 
+## O-Proj Producer/API Probe 13/16/10
+
+The oracle-side producer/API probe matrix is recorded in:
+
+```text
+/tmp/o_proj_producer_api_probes_13_16_10_status.json
+```
+
+Classification:
+
+```text
+o_proj_producer_api_probes_13_16_10_generated
+```
+
+Results:
+
+| Layer | Class | Focus lane | Producer/API result | Explicit matmul/einsum/unfused-bias result |
+| --- | --- | ---: | --- | --- |
+| 13 | blocked-family | 151 | module/F.linear/_C/addmm full-vector clear | 819 mismatches |
+| 16 | blocked-family | 2666 | module/F.linear/_C/addmm full-vector clear | 763 mismatches |
+| 10 | pairwise-clear control | 915 | module/F.linear/_C/addmm full-vector clear | 822 mismatches |
+
+Key conclusion: blocked layers 13/16 and pairwise-clear control layer10 all
+match the layer6 fused-linear/addmm producer pattern. Pairwise local clearing
+is validation-only evidence, not official backend identity proof. No consumer
+revalidation, implementation, output emission, ladder continuation,
+correction/tolerance, runtime/default/CUDA change, final-logit, all-layer,
+server, or 4097-token claim is authorized.
+
 ## Validation Commands
 
 For the skeleton slice:
