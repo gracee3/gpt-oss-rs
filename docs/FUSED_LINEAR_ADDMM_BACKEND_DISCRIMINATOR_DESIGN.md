@@ -486,6 +486,31 @@ sampled-set exactness requirement still matters. No runtime/default/CUDA
 behavior change, output emission, or ladder continuation follows from this
 status.
 
+## Fused-AddMM-Like Helper Implementation Design
+
+The follow-up design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_LIKE_HELPER_IMPLEMENTATION_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_implementation_design_recorded
+```
+
+It records that existing local helpers plus available cuBLAS BF16 tensor-op and
+pedantic candidates did not clear the sampled set. Future work should model the
+producer/API fused-addmm-like boundary directly, with plausible paths including
+cuBLASLt fused-bias epilogue or a custom validation-only CUDA fused linear+bias
+helper. The next executable branch, only if explicitly approved, is
+`validation/fused-linear-addmm-like-helper-prototype`.
+
+Backend selected: false. Consumer revalidation authorized: false. No
+runtime/default/CUDA behavior change, output emission, or ladder continuation
+is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -279,6 +279,29 @@ Next bounded step: review whether a separately designed fused-addmm-like
 validation helper is warranted. Do not promote any existing helper from this
 matrix.
 
+## Fused-AddMM-Like Helper Implementation Design
+
+The follow-up docs-only implementation design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_LIKE_HELPER_IMPLEMENTATION_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_implementation_design_recorded
+```
+
+It records that the existing helper and cuBLAS candidate space is exhausted for
+the sampled set. The next candidate, if separately approved, must model the
+module/F.linear/_C/addmm BF16 fused-bias original-layout reference more
+directly. Proposed executable branch:
+`validation/fused-linear-addmm-like-helper-prototype`.
+
+No backend selection, consumer revalidation, runtime/default/CUDA behavior
+change, output emission, or ladder continuation is authorized.
+
 ## Guardrails
 
 - No runtime/default/CUDA behavior change.

@@ -410,6 +410,32 @@ No backend is selected. No consumer revalidation, runtime/default/CUDA behavior
 change, output emission, ladder continuation, correction metadata, tolerance
 pass, final-logit, all-layer, server, or 4097-token claim is authorized.
 
+## Fused-AddMM-Like Helper Design
+
+The next docs-only implementation design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_LIKE_HELPER_IMPLEMENTATION_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_like_helper_implementation_design_recorded
+```
+
+It narrows future work to a helper that models the producer/API
+module/F.linear/_C/addmm BF16 fused-bias original-layout reference directly.
+Another local accumulation sweep, focus-lane promotion, diagnostic promotion,
+and evidence-only promotion are explicitly rejected. The next executable
+branch, only if separately approved, is
+`validation/fused-linear-addmm-like-helper-prototype`.
+
+No runtime/default/CUDA behavior change, backend selection, consumer
+revalidation, output emission, ladder continuation, correction metadata,
+tolerance pass, final-logit, all-layer, server, or 4097-token claim is
+authorized.
+
 ## Non-Goals
 
 - No runtime implementation.
