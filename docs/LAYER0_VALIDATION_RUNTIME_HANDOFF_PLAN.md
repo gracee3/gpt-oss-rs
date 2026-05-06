@@ -2527,6 +2527,29 @@ than continuing broad layer collection or implementing runtime/default/CUDA
 policy changes. No output emission, ladder continuation, correction metadata,
 tolerance pass, final-logit, all-layer, server, or 4097-token claim is made.
 
+## Ordered Surface Batch Backlog Design
+
+The docs-only backlog/design follow-up is recorded at:
+
+```text
+docs/ORDERED_SURFACE_BATCH_BACKLOG_DESIGN.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_backlog_design_recorded
+```
+
+It ranks three follow-up workstreams: Workstream A o-proj blocked-family
+discriminator design, Workstream B selected-MLP-down bundle revalidation
+support, and Workstream C raw-QK artifact/source boundary analysis. The
+recommended immediate next step is Workstream A as a docs-only o-proj
+blocked-family discriminator design. No implementation, runtime/default
+routing, CUDA change, output emission, ladder continuation, correction
+metadata, tolerance pass, final-logit, all-layer, server, or 4097-token claim
+is authorized.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

@@ -129,6 +129,14 @@ result explain an o-proj backend boundary. Layer6 is not included as a row.
    decision is made.
 7. Do not implement runtime/default/CUDA policy changes from this matrix.
 
+## Backlog / Design Follow-Up
+
+The docs-only backlog/design follow-up from this matrix is recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_BACKLOG_DESIGN.md
+```
+
 ## Guardrails
 
 - No output emission.
