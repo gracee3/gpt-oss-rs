@@ -103,7 +103,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-consumer-bundle-validate-status",
         type=Path,
-        help="Consumer bundle validation status requesting an attention o-proj probe.",
+        help="Consumer bundle validation status requesting an attention o-proj or raw-QK probe.",
+    )
+    parser.add_argument(
+        "--source-consumer-surface-status",
+        type=Path,
+        help="Consumer compact surface status used as provenance for focused probes.",
+    )
+    parser.add_argument(
+        "--source-batch-probe-status",
+        type=Path,
+        help="Batch probe status used as provenance for focused probes.",
     )
     parser.add_argument(
         "--source-consumer-oproj-sweep-status",
@@ -1798,7 +1808,11 @@ def capture_layer_raw_qk_dtype_probe(
     *,
     lane: int | None,
     source_attention_status: Path | None,
+    source_attention_audit_status: Path | None,
     source_consumer_debug_status: Path | None,
+    source_consumer_bundle_validate_status: Path | None,
+    source_consumer_surface_status: Path | None,
+    source_batch_probe_status: Path | None,
     output_dir: Path,
 ) -> dict[str, Any]:
     if layer_index < 0 or layer_index >= len(model.block):
@@ -1812,8 +1826,31 @@ def capture_layer_raw_qk_dtype_probe(
     source_debug = (
         load_json(source_consumer_debug_status) if source_consumer_debug_status else {}
     )
+    source_bundle = (
+        load_json(source_consumer_bundle_validate_status)
+        if source_consumer_bundle_validate_status
+        else {}
+    )
+    source_surface = (
+        load_json(source_consumer_surface_status)
+        if source_consumer_surface_status and source_consumer_surface_status.exists()
+        else {}
+    )
+    source_batch_probe = (
+        load_json(source_batch_probe_status)
+        if source_batch_probe_status and source_batch_probe_status.exists()
+        else {}
+    )
+    raw_qk_mismatch = get_nested(
+        source_bundle,
+        ["attention_metrics", "raw_qk", "worst_mismatch"],
+    ) or get_nested(source_bundle, ["attention_metrics", "raw_qk", "first_mismatch"])
     official_prior = source_debug.get("official_value")
+    if official_prior is None and isinstance(raw_qk_mismatch, dict):
+        official_prior = raw_qk_mismatch.get("expected")
     current_local_value = source_debug.get("current_local_value")
+    if current_local_value is None and isinstance(raw_qk_mismatch, dict):
+        current_local_value = raw_qk_mismatch.get("actual")
     consumer_variants = {
         item.get("name"): item
         for item in source_debug.get("dot_variants", [])
@@ -1915,10 +1952,25 @@ def capture_layer_raw_qk_dtype_probe(
         f64_unscaled = float(
             sum(float(left) * float(right) for left, right in zip(q_f32.cpu().tolist(), k_f32.cpu().tolist()))
         )
+        abs_ascending_unscaled = sequential_f32_sum(
+            [
+                item["product_f32"]
+                for item in sorted(
+                    (
+                        {"index": index, "product_f32": value}
+                        for index, value in enumerate(product_f32_values)
+                    ),
+                    key=lambda item: (abs(item["product_f32"]), item["index"]),
+                )
+            ]
+        )
         sequential_scaled = round_f32(sequential_unscaled * float(attn.sm_scale))
         reverse_scaled = round_f32(reverse_unscaled * float(attn.sm_scale))
         pairwise_scaled = round_f32(pairwise_unscaled * float(attn.sm_scale))
         f64_scaled = float(f64_unscaled * float(attn.sm_scale))
+        abs_ascending_scaled = round_f32(
+            abs_ascending_unscaled * float(attn.sm_scale)
+        )
         scale_per_term_unscaled = sequential_unscaled
         scale_per_term_scaled = sequential_f32_sum(
             [round_f32(value * float(attn.sm_scale)) for value in product_f32_values]
@@ -2060,6 +2112,11 @@ def capture_layer_raw_qk_dtype_probe(
             f64_unscaled,
             f64_scaled,
         ),
+        "deterministic_abs_ascending_scale_after": variant_result(
+            "deterministic_abs_ascending_scale_after",
+            abs_ascending_unscaled,
+            abs_ascending_scaled,
+        ),
         "explicit_f32_sequential_scale_per_term": variant_result(
             "explicit_f32_sequential_scale_per_term",
             scale_per_term_unscaled,
@@ -2091,6 +2148,7 @@ def capture_layer_raw_qk_dtype_probe(
         "explicit_reverse_scaled_pre_output": reverse_scaled,
         "explicit_pairwise_scaled_pre_output": pairwise_scaled,
         "explicit_f64_scaled_pre_output": f64_scaled,
+        "deterministic_abs_ascending_scaled_pre_output": abs_ascending_scaled,
         "explicit_sequential_scaled_pre_output": sequential_scaled,
     }
     bf16_rounding_probe = {
@@ -2141,9 +2199,7 @@ def capture_layer_raw_qk_dtype_probe(
             "q_head": q_head,
             "key_column": key_column,
             "kv_head": kv_head,
-            "scale": float(source_debug.get("scale", 0.0) or 0.0)
-            if source_debug
-            else None,
+            "scale": float(attn.sm_scale),
             "term_count": len(term_values),
             "summary": finite_summary(product_f32_values),
             "positive_term_sum": float(
@@ -2167,18 +2223,42 @@ def capture_layer_raw_qk_dtype_probe(
             "explicit_f32_reverse_scale_after",
             "explicit_f32_pairwise_scale_after",
             "explicit_f64_diagnostic_scale_after",
+            "deterministic_abs_ascending_scale_after",
         )
         if dtype_variant_results[name]["matches_prior_official"]
     ]
+    downstream_propagation = {
+        "masked_logits": get_nested(
+            source_bundle, ["attention_metrics", "masked_logits"]
+        ),
+        "attention_probabilities": get_nested(
+            source_bundle, ["attention_metrics", "attention_probabilities"]
+        ),
+        "weighted_v": get_nested(source_bundle, ["attention_metrics", "weighted_v"]),
+        "o_proj": get_nested(source_bundle, ["attention_metrics", "o_proj"]),
+    }
     downstream_nonpropagating = bool(
         downstream.get("attention_probs_exact")
         and downstream.get("weighted_v_exact")
         and downstream.get("o_proj_exact")
+    ) or bool(
+        get_nested(
+            downstream_propagation,
+            ["attention_probabilities", "metrics", "mismatches"],
+        )
+        == 0
+        and get_nested(downstream_propagation, ["weighted_v", "metric", "metrics", "mismatches"])
+        == 0
+        and get_nested(downstream_propagation, ["o_proj", "metrics", "mismatches"]) == 0
     )
     current_rounds_to = get_nested(
         bf16_rounding_probe,
         ["consumer_current_local_scaled_pre_output", "bfloat16_output"],
     )
+    if current_rounds_to is None:
+        current_rounds_to = dtype_variant_results[
+            "explicit_f32_sequential_scale_after"
+        ]["bf16_output"]
     consistent_with_boundary = bool(
         official_matches_prior
         and matching_variant_names
@@ -2186,18 +2266,20 @@ def capture_layer_raw_qk_dtype_probe(
         and current_rounds_to == float(current_local_value)
     )
     classification = (
-        "layer3_raw_qk_dtype_probe_confirms_accumulation_boundary"
+        f"layer{layer_index}_raw_qk_dtype_probe_confirms_accumulation_boundary"
         if consistent_with_boundary
-        else "layer3_raw_qk_dtype_probe_generated_without_precise_precast"
+        else f"layer{layer_index}_raw_qk_dtype_probe_confirms_artifact_precision_boundary"
+        if official_matches_prior
+        else f"layer{layer_index}_raw_qk_dtype_probe_confirms_source_boundary_mismatch"
     )
 
     artifact_path = output_dir / "raw_qk_dtype_probe.json"
     source_vector_summaries = {
-        "q_vector_head2": {
+        f"q_vector_head{q_head}": {
             "artifact": str(q_vector_path),
             "summary": finite_summary(q_values),
         },
-        "k_vector_token1_kvhead0": {
+        f"k_vector_token{key_column}_kvhead{kv_head}": {
             "artifact": str(k_vector_path),
             "summary": finite_summary(k_values),
         },
@@ -2240,10 +2322,31 @@ def capture_layer_raw_qk_dtype_probe(
         "consistent_with_accumulation_boundary": consistent_with_boundary,
         "precise_precast_accumulator_available": False,
         "downstream_nonpropagating": downstream_nonpropagating,
+        "suggested_consumer_next_step": (
+            f"rerun layer{layer_index} raw-QK policy sweep with this status"
+        ),
         "next_consumer_step": (
             "Use this live-tensor raw-QK probe to choose a validation-only "
-            "accumulation/output-cast policy for the single layer3 raw-QK seam."
+            f"accumulation/output-cast policy for the single layer{layer_index} "
+            "raw-QK seam."
         ),
+    }
+    source_statuses = {
+        "attention_bundle_status": str(source_attention_status)
+        if source_attention_status
+        else None,
+        "attention_audit_status": str(source_attention_audit_status)
+        if source_attention_audit_status
+        else None,
+        "consumer_bundle_validate_status": str(source_consumer_bundle_validate_status)
+        if source_consumer_bundle_validate_status
+        else None,
+        "consumer_surface_status": str(source_consumer_surface_status)
+        if source_consumer_surface_status
+        else None,
+        "batch_probe_status": str(source_batch_probe_status)
+        if source_batch_probe_status
+        else None,
     }
     status = {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
@@ -2251,25 +2354,45 @@ def capture_layer_raw_qk_dtype_probe(
         "runtime_behavior_changed": False,
         "production_routing_changed": False,
         "cuda_kernels_changed": False,
+        "validation_only": True,
         "layer_index": layer_index,
         "focus_lane": lane,
         "q_head": q_head,
         "key_column": key_column,
         "kv_head": kv_head,
         "scale": float(attn.sm_scale),
+        "source_statuses": source_statuses,
         "source_attention_status": str(source_attention_status)
         if source_attention_status
         else None,
         "source_consumer_debug_status": str(source_consumer_debug_status)
         if source_consumer_debug_status
         else None,
+        "source_consumer_bundle_validate_status": str(
+            source_consumer_bundle_validate_status
+        )
+        if source_consumer_bundle_validate_status
+        else None,
         "source_attention_classification": source_attention.get("classification"),
+        "source_consumer_bundle_validate_classification": source_bundle.get(
+            "classification"
+        ),
+        "source_consumer_surface_classification": source_surface.get("classification"),
+        "source_batch_probe_classification": source_batch_probe.get("classification"),
+        "official_value": official_prior,
+        "current_local_value": current_local_value,
+        "abs_diff": (
+            abs(float(current_local_value) - float(official_prior))
+            if current_local_value is not None and official_prior is not None
+            else None
+        ),
         "environment": environment,
         "tensor_metadata": tensor_meta,
         "mapping": mapping,
         "official_expression_results": official_expression_results,
         "dtype_variant_results": dtype_variant_results,
         "bf16_rounding_probe": bf16_rounding_probe,
+        "downstream_propagation": downstream_propagation,
         "source_vector_summaries": source_vector_summaries,
         "artifacts": {
             "bundle_dir": str(output_dir) + "/",
@@ -2295,6 +2418,7 @@ def capture_layer_raw_qk_dtype_probe(
             "official_expression_results": official_expression_results,
             "dtype_variant_results": dtype_variant_results,
             "bf16_rounding_probe": bf16_rounding_probe,
+            "downstream_propagation": downstream_propagation,
             "source_vector_summaries": source_vector_summaries,
             "interpretation": interpretation,
         },
@@ -5633,8 +5757,14 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("raw-QK dtype probe requires --q-head and --key-column")
         if args.source_attention_status is None:
             raise ValueError("raw-QK dtype probe requires --source-attention-status")
-        if args.source_consumer_debug_status is None:
-            raise ValueError("raw-QK dtype probe requires --source-consumer-debug-status")
+        if (
+            args.source_consumer_debug_status is None
+            and args.source_consumer_bundle_validate_status is None
+        ):
+            raise ValueError(
+                "raw-QK dtype probe requires --source-consumer-debug-status "
+                "or --source-consumer-bundle-validate-status"
+            )
         if args.output_dir is None:
             raise ValueError("raw-QK dtype probe requires --output-dir")
         model_path = args.official_model or args.model
@@ -5661,7 +5791,11 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             args.key_column,
             lane=args.lane,
             source_attention_status=args.source_attention_status,
+            source_attention_audit_status=args.source_attention_audit_status,
             source_consumer_debug_status=args.source_consumer_debug_status,
+            source_consumer_bundle_validate_status=args.source_consumer_bundle_validate_status,
+            source_consumer_surface_status=args.source_consumer_surface_status,
+            source_batch_probe_status=args.source_batch_probe_status,
             output_dir=args.output_dir,
         )
         body["model"] = str(model_path)
