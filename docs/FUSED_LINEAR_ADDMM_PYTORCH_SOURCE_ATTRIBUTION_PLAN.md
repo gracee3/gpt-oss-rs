@@ -320,7 +320,7 @@ This planning branch creates no virtual environment, installs no packages,
 clones or builds no PyTorch source, reruns no oracle probes, and authorizes no
 runtime/default/CUDA behavior changes.
 
-## Forward Python Environment Baseline Attempt
+## Forward Python Environment Baseline Result
 
 Status:
 
@@ -331,11 +331,16 @@ Status:
 Classification:
 
 ```text
-oracle_forward_python_env_baseline_blocked_by_python
+oracle_forward_python_env_baseline_validated
 ```
 
-The implementation attempt found that `python3.12` is unavailable, so the
-forward environment was not created and no packages were installed. The
-historical environments were observed for provenance only and left untouched.
-Future source-attribution work still needs a Python 3.12 baseline before new
-oracle artifacts or cross-env comparisons are attempted.
+The uv-managed implementation created and validated
+`/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130` with Python 3.12.12 and
+Torch `2.11.0+cu130`. CUDA availability is recorded, but the validation stayed
+CPU-only and `cuda_used` is false. Tiny CPU BF16 `torch.addmm` sanity passed,
+requirements files were written, and pip freeze was stored under
+`/home/emmy/openai/pytorch-research/oracle-forward-python-env-baseline/`.
+
+Historical environments were observed for provenance only and left untouched.
+No PyTorch clone/build/patch, Workstream A artifact rerun, model loading,
+consumer revalidation, or cross-env artifact comparison was performed.

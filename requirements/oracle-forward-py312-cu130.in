@@ -1,0 +1,14 @@
+# Human-maintained package families for the forward oracle/source-attribution env.
+# Generated after validating oracle/forward-python-env-baseline-uv.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch
+numpy
+transformers
+accelerate
+triton
+kernels
+safetensors
+huggingface_hub
+openai-harmony
+gpt-oss
+packaging

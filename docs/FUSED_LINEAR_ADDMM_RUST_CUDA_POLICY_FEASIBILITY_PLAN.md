@@ -448,7 +448,7 @@ This docs branch creates no environment, installs no packages, changes no
 requirements, clones/builds no PyTorch source, and authorizes no CUDA mirror,
 consumer revalidation, or runtime/default/CUDA behavior change.
 
-## Forward Python Environment Baseline Attempt
+## Forward Python Environment Baseline Result
 
 Status:
 
@@ -459,11 +459,15 @@ Status:
 Classification:
 
 ```text
-oracle_forward_python_env_baseline_blocked_by_python
+oracle_forward_python_env_baseline_validated
 ```
 
-The forward baseline implementation stopped before environment creation because
-`python3.12` is not available. No package install, requirements update, PyTorch
-clone/build, oracle probe, consumer revalidation, or CUDA mirror work occurred.
-The Rust/CUDA feasibility lane remains unchanged and blocked from any runtime
-promotion.
+The uv-managed forward baseline is validated at
+`/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130` with Python 3.12.12 and
+Torch `2.11.0+cu130`. The branch recorded CUDA availability but did not use
+CUDA, validated imports and a tiny CPU BF16 addmm sanity check, wrote
+requirements files, and preserved historical environments as provenance-only.
+
+This provides a forward oracle/source-attribution environment only. It does
+not authorize CUDA mirror work, consumer revalidation, runtime/default/CUDA
+behavior changes, model loading, or Workstream A artifact reruns.

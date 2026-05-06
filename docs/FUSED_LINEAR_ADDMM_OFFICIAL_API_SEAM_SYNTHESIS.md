@@ -290,7 +290,7 @@ baseline before producing new oracle evidence.
 This is docs-only and does not create a venv, install packages, clone/build
 PyTorch, rerun probes, or authorize implementation.
 
-## Forward Python Environment Baseline Attempt
+## Forward Python Environment Baseline Result
 
 Status:
 
@@ -301,14 +301,17 @@ Status:
 Classification:
 
 ```text
-oracle_forward_python_env_baseline_blocked_by_python
+oracle_forward_python_env_baseline_validated
 ```
 
-The forward baseline attempt did not replace the historical Torch wheel
-environment. `python3.12` was unavailable, so no forward venv was created and
-no packages were installed. The recorded official API seam remains tied to the
-historical/provenance environments until a future Python 3.12 baseline is
-validated.
+The forward baseline now exists as a uv-managed Python 3.12.12 environment at
+`/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130`, with Torch
+`2.11.0+cu130` and CPU-only tiny BF16 addmm validation. Historical artifacts
+remain tied to their recorded environments; the new forward environment does
+not silently replace prior exactness evidence.
+
+No PyTorch clone/build/patch, model loading, Workstream A artifact rerun,
+consumer revalidation, or cross-env artifact comparison was performed.
 
 ## Guardrails
 

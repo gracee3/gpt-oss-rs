@@ -779,7 +779,7 @@ known-good versions, and emit `/tmp/oracle_forward_python_env_baseline_status.js
 No environment, package, requirements, PyTorch source, probe, consumer
 revalidation, CUDA mirror, or runtime/default/CUDA change is made here.
 
-## Forward Python Environment Baseline Attempt
+## Forward Python Environment Baseline Result
 
 Status:
 
@@ -790,14 +790,18 @@ Status:
 Classification:
 
 ```text
-oracle_forward_python_env_baseline_blocked_by_python
+oracle_forward_python_env_baseline_validated
 ```
 
-Baseline validation could not proceed because `python3.12` is missing. No
-forward venv was created, no candidate packages were installed, and no
-requirements files were written. Future validation should first provide Python
-3.12, then rerun the baseline helper before any forward-env smoke or
-rebaseline branch.
+Baseline validation completed with uv-managed Python 3.12.12 at
+`/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130`. Torch is
+`2.11.0+cu130`; CUDA availability is recorded, `cuda_used` is false, and tiny
+CPU BF16 `torch.addmm` sanity passed. Requirements files and pip freeze were
+written for reproducibility.
+
+This enables future forward-env smoke planning, but does not authorize
+Workstream A artifact reruns, model loading, consumer revalidation, CUDA mirror
+work, runtime/default/CUDA changes, or cross-env artifact comparisons.
 
 ## Non-Goals
 

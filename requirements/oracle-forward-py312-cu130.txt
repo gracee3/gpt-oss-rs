@@ -1,0 +1,14 @@
+# Installable entrypoint for the validated forward oracle Python env.
+--extra-index-url https://download.pytorch.org/whl/cu130
+-c requirements/oracle-forward-py312-cu130.constraints.txt
+torch==2.11.0+cu130
+numpy==2.4.4
+transformers==5.8.0
+accelerate==1.13.0
+triton==3.6.0
+kernels==0.14.0
+safetensors==0.7.0
+huggingface_hub==1.14.0
+openai-harmony==0.0.8
+gpt-oss==0.0.9
+packaging==26.2

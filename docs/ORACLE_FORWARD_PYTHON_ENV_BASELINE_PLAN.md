@@ -252,12 +252,12 @@ attribution status.
 The forward baseline is for future oracle/source-attribution work. It must not
 silently replace old artifacts or reinterpret previous exactness claims.
 
-## Implementation Attempt Result
+## UV Implementation Result
 
 Implementation branch:
 
 ```text
-oracle/forward-python-env-baseline
+oracle/forward-python-env-baseline-uv
 ```
 
 Status:
@@ -269,17 +269,29 @@ Status:
 Classification:
 
 ```text
-oracle_forward_python_env_baseline_blocked_by_python
+oracle_forward_python_env_baseline_validated
 ```
 
 Result:
 
-- `python3.12` was not available on the host.
-- The forward environment
-  `/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130` was not created.
-- No packages were installed.
-- No requirements files were written because validation could not proceed.
-- No pip freeze was written.
+- uv `0.9.27` installed and provided Python 3.12.12.
+- The forward environment was created at
+  `/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130`.
+- Torch installed as `2.11.0+cu130`; `torch.cuda.is_available()` is true but
+  `cuda_used` remains false.
+- `triton==3.6.0` was retained because it is the Torch `2.11.0+cu130`
+  compatibility dependency.
+- Required imports validated: Torch, NumPy, Transformers, Accelerate, Triton,
+  `kernels`, `safetensors`, `huggingface_hub`, `openai_harmony`, `gpt_oss`,
+  and `packaging`.
+- Tiny CPU BF16 `torch.addmm` sanity passed with CPU BF16 output.
+- Requirements files were written:
+  - `requirements/oracle-forward-py312-cu130.in`
+  - `requirements/oracle-forward-py312-cu130.txt`
+  - `requirements/oracle-forward-py312-cu130.constraints.txt`
+  - `requirements/oracle-legacy-observed.txt`
+- Pip freeze was written to
+  `/home/emmy/openai/pytorch-research/oracle-forward-python-env-baseline/pip-freeze.txt`.
 - Historical/provenance environments were observed without modification:
   - `/home/emmy/openai/gpt-oss/.venv`: Python 3.13.7, Torch
     `2.11.0+cu130`, Torch git
@@ -287,16 +299,16 @@ Result:
   - `/data/models/.venv-awq`: Python 3.13.7, Torch `2.10.0+cu128`, Torch git
     `449b1768410104d3ed79d3bcfe4ba1d65c7f22c0`, NumPy `2.4.2`.
 
-Next bounded step: make Python 3.12 available, then rerun the forward baseline
-branch to create the environment, install candidate packages, validate imports,
-freeze known-good versions, and write requirements files.
+No apt sources were modified, no sudo was used, no historical environment was
+modified, no PyTorch clone/build/patch was performed, and no model weights,
+Workstream A artifacts, or cross-env artifact comparisons were loaded.
 
 ## Guardrails
 
-- Docs-only.
-- No virtual environment creation.
-- No package installation.
-- No requirements file changes in this branch.
+- Validation-only environment baseline.
+- No apt source changes.
+- No sudo usage.
+- No historical virtual environment modification.
 - No PyTorch clone.
 - No PyTorch build.
 - No runtime implementation.
