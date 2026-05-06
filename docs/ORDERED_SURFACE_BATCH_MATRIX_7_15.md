@@ -59,6 +59,18 @@ all-layer, server, or 4097-token claims.
 - Candidate future producer/API lane: layer13 o-proj API probe only if 16..23
   shows a similar blocked o-proj class.
 
+## Layer16..23 Classify Pointer
+
+The follow-on classify-only consumer status is recorded at:
+
+```text
+/tmp/ordered_surface_batch_consumer_16_23_status.json
+```
+
+It should be reviewed as a separate 16..23 classify matrix before any bounded
+probe work is authorized. This 7..15 document remains the stable taxonomy
+anchor for comparing the next batch.
+
 ## Guardrails
 
 - No output emission.

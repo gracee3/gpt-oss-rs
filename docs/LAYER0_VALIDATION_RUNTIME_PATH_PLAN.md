@@ -4598,6 +4598,54 @@ support-missing classes. It is a taxonomy/provenance update only; no runtime,
 default routing, CUDA, correction, tolerance, output, ladder, final-logit,
 all-layer, server, or 4097 claim is made.
 
+## Ordered Surface Batch Consumer Classify-Only 16..23
+
+The layer16..23 consumer classify-only pilot ran on branch
+`validation/ordered-surface-batch-consumer-16-23` from
+`origin/docs/ordered-surface-batch-matrix-7-15`. Source oracle status:
+
+```text
+/tmp/ordered_surface_batch_generation_16_23_status.json
+```
+
+Batch classify status:
+
+```text
+/tmp/ordered_surface_batch_consumer_16_23_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_consumer_16_23_classify_recorded
+```
+
+All eight attention audits cleared weighted-V, residual, and attention-to-MLP
+bridge under strict/default validation. The strict/default ordered bundle
+cleared layer 22. Layers 16, 18, and 20 stopped at attention o-proj; layers
+17, 21, and 23 stopped at raw-QK; layer 19 stopped at selected MLP down.
+Selected MLP down replay was run for every layer because each bridge was exact.
+
+| Layer | Attention audit | Strict/default first failure | Selected MLP down replay | Recommended probe |
+| --- | --- | --- | --- | --- |
+| 16 | cleared | attention o-proj lane 2666 | collateral mismatches; baseline exact | attention o-proj policy sweep |
+| 17 | cleared | raw-QK q_head 35 / key col 65 | baseline already clear | raw-QK policy sweep |
+| 18 | cleared | attention o-proj lane 63 | baseline already clear | attention o-proj policy sweep |
+| 19 | cleared | selected MLP down lane 3005 | collateral mismatches; baseline has four selected-output mismatches | selected MLP down policy review |
+| 20 | cleared | attention o-proj lane 2212 | full MLP cleared by replay; baseline has one selected-output mismatch | attention o-proj policy sweep |
+| 21 | cleared | raw-QK q_head 52 / key col 55 | baseline already clear | raw-QK policy sweep |
+| 22 | cleared | none, strict/default clear | baseline already clear | none |
+| 23 | cleared | raw-QK q_head 33 / key col 27 | collateral mismatches; baseline exact | raw-QK policy sweep |
+
+No bounded raw-QK, weighted-V, o-proj, selected-MLP-down follow-up,
+producer/API, or fused-linear probes were run in this classify-only slice. No
+explicit policies were applied. No output was emitted, the ladder was not
+continued, no correction metadata or tolerance pass was applied, and no
+runtime/default routing/CUDA behavior changed. There is no final-logit,
+all-layer, server, or 4097-token claim. Next bounded step: review the
+classify-only matrix, then authorize bounded probes only for the first failing
+seams.
+
 ## Validation Commands
 
 For the skeleton slice:
