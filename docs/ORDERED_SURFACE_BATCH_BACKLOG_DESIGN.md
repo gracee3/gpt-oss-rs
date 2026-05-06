@@ -376,6 +376,33 @@ Current status:
   continuation, correction metadata, tolerance pass, or global raw-QK policy is
   authorized.
 
+## O-Proj Producer/API Final Matrix
+
+The final sampled o-proj producer/API matrix is recorded in:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Classification: `o_proj_producer_api_final_matrix_recorded`.
+
+Status paths:
+
+- `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/o_proj_producer_api_probes_18_21_status.json`
+- `/tmp/fused_linear_addmm_status_scaffold.json`
+
+Workstream A update:
+
+- Layer18 and layer21 producer/API probes are complete.
+- All sampled o-proj blocked/control cases match fused-linear/addmm
+  producer/API semantics: layer6 context, layer10 control, and layers
+  13/16/18/21.
+- Explicit matmul/einsum/unfused-bias remain negative controls.
+- The next design target is a validation/backend discriminator or milestone
+  preservation, not more blind sweeps.
+- No backend is selected and no implementation is authorized.
+
 ## Non-Goals
 
 - No implementation authorization.

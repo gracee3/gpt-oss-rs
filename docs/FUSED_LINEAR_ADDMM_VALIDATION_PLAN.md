@@ -57,6 +57,18 @@ Statuses:
 | 10 | pairwise-clear control | 915 | 0 mismatches | 822 mismatches | yes | fused-linear/addmm pattern |
 | 6 | historical blocker | 22 | 0 mismatches in producer API probe | 826 mismatches in matmul/einsum/unfused class | yes | original fused-linear/addmm pattern |
 
+The final sampled matrix expands this evidence to layer18 and layer21:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+/tmp/o_proj_producer_api_probes_18_21_status.json
+```
+
+Layer18 and layer21 also clear through module/F.linear/_C/addmm and fail
+through explicit matmul/einsum or unfused-bias forms. The added evidence does
+not authorize implementation, backend selection, consumer revalidation, or
+runtime/default/CUDA behavior changes.
+
 The producer API result is the same for blocked and pairwise-clear classes.
 Local pairwise, reverse, and current sweep results are local approximations,
 not producer-backend identities. Explicit matmul/einsum and unfused-bias forms

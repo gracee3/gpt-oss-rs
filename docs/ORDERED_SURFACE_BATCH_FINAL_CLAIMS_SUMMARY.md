@@ -41,6 +41,7 @@ Key statuses:
 - `/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json`
 - `/tmp/raw_qk_producer_api_probes_23_17_21_status.json`
 - `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/o_proj_producer_api_probes_18_21_status.json`
 - `/tmp/fused_linear_addmm_status_scaffold.json`
 - `/tmp/selected_mlp_down_bundle_revalidation_status.json`
 - `/tmp/layer11_router_logit_bundle_revalidation_status.json`
@@ -106,6 +107,9 @@ Status: status scaffold recorded; not implemented as a runtime backend.
 
 - Layer13/layer16 blocked-family and layer10 pairwise-clear control all follow
   the same producer/API fused-linear/addmm pattern.
+- Layer18 and layer21 also follow the same producer/API fused-linear/addmm
+  pattern.
+- Final matrix doc: `docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md`.
 - Normalized scaffold: `/tmp/fused_linear_addmm_status_scaffold.json`.
 - No backend selected.
 - No runtime/default/CUDA change.
@@ -174,12 +178,18 @@ raw-QK-solved for this prompt/case and o-proj-blocked for any next bounded
 work. No global raw-QK policy is justified, and no implementation or
 runtime/default/CUDA behavior change is authorized.
 
+The final sampled o-proj producer/API matrix is now recorded in
+`docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md` with classification
+`o_proj_producer_api_final_matrix_recorded`. Layer18 and layer21 match the
+same fused-linear/addmm pattern as layer6, layer13, layer16, and layer10
+control. No backend is selected.
+
 ## Recommended Next Step
 
 Next bounded decision: pause and preserve this taxonomy as the milestone
-summary, or continue Workstream A evidence coverage with o-proj producer/API
-probes for layers 18 and 21. Do not start implementation or select a runtime
-raw-QK policy from this evidence.
+summary, create a docs-only fused-linear/addmm backend-discriminator design
+update, or create a validation-only backend-discriminator/status plan if
+explicitly approved. Do not jump directly to runtime implementation.
 
 ## Guardrails
 

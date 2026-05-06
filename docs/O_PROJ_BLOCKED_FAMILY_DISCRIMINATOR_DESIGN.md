@@ -283,7 +283,36 @@ docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 ```
 
 It turns the layer13/layer16/layer10 producer/API probe matrix into a
-validation-modeling plan. It does not authorize implementation.
+validation-only modeling question.
+
+## Producer/API Final Matrix
+
+The final sampled o-proj producer/API matrix is recorded in:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Additional status:
+
+```text
+/tmp/o_proj_producer_api_probes_18_21_status.json
+```
+
+Layer18 and layer21 both match the fused-linear/addmm producer/API pattern:
+module call, F.linear, torch._C._nn.linear, and fused torch.addmm clear the
+full official vector; explicit matmul/einsum and unfused-bias forms do not;
+the behavior remains layout/fused-bias sensitive.
+
+Revised decision: the remaining o-proj blocked-family sampled layers match
+fused-linear/addmm producer/API semantics. Further local policy sweeps are
+lower value than designing a validation/backend discriminator against this
+producer reference.
+
+This does not select a Rust backend, authorize consumer revalidation, or
+authorize runtime/default/CUDA behavior changes.
+
+It also does not authorize implementation.
 
 The docs-only fused-linear/addmm status scaffold design is recorded in:
 

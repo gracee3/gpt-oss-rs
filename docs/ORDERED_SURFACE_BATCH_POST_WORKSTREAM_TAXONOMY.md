@@ -36,6 +36,7 @@ Key statuses:
 - `/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json`
 - `/tmp/ordered_surface_batch_probe_16_23_oproj_status.json`
 - `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/o_proj_producer_api_probes_18_21_status.json`
 
 ## Final Workstream Status
 
@@ -48,11 +49,41 @@ Status: active follow-up class, not runtime implementation.
 - Layer10 pairwise-clear control also matches the producer/API
   fused-linear/addmm pattern.
 - Local pairwise clearing is validation evidence, not backend identity.
-- Layer18 remains an unprobed o-proj blocked-family candidate.
-- Layer21 now joins Workstream A as an o-proj blocker after raw-QK reverse
-  clears.
+- Layer18 blocked-family also matches the producer/API fused-linear/addmm
+  pattern.
+- Layer21 joins Workstream A after raw-QK reverse clears and also matches the
+  producer/API fused-linear/addmm pattern.
 - Layer6 remains historical fused-linear/addmm context.
 - No backend is selected.
+
+## O-Proj Producer/API Final Matrix
+
+The final o-proj producer/API evidence matrix is recorded in:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Classification:
+
+```text
+o_proj_producer_api_final_matrix_recorded
+```
+
+Layer18 and layer21 probe status:
+
+```text
+/tmp/o_proj_producer_api_probes_18_21_status.json
+```
+
+Both layer18 and layer21 match the fused-linear/addmm producer/API pattern.
+Workstream A's sampled evidence matrix now covers layer6 historical context,
+layer10 control, and layers 13/16/18/21. Workstream A is ready for a design
+decision, not implementation.
+
+Next choice: pause for a milestone summary, or design a validation/backend
+discriminator. This taxonomy does not authorize consumer revalidation, backend
+selection, or runtime/default/CUDA changes.
 
 ### Workstream B — Selected-MLP-Down / Router Support
 

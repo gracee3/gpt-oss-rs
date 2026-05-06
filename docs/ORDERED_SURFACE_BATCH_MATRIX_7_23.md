@@ -221,6 +221,19 @@ next layer21 evidence work belongs under Workstream A o-proj/fused-linear/addmm
 classification, not another raw-QK sweep. No implementation or runtime/default/
 CUDA behavior change is authorized.
 
+The final o-proj producer/API matrix is recorded in:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+It adds layer18 and layer21 to the fused-linear/addmm producer/API evidence:
+both match the module/F.linear/_C/addmm full-vector-clear pattern, while
+explicit matmul/einsum and unfused-bias forms remain negative controls. Layer21
+therefore remains o-proj blocked after raw-QK clears. This is evidence for a
+future validation/backend discriminator decision, not a backend selection or
+runtime implementation authorization.
+
 ## Guardrails
 
 - No output emission.

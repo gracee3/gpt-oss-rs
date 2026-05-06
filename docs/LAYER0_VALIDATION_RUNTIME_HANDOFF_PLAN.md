@@ -2947,6 +2947,53 @@ Guardrails: no implementation, consumer revalidation, output emission, ladder
 continuation, correction metadata, tolerance pass, runtime/default/CUDA change,
 or final-logit/all-layer/server/4097 claim.
 
+## O-Proj Producer/API Final Matrix
+
+The final o-proj producer/API matrix is recorded in:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Oracle branch:
+
+```text
+oracle/o-proj-producer-api-probes-18-21
+```
+
+Status:
+
+```text
+/tmp/o_proj_producer_api_probes_18_21_status.json
+```
+
+Classification:
+
+```text
+o_proj_producer_api_final_matrix_recorded
+```
+
+- Layer18: blocked-family focus lane 63; module/F.linear/_C/addmm clear the
+  full vector, while matmul/einsum and unfused-bias forms do not. The case is
+  layout/fused-bias sensitive and matches the fused-linear/addmm pattern.
+- Layer21: raw-QK-solved / o-proj-blocked focus lane 2807; module/F.linear,
+  _C linear, and addmm clear the full vector, while matmul/einsum and
+  unfused-bias forms do not. Layer21 remains an o-proj blocker after raw-QK
+  clears.
+
+Key conclusion: Workstream A's sampled o-proj matrix now covers layer6
+context, layer10 control, and layers 13/16/18/21. The sampled cases all point
+to fused-linear/addmm producer/API semantics with original layout and fused
+bias. No consumer revalidation, backend selection, implementation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction metadata, tolerance pass, final-logit, all-layer, server, or
+4097-token claim is authorized.
+
+Recommended next decision: Option A is to pause and preserve the milestone
+taxonomy. Option B is a docs-only fused-linear/addmm backend-discriminator
+design update. Option C is a validation-only backend-discriminator/status plan
+only if explicitly approved. Do not jump directly to runtime implementation.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:
