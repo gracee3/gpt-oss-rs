@@ -719,6 +719,31 @@ validation policy:
 This discriminator lane must stop if only per-layer, per-lane, diagnostic,
 tolerance, or production-routing-dependent candidates clear.
 
+## Rust CPU Policy Synthesis Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_synthesis_partial_only
+```
+
+Gate B confirms the discriminator must continue treating the CPU Torch
+module/F.linear/_C/addmm seam as the official reference, not as a discovered
+Rust backend identity. The bounded Rust CPU search produced per-layer clears
+for layers 10, 13, and 21 only; it did not find one selectable policy that
+clears layers 6, 10, 13, 16, 18, and 21 as a sampled set.
+
+This result rejects promotion from focus-lane-only, diagnostic-only,
+evidence-only, or per-layer policy choices. CUDA mirror work, consumer
+revalidation, backend selection, and runtime/default/CUDA behavior changes are
+not authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

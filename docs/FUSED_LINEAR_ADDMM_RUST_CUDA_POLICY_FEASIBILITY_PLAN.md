@@ -288,3 +288,44 @@ Rust CPU policy synthesis still requires explicit approval. No backend is
 selected, no implementation is authorized, no consumer revalidation is
 authorized, and no runtime/default/CUDA behavior change follows from this
 result.
+
+## Gate B Result — Rust CPU Policy Synthesis
+
+Implementation branch:
+
+```text
+validation/fused-linear-addmm-rust-cpu-policy-synthesis
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_synthesis_partial_only
+```
+
+Result:
+
+- The validation-only Rust CPU mode enumerated 350 named policy records across
+  BF16-input/f32-product, BF16-rounded-product evidence, f64 diagnostic,
+  forward/reverse/pairwise/chunked/tiled accumulation, bias-placement, and
+  output-cast dimensions.
+- Full-vector replay was only run after a candidate cleared the layer focus
+  lane, because full-vector exactness implies focus-lane exactness.
+- No single selectable Rust CPU policy cleared the sampled set
+  6/10/13/16/18/21 full-vector exactly.
+- Per-layer full-vector clears appeared for layers 10, 13, and 21, but not for
+  layers 6, 16, or 18.
+- The best selectable full-vector replays still had residual mismatches on
+  layer6 (1 mismatch), layer16 (2 mismatches), and layer18 (1 mismatch).
+- Focus-lane-only, diagnostic-only, and evidence-only candidates remain
+  rejected.
+
+Gate B did not pass. Gate C CUDA mirror work is not authorized from this
+result. No backend is selected, no implementation is authorized, no consumer
+revalidation is authorized, and no runtime/default/CUDA behavior change follows.

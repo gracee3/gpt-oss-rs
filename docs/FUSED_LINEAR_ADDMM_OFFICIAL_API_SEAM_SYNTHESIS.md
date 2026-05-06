@@ -167,6 +167,32 @@ does not select a backend or authorize Rust CPU policy synthesis, consumer
 revalidation, runtime/default/CUDA changes, output emission, or ladder
 continuation.
 
+## Gate B Rust CPU Policy Synthesis Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_synthesis_partial_only
+```
+
+The bounded Rust CPU search did not find one selectable arithmetic policy that
+clears all sampled o-proj full vectors for layers 6, 10, 13, 16, 18, and 21.
+Some per-layer candidates clear layers 10, 13, or 21, but the sampled-set gate
+fails because layers 6, 16, and 18 retain full-vector mismatches. Focus-lane
+clears, diagnostic-only candidates, and evidence-only candidates remain
+non-promotable.
+
+This preserves the official CPU Torch module/F.linear/_C/addmm seam as the
+current Workstream A oracle boundary. It does not authorize Gate C CUDA mirror
+work, consumer revalidation, runtime/default/CUDA behavior changes, output
+emission, or ladder continuation.
+
 ## Guardrails
 
 - No backend selected.

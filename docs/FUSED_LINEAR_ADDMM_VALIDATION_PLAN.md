@@ -658,6 +658,32 @@ This means CPU dispatch instability is not currently blocking feasibility. It
 does not select a backend and does not authorize Gate B, CUDA mirror work,
 consumer revalidation, or runtime/default/CUDA behavior changes.
 
+## Rust CPU Policy Synthesis Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_synthesis_partial_only
+```
+
+Gate B executed as a validation-only Rust CPU policy search. It evaluated 350
+named policy records and found only partial/per-layer evidence: layers 10, 13,
+and 21 have selectable full-vector clears, while layers 6, 16, and 18 retain
+full-vector mismatches under the best selectable replays. Therefore no single
+Rust-replayable policy clears the sampled set, and the lane should not proceed
+to CUDA mirror work without a new design review.
+
+Focus-lane-only clears, diagnostic-only f64, BF16-product evidence, and
+evidence-only output policies remain rejected. No backend is selected, no
+consumer revalidation is authorized, and no runtime/default/CUDA behavior
+change follows.
+
 ## Non-Goals
 
 - No runtime implementation.

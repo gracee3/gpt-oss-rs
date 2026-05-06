@@ -549,6 +549,28 @@ authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change, output emission, ladder continuation, final-logit, all-layer,
 server, or 4097-token claim is made.
 
+## Rust CPU Policy Synthesis Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_synthesis_partial_only
+```
+
+Gate B did not find one global Rust CPU arithmetic policy for the sampled
+Workstream A o-proj set. Layers 10, 13, and 21 have per-layer full-vector
+clears, but layers 6, 16, and 18 retain mismatches under the best selectable
+replays. The milestone taxonomy therefore remains anchored to the official CPU
+Torch fused-linear/addmm API seam, and no CUDA mirror, backend selection,
+consumer revalidation, runtime/default/CUDA behavior change, output emission,
+or ladder continuation is authorized.
+
 ## Guardrails
 
 - Validation-only.

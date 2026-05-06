@@ -579,6 +579,7 @@ enum Mode {
     FusedLinearAddmmBackendDiscriminator,
     FusedLinearAddmmHelperCandidate,
     FusedLinearAddmmLikeHelperPrototype,
+    FusedLinearAddmmRustCpuPolicySynthesis,
     SelectedMlpDownBundleRevalidationStatus,
     Layer11RouterLogitInspectStatus,
     RouterLogitPolicyDebug,
@@ -1584,6 +1585,9 @@ fn main() -> Result<()> {
         Mode::FusedLinearAddmmLikeHelperPrototype => {
             run_fused_linear_addmm_like_helper_prototype(&cli)
         }
+        Mode::FusedLinearAddmmRustCpuPolicySynthesis => {
+            run_fused_linear_addmm_rust_cpu_policy_synthesis(&cli)
+        }
         Mode::SelectedMlpDownBundleRevalidationStatus => {
             run_selected_mlp_down_bundle_revalidation_status(&cli)
         }
@@ -2001,6 +2005,1150 @@ fn run_fused_linear_addmm_backend_discriminator(cli: &Cli) -> Result<()> {
         "next_bounded_step": "Review candidate matrix before any backend design, fused-addmm helper design, or consumer revalidation.",
     });
     write_json(&cli.output, &status)
+}
+
+#[derive(Clone, Copy)]
+enum RustCpuProductPolicy {
+    Bf16InputsMulToF32,
+    Bf16ProductRoundedThenF32Sum,
+    F64ProductSum,
+}
+
+impl RustCpuProductPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Bf16InputsMulToF32 => "bf16_inputs_mul_to_f32",
+            Self::Bf16ProductRoundedThenF32Sum => "bf16_product_rounded_then_f32_sum",
+            Self::F64ProductSum => "f64_product_sum",
+        }
+    }
+
+    fn short_name(self) -> &'static str {
+        match self {
+            Self::Bf16InputsMulToF32 => "bf16xf32",
+            Self::Bf16ProductRoundedThenF32Sum => "bf16prod",
+            Self::F64ProductSum => "f64prod",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RustCpuTileOrder {
+    ForwardTiles,
+    ReverseTiles,
+    PairwiseTiles,
+}
+
+impl RustCpuTileOrder {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ForwardTiles => "forward_tiles",
+            Self::ReverseTiles => "reverse_tiles",
+            Self::PairwiseTiles => "pairwise_tiles",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RustCpuAccumPolicy {
+    ForwardF32,
+    ReverseF32,
+    PairwiseF32,
+    ChunkedPairwiseF32(usize),
+    TiledF32 {
+        tile_size: usize,
+        order: RustCpuTileOrder,
+    },
+}
+
+impl RustCpuAccumPolicy {
+    fn name(self) -> String {
+        match self {
+            Self::ForwardF32 => "forward_f32".to_string(),
+            Self::ReverseF32 => "reverse_f32".to_string(),
+            Self::PairwiseF32 => "pairwise_f32".to_string(),
+            Self::ChunkedPairwiseF32(chunk) => format!("chunked_pairwise_f32_{chunk}"),
+            Self::TiledF32 { tile_size, order } => {
+                format!("tile{tile_size}_f32_{}", order.name())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RustCpuBiasPlacement {
+    BiasAddedBeforeFinalCast,
+    BiasAsInitialAccumulator,
+    BiasAsFinalReductionTerm,
+}
+
+impl RustCpuBiasPlacement {
+    fn name(self) -> &'static str {
+        match self {
+            Self::BiasAddedBeforeFinalCast => "bias_pre_round",
+            Self::BiasAsInitialAccumulator => "bias_initial",
+            Self::BiasAsFinalReductionTerm => "bias_final_term",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RustCpuOutputPolicy {
+    FinalBf16CastOnce,
+    IntermediateBf16CoreThenBiasThenBf16,
+}
+
+impl RustCpuOutputPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::FinalBf16CastOnce => "final_bf16",
+            Self::IntermediateBf16CoreThenBiasThenBf16 => "intermediate_bf16_core_then_bias_bf16",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RustCpuOprojCandidate {
+    name: String,
+    product: RustCpuProductPolicy,
+    accumulation: RustCpuAccumPolicy,
+    bias_placement: RustCpuBiasPlacement,
+    output_policy: RustCpuOutputPolicy,
+    diagnostic_only: bool,
+    evidence_only: bool,
+}
+
+impl RustCpuOprojCandidate {
+    fn selectable(&self) -> bool {
+        !self.diagnostic_only && !self.evidence_only
+    }
+
+    fn status_row(&self) -> Value {
+        json!({
+            "candidate_name": self.name,
+            "product_policy": self.product.name(),
+            "accumulation_policy": self.accumulation.name(),
+            "bias_placement_policy": self.bias_placement.name(),
+            "output_policy": self.output_policy.name(),
+            "selectable": self.selectable(),
+            "diagnostic_only": self.diagnostic_only,
+            "evidence_only": self.evidence_only,
+        })
+    }
+}
+
+fn rust_cpu_accum_policies() -> Vec<RustCpuAccumPolicy> {
+    let mut policies = vec![
+        RustCpuAccumPolicy::ForwardF32,
+        RustCpuAccumPolicy::ReverseF32,
+        RustCpuAccumPolicy::PairwiseF32,
+    ];
+    for chunk in [4usize, 8, 16, 32, 64, 128, 256, 512] {
+        policies.push(RustCpuAccumPolicy::ChunkedPairwiseF32(chunk));
+    }
+    for tile_size in [4usize, 8, 16, 32, 64, 128, 256, 512] {
+        for order in [
+            RustCpuTileOrder::ForwardTiles,
+            RustCpuTileOrder::ReverseTiles,
+            RustCpuTileOrder::PairwiseTiles,
+        ] {
+            policies.push(RustCpuAccumPolicy::TiledF32 { tile_size, order });
+        }
+    }
+    policies
+}
+
+fn rust_cpu_bias_placements() -> [RustCpuBiasPlacement; 3] {
+    [
+        RustCpuBiasPlacement::BiasAddedBeforeFinalCast,
+        RustCpuBiasPlacement::BiasAsInitialAccumulator,
+        RustCpuBiasPlacement::BiasAsFinalReductionTerm,
+    ]
+}
+
+fn rust_cpu_policy_candidates() -> Vec<RustCpuOprojCandidate> {
+    let mut candidates = Vec::new();
+    let accum_policies = rust_cpu_accum_policies();
+    for accumulation in accum_policies.iter().copied() {
+        for bias_placement in rust_cpu_bias_placements() {
+            let product = RustCpuProductPolicy::Bf16InputsMulToF32;
+            let output_policy = RustCpuOutputPolicy::FinalBf16CastOnce;
+            candidates.push(RustCpuOprojCandidate {
+                name: format!(
+                    "rust_cpu_{}_{}_{}_{}",
+                    product.short_name(),
+                    accumulation.name(),
+                    bias_placement.name(),
+                    output_policy.name(),
+                ),
+                product,
+                accumulation,
+                bias_placement,
+                output_policy,
+                diagnostic_only: false,
+                evidence_only: false,
+            });
+
+            let product = RustCpuProductPolicy::Bf16ProductRoundedThenF32Sum;
+            candidates.push(RustCpuOprojCandidate {
+                name: format!(
+                    "rust_cpu_{}_{}_{}_{}",
+                    product.short_name(),
+                    accumulation.name(),
+                    bias_placement.name(),
+                    output_policy.name(),
+                ),
+                product,
+                accumulation,
+                bias_placement,
+                output_policy,
+                diagnostic_only: false,
+                evidence_only: true,
+            });
+
+            let product = RustCpuProductPolicy::F64ProductSum;
+            candidates.push(RustCpuOprojCandidate {
+                name: format!(
+                    "rust_cpu_{}_{}_{}_{}",
+                    product.short_name(),
+                    accumulation.name(),
+                    bias_placement.name(),
+                    output_policy.name(),
+                ),
+                product,
+                accumulation,
+                bias_placement,
+                output_policy,
+                diagnostic_only: true,
+                evidence_only: false,
+            });
+        }
+
+        let product = RustCpuProductPolicy::Bf16InputsMulToF32;
+        let output_policy = RustCpuOutputPolicy::IntermediateBf16CoreThenBiasThenBf16;
+        let bias_placement = RustCpuBiasPlacement::BiasAddedBeforeFinalCast;
+        candidates.push(RustCpuOprojCandidate {
+            name: format!(
+                "rust_cpu_{}_{}_{}_{}",
+                product.short_name(),
+                accumulation.name(),
+                bias_placement.name(),
+                output_policy.name(),
+            ),
+            product,
+            accumulation,
+            bias_placement,
+            output_policy,
+            diagnostic_only: false,
+            evidence_only: true,
+        });
+    }
+    candidates
+}
+
+fn run_fused_linear_addmm_rust_cpu_policy_synthesis(cli: &Cli) -> Result<()> {
+    let status = match build_fused_linear_addmm_rust_cpu_policy_synthesis_status(cli) {
+        Ok(status) => status,
+        Err(err) => fused_linear_addmm_rust_cpu_policy_synthesis_failed_status(cli, err),
+    };
+    write_json(&cli.output, &status)
+}
+
+fn build_fused_linear_addmm_rust_cpu_policy_synthesis_status(cli: &Cli) -> Result<Value> {
+    let requested_layers = if let Some(layers) = cli.layers.as_deref() {
+        parse_comma_or_range_layers(layers)?
+    } else {
+        vec![6, 10, 13, 16, 18, 21]
+    };
+    let required_layers = [6usize, 10, 13, 16, 18, 21];
+    anyhow::ensure!(
+        requested_layers == required_layers,
+        "fused-linear/addmm Rust CPU policy synthesis requires layers 6,10,13,16,18,21; got {:?}",
+        requested_layers
+    );
+
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    let dispatch_status =
+        PathBuf::from("/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json");
+    let mut missing_sources = Vec::new();
+    if !dispatch_status.exists() {
+        missing_sources.push(dispatch_status.display().to_string());
+    }
+    if !model.exists() {
+        missing_sources.push(model.display().to_string());
+    }
+    for layer in requested_layers.iter().copied() {
+        let attention_status = PathBuf::from(format!(
+            "/tmp/layer{layer}_ordered_attention_bundle_status.json"
+        ));
+        let attention_bundle = PathBuf::from(format!("/tmp/layer{layer}_ordered_attention_bundle"));
+        if !attention_status.exists() {
+            missing_sources.push(attention_status.display().to_string());
+        }
+        if !attention_bundle.exists() {
+            missing_sources.push(attention_bundle.display().to_string());
+        }
+    }
+
+    let candidates = rust_cpu_policy_candidates();
+    if !missing_sources.is_empty() {
+        return Ok(fused_linear_addmm_rust_cpu_policy_synthesis_base_status(
+            "fused_linear_addmm_rust_cpu_policy_synthesis_blocked_by_missing_artifacts",
+            cli,
+            &requested_layers,
+            &candidates,
+            json!({
+                "missing_sources": missing_sources,
+                "reason": "required source artifacts were missing",
+            }),
+        ));
+    }
+
+    let mut layers_evaluated = Vec::new();
+    let mut layers_blocked = Vec::new();
+    for layer in requested_layers.iter().copied() {
+        match evaluate_fused_linear_addmm_rust_cpu_policy_layer(layer, model, cli, &candidates) {
+            Ok(layer_status) => layers_evaluated.push(layer_status),
+            Err(err) => layers_blocked.push(json!({
+                "layer_index": layer,
+                "reason": err.to_string(),
+            })),
+        }
+    }
+
+    let candidate_matrix =
+        build_fused_linear_addmm_rust_cpu_policy_matrix(&layers_evaluated, &candidates);
+    let global_policy = candidate_matrix
+        .iter()
+        .find(|candidate| {
+            candidate
+                .get("sampled_set_full_vector_cleared")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && candidate
+                    .get("selectable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .cloned();
+    let any_partial = candidate_matrix.iter().any(|candidate| {
+        candidate
+            .get("full_vector_cleared_layers")
+            .and_then(Value::as_array)
+            .is_some_and(|layers| !layers.is_empty())
+            || candidate
+                .get("focus_lane_cleared_layers")
+                .and_then(Value::as_array)
+                .is_some_and(|layers| !layers.is_empty())
+    });
+    let matrix_complete =
+        layers_blocked.is_empty() && layers_evaluated.len() == requested_layers.len();
+    let classification = if global_policy.is_some() {
+        "fused_linear_addmm_rust_cpu_policy_synthesis_global_policy_cleared"
+    } else if !matrix_complete {
+        "fused_linear_addmm_rust_cpu_policy_synthesis_failed"
+    } else if any_partial {
+        "fused_linear_addmm_rust_cpu_policy_synthesis_partial_only"
+    } else {
+        "fused_linear_addmm_rust_cpu_policy_synthesis_no_global_policy"
+    };
+    let selected_validation_policy = global_policy
+        .as_ref()
+        .and_then(|candidate| candidate.get("candidate_name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut status = fused_linear_addmm_rust_cpu_policy_synthesis_base_status(
+        classification,
+        cli,
+        &requested_layers,
+        &candidates,
+        json!({}),
+    );
+    if let Some(object) = status.as_object_mut() {
+        object.insert(
+            "source_statuses".to_string(),
+            json!({
+                "cpu_dispatch_stability": dispatch_status.display().to_string(),
+                "official_api_seam": "docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md",
+                "feasibility_plan": "docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md",
+            }),
+        );
+        object.insert("layers_evaluated".to_string(), json!(layers_evaluated));
+        object.insert("layers_blocked".to_string(), json!(layers_blocked));
+        object.insert("candidate_matrix".to_string(), json!(candidate_matrix));
+        object.insert(
+            "candidate_outcome".to_string(),
+            json!({
+                "global_policy_cleared": global_policy.is_some(),
+                "validation_policy_selected": selected_validation_policy.is_some(),
+                "selected_validation_policy": selected_validation_policy,
+                "selected_backend": Value::Null,
+                "backend_selected": false,
+                "gate_b_passed": global_policy.is_some(),
+                "gate_b_failed": global_policy.is_none() && matrix_complete,
+                "gate_b_partial": global_policy.is_none() && any_partial,
+                "next_bounded_step": if global_policy.is_some() {
+                    "Review the global validation policy before any CUDA mirror design. Consumer revalidation and runtime promotion remain unauthorized."
+                } else {
+                    "Stop Gate B for this lane; no single Rust CPU policy cleared the sampled set."
+                },
+            }),
+        );
+        object.insert(
+            "validation_policy_selected".to_string(),
+            json!(global_policy.is_some()),
+        );
+        object.insert(
+            "selected_validation_policy".to_string(),
+            global_policy
+                .as_ref()
+                .and_then(|candidate| candidate.get("candidate_name"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+    }
+    Ok(status)
+}
+
+fn fused_linear_addmm_rust_cpu_policy_synthesis_base_status(
+    classification: &str,
+    cli: &Cli,
+    requested_layers: &[usize],
+    candidates: &[RustCpuOprojCandidate],
+    extra: Value,
+) -> Value {
+    json!({
+        "classification": classification,
+        "validation_only": true,
+        "rust_cpu_policy_synthesis": true,
+        "oracle_device": "cpu",
+        "cuda_available": cfg!(feature = "cuda"),
+        "cuda_used": false,
+        "operator": "attention_o_proj",
+        "reference": {
+            "api": "CPU Torch module/F.linear/_C._nn.linear/addmm",
+            "addmm_form": "torch.addmm(bias, input_2d, weight_t_2d)",
+            "input_dtype": "BF16",
+            "weight_dtype": "BF16",
+            "bias_dtype": "BF16",
+            "bias_behavior": "fused before final observable BF16 output",
+            "output_dtype": "BF16",
+            "full_vector_exactness_required": true,
+            "focus_lane_only_accepted": false,
+        },
+        "layers_requested": requested_layers,
+        "candidate_policy_count": candidates.len(),
+        "candidate_policies": candidates.iter().map(RustCpuOprojCandidate::status_row).collect::<Vec<_>>(),
+        "search_strategy": {
+            "bounded_policy_space": true,
+            "full_cartesian_product": false,
+            "full_vector_pre_screen": "candidate full-vector replay is executed only after the candidate clears the layer focus lane, because full-vector exactness implies focus-lane exactness",
+            "focus_lane_only_rejected": true,
+            "diagnostic_or_evidence_promotion_rejected": true,
+        },
+        "selected_backend": Value::Null,
+        "backend_selected": false,
+        "implementation_authorized": false,
+        "consumer_revalidation_authorized": false,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "status_output": cli.output.display().to_string(),
+        "extra": extra,
+    })
+}
+
+fn fused_linear_addmm_rust_cpu_policy_synthesis_failed_status(
+    cli: &Cli,
+    err: anyhow::Error,
+) -> Value {
+    let candidates = rust_cpu_policy_candidates();
+    fused_linear_addmm_rust_cpu_policy_synthesis_base_status(
+        "fused_linear_addmm_rust_cpu_policy_synthesis_failed",
+        cli,
+        &[6, 10, 13, 16, 18, 21],
+        &candidates,
+        json!({
+            "error": err.to_string(),
+        }),
+    )
+}
+
+fn evaluate_fused_linear_addmm_rust_cpu_policy_layer(
+    layer: usize,
+    model: &Path,
+    cli: &Cli,
+    candidates: &[RustCpuOprojCandidate],
+) -> Result<Value> {
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let role = fused_linear_addmm_layer_role(layer);
+    let focus_lane = fused_linear_addmm_layer_focus_lane(layer);
+    anyhow::ensure!(
+        focus_lane < hidden,
+        "layer {layer} focus lane {focus_lane} must be < {hidden}"
+    );
+
+    let attention_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_ordered_attention_bundle_status.json"
+    ));
+    let attention_status = load_json(&attention_status_path)
+        .with_context(|| format!("failed to load {}", attention_status_path.display()))?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    validate_path(&weighted_v_path, "attention weighted V")?;
+    validate_path(&oproj_path, "attention o-proj reference")?;
+    let (weighted_v_status, weighted_v) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (oproj_status, oproj_reference) =
+        load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+    anyhow::ensure!(
+        weighted_v.len() == q_dim,
+        "layer {layer} weighted-V length {} does not match q_dim {q_dim}",
+        weighted_v.len()
+    );
+    anyhow::ensure!(
+        oproj_reference.len() == hidden,
+        "layer {layer} o-proj reference length {} does not match hidden {hidden}",
+        oproj_reference.len()
+    );
+    anyhow::ensure!(
+        oproj_weight.len() == hidden * q_dim,
+        "layer {layer} o-proj weight length {} does not match hidden*q_dim {}",
+        oproj_weight.len(),
+        hidden * q_dim
+    );
+    anyhow::ensure!(
+        oproj_bias.len() == hidden,
+        "layer {layer} o-proj bias length {} does not match hidden {hidden}",
+        oproj_bias.len()
+    );
+
+    let input_bf16 = weighted_v
+        .iter()
+        .copied()
+        .map(round_bf16)
+        .collect::<Vec<_>>();
+    let weight_bf16 = oproj_weight
+        .iter()
+        .copied()
+        .map(round_bf16)
+        .collect::<Vec<_>>();
+    let bias_bf16 = oproj_bias
+        .iter()
+        .copied()
+        .map(round_bf16)
+        .collect::<Vec<_>>();
+
+    let mut candidate_results = Vec::new();
+    for candidate in candidates {
+        let focus_lane_local = compute_rust_cpu_oproj_candidate_lane(
+            &input_bf16,
+            &weight_bf16,
+            &bias_bf16,
+            q_dim,
+            focus_lane,
+            candidate,
+        );
+        let focus_lane_reference = oproj_reference[focus_lane];
+        let focus_lane_abs_diff = (focus_lane_local - focus_lane_reference).abs();
+        let focus_lane_cleared = focus_lane_abs_diff == 0.0;
+        let full_vector_probe_allowed = rust_cpu_candidate_full_vector_probe_allowed(candidate);
+        let (full_vector_executed, metric, full_vector_cleared, output) =
+            if focus_lane_cleared && full_vector_probe_allowed {
+                let output = compute_rust_cpu_oproj_candidate_output(
+                    &input_bf16,
+                    &weight_bf16,
+                    &bias_bf16,
+                    hidden,
+                    q_dim,
+                    candidate,
+                );
+                let metric = compare_hidden(&output, &oproj_reference);
+                let full_vector_cleared =
+                    metric.metrics.mismatches == 0 && metric.metrics.max_abs_diff == 0.0;
+                (true, Some(metric), full_vector_cleared, Some(output))
+            } else {
+                (false, None, false, None)
+            };
+        let selectable = candidate.selectable() && full_vector_cleared;
+        let focus_lane_only_clear = focus_lane_cleared && !full_vector_cleared;
+        let rejection_reason = if selectable {
+            Value::Null
+        } else if candidate.diagnostic_only {
+            json!("diagnostic_only")
+        } else if candidate.evidence_only {
+            json!("evidence_only")
+        } else if !focus_lane_cleared {
+            json!("focus_lane_mismatch_pre_screen")
+        } else if !full_vector_probe_allowed {
+            json!("bounded_full_vector_probe_not_executed")
+        } else if !full_vector_cleared {
+            json!("full_vector_mismatches")
+        } else {
+            json!("not_selectable")
+        };
+        candidate_results.push(json!({
+            "candidate_name": candidate.name,
+            "selectable": selectable,
+            "candidate_selectable_by_policy": candidate.selectable(),
+            "diagnostic_only": candidate.diagnostic_only,
+            "evidence_only": candidate.evidence_only,
+            "layer_index": layer,
+            "product_policy": candidate.product.name(),
+            "accumulation_policy": candidate.accumulation.name(),
+            "bias_placement_policy": candidate.bias_placement.name(),
+            "output_policy": candidate.output_policy.name(),
+            "full_vector_probe_allowed": full_vector_probe_allowed,
+            "full_vector_executed": full_vector_executed,
+            "full_vector_mismatches": metric.as_ref().map(|metric| metric.metrics.mismatches),
+            "max_abs_diff": metric.as_ref().map(|metric| metric.metrics.max_abs_diff),
+            "mean_abs_diff": metric.as_ref().map(|metric| metric.metrics.mean_abs_diff),
+            "first_mismatch": metric.as_ref().and_then(|metric| metric.first_mismatch.clone()),
+            "worst_mismatch": metric.as_ref().and_then(|metric| metric.worst_mismatch.clone()),
+            "focus_lane": {
+                "hidden_lane": focus_lane,
+                "actual": focus_lane_local,
+                "expected": focus_lane_reference,
+                "abs_diff": focus_lane_abs_diff,
+                "cleared": focus_lane_cleared,
+                "diagnostic_only": true,
+            },
+            "focus_lane_cleared": focus_lane_cleared,
+            "focus_lane_only_clear": focus_lane_only_clear,
+            "full_vector_cleared": full_vector_cleared,
+            "value_count": output.as_ref().map(Vec::len).unwrap_or(hidden),
+            "rejection_reason": rejection_reason,
+        }));
+    }
+
+    let best_selectable = best_rust_cpu_policy_layer_candidate(&candidate_results, |candidate| {
+        candidate
+            .get("candidate_selectable_by_policy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && candidate
+                .get("full_vector_executed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
+    let best_diagnostic = best_rust_cpu_policy_layer_candidate(&candidate_results, |candidate| {
+        candidate
+            .get("diagnostic_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && candidate
+                .get("full_vector_executed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
+    let best_evidence = best_rust_cpu_policy_layer_candidate(&candidate_results, |candidate| {
+        candidate
+            .get("evidence_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && candidate
+                .get("full_vector_executed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
+    let any_focus_lane_only_clear = candidate_results.iter().any(|candidate| {
+        candidate
+            .get("focus_lane_only_clear")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let full_vector_clear_candidates = candidate_results
+        .iter()
+        .filter_map(|candidate| {
+            candidate
+                .get("full_vector_cleared")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                .then(|| {
+                    candidate
+                        .get("candidate_name")
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "layer_index": layer,
+        "role": role,
+        "focus_lane": focus_lane,
+        "artifacts": {
+            "weighted_v": weighted_v_status,
+            "o_proj_reference": oproj_status,
+        },
+        "model_tensors": {
+            "oproj_weight": oproj_weight_source,
+            "oproj_bias": oproj_bias_source,
+        },
+        "tensor_counts": {
+            "hidden": hidden,
+            "q_dim": q_dim,
+            "weighted_v": weighted_v.len(),
+            "oproj_weight": oproj_weight.len(),
+            "oproj_bias": oproj_bias.len(),
+            "oproj_reference": oproj_reference.len(),
+        },
+        "source_statuses": fused_linear_addmm_layer_source_statuses(layer, cli),
+        "candidate_results": candidate_results,
+        "full_vector_clear_candidates": full_vector_clear_candidates,
+        "per_layer_best_partials": {
+            "best_selectable_candidate_by_mismatch_count": best_selectable,
+            "best_diagnostic_candidate_by_mismatch_count": best_diagnostic,
+            "best_evidence_only_candidate_by_mismatch_count": best_evidence,
+            "any_focus_lane_only_clear": any_focus_lane_only_clear,
+            "focus_lane_only_clears_rejected": true,
+        },
+    }))
+}
+
+fn compute_rust_cpu_oproj_candidate_output(
+    input_bf16: &[f32],
+    weight_bf16: &[f32],
+    bias_bf16: &[f32],
+    hidden: usize,
+    q_dim: usize,
+    candidate: &RustCpuOprojCandidate,
+) -> Vec<f32> {
+    (0..hidden)
+        .map(|out_lane| {
+            compute_rust_cpu_oproj_candidate_lane(
+                input_bf16,
+                weight_bf16,
+                bias_bf16,
+                q_dim,
+                out_lane,
+                candidate,
+            )
+        })
+        .collect()
+}
+
+fn rust_cpu_candidate_full_vector_probe_allowed(candidate: &RustCpuOprojCandidate) -> bool {
+    if !candidate.selectable()
+        || !matches!(candidate.product, RustCpuProductPolicy::Bf16InputsMulToF32)
+        || !matches!(
+            candidate.output_policy,
+            RustCpuOutputPolicy::FinalBf16CastOnce
+        )
+    {
+        return false;
+    }
+
+    matches!(
+        candidate.accumulation,
+        RustCpuAccumPolicy::ForwardF32
+            | RustCpuAccumPolicy::ReverseF32
+            | RustCpuAccumPolicy::PairwiseF32
+            | RustCpuAccumPolicy::ChunkedPairwiseF32(64)
+            | RustCpuAccumPolicy::ChunkedPairwiseF32(128)
+            | RustCpuAccumPolicy::TiledF32 {
+                tile_size: 64,
+                order: RustCpuTileOrder::ForwardTiles,
+            }
+            | RustCpuAccumPolicy::TiledF32 {
+                tile_size: 64,
+                order: RustCpuTileOrder::ReverseTiles,
+            }
+            | RustCpuAccumPolicy::TiledF32 {
+                tile_size: 64,
+                order: RustCpuTileOrder::PairwiseTiles,
+            }
+    )
+}
+
+fn compute_rust_cpu_oproj_candidate_lane(
+    input_bf16: &[f32],
+    weight_bf16: &[f32],
+    bias_bf16: &[f32],
+    q_dim: usize,
+    out_lane: usize,
+    candidate: &RustCpuOprojCandidate,
+) -> f32 {
+    let weight_base = out_lane * q_dim;
+    match candidate.product {
+        RustCpuProductPolicy::F64ProductSum => {
+            let terms = (0..q_dim)
+                .map(|in_lane| {
+                    (input_bf16[in_lane] as f64) * (weight_bf16[weight_base + in_lane] as f64)
+                })
+                .collect::<Vec<_>>();
+            let value = apply_rust_cpu_bias_f64(
+                &terms,
+                bias_bf16[out_lane] as f64,
+                candidate.accumulation,
+                candidate.bias_placement,
+                candidate.output_policy,
+            );
+            round_bf16(value as f32)
+        }
+        RustCpuProductPolicy::Bf16InputsMulToF32
+        | RustCpuProductPolicy::Bf16ProductRoundedThenF32Sum => {
+            let terms = (0..q_dim)
+                .map(|in_lane| {
+                    let product = input_bf16[in_lane] * weight_bf16[weight_base + in_lane];
+                    match candidate.product {
+                        RustCpuProductPolicy::Bf16ProductRoundedThenF32Sum => round_bf16(product),
+                        _ => product,
+                    }
+                })
+                .collect::<Vec<_>>();
+            apply_rust_cpu_bias_f32(
+                &terms,
+                bias_bf16[out_lane],
+                candidate.accumulation,
+                candidate.bias_placement,
+                candidate.output_policy,
+            )
+        }
+    }
+}
+
+fn apply_rust_cpu_bias_f32(
+    terms: &[f32],
+    bias: f32,
+    accumulation: RustCpuAccumPolicy,
+    bias_placement: RustCpuBiasPlacement,
+    output_policy: RustCpuOutputPolicy,
+) -> f32 {
+    if matches!(
+        output_policy,
+        RustCpuOutputPolicy::IntermediateBf16CoreThenBiasThenBf16
+    ) {
+        return round_bf16(round_bf16(accumulate_rust_cpu_f32(terms, accumulation)) + bias);
+    }
+    let value = match bias_placement {
+        RustCpuBiasPlacement::BiasAddedBeforeFinalCast => {
+            accumulate_rust_cpu_f32(terms, accumulation) + bias
+        }
+        RustCpuBiasPlacement::BiasAsInitialAccumulator => match accumulation {
+            RustCpuAccumPolicy::ForwardF32 => {
+                let mut sum = bias;
+                for term in terms {
+                    sum += *term;
+                }
+                sum
+            }
+            RustCpuAccumPolicy::ReverseF32 => {
+                let mut sum = bias;
+                for term in terms.iter().rev() {
+                    sum += *term;
+                }
+                sum
+            }
+            _ => {
+                let mut with_bias = Vec::with_capacity(terms.len() + 1);
+                with_bias.push(bias);
+                with_bias.extend_from_slice(terms);
+                accumulate_rust_cpu_f32(&with_bias, accumulation)
+            }
+        },
+        RustCpuBiasPlacement::BiasAsFinalReductionTerm => match accumulation {
+            RustCpuAccumPolicy::ForwardF32 => {
+                let mut sum = accumulate_rust_cpu_f32(terms, accumulation);
+                sum += bias;
+                sum
+            }
+            RustCpuAccumPolicy::ReverseF32 => {
+                let mut sum = 0.0f32;
+                for term in terms.iter().rev() {
+                    sum += *term;
+                }
+                sum + bias
+            }
+            _ => {
+                let mut with_bias = Vec::with_capacity(terms.len() + 1);
+                with_bias.extend_from_slice(terms);
+                with_bias.push(bias);
+                accumulate_rust_cpu_f32(&with_bias, accumulation)
+            }
+        },
+    };
+    round_bf16(value)
+}
+
+fn apply_rust_cpu_bias_f64(
+    terms: &[f64],
+    bias: f64,
+    accumulation: RustCpuAccumPolicy,
+    bias_placement: RustCpuBiasPlacement,
+    output_policy: RustCpuOutputPolicy,
+) -> f64 {
+    if matches!(
+        output_policy,
+        RustCpuOutputPolicy::IntermediateBf16CoreThenBiasThenBf16
+    ) {
+        let core = round_bf16(accumulate_rust_cpu_f64(terms, accumulation) as f32) as f64;
+        return (round_bf16((core + bias) as f32)) as f64;
+    }
+    let value = match bias_placement {
+        RustCpuBiasPlacement::BiasAddedBeforeFinalCast => {
+            accumulate_rust_cpu_f64(terms, accumulation) + bias
+        }
+        RustCpuBiasPlacement::BiasAsInitialAccumulator => match accumulation {
+            RustCpuAccumPolicy::ForwardF32 => {
+                let mut sum = bias;
+                for term in terms {
+                    sum += *term;
+                }
+                sum
+            }
+            RustCpuAccumPolicy::ReverseF32 => {
+                let mut sum = bias;
+                for term in terms.iter().rev() {
+                    sum += *term;
+                }
+                sum
+            }
+            _ => {
+                let mut with_bias = Vec::with_capacity(terms.len() + 1);
+                with_bias.push(bias);
+                with_bias.extend_from_slice(terms);
+                accumulate_rust_cpu_f64(&with_bias, accumulation)
+            }
+        },
+        RustCpuBiasPlacement::BiasAsFinalReductionTerm => match accumulation {
+            RustCpuAccumPolicy::ForwardF32 => {
+                let mut sum = accumulate_rust_cpu_f64(terms, accumulation);
+                sum += bias;
+                sum
+            }
+            RustCpuAccumPolicy::ReverseF32 => {
+                let mut sum = 0.0f64;
+                for term in terms.iter().rev() {
+                    sum += *term;
+                }
+                sum + bias
+            }
+            _ => {
+                let mut with_bias = Vec::with_capacity(terms.len() + 1);
+                with_bias.extend_from_slice(terms);
+                with_bias.push(bias);
+                accumulate_rust_cpu_f64(&with_bias, accumulation)
+            }
+        },
+    };
+    (round_bf16(value as f32)) as f64
+}
+
+fn accumulate_rust_cpu_f32(terms: &[f32], accumulation: RustCpuAccumPolicy) -> f32 {
+    match accumulation {
+        RustCpuAccumPolicy::ForwardF32 => terms.iter().fold(0.0f32, |sum, term| sum + *term),
+        RustCpuAccumPolicy::ReverseF32 => terms.iter().rev().fold(0.0f32, |sum, term| sum + *term),
+        RustCpuAccumPolicy::PairwiseF32 => pairwise_sum_f32(terms),
+        RustCpuAccumPolicy::ChunkedPairwiseF32(chunk_size) => {
+            chunked_pairwise_sum_f32(terms, chunk_size)
+        }
+        RustCpuAccumPolicy::TiledF32 { tile_size, order } => {
+            let mut partials = Vec::new();
+            for chunk in terms.chunks(tile_size) {
+                partials.push(chunk.iter().fold(0.0f32, |sum, term| sum + *term));
+            }
+            match order {
+                RustCpuTileOrder::ForwardTiles => {
+                    partials.iter().fold(0.0f32, |sum, term| sum + *term)
+                }
+                RustCpuTileOrder::ReverseTiles => {
+                    partials.iter().rev().fold(0.0f32, |sum, term| sum + *term)
+                }
+                RustCpuTileOrder::PairwiseTiles => pairwise_sum_f32(&partials),
+            }
+        }
+    }
+}
+
+fn accumulate_rust_cpu_f64(terms: &[f64], accumulation: RustCpuAccumPolicy) -> f64 {
+    match accumulation {
+        RustCpuAccumPolicy::ForwardF32 => terms.iter().fold(0.0f64, |sum, term| sum + *term),
+        RustCpuAccumPolicy::ReverseF32 => terms.iter().rev().fold(0.0f64, |sum, term| sum + *term),
+        RustCpuAccumPolicy::PairwiseF32 => pairwise_sum_f64_slice(terms),
+        RustCpuAccumPolicy::ChunkedPairwiseF32(chunk_size) => {
+            let mut partials = Vec::new();
+            for chunk in terms.chunks(chunk_size) {
+                partials.push(chunk.iter().fold(0.0f64, |sum, term| sum + *term));
+            }
+            pairwise_sum_f64_slice(&partials)
+        }
+        RustCpuAccumPolicy::TiledF32 { tile_size, order } => {
+            let mut partials = Vec::new();
+            for chunk in terms.chunks(tile_size) {
+                partials.push(chunk.iter().fold(0.0f64, |sum, term| sum + *term));
+            }
+            match order {
+                RustCpuTileOrder::ForwardTiles => {
+                    partials.iter().fold(0.0f64, |sum, term| sum + *term)
+                }
+                RustCpuTileOrder::ReverseTiles => {
+                    partials.iter().rev().fold(0.0f64, |sum, term| sum + *term)
+                }
+                RustCpuTileOrder::PairwiseTiles => pairwise_sum_f64_slice(&partials),
+            }
+        }
+    }
+}
+
+fn pairwise_sum_f64_slice(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut current = values.to_vec();
+    while current.len() > 1 {
+        let mut next = Vec::with_capacity(current.len().div_ceil(2));
+        for pair in current.chunks(2) {
+            next.push(pair[0] + pair.get(1).copied().unwrap_or(0.0));
+        }
+        current = next;
+    }
+    current[0]
+}
+
+fn build_fused_linear_addmm_rust_cpu_policy_matrix(
+    layers_evaluated: &[Value],
+    candidates: &[RustCpuOprojCandidate],
+) -> Vec<Value> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let mut focus_lane_cleared_layers = Vec::new();
+            let mut full_vector_executed_layers = Vec::new();
+            let mut full_vector_cleared_layers = Vec::new();
+            let mut focus_lane_only_layers = Vec::new();
+            for layer in layers_evaluated {
+                let layer_index = layer
+                    .get("layer_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize;
+                let result = layer
+                    .get("candidate_results")
+                    .and_then(Value::as_array)
+                    .and_then(|results| {
+                        results.iter().find(|result| {
+                            result
+                                .get("candidate_name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|name| name == candidate.name)
+                        })
+                    });
+                if let Some(result) = result {
+                    if result
+                        .get("focus_lane_cleared")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        focus_lane_cleared_layers.push(layer_index);
+                    }
+                    if result
+                        .get("full_vector_executed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        full_vector_executed_layers.push(layer_index);
+                    }
+                    if result
+                        .get("full_vector_cleared")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        full_vector_cleared_layers.push(layer_index);
+                    }
+                    if result
+                        .get("focus_lane_only_clear")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        focus_lane_only_layers.push(layer_index);
+                    }
+                }
+            }
+            let sampled_count = layers_evaluated.len();
+            let sampled_set_focus_cleared = focus_lane_cleared_layers.len() == sampled_count;
+            let sampled_set_full_vector_cleared = full_vector_cleared_layers.len() == sampled_count;
+            json!({
+                "candidate_name": candidate.name,
+                "selectable": candidate.selectable(),
+                "diagnostic_only": candidate.diagnostic_only,
+                "evidence_only": candidate.evidence_only,
+                "product_policy": candidate.product.name(),
+                "accumulation_policy": candidate.accumulation.name(),
+                "bias_placement_policy": candidate.bias_placement.name(),
+                "output_policy": candidate.output_policy.name(),
+                "focus_lane_cleared_layers": focus_lane_cleared_layers,
+                "full_vector_executed_layers": full_vector_executed_layers,
+                "full_vector_cleared_layers": full_vector_cleared_layers,
+                "focus_lane_only_clear_layers": focus_lane_only_layers,
+                "sampled_set_focus_cleared": sampled_set_focus_cleared,
+                "sampled_set_full_vector_cleared": sampled_set_full_vector_cleared,
+                "candidate_rejected": !candidate.selectable() || !sampled_set_full_vector_cleared,
+                "rejection_reason": if !candidate.selectable() {
+                    if candidate.diagnostic_only { "diagnostic_only" } else { "evidence_only" }
+                } else if !sampled_set_focus_cleared {
+                    "one_or_more_focus_lanes_failed"
+                } else if !sampled_set_full_vector_cleared {
+                    "one_or_more_full_vectors_failed"
+                } else {
+                    "not_rejected"
+                },
+            })
+        })
+        .collect()
+}
+
+fn best_rust_cpu_policy_layer_candidate<F>(results: &[Value], predicate: F) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    let mut best: Option<&Value> = None;
+    for result in results.iter().filter(|result| predicate(result)) {
+        let Some(mismatches) = result.get("full_vector_mismatches").and_then(Value::as_u64) else {
+            continue;
+        };
+        let max_abs_diff = result
+            .get("max_abs_diff")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::INFINITY);
+        let replace = best
+            .and_then(|candidate| {
+                candidate
+                    .get("full_vector_mismatches")
+                    .and_then(Value::as_u64)
+                    .map(|best_mismatches| {
+                        let best_max_abs_diff = candidate
+                            .get("max_abs_diff")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(f64::INFINITY);
+                        mismatches < best_mismatches
+                            || (mismatches == best_mismatches && max_abs_diff < best_max_abs_diff)
+                    })
+            })
+            .unwrap_or(true);
+        if replace {
+            best = Some(result);
+        }
+    }
+    best.cloned().unwrap_or(Value::Null)
 }
 
 fn run_fused_linear_addmm_helper_candidate(cli: &Cli) -> Result<()> {
