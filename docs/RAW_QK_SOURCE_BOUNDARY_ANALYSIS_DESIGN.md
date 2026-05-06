@@ -272,6 +272,9 @@ Require:
 
 Docs-only raw-QK source boundary design is enough for now.
 
+The conservative final claims summary for the ordered-surface batch pivot is
+recorded in `docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md`.
+
 Next executable branch only if separately approved:
 
 ```text

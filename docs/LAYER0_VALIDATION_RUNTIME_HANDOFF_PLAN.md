@@ -2878,6 +2878,46 @@ design. No output emission, ladder continuation, correction metadata, tolerance
 pass, runtime/default/CUDA change, final-logit, all-layer, server, or
 4097-token claim.
 
+## Ordered Surface Batch Final Claims Summary
+
+Claims doc:
+
+```text
+docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md
+```
+
+Classification:
+
+```text
+ordered_surface_batch_final_claims_summary_recorded
+```
+
+Can claim:
+
+- The layer7..23 ordered-surface pivot produced an operator-specific taxonomy
+  for the `developer-message-user-smoke` prompt/case.
+- Strict/default clears exist for layers 12/14/15/22.
+- Explicit validation-only full-bundle clears exist for layers 8/9/10.
+- Workstream A narrowed o-proj to fused-linear/addmm validation modeling.
+- Workstream B retired layer11/layer20 support gaps while preserving layer19
+  as a collateral negative control.
+- Workstream C is scoped for raw-QK source/artifact analysis, but not executed.
+
+Cannot claim: production/default runtime parity, CUDA correctness, output
+promotion, ladder continuation, final-logit parity, all-layer parity, server
+parity, 4097-token behavior, global policy safety, or backend identity for
+local pairwise/reverse/current policies.
+
+Next executable branch, only if separately authorized:
+
+```text
+oracle/raw-qk-producer-api-probes-23-17-21
+```
+
+Guardrails: no runtime/default/CUDA change, output emission, ladder
+continuation, correction metadata promotion, tolerance pass, final-logit,
+all-layer, server, or 4097-token claim.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

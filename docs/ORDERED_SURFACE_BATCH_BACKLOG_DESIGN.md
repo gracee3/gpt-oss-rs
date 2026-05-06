@@ -314,6 +314,33 @@ recorded in `docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md`. No
 implementation is authorized by the design, probe result, plan update, or
 scaffold design.
 
+## Final Claims Summary
+
+The conservative final claims summary for the ordered-surface batch pivot is
+recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md
+```
+
+Classification: `ordered_surface_batch_final_claims_summary_recorded`.
+
+Status:
+
+- Workstream A: fused-linear/addmm o-proj evidence normalized in the status
+  scaffold; no backend selected.
+- Workstream B: layer11 and layer20 support-gap cases retired under
+  validation-only composed policies; layer19 remains the collateral negative
+  control.
+- Workstream C: raw-QK source-boundary design recorded; probes are not yet
+  authorized.
+- Next executable lane, only after separate approval:
+  `oracle/raw-qk-producer-api-probes-23-17-21`.
+
+Guardrails: no implementation authorization, runtime/default/CUDA change,
+output emission, ladder continuation, correction metadata promotion, tolerance
+pass, final-logit, all-layer, server, or 4097-token claim.
+
 ## Non-Goals
 
 - No implementation authorization.

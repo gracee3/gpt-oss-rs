@@ -190,6 +190,13 @@ The fused-linear/addmm validation plan update is recorded in:
 docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 ```
 
+The conservative final claims summary for the ordered-surface batch pivot is
+recorded in:
+
+```text
+docs/ORDERED_SURFACE_BATCH_FINAL_CLAIMS_SUMMARY.md
+```
+
 ## Guardrails
 
 - No output emission.
