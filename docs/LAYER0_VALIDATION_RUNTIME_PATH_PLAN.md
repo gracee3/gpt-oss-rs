@@ -4437,6 +4437,45 @@ is no final-logit, all-layer, server, or 4097-token claim. Next bounded step:
 review the classify-only matrix, then authorize bounded probes only for the
 first failing seams.
 
+## Ordered Surface Batch Bounded-Probe Pilot
+
+The layer7..9 bounded-probe pilot ran on branch
+`validation/ordered-surface-batch-probes` and wrote:
+
+```text
+/tmp/ordered_surface_batch_probe_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_probe_recorded
+```
+
+The pilot only attempted the classified first failing seam per layer. Layer7
+raw-QK probing was blocked before sweep execution because
+`raw-qk-policy-sweep-status` requires an
+`--oracle-raw-qk-dtype-probe-status`; no layer7 raw-QK dtype-probe status was
+present, and no producer probe was run in this slice.
+
+Layer8 and layer9 attention o-proj sweeps both found
+`pairwise_f32_accum_f32_bias_bf16_output` as a full-vector, residual, and
+bridge clearing validation-only policy. Full ordered bundle revalidation
+cleared for both layers under `--attention-oproj-policy pairwise`.
+
+| Layer | Source classify seam | Probe result | Revalidation result | Selected policy |
+| --- | --- | --- | --- | --- |
+| 7 | raw-QK q_head 50 / key column 57 | blocked by missing raw-QK dtype-probe status | not run | none |
+| 8 | attention o-proj lane 2578 | o-proj sweep full-vector clear | attention and MLP cleared | `pairwise_f32_accum_f32_bias_bf16_output` |
+| 9 | attention o-proj lane 446 | o-proj sweep full-vector clear | attention and MLP cleared | `pairwise_f32_accum_f32_bias_bf16_output` |
+
+No output was emitted, the ladder was not continued, no correction metadata or
+tolerance pass was applied, no producer/API probe was run, and no
+runtime/default routing/CUDA behavior changed. There is no final-logit,
+all-layer, server, or 4097-token claim. Next bounded step: review the probe
+matrix and provide or authorize the missing layer7 raw-QK dtype-probe
+prerequisite only if continuing layer7 localization.
+
 ## Validation Commands
 
 For the skeleton slice:
