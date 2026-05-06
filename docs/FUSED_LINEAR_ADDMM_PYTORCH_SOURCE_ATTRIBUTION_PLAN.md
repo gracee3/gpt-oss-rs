@@ -562,3 +562,44 @@ addmm/GEMM path and the layer18 lane1641 `ATEN_CPU_CAPABILITY=default`
 differential. This docs branch does not build or patch PyTorch, create a venv,
 run probes, select a backend, authorize consumer revalidation, or reopen
 Rust/CUDA policy synthesis.
+
+## PyTorch CPU Instrumentation Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_cpu_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_path_identified_not_replayable
+```
+
+The CPU-only source-build instrumentation branch built PyTorch from the
+checked-out source commit `70d99e998b4955e0049d13a98d77ae1b14db1f45` in the
+separate `/home/emmy/openai/.venvs/pytorch-src-cpu` environment with
+`USE_CUDA=0`. The runtime probe evaluated layer18 under baseline/no override
+and `ATEN_CPU_CAPABILITY=default`.
+
+Instrumentation identified the active lower source path for both configs as:
+
+```text
+linear 2D+bias -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub
+```
+
+Baseline reproduced the official artifact exactly. The `default` run reproduced
+the known one-lane layer18 lane1641 differential, but the traced source path did
+not change. This is path identification, not a replayable arithmetic or
+microkernel rule:
+
+- `active_path_baseline = native_cpublas_stub`;
+- `active_path_default = native_cpublas_stub`;
+- `path_changed_under_default = false`;
+- `concrete_replayable_rule_found = false`;
+- `reopen_rust_policy_synthesis = false`.
+
+The source-attribution lane therefore still preserves Workstream A as the
+official CPU Torch API seam. It does not select a backend, rebaseline artifacts,
+authorize consumer revalidation, or change runtime/default/CUDA behavior.

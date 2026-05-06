@@ -962,6 +962,43 @@ baseline and `ATEN_CPU_CAPABILITY=default` take different optimized BF16 paths
 for layer18 lane 1641. It must not rebaseline, select a backend, run consumer
 revalidation, or change runtime/default/CUDA behavior.
 
+## PyTorch CPU Instrumentation Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_cpu_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_path_identified_not_replayable
+```
+
+The CPU-only instrumented source build patched PyTorch logging behind
+`GPT_OSS_TRACE_ADDMM=1` and built with `USE_CUDA=0` in
+`/home/emmy/openai/.venvs/pytorch-src-cpu`. Layer18 baseline matched the
+official artifact exactly, confirming that the instrumentation did not perturb
+the official seam. `ATEN_CPU_CAPABILITY=default` reproduced the known one-lane
+lane1641 differential.
+
+Both baseline and `default` traced through the same lower source path:
+
+```text
+addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub
+```
+
+This is useful source attribution but not a selectable validation policy:
+
+- `path_changed_under_default = false`;
+- `concrete_replayable_rule_found = false`;
+- `reopen_rust_policy_synthesis = false`;
+- `backend_selected = false`.
+
+No consumer revalidation, rebaseline, output emission, ladder continuation, or
+runtime/default/CUDA behavior change is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -855,6 +855,43 @@ the milestone guardrails intact: no build or patch in this branch, no
 rebaseline, no backend selection, no consumer revalidation, no Rust/CUDA
 policy synthesis reopening, and no runtime/default/CUDA behavior change.
 
+## PyTorch CPU Instrumentation Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_cpu_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_path_identified_not_replayable
+```
+
+The CPU-only source-build instrumentation branch built PyTorch from the exact
+source commit and traced the layer18 Workstream A seam with
+`GPT_OSS_TRACE_ADDMM=1`. Baseline/no override reproduced the official artifact
+exactly and did not perturb the seam. `ATEN_CPU_CAPABILITY=default` reproduced
+the known lane1641 change:
+
+- official/baseline value: `0.0289306640625`;
+- `default` value: `0.02880859375`;
+- absolute difference: `0.0001220703125`.
+
+Instrumentation traced both baseline and `default` through:
+
+```text
+addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub
+```
+
+The path did not change under `default`, so the result identifies the lower
+source path but still does not provide a concrete replayable arithmetic or
+microkernel rule. `reopen_rust_policy_synthesis = false`, and the milestone
+continues to preserve the official CPU Torch API seam without backend
+selection, consumer revalidation, rebaseline, output emission, ladder
+continuation, or runtime/default/CUDA behavior change.
+
 ## Guardrails
 
 - Validation-only.

@@ -274,14 +274,78 @@ If any stop condition occurs:
 - do not run consumer revalidation;
 - do not change runtime/default/CUDA behavior.
 
-## Guardrails
+## CPU Instrumentation Result
 
-- Docs-only in this branch.
-- No PyTorch build in this branch.
-- No PyTorch source patch in this branch.
-- No venv creation in this branch.
-- No `/home/emmy/openai/pytorch` modification in this branch.
-- No probes in this branch.
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_cpu_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_path_identified_not_replayable
+```
+
+The CPU-only source-build instrumentation branch created the separate
+`/home/emmy/openai/.venvs/pytorch-src-cpu` build environment, patched the
+checked-out PyTorch source at
+`70d99e998b4955e0049d13a98d77ae1b14db1f45`, and built PyTorch with
+`USE_CUDA=0`. Instrumentation was gated by `GPT_OSS_TRACE_ADDMM=1` and touched
+only:
+
+- `aten/src/ATen/native/Linear.cpp`;
+- `aten/src/ATen/native/LinearAlgebra.cpp`;
+- `aten/src/ATen/native/CPUBlas.cpp`;
+- `aten/src/ATen/native/mkldnn/Matmul.cpp`.
+
+Layer18 was evaluated under the baseline/no-override configuration and
+`ATEN_CPU_CAPABILITY=default`. The baseline instrumented build reproduced the
+official artifact exactly, so the instrumentation did not perturb numeric
+behavior. The `default` run reproduced the known one-lane differential:
+
+- official/baseline lane 1641: `0.0289306640625`;
+- `ATEN_CPU_CAPABILITY=default` lane 1641: `0.02880859375`;
+- absolute difference: `0.0001220703125`;
+- official variants changed: `torch.addmm`, `torch.nn.functional.linear`, and
+  `torch._C._nn.linear`.
+
+Trace output identified the active source path for both baseline and
+`default` as:
+
+```text
+linear 2D+bias -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub
+```
+
+The path label did not change under `ATEN_CPU_CAPABILITY=default`. This
+identifies the lower source path but still does not expose a concrete global
+replayable arithmetic or microkernel rule. Therefore:
+
+- `active_path_baseline = native_cpublas_stub`;
+- `active_path_default = native_cpublas_stub`;
+- `path_changed_under_default = false`;
+- `concrete_replayable_rule_found = false`;
+- `reopen_rust_policy_synthesis = false`.
+
+Build and trace logs are under:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-pytorch-cpu-instrumentation/
+```
+
+This result preserves the official CPU Torch API seam. It does not authorize a
+rebaseline, backend selection, consumer revalidation, CUDA mirror, output
+emission, ladder continuation, or runtime/default/CUDA behavior change.
+
+## Plan-Branch Guardrails
+
+- The planning branch was docs-only.
+- The planning branch performed no PyTorch build.
+- The planning branch performed no PyTorch source patch.
+- The planning branch created no venv.
+- The planning branch modified no `/home/emmy/openai/pytorch` source.
+- The planning branch ran no probes.
 - No runtime implementation.
 - No backend selected.
 - No consumer revalidation authorized.

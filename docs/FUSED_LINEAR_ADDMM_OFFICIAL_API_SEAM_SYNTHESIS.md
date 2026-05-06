@@ -480,6 +480,44 @@ and gate minimal addmm/GEMM logs behind `GPT_OSS_TRACE_ADDMM=1`. The branch is
 only justified as source attribution; backend/path identification alone would
 not reopen Rust/CUDA policy synthesis or authorize implementation.
 
+## PyTorch CPU Instrumentation Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_cpu_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_cpu_instrumentation_path_identified_not_replayable
+```
+
+The CPU-only instrumented PyTorch source build reached the Workstream A
+layer18 seam without perturbing baseline numeric behavior. Baseline
+`torch.addmm`, `torch.nn.functional.linear`, and `torch._C._nn.linear` matched
+the official artifact exactly. `ATEN_CPU_CAPABILITY=default` reproduced the
+known lane1641 one-BF16-ULP differential:
+
+- official/baseline: `0.0289306640625`;
+- `default`: `0.02880859375`.
+
+Instrumentation traced both baseline and `default` through:
+
+```text
+addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub
+```
+
+The traced path did not change under `default`, so this identifies the lower
+source path but does not explain the numeric split as a concrete replayable
+arithmetic or microkernel rule. `concrete_replayable_rule_found = false` and
+`reopen_rust_policy_synthesis = false`.
+
+The official seam remains a CPU Torch API seam. No backend is selected, no
+consumer revalidation is authorized, and no runtime/default/CUDA behavior
+changes are authorized.
+
 ## Guardrails
 
 - No backend selected.
