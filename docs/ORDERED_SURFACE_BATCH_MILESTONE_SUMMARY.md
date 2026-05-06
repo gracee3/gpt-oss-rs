@@ -601,6 +601,28 @@ Torch API seam unless a new design review authorizes a different lane. CUDA
 mirror work, consumer revalidation, backend selection, runtime/default/CUDA
 behavior changes, output emission, and ladder continuation remain unauthorized.
 
+## PyTorch Source Attribution Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_SOURCE_ATTRIBUTION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_attribution_plan_recorded
+```
+
+The milestone now has a planning-only option for external PyTorch source and
+dispatch attribution. The plan isolates future installed-wheel introspection
+and optional source builds under `/home/emmy/openai/pytorch*` and dedicated
+virtual environments, preserving the current `gpt-oss-rs` worktrees. No
+PyTorch clone/build, implementation, consumer revalidation, CUDA mirror work,
+runtime/default/CUDA behavior change, output emission, or ladder continuation
+is authorized by this planning branch.
+
 ## Guardrails
 
 - Validation-only.

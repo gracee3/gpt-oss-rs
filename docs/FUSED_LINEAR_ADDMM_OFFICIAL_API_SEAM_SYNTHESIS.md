@@ -222,6 +222,27 @@ Torch API seam, not a Rust/CUDA backend identity. No backend is selected, no
 implementation is authorized, no consumer revalidation is authorized, and no
 runtime/default/CUDA behavior change follows.
 
+## PyTorch Source Attribution Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_SOURCE_ATTRIBUTION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_attribution_plan_recorded
+```
+
+The next source-attribution option is to inspect the installed Torch wheel,
+then map the matching PyTorch/ATen source path for `aten::addmm` and related
+linear/mm/matmul registrations. The plan keeps this work outside the current
+`gpt-oss-rs` worktrees and requires isolated virtual environments. It does not
+clone or build PyTorch in this branch, and it does not authorize implementation
+or consumer revalidation.
+
 ## Guardrails
 
 - No backend selected.

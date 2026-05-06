@@ -712,6 +712,26 @@ This closes the current Rust CPU policy synthesis lane. Continue treating the
 CPU Torch module/F.linear/_C/addmm seam as the oracle reference; do not proceed
 to CUDA mirror work or consumer revalidation from this result.
 
+## PyTorch Source Attribution Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_SOURCE_ATTRIBUTION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_attribution_plan_recorded
+```
+
+Future validation research may inspect the installed Torch wheel and matching
+PyTorch/ATen source to identify the CPU BF16 addmm implementation path behind
+the official seam. This is a planning record only: no PyTorch clone, venv,
+source build, runtime implementation, consumer revalidation, CUDA mirror work,
+or default behavior change is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

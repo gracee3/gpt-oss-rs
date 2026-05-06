@@ -775,6 +775,26 @@ oracle boundary, not to a Rust CPU backend candidate. No backend is selected,
 no implementation is authorized, and no runtime/default/CUDA behavior changes
 are authorized.
 
+## PyTorch Source Attribution Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_SOURCE_ATTRIBUTION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_attribution_plan_recorded
+```
+
+The backend discriminator lane should not invent another Rust/CUDA policy
+family from the current residuals. If policy work is reopened, first inspect
+the installed Torch wheel dispatch tables and matching PyTorch/ATen source for
+the CPU BF16 addmm path. This branch only records that future source
+attribution plan; it does not select a backend or authorize implementation.
+
 ## Non-Goals
 
 - No runtime implementation.

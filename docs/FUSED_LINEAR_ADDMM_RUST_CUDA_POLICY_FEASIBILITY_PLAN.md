@@ -369,3 +369,25 @@ not authorized. The official CPU Torch module/F.linear/_C/addmm seam remains
 the Workstream A oracle boundary. No backend is selected, no implementation is
 authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
 behavior change follows.
+
+## PyTorch Source Attribution Plan
+
+Plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_PYTORCH_SOURCE_ATTRIBUTION_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_attribution_plan_recorded
+```
+
+Because Gate B closure found no global Rust CPU policy, any future attempt to
+reopen Rust/CUDA policy synthesis should first inspect the PyTorch/ATen source
+and dispatch path behind the stable CPU Torch addmm seam. The plan defines an
+external research workspace under `/home/emmy/openai/pytorch*` with isolated
+virtual environments. This docs branch performs no PyTorch clone, venv setup,
+source build, consumer revalidation, CUDA mirror work, or runtime/default/CUDA
+behavior change.
