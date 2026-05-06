@@ -518,6 +518,47 @@ The official seam remains a CPU Torch API seam. No backend is selected, no
 consumer revalidation is authorized, and no runtime/default/CUDA behavior
 changes are authorized.
 
+## GEMM Stub Internals
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_dispatch_internals_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_replayable_rule_identified
+```
+
+The GEMM-stub dispatch-internals branch archived the pre-existing PyTorch
+instrumentation patch and then traced the lower dispatch target. `gemm_stub`
+is declared/defined in `aten/src/ATen/native/CPUBlas.h` and `CPUBlas.cpp`, and
+registered through `aten/src/ATen/native/cpu/BlasKernel.cpp`.
+
+Baseline/no override runs with runtime CPU capability `AVX512`, but the
+`AVX512` dispatch table entry is null, so it selects the AVX2-compiled
+`cpublas_gemm_impl`. `ATEN_CPU_CAPABILITY=default` selects the
+DEFAULT-compiled `cpublas_gemm_impl`. That target difference explains the
+layer18 lane1641 split:
+
+- official/baseline value: `0.0289306640625`;
+- `default` value: `0.02880859375`;
+- AVX2 dot/pre-BF16 combined: `0.1587543488` / `0.02887153625`;
+- DEFAULT dot/pre-BF16 combined: `0.1587524414` / `0.02886962891`.
+
+The traced rule is bias-as-prior, BF16 dot accumulation into f32, and one final
+BF16 cast, with CPU-capability-specific GEMM-stub target behavior determining
+which side of the BF16 rounding boundary layer18 lane1641 lands on.
+
+This is the first concrete source-level replayable rule for the observed
+baseline/default differential, but it is not a sampled-set Rust/CUDA policy.
+`reopen_rust_policy_synthesis = false` remains in force until a separately
+approved design verifies global sampled-set replay. No backend is selected,
+and no consumer revalidation, CUDA mirror, rebaseline, or runtime/default/CUDA
+behavior change is authorized.
+
 ## Guardrails
 
 - No backend selected.

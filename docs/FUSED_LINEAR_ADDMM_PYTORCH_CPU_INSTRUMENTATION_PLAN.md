@@ -338,6 +338,58 @@ This result preserves the official CPU Torch API seam. It does not authorize a
 rebaseline, backend selection, consumer revalidation, CUDA mirror, output
 emission, ladder continuation, or runtime/default/CUDA behavior change.
 
+## GEMM Stub Dispatch Internals Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_dispatch_internals_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_replayable_rule_identified
+```
+
+The follow-up GEMM-stub internals branch archived the pre-existing dirty
+PyTorch instrumentation patch before adding more source-attribution logging:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-gemm-stub-dispatch-internals/pre_gemm_stub_internals.patch
+```
+
+Source mapping identified `gemm_stub` declaration/definition in
+`aten/src/ATen/native/CPUBlas.h` and `CPUBlas.cpp`, with registration in
+`aten/src/ATen/native/cpu/BlasKernel.cpp`. Runtime traces showed that the
+baseline/no-override path sees runtime CPU capability `AVX512`, but the
+`AVX512` dispatch table entry is null and selects the `AVX2`-compiled
+`cpublas_gemm_impl`. `ATEN_CPU_CAPABILITY=default` selects the
+`DEFAULT`-compiled `cpublas_gemm_impl`.
+
+Both paths execute the BF16 GEMM-stub implementation, but their lane1641 dot
+accumulators differ:
+
+- bias prior: `-0.1298828125`;
+- baseline/official lane 1641: `0.0289306640625`;
+- default lane 1641: `0.02880859375`;
+- baseline dot: `0.1587543488`;
+- default dot: `0.1587524414`;
+- baseline pre-BF16 combined value: `0.02887153625`;
+- default pre-BF16 combined value: `0.02886962891`.
+
+This explains the layer18 lane1641 split: the selected GEMM-stub target changes
+from the AVX2-compiled implementation to the DEFAULT-compiled implementation,
+and the small dot-product difference crosses the BF16 rounding boundary. The
+status records `concrete_replayable_rule_found = true` for this traced
+source-level mechanism, while keeping `reopen_rust_policy_synthesis = false`
+because sampled-set/global replay validation still needs a separate approved
+design.
+
+No production backend was selected. No runtime/default/CUDA behavior change,
+consumer revalidation, rebaseline, output emission, or ladder continuation was
+authorized.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.

@@ -999,6 +999,47 @@ This is useful source attribution but not a selectable validation policy:
 No consumer revalidation, rebaseline, output emission, ladder continuation, or
 runtime/default/CUDA behavior change is authorized.
 
+## GEMM Stub Dispatch Internals
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_dispatch_internals_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_replayable_rule_identified
+```
+
+The GEMM-stub internals branch archived the pre-existing dirty PyTorch source
+instrumentation patch and then traced the lower `gemm_stub` dispatch machinery.
+The source map identifies:
+
+- declaration/definition: `aten/src/ATen/native/CPUBlas.h` and
+  `aten/src/ATen/native/CPUBlas.cpp`;
+- registration: `aten/src/ATen/native/cpu/BlasKernel.cpp`;
+- baseline target: runtime `AVX512`, null AVX512 entry, selected AVX2-compiled
+  `cpublas_gemm_impl`;
+- `ATEN_CPU_CAPABILITY=default` target: DEFAULT-compiled
+  `cpublas_gemm_impl`.
+
+Layer18 lane1641 is now explained by the selected GEMM-stub target and local
+BF16 rounding boundary:
+
+- official/baseline: `0.0289306640625`;
+- `default`: `0.02880859375`;
+- baseline dot/pre-BF16 combined: `0.1587543488` / `0.02887153625`;
+- default dot/pre-BF16 combined: `0.1587524414` / `0.02886962891`.
+
+The status records a concrete replayable source-level rule for this traced
+differential, but it does not promote a validation policy or runtime backend.
+Sampled-set/global verification would need a separate approved design branch.
+For now `reopen_rust_policy_synthesis = false`, `backend_selected = false`,
+and no consumer revalidation, CUDA mirror, rebaseline, output emission, ladder
+continuation, or runtime/default/CUDA behavior change is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

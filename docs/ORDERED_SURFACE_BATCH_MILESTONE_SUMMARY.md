@@ -892,6 +892,43 @@ continues to preserve the official CPU Torch API seam without backend
 selection, consumer revalidation, rebaseline, output emission, ladder
 continuation, or runtime/default/CUDA behavior change.
 
+## GEMM Stub Dispatch Internals
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_dispatch_internals_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_replayable_rule_identified
+```
+
+The follow-up source-attribution branch archived the existing PyTorch
+instrumentation patch, mapped `gemm_stub` declaration/definition/registration,
+and rebuilt the CPU-only instrumented source. Runtime tracing shows:
+
+- baseline/no override: runtime `AVX512`, null AVX512 dispatch entry, selected
+  AVX2-compiled `cpublas_gemm_impl`;
+- `ATEN_CPU_CAPABILITY=default`: selected DEFAULT-compiled
+  `cpublas_gemm_impl`;
+- layer18 baseline/official lane1641: `0.0289306640625`;
+- layer18 `default` lane1641: `0.02880859375`;
+- AVX2 dot/pre-BF16 combined: `0.1587543488` / `0.02887153625`;
+- DEFAULT dot/pre-BF16 combined: `0.1587524414` / `0.02886962891`.
+
+This explains the layer18 baseline/default differential as a GEMM-stub target
+and BF16 rounding-boundary effect. The result is a concrete source-level
+replayable rule for the traced lane, but the milestone does not promote it to
+a global sampled-set validation policy. Rust/CUDA policy synthesis remains
+closed until a separately approved global verification design exists.
+
+No backend is selected. No implementation, consumer revalidation, CUDA mirror,
+rebaseline, output emission, ladder continuation, or runtime/default/CUDA
+behavior change is authorized.
+
 ## Guardrails
 
 - Validation-only.

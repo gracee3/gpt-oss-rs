@@ -603,3 +603,51 @@ microkernel rule:
 The source-attribution lane therefore still preserves Workstream A as the
 official CPU Torch API seam. It does not select a backend, rebaseline artifacts,
 authorize consumer revalidation, or change runtime/default/CUDA behavior.
+
+## GEMM Stub Dispatch Internals Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_dispatch_internals_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_replayable_rule_identified
+```
+
+The GEMM-stub internals branch continued the CPU-only source attribution lane
+from the dirty instrumented PyTorch checkout. It first archived the existing
+patch at:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-gemm-stub-dispatch-internals/pre_gemm_stub_internals.patch
+```
+
+Source mapping found `gemm_stub` declared/defined in
+`aten/src/ATen/native/CPUBlas.h` and `CPUBlas.cpp`, with the BF16 GEMM
+implementation registered from `aten/src/ATen/native/cpu/BlasKernel.cpp`.
+Runtime traces identified the selected dispatch targets:
+
+- baseline/no override: runtime `AVX512`, null `AVX512` table entry, selected
+  `AVX2`-compiled `cpublas_gemm_impl`;
+- `ATEN_CPU_CAPABILITY=default`: selected `DEFAULT`-compiled
+  `cpublas_gemm_impl`;
+- `ATEN_CPU_CAPABILITY=avx2`: selected the same AVX2 target as baseline;
+- explicit `avx512` also fell back to the AVX2 target.
+
+For layer18 lane1641, both targets used BF16 bias as the prior accumulator,
+then accumulated a BF16 dot into f32 and cast the fused result once to BF16.
+The AVX2 target produced dot `0.1587543488` and pre-BF16 combined value
+`0.02887153625`, which rounds to the official `0.0289306640625`. The DEFAULT
+target produced dot `0.1587524414` and pre-BF16 combined value
+`0.02886962891`, which rounds to `0.02880859375`.
+
+This identifies the dispatch target and explains the known layer18
+baseline/default differential. It is a concrete source-level replayable rule
+for the traced lane18 split, but not yet a sampled-set Rust/CUDA validation
+policy. Therefore `reopen_rust_policy_synthesis = false`, no backend is
+selected, and no implementation, consumer revalidation, CUDA mirror,
+rebaseline, or runtime/default/CUDA behavior change is authorized.
