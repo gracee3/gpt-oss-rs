@@ -147,6 +147,10 @@ struct Cli {
     #[arg(long)]
     selected_mlp_down_policy_from_replay: Option<PathBuf>,
 
+    /// Focused router-logit expert index for router policy diagnostics.
+    #[arg(long, alias = "focus-expert")]
+    focus_router_logit_index: Option<usize>,
+
     /// Optional path to emit the layer1 attention residual computed from bundle seams.
     #[arg(long)]
     emit_layer1_attention_residual: Option<PathBuf>,
@@ -536,6 +540,9 @@ enum Mode {
     OrderedSurfaceBatchStatus,
     FusedLinearAddmmStatusScaffold,
     SelectedMlpDownBundleRevalidationStatus,
+    Layer11RouterLogitInspectStatus,
+    RouterLogitPolicyDebug,
+    Layer11RouterLogitLocalizationStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1529,6 +1536,11 @@ fn main() -> Result<()> {
         Mode::SelectedMlpDownBundleRevalidationStatus => {
             run_selected_mlp_down_bundle_revalidation_status(&cli)
         }
+        Mode::Layer11RouterLogitInspectStatus => run_layer11_router_logit_inspect_status(&cli),
+        Mode::RouterLogitPolicyDebug => run_router_logit_policy_debug(&cli),
+        Mode::Layer11RouterLogitLocalizationStatus => {
+            run_layer11_router_logit_localization_status(&cli)
+        }
     }
 }
 
@@ -1878,6 +1890,491 @@ fn layer_bundle_status_policy_rejected(path: &Path) -> Result<bool> {
     Ok(status
         .get("selected_mlp_down_policy_rejected_reason")
         .is_some_and(|reason| !reason.is_null()))
+}
+
+fn run_layer11_router_logit_inspect_status(cli: &Cli) -> Result<()> {
+    let status_path = cli
+        .ordered_bundle_validate_status
+        .as_deref()
+        .unwrap_or_else(|| {
+            Path::new("/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json")
+        });
+    if !status_path.exists() {
+        let status = json!({
+            "classification": "layer11_router_logit_inspect_blocked_by_missing_status",
+            "validation_only": true,
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "source_status": status_path.display().to_string(),
+            "output_emitted": false,
+            "ladder_continued": false,
+            "correction_metadata_applied": false,
+            "tolerance_pass": false,
+            "final_logit_claim": false,
+            "all_layer_claim": false,
+            "server_claim": false,
+            "context_length_claim": false,
+            "next_bounded_step": "provide the layer11 selected-MLP-down bundle revalidation status"
+        });
+        return write_json(&cli.output, &status);
+    }
+    let source = load_json(status_path)?;
+    let router_metric = source.pointer("/mlp_metrics/router_logits");
+    let first_mismatch = router_metric.and_then(|metric| metric.get("first_mismatch"));
+    let Some(first_mismatch) = first_mismatch else {
+        let status = json!({
+            "classification": "layer11_router_logit_mismatch_status_missing_fields",
+            "validation_only": true,
+            "runtime_behavior_changed": false,
+            "production_routing_changed": false,
+            "cuda_kernels_changed": false,
+            "source_status": status_path.display().to_string(),
+            "source_classification": source.get("classification").cloned().unwrap_or(Value::Null),
+            "output_emitted": false,
+            "ladder_continued": false,
+            "correction_metadata_applied": false,
+            "tolerance_pass": false,
+            "final_logit_claim": false,
+            "all_layer_claim": false,
+            "server_claim": false,
+            "context_length_claim": false,
+            "next_bounded_step": "rerun layer11 selected-MLP-down bundle revalidation with router-logit metrics"
+        });
+        return write_json(&cli.output, &status);
+    };
+    let focus_index = first_mismatch
+        .get("hidden_lane")
+        .and_then(Value::as_u64)
+        .unwrap_or(usize::MAX as u64) as usize;
+    let local = first_mismatch
+        .get("actual")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let official = first_mismatch
+        .get("expected")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let diff = first_mismatch
+        .get("abs_diff")
+        .and_then(Value::as_f64)
+        .unwrap_or((local - official).abs());
+    let selected_experts = source
+        .pointer("/mlp_metrics/topk/selected_experts_ordered")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let focus_in_topk = selected_experts
+        .iter()
+        .filter_map(Value::as_u64)
+        .any(|expert| expert as usize == focus_index);
+    let topk_changed = source
+        .pointer("/mlp_metrics/topk/ordered_match")
+        .and_then(Value::as_bool)
+        .map(|matched| !matched)
+        .unwrap_or(true);
+    let routing_weights_changed = source
+        .pointer("/mlp_metrics/topk/routing_weights_metric/metrics/mismatches")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX)
+        != 0;
+    let selected_outputs_mismatches = source
+        .pointer("/mlp_metrics/selected_mlp_down_policy_result/selected_outputs/full_vector_metrics/mismatches")
+        .and_then(Value::as_u64);
+    let weighted_sum_mismatches = source
+        .pointer("/mlp_metrics/selected_mlp_down_policy_result/weighted_sum/full_vector_metrics/mismatches")
+        .and_then(Value::as_u64);
+    let final_output_mismatches = source
+        .pointer("/mlp_metrics/selected_mlp_down_policy_result/final_output/full_vector_metrics/mismatches")
+        .and_then(Value::as_u64);
+    let downstream_exact_under_selected_down_policy = selected_outputs_mismatches == Some(0)
+        && weighted_sum_mismatches == Some(0)
+        && final_output_mismatches == Some(0);
+    let status = json!({
+        "classification": "layer11_router_logit_single_mismatch_inspected",
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layer_index": 11,
+        "source_status": status_path.display().to_string(),
+        "source_classification": source.get("classification").cloned().unwrap_or(Value::Null),
+        "focus_router_logit_index": focus_index,
+        "router_logit_mismatch": {
+            "index": focus_index,
+            "local": local,
+            "official": official,
+            "abs_diff": diff,
+            "raw": first_mismatch,
+        },
+        "topk_impact": {
+            "focus_expert_in_topk": focus_in_topk,
+            "topk_changed": topk_changed,
+            "selected_experts_local": source.pointer("/mlp_metrics/topk/selected_experts_local").cloned().unwrap_or(Value::Null),
+            "selected_experts_ordered": source.pointer("/mlp_metrics/topk/selected_experts_ordered").cloned().unwrap_or(Value::Null),
+        },
+        "routing_weight_impact": {
+            "routing_weights_changed": routing_weights_changed,
+            "routing_weights_metric": source.pointer("/mlp_metrics/topk/routing_weights_metric").cloned().unwrap_or(Value::Null),
+        },
+        "selected_mlp_down_policy_context": {
+            "selected_policy": source.get("selected_mlp_down_policy").cloned().unwrap_or(Value::Null),
+            "selected_policy_applied": source.get("selected_mlp_down_policy_applied").cloned().unwrap_or(Value::Null),
+            "selected_outputs_mismatches": selected_outputs_mismatches,
+            "weighted_sum_mismatches": weighted_sum_mismatches,
+            "final_output_mismatches": final_output_mismatches,
+            "downstream_exact_under_selected_down_policy": downstream_exact_under_selected_down_policy,
+        },
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "run focused router-logit policy debug for the mismatching expert index"
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_router_logit_policy_debug(cli: &Cli) -> Result<()> {
+    validate_norm_reduction_policy(&cli.norm_reduction_policy)?;
+    let layer = cli.layer_index;
+    let hidden = 2880usize;
+    let experts = 32usize;
+    let selected_count = 4usize;
+    let focus_expert = cli.focus_router_logit_index.unwrap_or(cli.expert);
+    anyhow::ensure!(
+        focus_expert < experts,
+        "focus router-logit expert must be < {experts}, got {focus_expert}"
+    );
+    let mlp_status_path = cli
+        .ordered_mlp_bundle_status
+        .as_deref()
+        .or(cli.mlp_bundle_status.as_deref())
+        .context("router-logit policy debug requires --ordered-mlp-status")?;
+    validate_path(mlp_status_path, "ordered MLP bundle status")?;
+    let mlp_status = load_json(mlp_status_path)?;
+    anyhow::ensure!(
+        status_layer_index(&mlp_status)? == layer,
+        "ordered MLP bundle status layer did not match requested layer {layer}"
+    );
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    anyhow::ensure!(
+        model.exists(),
+        "model path does not exist: {}",
+        model.display()
+    );
+
+    let mlp_input_path = status_artifact_path(&mlp_status, "mlp_input", "MLP")?;
+    let mlp_norm_path = status_artifact_path(&mlp_status, "mlp_norm", "MLP")?;
+    let router_logits_path = status_artifact_path(&mlp_status, "router_logits", "MLP")?;
+    for (label, path) in [
+        ("MLP input", &mlp_input_path),
+        ("MLP norm", &mlp_norm_path),
+        ("router logits", &router_logits_path),
+    ] {
+        validate_path(path, label)?;
+    }
+    let (_, mlp_input) = load_tensor_artifact(&mlp_input_path, &[hidden], &["values"])?;
+    let (_, ordered_mlp_norm) = load_tensor_artifact(&mlp_norm_path, &[hidden], &["values"])?;
+    let (_, ordered_router_logits) =
+        load_tensor_artifact(&router_logits_path, &[experts], &["values"])?;
+    let selected_experts = status_usize_array(&mlp_status, "selected_experts")?;
+    let routing_weights = status_f32_array(&mlp_status, "routing_weights")?;
+    anyhow::ensure!(
+        selected_experts.len() == selected_count && routing_weights.len() == selected_count,
+        "expected {selected_count} selected experts and routing weights"
+    );
+
+    let norm_weight_name = format!("model.layers.{layer}.post_attention_layernorm.weight");
+    let (norm_weight_source, norm_weight_values) =
+        load_model_tensor_f32(model, &[norm_weight_name.as_str()])?;
+    let mlp_norm_values = compute_mlp_rms_norm_with_policy(
+        &mlp_input,
+        &norm_weight_values,
+        1e-5,
+        &cli.norm_reduction_policy,
+    )?;
+    let mlp_norm_metric = compare_hidden(&mlp_norm_values, &ordered_mlp_norm);
+
+    let router_weight_name = format!("model.layers.{layer}.mlp.router.weight");
+    let router_bias_name = format!("model.layers.{layer}.mlp.router.bias");
+    let (router_weight_source, router_weight) =
+        load_model_tensor_f32(model, &[router_weight_name.as_str()])?;
+    let (router_bias_source, router_bias) =
+        load_model_tensor_f32(model, &[router_bias_name.as_str()])?;
+
+    let ordered_selected_logits = selected_experts
+        .iter()
+        .map(|expert| ordered_router_logits[*expert])
+        .collect::<Vec<_>>();
+    let ordered_topk_indices = selected_experts
+        .iter()
+        .copied()
+        .map(|expert| expert as i64)
+        .collect::<Vec<_>>();
+
+    let specs = [
+        ("current_sequential_f32_bf16_bias_bf16_output", false, false),
+        ("reverse_f32_bf16_bias_bf16_output", false, false),
+        ("pairwise_f32_bf16_bias_bf16_output", false, false),
+        ("chunked_pairwise_f32_bf16_bias_bf16_output", false, false),
+        ("f64_diagnostic_bf16_output", true, false),
+        ("sequential_f32_f32_bias_bf16_output", false, false),
+        ("bf16_prebias_bf16_bias_bf16_output", false, false),
+        ("bf16_product_then_f32_sum_bf16_output", false, true),
+    ];
+    let mut variants = Vec::new();
+    let mut full_vector_results = Vec::new();
+    let mut any_focus_only_clear = false;
+    let mut any_collateral = false;
+    for (name, diagnostic_only, evidence_only) in specs {
+        let logits =
+            compute_router_logits_variant(&mlp_norm_values, &router_weight, &router_bias, name);
+        let metric = compare_hidden(&logits, &ordered_router_logits);
+        let topk = compute_router_topk(&logits, selected_count);
+        let selected_logits_metric = compare_hidden(&topk.logits, &ordered_selected_logits);
+        let routing_weights_metric = compare_hidden(&topk.routing_weights, &routing_weights);
+        let topk_ordered_match = topk.indices == ordered_topk_indices;
+        let focus_local = logits[focus_expert];
+        let focus_official = ordered_router_logits[focus_expert];
+        let focus_matched = focus_local == focus_official;
+        if focus_matched && metric.metrics.mismatches != 0 {
+            any_focus_only_clear = true;
+        }
+        if metric.metrics.mismatches > 1 {
+            any_collateral = true;
+        }
+        full_vector_results.push(json!({
+            "policy": name,
+            "full_vector_cleared": metric.metrics.mismatches == 0,
+            "mismatches": metric.metrics.mismatches,
+            "diagnostic_only": diagnostic_only,
+            "evidence_only": evidence_only,
+        }));
+        variants.push(json!({
+            "policy": name,
+            "diagnostic_only": diagnostic_only,
+            "evidence_only": evidence_only,
+            "full_vector_metrics": metric,
+            "focus": {
+                "expert_index": focus_expert,
+                "local": focus_local,
+                "official": focus_official,
+                "abs_diff": (focus_local - focus_official).abs(),
+                "matched": focus_matched,
+            },
+            "topk_impact": {
+                "ordered_match": topk_ordered_match,
+                "selected_experts_local": topk.indices,
+                "selected_experts_ordered": ordered_topk_indices,
+                "selected_logits_metric": selected_logits_metric,
+            },
+            "routing_weight_impact": {
+                "routing_weights_metric": routing_weights_metric,
+            }
+        }));
+    }
+    let selected_policy = [
+        "current_sequential_f32_bf16_bias_bf16_output",
+        "pairwise_f32_bf16_bias_bf16_output",
+        "reverse_f32_bf16_bias_bf16_output",
+        "chunked_pairwise_f32_bf16_bias_bf16_output",
+        "sequential_f32_f32_bias_bf16_output",
+        "bf16_prebias_bf16_bias_bf16_output",
+    ]
+    .iter()
+    .find(|policy| {
+        variants.iter().any(|variant| {
+            variant.get("policy").and_then(Value::as_str) == Some(**policy)
+                && variant
+                    .pointer("/full_vector_metrics/metrics/mismatches")
+                    .and_then(Value::as_u64)
+                    == Some(0)
+        })
+    })
+    .map(|policy| json!(*policy))
+    .unwrap_or(Value::Null);
+    let classification = if variants.iter().any(|variant| {
+        variant.get("policy").and_then(Value::as_str)
+            == Some("current_sequential_f32_bf16_bias_bf16_output")
+            && variant
+                .pointer("/full_vector_metrics/metrics/mismatches")
+                .and_then(Value::as_u64)
+                == Some(0)
+    }) {
+        "layer11_router_logit_policy_current_matches_oracle"
+    } else if variants.iter().any(|variant| {
+        variant.get("policy").and_then(Value::as_str) == Some("pairwise_f32_bf16_bias_bf16_output")
+            && variant
+                .pointer("/full_vector_metrics/metrics/mismatches")
+                .and_then(Value::as_u64)
+                == Some(0)
+    }) {
+        "layer11_router_logit_policy_pairwise_clears_full_vector"
+    } else if variants.iter().any(|variant| {
+        variant.get("policy").and_then(Value::as_str) == Some("reverse_f32_bf16_bias_bf16_output")
+            && variant
+                .pointer("/full_vector_metrics/metrics/mismatches")
+                .and_then(Value::as_u64)
+                == Some(0)
+    }) {
+        "layer11_router_logit_policy_reverse_clears_full_vector"
+    } else if any_focus_only_clear {
+        "layer11_router_logit_policy_focus_only_clear"
+    } else if any_collateral {
+        "layer11_router_logit_policy_collateral_mismatches"
+    } else {
+        "layer11_router_logit_policy_backend_required"
+    };
+    let source_revalidation_status =
+        Path::new("/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json");
+    let selected_context = if source_revalidation_status.exists() {
+        let status = load_json(source_revalidation_status)?;
+        json!({
+            "status": source_revalidation_status.display().to_string(),
+            "classification": status.get("classification").cloned().unwrap_or(Value::Null),
+            "selected_mlp_down_policy": status.get("selected_mlp_down_policy").cloned().unwrap_or(Value::Null),
+            "selected_mlp_down_policy_applied": status.get("selected_mlp_down_policy_applied").cloned().unwrap_or(Value::Null),
+            "selected_outputs_mismatches": status.get("selected_outputs_mismatches").cloned().unwrap_or(Value::Null),
+            "weighted_sum_mismatches": status.get("weighted_sum_mismatches").cloned().unwrap_or(Value::Null),
+            "final_output_mismatches": status.get("final_output_mismatches").cloned().unwrap_or(Value::Null),
+        })
+    } else {
+        Value::Null
+    };
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "layer_index": layer,
+        "focus_router_logit_index": focus_expert,
+        "local_current": variants
+            .first()
+            .and_then(|variant| variant.pointer("/focus/local"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "official": ordered_router_logits[focus_expert],
+        "diff": variants
+            .first()
+            .and_then(|variant| variant.pointer("/focus/abs_diff"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "source_statuses": {
+            "ordered_mlp_status": mlp_status_path.display().to_string(),
+            "selected_mlp_down_revalidation_status": source_revalidation_status.display().to_string(),
+        },
+        "mlp_norm_source_exact": mlp_norm_metric.metrics.mismatches == 0,
+        "mlp_norm_metric": mlp_norm_metric,
+        "model_tensors": {
+            "norm_weight": norm_weight_source,
+            "router_weight": router_weight_source,
+            "router_bias": router_bias_source,
+        },
+        "variants": variants,
+        "full_vector_results": full_vector_results,
+        "topk_impact": variants
+            .first()
+            .and_then(|variant| variant.get("topk_impact"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "routing_weight_impact": variants
+            .first()
+            .and_then(|variant| variant.get("routing_weight_impact"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "selected_mlp_down_policy_context": selected_context,
+        "selected_policy": selected_policy,
+        "router_policy_revalidation": if selected_policy.is_null() {
+            "not_run_no_full_vector_policy"
+        } else {
+            "router_policy_revalidation_not_supported"
+        },
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": if selected_policy.is_null() {
+            "review router-logit source/backend boundary before any selected-MLP-down policy work"
+        } else {
+            "add a narrow validation-only router policy provenance flag before full-bundle revalidation"
+        }
+    });
+    write_json(&cli.output, &status)
+}
+
+fn run_layer11_router_logit_localization_status(cli: &Cli) -> Result<()> {
+    let inspect_path = PathBuf::from("/tmp/layer11_router_logit_inspect_status.json");
+    let debug_path = PathBuf::from("/tmp/layer11_router_logit_policy_debug_status.json");
+    let mut missing = Vec::new();
+    if !inspect_path.exists() {
+        missing.push(inspect_path.display().to_string());
+    }
+    if !debug_path.exists() {
+        missing.push(debug_path.display().to_string());
+    }
+    let inspect = if inspect_path.exists() {
+        load_json(&inspect_path)?
+    } else {
+        Value::Null
+    };
+    let debug = if debug_path.exists() {
+        load_json(&debug_path)?
+    } else {
+        Value::Null
+    };
+    let classification = if !missing.is_empty() {
+        "layer11_router_logit_localization_blocked_by_missing_artifacts"
+    } else if debug
+        .get("classification")
+        .and_then(Value::as_str)
+        .is_some_and(|classification| classification.ends_with("_execution_failed"))
+    {
+        "layer11_router_logit_localization_execution_failed"
+    } else {
+        "layer11_router_logit_localization_recorded"
+    };
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "source_selected_mlp_down_revalidation_status": "/tmp/selected_mlp_down_bundle_revalidation_status.json",
+        "layer11_selected_mlp_down_policy_status": "/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json",
+        "inspect_status": inspect_path.display().to_string(),
+        "debug_status": debug_path.display().to_string(),
+        "inspect_classification": inspect.get("classification").cloned().unwrap_or(Value::Null),
+        "debug_classification": debug.get("classification").cloned().unwrap_or(Value::Null),
+        "router_mismatch": inspect.get("router_logit_mismatch").cloned().unwrap_or(Value::Null),
+        "selected_policy": debug.get("selected_policy").cloned().unwrap_or(Value::Null),
+        "revalidation_status": debug.get("router_policy_revalidation").cloned().unwrap_or(json!("not_run")),
+        "missing_statuses": missing,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": if debug.get("selected_policy").is_some_and(|value| !value.is_null()) {
+            "authorize a narrow validation-only router-logit bundle policy flag only if the full-vector policy should be revalidated"
+        } else {
+            "review router-logit source/backend boundary; do not continue selected-MLP-down policy work yet"
+        }
+    });
+    write_json(&cli.output, &status)
 }
 
 fn load_selected_mlp_down_replay_gate(
@@ -17821,6 +18318,60 @@ fn compute_router_logits_bf16_linear(input: &[f32], weight: &[f32], bias: &[f32]
             sum += round_bf16(input[hidden_lane]) * round_bf16(weight[weight_base + hidden_lane]);
         }
         output[expert] = round_bf16(sum + round_bf16(bias[expert]));
+    }
+    output
+}
+
+fn chunked_pairwise_sum_f32(values: &[f32], chunk_size: usize) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let partials = values
+        .chunks(chunk_size.max(1))
+        .map(pairwise_sum_f32)
+        .collect::<Vec<_>>();
+    pairwise_sum_f32(&partials)
+}
+
+fn compute_router_logits_variant(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    policy: &str,
+) -> Vec<f32> {
+    let experts = bias.len();
+    let hidden = input.len();
+    let mut output = vec![0.0f32; experts];
+    for expert in 0..experts {
+        let weight_base = expert * hidden;
+        let terms = (0..hidden)
+            .map(|hidden_lane| {
+                let input_value = round_bf16(input[hidden_lane]);
+                let weight_value = round_bf16(weight[weight_base + hidden_lane]);
+                match policy {
+                    "bf16_product_then_f32_sum_bf16_output" => {
+                        round_bf16(input_value * weight_value)
+                    }
+                    _ => input_value * weight_value,
+                }
+            })
+            .collect::<Vec<_>>();
+        let sum = match policy {
+            "reverse_f32_bf16_bias_bf16_output" => terms.iter().rev().sum::<f32>(),
+            "pairwise_f32_bf16_bias_bf16_output" => pairwise_sum_f32(&terms),
+            "chunked_pairwise_f32_bf16_bias_bf16_output" => chunked_pairwise_sum_f32(&terms, 64),
+            "f64_diagnostic_bf16_output" => {
+                terms.iter().map(|value| *value as f64).sum::<f64>() as f32
+            }
+            _ => terms.iter().sum::<f32>(),
+        };
+        output[expert] = match policy {
+            "sequential_f32_f32_bias_bf16_output" => round_bf16(sum + bias[expert]),
+            "bf16_prebias_bf16_bias_bf16_output" => {
+                round_bf16(round_bf16(sum) + round_bf16(bias[expert]))
+            }
+            _ => round_bf16(sum + round_bf16(bias[expert])),
+        };
     }
     output
 }

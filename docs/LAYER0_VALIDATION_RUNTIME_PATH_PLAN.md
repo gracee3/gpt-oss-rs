@@ -5016,6 +5016,46 @@ Guardrails: no output emission, ladder continuation, correction metadata,
 tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
 4097-token claim.
 
+## Layer11 Router-Logit Localization
+
+Branch:
+
+```text
+validation/layer11-router-logit-localization
+```
+
+Status path:
+
+```text
+/tmp/layer11_router_logit_localization_status.json
+```
+
+Classification:
+
+```text
+layer11_router_logit_localization_recorded
+```
+
+Result:
+
+- Layer11 selected-MLP-down revalidation remains sourced from
+  `/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json`;
+  the selected-down policy still clears selected outputs, weighted sum, and
+  final output.
+- The remaining mismatch is router logit expert 7: local `0.0693359375`,
+  official `0.06884765625`, diff `0.00048828125`.
+- Top-k experts and selected routing weights are unchanged.
+- Focused router-logit debug records
+  `layer11_router_logit_policy_pairwise_clears_full_vector` and selects
+  `pairwise_f32_bf16_bias_bf16_output`; reverse and chunked pairwise also clear
+  the full router-logit vector.
+- Full bundle revalidation with a router policy was not run because this slice
+  does not add broad router policy plumbing.
+
+Guardrails: no output emission, ladder continuation, correction metadata,
+tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:

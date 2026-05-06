@@ -317,3 +317,46 @@ Recorded behavior:
 - No output emission, ladder continuation, correction metadata, tolerance pass,
   runtime/default/CUDA change, final-logit, all-layer, server, or 4097-token
   claim is authorized.
+
+## Layer11 Router-Logit Follow-Up
+
+Source selected-MLP-down revalidation:
+
+```text
+/tmp/selected_mlp_down_bundle_revalidation_status.json
+/tmp/layer11_ordered_bundle_validate_selected_mlp_down_policy_status.json
+```
+
+Router localization statuses:
+
+```text
+/tmp/layer11_router_logit_inspect_status.json
+/tmp/layer11_router_logit_policy_debug_status.json
+/tmp/layer11_router_logit_localization_status.json
+```
+
+Classification:
+
+```text
+layer11_router_logit_localization_recorded
+```
+
+Result:
+
+- The remaining layer11 seam is one router-logit mismatch at expert 7:
+  local `0.0693359375`, official `0.06884765625`, diff `0.00048828125`.
+- The selected experts remain `[30, 13, 4, 20]`; selected logits and routing
+  weights remain exact for the selected experts.
+- The selected-MLP-down policy context remains
+  `naive_f64_sum_then_bf16_output`; selected outputs, weighted sum, and final
+  output clear under that policy.
+- Router-logit debug classifies
+  `pairwise_f32_bf16_bias_bf16_output` as a full-vector clear. Reverse and
+  chunked-pairwise also clear the full router-logit vector; BF16 prebias and
+  BF16-product variants have collateral mismatches.
+- Full bundle revalidation with a router policy was not run because no narrow
+  router-logit bundle policy flag exists in this slice.
+
+Guardrails: no output emission, ladder continuation, correction metadata,
+tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.

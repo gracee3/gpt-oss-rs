@@ -176,6 +176,14 @@ Design status:
   `pairwise_f32_sum_then_bf16_output` and clears the full bundle.
 - Layer19 is the collateral negative control and must not be forced into the
   layer11/layer20 pattern.
+- Layer11 follow-up localization is recorded in
+  `/tmp/layer11_router_logit_localization_status.json` with classification
+  `layer11_router_logit_localization_recorded`.
+- Layer11 selected-down support works; the remaining seam is router logit
+  expert 7, local `0.0693359375` vs official `0.06884765625`.
+- Router-logit debug finds full-vector clears under pairwise, reverse, and
+  chunked-pairwise policies, but full bundle revalidation with a router policy
+  is not supported in this slice.
 - Runtime/default/CUDA behavior remains unchanged; no outputs are emitted and
   the ladder is not continued.
 
