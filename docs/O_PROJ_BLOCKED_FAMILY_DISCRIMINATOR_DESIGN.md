@@ -314,6 +314,15 @@ authorize runtime/default/CUDA behavior changes.
 
 It also does not authorize implementation.
 
+The follow-up backend-discriminator design update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+It converts this producer/API evidence class into validation-only discriminator
+requirements. It still selects no backend and authorizes no implementation.
+
 The docs-only fused-linear/addmm status scaffold design is recorded in:
 
 ```text

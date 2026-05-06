@@ -282,6 +282,25 @@ non-implementation and non-backend-selecting: no model execution, no CUDA
 execution, no consumer revalidation, no runtime/default/CUDA behavior change,
 and no output emission or ladder continuation.
 
+## Backend Discriminator Design Update
+
+The docs-only backend-discriminator design update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_design_update_recorded
+```
+
+It turns the final Workstream A producer/API matrix into requirements for a
+future validation-only backend discriminator. It does not authorize
+implementation, backend selection, consumer revalidation, runtime/default/CUDA
+behavior changes, output emission, or ladder continuation.
+
 ## Non-Goals
 
 - No runtime implementation.

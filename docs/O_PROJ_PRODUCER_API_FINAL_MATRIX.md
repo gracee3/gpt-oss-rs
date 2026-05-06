@@ -76,6 +76,19 @@ Milestone summary:
 docs/ORDERED_SURFACE_BATCH_MILESTONE_SUMMARY.md
 ```
 
+Backend-discriminator design update:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+The final matrix now feeds the docs-only backend-discriminator design update.
+If explicitly approved, the next recommended branch is:
+
+```text
+validation/fused-linear-addmm-backend-discriminator-status
+```
+
 ## Guardrails
 
 - Validation-only.

@@ -241,6 +241,12 @@ Scope:
 
 ## Recommended Next Step
 
+The backend-discriminator design update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
 Option A: authorize `validation/fused-linear-addmm-status-scaffold` as a
 status-only code slice.
 

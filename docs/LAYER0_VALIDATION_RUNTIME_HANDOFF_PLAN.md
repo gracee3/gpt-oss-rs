@@ -3026,6 +3026,38 @@ runtime/default/CUDA behavior change, output emission, ladder continuation,
 correction metadata, tolerance pass, final-logit, all-layer, server, or
 4097-token claim.
 
+## Fused Linear/AddMM Backend Discriminator Design Update
+
+Design doc:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_design_update_recorded
+```
+
+Source matrix:
+
+```text
+docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md
+```
+
+Future branch options:
+
+- `validation/fused-linear-addmm-backend-discriminator-status` for status-only
+  readiness over existing producer/API statuses and the scaffold.
+- `validation/fused-linear-addmm-backend-discriminator` for candidate execution
+  only if separately approved after the status-only step.
+
+No implementation, backend selection, consumer revalidation, runtime/default/
+CUDA behavior change, output emission, ladder continuation, correction
+metadata, tolerance pass, final-logit, all-layer, server, or 4097-token claim
+is authorized.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:

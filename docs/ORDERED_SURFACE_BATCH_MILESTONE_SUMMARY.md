@@ -187,8 +187,32 @@ Purpose:
 
 Only if explicitly approved after Option B.
 
-Recommended: Option B next if preparing for implementation design. Do not jump
+At milestone time, Option B was recommended if preparing for implementation
+design. This branch records that docs-only design update below. Do not jump
 directly to runtime implementation.
+
+## Backend-Discriminator Design Update
+
+Option B is completed as a docs-only design update:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_design_update_recorded
+```
+
+Recommended next branch, only if explicitly approved:
+
+```text
+validation/fused-linear-addmm-backend-discriminator-status
+```
+
+This is status-only readiness work, not runtime implementation, backend
+selection, consumer revalidation, output emission, or ladder continuation.
 
 ## Guardrails
 

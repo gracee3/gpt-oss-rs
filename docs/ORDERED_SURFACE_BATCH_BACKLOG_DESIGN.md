@@ -423,6 +423,27 @@ Milestone status:
 - Next design branch, if preparing for implementation design:
   `docs/fused-linear-addmm-backend-discriminator-design-update`.
 
+## Fused Linear/AddMM Backend Discriminator Design Update
+
+Workstream A backend-discriminator design update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Classification: `fused_linear_addmm_backend_discriminator_design_update_recorded`.
+
+Next branch, only if explicitly approved:
+
+```text
+validation/fused-linear-addmm-backend-discriminator-status
+```
+
+This next step is status-only readiness over existing producer/API statuses and
+the status scaffold. It is not candidate execution, backend selection,
+consumer revalidation, runtime/default/CUDA behavior change, output emission,
+or ladder continuation.
+
 ## Non-Goals
 
 - No implementation authorization.

@@ -202,12 +202,31 @@ implementation, backend selection, runtime/default/CUDA change, output
 emission, ladder continuation, correction metadata, tolerance pass, or
 final-logit/all-layer/server/4097 claim is authorized.
 
+## Backend Discriminator Design Update
+
+The fused-linear/addmm backend-discriminator design update is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_design_update_recorded
+```
+
+It defines requirements for a future validation-only discriminator and still
+selects no backend. No runtime/default/CUDA behavior change, consumer
+revalidation, output emission, ladder continuation, correction metadata,
+tolerance pass, or final-logit/all-layer/server/4097 claim is authorized.
+
 ## Recommended Next Step
 
 Next bounded decision: pause and preserve this taxonomy as the milestone
-summary, create a docs-only fused-linear/addmm backend-discriminator design
-update, or create a validation-only backend-discriminator/status plan if
-explicitly approved. Do not jump directly to runtime implementation.
+summary, or create a validation-only backend-discriminator/status plan if
+explicitly approved. The docs-only backend-discriminator design update now
+exists; do not jump directly to runtime implementation.
 
 ## Guardrails
 
