@@ -391,6 +391,43 @@ not identify one concrete active CPU backend. The active backend inference is
 therefore `multiple_possible`, with no concrete replayable rule found and no
 Rust/CUDA policy synthesis reopened.
 
+## CPUBlas GEMM Attribution
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpublas_gemm_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpublas_gemm_attribution_recorded
+```
+
+The lower-GEMM attribution stage confirmed the source chain below the official
+API seam:
+
+```text
+linear 2D+bias -> addmm -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm
+```
+
+The source map and `libtorch_cpu.so` symbol scan expose multiple lower-GEMM
+candidates: native CPU stubs, MKL/BLAS BF16 GEMM symbols, and MKLDNN/oneDNN
+BF16 matmul/GEMM paths. Runtime telemetry preserved the sampled official seam
+for baseline, MKLDNN enabled/disabled, verbose DNNL/ONEDNN/MKL, and ONEDNN ISA
+configs, while optional `ATEN_CPU_CAPABILITY=default` changed layer18 and is
+recorded only as attribution telemetry.
+
+Current decision:
+
+- `active_backend_inference = multiple_possible`.
+- `active_backend_confidence = medium`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+- The official seam remains CPU Torch API artifact/provenance, not a selected
+  Rust/CUDA backend.
+
 ## Guardrails
 
 - No backend selected.

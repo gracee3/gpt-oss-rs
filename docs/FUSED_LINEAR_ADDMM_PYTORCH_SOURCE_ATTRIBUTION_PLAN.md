@@ -462,3 +462,44 @@ Interpretation:
 - `reopen_rust_policy_synthesis = false`.
 - The source-map and runtime evidence strengthen the official CPU Torch API
   seam, but still do not identify one replayable BF16 arithmetic/kernel rule.
+
+## CPUBlas GEMM Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpublas_gemm_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpublas_gemm_attribution_recorded
+```
+
+The lower-GEMM attribution stage inspected the exact PyTorch source checkout
+at `70d99e998b4955e0049d13a98d77ae1b14db1f45`, the installed forward-env
+`libtorch_cpu.so`, and captured Workstream A tensors for layers 6, 10, 13,
+16, 18, and 21. It confirmed the source chain:
+
+```text
+linear 2D+bias -> addmm -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm
+```
+
+Source and binary evidence expose native CPU, MKL/BLAS, and MKLDNN/oneDNN
+lower-GEMM candidates, including BF16 GEMM symbols. Runtime telemetry still
+does not isolate one concrete active microkernel. Baseline, MKLDNN enabled,
+MKLDNN disabled, DNNL/ONEDNN verbose, MKL verbose, and ONEDNN ISA probes
+preserved the sampled official seam; the optional `ATEN_CPU_CAPABILITY=default`
+fresh-process probe changed layer18 and is recorded as attribution telemetry,
+not a rebaseline.
+
+Interpretation:
+
+- `active_backend_inference = multiple_possible`.
+- `active_backend_confidence = medium`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+- No PyTorch build, PyTorch patch, CUDA use, model forward, consumer
+  revalidation, backend selection, output emission, ladder continuation, or
+  runtime/default/CUDA behavior change was performed.

@@ -773,6 +773,35 @@ verbose backend capture does not identify a concrete microkernel, and
 was found, so the milestone still does not reopen Rust/CUDA policy synthesis
 or authorize implementation.
 
+## CPUBlas GEMM Attribution
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpublas_gemm_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpublas_gemm_attribution_recorded
+```
+
+The source-guided lower-GEMM probe confirmed the Workstream A source chain:
+
+```text
+linear 2D+bias -> addmm -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm
+```
+
+Native CPU, MKL/BLAS, and MKLDNN/oneDNN BF16 GEMM candidates are visible in
+source and wheel symbols, but the active backend remains `multiple_possible`
+with medium confidence. No concrete replayable BF16 arithmetic or microkernel
+rule was found, and `reopen_rust_policy_synthesis = false`.
+
+The milestone state is unchanged: preserve the official CPU Torch API seam and
+do not select a backend, run consumer revalidation, emit outputs, continue the
+ladder, or change runtime/default/CUDA behavior from this evidence.
+
 ## Guardrails
 
 - Validation-only.

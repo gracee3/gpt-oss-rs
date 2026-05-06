@@ -882,6 +882,36 @@ ONEDNN/DNNL/MKL capture did not pin a backend. The resulting
 was found, no backend was selected, and Rust/CUDA policy synthesis remains
 closed.
 
+## CPUBlas GEMM Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpublas_gemm_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpublas_gemm_attribution_recorded
+```
+
+The lower-GEMM attribution probe confirmed that biased 2D `linear` reaches
+`addmm_out_cpu` / `addmm_impl_cpu_` and the `cpublas::gemm` callsite. Source
+and binary inspection show native CPU, MKL/BLAS, and MKLDNN/oneDNN BF16 GEMM
+families are compiled or visible, but runtime telemetry still leaves the
+active backend as `multiple_possible`.
+
+All sampled layers 6/10/13/16/18/21 were evaluated with captured tensors only.
+No concrete replayable arithmetic or microkernel rule was identified. The
+optional `ATEN_CPU_CAPABILITY=default` telemetry variant changed layer18, so it
+is recorded as a backend-attribution signal only and does not replace the
+official seam artifacts.
+
+No backend was selected, Rust/CUDA policy synthesis remains closed, and this
+does not authorize consumer revalidation, output emission, ladder
+continuation, or runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.
