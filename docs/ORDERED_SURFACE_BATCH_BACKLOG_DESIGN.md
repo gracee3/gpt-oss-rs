@@ -229,6 +229,18 @@ Reason:
 - This is more likely to shape a useful discriminator than another blind
   sweep.
 
+## Workstream A Design Pointer
+
+The docs-only o-proj blocked-family discriminator design is recorded in:
+
+```text
+docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
+```
+
+It targets layers 13, 16, 18, and 21, with layer10 as the recommended
+pairwise-clear control for the first minimal future producer/API probe set. No
+implementation is authorized by that design.
+
 ## Non-Goals
 
 - No implementation authorization.

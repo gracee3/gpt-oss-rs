@@ -137,6 +137,12 @@ The docs-only backlog/design follow-up from this matrix is recorded in:
 docs/ORDERED_SURFACE_BATCH_BACKLOG_DESIGN.md
 ```
 
+The Workstream A o-proj blocked-family discriminator design is recorded in:
+
+```text
+docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
+```
+
 ## Guardrails
 
 - No output emission.

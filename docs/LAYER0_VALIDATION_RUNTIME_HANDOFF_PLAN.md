@@ -2550,6 +2550,29 @@ routing, CUDA change, output emission, ladder continuation, correction
 metadata, tolerance pass, final-logit, all-layer, server, or 4097-token claim
 is authorized.
 
+## O-Proj Blocked-Family Discriminator Design
+
+The docs-only Workstream A design is recorded at:
+
+```text
+docs/O_PROJ_BLOCKED_FAMILY_DISCRIMINATOR_DESIGN.md
+```
+
+Classification:
+
+```text
+o_proj_blocked_family_discriminator_design_recorded
+```
+
+Target layers are 13, 16, 18, and 21, with layer6 fused-linear/addmm evidence
+as historical context and layers 8/9/10/20 plus older 4/5 as clearing
+contrasts. The recommended minimal future probe set is layer13, layer16, and
+layer10 as a pairwise-clear control, on a separately authorized branch such as
+`oracle/o-proj-producer-api-probes-13-16-10`. No implementation,
+runtime/default routing, CUDA change, output emission, ladder continuation,
+correction metadata, tolerance pass, final-logit, all-layer, server, or
+4097-token claim is authorized.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
