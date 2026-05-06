@@ -275,3 +275,66 @@ build, or probe PyTorch.
 - No server claim.
 - No 4097/context-length claim.
 - No Torch runtime dependency in Rust.
+
+## Sampled Trace Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The instrumentation expansion branch reused the existing CPU-only instrumented
+PyTorch build and did not patch, reset, or rebuild PyTorch in this branch. It
+archived the current external PyTorch diff at:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-gemm-stub-sampled-trace/pre_sampled_trace.patch
+```
+
+Sampled layers evaluated:
+
+```text
+6, 10, 13, 16, 18, 21
+```
+
+Configs evaluated:
+
+```text
+baseline, default, avx2, avx512, avx512_bf16, avx512_vnni
+```
+
+Result:
+
+- baseline/no override selected the AVX2-compiled `cpublas_gemm_impl` for all
+  sampled layers;
+- `ATEN_CPU_CAPABILITY=default` selected the DEFAULT-compiled target for all
+  sampled layers;
+- `avx2`, explicit `avx512`, `avx512_bf16`, and `avx512_vnni` selected or
+  fell back to the AVX2 target for all sampled layers;
+- baseline official variants matched the official artifact full-vector exactly
+  for every sampled layer;
+- negative controls remained negative;
+- 25 residual lanes were traced;
+- layer18 lane1641 remains the only fully explained residual lane;
+- 24 residual lanes still need a source-derived replay design to model the
+  selected GEMM-stub reduction behavior.
+
+The sampled trace supports moving to
+`docs/fused-linear-addmm-gemm-stub-source-replay-design`, but it does not prove
+a global replay policy. Therefore:
+
+- `sampled_trace_supports_source_replay_design = true`;
+- `concrete_global_replay_policy_found = false`;
+- `replayable_rule_scope = lane_level`;
+- `reopen_rust_policy_synthesis = false`;
+- no backend is selected;
+- no implementation, consumer revalidation, CUDA mirror, rebaseline, output
+  emission, ladder continuation, or runtime/default/CUDA behavior change is
+  authorized.

@@ -955,6 +955,39 @@ Rust/CUDA policy synthesis, select a backend, authorize implementation,
 authorize consumer revalidation, emit outputs, continue the ladder, or change
 runtime/default/CUDA behavior.
 
+## GEMM Stub Sampled Trace
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The sampled trace branch evaluated layers 6, 10, 13, 16, 18, and 21 with the
+existing CPU-only instrumented PyTorch build. It archived the current external
+PyTorch diff but did not patch, reset, or rebuild PyTorch in this branch.
+
+Milestone result:
+
+- baseline target rule held for all sampled layers;
+- baseline official variants matched official artifacts full-vector exactly
+  for all sampled layers;
+- negative controls remained negative;
+- 25 residual lanes were traced;
+- layer18 lane1641 remains the only fully explained residual lane;
+- the trace supports a source replay design, not a global replay policy.
+
+The milestone therefore remains guarded: `concrete_global_replay_policy_found =
+false`, `reopen_rust_policy_synthesis = false`, no backend selected, no
+implementation authorized, no consumer revalidation, and no runtime/default/CUDA
+behavior change.
+
 ## Guardrails
 
 - Validation-only.

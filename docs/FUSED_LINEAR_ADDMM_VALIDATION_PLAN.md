@@ -1067,6 +1067,42 @@ does not reopen Rust/CUDA policy synthesis or authorize backend selection,
 consumer revalidation, CUDA mirror work, output emission, ladder continuation,
 or runtime/default/CUDA behavior changes.
 
+## GEMM Stub Sampled Trace Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The sampled trace ran the instrumentation expansion step. It evaluated layers
+6, 10, 13, 16, 18, and 21 under baseline, `default`, `avx2`, `avx512`,
+`avx512_bf16`, and `avx512_vnni`.
+
+Validation-relevant results:
+
+- all sampled layers were traced;
+- baseline/no override selected AVX2-compiled `cpublas_gemm_impl` for every
+  sampled layer;
+- `ATEN_CPU_CAPABILITY=default` selected DEFAULT-compiled `cpublas_gemm_impl`
+  for every sampled layer;
+- baseline official variants matched official artifacts full-vector exactly
+  for every sampled layer;
+- negative controls remained negative;
+- 25 residual lanes were traced;
+- 1 residual lane, layer18 lane1641, is explained;
+- 24 residual lanes remain traced but not modeled by an outside-PyTorch replay.
+
+This supports a source-derived replay design, but it is still not a global
+replay policy or runtime backend. `concrete_global_replay_policy_found = false`
+and `reopen_rust_policy_synthesis = false`.
+
 ## Non-Goals
 
 - No runtime implementation.

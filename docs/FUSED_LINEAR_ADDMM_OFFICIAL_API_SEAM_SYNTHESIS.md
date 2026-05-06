@@ -583,6 +583,39 @@ This branch performs no PyTorch modification, reset, build, or probe. It does
 not select a backend, reopen Rust/CUDA policy synthesis, authorize consumer
 revalidation, or change runtime/default/CUDA behavior.
 
+## GEMM Stub Sampled Trace
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The sampled trace confirms that the GEMM-stub target-selection rule holds for
+all sampled Workstream A layers. Baseline/no override selects the AVX2-compiled
+`cpublas_gemm_impl`; `ATEN_CPU_CAPABILITY=default` selects the DEFAULT-compiled
+target; and the optional AVX-target configs select or fall back to AVX2.
+
+Baseline `torch.addmm`, `torch.nn.functional.linear`, and
+`torch._C._nn.linear` matched the official artifacts full-vector exactly for
+layers 6, 10, 13, 16, 18, and 21. Negative controls stayed negative.
+
+The trace supports a source replay design because it traced all sampled layers
+and 25 prior residual lanes. It does not yet prove a global replay policy:
+only layer18 lane1641 is fully explained, 24 residual lanes remain to be
+modeled by a source-derived replay design, and
+`concrete_global_replay_policy_found = false`.
+
+The official API seam remains preserved. `reopen_rust_policy_synthesis = false`,
+with no backend selection, consumer revalidation, rebaseline, or
+runtime/default/CUDA behavior change.
+
 ## Guardrails
 
 - No backend selected.

@@ -680,3 +680,40 @@ This plan keeps `reopen_rust_policy_synthesis = false` until one global
 source-derived policy clears layers 6, 10, 13, 16, 18, and 21 full-vector
 exactly without tolerance, correction metadata, per-layer policy choice, CUDA,
 consumer revalidation, or runtime/default/CUDA behavior changes.
+
+## GEMM Stub Sampled Trace Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The sampled trace evaluated all required Workstream A layers: 6, 10, 13, 16,
+18, and 21. It reused the existing instrumented CPU-only PyTorch build and did
+not patch, reset, or rebuild PyTorch in this branch.
+
+The target-selection rule held across the sampled set:
+
+- baseline/no override selected AVX2-compiled `cpublas_gemm_impl`;
+- `ATEN_CPU_CAPABILITY=default` selected DEFAULT-compiled
+  `cpublas_gemm_impl`;
+- `avx2`, explicit `avx512`, `avx512_bf16`, and `avx512_vnni` selected or fell
+  back to the AVX2 target.
+
+Baseline official variants cleared every sampled layer full-vector exactly, and
+negative controls remained negative. The trace covered 25 prior residual lanes.
+Only layer18 lane1641 is fully explained by the already identified target
+selection plus BF16 rounding-boundary crossing; the other 24 residual lanes are
+traced but still require source-derived replay design.
+
+The result supports moving to
+`docs/fused-linear-addmm-gemm-stub-source-replay-design`, but it does not prove
+a global replay policy. `concrete_global_replay_policy_found = false` and
+`reopen_rust_policy_synthesis = false`.

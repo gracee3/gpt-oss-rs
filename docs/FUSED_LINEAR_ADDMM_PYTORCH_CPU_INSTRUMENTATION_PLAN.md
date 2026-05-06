@@ -411,6 +411,49 @@ and 21 full-vector exactly as one validation policy. It does not modify,
 reset, build, or probe PyTorch, and it does not reopen Rust/CUDA policy
 synthesis in this branch.
 
+## GEMM Stub Sampled Trace Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_sampled_trace_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_sampled_trace_supports_replay_design
+```
+
+The sampled-trace branch reused the existing CPU-only instrumented PyTorch
+build and archived the external dirty PyTorch diff before running:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-gemm-stub-sampled-trace/pre_sampled_trace.patch
+```
+
+No new PyTorch patch or rebuild was needed in this branch. The trace evaluated
+layers 6, 10, 13, 16, 18, and 21 under baseline, `default`, `avx2`, `avx512`,
+`avx512_bf16`, and `avx512_vnni`.
+
+The baseline target rule held for every sampled layer: baseline/no override
+selected the AVX2-compiled `cpublas_gemm_impl`, while
+`ATEN_CPU_CAPABILITY=default` selected the DEFAULT-compiled target. Baseline
+official variants matched the official artifacts full-vector exactly for all
+sampled layers, and negative controls remained negative.
+
+Residual-lane result:
+
+- residual lanes traced: 25;
+- residual lanes explained: 1;
+- residual lanes still requiring replay design: 24;
+- layer18 lane1641 remained explained by target selection plus BF16
+  rounding-boundary crossing.
+
+This supports a source-derived replay design branch, but no global replay
+policy was proven. `concrete_global_replay_policy_found = false` and
+`reopen_rust_policy_synthesis = false`.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.
