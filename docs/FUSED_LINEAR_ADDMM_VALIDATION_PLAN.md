@@ -826,6 +826,35 @@ This is a smoke-only cross-env compatibility check. It does not perform a full
 rebaseline, replace historical artifacts, run consumer validation, select a
 backend, or authorize runtime/default/CUDA behavior changes.
 
+## PyTorch Source Map Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_source_map_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_map_exact_commit_mapped
+```
+
+The source-map stage checked out PyTorch commit
+`70d99e998b4955e0049d13a98d77ae1b14db1f45` under
+`/home/emmy/openai/pytorch` and recorded raw search summaries under
+`/home/emmy/openai/pytorch-research/fused-linear-addmm-pytorch-source-map/`.
+The map confirms the source-level API seam:
+
+- biased 2D `linear` routes to `addmm`;
+- `addmm` registers CPU `addmm_out_cpu` and uses `addmm_impl_cpu_`;
+- MKLDNN/oneDNN BF16 matmul candidates and beta/fused-sum signals are visible;
+- no concrete replayable BF16 arithmetic rule was identified.
+
+This remains validation/source attribution only. It does not reopen Rust/CUDA
+policy synthesis, select a backend, run consumer validation, build or patch
+PyTorch, or change runtime/default/CUDA behavior.
+
 ## Non-Goals
 
 - No runtime implementation.

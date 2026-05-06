@@ -721,6 +721,32 @@ This is not a full rebaseline and does not replace historical artifacts. It
 does not authorize consumer revalidation, backend selection, runtime/default
 or CUDA behavior changes, output emission, or ladder continuation.
 
+## PyTorch Source Map
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_source_map_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_map_exact_commit_mapped
+```
+
+Stage 2 source attribution checked out the exact PyTorch wheel commit
+`70d99e998b4955e0049d13a98d77ae1b14db1f45` and mapped `aten::linear`,
+`aten::addmm`, `aten::mm`, and `aten::matmul` source areas. The map confirms
+that the official Workstream A seam is source-aligned with biased 2D
+`linear -> addmm`, CPU `addmm_out_cpu` / `addmm_impl_cpu_`, and visible
+MKLDNN/oneDNN BF16 matmul candidates.
+
+The milestone conclusion is unchanged: this narrows source attribution, but no
+single replayable Rust/CUDA arithmetic policy or backend is selected.
+`reopen_rust_policy_synthesis = false`; no consumer revalidation or
+runtime/default/CUDA behavior change is authorized.
+
 ## Guardrails
 
 - Validation-only.

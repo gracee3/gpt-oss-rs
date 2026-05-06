@@ -370,3 +370,55 @@ This smoke compares forward-env outputs to historical official artifacts only
 to check compatibility. It does not clone/build/patch PyTorch, load the full
 model, rerun a Workstream A rebaseline, replace artifacts, authorize consumer
 revalidation, select a backend, or change runtime/default/CUDA behavior.
+
+## PyTorch Source Map Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_source_map_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_map_exact_commit_mapped
+```
+
+The Stage 2 source-map branch cloned PyTorch source into
+`/home/emmy/openai/pytorch` and checked out the exact installed-wheel commit:
+
+```text
+70d99e998b4955e0049d13a98d77ae1b14db1f45
+```
+
+Raw source-map summaries were written under:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-pytorch-source-map/
+```
+
+Source mapping records:
+
+- `aten::linear` is registered as CompositeImplicitAutograd and, for 2D input
+  with defined bias, routes through `at::addmm(*bias, input, weight.t())` in
+  `aten/src/ATen/native/Linear.cpp`.
+- `aten::addmm` maps through `native_functions.yaml` to CPU
+  `addmm_out_cpu`, implemented via `addmm_impl_cpu_` in
+  `aten/src/ATen/native/LinearAlgebra.cpp`.
+- The source exposes MKLDNN/oneDNN BF16 matmul candidates in
+  `aten/src/ATen/native/mkldnn/Matmul.cpp`, including `use_mkldnn_bf16_matmul`
+  and beta/fused-sum handling.
+- `aten::mm` and `aten::matmul` share related native/MKLDNN source areas but
+  do not provide the fused-bias addmm seam by themselves.
+
+Interpretation:
+
+- The source map confirms the official API seam and narrows likely CPU native
+  plus MKLDNN/oneDNN source paths.
+- It still does not identify one concrete replayable BF16 arithmetic or
+  microkernel rule.
+- `reopen_rust_policy_synthesis = false`.
+- No PyTorch build, source patch, submodule initialization, model loading,
+  CUDA use, consumer revalidation, backend selection, output emission, ladder
+  continuation, or runtime/default/CUDA behavior change was performed.

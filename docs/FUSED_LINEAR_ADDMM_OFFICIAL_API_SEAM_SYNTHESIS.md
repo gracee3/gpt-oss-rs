@@ -340,6 +340,31 @@ a full rebaseline and does not authorize implementation, consumer
 revalidation, backend selection, output emission, ladder continuation, or
 runtime/default/CUDA behavior changes.
 
+## PyTorch Source Map
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_source_map_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_source_map_exact_commit_mapped
+```
+
+PyTorch source was checked out at the exact Torch wheel git commit
+`70d99e998b4955e0049d13a98d77ae1b14db1f45`. The source map confirms that
+2D biased `aten::linear` routes to `at::addmm(*bias, input, weight.t())`, and
+that `aten::addmm` maps to CPU `addmm_out_cpu` / `addmm_impl_cpu_` with
+additional MKLDNN/oneDNN BF16 matmul candidates visible in source.
+
+This strengthens the official CPU Torch API seam attribution, but it still
+does not expose a single replayable BF16 arithmetic or microkernel rule. Rust
+policy synthesis remains closed, `reopen_rust_policy_synthesis = false`, and
+no backend is selected or authorized for implementation.
+
 ## Guardrails
 
 - No backend selected.
