@@ -7350,3 +7350,149 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_real_model_moe_gpu_upload_allocation_smoke_complete
+
+## Real-model full allocation baseline plus MoE upload status
+
+This operator-validation slice ran the full current bench-only allocation
+baseline plus GPT-OSS MoE U8 GPU upload against the restricted GPT-OSS model.
+The command was:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --upload-gpt-oss-moe-gpu \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_f16_full_moe_upload_status.json
+```
+
+The output JSON path is
+`/tmp/multi_gpu_layer_sharding/split_allocation_f16_full_moe_upload_status.json`.
+It is not committed.
+
+Primary result classification:
+
+`multi_gpu_layer_sharding_real_model_full_allocation_moe_upload_smoke_complete`
+
+Command status classification:
+
+`multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete`
+
+The command currently emits the MoE upload allocation classification as the
+dominant allocation-only classification when `--upload-gpt-oss-moe-gpu`
+succeeds, even when fused f16 and scratch allocation also succeed.
+
+### Result summary
+
+- Resource construction: succeeded.
+- Allocation smoke: succeeded.
+- Manifest-owned f16 allocation: succeeded.
+- Manifest-owned U8 host allocation/retention: succeeded.
+- RoPE allocation: succeeded.
+- Small KV allocation: succeeded.
+- Synthetic decode metadata allocation: succeeded.
+- Fused QKV/norm/bias/global f16 allocation: succeeded.
+- Shard-local f16 scratch allocation with `max_tokens=1`: succeeded.
+- GPT-OSS MoE U8 expert payload GPU upload: succeeded.
+- `moe_gpu_upload_attempted=true`.
+- `moe_gpu_upload_succeeded=true`.
+- `moe_gpu_upload_error=null`.
+- `fused_f16_error=null`.
+- `f16_scratch_error=null`.
+- Unassigned tensors: 0.
+- Invalid tensors: 0.
+
+Shard summaries:
+
+- GPU0 owns layers 0..11 and embeddings. It uploaded 181 f16 tensors,
+  selectively uploaded 72 f32 norm/bias tensors, and retained 48 U8 host
+  tensors / 5,076,172,800 bytes. RoPE was 2,097,152 bytes, KV was
+  393,216 bytes, and packed metadata was 32,792 bytes. Fused f16 status was
+  `allocated` with 354,224,640 total bytes. Embedding f16 was
+  `available_from_uploaded_f16` from `uploaded_f16` with 1,158,266,880 bytes.
+  Final norm f16 was `not_applicable`. Scratch was `allocated` with
+  29,376 elements / 58,752 bytes. MoE upload reported 12 applicable layers,
+  48 U8 host tensors / 5,076,172,800 host bytes, and 48 U8 GPU tensors /
+  5,076,172,800 GPU bytes.
+- GPU1 owns layers 12..23 and the final head. It uploaded 182 f16 tensors,
+  selectively uploaded 73 f32 norm/bias/final-norm tensors, and retained 48 U8
+  host tensors / 5,076,172,800 bytes. RoPE was 2,097,152 bytes, KV was
+  393,216 bytes, and packed metadata was 32,792 bytes. Fused f16 status was
+  `allocated` with 354,230,400 total bytes. Embedding f16 was
+  `not_applicable`. Final norm f16 was `allocated` from `f32_cast` with
+  5,760 bytes. Scratch was `allocated` with 29,376 elements / 58,752 bytes.
+  MoE upload reported 12 applicable layers, 48 U8 host tensors /
+  5,076,172,800 host bytes, and 48 U8 GPU tensors / 5,076,172,800 GPU bytes.
+
+Fused f16 per-shard component summary:
+
+- Fused QKV: 12 buffers / 353,894,400 bytes.
+- Input layernorm f16: 12 buffers / 69,120 bytes.
+- Post-attention norm f16: 12 buffers / 69,120 bytes.
+- Fused QKV bias f16: 12 buffers / 122,880 bytes.
+- O-projection bias f16: 12 buffers / 69,120 bytes.
+- Dense gate/up: not applicable, 0 buffers / 0 bytes.
+- GPU0 embedding f16: available from uploaded f16, 1,158,266,880 bytes.
+- GPU1 final norm f16: allocated from f32 cast, 5,760 bytes.
+
+Scratch per shard:
+
+- `qkv`: 5,120 elements / 10,240 bytes.
+- `attn_out`: 4,096 elements / 8,192 bytes.
+- `o_proj`: 2,880 elements / 5,760 bytes.
+- `normed`: 2,880 elements / 5,760 bytes.
+- `residual`: 2,880 elements / 5,760 bytes.
+- `gate_up`: 5,760 elements / 11,520 bytes.
+- `silu_out`: 2,880 elements / 5,760 bytes.
+- `down`: 2,880 elements / 5,760 bytes.
+
+MoE upload summary:
+
+- Both shards reported `moe_gpu_status=allocated`.
+- Each shard reported 12 applicable MoE layers.
+- Each shard uploaded 48 U8 GPU tensors / 5,076,172,800 bytes.
+- Each applicable layer uploaded all four GPT-OSS U8 expert payloads.
+- Per applicable layer, `gate_up_proj_blocks` was 265,420,800 bytes,
+  `gate_up_proj_scales` was 16,588,800 bytes, `down_proj_blocks` was
+  132,710,400 bytes, and `down_proj_scales` was 8,294,400 bytes.
+- GPU1 layer 12 was reported as absolute layer 12 with local layer 0.
+
+Router and expert-bias status remains `deferred` for all applicable MoE
+layers. `supports_gpu_decode_status` remains non-executing and was reported as
+`gpu_u8_uploaded_but_not_evaluated_without_layer_construction` for all
+applicable uploaded layers. It is not a true execution-readiness or graph-decode
+readiness claim.
+
+The stderr summary contains the existing compile/runtime warnings and the
+bench command invocation; there was no fused, scratch, or MoE upload error.
+
+This is f16 allocation-surface validation, not BF16 parity, model parity,
+execution readiness, final-token parity, logit parity, graph-decode readiness,
+or serving support. No `GptOssMoeLayerWeights`, layers, runner, attention,
+graph decode, graph output, execution, serving behavior, or parity path changed.
+Serve/runtime split maps remain non-executable.
+
+Next bounded step:
+
+- Choose between a non-executing layer-construction skeleton, tied LM-head
+  fallback design/status, a BF16/dtype-policy checkpoint before execution work,
+  or router/bias readiness design for future executable MoE state.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_full_allocation_moe_upload_smoke_complete
