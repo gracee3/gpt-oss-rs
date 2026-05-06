@@ -4695,6 +4695,56 @@ review the blocked o-proj class for layers 16/18, the layer20 selected-MLP
 support gap, and the deferred raw-QK oracle prerequisites before authorizing
 more probes.
 
+## Ordered Surface Batch Raw-QK Probe 17/21/23
+
+The deferred raw-QK bounded-probe slice ran on branch
+`validation/ordered-surface-batch-raw-qk-probes-17-21-23`. Source classify
+status:
+
+```text
+/tmp/ordered_surface_batch_consumer_16_23_status.json
+```
+
+Source dtype-probe batch status:
+
+```text
+/tmp/raw_qk_dtype_probes_17_21_23_status.json
+```
+
+Batch probe status:
+
+```text
+/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_probe_17_21_23_raw_qk_recorded
+```
+
+The slice only ran raw-QK sweeps for layers 17, 21, and 23 using their oracle
+dtype-probe prerequisites. Layer17 remained blocked: pairwise/f64 focus
+evidence did not become a valid full-matrix policy. Layer21 selected
+`reverse_f32_scale_after_sum_bf16_output` for raw-QK after reverse cleared the
+full raw-QK and masked-logit matrices, but full bundle revalidation stopped at
+attention o-proj. Layer23 remained blocked on the artifact precision boundary.
+
+| Layer | Dtype probe | Raw-QK sweep | Revalidation result | Selected policy |
+| --- | --- | --- | --- | --- |
+| 17 | accumulation boundary | collateral mismatches; no valid full-matrix clear | not run | none |
+| 21 | accumulation boundary | reverse clears raw-QK and masked logits | stopped at attention o-proj | `reverse_f32_scale_after_sum_bf16_output` for raw-QK only |
+| 23 | artifact precision boundary | no candidate clears | not run | none |
+
+F64 diagnostic, deterministic abs-ascending, and BF16-product remain
+diagnostic/evidence-only and are not correction candidates. No o-proj sweep,
+selected-MLP-down follow-up, producer/API probe, fused-linear/addmm probe,
+correction metadata, tolerance pass, output emission, or ladder continuation
+was run. No runtime/default routing/CUDA behavior changed, and there is no
+final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+review the raw-QK batch status before separately authorizing layer21 o-proj
+probing or layer23 source precision analysis.
+
 ## Validation Commands
 
 For the skeleton slice:

@@ -2443,6 +2443,60 @@ review the blocked o-proj class for layers 16/18, the layer20 selected-MLP
 support gap, and the deferred raw-QK oracle prerequisites before authorizing
 more probes.
 
+## Ordered Surface Batch Raw-QK Probe 17/21/23
+
+The deferred raw-QK bounded-probe slice ran on branch
+`validation/ordered-surface-batch-raw-qk-probes-17-21-23` from the layer16..23
+o-proj/MLP probe branch. Source classify status:
+
+```text
+/tmp/ordered_surface_batch_consumer_16_23_status.json
+```
+
+Source dtype-probe batch status:
+
+```text
+/tmp/raw_qk_dtype_probes_17_21_23_status.json
+```
+
+Batch probe status:
+
+```text
+/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_probe_17_21_23_raw_qk_recorded
+```
+
+Layer17's dtype probe confirmed an accumulation boundary where pairwise/f64
+matched the focus entry, but the consumer sweep found collateral mismatches
+and no valid full-matrix raw-QK plus masked-logit policy. Layer21's dtype probe
+confirmed an accumulation boundary, and reverse f32 accumulation cleared the
+full raw-QK and masked-logit matrices; full bundle revalidation with
+`--raw-qk-accum-policy reverse` then stopped at attention o-proj, so the layer
+is not full-bundle cleared. Layer23's dtype probe confirmed an artifact
+precision boundary, and the consumer sweep found no reverse/pairwise/f64 focus
+or full-matrix clear.
+
+| Layer | Dtype probe | Raw-QK sweep | Revalidation result | Selected policy |
+| --- | --- | --- | --- | --- |
+| 17 | accumulation boundary | collateral mismatches; no valid full-matrix clear | not run | none |
+| 21 | accumulation boundary | reverse clears raw-QK and masked logits | stopped at attention o-proj | `reverse_f32_scale_after_sum_bf16_output` for raw-QK only |
+| 23 | artifact precision boundary | no candidate clears | not run | none |
+
+Evidence-only and diagnostic policies remain rejected as correction candidates,
+including f64 diagnostic, deterministic abs-ascending, and BF16-product. No
+o-proj sweep, selected-MLP-down follow-up, producer/API probe,
+fused-linear/addmm probe, correction metadata, tolerance pass, output
+emission, or ladder continuation was run. No runtime/default routing/CUDA
+behavior changed, and there is no final-logit, all-layer, server, or
+4097-token claim. Next bounded step: review the raw-QK batch status before
+separately authorizing layer21 o-proj probing or layer23 source precision
+analysis.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing

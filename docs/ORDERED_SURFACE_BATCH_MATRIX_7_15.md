@@ -82,6 +82,19 @@ The follow-on o-proj/MLP bounded-probe status is recorded at:
 It covers only layers 16, 18, 19, and 20. Raw-QK layers 17, 21, and 23 remain
 deferred to oracle dtype-probe prerequisites.
 
+## Layer16..23 Raw-QK Probe Pointer
+
+The follow-on raw-QK bounded-probe status for layers 17, 21, and 23 is
+recorded at:
+
+```text
+/tmp/ordered_surface_batch_probe_17_21_23_raw_qk_status.json
+```
+
+Layer21 clears the raw-QK seam under reverse f32 validation-only accumulation
+but remains full-bundle blocked at attention o-proj. Layers 17 and 23 remain
+blocked on raw-QK without a selected policy.
+
 ## Guardrails
 
 - No output emission.
