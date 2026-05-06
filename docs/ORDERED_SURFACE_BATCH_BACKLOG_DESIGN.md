@@ -220,6 +220,17 @@ safe full-matrix policy.
 
 Potential next design: raw-QK source/artifact precision discriminator.
 
+Design status:
+
+- Workstream C raw-QK source boundary analysis design is recorded in
+  `docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md`.
+- Classification: `raw_qk_source_boundary_analysis_design_recorded`.
+- Implementation and probes remain unauthorized.
+- Recommended future probe set, only if separately approved: layer23
+  artifact/source boundary, layer17 accumulation-boundary collateral, and
+  layer21 raw-QK clear positive control.
+- Layer7 remains historical artifact/source-boundary context.
+
 Do not:
 
 - Use BF16-product as correction.

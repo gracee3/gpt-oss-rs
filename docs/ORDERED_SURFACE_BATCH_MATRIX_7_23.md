@@ -75,6 +75,16 @@ result explain an o-proj backend boundary. Layer6 is not included as a row.
 - Layer17: accumulation-boundary dtype probe, but sweep collateral mismatches.
 - Layer23: artifact precision / source boundary.
 
+Workstream C raw-QK source boundary analysis design is recorded in:
+
+```text
+docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md
+```
+
+It preserves layer7/23 as artifact/source-boundary cases, layer17 as an
+accumulation-boundary collateral case, and layer21 as the positive raw-QK
+full-matrix clear control. It does not authorize implementation or probes.
+
 ### O-proj bounded-family blocked
 
 - Layer13.

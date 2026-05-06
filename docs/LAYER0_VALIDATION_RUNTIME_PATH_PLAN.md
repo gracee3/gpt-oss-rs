@@ -5093,6 +5093,39 @@ Guardrails: no output emission, ladder continuation, correction metadata,
 tolerance pass, runtime/default/CUDA change, final-logit, all-layer, server, or
 4097-token claim.
 
+## Raw-QK Source Boundary Analysis Design
+
+Design doc:
+
+```text
+docs/RAW_QK_SOURCE_BOUNDARY_ANALYSIS_DESIGN.md
+```
+
+Classification:
+
+```text
+raw_qk_source_boundary_analysis_design_recorded
+```
+
+Target layers:
+
+- Layer7: artifact precision/source boundary historical context.
+- Layer17: accumulation-boundary dtype probe with full-matrix collateral.
+- Layer21: reverse raw-QK full-matrix clear positive control; next seam is
+  o-proj.
+- Layer23: current artifact precision/source boundary.
+
+Future branch, only if separately authorized:
+
+```text
+oracle/raw-qk-producer-api-probes-23-17-21
+```
+
+Guardrails: no implementation or probes are authorized by this docs-only
+design. No output emission, ladder continuation, correction metadata, tolerance
+pass, runtime/default/CUDA change, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Validation Commands
 
 For the skeleton slice:
