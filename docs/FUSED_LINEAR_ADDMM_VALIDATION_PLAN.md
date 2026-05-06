@@ -999,6 +999,28 @@ This is useful source attribution but not a selectable validation policy:
 No consumer revalidation, rebaseline, output emission, ladder continuation, or
 runtime/default/CUDA behavior change is authorized.
 
+## Source Attribution Closure
+
+Closure:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_ATTRIBUTION_CLOSURE.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_attribution_closure_recorded
+```
+
+Validation planning now treats Workstream A as an official CPU Torch API seam
+backed by producer/API artifacts, not as an active Rust/CUDA policy synthesis
+lane. The PyTorch source-attribution path was traced to `cpublas::gemm ->
+gemm_stub`, but no concrete replayable rule was found. Future validation may
+consume official seam artifacts, but this closure does not authorize backend
+selection, consumer revalidation, CUDA mirror work, rebaseline, output
+emission, ladder continuation, or runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.

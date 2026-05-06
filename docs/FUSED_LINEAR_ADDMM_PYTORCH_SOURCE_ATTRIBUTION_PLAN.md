@@ -603,3 +603,25 @@ microkernel rule:
 The source-attribution lane therefore still preserves Workstream A as the
 official CPU Torch API seam. It does not select a backend, rebaseline artifacts,
 authorize consumer revalidation, or change runtime/default/CUDA behavior.
+
+## Source Attribution Closure
+
+Closure:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_ATTRIBUTION_CLOSURE.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_attribution_closure_recorded
+```
+
+The current PyTorch source-attribution lane stops at the identified
+`linear -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub`
+path. The closure records this as path-identified-not-replayable evidence:
+useful negative evidence that preserves the official CPU Torch API seam, but
+does not reopen Rust/CUDA policy synthesis or authorize CUDA mirror work,
+consumer revalidation, backend selection, or runtime/default/CUDA behavior
+changes.

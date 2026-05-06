@@ -518,6 +518,27 @@ The official seam remains a CPU Torch API seam. No backend is selected, no
 consumer revalidation is authorized, and no runtime/default/CUDA behavior
 changes are authorized.
 
+## Source Attribution Closure
+
+Closure:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_ATTRIBUTION_CLOSURE.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_attribution_closure_recorded
+```
+
+The closure records the final Workstream A source-attribution decision:
+preserve the official CPU Torch API seam and stop broad source/backend
+attribution here. The traced path reaches `cpublas::gemm -> gemm_stub`, but no
+replayable arithmetic or microkernel rule was identified. This does not select
+a backend, authorize implementation, reopen Rust/CUDA policy synthesis, run
+consumer revalidation, or change runtime/default/CUDA behavior.
+
 ## Guardrails
 
 - No backend selected.

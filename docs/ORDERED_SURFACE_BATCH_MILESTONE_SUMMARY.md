@@ -892,6 +892,32 @@ continues to preserve the official CPU Torch API seam without backend
 selection, consumer revalidation, rebaseline, output emission, ladder
 continuation, or runtime/default/CUDA behavior change.
 
+## Source Attribution Closure
+
+Closure:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_ATTRIBUTION_CLOSURE.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_attribution_closure_recorded
+```
+
+The milestone now records closure for the Workstream A PyTorch
+source-attribution lane. The final source path is
+`linear -> addmm_out_cpu -> addmm_impl_cpu_ -> cpublas::gemm -> gemm_stub`.
+Because no concrete replayable arithmetic or microkernel rule was found, the
+ordered-surface milestone keeps Workstream A as an official CPU Torch API seam
+and does not reopen Rust/CUDA policy synthesis.
+
+The closure also records workspace hygiene for the dirty
+`/home/emmy/openai/pytorch` checkout: archive the instrumentation diff before
+any future reset, and do not reset or modify that checkout from this docs-only
+branch.
+
 ## Guardrails
 
 - Validation-only.

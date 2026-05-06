@@ -338,6 +338,26 @@ This result preserves the official CPU Torch API seam. It does not authorize a
 rebaseline, backend selection, consumer revalidation, CUDA mirror, output
 emission, ladder continuation, or runtime/default/CUDA behavior change.
 
+## Source Attribution Closure
+
+Closure:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_ATTRIBUTION_CLOSURE.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_attribution_closure_recorded
+```
+
+The source-attribution lane is closed at the CPU Torch API seam. The
+instrumented build identified `cpublas::gemm -> gemm_stub`, but did not expose
+a concrete replayable arithmetic or microkernel rule. Rust/CUDA policy
+synthesis remains closed, CUDA mirror work remains unauthorized, and the dirty
+`/home/emmy/openai/pytorch` checkout must be archived before any future reset.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.
