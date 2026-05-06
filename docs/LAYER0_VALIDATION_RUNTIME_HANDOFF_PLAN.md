@@ -2148,6 +2148,42 @@ applied, no output was emitted, and there is no final-logit, all-layer,
 server, or 4097-token claim. Next bounded step: review the matrix, then pilot
 layer7..9 generation/validation only if approved.
 
+## Ordered Surface Batch Consumer Classify-Only Pilot
+
+The layer7..9 consumer pilot ran classify-only validation on branch
+`validation/ordered-surface-batch-consumer` and wrote:
+
+```text
+/tmp/ordered_surface_batch_consumer_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_consumer_classify_recorded
+```
+
+The workflow consumed the existing oracle artifacts only. It ran attention
+audit, strict/default ordered bundle validation, and selected MLP down replay
+where the bridge was exact. It did not run bounded raw-QK, weighted-V, o-proj,
+backend, or producer/API probes, and it did not apply explicit layer3/4/5
+policies to layers7..9.
+
+Per-layer first failing seams:
+
+| Layer | Attention audit | Strict/default first failure | Selected MLP down replay | Recommended probe |
+| --- | --- | --- | --- | --- |
+| 7 | cleared | raw-QK q_head 50 / key column 57 | baseline already clear | raw-QK policy sweep |
+| 8 | cleared | attention o-proj lane 2578 | baseline already clear | attention o-proj policy sweep |
+| 9 | cleared | attention o-proj lane 446 | full MLP cleared by replay; baseline has one selected-output mismatch | attention o-proj policy sweep |
+
+No layer7..9 strict/default surface cleared. No explicit policy was applied, no
+output was emitted, and the ladder was not continued. No runtime/default
+routing/CUDA behavior changed, no tolerance/correction was applied, and there
+is no final-logit, all-layer, server, or 4097-token claim. Next bounded step:
+review the classify-only matrix, then authorize bounded probes only for the
+first failing seams.
+
 ## Validation-Only Non-Goals
 
 - No production runtime routing
