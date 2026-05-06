@@ -988,6 +988,30 @@ false`, `reopen_rust_policy_synthesis = false`, no backend selected, no
 implementation authorized, no consumer revalidation, and no runtime/default/CUDA
 behavior change.
 
+## GEMM Stub Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The milestone now includes a docs-only source replay design for the
+AVX2-selected `cpublas_gemm_impl` rule. It defines the future validation-only
+prototype branch and the proof gates needed before any Rust policy synthesis
+reopening can be considered.
+
+Current milestone state is unchanged: no global replay policy has cleared the
+sampled set, no backend is selected, no implementation is authorized, no
+consumer revalidation is authorized, and no runtime/default/CUDA behavior
+change is authorized.
+
 ## Guardrails
 
 - Validation-only.

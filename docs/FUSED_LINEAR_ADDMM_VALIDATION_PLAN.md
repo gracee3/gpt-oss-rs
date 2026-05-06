@@ -1103,6 +1103,31 @@ This supports a source-derived replay design, but it is still not a global
 replay policy or runtime backend. `concrete_global_replay_policy_found = false`
 and `reopen_rust_policy_synthesis = false`.
 
+## GEMM Stub Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The validation plan now has a docs-only design for a future source-derived
+replay prototype. Acceptance requires one single policy, no PyTorch runtime
+dependency, full-vector exactness for layers 6, 10, 13, 16, 18, and 21,
+negative controls preserved, no tolerance, no correction metadata, no per-layer
+or per-lane choices, and a status explanation for why earlier bounded Rust
+policies missed the mechanism.
+
+The design does not implement Rust/CUDA behavior, reopen Rust/CUDA synthesis,
+select a backend, run consumer revalidation, emit outputs, continue the ladder,
+or change runtime/default/CUDA behavior.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -616,6 +616,30 @@ The official API seam remains preserved. `reopen_rust_policy_synthesis = false`,
 with no backend selection, consumer revalidation, rebaseline, or
 runtime/default/CUDA behavior change.
 
+## GEMM Stub Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The replay design preserves the official CPU Torch API seam while defining how
+a future validation-only prototype could test the AVX2-selected GEMM-stub rule
+outside PyTorch. The design requires one global source-derived policy to clear
+layers 6, 10, 13, 16, 18, and 21 full-vector exactly before Rust policy
+synthesis can be reconsidered.
+
+This is still not a backend selection or implementation authorization. No
+consumer revalidation, output emission, ladder continuation, or
+runtime/default/CUDA behavior change follows from this design.
+
 ## Guardrails
 
 - No backend selected.

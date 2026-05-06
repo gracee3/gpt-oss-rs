@@ -454,6 +454,27 @@ This supports a source-derived replay design branch, but no global replay
 policy was proven. `concrete_global_replay_policy_found = false` and
 `reopen_rust_policy_synthesis = false`.
 
+## GEMM Stub Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The design translates the sampled-trace result into requirements for a future
+validation-only replay candidate. It keeps the active source target as the
+AVX2-compiled `cpublas_gemm_impl` path and records the key prototype blockers:
+SIMD/vector grouping, tile shape, K-loop order, horizontal reduction order,
+lane-dependent behavior, and final BF16 rounding parity. The branch is
+docs-only and performs no PyTorch modification, build, reset, or probe.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.

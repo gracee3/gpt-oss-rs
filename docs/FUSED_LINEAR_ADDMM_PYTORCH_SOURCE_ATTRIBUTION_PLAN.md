@@ -717,3 +717,28 @@ The result supports moving to
 `docs/fused-linear-addmm-gemm-stub-source-replay-design`, but it does not prove
 a global replay policy. `concrete_global_replay_policy_found = false` and
 `reopen_rust_policy_synthesis = false`.
+
+## GEMM Stub Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The source replay design names the target source path and defines a future
+validation-only prototype contract. It identifies `cpublas_gemm_impl` in
+`aten/src/ATen/native/cpu/BlasKernel.cpp` as the CPU-capability-compiled target
+registered for `cpublas::gemm_stub`, with BF16 dot work delegated through
+`CPU_CAPABILITY::bf16_dot_with_fp32_arith`. It also records the design unknowns
+that must be closed before a prototype can claim a global replay policy.
+
+No PyTorch source modification, reset, build, probe, Rust/CUDA implementation,
+backend selection, consumer revalidation, or runtime/default/CUDA behavior
+change is authorized by the design branch.

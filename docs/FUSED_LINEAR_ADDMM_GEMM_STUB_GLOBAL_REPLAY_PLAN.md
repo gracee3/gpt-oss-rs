@@ -338,3 +338,31 @@ a global replay policy. Therefore:
 - no implementation, consumer revalidation, CUDA mirror, rebaseline, output
   emission, ladder continuation, or runtime/default/CUDA behavior change is
   authorized.
+
+## Source Replay Design
+
+Design:
+
+```text
+docs/FUSED_LINEAR_ADDMM_GEMM_STUB_SOURCE_REPLAY_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_source_replay_design_recorded
+```
+
+The replay design records how a future validation-only prototype should model
+the selected AVX2 `cpublas_gemm_impl` source rule outside PyTorch. It identifies
+`CPUBlas.h`, `CPUBlas.cpp`, `BlasKernel.cpp`, `DispatchStub.*`, and
+`ReducedPrecisionFloatGemvFastPathKernel.cpp` as the relevant source targets,
+then lists the remaining unknowns: vector width, tile shape, K-loop grouping,
+horizontal reduction order, tail handling, lane-dependent behavior, and exact
+BF16 conversion/rounding parity.
+
+The design keeps the next step bounded to
+`validation/fused-linear-addmm-gemm-stub-source-replay-prototype`. It does not
+implement the prototype, call PyTorch at runtime, reopen Rust/CUDA policy
+synthesis, select a backend, authorize consumer revalidation, or change
+runtime/default/CUDA behavior.
