@@ -505,6 +505,26 @@ authorized, and no runtime/default/CUDA behavior change, output emission,
 ladder continuation, final-logit, all-layer, server, or 4097-token claim is
 made.
 
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+The milestone now has a staged feasibility path if Workstream A ever proceeds:
+CPU Torch dispatch-stability, then bounded Rust CPU policy synthesis, then CUDA
+mirror only after one global CPU policy clears, then a separate promotion-proof
+plan. This does not authorize implementation and does not change milestone
+claims.
+
 ## Guardrails
 
 - Validation-only.

@@ -611,6 +611,30 @@ No further blind sweeps are recommended from this evidence. No backend is
 selected and no consumer revalidation or runtime/default/CUDA behavior change
 is authorized.
 
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+The plan defines a staged feasibility path rather than a validation
+implementation. Gate A checks CPU Torch addmm dispatch-stability. Gate B, only
+after Gate A review, searches a bounded Rust-replayable CPU arithmetic policy
+space. Gate C, only after one global CPU policy clears, mirrors that exact
+policy in CUDA for validation-only comparison.
+
+The plan explicitly prohibits per-layer policy selection, focus-lane promotion,
+tolerance passes, f64 diagnostic promotion, producer/API seam promotion as a
+runtime backend, consumer revalidation, and runtime/default/CUDA changes.
+
 ## Non-Goals
 
 - No runtime implementation.

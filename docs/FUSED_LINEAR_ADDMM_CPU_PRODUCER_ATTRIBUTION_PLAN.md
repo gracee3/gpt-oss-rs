@@ -408,3 +408,23 @@ unresolved.
 No backend is selected. No implementation, consumer revalidation,
 runtime/default/CUDA behavior change, output emission, or ladder continuation
 is authorized.
+
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+The plan keeps this CPU attribution result as oracle seam evidence only. The
+next permissible implementation branch is CPU Torch dispatch-stability, not
+Rust/CUDA policy code. Rust CPU policy synthesis is gated behind stable Torch
+CPU addmm outputs, and CUDA mirroring is gated behind one global Rust CPU
+policy clearing layers 6, 10, 13, 16, 18, and 21 full-vector exactly.

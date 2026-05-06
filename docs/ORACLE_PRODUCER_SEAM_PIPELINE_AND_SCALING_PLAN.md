@@ -282,3 +282,27 @@ more blind helper sweeps or promoting focus-lane arithmetic policies.
 This is still oracle evidence only. It does not authorize implementation,
 consumer revalidation, runtime/default/CUDA changes, output emission, or ladder
 continuation.
+
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+Pipeline sequence:
+
+1. CPU Torch dispatch-stability.
+2. Rust CPU policy synthesis only if Torch addmm is stable.
+3. CUDA mirror only if one Rust CPU policy clears the sampled set.
+4. Separate promotion-proof planning before any runtime behavior discussion.
+
+The plan preserves the producer seam as oracle evidence and stops the lane if
+stability, global-policy, CUDA-mirror, or guardrail conditions fail.

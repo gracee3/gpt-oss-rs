@@ -694,6 +694,31 @@ Future work should prefer producer/API artifact reuse or a status-only
 discriminator before any custom helper design. This record does not select a
 backend and does not authorize implementation or consumer revalidation.
 
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+The plan converts the official API seam into proof gates for a possible future
+validation policy:
+
+- first prove CPU Torch addmm dispatch-stability;
+- then search one bounded Rust CPU arithmetic policy for the sampled set;
+- then mirror only that exact policy in CUDA;
+- then require a separate promotion-proof plan before runtime discussion.
+
+This discriminator lane must stop if only per-layer, per-lane, diagnostic,
+tolerance, or production-routing-dependent candidates clear.
+
 ## Non-Goals
 
 - No runtime implementation.

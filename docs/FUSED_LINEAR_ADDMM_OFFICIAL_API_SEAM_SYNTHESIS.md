@@ -117,6 +117,31 @@ Revisit GPU or sharded Torch oracle generation later if needed. For single-GPU
 work, use GPU1 because displays are on GPU0, and consult the multi-GPU sharding
 lane before any sharded run.
 
+## Rust/CUDA Policy Feasibility Plan
+
+Follow-up plan:
+
+```text
+docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cuda_policy_feasibility_plan_recorded
+```
+
+The plan defines three gates before any policy implementation discussion:
+
+- Gate A: CPU Torch dispatch-stability.
+- Gate B: bounded Rust CPU policy synthesis, only if Gate A is stable.
+- Gate C: CUDA mirror, only if one Rust CPU policy clears the sampled set.
+
+The plan keeps the official API seam as the reference and explicitly rejects
+per-layer policy selection, per-lane policy selection, focus-lane promotion,
+tolerance passes, f64 diagnostic promotion, and runtime backend promotion from
+this evidence.
+
 ## Guardrails
 
 - No backend selected.
