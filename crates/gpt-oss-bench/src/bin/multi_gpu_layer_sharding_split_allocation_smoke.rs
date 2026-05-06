@@ -6,17 +6,19 @@ use clap::{Parser, ValueEnum};
 use gpt_oss_model_runner::{
     CudaLayerFusedF16AllocationStatus, CudaLayerMoeGpuUploadStatus,
     CudaShardFusedF16AllocationStatus, CudaShardKvCacheAllocationStatus,
-    CudaShardMetadataAllocationStatus, CudaShardMoeGpuUploadStatus, CudaShardResourceStatus,
-    CudaShardRuntimeBufferStatus, DeviceId, DeviceMap, F16ScratchAllocationConfig,
-    F16ScratchBufferStatus, F16ScratchBufferStatuses, FusedF16AllocationStatus,
-    KvCacheAllocationConfig, LateAllocationKind, MetadataAllocationConfig, MetadataMode,
-    MoeGpuUploadStatus, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
+    CudaShardLayerConstructionStatus, CudaShardMetadataAllocationStatus,
+    CudaShardMoeGpuUploadStatus, CudaShardResourceStatus, CudaShardRuntimeBufferStatus, DeviceId,
+    DeviceMap, F16ScratchAllocationConfig, F16ScratchBufferStatus, F16ScratchBufferStatuses,
+    FusedF16AllocationStatus, KvCacheAllocationConfig, LateAllocationKind,
+    LayerConstructionBlocker, LayerConstructionReadinessStatus, MetadataAllocationConfig,
+    MetadataMode, MoeGpuUploadStatus, RopeRuntimeBufferConfig, SafetensorHeaderManifest,
     SafetensorHeaderMergePolicy, ShardAllocationReport, ShardTensorManifest,
     ShardedCudaResourcePlan, ShardedCudaResourceStatus, ShardedFusedF16AllocationPlan,
     ShardedFusedF16AllocationStatus, ShardedKvCacheAllocationPlan, ShardedKvCacheAllocationStatus,
-    ShardedMetadataAllocationPlan, ShardedMetadataAllocationStatus, ShardedModelPlan,
-    ShardedMoeGpuUploadPlan, ShardedMoeGpuUploadStatus, ShardedRuntimeBufferPlan,
-    ShardedRuntimeBufferStatus, SplitAllocationReport, UploadManifestOptions,
+    ShardedLayerConstructionPlan, ShardedLayerConstructionStatus, ShardedMetadataAllocationPlan,
+    ShardedMetadataAllocationStatus, ShardedModelPlan, ShardedMoeGpuUploadPlan,
+    ShardedMoeGpuUploadStatus, ShardedRuntimeBufferPlan, ShardedRuntimeBufferStatus,
+    SplitAllocationReport, UploadManifestOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +62,8 @@ const MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_moe_gpu_upload_plan_status_complete";
 const MOE_GPU_UPLOAD_ALLOCATION_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete";
+const LAYER_SKELETON_STATUS_CLASSIFICATION: &str =
+    "multi_gpu_layer_sharding_layer_construction_skeleton_status_complete";
 const MOE_GPU_UPLOAD_ALLOCATION_BLOCKED_CLASSIFICATION: &str =
     "multi_gpu_layer_sharding_moe_gpu_upload_allocation_blocked";
 const MOE_GPU_UPLOAD_PARTIAL_U8_BLOCKED_CLASSIFICATION: &str =
@@ -166,6 +170,9 @@ struct Cli {
 
     #[arg(long)]
     upload_gpt_oss_moe_gpu: bool,
+
+    #[arg(long)]
+    construct_layer_skeletons: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -230,9 +237,13 @@ struct SplitAllocationSmokeReport {
     f16_scratch_max_tokens: Option<usize>,
     moe_gpu_upload_attempted: bool,
     moe_gpu_upload_succeeded: bool,
+    layer_skeleton_attempted: bool,
+    layer_skeleton_succeeded: bool,
+    layer_skeleton_status: String,
     fused_f16_error: Option<String>,
     f16_scratch_error: Option<String>,
     moe_gpu_upload_error: Option<String>,
+    layer_skeleton_error: Option<String>,
     kernel_dir: Option<String>,
     omitted_allocations: Vec<String>,
     shards: Vec<SplitAllocationSmokeShardReport>,
@@ -340,6 +351,14 @@ struct SplitAllocationSmokeShardReport {
     moe_layer_statuses: Vec<MoeLayerReport>,
     moe_gpu_deferred_reason: Option<String>,
     moe_gpu_error: Option<String>,
+    layer_skeleton_built: bool,
+    layer_skeleton_status: String,
+    layer_skeleton_count: usize,
+    layer_skeleton_ready_count: usize,
+    layer_skeleton_blocked_count: usize,
+    layer_skeleton_deferred_count: usize,
+    layer_skeletons: Vec<LayerSkeletonReport>,
+    layer_skeleton_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -413,6 +432,38 @@ struct MoeLayerReport {
     expert_bias_status: String,
     supports_gpu_decode_status: String,
     layer_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LayerSkeletonBlockerReport {
+    code: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LayerSkeletonReport {
+    absolute_layer_idx: usize,
+    local_layer_idx: usize,
+    owns_layer: bool,
+    layer_config_status: String,
+    required_f16_projection_status: String,
+    required_f32_norm_bias_status: String,
+    rope_status: String,
+    kv_cache_status: String,
+    metadata_status: String,
+    fused_qkv_status: String,
+    layernorm_f16_status: String,
+    postnorm_f16_status: String,
+    qkv_bias_f16_status: String,
+    o_proj_bias_f16_status: String,
+    f16_scratch_status: String,
+    moe_u8_upload_status: String,
+    moe_router_status: String,
+    moe_expert_bias_status: String,
+    supports_gpu_decode_status: String,
+    executable_layer_status: String,
+    executable_layer_deferred_reason: Option<String>,
+    blockers: Vec<LayerSkeletonBlockerReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -491,6 +542,7 @@ fn main() -> Result<()> {
         cli.allocate_f16_scratch,
         cli.f16_scratch_max_tokens,
         cli.upload_gpt_oss_moe_gpu,
+        cli.construct_layer_skeletons,
         true,
     );
     let json = serde_json::to_string_pretty(&report)?;
@@ -535,6 +587,7 @@ fn build_split_allocation_smoke_report(
     allocate_f16_scratch: bool,
     f16_scratch_max_tokens: Option<usize>,
     upload_gpt_oss_moe_gpu: bool,
+    construct_layer_skeletons: bool,
     construct_and_upload: bool,
 ) -> SplitAllocationSmokeReport {
     let fused_f16_options = FusedF16SmokeOptions {
@@ -565,6 +618,7 @@ fn build_split_allocation_smoke_report(
                 None,
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -593,6 +647,7 @@ fn build_split_allocation_smoke_report(
                     None,
                     fused_f16_options,
                     upload_gpt_oss_moe_gpu,
+                    construct_layer_skeletons,
                     Some(error.to_string()),
                 );
             }
@@ -628,6 +683,7 @@ fn build_split_allocation_smoke_report(
                 None,
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -664,6 +720,7 @@ fn build_split_allocation_smoke_report(
                 None,
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -691,6 +748,7 @@ fn build_split_allocation_smoke_report(
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -718,6 +776,7 @@ fn build_split_allocation_smoke_report(
             metadata_config.map(|config| config.graph_max_blocks()),
             fused_f16_options,
             upload_gpt_oss_moe_gpu,
+            construct_layer_skeletons,
             Some("--allocate-fused-f16 requires --dtype f16 or --dtype both".to_string()),
         );
     }
@@ -750,6 +809,7 @@ fn build_split_allocation_smoke_report(
                     metadata_config.map(|config| config.graph_max_blocks()),
                     fused_f16_options,
                     upload_gpt_oss_moe_gpu,
+                    construct_layer_skeletons,
                     Some(error.to_string()),
                 );
             }
@@ -785,6 +845,7 @@ fn build_split_allocation_smoke_report(
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -816,6 +877,7 @@ fn build_split_allocation_smoke_report(
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -852,6 +914,7 @@ fn build_split_allocation_smoke_report(
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -884,6 +947,7 @@ fn build_split_allocation_smoke_report(
                 metadata_config.map(|config| config.graph_max_blocks()),
                 fused_f16_options,
                 upload_gpt_oss_moe_gpu,
+                construct_layer_skeletons,
                 Some(error.to_string()),
             );
         }
@@ -932,7 +996,23 @@ fn build_split_allocation_smoke_report(
             let metadata_plan = ShardedMetadataAllocationPlan::from_model_plan(&plan, config);
             ShardedMetadataAllocationStatus::from_plan(&metadata_plan, false)
         });
-        let classification = if fused_f16_status.is_some() {
+        let layer_skeleton_status = if construct_layer_skeletons {
+            let layer_plan = ShardedLayerConstructionPlan::from_upload_manifest(&upload_manifest);
+            Some(ShardedLayerConstructionStatus::from_plan(
+                &layer_plan,
+                false,
+                runtime_buffer_status.as_ref(),
+                kv_cache_status.as_ref(),
+                metadata_status.as_ref(),
+                fused_f16_status.as_ref(),
+                moe_gpu_upload_status.as_ref(),
+            ))
+        } else {
+            None
+        };
+        let classification = if layer_skeleton_status.is_some() {
+            LAYER_SKELETON_STATUS_CLASSIFICATION
+        } else if fused_f16_status.is_some() {
             FUSED_F16_PLAN_STATUS_CLASSIFICATION
         } else if moe_gpu_upload_status.is_some() {
             MOE_GPU_UPLOAD_PLAN_STATUS_CLASSIFICATION
@@ -971,6 +1051,8 @@ fn build_split_allocation_smoke_report(
             fused_f16_status.as_ref(),
             upload_gpt_oss_moe_gpu,
             moe_gpu_upload_status.as_ref(),
+            construct_layer_skeletons,
+            layer_skeleton_status.as_ref(),
             None,
         );
     }
@@ -1017,7 +1099,33 @@ fn build_split_allocation_smoke_report(
                     .as_ref()
                     .map(moe_status_succeeded)
                     .unwrap_or(false);
-            let classification = if moe_gpu_upload_succeeded {
+            let layer_skeleton_status = if construct_layer_skeletons {
+                let layer_plan =
+                    ShardedLayerConstructionPlan::from_upload_manifest(&upload_manifest);
+                Some(ShardedLayerConstructionStatus::from_plan(
+                    &layer_plan,
+                    matches!(dtype_mode, DTypeMode::F16 | DTypeMode::Both),
+                    runtime_buffer_status.as_ref(),
+                    kv_cache_status.as_ref(),
+                    metadata_status.as_ref(),
+                    actual_fused_f16_status
+                        .as_ref()
+                        .or(fused_f16_status.as_ref()),
+                    actual_moe_gpu_upload_status
+                        .as_ref()
+                        .or(moe_gpu_upload_status.as_ref()),
+                ))
+            } else {
+                None
+            };
+            let layer_skeleton_succeeded = construct_layer_skeletons
+                && layer_skeleton_status
+                    .as_ref()
+                    .map(layer_skeleton_status_succeeded)
+                    .unwrap_or(false);
+            let classification = if layer_skeleton_succeeded {
+                LAYER_SKELETON_STATUS_CLASSIFICATION
+            } else if moe_gpu_upload_succeeded {
                 MOE_GPU_UPLOAD_ALLOCATION_CLASSIFICATION
             } else if fused_f16_succeeded && f16_scratch_succeeded {
                 if actual_fused_f16_status
@@ -1106,6 +1214,8 @@ fn build_split_allocation_smoke_report(
                 actual_moe_gpu_upload_status
                     .as_ref()
                     .or(moe_gpu_upload_status.as_ref()),
+                construct_layer_skeletons,
+                layer_skeleton_status.as_ref(),
                 None,
             )
         }
@@ -1144,6 +1254,8 @@ fn build_split_allocation_smoke_report(
                 fused_f16_status.as_ref(),
                 upload_gpt_oss_moe_gpu,
                 moe_gpu_upload_status.as_ref(),
+                construct_layer_skeletons,
+                None,
                 Some(error),
             )
         }
@@ -1684,6 +1796,35 @@ fn moe_status_succeeded(status: &ShardedMoeGpuUploadStatus) -> bool {
     })
 }
 
+fn layer_skeleton_status_succeeded(status: &ShardedLayerConstructionStatus) -> bool {
+    status.shards.iter().all(|shard| {
+        shard.layer_skeleton_status == LayerConstructionReadinessStatus::SkeletonComplete
+            || shard.layer_skeleton_status == LayerConstructionReadinessStatus::NotApplicable
+    })
+}
+
+fn layer_skeleton_status_string(status: &ShardedLayerConstructionStatus) -> String {
+    if status
+        .shards
+        .iter()
+        .any(|shard| shard.layer_skeleton_status == LayerConstructionReadinessStatus::Blocked)
+    {
+        LayerConstructionReadinessStatus::Blocked
+            .as_str()
+            .to_string()
+    } else if status.shards.iter().any(|shard| {
+        shard.layer_skeleton_status == LayerConstructionReadinessStatus::SkeletonComplete
+    }) {
+        LayerConstructionReadinessStatus::SkeletonComplete
+            .as_str()
+            .to_string()
+    } else {
+        LayerConstructionReadinessStatus::NotApplicable
+            .as_str()
+            .to_string()
+    }
+}
+
 fn classify_fused_f16_error(error: &str) -> &'static str {
     if error.contains("f16 scratch") {
         if error.to_ascii_lowercase().contains("out of memory") || error.contains("OOM") {
@@ -1748,6 +1889,8 @@ fn render_report(
     fused_f16_status: Option<&ShardedFusedF16AllocationStatus>,
     moe_gpu_upload_attempted: bool,
     moe_gpu_upload_status: Option<&ShardedMoeGpuUploadStatus>,
+    construct_layer_skeletons: bool,
+    layer_skeleton_status: Option<&ShardedLayerConstructionStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let upload_counts = manifest_by_device
@@ -1793,6 +1936,8 @@ fn render_report(
         fused_f16_status,
         moe_gpu_upload_attempted,
         moe_gpu_upload_status,
+        construct_layer_skeletons,
+        layer_skeleton_status,
         error,
     )
 }
@@ -1830,6 +1975,8 @@ fn render_report_with_counts(
     fused_f16_status: Option<&ShardedFusedF16AllocationStatus>,
     moe_gpu_upload_attempted: bool,
     moe_gpu_upload_status: Option<&ShardedMoeGpuUploadStatus>,
+    construct_layer_skeletons: bool,
+    layer_skeleton_status: Option<&ShardedLayerConstructionStatus>,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let resource_by_device = resource_status
@@ -1882,6 +2029,15 @@ fn render_report_with_counts(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
+    let layer_skeleton_by_device = layer_skeleton_status
+        .map(|status| {
+            status
+                .shards
+                .iter()
+                .map(|status| (status.device_id, status))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     let fused_f16_allocation_succeeded = fused_f16_options.allocate_fused_f16
         && fused_f16_status
             .map(fused_status_succeeded)
@@ -1894,6 +2050,23 @@ fn render_report_with_counts(
         && moe_gpu_upload_status
             .map(moe_status_succeeded)
             .unwrap_or(false);
+    let layer_skeleton_succeeded = construct_layer_skeletons
+        && layer_skeleton_status
+            .map(layer_skeleton_status_succeeded)
+            .unwrap_or(false);
+    let layer_skeleton_top_status = layer_skeleton_status
+        .map(layer_skeleton_status_string)
+        .unwrap_or_else(|| {
+            if construct_layer_skeletons {
+                LayerConstructionReadinessStatus::Deferred
+                    .as_str()
+                    .to_string()
+            } else {
+                LayerConstructionReadinessStatus::NotApplicable
+                    .as_str()
+                    .to_string()
+            }
+        });
 
     SplitAllocationSmokeReport {
         classification: classification.into(),
@@ -1934,6 +2107,9 @@ fn render_report_with_counts(
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
         moe_gpu_upload_attempted,
         moe_gpu_upload_succeeded,
+        layer_skeleton_attempted: construct_layer_skeletons,
+        layer_skeleton_succeeded,
+        layer_skeleton_status: layer_skeleton_top_status,
         fused_f16_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_fused_f16),
@@ -1941,6 +2117,7 @@ fn render_report_with_counts(
             .clone()
             .filter(|_| fused_f16_options.allocate_f16_scratch),
         moe_gpu_upload_error: error.clone().filter(|_| moe_gpu_upload_attempted),
+        layer_skeleton_error: error.clone().filter(|_| construct_layer_skeletons),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
         omitted_allocations: omitted_allocations(
             rope_metadata_allocation_succeeded,
@@ -1967,6 +2144,7 @@ fn render_report_with_counts(
                 let metadata = metadata_by_device.get(&shard.device_id).copied();
                 let fused_f16 = fused_f16_by_device.get(&shard.device_id).copied();
                 let moe_gpu = moe_gpu_by_device.get(&shard.device_id).copied();
+                let layer_skeleton = layer_skeleton_by_device.get(&shard.device_id).copied();
                 render_shard_report(
                     shard,
                     counts,
@@ -1977,6 +2155,7 @@ fn render_report_with_counts(
                     metadata,
                     fused_f16,
                     moe_gpu,
+                    layer_skeleton,
                 )
             })
             .collect(),
@@ -1996,6 +2175,7 @@ fn render_shard_report(
     metadata: Option<&CudaShardMetadataAllocationStatus>,
     fused_f16: Option<&CudaShardFusedF16AllocationStatus>,
     moe_gpu: Option<&CudaShardMoeGpuUploadStatus>,
+    layer_skeleton: Option<&CudaShardLayerConstructionStatus>,
 ) -> SplitAllocationSmokeShardReport {
     let (
         rope_allocated,
@@ -2302,6 +2482,46 @@ fn render_shard_report(
                 None,
             )
         });
+    let (
+        layer_skeleton_built,
+        layer_skeleton_status,
+        layer_skeleton_count,
+        layer_skeleton_ready_count,
+        layer_skeleton_blocked_count,
+        layer_skeleton_deferred_count,
+        layer_skeletons,
+        layer_skeleton_error,
+    ) = layer_skeleton
+        .map(|status| {
+            (
+                status.layer_skeleton_built,
+                status.layer_skeleton_status.as_str().to_string(),
+                status.layer_skeleton_count,
+                status.layer_skeleton_ready_count,
+                status.layer_skeleton_blocked_count,
+                status.layer_skeleton_deferred_count,
+                status
+                    .layer_skeletons
+                    .iter()
+                    .map(render_layer_skeleton_report)
+                    .collect::<Vec<_>>(),
+                status.layer_skeleton_error.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                false,
+                LayerConstructionReadinessStatus::NotApplicable
+                    .as_str()
+                    .to_string(),
+                0,
+                0,
+                0,
+                0,
+                Vec::new(),
+                None,
+            )
+        });
 
     SplitAllocationSmokeShardReport {
         device_id: shard.device_id.0,
@@ -2410,6 +2630,14 @@ fn render_shard_report(
         moe_layer_statuses,
         moe_gpu_deferred_reason,
         moe_gpu_error,
+        layer_skeleton_built,
+        layer_skeleton_status,
+        layer_skeleton_count,
+        layer_skeleton_ready_count,
+        layer_skeleton_blocked_count,
+        layer_skeleton_deferred_count,
+        layer_skeletons,
+        layer_skeleton_error,
     }
 }
 
@@ -2474,6 +2702,46 @@ fn render_moe_layer_report(status: &CudaLayerMoeGpuUploadStatus) -> MoeLayerRepo
     }
 }
 
+fn render_layer_skeleton_report(
+    status: &gpt_oss_model_runner::CudaLayerConstructionStatus,
+) -> LayerSkeletonReport {
+    LayerSkeletonReport {
+        absolute_layer_idx: status.absolute_layer_idx,
+        local_layer_idx: status.local_layer_idx,
+        owns_layer: status.owns_layer,
+        layer_config_status: status.layer_config_status.as_str().to_string(),
+        required_f16_projection_status: status.required_f16_projection_status.as_str().to_string(),
+        required_f32_norm_bias_status: status.required_f32_norm_bias_status.as_str().to_string(),
+        rope_status: status.rope_status.as_str().to_string(),
+        kv_cache_status: status.kv_cache_status.as_str().to_string(),
+        metadata_status: status.metadata_status.as_str().to_string(),
+        fused_qkv_status: status.fused_qkv_status.as_str().to_string(),
+        layernorm_f16_status: status.layernorm_f16_status.as_str().to_string(),
+        postnorm_f16_status: status.postnorm_f16_status.as_str().to_string(),
+        qkv_bias_f16_status: status.qkv_bias_f16_status.as_str().to_string(),
+        o_proj_bias_f16_status: status.o_proj_bias_f16_status.as_str().to_string(),
+        f16_scratch_status: status.f16_scratch_status.as_str().to_string(),
+        moe_u8_upload_status: status.moe_u8_upload_status.as_str().to_string(),
+        moe_router_status: status.moe_router_status.as_str().to_string(),
+        moe_expert_bias_status: status.moe_expert_bias_status.as_str().to_string(),
+        supports_gpu_decode_status: status.supports_gpu_decode_status.clone(),
+        executable_layer_status: status.executable_layer_status.as_str().to_string(),
+        executable_layer_deferred_reason: status.executable_layer_deferred_reason.clone(),
+        blockers: status
+            .blockers
+            .iter()
+            .map(render_layer_skeleton_blocker)
+            .collect(),
+    }
+}
+
+fn render_layer_skeleton_blocker(blocker: &LayerConstructionBlocker) -> LayerSkeletonBlockerReport {
+    LayerSkeletonBlockerReport {
+        code: blocker.code.clone(),
+        detail: blocker.detail.clone(),
+    }
+}
+
 fn error_report(
     classification: &str,
     model_path: &Path,
@@ -2494,6 +2762,7 @@ fn error_report(
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
     upload_gpt_oss_moe_gpu: bool,
+    construct_layer_skeletons: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     SplitAllocationSmokeReport {
@@ -2537,6 +2806,17 @@ fn error_report(
         f16_scratch_max_tokens: fused_f16_options.f16_scratch_max_tokens,
         moe_gpu_upload_attempted: upload_gpt_oss_moe_gpu,
         moe_gpu_upload_succeeded: false,
+        layer_skeleton_attempted: construct_layer_skeletons,
+        layer_skeleton_succeeded: false,
+        layer_skeleton_status: if construct_layer_skeletons {
+            LayerConstructionReadinessStatus::Deferred
+                .as_str()
+                .to_string()
+        } else {
+            LayerConstructionReadinessStatus::NotApplicable
+                .as_str()
+                .to_string()
+        },
         fused_f16_error: error
             .clone()
             .filter(|_| fused_f16_options.allocate_fused_f16),
@@ -2544,6 +2824,7 @@ fn error_report(
             .clone()
             .filter(|_| fused_f16_options.allocate_f16_scratch),
         moe_gpu_upload_error: error.clone().filter(|_| upload_gpt_oss_moe_gpu),
+        layer_skeleton_error: error.clone().filter(|_| construct_layer_skeletons),
         kernel_dir: kernel_dir.map(|path| path.display().to_string()),
         omitted_allocations: omitted_allocations(
             false,
@@ -2582,6 +2863,7 @@ fn error_report_with_config(
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
     upload_gpt_oss_moe_gpu: bool,
+    construct_layer_skeletons: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report(
@@ -2604,6 +2886,7 @@ fn error_report_with_config(
         metadata_graph_max_blocks,
         fused_f16_options,
         upload_gpt_oss_moe_gpu,
+        construct_layer_skeletons,
         error,
     );
     report.num_layers = Some(config.num_layers);
@@ -2638,6 +2921,7 @@ fn error_report_with_config_and_headers(
     metadata_graph_max_blocks: Option<usize>,
     fused_f16_options: FusedF16SmokeOptions,
     upload_gpt_oss_moe_gpu: bool,
+    construct_layer_skeletons: bool,
     error: Option<String>,
 ) -> SplitAllocationSmokeReport {
     let mut report = error_report_with_config(
@@ -2662,6 +2946,7 @@ fn error_report_with_config_and_headers(
         metadata_graph_max_blocks,
         fused_f16_options,
         upload_gpt_oss_moe_gpu,
+        construct_layer_skeletons,
         error,
     );
     report.has_lm_head_weight = Some(header_manifest.has_lm_head_weight());
@@ -2933,6 +3218,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         )
     }
 
@@ -2964,6 +3250,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false,
             false,
         )
@@ -3002,6 +3289,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         )
     }
 
@@ -3034,6 +3322,7 @@ mod tests {
             f16_scratch_max_tokens,
             false,
             false,
+            false,
         )
     }
 
@@ -3063,6 +3352,38 @@ mod tests {
             false,
             None,
             upload_gpt_oss_moe_gpu,
+            false,
+            false,
+        )
+    }
+
+    fn split_report_for_layer_skeletons(
+        dir: &Path,
+        construct_layer_skeletons: bool,
+    ) -> SplitAllocationSmokeReport {
+        build_split_allocation_smoke_report(
+            dir,
+            "split:0-11@0,12-23@1",
+            0,
+            None,
+            DTypeMode::F16,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            false,
+            construct_layer_skeletons,
             false,
         )
     }
@@ -3500,6 +3821,79 @@ mod tests {
     }
 
     #[test]
+    fn default_split_allocation_smoke_does_not_attempt_layer_skeletons() {
+        let dir = fixture_with_moe_tensors();
+
+        let report = split_report_for(&dir, None);
+
+        assert!(!report.layer_skeleton_attempted);
+        assert!(!report.layer_skeleton_succeeded);
+        assert_eq!(report.layer_skeleton_status, "not_applicable");
+        for shard in &report.shards {
+            assert!(!shard.layer_skeleton_built);
+            assert_eq!(shard.layer_skeleton_status, "not_applicable");
+            assert_eq!(shard.layer_skeleton_count, 0);
+            assert!(shard.layer_skeletons.is_empty());
+        }
+    }
+
+    #[test]
+    fn layer_skeleton_flag_surfaces_absolute_layer_status_without_other_flags() {
+        let dir = fixture_with_moe_tensors();
+
+        let report = split_report_for_layer_skeletons(&dir, true);
+
+        assert_eq!(report.classification, LAYER_SKELETON_STATUS_CLASSIFICATION);
+        assert!(report.layer_skeleton_attempted);
+        assert!(!report.fused_f16_allocation_attempted);
+        assert!(!report.f16_scratch_allocation_attempted);
+        assert!(!report.moe_gpu_upload_attempted);
+        assert_eq!(report.shards.len(), 2);
+
+        let gpu0 = shard(&report, 0);
+        assert!(gpu0.layer_skeleton_built);
+        assert_eq!(gpu0.layer_skeleton_count, 12);
+        assert_eq!(
+            gpu0.layer_skeletons
+                .iter()
+                .map(|layer| layer.absolute_layer_idx)
+                .collect::<Vec<_>>(),
+            (0..12).collect::<Vec<_>>()
+        );
+        let gpu0_layer0 = gpu0
+            .layer_skeletons
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 0)
+            .unwrap();
+        assert_eq!(gpu0_layer0.local_layer_idx, 0);
+        assert_eq!(gpu0_layer0.kv_cache_status, "not_requested");
+        assert_eq!(gpu0_layer0.metadata_status, "not_requested");
+        assert_eq!(gpu0_layer0.fused_qkv_status, "not_requested");
+        assert_eq!(gpu0_layer0.f16_scratch_status, "not_requested");
+        assert_eq!(gpu0_layer0.moe_u8_upload_status, "not_requested");
+        assert_eq!(gpu0_layer0.executable_layer_status, "not_constructed");
+        assert_ne!(gpu0_layer0.supports_gpu_decode_status, "true");
+        assert!(!gpu0_layer0
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code.contains("bf16") || blocker.detail.contains("BF16")));
+        assert_ne!(gpu0_layer0.executable_layer_status, "execution_ready");
+
+        let gpu1 = shard(&report, 1);
+        assert_eq!(gpu1.layer_skeleton_count, 12);
+        let gpu1_layer12 = gpu1
+            .layer_skeletons
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(gpu1_layer12.local_layer_idx, 0);
+        assert!(gpu1
+            .layer_skeletons
+            .iter()
+            .all(|layer| layer.absolute_layer_idx >= 12));
+    }
+
+    #[test]
     fn moe_gpu_flag_surfaces_deferred_plan_status_per_shard() {
         let dir = fixture_with_moe_tensors();
 
@@ -3835,6 +4229,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
 
         assert_eq!(report.classification, CONFIG_ERROR_CLASSIFICATION);
@@ -3980,6 +4375,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false,
             false,
         );

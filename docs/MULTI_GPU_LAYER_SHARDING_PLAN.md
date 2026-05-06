@@ -7614,3 +7614,181 @@ Next bounded slice:
 Primary classification:
 
 multi_gpu_layer_sharding_bf16_dtype_policy_checkpoint_complete
+
+## Bench-only layer-construction skeleton status
+
+This slice adds an inert, bench-only layer-construction status boundary. It is
+f16 allocation-surface-only: it consumes the split ownership/allocation status
+objects that this lane has already validated, but it does not construct runtime
+layers, does not run kernels, and does not make BF16, execution, graph-decode,
+serving, final-token, or logit parity claims.
+
+Flag:
+
+```text
+--construct-layer-skeletons
+```
+
+Module/type additions:
+
+- `crates/gpt-oss-model-runner/src/sharded_resources.rs`
+  - `LayerConstructionReadinessStatus`
+  - `LayerConstructionBlocker`
+  - `ShardedLayerConstructionPlan`
+  - `CudaShardLayerConstructionPlan`
+  - `CudaLayerConstructionPlan`
+  - `ShardedLayerConstructionStatus`
+  - `CudaShardLayerConstructionStatus`
+  - `CudaLayerConstructionStatus`
+- `crates/gpt-oss-bench/src/bin/multi_gpu_layer_sharding_split_allocation_smoke.rs`
+  renders the new status under `--construct-layer-skeletons`.
+
+Actual `GpuTransformerLayer` construction was avoided. Recon found
+`GpuTransformerLayer` is a runtime layer object with stream/kernel-loader
+execution state and forward methods, so this slice creates pure plan/status
+objects only. It also does not construct `GpuModelRunner` or
+`GptOssMoeLayerWeights`.
+
+For each shard-owned absolute layer, the skeleton status records:
+
+- `absolute_layer_idx` and `local_layer_idx`.
+- Ownership/config status through `ShardWeightStore`-derived absolute names.
+- Required f16 projection tensor presence from the manifest-owned f16 surface.
+- Required f32 norm/bias prerequisite status when fused f16 side buffers are in
+  scope.
+- Requested RoPE, KV cache, metadata, fused QKV, layernorm/postnorm, QKV/O
+  bias, and f16 scratch statuses.
+- MoE U8 upload, router, expert-bias, and `supports_gpu_decode` statuses.
+- `executable_layer_status=not_constructed` with an explicit deferred reason.
+- A `blockers` array for future executable-layer design boundaries.
+
+Absolute-layer naming policy:
+
+- Public status always reports absolute layer ids.
+- GPU0 owns layers 0..11.
+- GPU1 owns layers 12..23.
+- GPU1's first layer remains `absolute_layer_idx=12`,
+  `local_layer_idx=0`, and names/status are derived from
+  `model.layers.12.*`, never `model.layers.0.*`.
+
+Status JSON fields:
+
+- Top level:
+  - `layer_skeleton_attempted`
+  - `layer_skeleton_succeeded`
+  - `layer_skeleton_status`
+  - `layer_skeleton_error`
+- Per shard:
+  - `layer_skeleton_built`
+  - `layer_skeleton_status`
+  - `layer_skeleton_count`
+  - `layer_skeleton_ready_count`
+  - `layer_skeleton_blocked_count`
+  - `layer_skeleton_deferred_count`
+  - `layer_skeletons`
+  - `layer_skeleton_error`
+- Per layer:
+  - ownership/local-index fields
+  - f16 projection and f32 norm/bias prerequisite fields
+  - RoPE/KV/metadata/fused/scratch fields
+  - MoE U8/router/expert-bias/supports-GPU-decode fields
+  - executable-layer deferred fields
+  - blockers
+
+Status semantics:
+
+- Without `--construct-layer-skeletons`, the new fields stay
+  `not_applicable`/false and existing behavior is unchanged.
+- The flag does not imply `--allocate-fused-f16`, `--allocate-f16-scratch`,
+  `--upload-gpt-oss-moe-gpu`, `--allocate-kv-cache`, or
+  `--allocate-metadata`.
+- If an allocation family is not requested, the per-layer prerequisite status is
+  `not_requested` rather than a failure.
+- If a requested allocation reports an error or partial owned state, that
+  blocker is surfaced on the relevant layer skeleton.
+- `supports_gpu_decode_status` is never true in this slice; uploaded MoE U8
+  remains non-executing and not evaluated without layer construction.
+- `executable_layer_status` is always `not_constructed`.
+
+What remains deferred:
+
+- Executable `GpuTransformerLayer` construction.
+- `GpuModelRunner` construction from split resources.
+- Executable `GptOssMoeLayerWeights`.
+- Router/bias executable readiness and real `supports_gpu_decode` evaluation.
+- Tied LM-head fallback and f32 embedding fallback.
+- Attention, graph decode, graph output, final norm, LM head, logits,
+  activation transfer, execution, serving, BF16 parity, and all parity paths.
+
+Manual operator commands, not run in this implementation slice:
+
+Minimal skeleton status:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --construct-layer-skeletons \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_layer_skeleton_status.json
+```
+
+Full current allocation baseline plus skeleton status:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --allocate-rope-metadata \
+  --allocate-kv-cache \
+  --kv-num-blocks 1 \
+  --kv-block-size 16 \
+  --allocate-metadata \
+  --metadata-mode decode \
+  --metadata-num-tokens 1 \
+  --metadata-num-seqs 1 \
+  --metadata-context-len 1 \
+  --metadata-block-size 16 \
+  --allocate-fused-f16 \
+  --allocate-f16-scratch \
+  --f16-scratch-max-tokens 1 \
+  --upload-gpt-oss-moe-gpu \
+  --construct-layer-skeletons \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_full_layer_skeleton_status.json
+```
+
+Validation commands for this slice:
+
+- `cargo fmt`
+- `cargo test -p gpt-oss-model-runner shard`
+- `cargo test -p gpt-oss-model-runner fused_f16`
+- `cargo test -p gpt-oss-model-runner f16`
+- `cargo test -p gpt-oss-model-runner u8`
+- `cargo test -p gpt-oss-model-runner device_map`
+- `cargo test -p gpt-oss-model-runner header`
+- `cargo test -p gpt-oss-model-runner safetensor`
+- `cargo check -p gpt-oss-model-runner --features cuda`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke`
+- `cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- --help`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run dry_run`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_dry_run`
+- `cargo test -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke`
+- `cargo check -p gpt-oss-bench --bin multi_gpu_layer_sharding_cuda_resource_smoke --features cuda`
+- `git diff --check`
+
+Primary classification:
+
+multi_gpu_layer_sharding_layer_construction_skeleton_status_complete
+
+Next bounded step:
+
+- Run the real-model full allocation baseline plus
+  `--construct-layer-skeletons` as an operator validation slice. This validates
+  the new JSON contract against the restricted model without constructing
+  executable layers or changing serve/runtime behavior.

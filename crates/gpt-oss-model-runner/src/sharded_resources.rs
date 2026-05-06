@@ -7,7 +7,10 @@
 
 use crate::device_map::DeviceId;
 use crate::fused_f16::{f16_scratch_element_counts, F16ScratchElementCounts};
-use crate::shard_plan::{ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan};
+use crate::model_loader::{ShardWeightStore, ShardWeightStorePlan};
+use crate::shard_plan::{
+    ShardTensorManifest, ShardedKvCachePlan, ShardedModelPlan, ShardedUploadManifest,
+};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
@@ -21,6 +24,8 @@ pub const F16_SCRATCH_DEFERRED_REASON: &str =
     "bench-only f16 scratch allocation requires the CUDA allocation pass; GpuModelRunner::F16LayerScratch remains private runner state";
 pub const MOE_GPU_UPLOAD_DEFERRED_REASON: &str =
     "bench-only GPT-OSS MoE GPU upload is plan/status only; per-shard U8 host maps are counted but not retained/uploaded yet";
+pub const LAYER_SKELETON_EXECUTABLE_DEFERRED_REASON: &str =
+    "bench-only layer skeleton is non-executing; executable GpuTransformerLayer construction is deferred";
 
 /// CUDA-free plan for one shard's resource island.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +114,25 @@ pub enum MoeGpuUploadStatus {
     Uploaded,
     Deferred,
     NotApplicable,
+}
+
+/// Readiness state for the non-executing layer-construction skeleton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerConstructionReadinessStatus {
+    SkeletonComplete,
+    Allocated,
+    Deferred,
+    NotApplicable,
+    NotRequested,
+    NotConstructed,
+    Blocked,
+}
+
+/// Non-executing blocker/deferred note for a future executable layer build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerConstructionBlocker {
+    pub code: String,
+    pub detail: String,
 }
 
 /// CUDA-free plan for one shard's RoPE/metadata runtime buffers.
@@ -508,6 +532,79 @@ pub struct ShardedMoeGpuUploadStatus {
     pub shards: Vec<CudaShardMoeGpuUploadStatus>,
 }
 
+/// CUDA-free plan for one shard-owned layer skeleton.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerConstructionPlan {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub owns_layer: bool,
+    pub required_f16_projection_tensor_names: Vec<String>,
+    pub missing_required_f16_projection_tensor_names: Vec<String>,
+    pub required_f32_norm_bias_tensor_names: Vec<String>,
+    pub has_moe_u8_payload: bool,
+}
+
+/// CUDA-free plan for one shard's non-executing layer skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardLayerConstructionPlan {
+    pub device_id: DeviceId,
+    pub absolute_layers: Vec<usize>,
+    pub layer_plans: Vec<CudaLayerConstructionPlan>,
+}
+
+/// CUDA-free plan for all shard-local non-executing layer skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedLayerConstructionPlan {
+    pub shards: Vec<CudaShardLayerConstructionPlan>,
+}
+
+/// Public status for one non-executing layer skeleton.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLayerConstructionStatus {
+    pub absolute_layer_idx: usize,
+    pub local_layer_idx: usize,
+    pub owns_layer: bool,
+    pub layer_config_status: LayerConstructionReadinessStatus,
+    pub required_f16_projection_status: LayerConstructionReadinessStatus,
+    pub required_f32_norm_bias_status: LayerConstructionReadinessStatus,
+    pub rope_status: LayerConstructionReadinessStatus,
+    pub kv_cache_status: LayerConstructionReadinessStatus,
+    pub metadata_status: LayerConstructionReadinessStatus,
+    pub fused_qkv_status: LayerConstructionReadinessStatus,
+    pub layernorm_f16_status: LayerConstructionReadinessStatus,
+    pub postnorm_f16_status: LayerConstructionReadinessStatus,
+    pub qkv_bias_f16_status: LayerConstructionReadinessStatus,
+    pub o_proj_bias_f16_status: LayerConstructionReadinessStatus,
+    pub f16_scratch_status: LayerConstructionReadinessStatus,
+    pub moe_u8_upload_status: LayerConstructionReadinessStatus,
+    pub moe_router_status: LayerConstructionReadinessStatus,
+    pub moe_expert_bias_status: LayerConstructionReadinessStatus,
+    pub supports_gpu_decode_status: String,
+    pub executable_layer_status: LayerConstructionReadinessStatus,
+    pub executable_layer_deferred_reason: Option<String>,
+    pub blockers: Vec<LayerConstructionBlocker>,
+}
+
+/// Public status for one shard's non-executing layer skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaShardLayerConstructionStatus {
+    pub device_id: DeviceId,
+    pub layer_skeleton_built: bool,
+    pub layer_skeleton_status: LayerConstructionReadinessStatus,
+    pub layer_skeleton_count: usize,
+    pub layer_skeleton_ready_count: usize,
+    pub layer_skeleton_blocked_count: usize,
+    pub layer_skeleton_deferred_count: usize,
+    pub layer_skeletons: Vec<CudaLayerConstructionStatus>,
+    pub layer_skeleton_error: Option<String>,
+}
+
+/// Public status for all non-executing layer skeletons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedLayerConstructionStatus {
+    pub shards: Vec<CudaShardLayerConstructionStatus>,
+}
+
 impl RopeRuntimeBufferConfig {
     pub fn new(head_dim: usize, max_position: usize, rope_theta: f32) -> Result<Self, String> {
         if head_dim == 0 {
@@ -797,6 +894,20 @@ impl MoeGpuUploadStatus {
             MoeGpuUploadStatus::Uploaded => "allocated",
             MoeGpuUploadStatus::Deferred => "deferred",
             MoeGpuUploadStatus::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+impl LayerConstructionReadinessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LayerConstructionReadinessStatus::SkeletonComplete => "skeleton_complete",
+            LayerConstructionReadinessStatus::Allocated => "allocated",
+            LayerConstructionReadinessStatus::Deferred => "deferred",
+            LayerConstructionReadinessStatus::NotApplicable => "not_applicable",
+            LayerConstructionReadinessStatus::NotRequested => "not_requested",
+            LayerConstructionReadinessStatus::NotConstructed => "not_constructed",
+            LayerConstructionReadinessStatus::Blocked => "blocked",
         }
     }
 }
@@ -1978,6 +2089,614 @@ impl ShardedMoeGpuUploadStatus {
                 .map(|shard| shard.status(moe_gpu_uploaded))
                 .collect(),
         }
+    }
+}
+
+impl ShardedLayerConstructionPlan {
+    /// Build a pure, non-executing layer-construction skeleton plan from the
+    /// shard tensor manifest. It validates absolute-layer ownership and names
+    /// only; it does not allocate buffers or instantiate runtime layer objects.
+    pub fn from_upload_manifest(manifest: &ShardedUploadManifest) -> Self {
+        Self {
+            shards: manifest
+                .shards
+                .iter()
+                .map(CudaShardLayerConstructionPlan::from_manifest)
+                .collect(),
+        }
+    }
+}
+
+impl CudaShardLayerConstructionPlan {
+    fn from_manifest(manifest: &ShardTensorManifest) -> Self {
+        let store = layer_skeleton_store(manifest);
+        let layer_plans = manifest
+            .absolute_layers
+            .iter()
+            .enumerate()
+            .map(|(local_layer_idx, &absolute_layer_idx)| {
+                CudaLayerConstructionPlan::from_store(
+                    &store,
+                    manifest,
+                    absolute_layer_idx,
+                    local_layer_idx,
+                )
+            })
+            .collect();
+
+        Self {
+            device_id: manifest.device_id,
+            absolute_layers: manifest.absolute_layers.clone(),
+            layer_plans,
+        }
+    }
+}
+
+impl CudaLayerConstructionPlan {
+    fn from_store(
+        store: &ShardWeightStore,
+        manifest: &ShardTensorManifest,
+        absolute_layer_idx: usize,
+        local_layer_idx: usize,
+    ) -> Self {
+        let owns_layer = store.owns_layer(absolute_layer_idx);
+        let mut required_f16_projection_tensor_names = Vec::new();
+        let mut missing_required_f16_projection_tensor_names = Vec::new();
+
+        for suffix in [
+            "self_attn.q_proj.weight",
+            "self_attn.k_proj.weight",
+            "self_attn.v_proj.weight",
+            "self_attn.o_proj.weight",
+        ] {
+            let name = store
+                .layer_tensor_name(absolute_layer_idx, suffix)
+                .unwrap_or_else(|_| format!("model.layers.{absolute_layer_idx}.{suffix}"));
+            if manifest.should_load_required_tensor(&name) {
+                required_f16_projection_tensor_names.push(name);
+            } else {
+                missing_required_f16_projection_tensor_names.push(name);
+            }
+        }
+
+        let dense_mlp_suffixes = [
+            "mlp.gate_proj.weight",
+            "mlp.up_proj.weight",
+            "mlp.down_proj.weight",
+        ];
+        let dense_present_count = dense_mlp_suffixes
+            .iter()
+            .filter(|suffix| manifest_has_layer_tensor(manifest, absolute_layer_idx, suffix))
+            .count();
+        if dense_present_count > 0 {
+            for suffix in dense_mlp_suffixes {
+                let name = store
+                    .layer_tensor_name(absolute_layer_idx, suffix)
+                    .unwrap_or_else(|_| format!("model.layers.{absolute_layer_idx}.{suffix}"));
+                if manifest.should_load_required_tensor(&name) {
+                    required_f16_projection_tensor_names.push(name);
+                } else {
+                    missing_required_f16_projection_tensor_names.push(name);
+                }
+            }
+        }
+
+        let required_f32_norm_bias_tensor_names = [
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "self_attn.q_proj.bias",
+            "self_attn.k_proj.bias",
+            "self_attn.v_proj.bias",
+            "self_attn.o_proj.bias",
+        ]
+        .into_iter()
+        .filter_map(|suffix| {
+            let name = store.layer_tensor_name(absolute_layer_idx, suffix).ok()?;
+            manifest.should_load_required_tensor(&name).then_some(name)
+        })
+        .collect();
+
+        Self {
+            absolute_layer_idx,
+            local_layer_idx,
+            owns_layer,
+            required_f16_projection_tensor_names,
+            missing_required_f16_projection_tensor_names,
+            required_f32_norm_bias_tensor_names,
+            has_moe_u8_payload: manifest_has_owned_u8_expert_tensors(manifest, absolute_layer_idx),
+        }
+    }
+}
+
+impl ShardedLayerConstructionStatus {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_plan(
+        plan: &ShardedLayerConstructionPlan,
+        f16_projection_allocated: bool,
+        runtime_buffer_status: Option<&ShardedRuntimeBufferStatus>,
+        kv_cache_status: Option<&ShardedKvCacheAllocationStatus>,
+        metadata_status: Option<&ShardedMetadataAllocationStatus>,
+        fused_f16_status: Option<&ShardedFusedF16AllocationStatus>,
+        moe_gpu_upload_status: Option<&ShardedMoeGpuUploadStatus>,
+    ) -> Self {
+        let runtime_by_device = runtime_buffer_status
+            .map(|status| {
+                status
+                    .shards
+                    .iter()
+                    .map(|shard| (shard.device_id, shard))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let kv_by_device = kv_cache_status
+            .map(|status| {
+                status
+                    .shards
+                    .iter()
+                    .map(|shard| (shard.device_id, shard))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let metadata_by_device = metadata_status
+            .map(|status| {
+                status
+                    .shards
+                    .iter()
+                    .map(|shard| (shard.device_id, shard))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let fused_by_device = fused_f16_status
+            .map(|status| {
+                status
+                    .shards
+                    .iter()
+                    .map(|shard| (shard.device_id, shard))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let moe_by_device = moe_gpu_upload_status
+            .map(|status| {
+                status
+                    .shards
+                    .iter()
+                    .map(|shard| (shard.device_id, shard))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        Self {
+            shards: plan
+                .shards
+                .iter()
+                .map(|shard| {
+                    shard.status(
+                        f16_projection_allocated,
+                        runtime_by_device.get(&shard.device_id).copied(),
+                        kv_by_device.get(&shard.device_id).copied(),
+                        metadata_by_device.get(&shard.device_id).copied(),
+                        fused_by_device.get(&shard.device_id).copied(),
+                        moe_by_device.get(&shard.device_id).copied(),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+impl CudaShardLayerConstructionPlan {
+    fn status(
+        &self,
+        f16_projection_allocated: bool,
+        runtime_buffer: Option<&CudaShardRuntimeBufferStatus>,
+        kv_cache: Option<&CudaShardKvCacheAllocationStatus>,
+        metadata: Option<&CudaShardMetadataAllocationStatus>,
+        fused_f16: Option<&CudaShardFusedF16AllocationStatus>,
+        moe_gpu: Option<&CudaShardMoeGpuUploadStatus>,
+    ) -> CudaShardLayerConstructionStatus {
+        let layer_skeletons = self
+            .layer_plans
+            .iter()
+            .map(|layer| {
+                layer.status(
+                    f16_projection_allocated,
+                    runtime_buffer,
+                    kv_cache,
+                    metadata,
+                    fused_f16,
+                    moe_gpu,
+                )
+            })
+            .collect::<Vec<_>>();
+        let layer_skeleton_count = layer_skeletons.len();
+        let layer_skeleton_ready_count = layer_skeletons
+            .iter()
+            .filter(|layer| {
+                layer.layer_config_status == LayerConstructionReadinessStatus::SkeletonComplete
+                    && layer.required_f16_projection_status
+                        != LayerConstructionReadinessStatus::Blocked
+            })
+            .count();
+        let layer_skeleton_blocked_count = layer_skeletons
+            .iter()
+            .filter(|layer| {
+                layer.layer_config_status == LayerConstructionReadinessStatus::Blocked
+                    || layer.required_f16_projection_status
+                        == LayerConstructionReadinessStatus::Blocked
+                    || layer
+                        .blockers
+                        .iter()
+                        .any(|blocker| blocker.code.starts_with("blocking_"))
+            })
+            .count();
+        let layer_skeleton_deferred_count = layer_skeletons
+            .iter()
+            .filter(|layer| {
+                layer.executable_layer_status == LayerConstructionReadinessStatus::NotConstructed
+            })
+            .count();
+        let layer_skeleton_status = if layer_skeleton_count == 0 {
+            LayerConstructionReadinessStatus::NotApplicable
+        } else if layer_skeleton_blocked_count > 0 {
+            LayerConstructionReadinessStatus::Blocked
+        } else {
+            LayerConstructionReadinessStatus::SkeletonComplete
+        };
+
+        CudaShardLayerConstructionStatus {
+            device_id: self.device_id,
+            layer_skeleton_built: layer_skeleton_count > 0,
+            layer_skeleton_status,
+            layer_skeleton_count,
+            layer_skeleton_ready_count,
+            layer_skeleton_blocked_count,
+            layer_skeleton_deferred_count,
+            layer_skeletons,
+            layer_skeleton_error: None,
+        }
+    }
+}
+
+impl CudaLayerConstructionPlan {
+    fn status(
+        &self,
+        f16_projection_allocated: bool,
+        runtime_buffer: Option<&CudaShardRuntimeBufferStatus>,
+        kv_cache: Option<&CudaShardKvCacheAllocationStatus>,
+        metadata: Option<&CudaShardMetadataAllocationStatus>,
+        fused_f16: Option<&CudaShardFusedF16AllocationStatus>,
+        moe_gpu: Option<&CudaShardMoeGpuUploadStatus>,
+    ) -> CudaLayerConstructionStatus {
+        let fused_layer = fused_f16.and_then(|shard| {
+            shard
+                .fused_layer_statuses
+                .iter()
+                .find(|layer| layer.absolute_layer_idx == self.absolute_layer_idx)
+        });
+        let moe_layer = moe_gpu.and_then(|shard| {
+            shard
+                .moe_layer_statuses
+                .iter()
+                .find(|layer| layer.absolute_layer_idx == self.absolute_layer_idx)
+        });
+
+        let mut blockers = Vec::new();
+        let layer_config_status = if self.owns_layer {
+            LayerConstructionReadinessStatus::SkeletonComplete
+        } else {
+            push_blocker(
+                &mut blockers,
+                "blocking_layer_not_owned",
+                format!(
+                    "absolute layer {} is not owned by this shard",
+                    self.absolute_layer_idx
+                ),
+            );
+            LayerConstructionReadinessStatus::Blocked
+        };
+
+        let required_f16_projection_status =
+            if !self.missing_required_f16_projection_tensor_names.is_empty() {
+                push_blocker(
+                    &mut blockers,
+                    "blocking_missing_required_f16_projection_tensor",
+                    format!(
+                        "missing projection tensors: {}",
+                        self.missing_required_f16_projection_tensor_names.join(", ")
+                    ),
+                );
+                LayerConstructionReadinessStatus::Blocked
+            } else if f16_projection_allocated {
+                LayerConstructionReadinessStatus::Allocated
+            } else {
+                LayerConstructionReadinessStatus::Deferred
+            };
+
+        let required_f32_norm_bias_status = required_f32_norm_bias_status_for_layer(
+            &self.required_f32_norm_bias_tensor_names,
+            fused_layer,
+        );
+        let rope_status = runtime_buffer
+            .map(|status| {
+                if status.rope_allocated {
+                    LayerConstructionReadinessStatus::Allocated
+                } else {
+                    runtime_metadata_to_layer_status(status.metadata_status)
+                }
+            })
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let kv_cache_status = kv_cache
+            .map(|status| {
+                let has_entry = status
+                    .entries
+                    .iter()
+                    .any(|entry| entry.absolute_layer_idx == self.absolute_layer_idx);
+                if status.kv_cache_allocated && has_entry {
+                    LayerConstructionReadinessStatus::Allocated
+                } else if has_entry {
+                    LayerConstructionReadinessStatus::Deferred
+                } else {
+                    LayerConstructionReadinessStatus::NotApplicable
+                }
+            })
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let metadata_status = metadata
+            .map(|status| {
+                if status.metadata_allocated {
+                    LayerConstructionReadinessStatus::Allocated
+                } else {
+                    runtime_metadata_to_layer_status(status.metadata_status)
+                }
+            })
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let fused_qkv_status = fused_layer
+            .map(|layer| fused_to_layer_status(layer.fused_qkv_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let layernorm_f16_status = fused_layer
+            .map(|layer| fused_to_layer_status(layer.layernorm_f16_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let postnorm_f16_status = fused_layer
+            .map(|layer| fused_to_layer_status(layer.postnorm_f16_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let qkv_bias_f16_status = fused_layer
+            .map(|layer| fused_to_layer_status(layer.qkv_bias_f16_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let o_proj_bias_f16_status = fused_layer
+            .map(|layer| fused_to_layer_status(layer.o_proj_bias_f16_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let f16_scratch_status = fused_f16
+            .map(|shard| fused_to_layer_status(shard.f16_scratch_status))
+            .unwrap_or(LayerConstructionReadinessStatus::NotRequested);
+        let moe_u8_upload_status = moe_layer.map(moe_u8_layer_status).unwrap_or_else(|| {
+            if self.has_moe_u8_payload {
+                LayerConstructionReadinessStatus::NotRequested
+            } else {
+                LayerConstructionReadinessStatus::NotApplicable
+            }
+        });
+        let moe_router_status = moe_layer
+            .map(|layer| moe_to_layer_status(layer.router_status))
+            .unwrap_or_else(|| {
+                if self.has_moe_u8_payload {
+                    LayerConstructionReadinessStatus::NotRequested
+                } else {
+                    LayerConstructionReadinessStatus::NotApplicable
+                }
+            });
+        let moe_expert_bias_status = moe_layer
+            .map(|layer| moe_to_layer_status(layer.expert_bias_status))
+            .unwrap_or_else(|| {
+                if self.has_moe_u8_payload {
+                    LayerConstructionReadinessStatus::NotRequested
+                } else {
+                    LayerConstructionReadinessStatus::NotApplicable
+                }
+            });
+        let supports_gpu_decode_status = moe_layer
+            .map(|layer| layer.supports_gpu_decode_status.clone())
+            .unwrap_or_else(|| {
+                if self.has_moe_u8_payload {
+                    "not_requested".to_string()
+                } else {
+                    "not_applicable".to_string()
+                }
+            });
+
+        if let Some(layer) = fused_layer {
+            if let Some(error) = &layer.layer_error {
+                push_blocker(
+                    &mut blockers,
+                    "blocking_fused_f16_layer_error",
+                    error.clone(),
+                );
+            }
+        }
+        if let Some(layer) = moe_layer {
+            if let Some(error) = &layer.layer_error {
+                push_blocker(&mut blockers, "blocking_moe_layer_error", error.clone());
+            }
+            if moe_u8_upload_status == LayerConstructionReadinessStatus::Allocated
+                && (moe_router_status == LayerConstructionReadinessStatus::Deferred
+                    || moe_expert_bias_status == LayerConstructionReadinessStatus::Deferred)
+            {
+                push_blocker(
+                    &mut blockers,
+                    "moe_router_or_expert_bias_deferred",
+                    "executable MoE readiness still requires router and expert-bias state".into(),
+                );
+            }
+            if layer.supports_gpu_decode_status != "not_applicable" {
+                push_blocker(
+                    &mut blockers,
+                    "supports_gpu_decode_not_evaluated",
+                    "real supports_gpu_decode requires executable MoE layer construction".into(),
+                );
+            }
+        }
+        push_blocker(
+            &mut blockers,
+            "executable_layer_not_constructed",
+            LAYER_SKELETON_EXECUTABLE_DEFERRED_REASON.into(),
+        );
+
+        CudaLayerConstructionStatus {
+            absolute_layer_idx: self.absolute_layer_idx,
+            local_layer_idx: self.local_layer_idx,
+            owns_layer: self.owns_layer,
+            layer_config_status,
+            required_f16_projection_status,
+            required_f32_norm_bias_status,
+            rope_status,
+            kv_cache_status,
+            metadata_status,
+            fused_qkv_status,
+            layernorm_f16_status,
+            postnorm_f16_status,
+            qkv_bias_f16_status,
+            o_proj_bias_f16_status,
+            f16_scratch_status,
+            moe_u8_upload_status,
+            moe_router_status,
+            moe_expert_bias_status,
+            supports_gpu_decode_status,
+            executable_layer_status: LayerConstructionReadinessStatus::NotConstructed,
+            executable_layer_deferred_reason: Some(
+                LAYER_SKELETON_EXECUTABLE_DEFERRED_REASON.into(),
+            ),
+            blockers,
+        }
+    }
+}
+
+fn layer_skeleton_store(manifest: &ShardTensorManifest) -> ShardWeightStore {
+    let mut global_shape_names = manifest.required_tensor_filter_set();
+    global_shape_names.extend(manifest.host_u8_tensor_filter_set());
+    ShardWeightStore::new(ShardWeightStorePlan {
+        device_id: manifest.device_id,
+        absolute_layers: manifest.absolute_layers.clone(),
+        owns_embeddings: manifest.should_load_required_tensor("model.embed_tokens.weight"),
+        owns_final_head: manifest.should_load_required_tensor("model.norm.weight")
+            || manifest.should_load_required_tensor("lm_head.weight"),
+        required_tensor_names: manifest.required_tensor_filter_set(),
+        host_u8_tensor_names: manifest.host_u8_tensor_filter_set(),
+        global_shape_names,
+        tied_lm_head_fallback_required: manifest.deferred_or_late_gpu_allocations.iter().any(
+            |allocation| allocation == &crate::shard_plan::LateAllocationKind::TiedLmHeadFallback,
+        ),
+    })
+}
+
+fn push_blocker(blockers: &mut Vec<LayerConstructionBlocker>, code: &str, detail: String) {
+    blockers.push(LayerConstructionBlocker {
+        code: code.into(),
+        detail,
+    });
+}
+
+fn runtime_metadata_to_layer_status(
+    status: RuntimeMetadataStatus,
+) -> LayerConstructionReadinessStatus {
+    match status {
+        RuntimeMetadataStatus::Allocated => LayerConstructionReadinessStatus::Allocated,
+        RuntimeMetadataStatus::Deferred => LayerConstructionReadinessStatus::Deferred,
+        RuntimeMetadataStatus::NotApplicable => LayerConstructionReadinessStatus::NotApplicable,
+    }
+}
+
+fn fused_to_layer_status(status: FusedF16AllocationStatus) -> LayerConstructionReadinessStatus {
+    match status {
+        FusedF16AllocationStatus::Allocated
+        | FusedF16AllocationStatus::AvailableFromUploadedF16 => {
+            LayerConstructionReadinessStatus::Allocated
+        }
+        FusedF16AllocationStatus::Deferred => LayerConstructionReadinessStatus::Deferred,
+        FusedF16AllocationStatus::NotApplicable => LayerConstructionReadinessStatus::NotApplicable,
+    }
+}
+
+fn moe_to_layer_status(status: MoeGpuUploadStatus) -> LayerConstructionReadinessStatus {
+    match status {
+        MoeGpuUploadStatus::Uploaded => LayerConstructionReadinessStatus::Allocated,
+        MoeGpuUploadStatus::Deferred => LayerConstructionReadinessStatus::Deferred,
+        MoeGpuUploadStatus::NotApplicable => LayerConstructionReadinessStatus::NotApplicable,
+    }
+}
+
+fn required_f32_norm_bias_status_for_layer(
+    names: &[String],
+    fused_layer: Option<&CudaLayerFusedF16AllocationStatus>,
+) -> LayerConstructionReadinessStatus {
+    if names.is_empty() {
+        return LayerConstructionReadinessStatus::NotApplicable;
+    }
+    let Some(layer) = fused_layer else {
+        return LayerConstructionReadinessStatus::NotRequested;
+    };
+    if layer.layer_error.is_some() {
+        return LayerConstructionReadinessStatus::Blocked;
+    }
+    let mut statuses = Vec::new();
+    if names
+        .iter()
+        .any(|name| name.ends_with("input_layernorm.weight"))
+    {
+        statuses.push(layer.layernorm_f16_status);
+    }
+    if names
+        .iter()
+        .any(|name| name.ends_with("post_attention_layernorm.weight"))
+    {
+        statuses.push(layer.postnorm_f16_status);
+    }
+    if names.iter().any(|name| {
+        name.ends_with("self_attn.q_proj.bias")
+            || name.ends_with("self_attn.k_proj.bias")
+            || name.ends_with("self_attn.v_proj.bias")
+    }) {
+        statuses.push(layer.qkv_bias_f16_status);
+    }
+    if names
+        .iter()
+        .any(|name| name.ends_with("self_attn.o_proj.bias"))
+    {
+        statuses.push(layer.o_proj_bias_f16_status);
+    }
+    if statuses
+        .iter()
+        .all(|status| *status == FusedF16AllocationStatus::Allocated)
+    {
+        LayerConstructionReadinessStatus::Allocated
+    } else if statuses
+        .iter()
+        .any(|status| *status == FusedF16AllocationStatus::Deferred)
+    {
+        LayerConstructionReadinessStatus::Deferred
+    } else {
+        LayerConstructionReadinessStatus::NotApplicable
+    }
+}
+
+fn moe_u8_layer_status(layer: &CudaLayerMoeGpuUploadStatus) -> LayerConstructionReadinessStatus {
+    let statuses = [
+        layer.gate_up_proj_blocks_status,
+        layer.gate_up_proj_scales_status,
+        layer.down_proj_blocks_status,
+        layer.down_proj_scales_status,
+    ];
+    if layer.layer_error.is_some() {
+        LayerConstructionReadinessStatus::Blocked
+    } else if statuses
+        .into_iter()
+        .all(|status| status == MoeGpuUploadStatus::NotApplicable)
+    {
+        LayerConstructionReadinessStatus::NotApplicable
+    } else if statuses
+        .into_iter()
+        .all(|status| status == MoeGpuUploadStatus::Uploaded)
+    {
+        LayerConstructionReadinessStatus::Allocated
+    } else {
+        LayerConstructionReadinessStatus::Deferred
     }
 }
 
@@ -3992,6 +4711,91 @@ mod tests {
             .unwrap()
     }
 
+    fn split_layer_skeleton_upload_manifest() -> crate::shard_plan::ShardedUploadManifest {
+        let mut names = vec![
+            "model.embed_tokens.weight".to_string(),
+            "model.norm.weight".to_string(),
+            "lm_head.weight".to_string(),
+        ];
+        for layer_idx in 0..24 {
+            for suffix in [
+                "self_attn.q_proj.weight",
+                "self_attn.k_proj.weight",
+                "self_attn.v_proj.weight",
+                "self_attn.o_proj.weight",
+                "input_layernorm.weight",
+                "post_attention_layernorm.weight",
+                "self_attn.q_proj.bias",
+                "self_attn.k_proj.bias",
+                "self_attn.v_proj.bias",
+                "self_attn.o_proj.bias",
+            ] {
+                names.push(format!("model.layers.{layer_idx}.{suffix}"));
+            }
+        }
+
+        split_plan()
+            .upload_manifest_for_tensor_names(
+                names.iter().map(String::as_str),
+                UploadManifestOptions {
+                    tie_word_embeddings: true,
+                },
+            )
+            .unwrap()
+    }
+
+    fn split_layer_skeleton_moe_upload_manifest() -> crate::shard_plan::ShardedUploadManifest {
+        let mut names = split_layer_skeleton_tensor_names();
+        for layer_idx in [0, 12] {
+            for suffix in [
+                "mlp.experts.gate_up_proj_blocks",
+                "mlp.experts.gate_up_proj_scales",
+                "mlp.experts.down_proj_blocks",
+                "mlp.experts.down_proj_scales",
+                "mlp.router.weight",
+                "mlp.router.bias",
+                "mlp.experts.gate_up_proj_bias",
+                "mlp.experts.down_proj_bias",
+            ] {
+                names.push(format!("model.layers.{layer_idx}.{suffix}"));
+            }
+        }
+
+        split_plan()
+            .upload_manifest_for_tensor_names(
+                names.iter().map(String::as_str),
+                UploadManifestOptions {
+                    tie_word_embeddings: true,
+                },
+            )
+            .unwrap()
+    }
+
+    fn split_layer_skeleton_tensor_names() -> Vec<String> {
+        let mut names = vec![
+            "model.embed_tokens.weight".to_string(),
+            "model.norm.weight".to_string(),
+            "lm_head.weight".to_string(),
+        ];
+        for layer_idx in 0..24 {
+            for suffix in [
+                "self_attn.q_proj.weight",
+                "self_attn.k_proj.weight",
+                "self_attn.v_proj.weight",
+                "self_attn.o_proj.weight",
+                "input_layernorm.weight",
+                "post_attention_layernorm.weight",
+                "self_attn.q_proj.bias",
+                "self_attn.k_proj.bias",
+                "self_attn.v_proj.bias",
+                "self_attn.o_proj.bias",
+            ] {
+                names.push(format!("model.layers.{layer_idx}.{suffix}"));
+            }
+        }
+        names
+    }
+
     fn moe_header_bytes() -> BTreeMap<String, usize> {
         [
             "model.layers.0.mlp.experts.gate_up_proj_blocks",
@@ -4187,6 +4991,233 @@ mod tests {
             layer12.supports_gpu_decode_status,
             "gpu_u8_uploaded_but_not_evaluated_without_layer_construction"
         );
+    }
+
+    #[test]
+    fn layer_construction_plan_preserves_split_absolute_and_local_indices() {
+        let manifest = split_layer_skeleton_upload_manifest();
+        let plan = ShardedLayerConstructionPlan::from_upload_manifest(&manifest);
+
+        assert_eq!(plan.shards.len(), 2);
+        assert_eq!(plan.shards[0].device_id, DeviceId(0));
+        assert_eq!(plan.shards[0].absolute_layers, (0..12).collect::<Vec<_>>());
+        assert_eq!(plan.shards[0].layer_plans.len(), 12);
+        assert_eq!(plan.shards[0].layer_plans[0].absolute_layer_idx, 0);
+        assert_eq!(plan.shards[0].layer_plans[0].local_layer_idx, 0);
+        assert!(plan.shards[0].layer_plans[0].owns_layer);
+
+        let gpu1 = &plan.shards[1];
+        assert_eq!(gpu1.device_id, DeviceId(1));
+        assert_eq!(gpu1.absolute_layers, (12..24).collect::<Vec<_>>());
+        assert_eq!(gpu1.layer_plans.len(), 12);
+        let layer12 = &gpu1.layer_plans[0];
+        assert_eq!(layer12.absolute_layer_idx, 12);
+        assert_eq!(layer12.local_layer_idx, 0);
+        assert!(layer12.owns_layer);
+        assert!(layer12
+            .required_f16_projection_tensor_names
+            .contains(&"model.layers.12.self_attn.q_proj.weight".to_string()));
+        assert!(layer12
+            .missing_required_f16_projection_tensor_names
+            .is_empty());
+    }
+
+    #[test]
+    fn layer_construction_status_is_nonexecuting_without_allocations() {
+        let manifest = split_layer_skeleton_upload_manifest();
+        let plan = ShardedLayerConstructionPlan::from_upload_manifest(&manifest);
+        let status =
+            ShardedLayerConstructionStatus::from_plan(&plan, false, None, None, None, None, None);
+
+        assert_eq!(status.shards.len(), 2);
+        for shard in &status.shards {
+            assert!(shard.layer_skeleton_built);
+            assert_eq!(
+                shard.layer_skeleton_status,
+                LayerConstructionReadinessStatus::SkeletonComplete
+            );
+            assert_eq!(shard.layer_skeleton_count, 12);
+            assert_eq!(shard.layer_skeleton_ready_count, 12);
+            assert_eq!(shard.layer_skeleton_blocked_count, 0);
+            assert_eq!(shard.layer_skeleton_deferred_count, 12);
+            for layer in &shard.layer_skeletons {
+                assert_eq!(
+                    layer.layer_config_status,
+                    LayerConstructionReadinessStatus::SkeletonComplete
+                );
+                assert_eq!(
+                    layer.required_f16_projection_status,
+                    LayerConstructionReadinessStatus::Deferred
+                );
+                assert_eq!(
+                    layer.kv_cache_status,
+                    LayerConstructionReadinessStatus::NotRequested
+                );
+                assert_eq!(
+                    layer.metadata_status,
+                    LayerConstructionReadinessStatus::NotRequested
+                );
+                assert_eq!(
+                    layer.fused_qkv_status,
+                    LayerConstructionReadinessStatus::NotRequested
+                );
+                assert_eq!(
+                    layer.f16_scratch_status,
+                    LayerConstructionReadinessStatus::NotRequested
+                );
+                assert_eq!(
+                    layer.executable_layer_status,
+                    LayerConstructionReadinessStatus::NotConstructed
+                );
+                assert_ne!(layer.supports_gpu_decode_status, "true");
+                assert!(layer
+                    .blockers
+                    .iter()
+                    .any(|blocker| blocker.code == "executable_layer_not_constructed"));
+            }
+        }
+    }
+
+    #[test]
+    fn layer_construction_status_surfaces_requested_kv_metadata_fused_and_scratch() {
+        let manifest = split_layer_skeleton_upload_manifest();
+        let layer_plan = ShardedLayerConstructionPlan::from_upload_manifest(&manifest);
+        let runtime_plan =
+            ShardedRuntimeBufferPlan::from_model_plan(&split_plan(), runtime_buffer_config());
+        let runtime_status = ShardedRuntimeBufferStatus::from_plan(&runtime_plan, true);
+        let kv_plan = ShardedKvCacheAllocationPlan::from_model_plan(
+            &split_plan(),
+            kv_cache_allocation_config(),
+        );
+        let kv_status = ShardedKvCacheAllocationStatus::from_plan(&kv_plan, true);
+        let metadata_plan = ShardedMetadataAllocationPlan::from_model_plan(
+            &split_plan(),
+            metadata_allocation_config(),
+        );
+        let metadata_status = ShardedMetadataAllocationStatus::from_plan(&metadata_plan, true);
+        let scratch_config = F16ScratchAllocationConfig::new(8, 8, 8, 16, 1).unwrap();
+        let fused_plan =
+            ShardedFusedF16AllocationPlan::from_upload_manifest(&manifest, Some(scratch_config));
+        let fused_status = ShardedFusedF16AllocationStatus::from_plan(&fused_plan, true, true);
+
+        let status = ShardedLayerConstructionStatus::from_plan(
+            &layer_plan,
+            true,
+            Some(&runtime_status),
+            Some(&kv_status),
+            Some(&metadata_status),
+            Some(&fused_status),
+            None,
+        );
+
+        let layer12 = status.shards[1]
+            .layer_skeletons
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(layer12.local_layer_idx, 0);
+        assert_eq!(
+            layer12.required_f16_projection_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.required_f32_norm_bias_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.rope_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.kv_cache_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.metadata_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.fused_qkv_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.layernorm_f16_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.postnorm_f16_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.qkv_bias_f16_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.o_proj_bias_f16_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.f16_scratch_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.executable_layer_status,
+            LayerConstructionReadinessStatus::NotConstructed
+        );
+    }
+
+    #[test]
+    fn layer_construction_status_surfaces_moe_upload_without_decode_readiness() {
+        let manifest = split_layer_skeleton_moe_upload_manifest();
+        let layer_plan = ShardedLayerConstructionPlan::from_upload_manifest(&manifest);
+        let moe_plan =
+            ShardedMoeGpuUploadPlan::from_upload_manifest(&manifest, &moe_header_bytes());
+        let moe_status = ShardedMoeGpuUploadStatus::from_plan(&moe_plan, true);
+        let status = ShardedLayerConstructionStatus::from_plan(
+            &layer_plan,
+            true,
+            None,
+            None,
+            None,
+            None,
+            Some(&moe_status),
+        );
+
+        let layer12 = status.shards[1]
+            .layer_skeletons
+            .iter()
+            .find(|layer| layer.absolute_layer_idx == 12)
+            .unwrap();
+        assert_eq!(layer12.local_layer_idx, 0);
+        assert_eq!(
+            layer12.moe_u8_upload_status,
+            LayerConstructionReadinessStatus::Allocated
+        );
+        assert_eq!(
+            layer12.moe_router_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.moe_expert_bias_status,
+            LayerConstructionReadinessStatus::Deferred
+        );
+        assert_eq!(
+            layer12.supports_gpu_decode_status,
+            "gpu_u8_uploaded_but_not_evaluated_without_layer_construction"
+        );
+        assert_ne!(layer12.supports_gpu_decode_status, "true");
+        assert_eq!(
+            layer12.executable_layer_status,
+            LayerConstructionReadinessStatus::NotConstructed
+        );
+        assert!(layer12
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "moe_router_or_expert_bias_deferred"));
+        assert!(layer12
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "supports_gpu_decode_not_evaluated"));
     }
 
     #[test]
