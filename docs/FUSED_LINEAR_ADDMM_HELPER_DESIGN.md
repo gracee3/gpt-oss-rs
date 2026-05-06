@@ -236,6 +236,49 @@ Scope for that future branch:
 - Do not select a production backend.
 - Do not change runtime/default/CUDA behavior.
 
+## Helper Candidate Implementation
+
+Mode:
+
+```text
+--mode fused-linear-addmm-helper-candidate
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_helper_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_candidate_no_candidate_selected
+```
+
+The validation-only helper candidate slice reran the existing local helpers and
+exposed cuBLAS BF16 tensor-op and pedantic helpers where the repo already had
+the right validation abstraction. The sampled set remained layers
+6/10/13/16/18/21.
+
+Result:
+
+- No helper cleared the full sampled set.
+- `pairwise_f32_bf16_output` still clears only layer10 and layer21; it remains
+  partial/local evidence, not backend identity.
+- `cublas_bf16_pedantic_or_deterministic` was the best partial by total
+  mismatch count, clearing layer16 only and leaving six total mismatches across
+  the sampled set.
+- `cublas_bf16_tensor_op` executed but had broad collateral mismatches.
+- `bf16_product_evidence_guard` remains unavailable at the required validation
+  abstraction.
+- No backend is selected, no consumer revalidation is authorized, and no
+  runtime/default/CUDA behavior changes are made.
+
+Next bounded step: review whether a separately designed fused-addmm-like
+validation helper is warranted. Do not promote any existing helper from this
+matrix.
+
 ## Guardrails
 
 - No runtime/default/CUDA behavior change.

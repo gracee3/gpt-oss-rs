@@ -446,6 +446,46 @@ It does not authorize implementation, backend selection, consumer
 revalidation, runtime/default/CUDA behavior changes, output emission, or ladder
 continuation.
 
+## Helper Candidate Implementation
+
+The follow-up validation-only helper candidate mode is recorded as:
+
+```text
+--mode fused-linear-addmm-helper-candidate
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_helper_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_candidate_no_candidate_selected
+```
+
+Outcome:
+
+- Existing local helpers were rerun as regression baselines.
+- cuBLAS BF16 tensor-op and pedantic helpers were executed where available
+  through validation-only wrappers.
+- No candidate cleared the full sampled set.
+- `pairwise_f32_bf16_output` remains partial evidence: it clears layer10 and
+  layer21 but not layer6/13/16/18.
+- `cublas_bf16_pedantic_or_deterministic` is the best partial by total
+  mismatch count, but it clears only layer16 and is not selectable.
+- `cublas_bf16_tensor_op` has broad collateral mismatches.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+Next bounded step: docs/design for a fused-addmm-like validation helper if the
+sampled-set exactness requirement still matters. No runtime/default/CUDA
+behavior change, output emission, or ladder continuation follows from this
+status.
+
 ## Non-Goals
 
 - No runtime implementation.

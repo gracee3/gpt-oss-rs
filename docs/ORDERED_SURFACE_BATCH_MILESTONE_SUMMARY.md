@@ -281,6 +281,34 @@ Milestone claims remain unchanged: no backend selection, runtime/default/CUDA
 behavior change, consumer revalidation, output emission, ladder continuation,
 final-logit, all-layer, server, or 4097-token claim.
 
+## Fused Linear/AddMM Helper Candidate
+
+The validation-only helper candidate run is recorded in:
+
+```text
+/tmp/fused_linear_addmm_helper_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_candidate_no_candidate_selected
+```
+
+Result:
+
+- No helper cleared the full sampled set for layers 6/10/13/16/18/21.
+- Pairwise remains a partial/local candidate, clearing layer10 and layer21
+  only.
+- cuBLAS BF16 pedantic is the best partial by total mismatch count, clearing
+  layer16 only.
+- cuBLAS BF16 tensor-op was available but produced broad collateral mismatches.
+- No backend is selected and no consumer revalidation is authorized.
+
+Milestone claims remain conservative: no runtime/default/CUDA behavior change,
+output emission, ladder continuation, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Guardrails
 
 - Validation-only.

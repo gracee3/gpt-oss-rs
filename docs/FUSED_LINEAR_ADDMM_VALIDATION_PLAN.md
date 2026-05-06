@@ -379,6 +379,37 @@ No implementation, backend selection, consumer revalidation,
 runtime/default/CUDA behavior change, output emission, or ladder continuation
 is authorized by the helper design.
 
+## Helper Candidate Result
+
+The validation-only helper candidate mode is recorded in:
+
+```text
+/tmp/fused_linear_addmm_helper_candidate_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_helper_candidate_no_candidate_selected
+```
+
+The run covers layers 6, 10, 13, 16, 18, and 21. It reruns existing helper
+baselines and executes available cuBLAS BF16 validation-only helpers. No helper
+matches the module/F.linear/_C/addmm fused-bias original-layout reference across
+the full sampled set.
+
+Candidate summary:
+
+- `pairwise_f32_bf16_output`: clears layer10 and layer21 only.
+- `cublas_bf16_pedantic_or_deterministic`: clears layer16 only and is the best
+  partial by total mismatch count.
+- `cublas_bf16_tensor_op`: broad collateral mismatches.
+- Diagnostic/evidence-only helpers remain non-selectable.
+
+No backend is selected. No consumer revalidation, runtime/default/CUDA behavior
+change, output emission, ladder continuation, correction metadata, tolerance
+pass, final-logit, all-layer, server, or 4097-token claim is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.
