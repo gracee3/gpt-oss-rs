@@ -4532,6 +4532,52 @@ changed. There is no final-logit, all-layer, server, or 4097-token claim. Next
 bounded step: review the classify-only matrix, then authorize bounded probes
 only for the first failing seams.
 
+## Ordered Surface Batch Bounded-Probe 10..15
+
+The layer10..15 bounded-probe pilot ran on branch
+`validation/ordered-surface-batch-probes-10-15` from the classify-only consumer
+branch. Source classify status:
+
+```text
+/tmp/ordered_surface_batch_consumer_10_15_status.json
+```
+
+Batch probe status:
+
+```text
+/tmp/ordered_surface_batch_probe_10_15_status.json
+```
+
+Classification:
+
+```text
+ordered_surface_batch_probe_10_15_recorded
+```
+
+The pilot only touched the first failing seams from the classify-only matrix.
+Layer10 attention o-proj swept full-vector candidates and selected
+`pairwise_f32_accum_f32_bias_bf16_output`; full bundle revalidation cleared
+attention and MLP under `--attention-oproj-policy pairwise`. Layer13 attention
+o-proj sweep found no non-diagnostic full-vector clearing policy, so no
+revalidation was run. Layer11 selected MLP down replay already clears the full
+MLP under `naive_f64_sum_then_bf16_output`, but the current bundle validator
+has no selected-MLP-down policy revalidation flag, so full bundle revalidation
+was not run.
+
+| Layer | Source classify seam | Probe/replay result | Revalidation result | Selected policy |
+| --- | --- | --- | --- | --- |
+| 10 | attention o-proj lane 915 | o-proj sweep full-vector clear | attention and MLP cleared | `pairwise_f32_accum_f32_bias_bf16_output` |
+| 11 | selected MLP down lane 1480 | replay full MLP clear; baseline has three ordered MLP mismatches | not run, existing bundle policy flag not supported | `naive_f64_sum_then_bf16_output` replay evidence |
+| 13 | attention o-proj lane 151 | no full-vector clearing o-proj candidate | not run | none |
+
+Layers 12, 14, and 15 remain closed from strict/default classify-only
+validation. No raw-QK sweep, weighted-V debug, producer/API probe,
+fused-linear/addmm probe, correction metadata, tolerance pass, output emission,
+or ladder continuation was run. No runtime/default routing/CUDA behavior
+changed, and there is no final-logit, all-layer, server, or 4097-token claim.
+Next bounded step: review layer11 selected-MLP-down revalidation support and
+the layer13 o-proj blocker before authorizing additional probes or design work.
+
 ## Validation Commands
 
 For the skeleton slice:
