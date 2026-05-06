@@ -7260,3 +7260,93 @@ Next bounded step:
 Primary classification:
 
 multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete
+
+## Real-model MoE GPU upload allocation smoke status
+
+This operator-validation slice ran the minimal bench-only MoE GPU upload smoke
+against the restricted GPT-OSS model. The command was:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 cargo run -p gpt-oss-bench --bin multi_gpu_layer_sharding_split_allocation_smoke --features cuda -- \
+  --model /data/models/openai/gpt-oss-20b-full-attn-restricted-integration \
+  --device-map split:0-11@0,12-23@1 \
+  --selected-device 0 \
+  --dtype f16 \
+  --allow-restricted-sinks-override \
+  --upload-gpt-oss-moe-gpu \
+  --output /tmp/multi_gpu_layer_sharding/split_allocation_moe_upload_status.json
+```
+
+The output JSON path is
+`/tmp/multi_gpu_layer_sharding/split_allocation_moe_upload_status.json`. It is
+not committed.
+
+Primary result classification:
+
+`multi_gpu_layer_sharding_real_model_moe_gpu_upload_allocation_smoke_complete`
+
+Command status classification:
+
+`multi_gpu_layer_sharding_moe_gpu_upload_allocation_smoke_complete`
+
+### Result summary
+
+- Resource construction: succeeded.
+- Allocation smoke: succeeded.
+- Manifest-owned f16 allocation: succeeded.
+- Manifest-owned U8 host allocation/retention: succeeded.
+- MoE GPU upload: succeeded.
+- `moe_gpu_upload_attempted=true`.
+- `moe_gpu_upload_succeeded=true`.
+- `moe_gpu_upload_error=null`.
+- Unassigned tensors: 0.
+- Invalid tensors: 0.
+
+Shard summaries:
+
+- GPU0 owns layers 0..11 and embeddings. It uploaded 181 f16 tensors and
+  retained 48 U8 host tensors. MoE upload reported 12 applicable layers,
+  48 U8 host tensors / 5,076,172,800 host bytes, and 48 U8 GPU tensors /
+  5,076,172,800 GPU bytes. Router tensor count was 24 and expert-bias tensor
+  count was 24.
+- GPU1 owns layers 12..23 and the final head. It uploaded 182 f16 tensors and
+  retained 48 U8 host tensors. MoE upload reported 12 applicable layers,
+  48 U8 host tensors / 5,076,172,800 host bytes, and 48 U8 GPU tensors /
+  5,076,172,800 GPU bytes. Router tensor count was 24 and expert-bias tensor
+  count was 24.
+
+Per applicable layer, all four GPT-OSS U8 expert payloads were allocated:
+
+- `gate_up_proj_blocks`: 265,420,800 bytes.
+- `gate_up_proj_scales`: 16,588,800 bytes.
+- `down_proj_blocks`: 132,710,400 bytes.
+- `down_proj_scales`: 8,294,400 bytes.
+
+The per-layer U8 upload total is 423,014,400 bytes. GPU1 layer 12 was reported
+with absolute layer id 12 and local layer id 0, preserving the existing
+absolute-layer ownership policy.
+
+Router and expert-bias status remains `deferred`. `supports_gpu_decode_status`
+remains non-executing and was reported as
+`gpu_u8_uploaded_but_not_evaluated_without_layer_construction` for uploaded
+layers. It is not a true execution-readiness or graph-decode readiness claim.
+
+The stderr summary contains the existing compile/runtime warnings and the
+bench command invocation; there was no MoE upload error.
+
+This is f16 allocation-surface validation, not BF16 parity, model parity,
+execution readiness, final-token parity, logit parity, graph-decode readiness,
+or serving support. No `GptOssMoeLayerWeights`, layers, runner, attention,
+graph decode, graph output, execution, serving behavior, or parity path changed.
+Serve/runtime split maps remain non-executable.
+
+Next bounded step:
+
+- Run the full allocation baseline plus MoE upload operator smoke.
+- Then choose between a non-executing layer-construction skeleton, tied
+  LM-head fallback design/status, or a BF16/dtype-policy checkpoint before any
+  execution work.
+
+Primary classification:
+
+multi_gpu_layer_sharding_real_model_moe_gpu_upload_allocation_smoke_complete
