@@ -428,3 +428,27 @@ next permissible implementation branch is CPU Torch dispatch-stability, not
 Rust/CUDA policy code. Rust CPU policy synthesis is gated behind stable Torch
 CPU addmm outputs, and CUDA mirroring is gated behind one global Rust CPU
 policy clearing layers 6, 10, 13, 16, 18, and 21 full-vector exactly.
+
+## CPU Dispatch-Stability Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+The CPU dispatch-stability probe executed all required fresh-process thread,
+interop, MKLDNN, OMP, and MKL configurations. For every sampled layer, addmm
+matched the default baseline and official o-proj artifact exactly under every
+tested setting. The diagnostic baseline explicit matmul/einsum/unfused-bias
+controls remained negative.
+
+Gate A passed. This records oracle evidence only and does not authorize Rust
+CPU policy synthesis, CUDA mirroring, backend selection, consumer revalidation,
+or runtime/default/CUDA behavior changes.

@@ -142,6 +142,31 @@ per-layer policy selection, per-lane policy selection, focus-lane promotion,
 tolerance passes, f64 diagnostic promotion, and runtime backend promotion from
 this evidence.
 
+## Gate A Dispatch-Stability Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+The official CPU Torch addmm seam is stable across the tested fresh-process CPU
+thread/backend settings for layers 6, 10, 13, 16, 18, and 21. No configuration
+changed the full-vector addmm output relative to baseline, and every
+configuration matched the official o-proj artifacts exactly. Baseline
+matmul/einsum/unfused-bias controls remained negative.
+
+This strengthens the official API seam as a stable oracle reference, but it
+does not select a backend or authorize Rust CPU policy synthesis, consumer
+revalidation, runtime/default/CUDA changes, output emission, or ladder
+continuation.
+
 ## Guardrails
 
 - No backend selected.

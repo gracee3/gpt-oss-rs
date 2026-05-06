@@ -306,3 +306,29 @@ Pipeline sequence:
 
 The plan preserves the producer seam as oracle evidence and stops the lane if
 stability, global-policy, CUDA-mirror, or guardrail conditions fail.
+
+## CPU Dispatch-Stability Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+Pipeline interpretation:
+
+- Gate A executed all required fresh-process CPU thread/backend configurations.
+- The official addmm seam stayed identical to baseline and official artifacts
+  for layers 6, 10, 13, 16, 18, and 21.
+- No configurations were skipped or unavailable.
+- Baseline explicit matmul/einsum/unfused-bias controls remained negative.
+
+The producer seam is stable enough for a reviewed Gate B discussion, but this
+result does not authorize Gate B implementation, consumer revalidation,
+runtime/default/CUDA behavior changes, output emission, or ladder continuation.

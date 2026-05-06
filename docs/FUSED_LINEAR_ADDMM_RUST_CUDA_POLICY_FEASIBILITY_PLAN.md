@@ -248,3 +248,43 @@ Do not modify that worktree from this branch.
 - No server claim.
 - No 4097/context-length claim.
 - No Torch runtime dependency in Rust.
+
+## Gate A Result — CPU Torch Dispatch-Stability
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-cpu-dispatch-stability
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+Result:
+
+- All required fresh-process configurations executed.
+- Tested configurations included default, `torch.set_num_threads(1)`,
+  `torch.set_num_threads(8)`, interop thread variants, MKLDNN enabled/disabled,
+  `OMP_NUM_THREADS` variants, `MKL_NUM_THREADS` variants, and combined
+  OMP/MKL variants.
+- For layers 6, 10, 13, 16, 18, and 21, every tested configuration reproduced
+  the baseline `torch.addmm(bias, input_2d, weight_t_2d)` full vector exactly.
+- Every tested configuration also matched the official o-proj artifact
+  full-vector exactly.
+- Baseline explicit matmul/einsum/unfused-bias sanity controls remained
+  negative controls.
+
+Gate A passed for this sampled seam. This does not authorize Gate B by itself;
+Rust CPU policy synthesis still requires explicit approval. No backend is
+selected, no implementation is authorized, no consumer revalidation is
+authorized, and no runtime/default/CUDA behavior change follows from this
+result.

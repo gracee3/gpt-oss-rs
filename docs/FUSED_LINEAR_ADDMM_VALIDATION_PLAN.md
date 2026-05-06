@@ -635,6 +635,29 @@ The plan explicitly prohibits per-layer policy selection, focus-lane promotion,
 tolerance passes, f64 diagnostic promotion, producer/API seam promotion as a
 runtime backend, consumer revalidation, and runtime/default/CUDA changes.
 
+## CPU Dispatch-Stability Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+Gate A passed: default, Torch thread-count, interop-thread, MKLDNN, OMP, MKL,
+and combined OMP/MKL fresh-process configurations all reproduced the same
+addmm full vectors for sampled layers 6, 10, 13, 16, 18, and 21. Every tested
+configuration also matched the official o-proj artifact exactly.
+
+This means CPU dispatch instability is not currently blocking feasibility. It
+does not select a backend and does not authorize Gate B, CUDA mirror work,
+consumer revalidation, or runtime/default/CUDA behavior changes.
+
 ## Non-Goals
 
 - No runtime implementation.

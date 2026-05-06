@@ -525,6 +525,30 @@ mirror only after one global CPU policy clears, then a separate promotion-proof
 plan. This does not authorize implementation and does not change milestone
 claims.
 
+## CPU Dispatch-Stability Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_cpu_dispatch_stability_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_dispatch_stability_stable
+```
+
+Gate A passed for the sampled official seam. All required CPU thread/backend
+settings reproduced the baseline and official full vectors exactly for layers
+6, 10, 13, 16, 18, and 21. No addmm output changed under tested settings, and
+the diagnostic negative controls remained negative.
+
+Milestone claims remain unchanged: no backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change, output emission, ladder continuation, final-logit, all-layer,
+server, or 4097-token claim is made.
+
 ## Guardrails
 
 - Validation-only.
