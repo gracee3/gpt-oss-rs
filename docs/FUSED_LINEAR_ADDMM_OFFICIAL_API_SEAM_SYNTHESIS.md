@@ -290,6 +290,26 @@ baseline before producing new oracle evidence.
 This is docs-only and does not create a venv, install packages, clone/build
 PyTorch, rerun probes, or authorize implementation.
 
+## Forward Python Environment Baseline Attempt
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+The forward baseline attempt did not replace the historical Torch wheel
+environment. `python3.12` was unavailable, so no forward venv was created and
+no packages were installed. The recorded official API seam remains tied to the
+historical/provenance environments until a future Python 3.12 baseline is
+validated.
+
 ## Guardrails
 
 - No backend selected.

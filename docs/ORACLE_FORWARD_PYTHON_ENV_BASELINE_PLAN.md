@@ -252,6 +252,45 @@ attribution status.
 The forward baseline is for future oracle/source-attribution work. It must not
 silently replace old artifacts or reinterpret previous exactness claims.
 
+## Implementation Attempt Result
+
+Implementation branch:
+
+```text
+oracle/forward-python-env-baseline
+```
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+Result:
+
+- `python3.12` was not available on the host.
+- The forward environment
+  `/home/emmy/openai/.venvs/gpt-oss-oracle-py312-cu130` was not created.
+- No packages were installed.
+- No requirements files were written because validation could not proceed.
+- No pip freeze was written.
+- Historical/provenance environments were observed without modification:
+  - `/home/emmy/openai/gpt-oss/.venv`: Python 3.13.7, Torch
+    `2.11.0+cu130`, Torch git
+    `70d99e998b4955e0049d13a98d77ae1b14db1f45`, NumPy not importable.
+  - `/data/models/.venv-awq`: Python 3.13.7, Torch `2.10.0+cu128`, Torch git
+    `449b1768410104d3ed79d3bcfe4ba1d65c7f22c0`, NumPy `2.4.2`.
+
+Next bounded step: make Python 3.12 available, then rerun the forward baseline
+branch to create the environment, install candidate packages, validate imports,
+freeze known-good versions, and write requirements files.
+
 ## Guardrails
 
 - Docs-only.

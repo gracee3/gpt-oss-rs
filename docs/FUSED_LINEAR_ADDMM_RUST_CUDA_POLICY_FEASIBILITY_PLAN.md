@@ -447,3 +447,23 @@ cross-env comparison or rebaseline.
 This docs branch creates no environment, installs no packages, changes no
 requirements, clones/builds no PyTorch source, and authorizes no CUDA mirror,
 consumer revalidation, or runtime/default/CUDA behavior change.
+
+## Forward Python Environment Baseline Attempt
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+The forward baseline implementation stopped before environment creation because
+`python3.12` is not available. No package install, requirements update, PyTorch
+clone/build, oracle probe, consumer revalidation, or CUDA mirror work occurred.
+The Rust/CUDA feasibility lane remains unchanged and blocked from any runtime
+promotion.

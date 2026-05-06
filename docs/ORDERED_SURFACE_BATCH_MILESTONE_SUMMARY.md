@@ -672,6 +672,26 @@ This docs branch performs no venv/package/PyTorch clone/build work and does
 not authorize implementation, consumer revalidation, CUDA mirror work,
 runtime/default/CUDA behavior changes, output emission, or ladder continuation.
 
+## Forward Python Environment Baseline Attempt
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+The first implementation attempt was blocked because `python3.12` is not
+installed. No forward environment was created and no packages were installed.
+Historical environments remain provenance-only. The milestone taxonomy and
+Workstream A conclusions remain unchanged until a validated forward baseline is
+available.
+
 ## Guardrails
 
 - Validation-only.

@@ -779,6 +779,26 @@ known-good versions, and emit `/tmp/oracle_forward_python_env_baseline_status.js
 No environment, package, requirements, PyTorch source, probe, consumer
 revalidation, CUDA mirror, or runtime/default/CUDA change is made here.
 
+## Forward Python Environment Baseline Attempt
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+Baseline validation could not proceed because `python3.12` is missing. No
+forward venv was created, no candidate packages were installed, and no
+requirements files were written. Future validation should first provide Python
+3.12, then rerun the baseline helper before any forward-env smoke or
+rebaseline branch.
+
 ## Non-Goals
 
 - No runtime implementation.

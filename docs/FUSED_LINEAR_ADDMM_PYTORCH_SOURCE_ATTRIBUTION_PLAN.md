@@ -319,3 +319,23 @@ with PyTorch source work isolated under `/home/emmy/openai/pytorch*`.
 This planning branch creates no virtual environment, installs no packages,
 clones or builds no PyTorch source, reruns no oracle probes, and authorizes no
 runtime/default/CUDA behavior changes.
+
+## Forward Python Environment Baseline Attempt
+
+Status:
+
+```text
+/tmp/oracle_forward_python_env_baseline_status.json
+```
+
+Classification:
+
+```text
+oracle_forward_python_env_baseline_blocked_by_python
+```
+
+The implementation attempt found that `python3.12` is unavailable, so the
+forward environment was not created and no packages were installed. The
+historical environments were observed for provenance only and left untouched.
+Future source-attribution work still needs a Python 3.12 baseline before new
+oracle artifacts or cross-env comparisons are attempted.
