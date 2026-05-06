@@ -444,6 +444,28 @@ the status scaffold. It is not candidate execution, backend selection,
 consumer revalidation, runtime/default/CUDA behavior change, output emission,
 or ladder continuation.
 
+## Fused Linear/AddMM Backend Discriminator Status
+
+Workstream A status-only backend-discriminator readiness is recorded in:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+Classification: `fused_linear_addmm_backend_discriminator_status_recorded`.
+
+Status:
+
+- Sampled layers emitted: 6, 10, 13, 16, 18, and 21.
+- Candidate backend families are recorded as unexecuted and nonselectable.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+- Runtime/default/CUDA behavior changed: false.
+
+Next branch would be `validation/fused-linear-addmm-backend-discriminator` only
+if candidate execution is explicitly approved.
+
 ## Non-Goals
 
 - No implementation authorization.

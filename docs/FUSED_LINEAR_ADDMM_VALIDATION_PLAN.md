@@ -301,6 +301,31 @@ future validation-only backend discriminator. It does not authorize
 implementation, backend selection, consumer revalidation, runtime/default/CUDA
 behavior changes, output emission, or ladder continuation.
 
+## Backend Discriminator Status Mode
+
+The validation-only status-readiness mode is recorded as:
+
+```text
+--mode fused-linear-addmm-backend-discriminator-status
+```
+
+It emits:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_status_recorded
+```
+
+The mode consumes the scaffold plus the layer6, 13/16/10, and 18/21
+producer/API statuses. It records readiness, candidate families, and decision
+rules only: no candidate execution, backend selection, consumer revalidation,
+runtime/default/CUDA change, output emission, or ladder continuation.
+
 ## Non-Goals
 
 - No runtime implementation.

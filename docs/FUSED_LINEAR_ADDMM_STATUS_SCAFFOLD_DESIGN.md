@@ -259,6 +259,26 @@ Preference:
 - If the goal is to avoid any code scaffolding until implementation is fully
   selected, do Option B.
 
+## Backend Discriminator Status Consumer
+
+The backend-discriminator status-readiness mode now consumes this scaffold:
+
+```text
+--mode fused-linear-addmm-backend-discriminator-status
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+The scaffold remains non-selecting. The backend-discriminator status mode uses
+it as provenance alongside producer/API statuses, records candidate families as
+unexecuted/nonselectable, and does not authorize backend selection,
+implementation, consumer revalidation, runtime/default/CUDA changes, output
+emission, or ladder continuation.
+
 ## Non-Goals
 
 - No runtime implementation.

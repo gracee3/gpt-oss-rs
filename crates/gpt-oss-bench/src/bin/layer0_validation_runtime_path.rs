@@ -206,6 +206,24 @@ struct Cli {
     )]
     producer_api_probe_status: PathBuf,
 
+    /// Fused-linear/addmm scaffold status for backend-discriminator readiness.
+    #[arg(long, default_value = "/tmp/fused_linear_addmm_status_scaffold.json")]
+    fused_linear_addmm_status_scaffold: PathBuf,
+
+    /// Producer/API probe batch status for layers 13, 16, and 10.
+    #[arg(
+        long,
+        default_value = "/tmp/o_proj_producer_api_probes_13_16_10_status.json"
+    )]
+    producer_api_status_13_16_10: PathBuf,
+
+    /// Producer/API probe batch status for layers 18 and 21.
+    #[arg(
+        long,
+        default_value = "/tmp/o_proj_producer_api_probes_18_21_status.json"
+    )]
+    producer_api_status_18_21: PathBuf,
+
     /// Layer6 producer/API probe status for fused-linear/addmm historical context.
     #[arg(
         long,
@@ -543,6 +561,7 @@ enum Mode {
     Mlp1Bf16Policy,
     OrderedSurfaceBatchStatus,
     FusedLinearAddmmStatusScaffold,
+    FusedLinearAddmmBackendDiscriminatorStatus,
     SelectedMlpDownBundleRevalidationStatus,
     Layer11RouterLogitInspectStatus,
     RouterLogitPolicyDebug,
@@ -1538,6 +1557,9 @@ fn main() -> Result<()> {
         Mode::Mlp1Bf16Policy => run_mlp1_bf16_policy(&cli),
         Mode::OrderedSurfaceBatchStatus => run_ordered_surface_batch_status(&cli),
         Mode::FusedLinearAddmmStatusScaffold => run_fused_linear_addmm_status_scaffold(&cli),
+        Mode::FusedLinearAddmmBackendDiscriminatorStatus => {
+            run_fused_linear_addmm_backend_discriminator_status(&cli)
+        }
         Mode::SelectedMlpDownBundleRevalidationStatus => {
             run_selected_mlp_down_bundle_revalidation_status(&cli)
         }
@@ -1638,6 +1660,338 @@ fn run_fused_linear_addmm_status_scaffold(cli: &Cli) -> Result<()> {
         "next_bounded_step": "Review status scaffold before any backend discriminator, consumer revalidation, or implementation."
     });
     write_json(&cli.output, &status)
+}
+
+fn run_fused_linear_addmm_backend_discriminator_status(cli: &Cli) -> Result<()> {
+    let required_statuses = [
+        ("status_scaffold", &cli.fused_linear_addmm_status_scaffold),
+        ("producer_api_13_16_10", &cli.producer_api_status_13_16_10),
+        ("producer_api_18_21", &cli.producer_api_status_18_21),
+        ("layer6_api_probe", &cli.layer6_api_probe_status),
+    ];
+    let missing_required_statuses = required_statuses
+        .iter()
+        .filter_map(|(_, path)| (!path.exists()).then(|| path.display().to_string()))
+        .collect::<Vec<_>>();
+    let mut missing_optional_statuses = Vec::new();
+    let layer6_backend_discriminator = if cli.layer6_backend_discriminator_status.exists() {
+        Some(load_json(&cli.layer6_backend_discriminator_status)?)
+    } else {
+        missing_optional_statuses.push(
+            cli.layer6_backend_discriminator_status
+                .display()
+                .to_string(),
+        );
+        None
+    };
+
+    let mut layers = Vec::new();
+    let mut scaffold_consistency = json!({
+        "checked": false,
+        "reason": "missing_required_status"
+    });
+
+    if missing_required_statuses.is_empty() {
+        let scaffold = load_json(&cli.fused_linear_addmm_status_scaffold)?;
+        let producer_13_16_10 = load_json(&cli.producer_api_status_13_16_10)?;
+        let producer_18_21 = load_json(&cli.producer_api_status_18_21)?;
+        let layer6_api_probe = load_json(&cli.layer6_api_probe_status)?;
+
+        layers.push(backend_discriminator_layer6_status(
+            &cli.layer6_api_probe_status,
+            &cli.layer6_backend_discriminator_status,
+            &layer6_api_probe,
+            layer6_backend_discriminator.as_ref(),
+        ));
+        layers.push(backend_discriminator_layer_from_producer_layers(
+            &producer_13_16_10,
+            10,
+            "pairwise_clear_control",
+            &cli.producer_api_status_13_16_10,
+        )?);
+        layers.push(backend_discriminator_layer_from_producer_layers(
+            &producer_13_16_10,
+            13,
+            "blocked_family",
+            &cli.producer_api_status_13_16_10,
+        )?);
+        layers.push(backend_discriminator_layer_from_producer_layers(
+            &producer_13_16_10,
+            16,
+            "blocked_family",
+            &cli.producer_api_status_13_16_10,
+        )?);
+        layers.push(backend_discriminator_layer_from_summary(
+            &producer_18_21,
+            18,
+            "blocked_family",
+            &cli.producer_api_status_18_21,
+        )?);
+        layers.push(backend_discriminator_layer_from_summary(
+            &producer_18_21,
+            21,
+            "raw_qk_solved_oproj_blocked",
+            &cli.producer_api_status_18_21,
+        )?);
+
+        let scaffold_layers = scaffold
+            .get("layers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let scaffold_available_layers = [6usize, 10, 13, 16]
+            .into_iter()
+            .filter(|layer| {
+                scaffold_layers.iter().any(|entry| {
+                    entry
+                        .get("layer_index")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|index| index as usize == *layer)
+                })
+            })
+            .collect::<Vec<_>>();
+        let producer_api_reference_layers = layers
+            .iter()
+            .filter_map(|layer| {
+                let available = layer
+                    .get("producer_api_reference_available")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                available.then(|| layer.get("layer_index").cloned().unwrap_or(Value::Null))
+            })
+            .collect::<Vec<_>>();
+        scaffold_consistency = json!({
+            "checked": true,
+            "scaffold_classification": scaffold.get("classification").cloned().unwrap_or(Value::Null),
+            "scaffold_reference_available_layers": scaffold_available_layers,
+            "producer_api_reference_available_layers": producer_api_reference_layers,
+            "scaffold_has_13_16_10_and_layer6": scaffold_available_layers == [6usize, 10, 13, 16],
+            "note": "layers 18 and 21 are supplied by the later producer/API matrix and are not expected in the original scaffold"
+        });
+    }
+
+    let classification = if missing_required_statuses.is_empty() && layers.len() == 6 {
+        "fused_linear_addmm_backend_discriminator_status_recorded"
+    } else if missing_required_statuses.is_empty() {
+        "fused_linear_addmm_backend_discriminator_status_partial"
+    } else {
+        "fused_linear_addmm_backend_discriminator_blocked_by_missing_reference"
+    };
+
+    let status = json!({
+        "classification": classification,
+        "validation_only": true,
+        "status_only": true,
+        "candidate_execution": false,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "operator": "attention_o_proj",
+        "reference": {
+            "api": "module/F.linear/_C/addmm",
+            "dtype": "torch.bfloat16",
+            "fused_bias": true,
+            "layout_sensitive": true,
+            "full_vector_required": true,
+            "focus_lane_only_accepted": false,
+        },
+        "source_statuses": {
+            "status_scaffold": cli.fused_linear_addmm_status_scaffold.display().to_string(),
+            "producer_api_13_16_10": cli.producer_api_status_13_16_10.display().to_string(),
+            "producer_api_18_21": cli.producer_api_status_18_21.display().to_string(),
+            "layer6_api_probe": cli.layer6_api_probe_status.display().to_string(),
+            "layer6_backend_discriminator": cli.layer6_backend_discriminator_status.display().to_string(),
+        },
+        "missing_required_statuses": missing_required_statuses,
+        "missing_optional_statuses": missing_optional_statuses,
+        "scaffold_consistency": scaffold_consistency,
+        "layers": layers,
+        "candidate_backends": fused_linear_addmm_backend_status_candidates(),
+        "decision_rules": {
+            "full_vector_required": true,
+            "zero_mismatches_required": true,
+            "max_abs_diff_zero_required": true,
+            "focus_lane_only_selection_allowed": false,
+            "diagnostic_candidates_selectable": false,
+            "evidence_only_candidates_selectable": false,
+            "collateral_mismatch_promotion_allowed": false,
+            "fused_bias_metadata_required": true,
+            "layout_metadata_required": true,
+            "backend_selection_authorized": false,
+        },
+        "selected_backend": Value::Null,
+        "backend_selected": false,
+        "implementation_authorized": false,
+        "consumer_revalidation_authorized": false,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "next_bounded_step": "Review status-only readiness before authorizing candidate execution.",
+    });
+    write_json(&cli.output, &status)
+}
+
+fn fused_linear_addmm_backend_status_candidates() -> Vec<Value> {
+    [
+        "current_sequential_f32_bf16_output",
+        "reverse_f32_bf16_output",
+        "pairwise_f32_bf16_output",
+        "chunked_pairwise_f32_bf16_output",
+        "f64_diagnostic",
+        "bf16_prebias_evidence_guard",
+        "bf16_product_evidence_guard",
+        "cublas_bf16_tensor_op_if_available",
+        "cublas_bf16_pedantic_if_available",
+        "future_fused_addmm_like_validation_helper_if_separately_designed",
+    ]
+    .into_iter()
+    .map(|candidate| {
+        json!({
+            "candidate": candidate,
+            "executed": false,
+            "selectable": false,
+            "reason": "status_only_mode_no_candidate_execution",
+        })
+    })
+    .collect()
+}
+
+fn backend_discriminator_layer_from_producer_layers(
+    producer_status: &Value,
+    layer: usize,
+    default_role: &str,
+    status_path: &Path,
+) -> Result<Value> {
+    let source = producer_status
+        .get("layers")
+        .and_then(Value::as_array)
+        .and_then(|layers| {
+            layers.iter().find(|entry| {
+                entry
+                    .get("layer_index")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|index| index as usize == layer)
+            })
+        })
+        .with_context(|| format!("producer API status is missing layer {layer} row"))?;
+    let role = json_path_str(source, &["layer_class"])
+        .or_else(|| json_path_str(source, &["class"]))
+        .unwrap_or(default_role);
+    let producer_api_full_vector_clear = producer_api_layer_full_vector_clear(
+        source,
+        &["module_attn_out", "F_linear", "C_nn_linear", "fused_addmm"],
+    );
+    let negative_control_mismatch_class_present = ["matmul", "einsum", "unfused_bias"]
+        .iter()
+        .any(|operator| json_path_u64(source, &[operator, "mismatches"]).unwrap_or(0) > 0);
+
+    Ok(json!({
+        "layer_index": layer,
+        "role": role,
+        "source_status": status_path.display().to_string(),
+        "producer_api_classification": source.get("classification").cloned().unwrap_or(Value::Null),
+        "focus_lane": source.get("focus_lane").cloned().unwrap_or(Value::Null),
+        "producer_api_reference_available": producer_api_full_vector_clear,
+        "producer_api_full_vector_clear": producer_api_full_vector_clear,
+        "negative_control_mismatch_class_present": negative_control_mismatch_class_present,
+        "matmul_mismatches": json_path_u64(source, &["matmul", "mismatches"]),
+        "einsum_mismatches": json_path_u64(source, &["einsum", "mismatches"]),
+        "unfused_bias_mismatches": json_path_u64(source, &["unfused_bias", "mismatches"]),
+        "layout_sensitive": json_path_bool(source, &["layout_sensitive"]).unwrap_or(false),
+        "fused_bias_sensitive": json_path_bool(source, &["fused_bias_sensitive"]).unwrap_or(false),
+        "candidate_results": [],
+    }))
+}
+
+fn backend_discriminator_layer_from_summary(
+    producer_status: &Value,
+    layer: usize,
+    default_role: &str,
+    status_path: &Path,
+) -> Result<Value> {
+    let summary_key = format!("layer{layer}");
+    let source = producer_status
+        .get("summary")
+        .and_then(|summary| summary.get(&summary_key))
+        .with_context(|| format!("producer API summary is missing {summary_key}"))?;
+    let role = json_path_str(source, &["layer_class"]).unwrap_or(default_role);
+    let producer_api_full_vector_clear =
+        json_path_bool(source, &["module_flinear_c_nn_addmm_clear"]).unwrap_or(false);
+    let negative_control_mismatch_class_present =
+        !json_path_bool(source, &["matmul_einsum_explains_artifact"]).unwrap_or(true);
+
+    Ok(json!({
+        "layer_index": layer,
+        "role": role,
+        "source_status": status_path.display().to_string(),
+        "producer_api_classification": source.get("classification").cloned().unwrap_or(Value::Null),
+        "focus_lane": source.get("focus_lane").cloned().unwrap_or(Value::Null),
+        "producer_api_reference_available": producer_api_full_vector_clear,
+        "producer_api_full_vector_clear": producer_api_full_vector_clear,
+        "negative_control_mismatch_class_present": negative_control_mismatch_class_present,
+        "matmul_einsum_explains_artifact": json_path_bool(source, &["matmul_einsum_explains_artifact"]),
+        "layout_sensitive": json_path_bool(source, &["layout_sensitive"]).unwrap_or(false),
+        "fused_bias_sensitive": json_path_bool(source, &["fused_bias_sensitive"]).unwrap_or(false),
+        "matches_layer6_pattern": json_path_bool(source, &["matches_layer6_pattern"]),
+        "matches_13_16_10_pattern": json_path_bool(source, &["matches_13_16_10_pattern"]),
+        "candidate_results": [],
+    }))
+}
+
+fn backend_discriminator_layer6_status(
+    layer6_api_probe_status: &Path,
+    layer6_backend_discriminator_status: &Path,
+    api_probe: &Value,
+    backend_discriminator: Option<&Value>,
+) -> Value {
+    let interpretation = api_probe.get("interpretation").unwrap_or(&Value::Null);
+    let full_vector_clear_operators = json_path(
+        api_probe,
+        &["interpretation", "full_vector_clear_operators"],
+    )
+    .and_then(Value::as_array)
+    .cloned()
+    .unwrap_or_default();
+    let has_clear_operator = |name: &str| {
+        full_vector_clear_operators
+            .iter()
+            .any(|operator| operator.as_str().is_some_and(|operator| operator == name))
+    };
+    let producer_api_full_vector_clear = has_clear_operator("module_attn_out")
+        && has_clear_operator("torch_nn_functional_linear")
+        && has_clear_operator("torch_C_nn_linear")
+        && has_clear_operator("torch_addmm_fused_bias");
+    let negative_control_mismatch_class_present =
+        !json_path_bool(interpretation, &["matmul_einsum_explains_official"]).unwrap_or(true);
+
+    json!({
+        "layer_index": 6,
+        "role": "historical_blocker_context",
+        "source_status": layer6_api_probe_status.display().to_string(),
+        "backend_discriminator_status": layer6_backend_discriminator_status.display().to_string(),
+        "producer_api_classification": api_probe.get("classification").cloned().unwrap_or(Value::Null),
+        "backend_discriminator_classification": backend_discriminator
+            .and_then(|status| status.get("classification"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "producer_api_reference_available": producer_api_full_vector_clear,
+        "producer_api_full_vector_clear": producer_api_full_vector_clear,
+        "negative_control_mismatch_class_present": negative_control_mismatch_class_present,
+        "layout_sensitive": json_path_bool(interpretation, &["layout_sensitive"]).unwrap_or(false),
+        "fused_bias_sensitive": json_path_bool(interpretation, &["fused_bias_sensitive"]).unwrap_or(false),
+        "candidate_results": [],
+    })
+}
+
+fn producer_api_layer_full_vector_clear(source: &Value, operators: &[&str]) -> bool {
+    operators
+        .iter()
+        .all(|operator| json_path_bool(source, &[operator, "clears_full_vector"]).unwrap_or(false))
 }
 
 fn fused_linear_addmm_scaffold_layer(source: &Value, layer: usize) -> Result<Value> {

@@ -89,6 +89,16 @@ If explicitly approved, the next recommended branch is:
 validation/fused-linear-addmm-backend-discriminator-status
 ```
 
+That status-only readiness branch now records:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+It consumes this final matrix's producer/API statuses and the fused-linear/addmm
+scaffold. Candidate execution, backend selection, consumer revalidation, and
+runtime/default/CUDA changes remain unapproved.
+
 ## Guardrails
 
 - Validation-only.

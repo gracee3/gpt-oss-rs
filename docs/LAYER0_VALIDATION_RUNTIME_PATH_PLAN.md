@@ -5306,6 +5306,40 @@ CUDA behavior change, output emission, ladder continuation, correction
 metadata, tolerance pass, final-logit, all-layer, server, or 4097-token claim
 is authorized.
 
+## Fused Linear/AddMM Backend Discriminator Status
+
+Mode:
+
+```text
+--mode fused-linear-addmm-backend-discriminator-status
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_status_recorded
+```
+
+Result:
+
+- Consumed the fused-linear/addmm scaffold plus layer6, 13/16/10, and 18/21
+  producer/API statuses.
+- Emitted status rows for layers 6, 10, 13, 16, 18, and 21.
+- Candidate execution: false.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+Guardrails: no runtime/default/CUDA change, output emission, ladder
+continuation, correction metadata, tolerance pass, final-logit, all-layer,
+server, or 4097-token claim.
+
 ## Ordered Surface Batch Final Claims Summary
 
 Claims doc:

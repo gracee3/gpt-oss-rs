@@ -313,6 +313,54 @@ Scope:
 Recommended next after this docs branch: Option 1 first, unless the user
 explicitly approves candidate execution.
 
+## Status-Only Readiness Implementation
+
+Mode:
+
+```text
+--mode fused-linear-addmm-backend-discriminator-status
+```
+
+Status path:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_status_recorded
+```
+
+Consumed statuses:
+
+- `/tmp/fused_linear_addmm_status_scaffold.json`
+- `/tmp/o_proj_producer_api_probes_13_16_10_status.json`
+- `/tmp/o_proj_producer_api_probes_18_21_status.json`
+- `/tmp/layer6_attention_oproj_api_probe_status.json`
+- `/tmp/layer6_official_linear_backend_discriminator_probe_status.json`
+
+Sampled layers emitted:
+
+- Layer6 historical blocker/context.
+- Layer10 pairwise-clear control.
+- Layers13/16/18 blocked-family.
+- Layer21 raw-QK-solved / o-proj-blocked.
+
+Result:
+
+- Candidate execution: false.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+- Next bounded step: review readiness status before authorizing candidate
+  execution.
+
+Guardrails: no runtime/default/CUDA behavior change, output emission, ladder
+continuation, correction metadata, tolerance pass, final-logit, all-layer,
+server, or 4097-token claim.
+
 ## Non-Goals
 
 - No runtime implementation.

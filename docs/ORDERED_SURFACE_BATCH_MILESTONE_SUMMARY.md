@@ -214,6 +214,25 @@ validation/fused-linear-addmm-backend-discriminator-status
 This is status-only readiness work, not runtime implementation, backend
 selection, consumer revalidation, output emission, or ladder continuation.
 
+## Backend-Discriminator Status Readiness
+
+Option C status-only readiness is recorded in:
+
+```text
+/tmp/fused_linear_addmm_backend_discriminator_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_backend_discriminator_status_recorded
+```
+
+The status consumes existing producer/API evidence and the scaffold for layers
+6, 10, 13, 16, 18, and 21. Candidate execution remains unapproved; no backend is
+selected, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior changes are made.
+
 ## Guardrails
 
 - Validation-only.
