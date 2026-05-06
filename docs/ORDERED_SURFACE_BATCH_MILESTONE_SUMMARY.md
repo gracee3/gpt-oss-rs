@@ -747,6 +747,32 @@ single replayable Rust/CUDA arithmetic policy or backend is selected.
 `reopen_rust_policy_synthesis = false`; no consumer revalidation or
 runtime/default/CUDA behavior change is authorized.
 
+## PyTorch Minimal Reproducer
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_minimal_reproducer_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_minimal_reproducer_backend_attribution_recorded
+```
+
+The Stage 3 minimal reproducer confirmed all sampled Workstream A layers
+6/10/13/16/18/21 against the existing official o-proj artifacts using captured
+tensors only. `torch.addmm`, `torch.nn.functional.linear`, and
+`torch._C._nn.linear` cleared full-vector exactly; zero-bias addmm plus bias,
+explicit matmul plus bias, and explicit einsum plus bias remained negative.
+
+Runtime attribution remains bounded: profiler evidence records `aten::addmm`,
+verbose backend capture does not identify a concrete microkernel, and
+`active_backend_inference = multiple_possible`. No concrete replayable rule
+was found, so the milestone still does not reopen Rust/CUDA policy synthesis
+or authorize implementation.
+
 ## Guardrails
 
 - Validation-only.

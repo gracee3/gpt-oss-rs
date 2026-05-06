@@ -365,6 +365,32 @@ does not expose a single replayable BF16 arithmetic or microkernel rule. Rust
 policy synthesis remains closed, `reopen_rust_policy_synthesis = false`, and
 no backend is selected or authorized for implementation.
 
+## PyTorch Minimal Reproducer
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_minimal_reproducer_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_minimal_reproducer_backend_attribution_recorded
+```
+
+The minimal reproducer replayed captured Workstream A tensors for layers 6,
+10, 13, 16, 18, and 21. `torch.addmm`, `torch.nn.functional.linear`, and
+`torch._C._nn.linear` all matched the existing official o-proj artifacts
+full-vector exactly under baseline, MKLDNN enabled, and MKLDNN disabled
+runtime configs. The zero-bias, explicit matmul, and explicit einsum controls
+remained negative.
+
+Profiler evidence recorded `aten::addmm`; verbose ONEDNN/DNNL/MKL attempts did
+not identify one concrete active CPU backend. The active backend inference is
+therefore `multiple_possible`, with no concrete replayable rule found and no
+Rust/CUDA policy synthesis reopened.
+
 ## Guardrails
 
 - No backend selected.

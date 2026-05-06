@@ -855,6 +855,33 @@ This remains validation/source attribution only. It does not reopen Rust/CUDA
 policy synthesis, select a backend, run consumer validation, build or patch
 PyTorch, or change runtime/default/CUDA behavior.
 
+## PyTorch Minimal Reproducer Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_minimal_reproducer_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_minimal_reproducer_backend_attribution_recorded
+```
+
+The minimal reproducer used captured tensors for layers 6, 10, 13, 16, 18,
+and 21. The official variants `torch.addmm`, `torch.nn.functional.linear`, and
+`torch._C._nn.linear` cleared full-vector exactness for every sampled layer.
+Zero-bias addmm plus separate bias, explicit matmul plus bias, and explicit
+einsum plus bias remained negative controls.
+
+Runtime attribution tested baseline/default, MKLDNN enabled, and MKLDNN
+disabled configs. CPU profiler recorded `aten::addmm`, while verbose
+ONEDNN/DNNL/MKL capture did not pin a backend. The resulting
+`active_backend_inference` is `multiple_possible`; no concrete replayable rule
+was found, no backend was selected, and Rust/CUDA policy synthesis remains
+closed.
+
 ## Non-Goals
 
 - No runtime implementation.

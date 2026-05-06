@@ -422,3 +422,43 @@ Interpretation:
 - No PyTorch build, source patch, submodule initialization, model loading,
   CUDA use, consumer revalidation, backend selection, output emission, ladder
   continuation, or runtime/default/CUDA behavior change was performed.
+
+## PyTorch Minimal Reproducer Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_pytorch_minimal_reproducer_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_pytorch_minimal_reproducer_backend_attribution_recorded
+```
+
+The Stage 3 minimal reproducer used captured Workstream A tensors only and ran
+under the forward Python 3.12.12 / Torch `2.11.0+cu130` environment. It
+evaluated layers 6, 10, 13, 16, 18, and 21 with no model forward pass and no
+CUDA tensor creation.
+
+Result:
+
+- `torch.addmm(bias, input_2d, weight_t_2d)`,
+  `torch.nn.functional.linear`, and `torch._C._nn.linear` each cleared all
+  sampled layers full-vector exactly.
+- Zero-bias addmm plus separate bias, explicit matmul plus bias, and explicit
+  einsum plus bias remained negative controls.
+- Baseline, `torch.backends.mkldnn.enabled = true`, and
+  `torch.backends.mkldnn.enabled = false` all preserved the official seam.
+- CPU profiler observed `aten::addmm` and did not expose a concrete
+  MKLDNN/oneDNN or BLAS/MKL microkernel identity.
+- ONEDNN/DNNL/MKL verbose capture did not provide a stronger backend identity.
+
+Interpretation:
+
+- `active_backend_inference = multiple_possible`.
+- `concrete_replayable_rule_found = false`.
+- `reopen_rust_policy_synthesis = false`.
+- The source-map and runtime evidence strengthen the official CPU Torch API
+  seam, but still do not identify one replayable BF16 arithmetic/kernel rule.
