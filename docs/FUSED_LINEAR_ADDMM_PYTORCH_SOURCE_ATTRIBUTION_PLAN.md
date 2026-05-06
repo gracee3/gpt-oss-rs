@@ -99,7 +99,52 @@ Allowed classifications:
 - `fused_linear_addmm_torch_wheel_dispatch_attribution_recorded`
 - `fused_linear_addmm_torch_wheel_dispatch_backend_identified`
 - `fused_linear_addmm_torch_wheel_dispatch_inconclusive`
+- `fused_linear_addmm_torch_wheel_dispatch_blocked_by_missing_torch`
 - `fused_linear_addmm_torch_wheel_dispatch_failed`
+
+### Stage 1 Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-torch-wheel-dispatch-attribution
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_torch_wheel_dispatch_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_torch_wheel_dispatch_attribution_recorded
+```
+
+Result:
+
+- Selected Python executable:
+  `/home/emmy/openai/gpt-oss/.venv/bin/python`.
+- Torch version: `2.11.0+cu130`.
+- Torch git version: `70d99e998b4955e0049d13a98d77ae1b14db1f45`.
+- Torch import path:
+  `/home/emmy/openai/gpt-oss/.venv/lib/python3.13/site-packages/torch/__init__.py`.
+- Dispatch dump tables were available for `aten::addmm`, `aten::linear`,
+  `aten::mm`, and `aten::matmul`.
+- Each target op showed CPU registration and MKLDNN/oneDNN registration
+  signals, so the per-op inferred signal is `multiple_possible`.
+- A tiny CPU BF16 `torch.addmm` sanity probe produced CPU BF16 output and the
+  CPU profiler reported ATen-level `aten::addmm` activity.
+- No PyTorch clone, PyTorch build, or source patch was performed.
+- No new virtual environment was created.
+
+Interpretation:
+
+The installed wheel attribution captures useful dispatch/source-registration
+hints for Stage 2 source mapping, but it does not identify a concrete active
+CPU BF16 addmm backend or microkernel strongly enough to reopen Rust/CUDA
+policy synthesis. Backend identity remains unresolved.
 
 ## Stage 2 — Source Checkout And Source Map
 

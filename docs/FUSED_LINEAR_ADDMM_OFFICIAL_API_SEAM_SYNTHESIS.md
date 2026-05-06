@@ -243,6 +243,30 @@ linear/mm/matmul registrations. The plan keeps this work outside the current
 clone or build PyTorch in this branch, and it does not authorize implementation
 or consumer revalidation.
 
+## Torch Wheel Dispatch Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_torch_wheel_dispatch_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_torch_wheel_dispatch_attribution_recorded
+```
+
+The installed Torch wheel dispatch probe selected the existing oracle Python
+environment and captured dispatch tables for `aten::addmm`, `aten::linear`,
+`aten::mm`, and `aten::matmul`. The tables provide CPU and MKLDNN/oneDNN
+registration signals for all four ops, while a tiny CPU BF16 addmm sanity case
+confirmed CPU BF16 output and ATen-level `aten::addmm` profiler activity.
+
+This supports Stage 2 source mapping, but it does not identify the concrete
+active CPU BF16 addmm backend or authorize Rust/CUDA policy work. No PyTorch
+clone/build/source patch was performed.
+
 ## Guardrails
 
 - No backend selected.

@@ -391,3 +391,35 @@ external research workspace under `/home/emmy/openai/pytorch*` with isolated
 virtual environments. This docs branch performs no PyTorch clone, venv setup,
 source build, consumer revalidation, CUDA mirror work, or runtime/default/CUDA
 behavior change.
+
+## Torch Wheel Dispatch Attribution Result
+
+Implementation branch:
+
+```text
+oracle/fused-linear-addmm-torch-wheel-dispatch-attribution
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_torch_wheel_dispatch_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_torch_wheel_dispatch_attribution_recorded
+```
+
+The installed wheel probe used `/home/emmy/openai/gpt-oss/.venv/bin/python`
+with Torch `2.11.0+cu130` and git version
+`70d99e998b4955e0049d13a98d77ae1b14db1f45`. Dispatch tables for
+`aten::addmm`, `aten::linear`, `aten::mm`, and `aten::matmul` were available.
+All four showed CPU registration plus MKLDNN/oneDNN registration signals, so
+the result is useful for source mapping but not a concrete active backend
+identity.
+
+No PyTorch clone/build/source patch was performed, no venv was created, and no
+consumer revalidation, CUDA mirror work, backend selection, implementation, or
+runtime/default/CUDA behavior change is authorized.

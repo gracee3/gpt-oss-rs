@@ -623,6 +623,30 @@ PyTorch clone/build, implementation, consumer revalidation, CUDA mirror work,
 runtime/default/CUDA behavior change, output emission, or ladder continuation
 is authorized by this planning branch.
 
+## Torch Wheel Dispatch Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_torch_wheel_dispatch_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_torch_wheel_dispatch_attribution_recorded
+```
+
+The Stage 1 installed-wheel probe recorded Torch `2.11.0+cu130` dispatch
+metadata from the existing oracle Python environment. Dispatch tables for
+`aten::addmm`, `aten::linear`, `aten::mm`, and `aten::matmul` are available and
+show CPU plus MKLDNN/oneDNN registration signals. The result guides future
+PyTorch source mapping but does not identify a concrete backend path.
+
+The milestone remains unchanged: no backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change, output emission, or ladder continuation follows.
+
 ## Guardrails
 
 - Validation-only.

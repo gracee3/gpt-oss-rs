@@ -732,6 +732,30 @@ the official seam. This is a planning record only: no PyTorch clone, venv,
 source build, runtime implementation, consumer revalidation, CUDA mirror work,
 or default behavior change is authorized.
 
+## Torch Wheel Dispatch Attribution Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_torch_wheel_dispatch_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_torch_wheel_dispatch_attribution_recorded
+```
+
+Stage 1 captured installed-wheel dispatch metadata from the existing
+`/home/emmy/openai/gpt-oss/.venv/bin/python` environment. The target ops
+`aten::addmm`, `aten::linear`, `aten::mm`, and `aten::matmul` all have dispatch
+tables available and show `multiple_possible` CPU/MKLDNN registration signals.
+This is source-map input, not backend identity.
+
+No PyTorch source checkout, build, source patch, venv creation, consumer
+revalidation, CUDA mirror work, or runtime/default/CUDA behavior change was
+performed or authorized.
+
 ## Non-Goals
 
 - No runtime implementation.
