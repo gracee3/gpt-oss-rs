@@ -4884,6 +4884,32 @@ No implementation is authorized by this plan update. No runtime/default/CUDA
 change, output emission, ladder continuation, correction metadata, tolerance
 pass, final-logit, all-layer, server, or 4097-token claim is authorized.
 
+## Fused Linear/AddMM Status Scaffold Design
+
+The docs-only status scaffold design is recorded at:
+
+```text
+docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_status_scaffold_design_recorded
+```
+
+Future status-only branch name:
+
+```text
+validation/fused-linear-addmm-status-scaffold
+```
+
+Implementation is not authorized by this design. The future branch would only
+read existing producer/API probe JSON statuses and emit a normalized scaffold
+status. No runtime/default/CUDA change, output emission, ladder continuation,
+correction metadata, tolerance pass, final-logit, all-layer, server, or
+4097-token claim is authorized.
+
 ## Validation Commands
 
 For the skeleton slice:

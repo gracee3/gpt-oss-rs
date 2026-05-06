@@ -233,6 +233,19 @@ docs/fused-linear-addmm-status-scaffold-design
 
 Use the alternative if implementation is not explicitly approved.
 
+## Status Scaffold Design
+
+The docs-only status scaffold design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md
+```
+
+It defines the future status-only contract for consuming existing
+producer/API probe statuses and emitting a normalized fused-linear/addmm
+validation status. The next approved step is still required before creating
+`validation/fused-linear-addmm-status-scaffold`.
+
 ## Non-Goals
 
 - No runtime implementation.

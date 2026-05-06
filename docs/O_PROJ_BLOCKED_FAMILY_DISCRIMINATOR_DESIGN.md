@@ -285,6 +285,15 @@ docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md
 It turns the layer13/layer16/layer10 producer/API probe matrix into a
 validation-modeling plan. It does not authorize implementation.
 
+The docs-only fused-linear/addmm status scaffold design is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md
+```
+
+It describes a future status-only consumer of existing producer/API probe
+statuses. It does not authorize implementation or backend selection.
+
 ## Status JSON Contract
 
 Future status shape:

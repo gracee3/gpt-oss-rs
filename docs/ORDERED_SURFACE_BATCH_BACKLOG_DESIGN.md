@@ -106,6 +106,8 @@ Producer/API probe update:
   not another blind local accumulation sweep.
 - The fused-linear/addmm validation plan is recorded in
   `docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`.
+- The fused-linear/addmm status scaffold design is recorded in
+  `docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md`.
 - Recommended next branch is
   `validation/fused-linear-addmm-status-scaffold` only if explicitly approved;
   otherwise use `docs/fused-linear-addmm-status-scaffold-design`.
@@ -258,8 +260,10 @@ It targets layers 13, 16, 18, and 21. The first minimal producer/API probe set
 for layer13, layer16, and the layer10 pairwise-clear control has now confirmed
 that all three sampled layers follow the fused-linear/addmm producer pattern.
 The fused-linear/addmm validation modeling plan is recorded in
-`docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`. No implementation is authorized
-by the design, probe result, or plan update.
+`docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`, and the status scaffold design is
+recorded in `docs/FUSED_LINEAR_ADDMM_STATUS_SCAFFOLD_DESIGN.md`. No
+implementation is authorized by the design, probe result, plan update, or
+scaffold design.
 
 ## Non-Goals
 
