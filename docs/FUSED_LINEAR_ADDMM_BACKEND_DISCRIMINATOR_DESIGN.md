@@ -744,6 +744,37 @@ evidence-only, or per-layer policy choices. CUDA mirror work, consumer
 revalidation, backend selection, and runtime/default/CUDA behavior changes are
 not authorized.
 
+## Rust CPU Policy Closure Audit Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_closure_audit_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_closure_no_global_policy
+```
+
+The closure audit verified the Gate B bounded replay surface by running all 238
+missing full-vector replays for selectable focus-clearing candidates. No
+single candidate became a global validation policy for layers 6, 10, 13, 16,
+18, and 21.
+
+The top near-global candidates still fail on residual layers, especially 6,
+16, and 18. The residual samples are one BF16 ULP or less in the simple check,
+but the audit did not identify a common tie or rounding rule suitable for a
+new narrow implementation design. The next recommended state is
+`stop_policy_lane_preserve_official_api_seam`.
+
+For backend-discriminator planning, this means the current sampled evidence
+still points to the official CPU Torch module/F.linear/_C/addmm seam as an
+oracle boundary, not to a Rust CPU backend candidate. No backend is selected,
+no implementation is authorized, and no runtime/default/CUDA behavior changes
+are authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

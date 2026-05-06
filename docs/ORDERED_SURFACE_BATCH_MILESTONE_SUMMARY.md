@@ -571,6 +571,36 @@ Torch fused-linear/addmm API seam, and no CUDA mirror, backend selection,
 consumer revalidation, runtime/default/CUDA behavior change, output emission,
 or ladder continuation is authorized.
 
+## Rust CPU Policy Closure Audit Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_closure_audit_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_closure_no_global_policy
+```
+
+The closure audit replayed all 238 selectable focus-clearing candidates that
+had not yet received full-vector replay in Gate B. All replays executed, no
+single Rust CPU policy cleared layers 6, 10, 13, 16, 18, and 21 full-vector
+exactly, and no validation policy was selected.
+
+The top near-global candidates remain residual-only, with remaining mismatches
+on layers 6, 16, and 18. The simple residual analysis found one-BF16-ULP-or-less
+differences but no shared rounding/tie rule that justifies a new narrow design.
+The recommended next state is
+`stop_policy_lane_preserve_official_api_seam`.
+
+Milestone conclusion: Workstream A should remain recorded as an official CPU
+Torch API seam unless a new design review authorizes a different lane. CUDA
+mirror work, consumer revalidation, backend selection, runtime/default/CUDA
+behavior changes, output emission, and ladder continuation remain unauthorized.
+
 ## Guardrails
 
 - Validation-only.

@@ -329,3 +329,43 @@ Result:
 Gate B did not pass. Gate C CUDA mirror work is not authorized from this
 result. No backend is selected, no implementation is authorized, no consumer
 revalidation is authorized, and no runtime/default/CUDA behavior change follows.
+
+## Gate B Closure Audit Result
+
+Implementation branch:
+
+```text
+validation/fused-linear-addmm-rust-cpu-policy-closure-audit
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_closure_audit_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_closure_no_global_policy
+```
+
+Result:
+
+- The closure audit replayed all 238 selectable focus-clearing candidates that
+  Gate B had rejected only because bounded full-vector replay had not executed.
+- No replay was blocked.
+- After closure, no single selectable Rust CPU policy cleared layers
+  6, 10, 13, 16, 18, and 21 full-vector exactly.
+- The best near-global candidate cleared 3 of 6 sampled layers and still left
+  5 total mismatches across the sampled set.
+- Residual samples for layers 6, 16, and 18 were one BF16 ULP or less in the
+  simple residual analysis, but no shared tie/rounding rule was localized.
+- The recommended next state is
+  `stop_policy_lane_preserve_official_api_seam`.
+
+This closes the current bounded Gate B policy space. Gate C CUDA mirror work is
+not authorized. The official CPU Torch module/F.linear/_C/addmm seam remains
+the Workstream A oracle boundary. No backend is selected, no implementation is
+authorized, no consumer revalidation is authorized, and no runtime/default/CUDA
+behavior change follows.

@@ -684,6 +684,34 @@ evidence-only output policies remain rejected. No backend is selected, no
 consumer revalidation is authorized, and no runtime/default/CUDA behavior
 change follows.
 
+## Rust CPU Policy Closure Audit Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_closure_audit_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_closure_no_global_policy
+```
+
+The closure audit completed the bounded Gate B replay coverage by executing all
+238 previously unrun full-vector replays for selectable focus-clearing
+candidates. None were blocked, and no single Rust CPU policy cleared the full
+sampled set 6/10/13/16/18/21.
+
+The best near-global candidate still leaves five full-vector mismatches across
+the sampled set. Residuals on layers 6, 16, and 18 are one BF16 ULP or less in
+the simple residual analysis, but no shared residual rule was localized. The
+recommended state is `stop_policy_lane_preserve_official_api_seam`.
+
+This closes the current Rust CPU policy synthesis lane. Continue treating the
+CPU Torch module/F.linear/_C/addmm seam as the oracle reference; do not proceed
+to CUDA mirror work or consumer revalidation from this result.
+
 ## Non-Goals
 
 - No runtime implementation.

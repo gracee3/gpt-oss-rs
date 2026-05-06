@@ -193,6 +193,35 @@ current Workstream A oracle boundary. It does not authorize Gate C CUDA mirror
 work, consumer revalidation, runtime/default/CUDA behavior changes, output
 emission, or ladder continuation.
 
+## Gate B Closure Audit Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_rust_cpu_policy_closure_audit_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_rust_cpu_policy_closure_no_global_policy
+```
+
+The validation-only closure audit replayed all 238 previously bounded
+focus-clearing selectable candidates full-vector. No single candidate cleared
+the sampled layers 6, 10, 13, 16, 18, and 21 as a global policy after closure.
+
+The top near-global candidates still leave residual mismatches on the sampled
+set. Residual samples in layers 6, 16, and 18 are within one BF16 ULP in the
+simple check, but the audit did not localize a shared rounding/tie rule that
+justifies another narrow policy branch.
+
+The recommended state is `stop_policy_lane_preserve_official_api_seam`. This
+reinforces the synthesis decision: preserve Workstream A as an official CPU
+Torch API seam, not a Rust/CUDA backend identity. No backend is selected, no
+implementation is authorized, no consumer revalidation is authorized, and no
+runtime/default/CUDA behavior change follows.
+
 ## Guardrails
 
 - No backend selected.

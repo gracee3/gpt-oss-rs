@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use half::{bf16, f16};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -580,6 +581,7 @@ enum Mode {
     FusedLinearAddmmHelperCandidate,
     FusedLinearAddmmLikeHelperPrototype,
     FusedLinearAddmmRustCpuPolicySynthesis,
+    FusedLinearAddmmRustCpuPolicyClosureAudit,
     SelectedMlpDownBundleRevalidationStatus,
     Layer11RouterLogitInspectStatus,
     RouterLogitPolicyDebug,
@@ -1588,6 +1590,9 @@ fn main() -> Result<()> {
         Mode::FusedLinearAddmmRustCpuPolicySynthesis => {
             run_fused_linear_addmm_rust_cpu_policy_synthesis(&cli)
         }
+        Mode::FusedLinearAddmmRustCpuPolicyClosureAudit => {
+            run_fused_linear_addmm_rust_cpu_policy_closure_audit(&cli)
+        }
         Mode::SelectedMlpDownBundleRevalidationStatus => {
             run_selected_mlp_down_bundle_revalidation_status(&cli)
         }
@@ -2485,6 +2490,943 @@ fn fused_linear_addmm_rust_cpu_policy_synthesis_failed_status(
     )
 }
 
+fn run_fused_linear_addmm_rust_cpu_policy_closure_audit(cli: &Cli) -> Result<()> {
+    let status = match build_fused_linear_addmm_rust_cpu_policy_closure_audit_status(cli) {
+        Ok(status) => status,
+        Err(err) => fused_linear_addmm_rust_cpu_policy_closure_failed_status(cli, err),
+    };
+    write_json(&cli.output, &status)
+}
+
+fn build_fused_linear_addmm_rust_cpu_policy_closure_audit_status(cli: &Cli) -> Result<Value> {
+    let requested_layers = if let Some(layers) = cli.layers.as_deref() {
+        parse_comma_or_range_layers(layers)?
+    } else {
+        vec![6, 10, 13, 16, 18, 21]
+    };
+    let required_layers = [6usize, 10, 13, 16, 18, 21];
+    anyhow::ensure!(
+        requested_layers == required_layers,
+        "fused-linear/addmm Rust CPU policy closure audit requires layers 6,10,13,16,18,21; got {:?}",
+        requested_layers
+    );
+
+    let synthesis_status_path =
+        PathBuf::from("/tmp/fused_linear_addmm_rust_cpu_policy_synthesis_status.json");
+    let default_model =
+        PathBuf::from("/data/models/openai/gpt-oss-20b-full-attn-restricted-integration");
+    let model = cli.model.as_deref().unwrap_or(default_model.as_path());
+    let mut missing_sources = Vec::new();
+    if !synthesis_status_path.exists() {
+        missing_sources.push(synthesis_status_path.display().to_string());
+    }
+    if !model.exists() {
+        missing_sources.push(model.display().to_string());
+    }
+    for layer in requested_layers.iter().copied() {
+        let attention_status = PathBuf::from(format!(
+            "/tmp/layer{layer}_ordered_attention_bundle_status.json"
+        ));
+        let attention_bundle = PathBuf::from(format!("/tmp/layer{layer}_ordered_attention_bundle"));
+        if !attention_status.exists() {
+            missing_sources.push(attention_status.display().to_string());
+        }
+        if !attention_bundle.exists() {
+            missing_sources.push(attention_bundle.display().to_string());
+        }
+    }
+
+    let candidates = rust_cpu_policy_candidates();
+    if !missing_sources.is_empty() {
+        return Ok(fused_linear_addmm_rust_cpu_policy_closure_base_status(
+            "fused_linear_addmm_rust_cpu_policy_closure_blocked_by_missing_artifacts",
+            cli,
+            &requested_layers,
+            &candidates,
+            json!({
+                "missing_sources": missing_sources,
+                "reason": "required source artifacts were missing",
+            }),
+        ));
+    }
+
+    let synthesis_status = load_json(&synthesis_status_path)?;
+    let missing_replay_specs =
+        rust_cpu_policy_closure_missing_replay_specs(&synthesis_status, &requested_layers);
+    let mut missing_by_layer: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for spec in &missing_replay_specs {
+        missing_by_layer
+            .entry(spec.layer_index)
+            .or_default()
+            .push(spec.candidate_name.clone());
+    }
+    let candidate_by_name = candidates
+        .iter()
+        .cloned()
+        .map(|candidate| (candidate.name.clone(), candidate))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut replay_results = Vec::new();
+    let mut replay_blocked = Vec::new();
+    for layer in requested_layers.iter().copied() {
+        let Some(candidate_names) = missing_by_layer.get(&layer) else {
+            continue;
+        };
+        match load_rust_cpu_policy_layer_inputs(layer, model, cli) {
+            Ok(inputs) => {
+                for candidate_name in candidate_names {
+                    match candidate_by_name.get(candidate_name) {
+                        Some(candidate) => {
+                            replay_results.push(rust_cpu_policy_closure_full_vector_result(
+                                &inputs,
+                                candidate,
+                                "replay_coverage_audit",
+                            ));
+                        }
+                        None => replay_blocked.push(json!({
+                            "layer_index": layer,
+                            "candidate_name": candidate_name,
+                            "reason": "candidate_not_found_in_current_policy_space",
+                        })),
+                    }
+                }
+            }
+            Err(err) => replay_blocked.push(json!({
+                "layer_index": layer,
+                "reason": err.to_string(),
+            })),
+        }
+    }
+
+    let mut closure_matrix = build_rust_cpu_policy_closure_matrix(
+        &synthesis_status,
+        &replay_results,
+        &candidates,
+        &requested_layers,
+    );
+    let top_candidate_names =
+        rust_cpu_policy_closure_top_candidate_names(&closure_matrix, &candidates, 10);
+    let top_candidate_detail = rust_cpu_policy_closure_top_candidate_detail(
+        &top_candidate_names,
+        model,
+        cli,
+        &requested_layers,
+        &candidate_by_name,
+    );
+    let top_candidate_replays = top_candidate_detail
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .get("per_layer")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    closure_matrix = build_rust_cpu_policy_closure_matrix(
+        &synthesis_status,
+        &[replay_results.clone(), top_candidate_replays].concat(),
+        &candidates,
+        &requested_layers,
+    );
+
+    let global_policy = closure_matrix
+        .iter()
+        .find(|candidate| {
+            candidate
+                .get("sampled_set_full_vector_cleared")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && candidate
+                    .get("selectable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .cloned();
+    let selected_validation_policy = global_policy
+        .as_ref()
+        .and_then(|candidate| candidate.get("candidate_name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let audit_complete = replay_blocked.is_empty()
+        && missing_replay_specs.len() == replay_results.len()
+        && !top_candidate_detail.iter().any(|entry| {
+            entry
+                .get("blocked")
+                .and_then(Value::as_array)
+                .is_some_and(|blocked| !blocked.is_empty())
+        });
+    let residual_analysis =
+        rust_cpu_policy_closure_residual_analysis(&top_candidate_detail, &closure_matrix);
+    let next_recommended_state = if global_policy.is_some() {
+        "proceed_to_cuda_mirror_design"
+    } else if residual_analysis
+        .get("narrow_rounding_probe_justified")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "design_narrow_residual_rounding_probe"
+    } else {
+        "stop_policy_lane_preserve_official_api_seam"
+    };
+    let classification = if global_policy.is_some() {
+        "fused_linear_addmm_rust_cpu_policy_closure_global_policy_cleared"
+    } else if !audit_complete {
+        "fused_linear_addmm_rust_cpu_policy_closure_audit_incomplete"
+    } else {
+        "fused_linear_addmm_rust_cpu_policy_closure_no_global_policy"
+    };
+
+    let mut status = fused_linear_addmm_rust_cpu_policy_closure_base_status(
+        classification,
+        cli,
+        &requested_layers,
+        &candidates,
+        json!({}),
+    );
+    if let Some(object) = status.as_object_mut() {
+        object.insert(
+            "source_statuses".to_string(),
+            json!({
+                "rust_cpu_policy_synthesis": synthesis_status_path.display().to_string(),
+                "feasibility_plan": "docs/FUSED_LINEAR_ADDMM_RUST_CUDA_POLICY_FEASIBILITY_PLAN.md",
+            }),
+        );
+        object.insert(
+            "replay_coverage_audit".to_string(),
+            json!({
+                "missing_full_vector_replays_identified": missing_replay_specs.len(),
+                "missing_full_vector_replays_executed": replay_results.len(),
+                "missing_full_vector_replays_blocked": replay_blocked,
+                "results": replay_results,
+            }),
+        );
+        object.insert(
+            "closure_candidate_matrix".to_string(),
+            json!(closure_matrix),
+        );
+        object.insert(
+            "top_near_global_candidates".to_string(),
+            json!(top_candidate_detail),
+        );
+        object.insert("residual_pattern_analysis".to_string(), residual_analysis);
+        object.insert(
+            "validation_policy_selected".to_string(),
+            json!(global_policy.is_some()),
+        );
+        object.insert(
+            "selected_validation_policy".to_string(),
+            selected_validation_policy
+                .as_ref()
+                .map(|value| json!(value))
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "candidate_outcome".to_string(),
+            json!({
+                "global_policy_cleared_after_closure": global_policy.is_some(),
+                "validation_policy_selected": selected_validation_policy.is_some(),
+                "selected_validation_policy": selected_validation_policy,
+                "backend_selected": false,
+                "selected_backend": Value::Null,
+                "closure_audit_complete": audit_complete,
+                "next_recommended_state": next_recommended_state,
+            }),
+        );
+        object.insert(
+            "next_recommended_state".to_string(),
+            json!(next_recommended_state),
+        );
+    }
+    Ok(status)
+}
+
+fn fused_linear_addmm_rust_cpu_policy_closure_base_status(
+    classification: &str,
+    cli: &Cli,
+    requested_layers: &[usize],
+    candidates: &[RustCpuOprojCandidate],
+    extra: Value,
+) -> Value {
+    json!({
+        "classification": classification,
+        "validation_only": true,
+        "rust_cpu_policy_closure_audit": true,
+        "oracle_device": "cpu",
+        "cuda_available": cfg!(feature = "cuda"),
+        "cuda_used": false,
+        "operator": "attention_o_proj",
+        "reference": {
+            "api": "CPU Torch module/F.linear/_C._nn.linear/addmm",
+            "addmm_form": "torch.addmm(bias, input_2d, weight_t_2d)",
+            "input_dtype": "BF16",
+            "weight_dtype": "BF16",
+            "bias_dtype": "BF16",
+            "bias_behavior": "fused before final observable BF16 output",
+            "output_dtype": "BF16",
+            "full_vector_exactness_required": true,
+            "focus_lane_only_accepted": false,
+        },
+        "layers_requested": requested_layers,
+        "candidate_policy_count": candidates.len(),
+        "candidate_policies": candidates.iter().map(RustCpuOprojCandidate::status_row).collect::<Vec<_>>(),
+        "selected_backend": Value::Null,
+        "backend_selected": false,
+        "implementation_authorized": false,
+        "consumer_revalidation_authorized": false,
+        "runtime_behavior_changed": false,
+        "production_routing_changed": false,
+        "cuda_kernels_changed": false,
+        "output_emitted": false,
+        "ladder_continued": false,
+        "correction_metadata_applied": false,
+        "tolerance_pass": false,
+        "final_logit_claim": false,
+        "all_layer_claim": false,
+        "server_claim": false,
+        "context_length_claim": false,
+        "status_output": cli.output.display().to_string(),
+        "extra": extra,
+    })
+}
+
+fn fused_linear_addmm_rust_cpu_policy_closure_failed_status(
+    cli: &Cli,
+    err: anyhow::Error,
+) -> Value {
+    let candidates = rust_cpu_policy_candidates();
+    fused_linear_addmm_rust_cpu_policy_closure_base_status(
+        "fused_linear_addmm_rust_cpu_policy_closure_failed",
+        cli,
+        &[6, 10, 13, 16, 18, 21],
+        &candidates,
+        json!({
+            "error": err.to_string(),
+        }),
+    )
+}
+
+#[derive(Clone)]
+struct RustCpuPolicyClosureReplaySpec {
+    layer_index: usize,
+    candidate_name: String,
+}
+
+fn rust_cpu_policy_closure_missing_replay_specs(
+    synthesis_status: &Value,
+    requested_layers: &[usize],
+) -> Vec<RustCpuPolicyClosureReplaySpec> {
+    synthesis_status
+        .get("layers_evaluated")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| {
+            let layer_index = layer.get("layer_index").and_then(Value::as_u64)? as usize;
+            requested_layers
+                .contains(&layer_index)
+                .then_some((layer_index, layer))
+        })
+        .flat_map(|(layer_index, layer)| {
+            layer
+                .get("candidate_results")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(move |result| {
+                    result
+                        .get("candidate_selectable_by_policy")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                        && !result
+                            .get("diagnostic_only")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        && !result
+                            .get("evidence_only")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        && result
+                            .get("focus_lane_cleared")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        && !result
+                            .get("full_vector_executed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        && result
+                            .get("rejection_reason")
+                            .and_then(Value::as_str)
+                            .is_some_and(|reason| {
+                                reason == "bounded_full_vector_probe_not_executed"
+                            })
+                })
+                .filter_map(move |result| {
+                    Some(RustCpuPolicyClosureReplaySpec {
+                        layer_index,
+                        candidate_name: result.get("candidate_name")?.as_str()?.to_string(),
+                    })
+                })
+        })
+        .collect()
+}
+
+struct RustCpuPolicyLayerInputs {
+    layer_index: usize,
+    role: &'static str,
+    focus_lane: usize,
+    hidden: usize,
+    q_dim: usize,
+    input_bf16: Vec<f32>,
+    weight_bf16: Vec<f32>,
+    bias_bf16: Vec<f32>,
+    oproj_reference: Vec<f32>,
+}
+
+fn load_rust_cpu_policy_layer_inputs(
+    layer: usize,
+    model: &Path,
+    cli: &Cli,
+) -> Result<RustCpuPolicyLayerInputs> {
+    let hidden = 2880usize;
+    let q_dim = cli.query_heads * cli.head_dim;
+    let focus_lane = fused_linear_addmm_layer_focus_lane(layer);
+    anyhow::ensure!(
+        focus_lane < hidden,
+        "layer {layer} focus lane {focus_lane} must be < {hidden}"
+    );
+    let attention_status_path = PathBuf::from(format!(
+        "/tmp/layer{layer}_ordered_attention_bundle_status.json"
+    ));
+    let attention_status = load_json(&attention_status_path)
+        .with_context(|| format!("failed to load {}", attention_status_path.display()))?;
+    let weighted_v_path = status_artifact_path(&attention_status, "weighted_v", "attention")?;
+    let oproj_path = status_artifact_path(&attention_status, "o_proj", "attention")?;
+    validate_path(&weighted_v_path, "attention weighted V")?;
+    validate_path(&oproj_path, "attention o-proj reference")?;
+    let (_weighted_v_status, weighted_v) =
+        load_tensor_artifact(&weighted_v_path, &[q_dim], &["values"])?;
+    let (_oproj_status, oproj_reference) =
+        load_tensor_artifact(&oproj_path, &[hidden], &["values"])?;
+    let oproj_weight_name = format!("model.layers.{layer}.self_attn.o_proj.weight");
+    let oproj_bias_name = format!("model.layers.{layer}.self_attn.o_proj.bias");
+    let (_oproj_weight_source, oproj_weight) =
+        load_model_tensor_f32(model, &[oproj_weight_name.as_str()])?;
+    let (_oproj_bias_source, oproj_bias) =
+        load_model_tensor_f32(model, &[oproj_bias_name.as_str()])?;
+    anyhow::ensure!(
+        weighted_v.len() == q_dim,
+        "layer {layer} weighted-V length {} does not match q_dim {q_dim}",
+        weighted_v.len()
+    );
+    anyhow::ensure!(
+        oproj_reference.len() == hidden,
+        "layer {layer} o-proj reference length {} does not match hidden {hidden}",
+        oproj_reference.len()
+    );
+    anyhow::ensure!(
+        oproj_weight.len() == hidden * q_dim,
+        "layer {layer} o-proj weight length {} does not match hidden*q_dim {}",
+        oproj_weight.len(),
+        hidden * q_dim
+    );
+    anyhow::ensure!(
+        oproj_bias.len() == hidden,
+        "layer {layer} o-proj bias length {} does not match hidden {hidden}",
+        oproj_bias.len()
+    );
+    Ok(RustCpuPolicyLayerInputs {
+        layer_index: layer,
+        role: fused_linear_addmm_layer_role(layer),
+        focus_lane,
+        hidden,
+        q_dim,
+        input_bf16: weighted_v.iter().copied().map(round_bf16).collect(),
+        weight_bf16: oproj_weight.iter().copied().map(round_bf16).collect(),
+        bias_bf16: oproj_bias.iter().copied().map(round_bf16).collect(),
+        oproj_reference,
+    })
+}
+
+fn rust_cpu_policy_closure_full_vector_result(
+    inputs: &RustCpuPolicyLayerInputs,
+    candidate: &RustCpuOprojCandidate,
+    audit_scope: &'static str,
+) -> Value {
+    let output = compute_rust_cpu_oproj_candidate_output(
+        &inputs.input_bf16,
+        &inputs.weight_bf16,
+        &inputs.bias_bf16,
+        inputs.hidden,
+        inputs.q_dim,
+        candidate,
+    );
+    let metric = compare_hidden(&output, &inputs.oproj_reference);
+    let full_vector_cleared = metric.metrics.mismatches == 0 && metric.metrics.max_abs_diff == 0.0;
+    let focus_lane_local = output[inputs.focus_lane];
+    let focus_lane_reference = inputs.oproj_reference[inputs.focus_lane];
+    let focus_lane_abs_diff = (focus_lane_local - focus_lane_reference).abs();
+    json!({
+        "audit_scope": audit_scope,
+        "candidate_name": candidate.name,
+        "candidate_selectable_by_policy": candidate.selectable(),
+        "selectable": candidate.selectable() && full_vector_cleared,
+        "diagnostic_only": candidate.diagnostic_only,
+        "evidence_only": candidate.evidence_only,
+        "layer_index": inputs.layer_index,
+        "role": inputs.role,
+        "product_policy": candidate.product.name(),
+        "accumulation_policy": candidate.accumulation.name(),
+        "bias_placement_policy": candidate.bias_placement.name(),
+        "output_policy": candidate.output_policy.name(),
+        "full_vector_executed": true,
+        "full_vector_mismatches": metric.metrics.mismatches,
+        "max_abs_diff": metric.metrics.max_abs_diff,
+        "mean_abs_diff": metric.metrics.mean_abs_diff,
+        "first_mismatch": metric.first_mismatch,
+        "worst_mismatch": metric.worst_mismatch,
+        "focus_lane": {
+            "hidden_lane": inputs.focus_lane,
+            "actual": focus_lane_local,
+            "expected": focus_lane_reference,
+            "abs_diff": focus_lane_abs_diff,
+            "cleared": focus_lane_abs_diff == 0.0,
+            "diagnostic_only": true,
+        },
+        "focus_lane_cleared": focus_lane_abs_diff == 0.0,
+        "focus_lane_only_clear": focus_lane_abs_diff == 0.0 && !full_vector_cleared,
+        "full_vector_cleared": full_vector_cleared,
+        "value_count": output.len(),
+        "rejection_reason": if full_vector_cleared && candidate.selectable() {
+            Value::Null
+        } else if candidate.diagnostic_only {
+            json!("diagnostic_only")
+        } else if candidate.evidence_only {
+            json!("evidence_only")
+        } else if !full_vector_cleared {
+            json!("full_vector_mismatches")
+        } else {
+            json!("not_selectable")
+        },
+    })
+}
+
+fn build_rust_cpu_policy_closure_matrix(
+    synthesis_status: &Value,
+    replay_results: &[Value],
+    candidates: &[RustCpuOprojCandidate],
+    requested_layers: &[usize],
+) -> Vec<Value> {
+    let replay_by_key = replay_results
+        .iter()
+        .filter_map(|result| {
+            Some((
+                (
+                    result.get("candidate_name")?.as_str()?.to_string(),
+                    result.get("layer_index")?.as_u64()? as usize,
+                ),
+                result,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let synthesis_by_key = synthesis_status
+        .get("layers_evaluated")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|layer| {
+            let layer_index = layer
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default() as usize;
+            layer
+                .get("candidate_results")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(move |result| {
+                    Some((
+                        (
+                            result.get("candidate_name")?.as_str()?.to_string(),
+                            layer_index,
+                        ),
+                        result,
+                    ))
+                })
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    candidates
+        .iter()
+        .map(|candidate| {
+            let mut layer_results = Vec::new();
+            let mut focus_lane_cleared_layers = Vec::new();
+            let mut full_vector_executed_layers = Vec::new();
+            let mut full_vector_cleared_layers = Vec::new();
+            let mut focus_lane_only_clear_layers = Vec::new();
+            let mut total_mismatches = 0u64;
+            let mut known_full_vector_layers = 0usize;
+            let mut max_abs_diff = 0.0f64;
+            for layer in requested_layers {
+                let key = (candidate.name.clone(), *layer);
+                let source = replay_by_key
+                    .get(&key)
+                    .copied()
+                    .or_else(|| synthesis_by_key.get(&key).copied());
+                let result = source.cloned().unwrap_or_else(|| {
+                    json!({
+                        "candidate_name": candidate.name,
+                        "layer_index": layer,
+                        "candidate_selectable_by_policy": candidate.selectable(),
+                        "selectable": false,
+                        "diagnostic_only": candidate.diagnostic_only,
+                        "evidence_only": candidate.evidence_only,
+                        "full_vector_executed": false,
+                        "full_vector_cleared": false,
+                        "focus_lane_cleared": false,
+                        "rejection_reason": "missing_candidate_result",
+                    })
+                });
+                if result
+                    .get("focus_lane_cleared")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    focus_lane_cleared_layers.push(*layer);
+                }
+                if result
+                    .get("full_vector_executed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    full_vector_executed_layers.push(*layer);
+                    known_full_vector_layers += 1;
+                    if let Some(mismatches) =
+                        result.get("full_vector_mismatches").and_then(Value::as_u64)
+                    {
+                        total_mismatches += mismatches;
+                    }
+                    if let Some(diff) = result.get("max_abs_diff").and_then(Value::as_f64) {
+                        max_abs_diff = max_abs_diff.max(diff);
+                    }
+                }
+                if result
+                    .get("full_vector_cleared")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    full_vector_cleared_layers.push(*layer);
+                }
+                if result
+                    .get("focus_lane_only_clear")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    focus_lane_only_clear_layers.push(*layer);
+                }
+                layer_results.push(result);
+            }
+            let sampled_set_full_vector_cleared =
+                full_vector_cleared_layers.len() == requested_layers.len();
+            json!({
+                "candidate_name": candidate.name,
+                "selectable": candidate.selectable(),
+                "diagnostic_only": candidate.diagnostic_only,
+                "evidence_only": candidate.evidence_only,
+                "product_policy": candidate.product.name(),
+                "accumulation_policy": candidate.accumulation.name(),
+                "bias_placement_policy": candidate.bias_placement.name(),
+                "output_policy": candidate.output_policy.name(),
+                "focus_lane_cleared_layers": focus_lane_cleared_layers,
+                "full_vector_executed_layers": full_vector_executed_layers,
+                "full_vector_cleared_layers": full_vector_cleared_layers,
+                "focus_lane_only_clear_layers": focus_lane_only_clear_layers,
+                "known_full_vector_layers": known_full_vector_layers,
+                "total_mismatches_known_full_vectors": total_mismatches,
+                "max_abs_diff_known_full_vectors": max_abs_diff,
+                "sampled_set_full_vector_cleared": sampled_set_full_vector_cleared,
+                "candidate_rejected": !candidate.selectable() || !sampled_set_full_vector_cleared,
+                "layer_results": layer_results,
+            })
+        })
+        .collect()
+}
+
+fn rust_cpu_policy_closure_top_candidate_names(
+    closure_matrix: &[Value],
+    candidates: &[RustCpuOprojCandidate],
+    limit: usize,
+) -> Vec<String> {
+    let selectable = candidates
+        .iter()
+        .filter(|candidate| candidate.selectable())
+        .map(|candidate| candidate.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut rows = closure_matrix
+        .iter()
+        .filter(|row| {
+            row.get("candidate_name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| selectable.contains(name))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        let a_cleared = a
+            .get("full_vector_cleared_layers")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let b_cleared = b
+            .get("full_vector_cleared_layers")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let a_focus = a
+            .get("focus_lane_cleared_layers")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let b_focus = b
+            .get("focus_lane_cleared_layers")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let a_mismatches = a
+            .get("total_mismatches_known_full_vectors")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX);
+        let b_mismatches = b
+            .get("total_mismatches_known_full_vectors")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX);
+        let a_diff = a
+            .get("max_abs_diff_known_full_vectors")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::INFINITY);
+        let b_diff = b
+            .get("max_abs_diff_known_full_vectors")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::INFINITY);
+        b_cleared
+            .cmp(&a_cleared)
+            .then_with(|| b_focus.cmp(&a_focus))
+            .then_with(|| a_mismatches.cmp(&b_mismatches))
+            .then_with(|| {
+                a_diff
+                    .partial_cmp(&b_diff)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    rows.into_iter()
+        .take(limit)
+        .filter_map(|row| row.get("candidate_name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn rust_cpu_policy_closure_top_candidate_detail(
+    top_candidate_names: &[String],
+    model: &Path,
+    cli: &Cli,
+    requested_layers: &[usize],
+    candidate_by_name: &BTreeMap<String, RustCpuOprojCandidate>,
+) -> Vec<Value> {
+    let mut details = Vec::new();
+    let mut layer_inputs = BTreeMap::new();
+    for layer in requested_layers {
+        match load_rust_cpu_policy_layer_inputs(*layer, model, cli) {
+            Ok(inputs) => {
+                layer_inputs.insert(*layer, inputs);
+            }
+            Err(err) => {
+                details.push(json!({
+                    "candidate_name": Value::Null,
+                    "blocked": [{
+                        "layer_index": layer,
+                        "reason": err.to_string(),
+                    }],
+                }));
+            }
+        }
+    }
+
+    for candidate_name in top_candidate_names {
+        let Some(candidate) = candidate_by_name.get(candidate_name) else {
+            details.push(json!({
+                "candidate_name": candidate_name,
+                "blocked": [{"reason": "candidate_not_found_in_current_policy_space"}],
+            }));
+            continue;
+        };
+        let mut per_layer = Vec::new();
+        let mut blocked = Vec::new();
+        for layer in requested_layers {
+            match layer_inputs.get(layer) {
+                Some(inputs) => per_layer.push(rust_cpu_policy_closure_full_vector_result(
+                    inputs,
+                    candidate,
+                    "top_near_global_candidate_audit",
+                )),
+                None => blocked.push(json!({
+                    "layer_index": layer,
+                    "reason": "layer_inputs_unavailable",
+                })),
+            }
+        }
+        let layers_cleared = per_layer
+            .iter()
+            .filter_map(|result| {
+                result
+                    .get("full_vector_cleared")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .then(|| result.get("layer_index").cloned().unwrap_or(Value::Null))
+            })
+            .collect::<Vec<_>>();
+        let total_mismatches = per_layer
+            .iter()
+            .filter_map(|result| result.get("full_vector_mismatches").and_then(Value::as_u64))
+            .sum::<u64>();
+        let max_abs_diff = per_layer
+            .iter()
+            .filter_map(|result| result.get("max_abs_diff").and_then(Value::as_f64))
+            .fold(0.0f64, f64::max);
+        details.push(json!({
+            "candidate_name": candidate_name,
+            "layers_cleared": layers_cleared,
+            "cleared_layer_count": layers_cleared.len(),
+            "total_mismatches": total_mismatches,
+            "max_abs_diff": max_abs_diff,
+            "per_layer": per_layer,
+            "blocked": blocked,
+        }));
+    }
+    details
+}
+
+fn rust_cpu_policy_closure_residual_analysis(
+    top_candidate_detail: &[Value],
+    closure_matrix: &[Value],
+) -> Value {
+    let mut lane_counts = BTreeMap::<usize, usize>::new();
+    let mut positive_actual_minus_expected = 0usize;
+    let mut negative_actual_minus_expected = 0usize;
+    let mut one_ulp_or_less = 0usize;
+    let mut mismatch_count = 0usize;
+    let mut residual_layers = BTreeMap::<usize, usize>::new();
+    let mut residual_samples = Vec::new();
+
+    for detail in top_candidate_detail {
+        let Some(candidate_name) = detail.get("candidate_name").and_then(Value::as_str) else {
+            continue;
+        };
+        for result in detail
+            .get("per_layer")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(layer_index) = result.get("layer_index").and_then(Value::as_u64) else {
+                continue;
+            };
+            if !matches!(layer_index, 6 | 16 | 18) {
+                continue;
+            }
+            let mismatches = result
+                .get("full_vector_mismatches")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if mismatches == 0 {
+                continue;
+            }
+            *residual_layers.entry(layer_index as usize).or_default() += 1;
+            for key in ["first_mismatch", "worst_mismatch"] {
+                let Some(diff) = result.get(key) else {
+                    continue;
+                };
+                let Some(hidden_lane) = diff.get("hidden_lane").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let actual = diff.get("actual").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                let expected = diff.get("expected").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                let abs_diff = diff.get("abs_diff").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                let ulp = bf16_ulp_at(expected).max(f32::MIN_POSITIVE);
+                mismatch_count += 1;
+                if actual > expected {
+                    positive_actual_minus_expected += 1;
+                } else if actual < expected {
+                    negative_actual_minus_expected += 1;
+                }
+                if abs_diff <= ulp {
+                    one_ulp_or_less += 1;
+                }
+                *lane_counts.entry(hidden_lane as usize).or_default() += 1;
+                residual_samples.push(json!({
+                    "candidate_name": candidate_name,
+                    "layer_index": layer_index,
+                    "sample_kind": key,
+                    "hidden_lane": hidden_lane,
+                    "actual": actual,
+                    "expected": expected,
+                    "abs_diff": abs_diff,
+                    "bf16_ulp_at_expected": ulp,
+                    "abs_diff_over_bf16_ulp": abs_diff / ulp,
+                }));
+            }
+        }
+    }
+
+    let repeated_mismatch_lanes = lane_counts
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(lane, count)| json!({"hidden_lane": lane, "count": count}))
+        .collect::<Vec<_>>();
+    let layer18_clearing_candidates = closure_matrix
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .get("full_vector_cleared_layers")
+                .and_then(Value::as_array)
+                .is_some_and(|layers| layers.iter().any(|layer| layer.as_u64() == Some(18)))
+        })
+        .count();
+    let all_samples_one_ulp_or_less = mismatch_count > 0 && one_ulp_or_less == mismatch_count;
+    let narrow_rounding_probe_justified = false;
+    json!({
+        "residual_layers_considered": [6, 16, 18],
+        "residual_layer_sample_counts": residual_layers,
+        "repeated_mismatch_lanes": repeated_mismatch_lanes,
+        "actual_minus_expected_sign_counts": {
+            "positive": positive_actual_minus_expected,
+            "negative": negative_actual_minus_expected,
+        },
+        "one_bf16_ulp_or_less_samples": one_ulp_or_less,
+        "mismatch_samples": mismatch_count,
+        "all_samples_one_bf16_ulp_or_less": all_samples_one_ulp_or_less,
+        "layer18_full_vector_clear_candidate_count": layer18_clearing_candidates,
+        "layer18_remains_resistant": layer18_clearing_candidates == 0,
+        "rounding_tie_analysis": "simple BF16-ULP residual check only; no tie-specific local rule localized",
+        "narrow_rounding_probe_justified": narrow_rounding_probe_justified,
+        "interpretation": if narrow_rounding_probe_justified {
+            "Residuals show a sufficiently shared simple pattern to justify a narrow follow-up design."
+        } else {
+            "Residuals do not localize a narrow shared rounding/tie rule; preserve the official API seam."
+        },
+        "residual_samples": residual_samples,
+    })
+}
+
+fn bf16_ulp_at(value: f32) -> f32 {
+    let rounded = bf16::from_f32(value);
+    let bits = rounded.to_bits();
+    let next_bits = if rounded.to_f32().is_sign_negative() {
+        bits.saturating_sub(1)
+    } else {
+        bits.saturating_add(1)
+    };
+    (bf16::from_bits(next_bits).to_f32() - rounded.to_f32()).abs()
+}
+
 fn evaluate_fused_linear_addmm_rust_cpu_policy_layer(
     layer: usize,
     model: &Path,
@@ -2734,6 +3676,7 @@ fn compute_rust_cpu_oproj_candidate_output(
     candidate: &RustCpuOprojCandidate,
 ) -> Vec<f32> {
     (0..hidden)
+        .into_par_iter()
         .map(|out_lane| {
             compute_rust_cpu_oproj_candidate_lane(
                 input_bf16,
