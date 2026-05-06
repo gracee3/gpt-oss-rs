@@ -1,0 +1,131 @@
+# Fused Linear/AddMM Official API Seam Synthesis
+
+## Classification
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+## Scope
+
+This is a docs-only synthesis and decision record for the official
+fused-linear/addmm attention o-proj API seam. It covers the
+`developer-message-user-smoke` final-token ordered-surface evidence for sampled
+layers 6, 10, 13, 16, 18, and 21.
+
+This record does not authorize implementation, backend selection, consumer
+revalidation, runtime/default routing changes, CUDA kernel changes, output
+emission, or ladder continuation.
+
+## Evidence Chain
+
+The evidence chain now includes:
+
+- Producer/API final matrix:
+  `docs/O_PROJ_PRODUCER_API_FINAL_MATRIX.md`
+- Backend/helper candidate exhaustion:
+  `docs/FUSED_LINEAR_ADDMM_BACKEND_DISCRIMINATOR_DESIGN.md`
+- cuBLASLt fused-bias prototype failure:
+  `docs/FUSED_LINEAR_ADDMM_VALIDATION_PLAN.md`
+- CPU producer attribution:
+  `/tmp/fused_linear_addmm_cpu_producer_attribution_status.json`
+- AddMM boundary localization:
+  `/tmp/fused_linear_addmm_addmm_boundary_localization_status.json`
+- Fused-bias arithmetic contract:
+  `/tmp/fused_linear_addmm_fused_bias_arithmetic_contract_status.json`
+
+The latest arithmetic-contract classification is:
+
+```text
+fused_linear_addmm_fused_bias_arithmetic_contract_inconclusive
+```
+
+## Strongest Current Conclusion
+
+The strongest current conclusion is that the official reference for the sampled
+attention o-proj seam is the CPU Torch API seam:
+
+- module call
+- `torch.nn.functional.linear`
+- `torch._C._nn.linear`
+- `torch.addmm(bias, input, weight.T)`
+
+The observed reference uses BF16 input, BF16 weight, and BF16 bias. The strongest
+arithmetic signal is fused bias before the final observable BF16 output.
+
+Full-vector exactness is required. Focus-lane clears are diagnostic only.
+
+The following remain negative controls:
+
+- explicit matmul plus bias
+- explicit einsum plus bias
+- zero-bias addmm plus separate bias
+- explicit unfused BF16 bias
+
+## Unresolved
+
+The following remain unresolved:
+
+- concrete CPU backend identity
+- one global accumulation/product policy
+- a Rust/CUDA helper candidate that clears layers 6, 10, 13, 16, 18, and 21
+- runtime promotion path
+
+The arithmetic-contract probe supports bias-before-output-rounding, but no
+explicit arithmetic variant localizes the exact accumulation/product policy
+across the full sampled set.
+
+## Why Blind Sweeps Should Stop
+
+Further blind sweeps are lower value because:
+
+- existing local helper families are exhausted for this evidence set
+- cuBLAS/cuBLASLt candidates did not clear the sampled producer/API reference
+- arithmetic variants are partial and layer-sensitive
+- focus-lane clears remain diagnostic only and cannot select a policy
+- explicit matmul/einsum/unfused-bias forms are negative controls, not
+  alternative official references
+
+## Decision
+
+Preserve Workstream A as an official Torch API seam for now.
+
+Do not implement runtime o-proj changes from this evidence. Do not run consumer
+revalidation from this evidence. If future validation needs this boundary, use
+producer/API artifacts as oracle seams rather than promoting local arithmetic
+policies.
+
+## Future Options
+
+### Option A — Preserve And Move On
+
+Preserve this synthesis and move to the next blocker or workstream.
+
+### Option B — Producer/API Artifact Reuse Path
+
+Design a validation-only path that reuses producer/API artifacts as oracle seam
+inputs. This would be an artifact-consumption design, not runtime behavior.
+
+### Option C — Custom Validation Helper Later
+
+Only later design a custom validation helper if a global arithmetic policy is
+discovered and proves full-vector safe across blocked layers and controls.
+
+### Option D — GPU/Sharded Torch Oracle Later
+
+Revisit GPU or sharded Torch oracle generation later if needed. For single-GPU
+work, use GPU1 because displays are on GPU0, and consult the multi-GPU sharding
+lane before any sharded run.
+
+## Guardrails
+
+- No backend selected.
+- No implementation authorized.
+- No consumer revalidation authorized.
+- No runtime/default/CUDA behavior change.
+- No output emission.
+- No ladder continuation.
+- No correction metadata promotion.
+- No tolerance pass.
+- No final-logit/all-layer/server/4097 claim.
+- No Torch runtime dependency in Rust.

@@ -670,6 +670,30 @@ No backend is selected. No implementation, consumer revalidation, runtime
 routing, default routing, CUDA kernel change, output emission, or ladder
 continuation is authorized.
 
+## Official API Seam Synthesis
+
+Decision record:
+
+```text
+docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+The synthesis keeps the future discriminator anchored to the official CPU Torch
+API seam rather than to a local arithmetic policy: module/F.linear/_C/addmm,
+BF16 input/weight/bias, fused bias before the final observable BF16 output, and
+full-vector exactness. Explicit matmul/einsum/unfused-bias are negative
+controls. Existing backend/helper candidates have not cleared the sampled set.
+
+Future work should prefer producer/API artifact reuse or a status-only
+discriminator before any custom helper design. This record does not select a
+backend and does not authorize implementation or consumer revalidation.
+
 ## Non-Goals
 
 - No runtime implementation.

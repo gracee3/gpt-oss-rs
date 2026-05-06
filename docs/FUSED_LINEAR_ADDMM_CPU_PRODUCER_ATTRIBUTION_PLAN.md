@@ -383,3 +383,28 @@ the final observable BF16 rounding, but the exact accumulation/product policy
 is not localized. No backend is selected, no implementation is authorized, and
 no consumer revalidation or runtime/default/CUDA change follows from this
 oracle evidence.
+
+## Official API Seam Synthesis
+
+Decision record:
+
+```text
+docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+The synthesis preserves Workstream A as an official CPU Torch API seam:
+module/F.linear/_C/addmm with BF16 input, BF16 weight, BF16 bias, fused bias
+before the final observable BF16 output, and full-vector exactness required.
+Explicit matmul/einsum/unfused-bias remain negative controls. The exact CPU
+backend identity and a single global accumulation/product policy remain
+unresolved.
+
+No backend is selected. No implementation, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, or ladder continuation
+is authorized.

@@ -259,3 +259,26 @@ Pipeline interpretation:
 This continues the seam pipeline pattern: collect sharper producer evidence,
 record the unresolved boundary honestly, and preserve all guardrails before any
 future discriminator or candidate execution.
+
+## Official API Seam Synthesis
+
+Decision record:
+
+```text
+docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+Pipeline decision: preserve the sampled attention o-proj boundary as an
+official CPU Torch API seam for now. Future validation should reuse
+producer/API seam artifacts when this boundary is needed, rather than running
+more blind helper sweeps or promoting focus-lane arithmetic policies.
+
+This is still oracle evidence only. It does not authorize implementation,
+consumer revalidation, runtime/default/CUDA changes, output emission, or ladder
+continuation.

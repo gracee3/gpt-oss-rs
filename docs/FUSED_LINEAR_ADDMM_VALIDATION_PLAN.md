@@ -586,6 +586,31 @@ This result should feed future validation-only discriminator requirements. It
 does not authorize consumer revalidation, output emission, ladder continuation,
 or runtime/default/CUDA behavior changes.
 
+## Official API Seam Synthesis
+
+Decision record:
+
+```text
+docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+The current validation stance is to treat Workstream A as an official CPU Torch
+API seam: module/F.linear/_C/addmm clears the sampled full vectors, fused bias
+before final observable BF16 output is the strongest arithmetic signal, and
+explicit matmul/einsum/unfused-bias remain negative controls. Existing
+helpers, cuBLAS/cuBLASLt candidates, and explicit arithmetic variants have not
+produced a global runtime candidate.
+
+No further blind sweeps are recommended from this evidence. No backend is
+selected and no consumer revalidation or runtime/default/CUDA behavior change
+is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

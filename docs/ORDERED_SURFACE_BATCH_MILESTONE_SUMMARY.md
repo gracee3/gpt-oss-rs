@@ -478,6 +478,33 @@ authorized, and no runtime/default/CUDA behavior change, output emission,
 ladder continuation, final-logit, all-layer, server, or 4097-token claim is
 made.
 
+## Official API Seam Synthesis
+
+Decision record:
+
+```text
+docs/FUSED_LINEAR_ADDMM_OFFICIAL_API_SEAM_SYNTHESIS.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_official_api_seam_synthesis_recorded
+```
+
+Milestone decision: preserve Workstream A as an official CPU Torch API seam for
+the sampled attention o-proj boundary. The seam is module/F.linear/_C/addmm with
+BF16 input, BF16 weight, BF16 bias, fused bias before final observable BF16
+output, and full-vector exactness required. Explicit matmul/einsum/unfused-bias
+remain negative controls.
+
+No further blind sweeps are recommended from this evidence. Future validation,
+if needed, should use producer/API artifacts as oracle seams. No backend is
+selected, no implementation is authorized, no consumer revalidation is
+authorized, and no runtime/default/CUDA behavior change, output emission,
+ladder continuation, final-logit, all-layer, server, or 4097-token claim is
+made.
+
 ## Guardrails
 
 - Validation-only.
