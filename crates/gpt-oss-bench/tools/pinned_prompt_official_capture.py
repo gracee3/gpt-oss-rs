@@ -3514,7 +3514,7 @@ def capture_layer_attention_oproj_api_probe(
             "o_proj_bias": extended_tensor_metadata(bias),
             "o_proj_output": {
                 **extended_tensor_metadata(module_output),
-                "lane22_value": output_values[output_lane],
+                "focus_lane_value": output_values[output_lane],
                 "summary": finite_summary(output_values),
             },
             "orientation": {
@@ -3638,6 +3638,22 @@ def capture_layer_attention_oproj_api_probe(
         and flinear_result.get("available")
         and fused_bias_result.get("metrics") != flinear_result.get("metrics")
     )
+    flinear_family_clears = bool(
+        module_result
+        and module_result.get("clears_full_vector")
+        and flinear_result
+        and flinear_result.get("clears_full_vector")
+        and c_nn_result
+        and c_nn_result.get("available")
+        and c_nn_result.get("clears_full_vector")
+        and addmm_matches
+    )
+    matches_fused_linear_pattern = bool(
+        flinear_family_clears
+        and not matmul_einsum_explains
+        and layout_sensitive
+        and fused_bias_sensitive
+    )
 
     classification = (
         f"layer{layer_index}_oproj_producer_api_probe_mkldnn_sensitive"
@@ -3646,14 +3662,57 @@ def capture_layer_attention_oproj_api_probe(
         if thread_sensitive
         else f"layer{layer_index}_oproj_producer_api_probe_layout_sensitive"
         if layout_sensitive
-        else f"layer{layer_index}_oproj_producer_api_probe_addmm_matches"
-        if addmm_matches
-        else f"layer{layer_index}_oproj_producer_api_probe_flinear_unique"
-        if flinear_unique
+        else f"layer{layer_index}_oproj_producer_api_probe_unfused_bias_mismatch"
+        if fused_bias_sensitive
+        else f"layer{layer_index}_oproj_producer_api_probe_matmul_einsum_mismatch"
+        if flinear_family_clears and not matmul_einsum_explains
+        else f"layer{layer_index}_oproj_producer_api_probe_fused_linear_clears"
+        if flinear_family_clears
         else f"layer{layer_index}_oproj_producer_api_probe_no_operator_explains"
+    )
+    operator_results_by_key = {
+        "module_attn_out": module_result,
+        "F_linear": flinear_result,
+        "_C_nn_linear": c_nn_result,
+        "fused_addmm": addmm_result,
+        "weight_at_input_plus_bias": result_by_operator("weight_at_input_plus_bias"),
+        "input_at_weight_t_plus_bias": result_by_operator("input_at_weight_t_plus_bias"),
+        "matmul": result_by_operator("torch_matmul_weight_input_plus_bias"),
+        "einsum": result_by_operator("torch_einsum_hk_k_to_h_plus_bias"),
+        "F_linear_bias_none_plus_bias": fused_bias_result,
+    }
+    sensitivity = {
+        "mkldnn": {
+            "enabled": sensitivity_results.get("mkldnn_enabled"),
+            "disabled": sensitivity_results.get("mkldnn_disabled"),
+            "sensitive": mkldnn_sensitive,
+        },
+        "threads": {
+            "default": default_thread,
+            "single_thread": single_thread,
+            "sensitive": thread_sensitive,
+        },
+        "layout": {
+            "sensitive": layout_sensitive,
+            "variants": {
+                result.get("operator"): result
+                for result in layout_variants
+            },
+        },
+        "fused_bias": {
+            "sensitive": fused_bias_sensitive,
+            "fused": flinear_result,
+            "unfused": fused_bias_result,
+        },
+    }
+    layer_class = (
+        "raw_qk_solved_oproj_blocked"
+        if layer_index == 21
+        else "blocked_family"
     )
     interpretation = {
         "flinear_unique": flinear_unique,
+        "fused_linear_clears": flinear_family_clears,
         "c_nn_linear_matches_flinear": (
             None
             if c_nn_result is None or not c_nn_result.get("available")
@@ -3670,6 +3729,9 @@ def capture_layer_attention_oproj_api_probe(
         "mkldnn_sensitive": mkldnn_sensitive,
         "thread_sensitive": thread_sensitive,
         "fused_bias_sensitive": fused_bias_sensitive,
+        "explicit_matmul_einsum_explains_artifact": matmul_einsum_explains,
+        "matches_layer6_pattern": matches_fused_linear_pattern,
+        "matches_13_16_10_pattern": matches_fused_linear_pattern,
         "matmul_einsum_explains_official": matmul_einsum_explains,
         "full_vector_clear_operators": full_vector_clear_operators,
         "module_matches_prior": bool(module_result and module_result.get("clears_full_vector")),
@@ -3687,12 +3749,15 @@ def capture_layer_attention_oproj_api_probe(
     status = {
         "schema_version": INTERMEDIATE_CAPTURE_OUTPUT_SCHEMA,
         "classification": classification,
+        "validation_only": True,
         "runtime_behavior_changed": False,
         "production_routing_changed": False,
         "cuda_kernels_changed": False,
         "backend": "official_torch",
         "layer_index": layer_index,
+        "layer_class": layer_class,
         "operator": "attention_o_proj",
+        "focus_lane": output_lane,
         "output_lane": output_lane,
         "model": None,
         "source_statuses": {
@@ -3752,9 +3817,19 @@ def capture_layer_attention_oproj_api_probe(
             if prior_weighted_v_values
             else None,
         },
-        "operator_results": operator_results,
+        "operator_results": operator_results_by_key,
+        "operator_results_full": operator_results,
+        "sensitivity": sensitivity,
         "sensitivity_results": sensitivity_results,
         "interpretation": interpretation,
+        "output_emitted": False,
+        "ladder_continued": False,
+        "correction_metadata_applied": False,
+        "tolerance_pass": False,
+        "final_logit_claim": False,
+        "all_layer_claim": False,
+        "server_claim": False,
+        "context_length_claim": False,
         "artifacts": {
             "bundle_dir": str(output_dir) + "/",
             "api_probe": str(artifact_path),
