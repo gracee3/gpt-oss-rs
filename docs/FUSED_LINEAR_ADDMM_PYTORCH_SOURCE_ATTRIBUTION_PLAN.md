@@ -742,3 +742,32 @@ that must be closed before a prototype can claim a global replay policy.
 No PyTorch source modification, reset, build, probe, Rust/CUDA implementation,
 backend selection, consumer revalidation, or runtime/default/CUDA behavior
 change is authorized by the design branch.
+
+## AVX2 Contract Extraction
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The source-attribution lane now has a replay-ready AVX2 contract for the
+selected `cpublas_gemm_impl` path. The extraction reused existing source and
+trace artifacts only; it did not patch, reset, rebuild, or rerun PyTorch.
+
+The extracted contract records the full reduction skeleton needed by a future
+validation prototype: 64-BF16 chunks over `K=4096`, eight f32 vector
+accumulators, AVX2 f32 fused multiply-add, PyTorch `VectorizedN` pairwise
+reduction, AVX2 horizontal shuffle reduction, f32 fused bias with `beta=1`,
+and final BF16 round-to-nearest-even output.
+
+This makes a validation-only prototype technically well-defined, but it still
+does not prove a global sampled-set replay policy. `concrete_global_replay_policy_found =
+false`, `reopen_rust_policy_synthesis = false`, no backend is selected, and no
+runtime/default/CUDA behavior change is authorized.

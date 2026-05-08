@@ -475,6 +475,40 @@ SIMD/vector grouping, tile shape, K-loop order, horizontal reduction order,
 lane-dependent behavior, and final BF16 rounding parity. The branch is
 docs-only and performs no PyTorch modification, build, reset, or probe.
 
+## AVX2 Contract Extraction
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The follow-on extraction did not patch, reset, rebuild, or rerun PyTorch. It
+archived the current external PyTorch diff and inspected the existing
+instrumented source plus sampled-trace artifacts.
+
+The replay-ready contract identifies the AVX2-selected BF16 dot path as:
+
+```text
+cpublas_gemm_impl -> gemm_core_ -> BF16 gemm_transa_
+  -> bf16_dot_with_fp32_arith -> dot_with_fp32_arith_no_bfdot
+```
+
+For the sampled `M=2880, N=1, K=4096` o-proj GEMM, the contract uses 64-BF16
+main-loop chunks, eight f32 vector accumulators, AVX2 f32 fused multiply-add,
+the PyTorch `VectorizedN` reduction order, AVX2 horizontal shuffle reduction,
+f32 bias fusion with `beta=1`, and final BF16 round-to-nearest-even output.
+
+This supports a validation-only source replay prototype. It does not identify
+a global replay policy, reopen Rust/CUDA policy synthesis, select a backend,
+or authorize implementation.
+
 ## Plan-Branch Guardrails
 
 - The planning branch was docs-only.

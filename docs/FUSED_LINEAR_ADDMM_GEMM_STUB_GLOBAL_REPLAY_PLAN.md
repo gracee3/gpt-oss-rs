@@ -366,3 +366,46 @@ The design keeps the next step bounded to
 implement the prototype, call PyTorch at runtime, reopen Rust/CUDA policy
 synthesis, select a backend, authorize consumer revalidation, or change
 runtime/default/CUDA behavior.
+
+## AVX2 Contract Extraction
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The AVX2 contract extraction branch converted the source-replay design into a
+replay-ready validation contract without patching, resetting, rebuilding, or
+rerunning PyTorch. It inspected:
+
+- `aten/src/ATen/native/cpu/BlasKernel.cpp`;
+- `aten/src/ATen/native/cpu/ReducedPrecisionFloatGemvFastPathKernel.cpp`;
+- `aten/src/ATen/native/CPUBlas.*`;
+- `aten/src/ATen/native/DispatchStub.*`;
+- AVX2 vector and reduction helpers;
+- `torch/headeronly/util/BFloat16.h`.
+
+Extracted rule:
+
+- baseline target selection remains AVX2 `cpublas_gemm_impl`;
+- `K=4096` is reduced as 64 chunks of 64 BF16 products;
+- the dot uses eight f32 vector accumulators and AVX2 fused multiply-add;
+- reduction order is the PyTorch `VectorizedN` pairwise reduction followed by
+  AVX2 f32 horizontal shuffle reduction;
+- BF16 bias is fused as the prior `c` value with `beta=1`;
+- the final observable value is a single BF16 round-to-nearest-even cast.
+
+The branch records `replay_contract_complete = true` and
+`supports_validation_prototype = true`, but still records
+`concrete_global_replay_policy_found = false` and
+`reopen_rust_policy_synthesis = false`. The next permitted step remains only a
+validation-only source-replay prototype; no backend selection, implementation,
+consumer revalidation, output emission, ladder continuation, or
+runtime/default/CUDA behavior change is authorized.

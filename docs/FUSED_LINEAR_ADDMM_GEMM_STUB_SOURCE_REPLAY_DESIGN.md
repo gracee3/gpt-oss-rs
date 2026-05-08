@@ -413,3 +413,61 @@ This docs-only branch performs no cleanup.
 - No server claim.
 - No 4097/context-length claim.
 - No Torch runtime dependency in Rust.
+
+## AVX2 Contract Extraction Result
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The contract-extraction branch inspected the PyTorch source and reused the
+existing sampled-trace artifacts. It archived the current external PyTorch diff
+at:
+
+```text
+/home/emmy/openai/pytorch-research/fused-linear-addmm-gemm-stub-avx2-contract-extraction/pre_avx2_contract_extraction.patch
+```
+
+No PyTorch source was patched, reset, or rebuilt in this branch.
+
+Replay-ready AVX2 contract:
+
+- baseline/no override selects the AVX2-compiled `cpublas_gemm_impl` on the
+  sampled host;
+- the source path remains `cpublas_gemm_impl -> gemm_core_ ->
+  BF16-specialized gemm_transa_ -> compute_dot ->
+  CPU_CAPABILITY::bf16_dot_with_fp32_arith`;
+- sampled GEMM shape is `M=2880`, `N=1`, `K=4096`;
+- `alpha = 1`, `beta = 1`, and BF16 bias is the prior `c` accumulator;
+- BF16 input and weight values are converted exactly to f32 before multiply;
+- the AVX2 dot processes `K` in 64-BF16 chunks;
+- each chunk uses four BF16 vector pairs, producing eight f32 vector
+  accumulators;
+- accumulator updates use AVX2 f32 fused multiply-add;
+- `K=4096` has no vector tail and no scalar tail;
+- the eight f32 vector accumulators are reduced by PyTorch's `VectorizedN`
+  pairwise order, then by the AVX2 f32 horizontal shuffle reduction;
+- bias is fused after dot reduction in f32;
+- final output is one BF16 round-to-nearest-even cast.
+
+The extraction marks:
+
+```text
+replay_contract_complete = true
+supports_validation_prototype = true
+concrete_global_replay_policy_found = false
+reopen_rust_policy_synthesis = false
+```
+
+This result authorizes only the future validation prototype design already
+described here. It does not select a backend, reopen Rust/CUDA policy
+synthesis, authorize implementation, authorize consumer revalidation, emit
+outputs, continue the ladder, or change runtime/default/CUDA behavior.

@@ -1128,6 +1128,39 @@ The design does not implement Rust/CUDA behavior, reopen Rust/CUDA synthesis,
 select a backend, run consumer revalidation, emit outputs, continue the ladder,
 or change runtime/default/CUDA behavior.
 
+## AVX2 Contract Extraction
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The validation lane now has the AVX2 reduction contract needed for the future
+prototype. The contract is source-derived and trace-backed, not a runtime
+implementation:
+
+- target selection: baseline/no override uses AVX2 `cpublas_gemm_impl`;
+- shape: `M=2880`, `N=1`, `K=4096`;
+- reduction: 64-BF16 chunks, eight f32 vector accumulators, AVX2 f32 FMA;
+- final reduction: PyTorch `VectorizedN` pairwise order plus AVX2 horizontal
+  shuffle reduction;
+- bias/output: f32 `beta=1` bias fusion, then one BF16 round-to-nearest-even
+  cast.
+
+The branch records `replay_contract_complete = true` and
+`supports_validation_prototype = true`, while keeping
+`concrete_global_replay_policy_found = false` and
+`reopen_rust_policy_synthesis = false`. The next validation step, if
+authorized, is still the source-replay prototype; consumer revalidation and
+runtime promotion remain out of scope.
+
 ## Non-Goals
 
 - No runtime implementation.

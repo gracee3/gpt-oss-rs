@@ -1012,6 +1012,38 @@ sampled set, no backend is selected, no implementation is authorized, no
 consumer revalidation is authorized, and no runtime/default/CUDA behavior
 change is authorized.
 
+## AVX2 GEMM-Stub Contract Extraction
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+The milestone now has a replay-ready source contract for the selected AVX2
+`cpublas_gemm_impl` path. The branch inspected PyTorch source and reused
+sampled-trace artifacts; it did not patch, reset, rebuild, or rerun PyTorch.
+
+Key contract fields:
+
+- baseline/no override target: AVX2-compiled `cpublas_gemm_impl`;
+- matrix shape: `M=2880`, `N=1`, `K=4096`;
+- K loop: 64 chunks of 64 BF16 products;
+- accumulation: eight f32 vector accumulators with AVX2 f32 FMA;
+- reduction: `VectorizedN` pairwise reduction, then AVX2 horizontal shuffle;
+- bias: BF16 bias as prior `c`, fused in f32 with `beta=1`;
+- output: one final BF16 round-to-nearest-even cast.
+
+This supports a validation-only source replay prototype, but it is not itself
+a full sampled-set replay proof. `concrete_global_replay_policy_found = false`
+and `reopen_rust_policy_synthesis = false` remain in force.
+
 ## Guardrails
 
 - Validation-only.

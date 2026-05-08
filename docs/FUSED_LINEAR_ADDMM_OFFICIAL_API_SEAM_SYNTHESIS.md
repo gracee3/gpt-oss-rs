@@ -640,6 +640,32 @@ This is still not a backend selection or implementation authorization. No
 consumer revalidation, output emission, ladder continuation, or
 runtime/default/CUDA behavior change follows from this design.
 
+## AVX2 GEMM-Stub Contract
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_gemm_stub_avx2_contract_replay_ready
+```
+
+Source attribution now has a replay-ready AVX2 contract for the selected
+`cpublas_gemm_impl` path: 64-BF16 K chunks, eight f32 vector accumulators,
+AVX2 f32 fused multiply-add, PyTorch `VectorizedN` pairwise reduction, AVX2
+horizontal shuffle reduction, f32 bias fusion, and one final BF16
+round-to-nearest-even cast.
+
+This is a validation-prototype input only. The official seam remains the CPU
+Torch API seam, and the guardrails remain unchanged: no global replay policy
+has cleared the sampled set, no backend is selected, no runtime implementation
+is authorized, no consumer revalidation is authorized, and no
+runtime/default/CUDA behavior change is authorized.
+
 ## Guardrails
 
 - No backend selected.
