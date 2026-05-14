@@ -617,6 +617,38 @@ Result:
 The result narrows the producer attribution lane, but it does not authorize a
 Rust helper implementation or backend selection.
 
+## CPU Producer Attribution Result Update
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_result_update_recorded
+```
+
+The backend discriminator and candidate comparator found no existing selectable
+backend. The CPU attribution result confirms the official API family and the
+AVX2 contract consistency, but it does not prove backend identity or
+source-level dispatch.
+
+Recorded source:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+2e5e5791a9c353a07ba40929a216056364af164c
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Next design path:
+
+```text
+docs/fused-linear-addmm-source-stepthrough-plan
+```
+
+This source step-through plan should come before any Rust fused-addmm helper
+implementation. Backend selected: false. Implementation authorized: false.
+Consumer revalidation authorized: false. Runtime/default/CUDA behavior changes:
+false.
+
 ## Non-Goals
 
 - No runtime implementation.

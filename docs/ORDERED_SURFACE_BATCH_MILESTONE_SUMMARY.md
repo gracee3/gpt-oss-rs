@@ -430,6 +430,43 @@ Milestone claims remain conservative: no runtime/default/CUDA behavior change,
 output emission, ladder continuation, final-logit, all-layer, server, or
 4097-token claim.
 
+## CPU Producer Attribution Result Update
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_result_update_recorded
+```
+
+Source:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+2e5e5791a9c353a07ba40929a216056364af164c
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Milestone decision:
+
+- CPU producer attribution result recorded.
+- Module/F.linear/_C/addmm/addmm clear all sampled layers.
+- Explicit matmul/einsum/unfused-bias remain negative controls.
+- AVX2 contract consistency is true across the sampled set.
+- Source-level dispatch remains unproven.
+- Backend identity remains unproven.
+- No backend is selected.
+- No runtime/default/CUDA behavior change is authorized.
+
+Recommended next branch:
+
+```text
+docs/fused-linear-addmm-source-stepthrough-plan
+```
+
+Milestone claims remain unchanged: no implementation authorization, no consumer
+revalidation, no output emission, no ladder continuation, and no
+final-logit/all-layer/server/4097 claim.
+
 ## Guardrails
 
 - Validation-only.

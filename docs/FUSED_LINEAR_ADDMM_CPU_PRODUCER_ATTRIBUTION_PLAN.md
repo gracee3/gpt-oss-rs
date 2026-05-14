@@ -305,6 +305,76 @@ The CPU probe supports the AVX2-style contract as a plausible attribution
 target, but it does not provide source-level dispatch proof. Review this status
 before any Rust fused-addmm helper design or implementation.
 
+## CPU Producer Attribution Result Update
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_result_update_recorded
+```
+
+Source branch:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+```
+
+Source commit:
+
+```text
+2e5e5791a9c353a07ba40929a216056364af164c
+```
+
+Source status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Attribution classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_recorded
+```
+
+Result summary:
+
+- Layers evaluated: 6, 10, 13, 16, 18, and 21.
+- API paths tested: module `attn.out`, F.linear, _C linear, `torch.addmm`,
+  ATen addmm profiler attribution, explicit matmul/einsum, and unfused
+  `F.linear(..., bias=None) + bias`.
+- Module/F.linear/_C/addmm/addmm clear full-vector for all sampled layers.
+- Explicit matmul/einsum/unfused-bias remain negative controls.
+- Environment toggles covered default, MKLDNN on/off, single/default thread,
+  layout guards, and fused-bias guard.
+- AVX2 contract consistency: true for all sampled layers.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- Backend selected: false.
+- Implementation authorized: false.
+- Runtime/default/CUDA changes: false.
+- Consumer revalidation: false.
+
+Interpretation:
+
+The CPU attribution probe confirms that the official producer/API family
+remains module/F.linear/_C/addmm/addmm and that explicit
+matmul/einsum/unfused-bias variants remain negative controls. The AVX2
+extracted contract is consistent with the observed API matrix across all
+sampled layers, but source-level dispatch and backend identity are still not
+proven. Therefore this result does not authorize a Rust helper implementation,
+backend selection, or consumer revalidation.
+
+Recommended next branch, only after separate approval:
+
+```text
+docs/fused-linear-addmm-source-stepthrough-plan
+```
+
+Reason: AVX2 contract consistency remains plausible, but source-level dispatch
+is unresolved. The next useful step is a source-level step-through/attribution
+plan, not another CUDA/helper sweep and not runtime implementation.
+
 ## Guardrails
 
 - Docs-only in this branch.

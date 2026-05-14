@@ -190,6 +190,36 @@ This keeps the lane in producer-attribution territory. No backend is selected,
 no implementation is authorized, no consumer revalidation is authorized, and no
 runtime/default/CUDA behavior change follows from the status.
 
+## Producer Attribution Result Update
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_result_update_recorded
+```
+
+The first pipeline application has completed on source branch
+`oracle/fused-linear-addmm-cpu-producer-attribution-probes` at commit
+`2e5e5791a9c353a07ba40929a216056364af164c`.
+
+Result note:
+
+- API semantics are confirmed for the sampled fused-linear/addmm o-proj seam:
+  module/F.linear/_C/addmm/addmm clear all sampled full-vector references.
+- Explicit matmul/einsum/unfused-bias variants remain the negative controls.
+- AVX2 contract consistency is true across layers 6/10/13/16/18/21.
+- Lower-level source dispatch remains unresolved.
+- Backend identity remains unproven.
+
+Recommended next design branch:
+
+```text
+docs/fused-linear-addmm-source-stepthrough-plan
+```
+
+The pipeline should now move to source-level step-through planning before any
+helper implementation, backend selection, or consumer revalidation.
+
 ## Non-Goals
 
 - No implementation in this branch.

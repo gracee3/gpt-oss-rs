@@ -528,6 +528,36 @@ AVX2-style contract, but source-level dispatch is not proven. Backend identity
 is not proven. No backend is selected, no consumer revalidation is authorized,
 and no runtime/default/CUDA behavior change is authorized.
 
+## CPU Producer Attribution Result Update
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_result_update_recorded
+```
+
+Source:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+2e5e5791a9c353a07ba40929a216056364af164c
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+The CPU producer attribution result is now recorded as a validation-plan
+decision point. It confirms the producer/API family and keeps the explicit
+matmul/einsum/unfused-bias variants as negative controls. It also records AVX2
+contract consistency as plausible across all sampled layers, but not as
+source-level dispatch proof.
+
+Decision:
+
+- No Rust helper implementation is authorized.
+- No backend is selected.
+- No consumer revalidation is authorized.
+- No runtime/default/CUDA behavior change is authorized.
+- The next design branch is `docs/fused-linear-addmm-source-stepthrough-plan`.
+
 ## Non-Goals
 
 - No runtime implementation.
