@@ -708,6 +708,40 @@ attribution still do not select a backend. The next bounded decision is review
 before any source instrumentation, not Rust helper implementation or consumer
 revalidation.
 
+## Source Walk Attribution Result
+
+The read-only PyTorch source-walk attribution lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Result:
+
+- Source tree: `/home/emmy/openai/pytorch`.
+- HEAD matches the installed Torch git version, but the source tree is dirty
+  from existing local edits; this branch did not modify it.
+- Candidate path graph: `aten::linear` -> `at::addmm` ->
+  `addmm_out_cpu` -> `addmm_impl_cpu_` -> `cpublas::gemm` ->
+  BF16 cpublas/gemm_stub/BlasKernel candidates.
+- Alternate path noted: `mkldnn_linear`, low confidence for the sampled dense
+  strided tensors because the profiler did not expose MKLDNN/oneDNN backend
+  events.
+- AVX2 source candidates were found, but they are not source-level execution
+  proof.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+
+The backend discriminator remains non-selecting. Source instrumentation is the
+next possible gate only after review; Rust helper implementation and consumer
+revalidation remain unauthorized.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -531,6 +531,38 @@ selection, implementation authorization, consumer revalidation,
 runtime/default/CUDA behavior change, output emission, ladder continuation,
 correction/tolerance, or final-logit/all-layer/server/4097 claim.
 
+## Fused Linear/AddMM Source Walk Attribution
+
+The read-only PyTorch source-walk attribution lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Milestone decision:
+
+- Source tree `/home/emmy/openai/pytorch` is available and matches the
+  installed Torch git version.
+- The source tree is dirty from existing local edits in relevant ATen files;
+  this branch did not modify it.
+- Candidate path graph recorded:
+  `linear` -> `addmm` -> `addmm_out_cpu` -> `addmm_impl_cpu_` ->
+  `cpublas::gemm` -> BF16 cpublas/gemm_stub candidates.
+- AVX2 contract source candidates were found, but source-level dispatch and
+  backend identity remain unproven.
+- Source instrumentation is recommended only after review.
+
+Milestone claims remain unchanged: no PyTorch patch/rebuild, backend
+selection, implementation authorization, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim.
+
 ## Guardrails
 
 - Validation-only.

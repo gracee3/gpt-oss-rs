@@ -615,6 +615,41 @@ does not authorize a Rust helper implementation, backend selection, consumer
 revalidation, runtime/default/CUDA behavior change, output emission, ladder
 continuation, correction/tolerance, or final-logit/all-layer/server/4097 claim.
 
+## Source Walk Attribution Result
+
+The read-only PyTorch source walk is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Result:
+
+- Source tree: `/home/emmy/openai/pytorch`.
+- Source tree HEAD matches installed Torch git version
+  `70d99e998b4955e0049d13a98d77ae1b14db1f45`.
+- Source tree dirty: true, with pre-existing edits in relevant ATen files.
+- Candidate dispatch graph: `linear` 2D+bias route -> `addmm` ->
+  `addmm_out_cpu` -> `addmm_impl_cpu_` -> `cpublas::gemm` ->
+  BF16 cpublas/gemm_stub candidates.
+- AVX2 source candidates: BF16 input paths, f32 accumulation,
+  addmm self/beta=1 fused bias, VectorizedN reduction, and BF16 conversion.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- Source instrumentation recommended: true.
+
+This keeps the validation plan gated on proof rather than backend selection.
+No Rust helper implementation, backend selection, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim is
+authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -276,6 +276,38 @@ any source instrumentation. No backend selection, implementation, consumer
 revalidation, runtime/default/CUDA behavior change, output emission, or ladder
 continuation follows from this status.
 
+## Source Walk Attribution Result
+
+The read-only source-walk attribution stage is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Pipeline result:
+
+- The local source tree `/home/emmy/openai/pytorch` is available and matches
+  the installed Torch git version, but it is dirty from existing local ATen
+  edits; the source walk did not modify it.
+- The candidate source graph maps `aten::linear` to the 2D+bias
+  `at::addmm` route, CPU `addmm` to `addmm_out_cpu`, and then to
+  `addmm_impl_cpu_` / `cpublas::gemm` / BF16 cpublas and gemm_stub
+  candidates.
+- AVX2 contract source candidates were found in `CPUBlas.cpp`,
+  `cpu/BlasKernel.cpp`, and vectorized helper headers.
+- The graph is candidate evidence, not source-level dispatch proof.
+
+Source instrumentation remains the next possible pipeline stage only after
+review. No PyTorch patch/rebuild, backend selection, implementation, consumer
+revalidation, runtime/default/CUDA behavior change, output emission, or ladder
+continuation follows from this status.
+
 ## Non-Goals
 
 - No implementation in this branch.

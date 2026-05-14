@@ -379,6 +379,70 @@ runtime/default/CUDA change, output emission, ladder continuation,
 correction/tolerance, or final-logit/all-layer/server/4097 claim is
 authorized by this result.
 
+## Source Walk Attribution Result
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-walk-attribution
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Source tree:
+
+```text
+/home/emmy/openai/pytorch
+```
+
+The source tree is available and its HEAD matches the installed Torch git
+version `70d99e998b4955e0049d13a98d77ae1b14db1f45`. The tree was already
+dirty before this read-only lane, with local edits in `CPUBlas.cpp`,
+`Linear.cpp`, `LinearAlgebra.cpp`, `cpu/BlasKernel.cpp`, and `mkldnn/Matmul.cpp`.
+No PyTorch source file was modified by this branch.
+
+Candidate source path:
+
+```text
+torch.nn.functional.linear / torch._C._nn.linear
+  -> aten::linear
+  -> Linear.cpp 2D + bias route
+  -> at::addmm(*bias, input, weight.t())
+  -> native_functions.yaml CPU: addmm_out_cpu
+  -> LinearAlgebra.cpp addmm_impl_cpu_
+  -> cpublas::gemm
+  -> CPUBlas.cpp BF16 cpublas path
+  -> BlasKernel.cpp gemm_stub / cpublas_gemm_impl candidates
+```
+
+AVX2 contract source candidates were found for BF16 inputs, f32 accumulation,
+fused bias as addmm self/beta=1, vectorized reduction helpers, and final BF16
+conversion. These are source candidates only:
+
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- AVX2 contract source-confirmed: false.
+- AVX2 contract behaviorally consistent: true.
+- Source instrumentation recommended next: true.
+
+The source walk maps plausible files and symbols, but it still does not prove
+which lower-level path the installed wheel executes for the sampled BF16
+o-proj seam. Review is required before authorizing lightweight PyTorch source
+instrumentation. No backend selection, implementation, consumer revalidation,
+runtime/default/CUDA change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim is
+authorized by this result.
+
 ## Non-Goals
 
 - No runtime implementation.

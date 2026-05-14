@@ -439,6 +439,53 @@ Outcome:
   continuation, correction/tolerance, or final-logit/all-layer/server/4097
   claim is authorized.
 
+## Source Walk Attribution Result
+
+Read-only PyTorch source-walk attribution is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_walk_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_walk_attribution_recorded
+```
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-walk-attribution
+```
+
+The source walk used `/home/emmy/openai/pytorch` read-only. The checkout HEAD
+matches the installed Torch git version, but the tree is dirty from existing
+local edits in relevant ATen files; this branch did not modify it.
+
+Candidate path summary:
+
+- `aten::linear` in `Linear.cpp` routes 2D input with defined bias to
+  `at::addmm(*bias, input, weight.t())`.
+- `native_functions.yaml` maps CPU `addmm` to `addmm_out_cpu`.
+- `LinearAlgebra.cpp` delegates `addmm_out_cpu` to `addmm_impl_cpu_`, which
+  contains a `cpublas::gemm` call site.
+- `CPUBlas.cpp` and `cpu/BlasKernel.cpp` contain BF16 cpublas/gemm_stub
+  candidates that align with the AVX2 contract vocabulary.
+- `vec_n.h` provides VectorizedN reduction helpers; `mkldnn/Linear.cpp`
+  remains an alternate low-confidence path.
+
+Outcome:
+
+- AVX2 source candidates found: yes.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- Source instrumentation recommended next: true.
+- No PyTorch patch/rebuild, backend selection, implementation, consumer
+  revalidation, runtime/default/CUDA change, output emission, ladder
+  continuation, correction/tolerance, or final-logit/all-layer/server/4097
+  claim is authorized.
+
 ## Guardrails
 
 - Docs-only in this branch.
