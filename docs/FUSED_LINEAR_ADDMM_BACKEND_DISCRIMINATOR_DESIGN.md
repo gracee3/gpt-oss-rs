@@ -742,6 +742,44 @@ The backend discriminator remains non-selecting. Source instrumentation is the
 next possible gate only after review; Rust helper implementation and consumer
 revalidation remain unauthorized.
 
+## Source Instrumentation Result
+
+The lightweight PyTorch source-instrumentation lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Result:
+
+- A separate PyTorch instrumentation worktree was used:
+  `/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`.
+- The main PyTorch source tree at `/home/emmy/openai/pytorch` was not modified;
+  its dirty ATen edits were treated as pre-existing.
+- The instrumentation worktree matches Torch git version
+  `70d99e998b4955e0049d13a98d77ae1b14db1f45` and remained clean.
+- The active Python import still points to the installed venv wheel, and no
+  source build directory or editable source install was available.
+- No PyTorch patch was applied, no PyTorch rebuild was attempted, and no trace
+  markers were observed.
+- A proposed instrumentation patch was preserved for future review, covering
+  the planned `Linear`, `addmm`, `cpublas::gemm`, gemm-stub, and MKLDNN marker
+  sites.
+
+This result does not prove source-level dispatch, backend identity, or AVX2
+contract source confirmation. The backend discriminator remains non-selecting;
+the next bounded step is an explicit PyTorch source build or editable install
+before rerunning instrumentation. No backend selection, Rust helper
+implementation, consumer revalidation, runtime/default/CUDA change, output
+emission, ladder continuation, correction/tolerance, or
+final-logit/all-layer/server/4097 claim is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

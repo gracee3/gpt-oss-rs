@@ -486,6 +486,50 @@ Outcome:
   continuation, correction/tolerance, or final-logit/all-layer/server/4097
   claim is authorized.
 
+## Source Instrumentation Result
+
+Lightweight PyTorch source-instrumentation attribution is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-instrumentation
+```
+
+The lane created or reused the separate PyTorch instrumentation worktree
+`/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`
+at the installed Torch git version. The dirty main PyTorch checkout was not
+modified. The instrumentation worktree remained clean, and the active Python
+import still came from the installed venv wheel rather than a source build.
+
+Outcome:
+
+- PyTorch patched: false.
+- PyTorch rebuilt: false.
+- Source build used: false.
+- Trace markers observed: none.
+- Proposed instrumentation patch preserved: true.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- AVX2 contract source-confirmed: false.
+
+The next bounded step is an explicitly approved PyTorch source build/editable
+install for the instrumentation worktree, followed by applying the preserved
+patch and rerunning the trace. No backend selection, implementation, consumer
+revalidation, runtime/default/CUDA change, output emission, ladder
+continuation, correction/tolerance, or final-logit/all-layer/server/4097 claim
+is authorized.
+
 ## Guardrails
 
 - Docs-only in this branch.

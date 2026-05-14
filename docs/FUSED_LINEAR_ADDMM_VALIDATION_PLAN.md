@@ -650,6 +650,42 @@ runtime/default/CUDA behavior change, output emission, ladder continuation,
 correction/tolerance, or final-logit/all-layer/server/4097 claim is
 authorized.
 
+## Source Instrumentation Result
+
+The lightweight source-instrumentation lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Result:
+
+- Separate PyTorch instrumentation worktree used:
+  `/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`.
+- Main PyTorch source tree modified: false.
+- Instrumentation worktree modified: false.
+- Source build used: false.
+- PyTorch patched/rebuilt: false/false.
+- Planned instrumentation files cover `Linear.cpp`, `LinearAlgebra.cpp`,
+  `CPUBlas.cpp`, `cpu/BlasKernel.cpp`, `mkldnn/Linear.cpp`, and
+  `mkldnn/Matmul.cpp`.
+- Trace markers observed: none.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- AVX2 contract source-confirmed: false.
+
+The validation plan remains blocked on an approved PyTorch source build or
+editable install before instrumentation can collect runtime trace markers. No
+backend selection, Rust helper implementation, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

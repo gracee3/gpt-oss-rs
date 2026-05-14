@@ -308,6 +308,37 @@ review. No PyTorch patch/rebuild, backend selection, implementation, consumer
 revalidation, runtime/default/CUDA behavior change, output emission, or ladder
 continuation follows from this status.
 
+## Source Instrumentation Result
+
+The lightweight source-instrumentation stage is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Pipeline result:
+
+- A separate PyTorch instrumentation worktree exists at
+  `/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`.
+- The dirty main PyTorch source tree was not modified.
+- The instrumentation worktree matches the installed Torch git version and
+  remained clean.
+- No usable PyTorch source build or editable source install was detected.
+- The lane generated and preserved a proposed instrumentation patch but did
+  not apply it.
+- No trace markers were collected.
+
+The pipeline is blocked on an explicit source-build setup before it can prove
+or falsify lower-level dispatch. No backend selection, Rust helper
+implementation, consumer revalidation, runtime/default/CUDA behavior change,
+output emission, or ladder continuation follows from this status.
+
 ## Non-Goals
 
 - No implementation in this branch.

@@ -563,6 +563,45 @@ selection, implementation authorization, consumer revalidation,
 runtime/default/CUDA behavior change, output emission, ladder continuation,
 correction/tolerance, or final-logit/all-layer/server/4097 claim.
 
+## Fused Linear/AddMM Source Instrumentation
+
+The lightweight PyTorch source-instrumentation lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Milestone decision:
+
+- A separate PyTorch instrumentation worktree was used at
+  `/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`.
+- The main PyTorch source tree was not modified; its dirty ATen edits remain
+  pre-existing local state.
+- The instrumentation worktree matches the installed Torch git version and
+  remained clean.
+- The active Python import points to the installed venv wheel, not the
+  instrumentation worktree.
+- No usable source build or editable source install was available, so no patch
+  was applied and no PyTorch rebuild was attempted.
+- A proposed instrumentation patch was preserved for future review, but no
+  trace markers were observed in this run.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- AVX2 contract source-confirmed: false.
+
+Milestone claims remain unchanged: no backend selection, implementation
+authorization, consumer revalidation, runtime/default/CUDA behavior change,
+output emission, ladder continuation, correction/tolerance, or
+final-logit/all-layer/server/4097 claim. The next bounded step is to prepare an
+explicit PyTorch source build or editable install, apply the preserved patch,
+and rerun instrumentation.
+
 ## Guardrails
 
 - Validation-only.

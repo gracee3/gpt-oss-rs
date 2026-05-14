@@ -443,6 +443,57 @@ runtime/default/CUDA change, output emission, ladder continuation,
 correction/tolerance, or final-logit/all-layer/server/4097 claim is
 authorized by this result.
 
+## Source Instrumentation Result
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-instrumentation
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_source_instrumentation_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_instrumentation_blocked_by_no_source_build
+```
+
+Result:
+
+- A separate PyTorch instrumentation worktree was used:
+  `/home/emmy/openai/pytorch-worktrees/fused-linear-addmm-source-instrumentation`.
+- The main PyTorch source tree at `/home/emmy/openai/pytorch` was not modified.
+- The instrumentation worktree is at Torch git version
+  `70d99e998b4955e0049d13a98d77ae1b14db1f45` and remained clean.
+- The active Python import still points to the installed venv wheel, not the
+  instrumentation worktree.
+- No source build directory or editable source install was available.
+- No PyTorch patch was applied and no PyTorch rebuild was attempted.
+- A proposed, not-applied instrumentation patch was preserved for future use.
+- Trace markers observed: none.
+
+Planned instrumentation files:
+
+- `aten/src/ATen/native/Linear.cpp`
+- `aten/src/ATen/native/LinearAlgebra.cpp`
+- `aten/src/ATen/native/CPUBlas.cpp`
+- `aten/src/ATen/native/cpu/BlasKernel.cpp`
+- `aten/src/ATen/native/mkldnn/Linear.cpp`
+- `aten/src/ATen/native/mkldnn/Matmul.cpp`
+
+No source-level dispatch proof, backend identity proof, or AVX2 contract source
+confirmation follows from this blocked run. The next bounded step is to prepare
+an explicit PyTorch source build or editable install, apply the preserved patch,
+and rerun instrumentation. No backend selection, Rust helper implementation,
+consumer revalidation, runtime/default/CUDA change, output emission, ladder
+continuation, correction/tolerance, or final-logit/all-layer/server/4097 claim
+is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.
