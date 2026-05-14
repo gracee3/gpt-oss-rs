@@ -245,6 +245,37 @@ oracle/fused-linear-addmm-source-dispatch-table-attribution
 No PyTorch patch/rebuild, Rust helper implementation, backend selection, or
 consumer revalidation is authorized by this plan.
 
+## Source Dispatch Table Attribution Result
+
+The read-only dispatch table attribution stage is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Pipeline result:
+
+- Dispatch tables for `aten::linear`, `aten::addmm`, `aten::mm`, and
+  `aten::matmul` were collected from the installed Torch wheel.
+- CPU profiler attribution ran under default, MKLDNN disabled, MKLDNN enabled,
+  single-thread, and default-thread-count settings.
+- ATen-level operators were visible, including `linear`, `addmm`, `matmul`,
+  `mm`, `einsum`, and `bmm`.
+- No deeper MKLDNN/oneDNN/DNNL/MKL profiler event name was visible.
+- Source-level dispatch and backend identity remain unproven.
+
+This confirms the pipeline stage can collect read-only dispatch evidence
+without patching PyTorch, but the next decision still requires review before
+any source instrumentation. No backend selection, implementation, consumer
+revalidation, runtime/default/CUDA behavior change, output emission, or ladder
+continuation follows from this status.
+
 ## Non-Goals
 
 - No implementation in this branch.

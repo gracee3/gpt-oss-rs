@@ -331,6 +331,54 @@ Do not jump directly to:
 - CUDA helper work
 - production runtime integration
 
+## Source Dispatch Table Attribution Result
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+Status:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Result:
+
+- Dispatch tables inspected: `aten::linear`, `aten::addmm`, `aten::mm`, and
+  `aten::matmul`.
+- Visible dispatch registrations include CPU registrations and MkldnnCPU table
+  labels, but the tables do not prove the lower-level BF16 CPU kernel path.
+- CPU profiler toggles ran for default environment, MKLDNN disabled, MKLDNN
+  enabled, single thread, and default thread count.
+- Profiler operators observed include `aten::linear`, `aten::addmm`,
+  `aten::matmul`, `aten::mm`, `aten::einsum`, and `aten::bmm`.
+- No MKLDNN/oneDNN/DNNL/MKL backend event name was visible in the profiler
+  output.
+- AVX2 contract consistency remains true from the CPU producer attribution
+  source status.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+
+Interpretation:
+
+Read-only dispatch table and profiler attribution narrows the evidence to
+ATen-level dispatch visibility, but it still does not prove the concrete
+lower-level fused-linear/addmm CPU implementation. Source instrumentation is
+recommended only after reviewing this status; no PyTorch patch/rebuild, Rust
+helper implementation, backend selection, consumer revalidation,
+runtime/default/CUDA change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim is
+authorized by this result.
+
 ## Non-Goals
 
 - No runtime implementation.

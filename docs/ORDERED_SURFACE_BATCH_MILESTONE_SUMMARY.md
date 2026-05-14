@@ -499,6 +499,38 @@ oracle/fused-linear-addmm-source-dispatch-table-attribution
 Milestone claims remain unchanged: no output emission, no ladder continuation,
 no correction/tolerance, and no final-logit/all-layer/server/4097 claim.
 
+## Fused Linear/AddMM Source Dispatch Table Attribution
+
+The read-only dispatch table/profiler attribution lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Milestone decision:
+
+- Dispatch tables for `aten::linear`, `aten::addmm`, `aten::mm`, and
+  `aten::matmul` were collected from the installed Torch wheel.
+- CPU profiler toggles ran for default, MKLDNN disabled, MKLDNN enabled,
+  single-thread, and default-thread-count settings.
+- Profiler output observed ATen-level `linear`, `addmm`, `matmul`, `mm`,
+  `einsum`, and `bmm`.
+- No deeper MKLDNN/oneDNN/DNNL/MKL backend event name was visible.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- Source instrumentation is recommended only after review.
+
+Milestone claims remain unchanged: no PyTorch patch/rebuild, backend
+selection, implementation authorization, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, ladder continuation,
+correction/tolerance, or final-logit/all-layer/server/4097 claim.
+
 ## Guardrails
 
 - Validation-only.

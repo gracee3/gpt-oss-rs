@@ -584,6 +584,37 @@ No Rust helper implementation, backend selection, consumer revalidation,
 runtime/default/CUDA behavior change, output emission, or ladder continuation
 is authorized.
 
+## Source Dispatch Table Attribution Result
+
+The read-only dispatch table/profiler attribution lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Result:
+
+- Dispatch tables inspected: `aten::linear`, `aten::addmm`, `aten::mm`, and
+  `aten::matmul`.
+- CPU profiler toggles run: default, MKLDNN disabled, MKLDNN enabled, single
+  thread, and default thread count.
+- Profiler operators observed: `aten::linear`, `aten::addmm`, `aten::matmul`,
+  `aten::mm`, `aten::einsum`, and `aten::bmm`.
+- Deeper backend names observed: none.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+
+The result preserves the AVX2 contract as plausible but source-unproven. It
+does not authorize a Rust helper implementation, backend selection, consumer
+revalidation, runtime/default/CUDA behavior change, output emission, ladder
+continuation, correction/tolerance, or final-logit/all-layer/server/4097 claim.
+
 ## Non-Goals
 
 - No runtime implementation.

@@ -675,6 +675,39 @@ No PyTorch patch/rebuild, Rust helper implementation, backend selection,
 consumer revalidation, runtime/default/CUDA behavior change, output emission,
 or ladder continuation is authorized by this plan.
 
+## Source Dispatch Table Attribution Result
+
+The read-only dispatch table/profiler attribution lane is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Result:
+
+- Dispatch tables inspected: `aten::linear`, `aten::addmm`, `aten::mm`, and
+  `aten::matmul`.
+- Dispatch table labels show CPU registrations and MkldnnCPU labels, but not
+  the exact lower-level BF16 CPU kernel path.
+- CPU profiler toggles covered default, MKLDNN disabled, MKLDNN enabled,
+  single thread, and default thread count.
+- Profiler operators observed include `aten::linear`, `aten::addmm`,
+  `aten::matmul`, `aten::mm`, `aten::einsum`, and `aten::bmm`.
+- No deeper MKLDNN/oneDNN/DNNL/MKL backend event name was visible.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+
+The candidate comparator plus CPU attribution plus read-only dispatch table
+attribution still do not select a backend. The next bounded decision is review
+before any source instrumentation, not Rust helper implementation or consumer
+revalidation.
+
 ## Non-Goals
 
 - No runtime implementation.

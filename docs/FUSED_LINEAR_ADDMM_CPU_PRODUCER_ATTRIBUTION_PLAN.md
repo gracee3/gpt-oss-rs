@@ -401,6 +401,44 @@ Recommended next executable branch:
 oracle/fused-linear-addmm-source-dispatch-table-attribution
 ```
 
+## Source Dispatch Table Attribution Result
+
+Read-only dispatch table/profiler attribution is recorded in:
+
+```text
+/tmp/fused_linear_addmm_source_dispatch_table_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_dispatch_table_recorded
+```
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+The probe inspected dispatch tables for `aten::linear`, `aten::addmm`,
+`aten::mm`, and `aten::matmul`, and profiled the BF16 CPU sampled shape under
+default, MKLDNN-disabled, MKLDNN-enabled, single-thread, and default-thread
+settings. The profiler observed ATen-level `linear`, `addmm`, `matmul`, `mm`,
+`einsum`, and `bmm` operators, but no deeper MKLDNN/oneDNN/DNNL/MKL backend
+event name.
+
+Outcome:
+
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- AVX2 contract consistency remains true from the prior CPU attribution.
+- Source instrumentation is the next candidate step only after review.
+- No PyTorch patch/rebuild, backend selection, implementation, consumer
+  revalidation, runtime/default/CUDA change, output emission, ladder
+  continuation, correction/tolerance, or final-logit/all-layer/server/4097
+  claim is authorized.
+
 ## Guardrails
 
 - Docs-only in this branch.
