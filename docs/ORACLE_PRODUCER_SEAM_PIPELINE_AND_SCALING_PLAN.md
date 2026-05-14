@@ -153,6 +153,43 @@ oracle/fused-linear-addmm-cpu-producer-attribution-impl
 The implementation should be CPU-first and should attribute the producer seam
 before any further CUDA/helper or backend-discriminator work.
 
+## CPU Producer Attribution Probe Result
+
+The first pipeline application is recorded in:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_recorded
+```
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+```
+
+Pipeline outcome:
+
+- Sampled layers 6/10/13/16/18/21 all emitted attribution rows.
+- The official module/F.linear/_C/addmm/addmm family clears all sampled
+  full-vector references.
+- Explicit matmul/einsum/unfused-bias variants remain negative controls.
+- Environment toggles from source traces cover MKLDNN enabled/disabled and
+  thread-count guards.
+- CPU profiler evidence observes ATen `linear` and `addmm`, but source-level
+  dispatch is not proven.
+- The AVX2 contract is consistent with the observed API matrix, but backend
+  identity remains unproven.
+
+This keeps the lane in producer-attribution territory. No backend is selected,
+no implementation is authorized, no consumer revalidation is authorized, and no
+runtime/default/CUDA behavior change follows from the status.
+
 ## Non-Goals
 
 - No implementation in this branch.

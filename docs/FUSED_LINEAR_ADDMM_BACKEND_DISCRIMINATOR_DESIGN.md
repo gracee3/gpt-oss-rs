@@ -582,6 +582,41 @@ No backend is selected. No implementation is authorized by the docs branch. No
 consumer revalidation, runtime/default/CUDA behavior change, output emission,
 or ladder continuation is authorized.
 
+## CPU Producer Attribution Probe Results
+
+The CPU-first producer attribution probe is recorded in:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_recorded
+```
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+```
+
+Result:
+
+- Layers evaluated: 6, 10, 13, 16, 18, 21.
+- API paths tested: module call, F.linear, _C linear, addmm, ATen addmm
+  profiler attribution, explicit matmul, explicit einsum, and unfused bias.
+- Module/F.linear/_C/addmm/addmm clear full-vector across the sampled set.
+- Explicit matmul/einsum/unfused-bias variants remain negative controls.
+- MKLDNN and thread toggles are covered by source producer/API traces.
+- AVX2 contract consistency: true for all sampled layers.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+
+The result narrows the producer attribution lane, but it does not authorize a
+Rust helper implementation or backend selection.
+
 ## Non-Goals
 
 - No runtime implementation.

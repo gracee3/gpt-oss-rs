@@ -400,6 +400,36 @@ authorized by this docs branch, no consumer revalidation is authorized, and no
 runtime/default/CUDA behavior change, output emission, ladder continuation,
 final-logit, all-layer, server, or 4097-token claim is made.
 
+## CPU Producer Attribution Probe Results
+
+The CPU-first producer attribution probe is recorded in:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_recorded
+```
+
+Milestone update:
+
+- Layers evaluated: 6, 10, 13, 16, 18, 21.
+- Module/F.linear/_C/addmm/addmm clear all sampled full-vector references.
+- Explicit matmul/einsum/unfused-bias variants remain negative controls.
+- AVX2 contract consistency is recorded for all sampled layers.
+- Source-level dispatch is not proven.
+- Backend identity is not proven.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+Milestone claims remain conservative: no runtime/default/CUDA behavior change,
+output emission, ladder continuation, final-logit, all-layer, server, or
+4097-token claim.
+
 ## Guardrails
 
 - Validation-only.

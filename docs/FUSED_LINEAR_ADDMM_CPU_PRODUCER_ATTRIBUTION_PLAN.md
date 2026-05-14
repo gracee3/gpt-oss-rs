@@ -246,6 +246,65 @@ unless an explicitly authorized future GPU attribution run is requested.
 - No consumer revalidation may be authorized by this plan.
 - No runtime/default/CUDA behavior change may be authorized by this plan.
 
+## CPU Producer Attribution Probe Results
+
+Branch:
+
+```text
+oracle/fused-linear-addmm-cpu-producer-attribution-probes
+```
+
+Batch status:
+
+```text
+/tmp/fused_linear_addmm_cpu_producer_attribution_status.json
+```
+
+Classification:
+
+```text
+fused_linear_addmm_cpu_producer_attribution_recorded
+```
+
+Layers evaluated:
+
+```text
+6, 10, 13, 16, 18, 21
+```
+
+API paths tested from the existing CPU producer/API traces:
+
+- module `attn.out(weighted_v)`
+- `torch.nn.functional.linear(weighted_v, weight, bias)`
+- `torch._C._nn.linear(weighted_v, weight, bias)`
+- `torch.addmm(bias, input[1xK], weight.T)`
+- `torch.ops.aten.addmm.default` profiler attribution
+- explicit matmul plus bias
+- explicit einsum plus bias
+- `F.linear(..., bias=None) + bias`
+
+Result:
+
+- Module/F.linear/_C/addmm/addmm clear full-vector for all sampled layers.
+- Explicit matmul/einsum/unfused-bias variants do not clear any sampled layer.
+- Source statuses cover default environment, MKLDNN enabled/disabled, one
+  thread, default thread count, layout perturbation guards, and fused-bias
+  guards.
+- CPU profiler attribution observed `aten::linear` and `aten::addmm`, but did
+  not prove the lower-level source dispatch.
+- AVX2 contract consistency is recorded for all sampled layers, using the
+  extracted contract status
+  `/tmp/fused_linear_addmm_gemm_stub_avx2_contract_extraction_status.json`.
+- Source-level dispatch proven: false.
+- Backend identity proven: false.
+- Backend selected: false.
+- Implementation authorized: false.
+- Consumer revalidation authorized: false.
+
+The CPU probe supports the AVX2-style contract as a plausible attribution
+target, but it does not provide source-level dispatch proof. Review this status
+before any Rust fused-addmm helper design or implementation.
+
 ## Guardrails
 
 - Docs-only in this branch.
