@@ -220,6 +220,31 @@ docs/fused-linear-addmm-source-stepthrough-plan
 The pipeline should now move to source-level step-through planning before any
 helper implementation, backend selection, or consumer revalidation.
 
+## Source Step-Through Pipeline Stage
+
+The next pipeline stage is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_STEPTHROUGH_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_stepthrough_plan_recorded
+```
+
+This stage follows inconclusive backend attribution: API semantics are known,
+the AVX2 contract is behaviorally consistent, but source-level dispatch is not
+yet proven. The next branch should be read-only dispatch table attribution:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+No PyTorch patch/rebuild, Rust helper implementation, backend selection, or
+consumer revalidation is authorized by this plan.
+
 ## Non-Goals
 
 - No implementation in this branch.

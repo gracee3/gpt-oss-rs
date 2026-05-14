@@ -558,6 +558,32 @@ Decision:
 - No runtime/default/CUDA behavior change is authorized.
 - The next design branch is `docs/fused-linear-addmm-source-stepthrough-plan`.
 
+## Source Step-Through Plan
+
+The source step-through plan is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_STEPTHROUGH_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_stepthrough_plan_recorded
+```
+
+The AVX2 contract remains plausible but source-unproven. This plan adds a
+read-only dispatch table/profiler attribution gate before any Rust helper
+implementation. The recommended next branch is:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+No Rust helper implementation, backend selection, consumer revalidation,
+runtime/default/CUDA behavior change, output emission, or ladder continuation
+is authorized.
+
 ## Non-Goals
 
 - No runtime implementation.

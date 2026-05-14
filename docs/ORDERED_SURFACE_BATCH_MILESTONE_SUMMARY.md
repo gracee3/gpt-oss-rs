@@ -467,6 +467,38 @@ Milestone claims remain unchanged: no implementation authorization, no consumer
 revalidation, no output emission, no ladder continuation, and no
 final-logit/all-layer/server/4097 claim.
 
+## Fused Linear/AddMM Source Step-Through Plan
+
+The source step-through plan is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_STEPTHROUGH_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_stepthrough_plan_recorded
+```
+
+Milestone decision:
+
+- AVX2 contract consistency is plausible but source-level dispatch remains
+  unproven.
+- Backend selected: false.
+- Implementation authorized: false.
+- Runtime/default/CUDA behavior changes authorized: false.
+- Consumer revalidation authorized: false.
+
+Next branch:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+Milestone claims remain unchanged: no output emission, no ladder continuation,
+no correction/tolerance, and no final-logit/all-layer/server/4097 claim.
+
 ## Guardrails
 
 - Validation-only.

@@ -649,6 +649,32 @@ implementation. Backend selected: false. Implementation authorized: false.
 Consumer revalidation authorized: false. Runtime/default/CUDA behavior changes:
 false.
 
+## Source Step-Through Plan
+
+The source step-through plan is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_STEPTHROUGH_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_stepthrough_plan_recorded
+```
+
+The candidate comparator plus CPU attribution still do not select a backend.
+The next gate before helper implementation is source-level step-through,
+starting with read-only dispatch table attribution:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
+No PyTorch patch/rebuild, Rust helper implementation, backend selection,
+consumer revalidation, runtime/default/CUDA behavior change, output emission,
+or ladder continuation is authorized by this plan.
+
 ## Non-Goals
 
 - No runtime implementation.

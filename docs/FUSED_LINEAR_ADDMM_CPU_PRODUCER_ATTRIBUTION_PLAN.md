@@ -375,6 +375,32 @@ Reason: AVX2 contract consistency remains plausible, but source-level dispatch
 is unresolved. The next useful step is a source-level step-through/attribution
 plan, not another CUDA/helper sweep and not runtime implementation.
 
+## Source Step-Through Plan
+
+The source step-through plan is recorded in:
+
+```text
+docs/FUSED_LINEAR_ADDMM_SOURCE_STEPTHROUGH_PLAN.md
+```
+
+Classification:
+
+```text
+fused_linear_addmm_source_stepthrough_plan_recorded
+```
+
+The CPU attribution result led to source step-through planning because AVX2
+contract consistency is plausible but source-level dispatch remains unproven.
+This plan does not authorize implementation, backend selection, PyTorch
+patch/rebuild, consumer revalidation, runtime/default/CUDA behavior changes,
+output emission, or ladder continuation.
+
+Recommended next executable branch:
+
+```text
+oracle/fused-linear-addmm-source-dispatch-table-attribution
+```
+
 ## Guardrails
 
 - Docs-only in this branch.
