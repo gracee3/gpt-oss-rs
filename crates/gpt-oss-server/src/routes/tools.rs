@@ -22,16 +22,12 @@ use tracing::info;
 use utoipa::ToSchema;
 
 use crate::error::ApiError;
-use crate::protocol_stream::{
-    visible_text_from_protocol_messages, StreamedChatChoiceState,
-};
+use crate::protocol_stream::{visible_text_from_protocol_messages, StreamedChatChoiceState};
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
 use crate::types::response::Usage;
-use crate::types::streaming::{
-    format_sse_data, ChatCompletionStreamChunk, SSE_DONE,
-};
+use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
 
 // ---------------------------------------------------------------------------
 // Request types

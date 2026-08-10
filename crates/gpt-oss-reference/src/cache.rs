@@ -6,8 +6,13 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheVisibility {
     Full,
-    Sliding { window_tokens: usize },
-    Sink { sink_tokens: usize, window_tokens: usize },
+    Sliding {
+        window_tokens: usize,
+    },
+    Sink {
+        sink_tokens: usize,
+        window_tokens: usize,
+    },
 }
 
 /// Logical cache layout for the single-block placeholder.

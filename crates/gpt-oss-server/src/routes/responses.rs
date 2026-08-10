@@ -13,6 +13,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
+use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style};
 use crate::runtime_policy::is_gpt_oss_model;
 use crate::server::AppState;
 use crate::types::request::ChatMessage;
@@ -71,8 +72,14 @@ pub async fn create_response(
             .map(StoredConversationItem::Input),
     );
 
-    let protocol_messages = render_conversation_protocol_items(&conversation_items);
-    if protocol_messages.is_empty() {
+    let prompt_style = preferred_tool_prompt_style(&state.model_name);
+    let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
+    let protocol_messages = if is_gpt_oss_model(&state.model_name) {
+        render_conversation_protocol_items(&conversation_items)
+    } else {
+        Vec::new()
+    };
+    if prompt_messages.is_empty() && protocol_messages.is_empty() {
         return Err(ApiError::InvalidRequest(
             "input must not be empty for /v1/responses".into(),
         ));
@@ -84,17 +91,47 @@ pub async fn create_response(
         .map(|tool| tool.to_tool_definition())
         .collect();
 
-    let harmony_instructions = req.instructions.clone().filter(|value| !value.is_empty());
-    let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
-        .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-    let prompt = protocol
-        .render_prompt(
-            &protocol_messages,
-            harmony_instructions.as_deref(),
-            if req.tools_enabled() { &tool_defs } else { &[] },
-        )
-        .map(|rendered| rendered.text)
-        .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?;
+    let mut templated_messages = prompt_messages;
+    let instructions = req.instructions.clone().filter(|value| !value.is_empty());
+    if !is_gpt_oss_model(&state.model_name) {
+        if let Some(instructions) = instructions.clone() {
+            templated_messages.insert(
+                0,
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: instructions,
+                },
+            );
+        }
+        if req.tools_enabled() {
+            templated_messages =
+                augment_messages_with_tools(&templated_messages, &tool_defs, prompt_style);
+        }
+    }
+
+    let prompt = if is_gpt_oss_model(&state.model_name) {
+        let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+            .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
+        protocol
+            .render_prompt(
+                &protocol_messages,
+                instructions.as_deref(),
+                if req.tools_enabled() { &tool_defs } else { &[] },
+            )
+            .map(|rendered| rendered.text)
+            .map_err(|e| ApiError::Internal(format!("harmony render error: {}", e)))?
+    } else {
+        let tokenizer_messages = templated_messages
+            .iter()
+            .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
+            .collect::<Vec<_>>();
+        state
+            .tokenizer
+            .read()
+            .await
+            .apply_chat_template(&tokenizer_messages, true)
+            .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?
+    };
 
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let sampling_params = req.to_sampling_params();
@@ -1257,7 +1294,10 @@ fn response_output_items_from_protocol_messages(
     function_tools: &[crate::types::responses::ResponseFunctionTool],
     tool_choice: &ResponseToolChoice,
 ) -> Result<Vec<ResponseOutputItem>, ApiError> {
-    let allowed_tools: HashSet<&str> = function_tools.iter().map(|tool| tool.name.as_str()).collect();
+    let allowed_tools: HashSet<&str> = function_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
     let forced_tool_name = tool_choice.forced_tool_name();
     let mut output_items = Vec::new();
     let mut saw_function_call = false;
@@ -1303,10 +1343,12 @@ fn response_output_items_from_protocol_messages(
         }
 
         if !message.content.is_empty() {
-            output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
-                format!("msg_{}", uuid::Uuid::new_v4().simple()),
-                message.content.clone(),
-            )));
+            output_items.push(ResponseOutputItem::Message(
+                ResponseOutputMessage::completed(
+                    format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                    message.content.clone(),
+                ),
+            ));
         }
     }
 
@@ -1320,10 +1362,12 @@ fn response_output_items_from_protocol_messages(
     }
 
     if output_items.is_empty() && !req.tools_enabled() {
-        output_items.push(ResponseOutputItem::Message(ResponseOutputMessage::completed(
-            format!("msg_{}", uuid::Uuid::new_v4().simple()),
-            String::new(),
-        )));
+        output_items.push(ResponseOutputItem::Message(
+            ResponseOutputMessage::completed(
+                format!("msg_{}", uuid::Uuid::new_v4().simple()),
+                String::new(),
+            ),
+        ));
     }
 
     Ok(output_items)
@@ -2180,8 +2224,16 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
-        assert!(prompts[1].contains("<|channel|>commentary"), "{}", prompts[1]);
+        assert!(
+            prompts[1].contains("to=functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("<|channel|>commentary"),
+            "{}",
+            prompts[1]
+        );
         assert!(
             prompts[1].contains("<|start|>functions.get_weather"),
             "{}",
@@ -2318,20 +2370,34 @@ mod tests {
 
         let prompts = engine.prompts();
         assert_eq!(prompts.len(), 3);
-        assert!(prompts[1].contains("to=functions.get_weather"), "{}", prompts[1]);
-        assert!(prompts[1].contains("<|start|>functions.get_weather"), "{}", prompts[1]);
+        assert!(
+            prompts[1].contains("to=functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("<|start|>functions.get_weather"),
+            "{}",
+            prompts[1]
+        );
         assert!(prompts[1].contains("\"temp_c\":18"), "{}", prompts[1]);
-        assert!(prompts[2].contains("to=functions.get_weather"), "{}", prompts[2]);
-        assert!(prompts[2].contains("to=functions.get_time"), "{}", prompts[2]);
+        assert!(
+            prompts[2].contains("to=functions.get_weather"),
+            "{}",
+            prompts[2]
+        );
+        assert!(
+            prompts[2].contains("to=functions.get_time"),
+            "{}",
+            prompts[2]
+        );
         assert!(prompts[2].contains("\"temp_c\":18"), "{}", prompts[2]);
         assert!(prompts[2].contains("\"time\":\"09:00\""), "{}", prompts[2]);
 
         let weather_call_idx = prompts[2].find("to=functions.get_weather").unwrap();
         let weather_output_idx = prompts[2].find("<|start|>functions.get_weather").unwrap();
         let time_call_idx = prompts[2].find("to=functions.get_time").unwrap();
-        let time_output_idx = prompts[2]
-            .rfind("<|start|>functions.get_time")
-            .unwrap();
+        let time_output_idx = prompts[2].rfind("<|start|>functions.get_time").unwrap();
         assert!(weather_call_idx < weather_output_idx);
         assert!(weather_output_idx < time_call_idx);
         assert!(time_call_idx < time_output_idx);
@@ -2467,17 +2533,17 @@ mod tests {
         let body = response.text();
         let events = parse_sse_events(&body);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert!(names.contains(&"response.function_call_arguments.delta"), "{body}");
+        assert!(
+            names.contains(&"response.function_call_arguments.delta"),
+            "{body}"
+        );
         assert!(names.contains(&"response.function_call_arguments.done"));
 
         let completed = events
             .iter()
             .find(|(name, _)| name == "response.completed")
             .unwrap();
-        assert_eq!(
-            completed.1["response"]["output"][0]["name"],
-            "get_weather"
-        );
+        assert_eq!(completed.1["response"]["output"][0]["name"], "get_weather");
         assert_eq!(
             completed.1["response"]["output"][0]["arguments"],
             "{\"location\":\"Boston\"}"
@@ -2523,7 +2589,10 @@ mod tests {
         let events = parse_sse_events(&response.text());
         let event_names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
 
-        let created_idx = event_names.iter().position(|name| *name == "response.created").unwrap();
+        let created_idx = event_names
+            .iter()
+            .position(|name| *name == "response.created")
+            .unwrap();
         let in_progress_idx = event_names
             .iter()
             .position(|name| *name == "response.in_progress")
@@ -2568,7 +2637,13 @@ mod tests {
                     false,
                 ),
                 gpt_oss_stream_request_output_from_fragments(
-                    &["<|channel|>final", "<|message|>", "Hel", "lo world", "<|end|>"],
+                    &[
+                        "<|channel|>final",
+                        "<|message|>",
+                        "Hel",
+                        "lo world",
+                        "<|end|>",
+                    ],
                     "",
                     true,
                 ),

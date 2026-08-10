@@ -64,6 +64,15 @@ enum Commands {
         #[arg(long, default_value_t = 128)]
         output_len: usize,
     },
+    /// Download a model snapshot without loading it.
+    Fetch {
+        #[arg(long)]
+        model: String,
+        #[arg(long, default_value = "main")]
+        revision: String,
+        #[arg(long)]
+        cache_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -153,9 +162,20 @@ fn resolve_serve_profile(
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if matches!(&cli.command, Commands::Serve { .. }) {
+        gpt_oss_tokenizer::initialize_harmony_encoding()
+            .map_err(|error| anyhow::anyhow!("failed to initialize Harmony: {error}"))?;
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Serve {
             model,
@@ -270,6 +290,22 @@ async fn main() -> anyhow::Result<()> {
                 output_len = output_len,
                 "running benchmark"
             );
+        }
+        Commands::Fetch {
+            model,
+            revision,
+            cache_dir,
+        } => {
+            let result = gpt_oss_engine::model_fetch::fetch_snapshot(
+                &gpt_oss_engine::model_fetch::FetchOptions {
+                    model,
+                    revision,
+                    cache_dir,
+                },
+            )?;
+            println!("snapshot: {}", result.snapshot_dir.display());
+            println!("revision: {}", result.manifest.resolved_revision);
+            println!("manifest: {}", result.manifest_path.display());
         }
     }
     Ok(())

@@ -29,6 +29,7 @@ pub mod gpu_engine;
 pub mod gpu_metrics;
 #[cfg(any(feature = "cuda", test))]
 mod hf_snapshot;
+pub mod model_fetch;
 pub mod output;
 pub mod scheduler;
 pub mod sequence;

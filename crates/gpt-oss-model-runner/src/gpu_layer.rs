@@ -944,8 +944,7 @@ mod inner {
                 )?;
                 if cfg.layer_idx == 12 {
                     let v_view = qkv.slice(k_end..num_tokens * qkv_dim);
-                    trace.biased_v_proj =
-                        Self::copy_f16_view_to_f32(&self.stream, &v_view)?;
+                    trace.biased_v_proj = Self::copy_f16_view_to_f32(&self.stream, &v_view)?;
                 }
             }
             let qkv_ms = if trace_layer_timings {
