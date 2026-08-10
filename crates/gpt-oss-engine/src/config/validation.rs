@@ -52,10 +52,38 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
         return Err("pipeline_parallel_size must be >= 1".into());
     }
 
-    if config.device.device == "cpu" && config.parallel.tensor_parallel_size > 1 {
+    if !matches!(
+        config.device.device.as_str(),
+        "auto" | "cpu" | "cuda" | "mock"
+    ) {
         return Err(format!(
-            "tensor_parallel_size={} not supported on CPU device",
-            config.parallel.tensor_parallel_size
+            "unknown device '{}': expected auto, cpu, cuda, or mock",
+            config.device.device
+        ));
+    }
+
+    if config.device.cpu_threads == 0 {
+        return Err("cpu_threads must be > 0".into());
+    }
+
+    if config
+        .device
+        .cpu_kernel
+        .parse::<gpt_oss_cpu_kernels::KernelPath>()
+        .is_err()
+    {
+        return Err(format!(
+            "unknown cpu_kernel '{}': expected auto, scalar, avx2, or avx512-vnni",
+            config.device.cpu_kernel
+        ));
+    }
+
+    if config.device.device == "cpu"
+        && (config.parallel.tensor_parallel_size > 1 || config.parallel.pipeline_parallel_size > 1)
+    {
+        return Err(format!(
+            "tensor_parallel_size={} and pipeline_parallel_size={} are not supported on CPU device",
+            config.parallel.tensor_parallel_size, config.parallel.pipeline_parallel_size
         ));
     }
 

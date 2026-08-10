@@ -61,6 +61,7 @@ metrics-exporter-prometheus = "0.15"
 rayon = "1.10"
 rand = "0.8"
 rand_chacha = "0.3"
+num_cpus = "1"
 half = { version = "2", features = ["serde", "bytemuck"] }
 safetensors = "0.4"
 tokenizers = "0.20"

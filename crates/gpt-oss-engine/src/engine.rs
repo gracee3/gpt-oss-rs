@@ -257,6 +257,15 @@ impl LLMEngine {
     ) -> Result<()> {
         info!(%request_id, prompt_len = prompt.len(), "adding request");
 
+        if self.config.device.device == "cpu"
+            && (sampling_params.best_of != 1 || sampling_params.use_beam_search)
+        {
+            return Err(LLMError::ConfigError(
+                "CPU backend supports one sequence and does not support best-of or beam search"
+                    .into(),
+            ));
+        }
+
         let prompt_token_ids = self.tokenizer.encode(&prompt)?;
         debug!(%request_id, num_tokens = prompt_token_ids.len(), "prompt tokenized");
 
@@ -264,6 +273,17 @@ impl LLMEngine {
             return Err(LLMError::TokenizerError(
                 "prompt produced zero tokens".into(),
             ));
+        }
+        if self.config.device.device == "cpu"
+            && prompt_token_ids
+                .len()
+                .checked_add(sampling_params.max_tokens)
+                .is_none_or(|total| total > self.config.model.max_model_len)
+        {
+            return Err(LLMError::ConfigError(format!(
+                "CPU prompt plus max_tokens exceeds context cap {}",
+                self.config.model.max_model_len
+            )));
         }
 
         let num_seqs = sampling_params.best_of.max(1);
@@ -629,6 +649,34 @@ mod tests {
         assert!(result.is_ok());
         assert!(engine.has_unfinished());
         assert!(engine.requests.contains_key(&RequestId(1)));
+    }
+
+    #[test]
+    fn cpu_add_request_rejects_multi_sequence_sampling() {
+        let mut engine = make_engine(5);
+        engine.config.device.device = "cpu".into();
+        let params = SamplingParams {
+            best_of: 2,
+            ..Default::default()
+        };
+        assert!(engine
+            .add_request(RequestId(1), "hello".to_string(), params)
+            .is_err());
+    }
+
+    #[test]
+    fn cpu_add_request_rejects_context_overflow() {
+        let mut engine = make_engine(5);
+        engine.config.device.device = "cpu".into();
+        engine.config.model.max_model_len = 1;
+        let params = SamplingParams {
+            max_tokens: 1,
+            ..Default::default()
+        };
+        let error = engine
+            .add_request(RequestId(1), "hello".to_string(), params)
+            .unwrap_err();
+        assert!(error.to_string().contains("context cap 1"));
     }
 
     #[test]

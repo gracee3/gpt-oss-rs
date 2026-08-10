@@ -1401,6 +1401,11 @@ impl GpuWorker {
         match plan.backend_path {
             BackendPath::CudaEager => return self.raw_gpu_forward_ex(model_input, greedy_only),
             BackendPath::CudaGraph => {}
+            BackendPath::Cpu => {
+                return Err(LLMError::ConfigError(
+                    "CPU execution plan cannot run on GpuWorker".into(),
+                ));
+            }
             BackendPath::Mock => {
                 return Err(LLMError::GpuError(format!(
                     "planner selected mock backend for {}",

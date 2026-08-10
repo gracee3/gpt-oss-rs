@@ -88,9 +88,21 @@ pub struct CliArgs {
     pub pipeline_parallel_size: usize,
 
     // -- Device --
-    /// Target device: "cuda", "cpu", "metal".
-    #[arg(long, default_value = "cuda")]
+    /// Target device: "auto", "cpu", "cuda", or explicit test-only "mock".
+    #[arg(long, default_value = "auto")]
     pub device: String,
+
+    /// Native CPU kernel path: auto, scalar, avx2, or avx512-vnni.
+    #[arg(long, default_value = "auto")]
+    pub cpu_kernel: String,
+
+    /// Native CPU worker threads (defaults to physical core count).
+    #[arg(long)]
+    pub cpu_threads: Option<usize>,
+
+    /// Root for versioned MXFP4 repack files.
+    #[arg(long)]
+    pub cpu_repack_cache: Option<std::path::PathBuf>,
 
     // -- Telemetry --
     /// Disable telemetry.

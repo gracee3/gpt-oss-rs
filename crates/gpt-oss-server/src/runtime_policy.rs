@@ -14,7 +14,9 @@ pub const GPT_OSS_CONSUMER_MAX_VRAM_BYTES: usize = 24 * 1024 * 1024 * 1024;
 pub enum RuntimeBackendPath {
     /// CUDA-backed execution.
     Cuda,
-    /// CPU/mock fallback execution.
+    /// Native batch-one GPT-OSS CPU execution.
+    Cpu,
+    /// Explicit test-only mock execution.
     Mock,
 }
 
@@ -22,6 +24,7 @@ impl RuntimeBackendPath {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Cuda => "cuda",
+            Self::Cpu => "cpu",
             Self::Mock => "mock",
         }
     }
@@ -52,8 +55,21 @@ impl RuntimeDecision {
 
 /// Whether the model name targets the GPT-OSS family.
 pub fn is_gpt_oss_model(model_name: &str) -> bool {
-    let model_name = model_name.to_ascii_lowercase();
-    model_name.contains("gpt-oss") || model_name.contains("gpt_oss")
+    let normalized = model_name.to_ascii_lowercase();
+    if normalized.contains("gpt-oss") || normalized.contains("gpt_oss") {
+        return true;
+    }
+
+    let config_path = std::path::Path::new(model_name).join("config.json");
+    std::fs::read(&config_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|config| config.get("architectures")?.as_array().cloned())
+        .is_some_and(|architectures| {
+            architectures
+                .iter()
+                .any(|architecture| architecture.as_str() == Some("GptOssForCausalLM"))
+        })
 }
 
 fn validate_cuda_gpt_oss_runtime(
@@ -88,82 +104,100 @@ fn validate_cuda_gpt_oss_runtime(
     Ok(())
 }
 
-/// Resolve the runtime path for GPT-OSS serving and fail unsupported trusted-mode combinations early.
-///
-/// In `trusted` mode, GPT-OSS requires a CUDA-capable GPU and the selected CUDA
-/// path must satisfy the existing phase-boundary constraints.
-/// In `experimental` mode, the existing mock fallback remains available.
+/// Resolve explicit or automatic device selection and reject unsupported
+/// model/backend combinations before any weights are loaded.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_gpt_oss_runtime(
     model_name: &str,
     runtime_mode: RuntimeMode,
+    requested_device: &str,
     gpu_available: bool,
     max_model_len: usize,
     tensor_parallel_size: usize,
+    pipeline_parallel_size: usize,
+    max_num_seqs: usize,
     primary_gpu_total_memory: Option<usize>,
     allow_long_context_override: bool,
 ) -> Result<RuntimeDecision, String> {
-    if !is_gpt_oss_model(model_name) {
-        let backend_path = if gpu_available {
-            RuntimeBackendPath::Cuda
-        } else {
-            RuntimeBackendPath::Mock
-        };
-        let reason = match backend_path {
-            RuntimeBackendPath::Cuda => {
-                "non-GPT-OSS model using CUDA backend because a GPU is available"
-            }
-            RuntimeBackendPath::Mock => {
-                "non-GPT-OSS model using mock backend because no GPU was detected"
-            }
-        };
-        return Ok(RuntimeDecision {
-            runtime_mode,
-            backend_path,
-            reason: reason.into(),
-        });
-    }
-
-    if runtime_mode == RuntimeMode::Trusted {
-        if !gpu_available {
+    let is_gpt_oss = is_gpt_oss_model(model_name);
+    let backend_path = match requested_device {
+        "auto" if gpu_available => RuntimeBackendPath::Cuda,
+        "auto" if is_gpt_oss => RuntimeBackendPath::Cpu,
+        "auto" => {
             return Err(
-                "trusted GPT-OSS mode requires a CUDA-capable GPU; no GPU was detected".into(),
-            );
+                "no CUDA device is usable and the native CPU backend only supports GPT-OSS".into(),
+            )
         }
+        "cuda" if gpu_available => RuntimeBackendPath::Cuda,
+        "cuda" => return Err("CUDA was requested but no usable CUDA device was detected".into()),
+        "cpu" if is_gpt_oss => RuntimeBackendPath::Cpu,
+        "cpu" => return Err("native CPU serving only supports GPT-OSS models".into()),
+        "mock" => RuntimeBackendPath::Mock,
+        other => {
+            return Err(format!(
+                "unknown device '{other}': expected auto, cpu, cuda, or mock"
+            ))
+        }
+    };
 
-        validate_cuda_gpt_oss_runtime(
-            max_model_len,
-            tensor_parallel_size,
-            primary_gpu_total_memory,
-            allow_long_context_override,
-        )?;
-
-        return Ok(RuntimeDecision {
-            runtime_mode,
-            backend_path: RuntimeBackendPath::Cuda,
-            reason: "trusted GPT-OSS mode selected the CUDA backend after passing planning checks"
-                .into(),
-        });
-    }
-
-    if gpu_available {
-        validate_cuda_gpt_oss_runtime(
-            max_model_len,
-            tensor_parallel_size,
-            primary_gpu_total_memory,
-            allow_long_context_override,
-        )?;
-
-        Ok(RuntimeDecision {
-            runtime_mode,
-            backend_path: RuntimeBackendPath::Cuda,
-            reason: "experimental GPT-OSS mode selected the CUDA backend".into(),
-        })
-    } else {
-        Ok(RuntimeDecision {
-            runtime_mode,
-            backend_path: RuntimeBackendPath::Mock,
-            reason: "experimental GPT-OSS mode fell back to the mock backend because no GPU was detected".into(),
-        })
+    match backend_path {
+        RuntimeBackendPath::Cuda => {
+            if is_gpt_oss {
+                validate_cuda_gpt_oss_runtime(
+                    max_model_len,
+                    tensor_parallel_size,
+                    primary_gpu_total_memory,
+                    allow_long_context_override,
+                )?;
+            }
+            Ok(RuntimeDecision {
+                runtime_mode,
+                backend_path,
+                reason: if requested_device == "auto" {
+                    "auto selected CUDA because a usable device is available".into()
+                } else {
+                    "explicit CUDA execution selected".into()
+                },
+            })
+        }
+        RuntimeBackendPath::Cpu => {
+            if runtime_mode == RuntimeMode::Trusted {
+                return Err(
+                    "trusted GPT-OSS CPU serving is blocked until the final i7 conformance gate"
+                        .into(),
+                );
+            }
+            if tensor_parallel_size != 1 || pipeline_parallel_size != 1 {
+                return Err(format!(
+                    "CPU serving requires tensor_parallel_size=1 and pipeline_parallel_size=1; got {tensor_parallel_size} and {pipeline_parallel_size}"
+                ));
+            }
+            if max_num_seqs != 1 {
+                return Err(format!(
+                    "CPU serving is batch-one and requires max_num_seqs=1; got {max_num_seqs}"
+                ));
+            }
+            Ok(RuntimeDecision {
+                runtime_mode,
+                backend_path,
+                reason: if requested_device == "auto" {
+                    "auto selected the native GPT-OSS CPU backend because CUDA is unavailable"
+                        .into()
+                } else {
+                    "explicit native GPT-OSS CPU execution selected".into()
+                },
+            })
+        }
+        RuntimeBackendPath::Mock => {
+            if runtime_mode == RuntimeMode::Trusted && is_gpt_oss {
+                return Err("trusted GPT-OSS serving rejects the mock backend".into());
+            }
+            Ok(RuntimeDecision {
+                runtime_mode,
+                backend_path,
+                reason: "explicit test-only mock execution selected".into(),
+            })
+        }
     }
 }
 
@@ -180,13 +214,27 @@ mod tests {
     }
 
     #[test]
+    fn detects_local_gpt_oss_snapshot_from_config() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.json"),
+            br#"{"architectures":["GptOssForCausalLM"]}"#,
+        )
+        .unwrap();
+        assert!(is_gpt_oss_model(temp.path().to_str().unwrap()));
+    }
+
+    #[test]
     fn rejects_tensor_parallel_for_gpt_oss_runtime() {
         let err = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Experimental,
+            "cuda",
             true,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN,
             2,
+            1,
+            256,
             Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
             false,
         )
@@ -199,9 +247,12 @@ mod tests {
         let err = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Experimental,
+            "cuda",
             true,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN + 1,
             1,
+            1,
+            256,
             Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
             false,
         )
@@ -215,9 +266,12 @@ mod tests {
         let decision = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Experimental,
+            "cuda",
             true,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN + 4096,
             1,
+            1,
+            256,
             Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
             true,
         )
@@ -226,18 +280,36 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_gpt_oss_names() {
+    fn explicit_mock_is_the_only_no_cuda_non_gpt_oss_fallback() {
         let decision = validate_gpt_oss_runtime(
             "/models/local-checkpoint",
             RuntimeMode::Experimental,
+            "mock",
             false,
             32768,
             4,
+            2,
+            256,
             Some(8),
             false,
         )
         .unwrap();
         assert_eq!(decision.backend_path, RuntimeBackendPath::Mock);
+
+        let error = validate_gpt_oss_runtime(
+            "/models/local-checkpoint",
+            RuntimeMode::Experimental,
+            "auto",
+            false,
+            32768,
+            1,
+            1,
+            1,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("only supports GPT-OSS"));
     }
 
     #[test]
@@ -245,29 +317,54 @@ mod tests {
         let err = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Trusted,
+            "auto",
             false,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
             1,
             Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
             false,
         )
         .unwrap_err();
-        assert!(err.contains("trusted GPT-OSS mode requires a CUDA-capable GPU"));
+        assert!(err.contains("final i7 conformance gate"));
     }
 
     #[test]
-    fn experimental_mode_falls_back_to_mock_when_no_gpu_is_available() {
+    fn experimental_auto_uses_real_cpu_when_no_gpu_is_available() {
         let decision = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Experimental,
+            "auto",
             false,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
             1,
             None,
             false,
         )
         .unwrap();
-        assert_eq!(decision.backend_path, RuntimeBackendPath::Mock);
-        assert!(decision.reason.contains("mock backend"));
+        assert_eq!(decision.backend_path, RuntimeBackendPath::Cpu);
+        assert!(decision.reason.contains("native GPT-OSS CPU backend"));
+    }
+
+    #[test]
+    fn cpu_rejects_parallelism_and_request_batching() {
+        for (tp, pp, seqs) in [(2, 1, 1), (1, 2, 1), (1, 1, 2)] {
+            assert!(validate_gpt_oss_runtime(
+                "openai/gpt-oss-20b",
+                RuntimeMode::Experimental,
+                "cpu",
+                false,
+                GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+                tp,
+                pp,
+                seqs,
+                None,
+                false,
+            )
+            .is_err());
+        }
     }
 }

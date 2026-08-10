@@ -1,8 +1,7 @@
 //! HTTP server setup, AppState, router construction, and graceful shutdown.
 //!
-//! When compiled with the `cuda` feature and a CUDA-capable GPU is detected,
-//! the server uses the GPU-accelerated AsyncGpuLLMEngine. Otherwise it falls
-//! back to the mock executor via AsyncLLMEngine.
+//! Device policy selects the CUDA engine, native batch-one GPT-OSS CPU worker,
+//! or an explicitly requested test-only mock executor.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +17,7 @@ use tracing::info;
 use gpt_oss_core::prelude::RequestId;
 use gpt_oss_engine::config::EngineConfig;
 use gpt_oss_engine::AsyncLLMEngine;
-use gpt_oss_engine::{ExecutorAdapter, ExecutorConfig};
+use gpt_oss_engine::{CpuWorker, ExecutorAdapter, ExecutorConfig};
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::routes;
@@ -192,6 +191,8 @@ fn detect_cuda_runtime() -> CudaRuntimeInfo {
 }
 
 pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
+    gpt_oss_engine::config::validate(&config)
+        .map_err(gpt_oss_core::prelude::LLMError::ConfigError)?;
     let model_name = config.model.model_path.clone();
     let tokenizer_path = config
         .model
@@ -201,7 +202,6 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
 
     info!(model = %model_name, "initializing engine");
 
-    let tokenizer = Tokenizer::from_pretrained(&tokenizer_path)?;
     let cuda_runtime = detect_cuda_runtime();
     let allow_long_context_override = std::env::var("GPT_OSS_RS_ALLOW_LONG_CONTEXT")
         .ok()
@@ -211,25 +211,38 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
     let runtime_decision = validate_gpt_oss_runtime(
         &config.model.model_path,
         config.runtime_mode,
+        &config.device.device,
         cuda_runtime.available,
         config.model.max_model_len,
         config.parallel.tensor_parallel_size,
+        config.parallel.pipeline_parallel_size,
+        config.scheduler.max_num_seqs,
         cuda_runtime.primary_gpu_total_memory,
         allow_long_context_override,
     )
     .map_err(gpt_oss_core::prelude::LLMError::ConfigError)?;
     info!(runtime = %runtime_decision.summary(), "resolved runtime path");
 
-    let engine: Arc<dyn InferenceEngine> = match runtime_decision.backend_path {
-        RuntimeBackendPath::Cuda => {
-            info!("GPU-backed runtime selected, creating AsyncGpuLLMEngine");
-            create_gpu_engine(config).await?
-        }
-        RuntimeBackendPath::Mock => {
-            info!("mock runtime selected, creating AsyncLLMEngine");
-            Arc::new(create_engine(config, &tokenizer_path)?)
-        }
-    };
+    let (engine, tokenizer): (Arc<dyn InferenceEngine>, Tokenizer) =
+        match runtime_decision.backend_path {
+            RuntimeBackendPath::Cuda => {
+                info!("GPU-backed runtime selected, creating AsyncGpuLLMEngine");
+                let tokenizer = Tokenizer::from_pretrained(&tokenizer_path)?;
+                (create_gpu_engine(config).await?, tokenizer)
+            }
+            RuntimeBackendPath::Cpu => {
+                info!("native CPU runtime selected, creating CpuWorker");
+                create_cpu_engine(config).await?
+            }
+            RuntimeBackendPath::Mock => {
+                info!("explicit mock runtime selected, creating AsyncLLMEngine");
+                let tokenizer = Tokenizer::from_pretrained(&tokenizer_path)?;
+                (
+                    Arc::new(create_mock_engine(config, &tokenizer_path)?),
+                    tokenizer,
+                )
+            }
+        };
 
     let state = Arc::new(AppState::new(
         engine,
@@ -278,7 +291,7 @@ async fn create_gpu_engine(
     ))
 }
 
-fn create_engine(
+fn create_mock_engine(
     config: EngineConfig,
     tokenizer_path: &str,
 ) -> gpt_oss_core::prelude::Result<AsyncLLMEngine> {
@@ -303,8 +316,123 @@ fn create_engine(
     Ok(engine)
 }
 
+async fn create_cpu_engine(
+    mut config: EngineConfig,
+) -> gpt_oss_core::prelude::Result<(Arc<dyn InferenceEngine>, Tokenizer)> {
+    if !matches!(
+        config.model.dtype,
+        gpt_oss_core::types::Dtype::Auto | gpt_oss_core::types::Dtype::BFloat16
+    ) {
+        return Err(gpt_oss_core::prelude::LLMError::ConfigError(format!(
+            "GPT-OSS CPU serving requires --dtype auto or bfloat16, got {}",
+            config.model.dtype
+        )));
+    }
+    let model = config.model.model_path.clone();
+    let tokenizer_override = config.model.tokenizer_path.clone();
+    let repack_cache = config.device.cpu_repack_cache.clone();
+    let kernel_path = config
+        .device
+        .cpu_kernel
+        .parse::<gpt_oss_cpu_kernels::KernelPath>()
+        .map_err(|error| gpt_oss_core::prelude::LLMError::ConfigError(error.to_string()))?;
+    let threads = config.device.cpu_threads;
+    let context_cap = config.model.max_model_len;
+
+    let (worker, snapshot) = tokio::task::spawn_blocking(move || {
+        let model_path = std::path::Path::new(&model);
+        let snapshot = if model_path.is_dir() {
+            model_path.to_path_buf()
+        } else {
+            gpt_oss_engine::model_fetch::fetch_snapshot(
+                &gpt_oss_engine::model_fetch::FetchOptions {
+                    model,
+                    revision: "main".into(),
+                    cache_dir: None,
+                },
+            )?
+            .snapshot_dir
+        };
+        let worker = CpuWorker::load(&snapshot, &repack_cache, kernel_path, threads, context_cap)?;
+        Ok::<_, gpt_oss_core::prelude::LLMError>((worker, snapshot))
+    })
+    .await
+    .map_err(|error| {
+        gpt_oss_core::prelude::LLMError::ModelError(format!(
+            "CPU model initialization task failed: {error}"
+        ))
+    })??;
+
+    let tokenizer_source = match tokenizer_override {
+        Some(path) => path,
+        None => snapshot
+            .to_str()
+            .ok_or_else(|| {
+                gpt_oss_core::prelude::LLMError::TokenizerError(
+                    "CPU snapshot path is not valid UTF-8".into(),
+                )
+            })?
+            .to_string(),
+    };
+    let engine_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
+    let app_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
+    let scheduler = Box::new(SingleRequestScheduler::new());
+    config.device.device = "cpu".into();
+    let engine = AsyncLLMEngine::new(config, Box::new(worker), scheduler, engine_tokenizer)?;
+    Ok((Arc::new(engine), app_tokenizer))
+}
+
 struct PlaceholderScheduler {
     groups: Vec<gpt_oss_engine::sequence::SequenceGroup>,
+}
+
+/// FIFO scheduler that exposes only the front request to the batch-one CPU
+/// executor. The engine removes that group when its output state finishes.
+struct SingleRequestScheduler {
+    groups: Vec<gpt_oss_engine::sequence::SequenceGroup>,
+}
+
+impl SingleRequestScheduler {
+    fn new() -> Self {
+        Self { groups: Vec::new() }
+    }
+}
+
+impl gpt_oss_engine::Scheduler for SingleRequestScheduler {
+    fn add_seq_group(&mut self, seq_group: gpt_oss_engine::sequence::SequenceGroup) {
+        self.groups.push(seq_group);
+    }
+
+    fn abort_seq_group(&mut self, request_id: &RequestId) {
+        self.groups.retain(|group| group.request_id != *request_id);
+    }
+
+    fn schedule(&mut self) -> gpt_oss_engine::SchedulerOutputs {
+        let scheduled_seq_groups = self.groups.first().cloned().into_iter().collect::<Vec<_>>();
+        let num_batched_tokens = scheduled_seq_groups
+            .first()
+            .map(|group| {
+                group
+                    .get_seqs()
+                    .iter()
+                    .map(|sequence| sequence.num_new_tokens().max(1))
+                    .sum()
+            })
+            .unwrap_or(0);
+        gpt_oss_engine::SchedulerOutputs {
+            scheduled_seq_groups,
+            num_batched_tokens,
+            preempted: false,
+        }
+    }
+
+    fn has_unfinished_seqs(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
+    fn get_num_unfinished_seq_groups(&self) -> usize {
+        self.groups.len()
+    }
 }
 
 impl PlaceholderScheduler {
@@ -364,5 +492,50 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => { info!("received Ctrl+C, shutting down"); }
         _ = terminate => { info!("received SIGTERM, shutting down"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use gpt_oss_core::prelude::{SamplingParams, SequenceId};
+    use gpt_oss_engine::{Scheduler, Sequence, SequenceGroup};
+
+    use super::*;
+
+    fn group(request_id: u64) -> SequenceGroup {
+        SequenceGroup::new(
+            RequestId(request_id),
+            vec![Sequence::new(SequenceId(request_id), vec![1, 2])],
+            SamplingParams::default(),
+            Instant::now(),
+            "prompt".into(),
+        )
+    }
+
+    #[test]
+    fn single_request_scheduler_is_fifo_and_never_batches() {
+        let mut scheduler = SingleRequestScheduler::new();
+        scheduler.add_seq_group(group(1));
+        scheduler.add_seq_group(group(2));
+        let first = scheduler.schedule();
+        assert_eq!(first.scheduled_seq_groups.len(), 1);
+        assert_eq!(first.scheduled_seq_groups[0].request_id, RequestId(1));
+        scheduler.abort_seq_group(&RequestId(1));
+        let second = scheduler.schedule();
+        assert_eq!(second.scheduled_seq_groups[0].request_id, RequestId(2));
+    }
+
+    #[tokio::test]
+    async fn cpu_engine_rejects_non_bf16_request_before_loading() {
+        let mut config = EngineConfig::default();
+        config.model.model_path = "openai/gpt-oss-20b".into();
+        config.model.dtype = gpt_oss_core::types::Dtype::Float16;
+        let error = match create_cpu_engine(config).await {
+            Ok(_) => panic!("float16 CPU request unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("auto or bfloat16"));
     }
 }

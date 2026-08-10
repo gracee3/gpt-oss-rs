@@ -7,6 +7,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use gpt_oss_core::types::Dtype;
 use gpt_oss_engine::RuntimeMode;
+use std::path::PathBuf;
 use tracing::info;
 
 use gpt_oss_server::runtime_policy::{
@@ -38,8 +39,16 @@ enum Commands {
         gpu_memory_utilization: Option<f32>,
         #[arg(long, default_value_t = 1)]
         tensor_parallel_size: usize,
-        #[arg(long, default_value_t = 256)]
-        max_num_seqs: usize,
+        #[arg(long)]
+        max_num_seqs: Option<usize>,
+        #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
+        device: DeviceChoice,
+        #[arg(long, value_enum, default_value_t = CpuKernelChoice::Auto)]
+        cpu_kernel: CpuKernelChoice,
+        #[arg(long)]
+        cpu_threads: Option<usize>,
+        #[arg(long)]
+        cpu_repack_cache: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = RuntimeMode::Experimental)]
         runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
@@ -80,6 +89,45 @@ enum ServeProfile {
     Auto,
     Generic,
     GptOss3090,
+    GptOssCpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DeviceChoice {
+    Auto,
+    Cpu,
+    Cuda,
+    Mock,
+}
+
+impl DeviceChoice {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+            Self::Mock => "mock",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CpuKernelChoice {
+    Auto,
+    Scalar,
+    Avx2,
+    Avx512Vnni,
+}
+
+impl CpuKernelChoice {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Scalar => "scalar",
+            Self::Avx2 => "avx2",
+            Self::Avx512Vnni => "avx512-vnni",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +135,7 @@ struct ResolvedServeProfile {
     profile: ServeProfile,
     max_model_len: usize,
     gpu_memory_utilization: f32,
+    max_num_seqs: usize,
 }
 
 fn init_tracing(log_level: &str) {
@@ -101,7 +150,7 @@ fn init_tracing(log_level: &str) {
 fn detect_gpu_and_log() -> bool {
     let devices = gpt_oss_gpu::prelude::list_devices();
     if devices.is_empty() {
-        info!("no GPU devices detected, using mock backend");
+        info!("no CUDA devices detected");
         return false;
     } else {
         for dev in &devices {
@@ -117,49 +166,51 @@ fn detect_gpu_and_log() -> bool {
     true
 }
 
-fn resolve_device_string(
-    model: &str,
-    runtime_mode: RuntimeMode,
-    gpu_available: bool,
-) -> anyhow::Result<&'static str> {
-    if runtime_mode == RuntimeMode::Trusted && is_gpt_oss_model(model) && !gpu_available {
-        return Err(anyhow::anyhow!(
-            "trusted GPT-OSS mode requires a CUDA-capable GPU; falling back to mock is not allowed"
-        ));
-    }
-
-    if gpu_available {
-        Ok("cuda")
-    } else {
-        Ok("cpu")
-    }
-}
-
 fn resolve_serve_profile(
     model: &str,
     requested_profile: ServeProfile,
+    cpu_selected: bool,
     max_model_len: Option<usize>,
     gpu_memory_utilization: Option<f32>,
+    max_num_seqs: Option<usize>,
 ) -> ResolvedServeProfile {
     let profile = match requested_profile {
+        ServeProfile::Auto if is_gpt_oss_model(model) && cpu_selected => ServeProfile::GptOssCpu,
         ServeProfile::Auto if is_gpt_oss_model(model) => ServeProfile::GptOss3090,
         ServeProfile::Auto => ServeProfile::Generic,
         profile => profile,
     };
 
-    let (default_max_model_len, default_gpu_memory_utilization) = match profile {
-        ServeProfile::Auto | ServeProfile::Generic => (2048, 0.90),
-        ServeProfile::GptOss3090 => (
-            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
-            GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION,
-        ),
-    };
+    let (default_max_model_len, default_gpu_memory_utilization, default_max_num_seqs) =
+        match profile {
+            ServeProfile::Auto | ServeProfile::Generic => (2048, 0.90, 256),
+            ServeProfile::GptOss3090 => (
+                GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+                GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION,
+                256,
+            ),
+            ServeProfile::GptOssCpu => (GPT_OSS_CONSUMER_MAX_MODEL_LEN, 0.90, 1),
+        };
 
     ResolvedServeProfile {
         profile,
         max_model_len: max_model_len.unwrap_or(default_max_model_len),
         gpu_memory_utilization: gpu_memory_utilization.unwrap_or(default_gpu_memory_utilization),
+        max_num_seqs: max_num_seqs.unwrap_or(default_max_num_seqs),
     }
+}
+
+fn default_cpu_repack_cache() -> PathBuf {
+    if let Some(path) = std::env::var_os("GPT_OSS_RS_CACHE") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(path).join("gpt-oss-rs");
+    }
+    if let Some(path) = std::env::var_os("HOME") {
+        return PathBuf::from(path).join(".cache/gpt-oss-rs");
+    }
+    PathBuf::from(".cache/gpt-oss-rs")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -186,6 +237,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             gpu_memory_utilization,
             tensor_parallel_size,
             max_num_seqs,
+            device,
+            cpu_kernel,
+            cpu_threads,
+            cpu_repack_cache,
             runtime_mode,
             profile,
             tokenizer,
@@ -197,15 +252,28 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let gpu_available = detect_gpu_and_log();
 
-            let resolved_profile =
-                resolve_serve_profile(&model, profile, max_model_len, gpu_memory_utilization);
-            if resolved_profile.profile == ServeProfile::GptOss3090 && !is_gpt_oss_model(&model) {
+            let cpu_selected = device == DeviceChoice::Cpu
+                || (device == DeviceChoice::Auto && !gpu_available && is_gpt_oss_model(&model));
+            let resolved_profile = resolve_serve_profile(
+                &model,
+                profile,
+                cpu_selected,
+                max_model_len,
+                gpu_memory_utilization,
+                max_num_seqs,
+            );
+            if matches!(
+                resolved_profile.profile,
+                ServeProfile::GptOss3090 | ServeProfile::GptOssCpu
+            ) && !is_gpt_oss_model(&model)
+            {
                 tracing::warn!(
                     model = %model,
-                    "gpt-oss-3090 profile selected for a non-GPT-OSS model"
+                    "GPT-OSS profile selected for a non-GPT-OSS model"
                 );
             }
-            let device = resolve_device_string(&model, runtime_mode, gpu_available)?;
+            let cpu_threads = cpu_threads.unwrap_or_else(|| num_cpus::get_physical().max(1));
+            let cpu_repack_cache = cpu_repack_cache.unwrap_or_else(default_cpu_repack_cache);
 
             // Build EngineConfig from CLI args
             let config = {
@@ -229,7 +297,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     .runtime_mode(runtime_mode)
                     .scheduler(
                         SchedulerConfigImpl::builder()
-                            .max_num_seqs(max_num_seqs)
+                            .max_num_seqs(resolved_profile.max_num_seqs)
                             .build(),
                     )
                     .runtime_mode(runtime_mode)
@@ -238,7 +306,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .tensor_parallel_size(tensor_parallel_size)
                             .build(),
                     )
-                    .device(DeviceConfig::builder().device(device).build())
+                    .device(
+                        DeviceConfig::builder()
+                            .device(device.as_str())
+                            .cpu_kernel(cpu_kernel.as_str())
+                            .cpu_threads(cpu_threads)
+                            .cpu_repack_cache(cpu_repack_cache.clone())
+                            .build(),
+                    )
                     .telemetry(
                         TelemetryConfig::builder()
                             .enabled(!disable_telemetry)
@@ -257,7 +332,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 profile = ?resolved_profile.profile,
                 max_model_len = resolved_profile.max_model_len,
                 gpu_memory_utilization = resolved_profile.gpu_memory_utilization,
+                max_num_seqs = resolved_profile.max_num_seqs,
                 tp_size = tensor_parallel_size,
+                requested_device = device.as_str(),
+                cpu_kernel = cpu_kernel.as_str(),
+                cpu_threads,
+                cpu_repack_cache = %cpu_repack_cache.display(),
                 "starting server"
             );
 
@@ -317,9 +397,17 @@ mod tests {
 
     #[test]
     fn auto_profile_uses_gpt_oss_3090_defaults() {
-        let resolved = resolve_serve_profile("openai/gpt-oss-20b", ServeProfile::Auto, None, None);
+        let resolved = resolve_serve_profile(
+            "openai/gpt-oss-20b",
+            ServeProfile::Auto,
+            false,
+            None,
+            None,
+            None,
+        );
         assert_eq!(resolved.profile, ServeProfile::GptOss3090);
         assert_eq!(resolved.max_model_len, GPT_OSS_CONSUMER_MAX_MODEL_LEN);
+        assert_eq!(resolved.max_num_seqs, 256);
         assert_eq!(
             resolved.gpu_memory_utilization,
             GPT_OSS_CONSUMER_GPU_MEMORY_UTILIZATION
@@ -328,8 +416,14 @@ mod tests {
 
     #[test]
     fn auto_profile_keeps_generic_defaults_for_non_gpt_oss_names() {
-        let resolved =
-            resolve_serve_profile("/models/local-checkpoint", ServeProfile::Auto, None, None);
+        let resolved = resolve_serve_profile(
+            "/models/local-checkpoint",
+            ServeProfile::Auto,
+            false,
+            None,
+            None,
+            None,
+        );
         assert_eq!(resolved.profile, ServeProfile::Generic);
         assert_eq!(resolved.max_model_len, 2048);
         assert_eq!(resolved.gpu_memory_utilization, 0.90);
@@ -340,27 +434,36 @@ mod tests {
         let resolved = resolve_serve_profile(
             "openai/gpt-oss-20b",
             ServeProfile::GptOss3090,
+            false,
             Some(4096),
             Some(0.82),
+            Some(8),
         );
         assert_eq!(resolved.profile, ServeProfile::GptOss3090);
         assert_eq!(resolved.max_model_len, 4096);
         assert_eq!(resolved.gpu_memory_utilization, 0.82);
+        assert_eq!(resolved.max_num_seqs, 8);
     }
 
     #[test]
-    fn trusted_gpt_oss_rejects_mock_fallback_without_gpu() {
-        let err = resolve_device_string("openai/gpt-oss-20b", RuntimeMode::Trusted, false)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("falling back to mock is not allowed"));
+    fn auto_profile_uses_batch_one_cpu_defaults_without_cuda() {
+        let resolved = resolve_serve_profile(
+            "openai/gpt-oss-20b",
+            ServeProfile::Auto,
+            true,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(resolved.profile, ServeProfile::GptOssCpu);
+        assert_eq!(resolved.max_model_len, 8192);
+        assert_eq!(resolved.max_num_seqs, 1);
     }
 
     #[test]
-    fn experimental_non_gpu_uses_cpu() {
-        let device =
-            resolve_device_string("/models/local-checkpoint", RuntimeMode::Experimental, false)
-                .unwrap();
-        assert_eq!(device, "cpu");
+    fn device_and_kernel_cli_values_are_stable() {
+        assert_eq!(DeviceChoice::Auto.as_str(), "auto");
+        assert_eq!(DeviceChoice::Mock.as_str(), "mock");
+        assert_eq!(CpuKernelChoice::Avx512Vnni.as_str(), "avx512-vnni");
     }
 }

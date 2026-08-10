@@ -13,7 +13,7 @@
 ## Quick Start
 
 ```bash
-# CPU / mock backend
+# Native CPU backend (or explicit test-only mock)
 cargo build --release -p gpt-oss-server
 
 # CUDA backend
@@ -23,6 +23,24 @@ cargo build --release --features cuda -p gpt-oss-server
 ```bash
 ./target/release/gpt-oss-rs serve --model openai/gpt-oss-20b
 ```
+
+`--device auto` is the default: it selects usable CUDA when the binary was
+built with CUDA support, then the native GPT-OSS CPU backend otherwise. CPU
+serving defaults to the `gpt-oss-cpu` profile (8192-token context and one
+active sequence). Kernel dispatch and storage can be controlled explicitly:
+
+```bash
+GPT_OSS_RS_CACHE=/path/to/gpt-oss-rs-cache \
+./target/release/gpt-oss-rs serve \
+  --model openai/gpt-oss-20b \
+  --device cpu \
+  --cpu-kernel auto \
+  --cpu-threads 8
+```
+
+The other kernel values are `scalar`, `avx2`, and `avx512-vnni`; forcing an
+unavailable ISA fails safely. `--device mock` is test-only and is never an
+automatic fallback. Native CPU serving currently supports GPT-OSS only.
 
 Download a revision-pinned native snapshot without loading it:
 
@@ -61,6 +79,7 @@ Useful entry points:
 - `crates/gpt-oss-server`: CLI and HTTP server binary
 - `crates/gpt-oss-bench`: repository-level Rust benchmarks
 - `docs/CPU_RUNTIME.md`: native mmap/repack, numeric, and cache invariants
+- `docs/CPU_I7_CONFORMANCE.md`: final 32 GiB CPU acceptance procedure
 - `kernels/`: CUDA kernels loaded by the GPU path
 
 ## Tier-2 Workflow

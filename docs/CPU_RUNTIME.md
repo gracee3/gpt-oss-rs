@@ -37,3 +37,23 @@ place.
 The runtime remains experimental until the separate 32 GiB i7 full-checkpoint,
 cross-runtime, API, and memory gates are complete. Trusted mode must continue
 to reject CPU serving until that evidence exists.
+
+## Serving policy
+
+The server owns a real `CpuWorker` and `CpuModelRunner`; CPU requests never
+pass through the GPU or mock executor. Prefill and decode are sequential and
+the existing sampler handles greedy and stochastic generation. Chat
+Completions and Responses, including their streaming forms, share that engine
+path and retain the existing Harmony rendering and parsing.
+
+`--device auto` prefers usable CUDA and otherwise selects CPU for GPT-OSS.
+`--device cpu` is explicit, while `--device mock` is an explicit test-only
+choice. CPU rejects non-GPT-OSS models, request batching, tensor parallelism,
+pipeline parallelism, CUDA graphs, and trusted mode. The `gpt-oss-cpu` profile
+sets `max_model_len=8192` and `max_num_seqs=1` unless the user supplies a
+stricter supported value.
+
+`--cpu-repack-cache` defaults first to `GPT_OSS_RS_CACHE`, then
+`XDG_CACHE_HOME/gpt-oss-rs`, then `$HOME/.cache/gpt-oss-rs`. Model snapshots,
+repacked expert tensors, build artifacts, and benchmark output remain outside
+Git.
