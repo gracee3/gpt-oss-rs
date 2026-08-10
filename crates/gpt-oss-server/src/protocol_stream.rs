@@ -72,9 +72,9 @@ impl StreamedChatChoiceState {
         }
         self.processed_tokens = token_ids.len();
         if finished {
-            self.parser.finish().map_err(|e| {
-                ApiError::Internal(format!("harmony stream finalize error: {}", e))
-            })?;
+            self.parser
+                .finish()
+                .map_err(|e| ApiError::Internal(format!("harmony stream finalize error: {}", e)))?;
         }
 
         let messages = self
@@ -129,7 +129,10 @@ impl StreamedChatChoiceState {
             });
         }
 
-        Ok(((!content_delta.is_empty()).then_some(content_delta), tool_call_deltas))
+        Ok((
+            (!content_delta.is_empty()).then_some(content_delta),
+            tool_call_deltas,
+        ))
     }
 
     pub(crate) fn has_tool_calls(&self) -> bool {

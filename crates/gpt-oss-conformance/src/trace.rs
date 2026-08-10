@@ -51,14 +51,20 @@ impl TraceSummary {
         }
     }
 
-    pub fn from_observed_case(label: impl Into<String>, is_prefill: bool, seq_start_pos: u32) -> Self {
+    pub fn from_observed_case(
+        label: impl Into<String>,
+        is_prefill: bool,
+        seq_start_pos: u32,
+    ) -> Self {
         let label = label.into();
         let mut frame = TraceFrame::new(format!("{label}:observed"));
         frame.events.push(TraceEvent::new(
             "reference_phase",
             if is_prefill { "Prefill" } else { "Decode" },
         ));
-        frame.events.push(TraceEvent::new("seq_start_pos", seq_start_pos.to_string()));
+        frame
+            .events
+            .push(TraceEvent::new("seq_start_pos", seq_start_pos.to_string()));
         Self {
             label,
             frames: vec![frame],
@@ -99,10 +105,9 @@ impl TraceSummary {
             "reference_phase",
             if is_prefill { "Prefill" } else { "Decode" },
         ));
-        plan_frame.events.push(TraceEvent::new(
-            "seq_start_pos",
-            seq_start_pos.to_string(),
-        ));
+        plan_frame
+            .events
+            .push(TraceEvent::new("seq_start_pos", seq_start_pos.to_string()));
         plan_frame.events.push(TraceEvent::new(
             "graph_policy",
             format!("{:?}", plan.graph_policy),
@@ -167,7 +172,9 @@ impl TraceSummary {
                     ),
                 ));
             } else {
-                frame.events.push(TraceEvent::new("moe", "DenseOnly/0 selected=[]"));
+                frame
+                    .events
+                    .push(TraceEvent::new("moe", "DenseOnly/0 selected=[]"));
             }
             frames.push(frame);
         }
@@ -230,7 +237,9 @@ impl TraceSummary {
                 "attention",
                 format!(
                     "{:?}/{} visible={:?}",
-                    layer.attention.mode, layer.attention.attended_tokens, layer.attention.visible_tokens
+                    layer.attention.mode,
+                    layer.attention.attended_tokens,
+                    layer.attention.visible_tokens
                 ),
             ));
             frame.events.push(TraceEvent::new(

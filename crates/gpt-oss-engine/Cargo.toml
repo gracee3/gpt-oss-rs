@@ -37,6 +37,7 @@ async-trait.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 memmap2.workspace = true
+sha2.workspace = true
 toml.workspace = true
 axum.workspace = true
 

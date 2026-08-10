@@ -9,9 +9,7 @@
 use half::f16;
 use tracing::trace;
 
-use gpt_oss_moe_semantics::{
-    ExpertStorageBoundary, MoeSemanticSpec, RouterInputSpec,
-};
+use gpt_oss_moe_semantics::{ExpertStorageBoundary, MoeSemanticSpec, RouterInputSpec};
 
 use crate::bridge::{AttentionBackend, CacheEngine, GpuBuffer, LLMError, ModelWeights, Result};
 use crate::input::ModelInput;

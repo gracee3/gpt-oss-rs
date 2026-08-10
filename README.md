@@ -24,6 +24,19 @@ cargo build --release --features cuda -p gpt-oss-server
 ./target/release/gpt-oss-rs serve --model openai/gpt-oss-20b
 ```
 
+Download a revision-pinned native snapshot without loading it:
+
+```bash
+./target/release/gpt-oss-rs fetch \
+  --model openai/gpt-oss-20b \
+  --revision main \
+  --cache-dir /path/to/huggingface/hub
+```
+
+The fetch command uses resumable Hugging Face cache downloads and writes a
+`gpt-oss-rs-fetch-manifest.json` containing the resolved revision, file sizes,
+and SHA-256 hashes.
+
 The server exposes:
 
 - `/v1/completions`
@@ -86,3 +99,7 @@ continues to preserve Apache-2.0 licensing and attribution for that code.
 The current fork intentionally credits the original upstream work in this README, in
 the git history, and in the repository notice file rather than pretending the codebase
 started here.
+
+Focused CPU work is additionally attributed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md).

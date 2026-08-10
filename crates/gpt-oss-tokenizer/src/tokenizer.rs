@@ -7,6 +7,7 @@ use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer as HfTokenizer;
 use tracing::{debug, info};
 
+use crate::chat::{apply_chatml, ChatMessage};
 use crate::incremental::IncrementalDecoder;
 
 /// High-level tokenizer wrapping HuggingFace's tokenizer with vLLM conventions.
@@ -175,6 +176,15 @@ impl Tokenizer {
     /// complete character/word boundary is available.
     pub fn decode_incremental(&mut self, token: TokenId) -> Result<Option<String>> {
         Ok(self.incremental.add_token(token, &self.inner))
+    }
+
+    /// Apply the portable fallback chat template used for non-Harmony models.
+    pub fn apply_chat_template(
+        &self,
+        messages: &[ChatMessage],
+        add_generation_prompt: bool,
+    ) -> Result<String> {
+        apply_chatml(messages, add_generation_prompt)
     }
 
     /// Vocabulary size including special tokens.

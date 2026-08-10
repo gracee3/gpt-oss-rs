@@ -4,14 +4,17 @@
 //! Wraps the HuggingFace `tokenizers` crate with streaming decode,
 //! Harmony protocol support, and special token detection.
 
+pub mod chat;
 pub mod incremental;
 pub mod protocol;
 pub mod tokenizer;
 pub mod tool_parser;
 
+pub use chat::{ChatMessage, ChatRole};
 pub use incremental::IncrementalDecoder;
 pub use protocol::{
-    HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage, ProtocolMessage, RenderedPrompt,
+    initialize_harmony_encoding, HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage,
+    ProtocolMessage, RenderedPrompt,
 };
 pub use tokenizer::Tokenizer;
 pub use tool_parser::{

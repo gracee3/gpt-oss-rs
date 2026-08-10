@@ -6,6 +6,7 @@
 //! of truth for future SSE/event derivation.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use gpt_oss_core::prelude::{LLMError, Result, TokenId};
 use openai_harmony::chat::{
@@ -14,6 +15,37 @@ use openai_harmony::chat::{
 use openai_harmony::{load_harmony_encoding, HarmonyEncodingName, StreamableParser};
 
 use crate::tool_parser::ToolDefinition;
+
+static GPT_OSS_ENCODING: OnceLock<std::result::Result<openai_harmony::HarmonyEncoding, String>> =
+    OnceLock::new();
+
+fn shared_gpt_oss_encoding() -> Result<openai_harmony::HarmonyEncoding> {
+    let encoding = GPT_OSS_ENCODING.get_or_init(|| {
+        // `openai-harmony` currently builds a blocking reqwest client while it
+        // loads the vocabulary. Loading it directly from a Tokio worker can
+        // panic when reqwest drops its helper runtime. A dedicated one-shot
+        // thread also makes lazy initialization safe for library consumers
+        // that did not call `initialize_harmony_encoding` before entering an
+        // async runtime.
+        std::thread::spawn(|| load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss))
+            .join()
+            .map_err(|_| "Harmony encoding initialization thread panicked".to_string())?
+            .map_err(|error| error.to_string())
+    });
+
+    encoding
+        .as_ref()
+        .cloned()
+        .map_err(|error| LLMError::TokenizerError(format!("harmony error: {error}")))
+}
+
+/// Load the process-lifetime GPT-OSS Harmony encoding.
+///
+/// Server binaries should call this before entering their asynchronous serving
+/// runtime. Library callers may rely on the thread-safe lazy fallback.
+pub fn initialize_harmony_encoding() -> Result<()> {
+    shared_gpt_oss_encoding().map(|_| ())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolMessage {
@@ -92,8 +124,7 @@ pub struct HarmonyProtocol {
 
 impl HarmonyProtocol {
     pub fn gpt_oss() -> Result<Self> {
-        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)
-            .map_err(map_harmony_error)?;
+        let encoding = shared_gpt_oss_encoding()?;
         Ok(Self { encoding })
     }
 
@@ -116,7 +147,8 @@ impl HarmonyProtocol {
         }
 
         for message in messages {
-            if matches!(message.role.as_str(), "system" | "developer") && !message.content.is_empty()
+            if matches!(message.role.as_str(), "system" | "developer")
+                && !message.content.is_empty()
             {
                 developer_parts.push(message.content.clone());
             }
@@ -167,7 +199,10 @@ impl HarmonyProtocol {
         Ok(RenderedPrompt { text, token_ids })
     }
 
-    pub fn parse_completion_tokens(&self, token_ids: &[TokenId]) -> Result<Vec<ParsedProtocolMessage>> {
+    pub fn parse_completion_tokens(
+        &self,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<ParsedProtocolMessage>> {
         let parsed = self
             .encoding
             .parse_messages_from_completion_tokens(token_ids.iter().copied(), Some(Role::Assistant))
@@ -274,9 +309,10 @@ fn protocol_to_harmony_message(message: &ProtocolMessage) -> Result<Message> {
     })?;
     let mut converted = if role == Role::Tool {
         match &message.author_name {
-            Some(name) => {
-                Message::from_author_and_content(Author::new(Role::Tool, name.clone()), message.content.clone())
-            }
+            Some(name) => Message::from_author_and_content(
+                Author::new(Role::Tool, name.clone()),
+                message.content.clone(),
+            ),
             None => Message::from_role_and_content(Role::Tool, message.content.clone()),
         }
     } else {
@@ -369,7 +405,10 @@ mod tests {
         assert_eq!(parsed[0].role, "assistant");
         assert_eq!(parsed[0].author_name, None);
         assert_eq!(parsed[0].channel.as_deref(), Some("commentary"));
-        assert_eq!(parsed[0].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            parsed[0].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(parsed[0].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(parsed[0].content, "{\"location\":\"Tokyo\"}");
     }
@@ -395,8 +434,16 @@ mod tests {
             )
             .unwrap();
 
-        assert!(prompt.text.contains("to=functions.get_weather"), "{}", prompt.text);
-        assert!(prompt.text.contains("<|start|>functions.get_weather"), "{}", prompt.text);
+        assert!(
+            prompt.text.contains("to=functions.get_weather"),
+            "{}",
+            prompt.text
+        );
+        assert!(
+            prompt.text.contains("<|start|>functions.get_weather"),
+            "{}",
+            prompt.text
+        );
         assert!(prompt.text.contains("to=assistant"), "{}", prompt.text);
         assert!(prompt.text.contains("\"temp_c\":18"), "{}", prompt.text);
     }
@@ -414,7 +461,10 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].channel.as_deref(), Some("analysis"));
         assert_eq!(parsed[0].content, "Need weather lookup.");
-        assert_eq!(parsed[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            parsed[1].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(parsed[1].channel.as_deref(), Some("commentary"));
         assert_eq!(parsed[1].content_type.as_deref(), Some("<|constrain|>json"));
         assert_eq!(parsed[1].content, "{\"location\":\"Tokyo\"}");
@@ -442,8 +492,14 @@ mod tests {
         let messages = parser.messages().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].author_name, None);
-        assert_eq!(messages[0].recipient.as_deref(), Some("functions.get_weather"));
-        assert_eq!(messages[0].content_type.as_deref(), Some("<|constrain|>json"));
+        assert_eq!(
+            messages[0].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
+        assert_eq!(
+            messages[0].content_type.as_deref(),
+            Some("<|constrain|>json")
+        );
         assert_eq!(messages[0].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[0].content, "{\"location\":\"Tokyo\"}");
     }
@@ -475,7 +531,10 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].channel.as_deref(), Some("analysis"));
         assert_eq!(messages[0].content, "Need weather lookup.");
-        assert_eq!(messages[1].recipient.as_deref(), Some("functions.get_weather"));
+        assert_eq!(
+            messages[1].recipient.as_deref(),
+            Some("functions.get_weather")
+        );
         assert_eq!(messages[1].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[1].content, "{\"location\":\"Boston\"}");
     }

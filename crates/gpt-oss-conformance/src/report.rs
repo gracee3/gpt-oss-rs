@@ -74,7 +74,10 @@ pub fn compare_samples(expected: &ExecutionSample, observed: &ExecutionSample) -
 }
 
 fn semantic_label(label: &str) -> &str {
-    label.split_once(':').map(|(_, suffix)| suffix).unwrap_or(label)
+    label
+        .split_once(':')
+        .map(|(_, suffix)| suffix)
+        .unwrap_or(label)
 }
 
 fn trace_diffs(expected: &TraceSummary, observed: &TraceSummary) -> Vec<String> {
@@ -155,13 +158,17 @@ pub fn compare_prefill_decode_continuity(
 
     match prefill.trace.find_event_payload("reference_phase") {
         Some("Prefill") => {}
-        Some(other) => diffs.push(format!("prefill phase mismatch: expected Prefill got {other}")),
+        Some(other) => diffs.push(format!(
+            "prefill phase mismatch: expected Prefill got {other}"
+        )),
         None => diffs.push("prefill phase missing from trace".to_string()),
     }
 
     match decode.trace.find_event_payload("reference_phase") {
         Some("Decode") => {}
-        Some(other) => diffs.push(format!("decode phase mismatch: expected Decode got {other}")),
+        Some(other) => diffs.push(format!(
+            "decode phase mismatch: expected Decode got {other}"
+        )),
         None => diffs.push("decode phase missing from trace".to_string()),
     }
 
