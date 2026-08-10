@@ -14,30 +14,47 @@ use crate::{Mxfp4Block, Q8Block};
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn bf16_dot_avx2(left: &[bf16], right: &[bf16]) -> f32 {
-    let mut accumulator = _mm256_setzero_ps();
+    let mut accumulator_low = _mm256_setzero_ps();
+    let mut accumulator_high = _mm256_setzero_ps();
     let mut index = 0;
-    while index + 8 <= left.len() {
-        // SAFETY: the loop bounds guarantee eight BF16 values in each slice.
-        let left16 = unsafe { _mm_loadu_si128(left.as_ptr().add(index).cast()) };
-        let right16 = unsafe { _mm_loadu_si128(right.as_ptr().add(index).cast()) };
-        let left32 = _mm256_slli_epi32(_mm256_cvtepu16_epi32(left16), 16);
-        let right32 = _mm256_slli_epi32(_mm256_cvtepu16_epi32(right16), 16);
-        accumulator = _mm256_fmadd_ps(
-            _mm256_castsi256_ps(left32),
-            _mm256_castsi256_ps(right32),
-            accumulator,
+    while index + 16 <= left.len() {
+        // SAFETY: the loop bounds guarantee sixteen BF16 values per slice.
+        let left_low = unsafe { _mm_loadu_si128(left.as_ptr().add(index).cast()) };
+        let right_low = unsafe { _mm_loadu_si128(right.as_ptr().add(index).cast()) };
+        let left_high = unsafe { _mm_loadu_si128(left.as_ptr().add(index + 8).cast()) };
+        let right_high = unsafe { _mm_loadu_si128(right.as_ptr().add(index + 8).cast()) };
+        let left_low = _mm256_slli_epi32(_mm256_cvtepu16_epi32(left_low), 16);
+        let right_low = _mm256_slli_epi32(_mm256_cvtepu16_epi32(right_low), 16);
+        let left_high = _mm256_slli_epi32(_mm256_cvtepu16_epi32(left_high), 16);
+        let right_high = _mm256_slli_epi32(_mm256_cvtepu16_epi32(right_high), 16);
+        accumulator_low = _mm256_add_ps(
+            _mm256_mul_ps(
+                _mm256_castsi256_ps(left_low),
+                _mm256_castsi256_ps(right_low),
+            ),
+            accumulator_low,
         );
-        index += 8;
+        accumulator_high = _mm256_add_ps(
+            _mm256_mul_ps(
+                _mm256_castsi256_ps(left_high),
+                _mm256_castsi256_ps(right_high),
+            ),
+            accumulator_high,
+        );
+        index += 16;
     }
-    let mut lanes = [0.0_f32; 8];
-    // SAFETY: `lanes` has room for one 256-bit vector.
-    unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator) };
-    let mut total: f32 = lanes.into_iter().sum();
+    let mut lanes = [0.0_f32; 16];
+    // SAFETY: each half of `lanes` has room for one 256-bit vector.
+    unsafe {
+        _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator_low);
+        _mm256_storeu_ps(lanes.as_mut_ptr().add(8), accumulator_high);
+    }
     while index < left.len() {
-        total += left[index].to_f32() * right[index].to_f32();
+        let lane = index % lanes.len();
+        lanes[lane] += left[index].to_f32() * right[index].to_f32();
         index += 1;
     }
-    total
+    lanes.into_iter().sum()
 }
 
 #[target_feature(enable = "avx512f,avx512bw")]
@@ -50,9 +67,8 @@ pub(super) unsafe fn bf16_dot_avx512(left: &[bf16], right: &[bf16]) -> f32 {
         let right16 = unsafe { _mm256_loadu_si256(right.as_ptr().add(index).cast()) };
         let left32 = _mm512_slli_epi32(_mm512_cvtepu16_epi32(left16), 16);
         let right32 = _mm512_slli_epi32(_mm512_cvtepu16_epi32(right16), 16);
-        accumulator = _mm512_fmadd_ps(
-            _mm512_castsi512_ps(left32),
-            _mm512_castsi512_ps(right32),
+        accumulator = _mm512_add_ps(
+            _mm512_mul_ps(_mm512_castsi512_ps(left32), _mm512_castsi512_ps(right32)),
             accumulator,
         );
         index += 16;
@@ -60,12 +76,12 @@ pub(super) unsafe fn bf16_dot_avx512(left: &[bf16], right: &[bf16]) -> f32 {
     let mut lanes = [0.0_f32; 16];
     // SAFETY: `lanes` has room for one 512-bit vector.
     unsafe { _mm512_storeu_ps(lanes.as_mut_ptr(), accumulator) };
-    let mut total: f32 = lanes.into_iter().sum();
     while index < left.len() {
-        total += left[index].to_f32() * right[index].to_f32();
+        let lane = index % lanes.len();
+        lanes[lane] += left[index].to_f32() * right[index].to_f32();
         index += 1;
     }
-    total
+    lanes.into_iter().sum()
 }
 
 #[target_feature(enable = "avx2")]
@@ -172,23 +188,29 @@ pub(super) unsafe fn mxfp4_q8_dot_avx512_vnni(weight: &Mxfp4Block, activation: &
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn sum_squares_avx2(values: &[f32]) -> f32 {
-    let mut accumulator = _mm256_setzero_ps();
+    let mut accumulator_low = _mm256_setzero_ps();
+    let mut accumulator_high = _mm256_setzero_ps();
     let mut index = 0;
-    while index + 8 <= values.len() {
-        // SAFETY: the loop bounds guarantee eight values.
-        let value = unsafe { _mm256_loadu_ps(values.as_ptr().add(index)) };
-        accumulator = _mm256_fmadd_ps(value, value, accumulator);
-        index += 8;
+    while index + 16 <= values.len() {
+        // SAFETY: the loop bounds guarantee sixteen values.
+        let low = unsafe { _mm256_loadu_ps(values.as_ptr().add(index)) };
+        let high = unsafe { _mm256_loadu_ps(values.as_ptr().add(index + 8)) };
+        accumulator_low = _mm256_add_ps(_mm256_mul_ps(low, low), accumulator_low);
+        accumulator_high = _mm256_add_ps(_mm256_mul_ps(high, high), accumulator_high);
+        index += 16;
     }
-    let mut lanes = [0.0_f32; 8];
-    // SAFETY: `lanes` has room for one 256-bit vector.
-    unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator) };
-    let mut total: f32 = lanes.into_iter().sum();
+    let mut lanes = [0.0_f32; 16];
+    // SAFETY: each half of `lanes` has room for one 256-bit vector.
+    unsafe {
+        _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator_low);
+        _mm256_storeu_ps(lanes.as_mut_ptr().add(8), accumulator_high);
+    }
     while index < values.len() {
-        total += values[index] * values[index];
+        let lane = index % lanes.len();
+        lanes[lane] += values[index] * values[index];
         index += 1;
     }
-    total
+    lanes.into_iter().sum()
 }
 
 #[target_feature(enable = "avx512f")]
@@ -198,16 +220,16 @@ pub(super) unsafe fn sum_squares_avx512(values: &[f32]) -> f32 {
     while index + 16 <= values.len() {
         // SAFETY: the loop bounds guarantee sixteen values.
         let value = unsafe { _mm512_loadu_ps(values.as_ptr().add(index)) };
-        accumulator = _mm512_fmadd_ps(value, value, accumulator);
+        accumulator = _mm512_add_ps(_mm512_mul_ps(value, value), accumulator);
         index += 16;
     }
     let mut lanes = [0.0_f32; 16];
     // SAFETY: `lanes` has room for one 512-bit vector.
     unsafe { _mm512_storeu_ps(lanes.as_mut_ptr(), accumulator) };
-    let mut total: f32 = lanes.into_iter().sum();
     while index < values.len() {
-        total += values[index] * values[index];
+        let lane = index % lanes.len();
+        lanes[lane] += values[index] * values[index];
         index += 1;
     }
-    total
+    lanes.into_iter().sum()
 }

@@ -25,6 +25,13 @@ license texts and attribution requirements.
   FP4 table lookup, and exact integer accumulation. The repository's AVX-512
   VNNI implementation uses its own signed-to-unsigned correction because VNNI
   byte dot products have asymmetric operand signedness.
+- `mistralrs-core/src/models/gpt_oss.rs` (`Attention`, `GptOssMoE`,
+  `gptoss_swiglu`): alternating sliding/full attention, selected-expert
+  softmax, interleaved gate/up ordering, and clamped GPT-OSS SwiGLU.
+- `mistralrs-core/src/layers.rs` (`GptOssRotaryEmbedding`): YaRN correction
+  range, frequency interpolation, GPT-NeoX rotation, and attention scaling.
+- `mistralrs-core/src/attention/backends/sinks.rs` (`sinks_attn_cpu`): learned
+  per-head sinks as extra softmax denominator logits with no value vector.
 
 When either reference is refreshed, update the pinned revision, list the exact
 reviewed files/functions here, and rerun scalar/SIMD parity and model-level

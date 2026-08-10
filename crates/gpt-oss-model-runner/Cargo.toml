@@ -21,6 +21,7 @@ gpt-oss-core.workspace = true
 gpt-oss-semantics.workspace = true
 gpt-oss-gpu.workspace = true
 gpt-oss-moe-semantics.workspace = true
+gpt-oss-cpu-kernels.workspace = true
 thiserror.workspace = true
 half.workspace = true
 tracing.workspace = true
@@ -32,6 +33,7 @@ rayon.workspace = true
 safetensors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 cudarc = { version = "0.19", features = ["driver", "cublas", "f16", "nccl", "cuda-version-from-build-system"], optional = true }
 
 [dev-dependencies]
