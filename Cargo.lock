@@ -1403,6 +1403,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpt-oss-cpu-kernels"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "half",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gpt-oss-engine"
 version = "0.1.0"
 dependencies = [
