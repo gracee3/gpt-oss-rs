@@ -143,6 +143,7 @@ fn select_native_snapshot_files<'a>(
 fn is_native_snapshot_file(filename: &str) -> bool {
     let path = Path::new(filename);
     if path.is_absolute()
+        || filename.starts_with("original/")
         || path
             .components()
             .any(|component| matches!(component, Component::ParentDir))
@@ -253,6 +254,7 @@ mod tests {
     fn selection_is_sorted_and_excludes_non_native_formats() {
         let selected = select_native_snapshot_files([
             "model.gguf",
+            "original/model.safetensors",
             "tokenizer.json",
             "model-00002-of-00002.safetensors",
             "README.md",
@@ -263,6 +265,9 @@ mod tests {
         .unwrap();
         assert_eq!(selected[0], "config.json");
         assert!(selected.iter().all(|file| file != "model.gguf"));
+        assert!(selected
+            .iter()
+            .all(|file| file != "original/model.safetensors"));
         assert_eq!(selected.last().unwrap(), "tokenizer.json");
     }
 

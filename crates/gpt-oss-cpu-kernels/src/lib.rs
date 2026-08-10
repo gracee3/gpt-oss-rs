@@ -293,7 +293,7 @@ impl Kernels {
             ));
         }
         let sum_squares = match self.path {
-            KernelPath::Scalar => input.iter().map(|value| value * value).sum(),
+            KernelPath::Scalar => scalar_sum_squares(input),
             #[cfg(target_arch = "x86_64")]
             KernelPath::Avx2 => {
                 // SAFETY: construction verifies AVX2 and FMA support.
@@ -304,7 +304,7 @@ impl Kernels {
                 // SAFETY: construction verifies the full AVX-512 feature set.
                 unsafe { x86::sum_squares_avx512(input) }
             }
-            _ => input.iter().map(|value| value * value).sum(),
+            _ => scalar_sum_squares(input),
         };
         let inverse_rms = (sum_squares / input.len() as f32 + epsilon).sqrt().recip();
         for ((destination, value), scale) in output.iter_mut().zip(input).zip(weight) {
@@ -392,10 +392,41 @@ pub fn softmax_in_place(values: &mut [f32]) -> Result<(), KernelError> {
 }
 
 fn scalar_bf16_dot(left: &[bf16], right: &[bf16]) -> f32 {
-    left.iter()
-        .zip(right)
-        .map(|(left, right)| left.to_f32() * right.to_f32())
-        .sum()
+    // Keep the logical reduction lanes identical to AVX-512 and to the two
+    // AVX2 accumulators. Besides reproducibility, this prevents long model
+    // projections from crossing a BF16 boundary solely because dispatch chose
+    // a different horizontal-reduction tree.
+    let mut lanes = [0.0_f32; 16];
+    let mut left_chunks = left.chunks_exact(lanes.len());
+    let mut right_chunks = right.chunks_exact(lanes.len());
+    for (left, right) in left_chunks.by_ref().zip(right_chunks.by_ref()) {
+        for lane in 0..lanes.len() {
+            lanes[lane] += left[lane].to_f32() * right[lane].to_f32();
+        }
+    }
+    for (lane, (left, right)) in left_chunks
+        .remainder()
+        .iter()
+        .zip(right_chunks.remainder())
+        .enumerate()
+    {
+        lanes[lane] += left.to_f32() * right.to_f32();
+    }
+    lanes.into_iter().sum()
+}
+
+fn scalar_sum_squares(values: &[f32]) -> f32 {
+    let mut lanes = [0.0_f32; 16];
+    let mut chunks = values.chunks_exact(lanes.len());
+    for values in chunks.by_ref() {
+        for lane in 0..lanes.len() {
+            lanes[lane] += values[lane] * values[lane];
+        }
+    }
+    for (lane, value) in chunks.remainder().iter().copied().enumerate() {
+        lanes[lane] += value * value;
+    }
+    lanes.into_iter().sum()
 }
 
 fn scalar_max_abs(values: &[f32]) -> f32 {
@@ -578,13 +609,27 @@ mod tests {
                 simd.bf16_matvec(&weights, 2, 64, &input, &mut actual)
                     .unwrap();
                 for (expected, actual) in expected.into_iter().zip(actual) {
-                    let tolerance = 2e-4_f32.max(expected.abs() * 2e-5);
-                    assert!(
-                        (expected - actual).abs() <= tolerance,
+                    assert_eq!(
+                        expected.to_bits(),
+                        actual.to_bits(),
                         "{}: {expected} vs {actual}",
                         simd.path()
                     );
                 }
+
+                let rms_input = input.iter().map(|value| value.to_f32()).collect::<Vec<_>>();
+                let rms_weight = weights[..64]
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>();
+                let mut expected_rms = [0.0_f32; 64];
+                let mut actual_rms = [0.0_f32; 64];
+                scalar
+                    .rms_norm(&rms_input, &rms_weight, 1e-5, &mut expected_rms)
+                    .unwrap();
+                simd.rms_norm(&rms_input, &rms_weight, 1e-5, &mut actual_rms)
+                    .unwrap();
+                assert_eq!(actual_rms, expected_rms, "{} RMS mismatch", simd.path());
             }
         }
     }

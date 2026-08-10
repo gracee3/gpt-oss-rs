@@ -1,4 +1,5 @@
-#![cfg_attr(not(feature = "cuda"), forbid(unsafe_code))]
+#![cfg_attr(not(feature = "cuda"), deny(unsafe_code))]
+#![deny(unsafe_op_in_unsafe_fn)]
 //! Transformer forward pass for gpt-oss-rs.
 //!
 //! Provides `ModelRunner` which orchestrates the forward pass through
@@ -10,6 +11,9 @@ extern crate self as gpt_oss_model_runner;
 pub mod architectures;
 pub mod attention;
 pub mod bridge;
+pub mod cpu_repack;
+pub mod cpu_runner;
+pub mod cpu_tensor_store;
 pub mod input;
 pub mod kv_cache;
 pub mod layers;
@@ -41,6 +45,8 @@ pub use attention::{
     MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
     SplitKvAttention,
 };
+pub use cpu_runner::{CpuGptOssConfig, CpuKvCache, CpuModelRunner};
+pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};
 pub use model_loader::{detect_format, load_model_weights, ModelFormat};

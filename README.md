@@ -60,6 +60,7 @@ Useful entry points:
 
 - `crates/gpt-oss-server`: CLI and HTTP server binary
 - `crates/gpt-oss-bench`: repository-level Rust benchmarks
+- `docs/CPU_RUNTIME.md`: native mmap/repack, numeric, and cache invariants
 - `kernels/`: CUDA kernels loaded by the GPU path
 
 ## Tier-2 Workflow
