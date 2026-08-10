@@ -22,3 +22,25 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
+
+  kernel-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Scalar reference path
+        run: cargo test -p gpt-oss-cpu-kernels --locked
+        env:
+          GPT_OSS_CPU_KERNEL: scalar
+      - name: AVX2 path
+        if: ${{ contains(runner.arch, 'X64') }}
+        run: |
+          if grep -qw avx2 /proc/cpuinfo; then
+            GPT_OSS_CPU_KERNEL=avx2 cargo test -p gpt-oss-cpu-kernels --locked
+          fi
+      - name: AVX-512 VNNI path
+        if: ${{ contains(runner.arch, 'X64') }}
+        run: |
+          if grep -Eqw 'avx512vnni|avx512_vnni' /proc/cpuinfo; then
+            GPT_OSS_CPU_KERNEL=avx512-vnni cargo test -p gpt-oss-cpu-kernels --locked
+          fi

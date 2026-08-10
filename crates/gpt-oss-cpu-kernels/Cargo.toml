@@ -1,0 +1,25 @@
+[package]
+name = "gpt-oss-cpu-kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native scalar and x86 CPU kernels for GPT-OSS"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+half.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[bench]]
+name = "kernels"
+harness = false
