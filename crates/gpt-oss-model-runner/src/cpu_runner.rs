@@ -5,6 +5,7 @@
 //! Transformer operation boundaries are BF16 with FP32 accumulation.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -14,6 +15,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use gpt_oss_core::error::{LLMError, Result};
+use gpt_oss_core::types::{SequenceId, TokenId};
 use gpt_oss_cpu_kernels::{
     accumulate_mxfp4_bf16_block, DispatchPlan, KernelPath, Kernels, Mxfp4WeightLayout,
     Q8ActivationView, Q8Block, ResidualQ8ActivationView, ResidualQ8Block, QUANT_BLOCK_SIZE,
@@ -76,6 +78,109 @@ pub struct CpuModelRunnerOptions {
     pub threads: usize,
     pub context_cap: usize,
     pub expert_projection: CpuExpertProjection,
+}
+
+/// Monotonic version of committed CPU sequence-model state.
+///
+/// Prepared work records this value and commit rejects the work if another
+/// operation reset or advanced the sequence first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CpuStateRevision(u64);
+
+impl CpuStateRevision {
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    fn next(self) -> Result<Self> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or_else(|| LLMError::ModelError("CPU sequence revision overflow".into()))
+    }
+}
+
+/// One ordered input row in a CPU model step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuStepRow {
+    pub sequence_id: SequenceId,
+    pub token_id: TokenId,
+    pub absolute_position: usize,
+    pub logits_required: bool,
+}
+
+impl CpuStepRow {
+    pub const fn new(
+        sequence_id: SequenceId,
+        token_id: TokenId,
+        absolute_position: usize,
+        logits_required: bool,
+    ) -> Self {
+        Self {
+            sequence_id,
+            token_id,
+            absolute_position,
+            logits_required,
+        }
+    }
+}
+
+/// Validated ordered rows for one transactional CPU execution.
+///
+/// Rows for the same sequence may recur, but their absolute positions must be
+/// consecutive in batch order. M3 executes these rows sequentially; M2 keeps
+/// this contract while changing the implementation to layer-major execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuStepBatch {
+    rows: Vec<CpuStepRow>,
+}
+
+impl CpuStepBatch {
+    pub fn new(rows: Vec<CpuStepRow>) -> Result<Self> {
+        if rows.is_empty() {
+            return Err(LLMError::ConfigError(
+                "CPU step batch must contain at least one row".into(),
+            ));
+        }
+        let mut next_positions = HashMap::new();
+        for row in &rows {
+            match next_positions.entry(row.sequence_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(row.absolute_position.checked_add(1).ok_or_else(|| {
+                        LLMError::ConfigError("CPU step row position overflow".into())
+                    })?);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if row.absolute_position != *entry.get() {
+                        return Err(LLMError::ConfigError(format!(
+                            "CPU step positions for sequence {} are not consecutive",
+                            row.sequence_id
+                        )));
+                    }
+                    *entry.get_mut() = row.absolute_position.checked_add(1).ok_or_else(|| {
+                        LLMError::ConfigError("CPU step row position overflow".into())
+                    })?;
+                }
+            }
+        }
+        Ok(Self { rows })
+    }
+
+    pub fn single(row: CpuStepRow) -> Self {
+        Self { rows: vec![row] }
+    }
+
+    pub fn rows(&self) -> &[CpuStepRow] {
+        &self.rows
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
 }
 
 fn default_alpha() -> f32 {
@@ -1501,6 +1606,41 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn cpu_step_batch_preserves_identity_positions_and_logits_flags() {
+        let batch = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(7), 11, 3, false),
+            CpuStepRow::new(SequenceId(9), 22, 0, true),
+            CpuStepRow::new(SequenceId(7), 12, 4, true),
+        ])
+        .unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch.rows()[0].sequence_id, SequenceId(7));
+        assert!(!batch.rows()[0].logits_required);
+        assert!(batch.rows()[1].logits_required);
+        assert_eq!(batch.rows()[2].absolute_position, 4);
+    }
+
+    #[test]
+    fn cpu_step_batch_rejects_empty_nonconsecutive_and_overflow_rows() {
+        assert!(CpuStepBatch::new(Vec::new()).is_err());
+        assert!(CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 1, 3, false),
+            CpuStepRow::new(SequenceId(1), 2, 5, true),
+        ])
+        .is_err());
+        assert!(
+            CpuStepBatch::new(vec![CpuStepRow::new(SequenceId(1), 1, usize::MAX, true,)]).is_err()
+        );
+    }
+
+    #[test]
+    fn cpu_state_revisions_advance_monotonically() {
+        let revision = CpuStateRevision::default();
+        assert_eq!(revision.value(), 0);
+        assert_eq!(revision.next().unwrap().value(), 1);
+    }
 
     struct TensorFixture {
         name: String,

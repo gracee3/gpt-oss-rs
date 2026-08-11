@@ -47,7 +47,8 @@ pub use attention::{
 };
 pub use cpu_runner::{
     CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace,
-    CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace, CpuTopLogit,
+    CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace, CpuStateRevision, CpuStepBatch,
+    CpuStepRow, CpuTopLogit,
 };
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;
