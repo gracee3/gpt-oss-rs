@@ -276,6 +276,54 @@ impl Kernels {
             .collect()
     }
 
+    /// Quantize an activation row as a Q8 approximation plus a separately
+    /// quantized reconstruction residual.
+    pub fn quantize_residual_q8(self, input: &[f32]) -> Result<Vec<ResidualQ8Block>, KernelError> {
+        if !input.len().is_multiple_of(QUANT_BLOCK_SIZE) {
+            return Err(KernelError::InvalidDimensions(format!(
+                "residual-Q8 input length {} is not divisible by {QUANT_BLOCK_SIZE}",
+                input.len()
+            )));
+        }
+        if input.iter().any(|value| !value.is_finite()) {
+            return Err(KernelError::NonFiniteInput);
+        }
+
+        input
+            .chunks_exact(QUANT_BLOCK_SIZE)
+            .map(|block| {
+                let primary_max = self.max_abs(block);
+                let primary = quantize_q8_block(block, primary_max);
+                let mut residual_values = [0.0_f32; QUANT_BLOCK_SIZE];
+                for ((destination, source), quantized) in
+                    residual_values.iter_mut().zip(block).zip(primary.values)
+                {
+                    *destination = *source - quantized as f32 * primary.scale;
+                }
+                let residual_max = self.max_abs(&residual_values);
+                let residual = quantize_q8_block(&residual_values, residual_max);
+                Ok(ResidualQ8Block { primary, residual })
+            })
+            .collect()
+    }
+
+    fn max_abs(self, block: &[f32]) -> f32 {
+        match self.dispatch_plan.quantize_q8 {
+            KernelPath::Scalar => scalar_max_abs(block),
+            #[cfg(target_arch = "x86_64")]
+            KernelPath::Avx2 => {
+                // SAFETY: construction verifies AVX2 and FMA support.
+                unsafe { x86::max_abs_avx2(block) }
+            }
+            #[cfg(target_arch = "x86_64")]
+            KernelPath::Avx512Vnni => {
+                // SAFETY: construction verifies the full AVX-512 feature set.
+                unsafe { x86::max_abs_avx512(block) }
+            }
+            _ => scalar_max_abs(block),
+        }
+    }
+
     /// Exact integer dot product for one packed MXFP4/Q8 block.
     pub fn mxfp4_q8_block_dot_i32(self, weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
         match self.dispatch_plan.mxfp4_q8_dot {
@@ -291,6 +339,29 @@ impl Kernels {
                 unsafe { x86::mxfp4_q8_dot_avx512_vnni(weight, activation) }
             }
             _ => scalar_mxfp4_q8_dot_i32(weight, activation),
+        }
+    }
+
+    /// Two exact integer dots for one packed MXFP4/residual-Q8 block. The
+    /// selected implementation unpacks the MXFP4 nibbles once for both dots.
+    pub fn mxfp4_residual_q8_block_dot_i32(
+        self,
+        weight: &Mxfp4Block,
+        activation: &ResidualQ8Block,
+    ) -> [i32; 2] {
+        match self.dispatch_plan.mxfp4_q8_dot {
+            KernelPath::Scalar => scalar_mxfp4_residual_q8_dot_i32(weight, activation),
+            #[cfg(target_arch = "x86_64")]
+            KernelPath::Avx2 => {
+                // SAFETY: construction verifies AVX2 and FMA support.
+                unsafe { x86::mxfp4_residual_q8_dot_avx2(weight, activation) }
+            }
+            #[cfg(target_arch = "x86_64")]
+            KernelPath::Avx512Vnni => {
+                // SAFETY: construction verifies the full AVX-512 feature set.
+                unsafe { x86::mxfp4_residual_q8_dot_avx512_vnni(weight, activation) }
+            }
+            _ => scalar_mxfp4_residual_q8_dot_i32(weight, activation),
         }
     }
 
@@ -314,6 +385,29 @@ impl Kernels {
             // be accumulated exactly. Convert that doubled integer result back
             // to the official MXFP4 value before applying the two block scales.
             total += integer as f32 * 0.5 * e8m0_scale(weight.scale) * activation.scale;
+        }
+        Ok(total)
+    }
+
+    /// Dot product across matching MXFP4 and two-pass residual-Q8 rows.
+    pub fn mxfp4_residual_q8_dot(
+        self,
+        weights: &[Mxfp4Block],
+        activations: &[ResidualQ8Block],
+    ) -> Result<f32, KernelError> {
+        if weights.len() != activations.len() {
+            return Err(KernelError::InvalidDimensions(format!(
+                "MXFP4 blocks {} do not match residual-Q8 blocks {}",
+                weights.len(),
+                activations.len()
+            )));
+        }
+        let mut total = 0.0_f32;
+        for (weight, activation) in weights.iter().zip(activations) {
+            let [primary, residual] = self.mxfp4_residual_q8_block_dot_i32(weight, activation);
+            let weight_scale = 0.5 * e8m0_scale(weight.scale);
+            total += primary as f32 * weight_scale * activation.primary.scale;
+            total += residual as f32 * weight_scale * activation.residual.scale;
         }
         Ok(total)
     }
@@ -387,6 +481,12 @@ pub struct Q8Block {
     pub values: [i8; QUANT_BLOCK_SIZE],
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidualQ8Block {
+    pub primary: Q8Block,
+    pub residual: Q8Block,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mxfp4Block {
     pub scale: u8,
@@ -403,6 +503,23 @@ impl Mxfp4Block {
             output[index * 2 + 1] = mxfp4_integer(byte >> 4);
         }
         output
+    }
+}
+
+/// Accumulate one exact MXFP4×BF16 block into the deterministic FP32
+/// reduction lanes used by the dense BF16 projection kernels.
+pub fn accumulate_mxfp4_bf16_block(
+    weight: &Mxfp4Block,
+    activation: &[bf16; QUANT_BLOCK_SIZE],
+    lanes: &mut [f32; 16],
+) {
+    let scale = e8m0_scale(weight.scale);
+    for (packed_index, packed) in weight.packed.iter().copied().enumerate() {
+        let value_index = packed_index * 2;
+        let low = bf16::from_f32(decode_mxfp4(packed & 0x0f) * scale).to_f32();
+        let high = bf16::from_f32(decode_mxfp4(packed >> 4) * scale).to_f32();
+        lanes[value_index % lanes.len()] += low * activation[value_index].to_f32();
+        lanes[(value_index + 1) % lanes.len()] += high * activation[value_index + 1].to_f32();
     }
 }
 
@@ -536,6 +653,21 @@ fn scalar_mxfp4_q8_dot_i32(weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
         .sum()
 }
 
+fn scalar_mxfp4_residual_q8_dot_i32(weight: &Mxfp4Block, activation: &ResidualQ8Block) -> [i32; 2] {
+    let unpacked = weight.unpack();
+    let mut primary = 0_i32;
+    let mut residual = 0_i32;
+    for ((weight, primary_value), residual_value) in unpacked
+        .iter()
+        .zip(activation.primary.values)
+        .zip(activation.residual.values)
+    {
+        primary += *weight as i32 * primary_value as i32;
+        residual += *weight as i32 * residual_value as i32;
+    }
+    [primary, residual]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,6 +769,62 @@ mod tests {
     }
 
     #[test]
+    fn residual_q8_reconstructs_better_than_one_pass_q8() {
+        let input = std::array::from_fn::<_, QUANT_BLOCK_SIZE, _>(|index| {
+            ((index as f32 * 0.731).sin() * 9.0) + index as f32 * 0.013
+        });
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let q8 = kernels.quantize_q8(&input).unwrap().remove(0);
+        let residual = kernels.quantize_residual_q8(&input).unwrap().remove(0);
+        let q8_error = input
+            .iter()
+            .zip(q8.values)
+            .map(|(source, value)| (source - value as f32 * q8.scale).abs())
+            .sum::<f32>();
+        let residual_error = input
+            .iter()
+            .zip(residual.primary.values)
+            .zip(residual.residual.values)
+            .map(|((source, primary), correction)| {
+                (source
+                    - primary as f32 * residual.primary.scale
+                    - correction as f32 * residual.residual.scale)
+                    .abs()
+            })
+            .sum::<f32>();
+        assert!(
+            residual_error < q8_error * 0.02,
+            "{residual_error} vs {q8_error}"
+        );
+    }
+
+    #[test]
+    fn residual_q8_zero_block_is_stable() {
+        let block = Kernels::new(KernelPath::Scalar)
+            .unwrap()
+            .quantize_residual_q8(&[0.0; QUANT_BLOCK_SIZE])
+            .unwrap()
+            .remove(0);
+        assert_eq!(block.primary.scale, 0.0);
+        assert_eq!(block.primary.values, [0; QUANT_BLOCK_SIZE]);
+        assert_eq!(block.residual.scale, 0.0);
+        assert_eq!(block.residual.values, [0; QUANT_BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn residual_q8_rejects_non_finite_input() {
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut input = [0.0; QUANT_BLOCK_SIZE];
+            input[7] = value;
+            assert_eq!(
+                kernels.quantize_residual_q8(&input).unwrap_err(),
+                KernelError::NonFiniteInput
+            );
+        }
+    }
+
+    #[test]
     fn mxfp4_integer_dot_has_official_e2m1_scale() {
         let weight = Mxfp4Block {
             scale: 127,
@@ -651,6 +839,56 @@ mod tests {
         assert_eq!(
             kernels.mxfp4_q8_dot(&[weight], &[activation]).unwrap(),
             16.0
+        );
+    }
+
+    #[test]
+    fn fused_residual_dot_matches_two_independent_dots() {
+        let weight = Mxfp4Block {
+            scale: 129,
+            packed: std::array::from_fn(|index| (index as u8) | ((15 - index) as u8) << 4),
+        };
+        let activation = ResidualQ8Block {
+            primary: Q8Block {
+                scale: 0.125,
+                values: std::array::from_fn(|index| index as i8 - 16),
+            },
+            residual: Q8Block {
+                scale: 0.001,
+                values: std::array::from_fn(|index| 31 - index as i8),
+            },
+        };
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        assert_eq!(
+            kernels.mxfp4_residual_q8_block_dot_i32(&weight, &activation),
+            [
+                kernels.mxfp4_q8_block_dot_i32(&weight, &activation.primary),
+                kernels.mxfp4_q8_block_dot_i32(&weight, &activation.residual),
+            ]
+        );
+    }
+
+    #[test]
+    fn exact_bf16_block_dot_uses_bf16_weight_boundaries_and_reduction_lanes() {
+        let weight = Mxfp4Block {
+            scale: 124,
+            packed: [
+                0x75, 0x31, 0xed, 0xa6, 0x42, 0xf9, 0x8b, 0xc4, 0x17, 0x5e, 0x20, 0xda, 0x63, 0xbf,
+                0x94, 0x28,
+            ],
+        };
+        let activation = std::array::from_fn(|index| {
+            bf16::from_f32(((index as f32 - 15.5) * 0.137).sin() * 2.25)
+        });
+        let mut lanes = [0.0_f32; 16];
+        accumulate_mxfp4_bf16_block(&weight, &activation, &mut lanes);
+        assert_eq!(
+            lanes.map(f32::to_bits),
+            [
+                3206160384, 3217183744, 3204644864, 3169845248, 1062731776, 1067950080, 3215392768,
+                3203301376, 1041563648, 1059454976, 3217698816, 1057914880, 1061216256, 3188326400,
+                3186294784, 1049509888,
+            ]
         );
     }
 
@@ -683,6 +921,20 @@ mod tests {
                     simd.mxfp4_q8_block_dot_i32(&weight, &activation),
                     scalar.mxfp4_q8_block_dot_i32(&weight, &activation),
                     "{} integer dot mismatch",
+                    simd.path()
+                );
+
+                let residual = ResidualQ8Block {
+                    primary: activation.clone(),
+                    residual: Q8Block {
+                        scale: rng.gen_range(0.000001..0.01),
+                        values: std::array::from_fn(|_| rng.gen_range(-127..=127)),
+                    },
+                };
+                assert_eq!(
+                    simd.mxfp4_residual_q8_block_dot_i32(&weight, &residual),
+                    scalar.mxfp4_residual_q8_block_dot_i32(&weight, &residual),
+                    "{} fused residual dot mismatch",
                     simd.path()
                 );
             }

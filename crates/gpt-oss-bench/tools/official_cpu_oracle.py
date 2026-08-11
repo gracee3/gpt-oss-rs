@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--trace-layers", type=parse_layers, default=[])
+    parser.add_argument(
+        "--trace-step",
+        type=int,
+        default=0,
+        help="zero-based generated-token index whose selecting context/logits are captured",
+    )
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--threads", type=int, default=4)
     return parser.parse_args()
@@ -129,17 +135,24 @@ class Oracle:
         )
 
     @torch.inference_mode()
-    def forward(self, token_ids: list[int]) -> tuple[torch.Tensor, dict]:
+    def forward(
+        self, token_ids: list[int], trace_step: int, capture_trace: bool
+    ) -> tuple[torch.Tensor, dict | None]:
         hidden = self.store.tensor("model.embed_tokens.weight")[token_ids].clone()
         traces = []
         for layer_index in range(self.config["num_hidden_layers"]):
-            hidden, trace = self.forward_layer(layer_index, hidden)
+            hidden, trace = self.forward_layer(layer_index, hidden, capture_trace)
             if trace is not None:
                 traces.append(trace)
         normalized = rms_norm(hidden, self.store.tensor("model.norm.weight"), self.epsilon)
         logits = F.linear(normalized[-1], self.store.tensor("lm_head.weight"))
+        if not capture_trace:
+            return logits, None
         trace = {
-            "prompt_token_ids": token_ids,
+            "prompt_token_ids": list(token_ids),
+            "context_token_ids": list(token_ids),
+            "trace_step": trace_step,
+            "expert_projection": "exact-bf16",
             "official_source_revision": OFFICIAL_SOURCE_REVISION,
             "layers": traces,
             "final_norm": cpu_values(normalized[-1]),
@@ -147,7 +160,9 @@ class Oracle:
         }
         return logits, trace
 
-    def forward_layer(self, layer_index: int, hidden: torch.Tensor):
+    def forward_layer(
+        self, layer_index: int, hidden: torch.Tensor, capture_trace: bool
+    ):
         prefix = f"model.layers.{layer_index}"
         attention = f"{prefix}.self_attn"
         normalized = rms_norm(
@@ -217,6 +232,7 @@ class Oracle:
             (hidden.shape[0], self.config["num_experts_per_tok"], hidden.shape[1]),
             dtype=torch.bfloat16,
         )
+        traced_experts = {}
         experts_prefix = f"{prefix}.mlp.experts"
         for expert in torch.unique(selected.indices).tolist():
             token_indices, ranks = torch.where(selected.indices == expert)
@@ -239,13 +255,29 @@ class Oracle:
                 expert,
             )
             down_bias = self.store.tensor(f"{experts_prefix}.down_proj_bias")[expert]
-            expert_outputs[token_indices, ranks] = F.linear(activated, down_weight, down_bias)
+            down_projection = F.linear(activated, down_weight, down_bias)
+            expert_outputs[token_indices, ranks] = down_projection
             del down_weight
+            if capture_trace and layer_index in self.trace_layers:
+                final_token_matches = torch.where(token_indices == hidden.shape[0] - 1)[0]
+                for local_index in final_token_matches.tolist():
+                    rank = int(ranks[local_index])
+                    route_weight = route_weights[-1, rank]
+                    traced_experts[rank] = {
+                        "rank": rank,
+                        "expert_index": int(expert),
+                        "gate_up_projection": cpu_values(gate_up[local_index]),
+                        "swiglu": cpu_values(activated[local_index]),
+                        "down_projection": cpu_values(down_projection[local_index]),
+                        "weighted_output": cpu_values(
+                            down_projection[local_index].float() * route_weight.float()
+                        ),
+                    }
         moe_output = torch.einsum("bec,be->bc", expert_outputs, route_weights)
         layer_output = after_attention + moe_output
 
         trace = None
-        if layer_index in self.trace_layers:
+        if capture_trace and layer_index in self.trace_layers:
             trace = {
                 "layer_index": layer_index,
                 "input_norm": cpu_values(normalized[-1]),
@@ -258,6 +290,7 @@ class Oracle:
                 "router_logits": cpu_values(router_logits[-1]),
                 "selected_experts": selected.indices[-1].tolist(),
                 "routing_weights": cpu_values(route_weights[-1]),
+                "experts": [traced_experts[rank] for rank in sorted(traced_experts)],
                 "moe_output": cpu_values(moe_output[-1]),
                 "layer_output": cpu_values(layer_output[-1]),
             }
@@ -266,6 +299,8 @@ class Oracle:
 
 def main() -> int:
     args = parse_args()
+    if args.trace_step < 0 or args.trace_step >= args.max_new_tokens:
+        raise ValueError("--trace-step must be in [0, --max-new-tokens)")
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     native_capture = json.loads(args.native_capture.read_text())
@@ -275,18 +310,21 @@ def main() -> int:
     start = time.monotonic()
     tokens = list(prompt_token_ids)
     generated = []
-    first_trace = None
+    selected_trace = None
     top_logits_by_step = []
     for step in range(args.max_new_tokens):
-        logits, trace = oracle.forward(tokens)
-        if first_trace is None:
-            first_trace = trace
+        capture_trace = step == args.trace_step
+        logits, trace = oracle.forward(tokens, step, capture_trace)
+        if trace is not None:
+            selected_trace = trace
         top_logits_by_step.append(top_logits(logits, args.top_k))
         token_id = int(torch.argmax(logits.float()))
         generated.append(token_id)
         tokens.append(token_id)
         if token_id in (200002, 200012):
             break
+    if selected_trace is None:
+        raise RuntimeError("generation stopped before the requested --trace-step")
     elapsed = time.monotonic() - start
 
     report = {
@@ -297,9 +335,10 @@ def main() -> int:
         "official_source_revision": OFFICIAL_SOURCE_REVISION,
         "prompt_token_ids": prompt_token_ids,
         "generated_token_ids": generated,
+        "expert_projection": "exact-bf16",
         "top_logits_by_step": top_logits_by_step,
         "elapsed_seconds": elapsed,
-        "trace": first_trace,
+        "trace": selected_trace,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

@@ -5,7 +5,9 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use gpt_oss_cpu_kernels::KernelPath;
-use gpt_oss_model_runner::{CpuModelRunner, CpuPrefillTrace};
+use gpt_oss_model_runner::{
+    CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
+};
 use gpt_oss_tokenizer::{
     FunctionDefinition, HarmonyProtocol, ProtocolMessage, ToolDefinition, ToolParameterProperty,
     ToolParameters, HARMONY_CALL_TOKEN_ID, HARMONY_RETURN_TOKEN_ID,
@@ -33,6 +35,9 @@ struct Cli {
     #[arg(long, default_value = "auto")]
     kernel: KernelPath,
 
+    #[arg(long, default_value = "residual-q8")]
+    expert_projection: CpuExpertProjection,
+
     #[arg(long, default_value_t = 4)]
     threads: usize,
 
@@ -41,6 +46,12 @@ struct Cli {
 
     #[arg(long, value_delimiter = ',')]
     trace_layers: Vec<usize>,
+
+    /// Zero-based generated-token index whose selecting context/logits are
+    /// captured. Step 0 is the final prefill token; step N>0 is the decode
+    /// after generated token N-1.
+    #[arg(long, requires = "trace_layers")]
+    trace_step: Option<usize>,
 
     #[arg(long, default_value_t = 8)]
     top_k: usize,
@@ -88,6 +99,7 @@ struct ParityCapture<'a> {
     model_path: &'a Path,
     repack_cache: &'a Path,
     kernel: String,
+    expert_projection: CpuExpertProjection,
     prompt_text: String,
     prompt_token_ids: Vec<u32>,
     generated_token_ids: Vec<u32>,
@@ -103,6 +115,7 @@ struct ParityCapture<'a> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    validate_trace_step(cli.trace_step, cli.max_new_tokens)?;
     let manifest = load_manifest(&cli.fixtures)?;
     let scenario = manifest
         .scenarios
@@ -117,33 +130,47 @@ fn main() -> Result<()> {
         .len()
         .checked_add(cli.max_new_tokens)
         .context("context length overflow")?;
-    let mut runner = CpuModelRunner::load(
+    let mut runner = CpuModelRunner::load_with_options(
         &cli.model,
         &cli.repack_cache,
-        cli.kernel,
-        cli.threads,
-        context_cap,
+        CpuModelRunnerOptions {
+            kernel_path: cli.kernel,
+            threads: cli.threads,
+            context_cap,
+            expert_projection: cli.expert_projection,
+        },
     )?;
 
     let prompt_start = Instant::now();
-    let (mut logits, trace) = if cli.trace_layers.is_empty() {
-        (runner.prefill(&rendered.token_ids)?, None)
-    } else {
+    let target_trace_step = (!cli.trace_layers.is_empty()).then_some(cli.trace_step.unwrap_or(0));
+    let (mut logits, mut trace) = if target_trace_step == Some(0) {
         let (logits, trace) =
             runner.prefill_trace(&rendered.token_ids, &cli.trace_layers, cli.top_k)?;
         (logits, Some(trace))
+    } else {
+        (runner.prefill(&rendered.token_ids)?, None)
     };
     let prompt_seconds = prompt_start.elapsed().as_secs_f64();
 
     let generation_start = Instant::now();
     let mut generated_token_ids = Vec::with_capacity(cli.max_new_tokens);
-    for _ in 0..cli.max_new_tokens {
+    for step in 0..cli.max_new_tokens {
         let token_id = greedy_token(&logits)? as u32;
         generated_token_ids.push(token_id);
         if matches!(token_id, HARMONY_RETURN_TOKEN_ID | HARMONY_CALL_TOKEN_ID) {
             break;
         }
-        logits = runner.decode(token_id)?;
+        if target_trace_step == Some(step + 1) {
+            let (next_logits, step_trace) =
+                runner.decode_trace(token_id, &cli.trace_layers, cli.top_k, step + 1)?;
+            logits = next_logits;
+            trace = Some(step_trace);
+        } else {
+            logits = runner.decode(token_id)?;
+        }
+    }
+    if target_trace_step.is_some() && trace.is_none() {
+        bail!("generation stopped before the requested --trace-step");
     }
     let generation_seconds = generation_start.elapsed().as_secs_f64();
     if let Some(expected) = &scenario.official_greedy_tokens {
@@ -164,6 +191,7 @@ fn main() -> Result<()> {
         model_path: &cli.model,
         repack_cache: &cli.repack_cache,
         kernel: cli.kernel.to_string(),
+        expert_projection: runner.expert_projection(),
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,
         generated_token_ids,
@@ -182,6 +210,13 @@ fn main() -> Result<()> {
     let encoded = serde_json::to_vec_pretty(&capture)?;
     std::fs::write(&cli.output, &encoded)?;
     println!("{}", String::from_utf8(encoded)?);
+    Ok(())
+}
+
+fn validate_trace_step(trace_step: Option<usize>, max_new_tokens: usize) -> Result<()> {
+    if trace_step.is_some_and(|trace_step| trace_step >= max_new_tokens) {
+        bail!("--trace-step must be smaller than --max-new-tokens");
+    }
     Ok(())
 }
 
@@ -323,5 +358,13 @@ mod tests {
             let rendered = render_scenario(scenario).unwrap();
             verify_rendered_fixture(scenario, &rendered.text, &rendered.token_ids).unwrap();
         }
+    }
+
+    #[test]
+    fn trace_step_range_is_zero_based_and_bounded_by_generation() {
+        validate_trace_step(Some(0), 8).unwrap();
+        validate_trace_step(Some(6), 8).unwrap();
+        assert!(validate_trace_step(Some(8), 8).is_err());
+        assert!(validate_trace_step(Some(0), 0).is_err());
     }
 }

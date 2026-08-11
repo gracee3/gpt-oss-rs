@@ -1,9 +1,13 @@
-# GPT-OSS CPU Final Conformance Gate
+# GPT-OSS CPU Full-Checkpoint Regression Procedure
 
-Run this gate on the 32 GiB i7 before marking the CPU serving pull request
-ready or enabling CPU in trusted mode. The initial i5 gate covers official
-tensor decoding and isolated full-attention, sliding-attention, and MoE
-layers; it does not substitute for this complete-model gate.
+This procedure produced the evidence used to merge the experimental CPU
+serving baseline. Re-run it after numerical changes, kernel-plan changes,
+packed-layout changes, or cache-format changes. The initial i5 checks cover
+official tensor decoding and isolated full-attention, sliding-attention, and
+MoE layers; they do not substitute for this complete-model regression.
+
+Passing this procedure does not automatically enable CPU in trusted mode.
+Trusted-mode eligibility requires a separate policy review.
 
 ## Host setup
 
@@ -83,6 +87,7 @@ cargo run --release --locked -p gpt-oss-bench --bin cpu_parity -- \
   --threads "$CPU_THREADS" \
   --max-new-tokens 8 \
   --trace-layers 0 \
+  --trace-step 0 \
   --output "$BENCH_ROOT/native-harmony-122.json"
 
 "$ORACLE_PYTHON" crates/gpt-oss-bench/tools/official_cpu_oracle.py \
@@ -91,6 +96,7 @@ cargo run --release --locked -p gpt-oss-bench --bin cpu_parity -- \
   --official-source "$PINNED_GPT_OSS_SOURCE" \
   --max-new-tokens 8 \
   --trace-layers 0 \
+  --trace-step 0 \
   --threads "$CPU_THREADS" \
   --output "$BENCH_ROOT/official-harmony-122.json"
 
@@ -102,19 +108,32 @@ cargo run --release --locked -p gpt-oss-bench --bin cpu_parity -- \
 ```
 
 The official SafeTensors/PyTorch capture at the source revision pinned in the
-manifest is the semantic authority. Run llama.cpp at its pinned revision with
-the manifest's exact prompt token IDs, greedy sampling, top-logprob capture,
-and physical `--ubatch-size 1`. A llama.cpp token divergence is non-blocking
-only when native exactly matches the official oracle and llama.cpp's chosen
-token versus the native token is a documented near-tie no larger than `1e-2`.
-Every other token divergence is blocking. Text-only similarity is not a
-substitute for token parity.
+manifest is the sole blocking semantic authority. Exact native/official
+generated-token parity is mandatory for every scenario. A native/official
+token divergence fails the gate.
+
+llama.cpp remains a required differential reference. Run its pinned revision
+and pinned GGUF hash with the manifest's exact prompt token IDs, greedy
+sampling, top-logprob capture, and physical `--ubatch-size 1`. Record its exact
+tokens, first divergence, competing-token log-probability gap, and near-tie
+classification for every scenario. These llama.cpp results are advisory: a
+divergence cannot fail or waive the official-oracle gate. The comparator's
+`--llama-near-tie` threshold remains an informational diagnostic and does not
+affect its exit status. Text-only similarity is not a substitute for token
+parity in either comparison.
 
 Use the opt-in trace only to localize a failing prompt. Compare, in order,
 selected-layer input norm, post-RoPE query/key, value projection, attention,
 post-attention residual, router selection/weights, MoE output, layer output,
 final norm, and top logits. Correct and regress the earliest mismatching
 operator rather than compensating at a later layer.
+
+`--trace-step N` is zero-based and captures the complete context and logits
+used to select generated token `N`; step 0 is the final prefill token. For an
+expert diagnostic, pass `--expert-projection exact-bf16` to the native parity
+runner and compare each selected expert's gate/up projection, SwiGLU result,
+down projection, and weighted output. `exact-bf16` is parity-only and is not a
+server flag or a production fallback. Normal CPU serving uses residual Q8.
 
 ## Required report
 
@@ -124,18 +143,22 @@ For cold repack and each scalar, AVX2, and AVX-512/VNNI run, record:
 - time to first token and decode tokens per second;
 - peak RSS from `/usr/bin/time -v` or an equivalent host tool;
 - cold repack duration and warm startup duration;
-- exact greedy token sequences for all three prompt classes;
+- exact native, official-oracle, and llama.cpp greedy token sequences for all
+  seven pinned scenarios, including llama.cpp first-divergence margins;
 - Chat Completions and Responses results in streaming and non-streaming modes.
 
-A forced unavailable ISA must fail before execution. Any NaN, token
-divergence outside the oracle rule above, cache error, or memory pressure
-beyond practical 32 GiB use must be investigated before merge. Forced scalar,
-AVX2, and AVX-512/VNNI must agree on exact greedy tokens. Benchmark scalar,
-AVX2, forced AVX-512/VNNI, and automatic dispatch with three warm repeats per
-path. The automatic median throughput may not be worse than AVX2 by more than
-2%, and the automatic run may not regress correctness, peak RSS, or cache
-integrity. There is no absolute throughput threshold for the first correct
-MVP.
+A forced unavailable ISA must fail before execution. Any NaN,
+native/official token divergence, cache error, or memory pressure beyond
+practical 32 GiB use must be investigated before merge. llama.cpp divergence
+must be retained in the report as advisory evidence. Forced scalar, AVX2, and
+AVX-512/VNNI must agree on exact greedy tokens. Benchmark scalar, AVX2, forced
+AVX-512/VNNI, and automatic dispatch with three warm repeats per path. The
+automatic median throughput may not be worse than AVX2 by more than 2%, and
+the automatic run may not regress correctness, peak RSS, or cache integrity.
+There is no absolute throughput threshold for the first correct MVP.
 
-When every item passes, attach the report to the serving PR, mark it ready,
-and make CPU eligible for trusted mode in a separately reviewable change.
+When every item passes, attach the report to the relevant kernel/runtime pull
+request. If a trace diagnostic differs while the official token gate passes,
+record the earliest mismatch and its ownership explicitly rather than waiving
+or hiding it. Keep CPU rejected in trusted mode until a separately reviewable
+follow-up change establishes that eligibility.

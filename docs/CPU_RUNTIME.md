@@ -33,11 +33,24 @@ place.
 - Sliding layers retain exactly the latest 128 BF16 K/V tokens. Full-attention
   layers retain the configured CPU context cap.
 - Routing is stable top-4-of-32 selected-logit softmax. Gate/up outputs use the
-  official interleaved clamped GPT-OSS SwiGLU formula.
+  official interleaved clamped GPT-OSS SwiGLU formula, including every BF16
+  multiply, sigmoid, and add boundary.
+- Expert activations use residual Q8 by default:
+  `Q8(x) + Q8(x - dequantize(Q8(x)))`. Scalar, AVX2, and AVX-512/VNNI kernels
+  unpack each MXFP4 block once and compute both integer dots from that unpack.
+- The parity runner can select `q8`, `residual-q8`, or streaming `exact-bf16`
+  expert projections. Exact BF16 decodes repacked blocks on demand into the
+  deterministic FP32 reduction lanes; it is diagnostic-only and does not
+  expand or alter the repack cache.
 
-The runtime remains experimental until the separate 32 GiB i7 full-checkpoint,
-cross-runtime, API, and memory gates are complete. Trusted mode must continue
-to reject CPU serving until that evidence exists.
+The runtime is an experimental mainline backend. Its maintained seven-scenario
+greedy suite matches the pinned official SafeTensors/PyTorch oracle across
+scalar, AVX2, AVX-512/VNNI, and automatic dispatch, with practical 32 GiB host
+memory use and no repack-cache format change. A stricter end-to-end trace still
+shows a rare BF16 reduction-order difference before the expert projection; it
+is retained as diagnostic evidence rather than hidden or compensated later.
+Trusted mode continues to reject CPU serving until a separate review revisits
+that policy against the next kernel architecture and full API/memory evidence.
 
 ## Serving policy
 
@@ -65,9 +78,16 @@ Forced `scalar`, `avx2`, and `avx512-vnni` requests use that path for every
 operation and fail before execution when the requested ISA is unavailable.
 The public compatibility `path()` remains the highest selected host path.
 
-Automatic dispatch resolves an immutable per-operation plan. On a host with
-AVX2/FMA and AVX-512/VNNI, BF16 matvec, Q8 quantization, and RMS norm use
-AVX-512/VNNI, while MXFP4/Q8 expert dot products use AVX2. This preserves the
-i7's faster AVX2 expert kernel without giving up the faster AVX-512 dense and
-normalization kernels. Startup logs include both the compatibility path and
-the complete read-only dispatch-plan description.
+Automatic dispatch resolves an immutable per-operation plan. On the validated
+development host, BF16 matvec, Q8/residual-Q8 quantization, and RMS norm select
+the AVX-512/VNNI implementation while MXFP4/Q8 expert dots select AVX2 because
+it benchmarks faster for that operation. Residual-Q8 dots follow the same
+expert-dot selection. This is a measured operation policy, not a CPU-model
+policy; startup logs include both the compatibility path and the complete
+read-only dispatch-plan description.
+
+The current plan is a baseline, not the final abstraction. Future dispatch
+must describe precise ISA requirements and include operation type, matrix
+shape, batch size, thread count, and packed-layout availability. GEMV decode
+and GEMM-like prefill may use different kernels and weight layouts. The forward
+design is documented in `MXFP4_CPU_BACKEND_HANDOFF.md`.

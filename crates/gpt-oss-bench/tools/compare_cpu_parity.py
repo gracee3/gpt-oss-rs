@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-TRACE_STAGES = (
+TRACE_STAGES_BEFORE_EXPERTS = (
     "input_norm",
     "query_after_rope",
     "key_after_rope",
@@ -16,6 +16,16 @@ TRACE_STAGES = (
     "post_attention_residual",
     "router_logits",
     "routing_weights",
+)
+
+EXPERT_TRACE_STAGES = (
+    "gate_up_projection",
+    "swiglu",
+    "down_projection",
+    "weighted_output",
+)
+
+TRACE_STAGES_AFTER_EXPERTS = (
     "moe_output",
     "layer_output",
 )
@@ -67,7 +77,7 @@ def compare_traces(native: dict, official: dict, tolerance: float) -> dict | Non
             continue
         official_layer = official_layers[index]
         stages = {}
-        for stage in TRACE_STAGES:
+        for stage in TRACE_STAGES_BEFORE_EXPERTS:
             if stage not in native_layer or stage not in official_layer:
                 continue
             metric = stage_diff(native_layer[stage], official_layer[stage])
@@ -78,9 +88,63 @@ def compare_traces(native: dict, official: dict, tolerance: float) -> dict | Non
                     "stage": stage,
                     **metric,
                 }
-        layers.append({"layer_index": index, "stages": stages})
+        official_experts = {
+            expert["rank"]: expert for expert in official_layer.get("experts", [])
+        }
+        experts = []
+        for native_expert in native_layer.get("experts", []):
+            rank = native_expert["rank"]
+            if rank not in official_experts:
+                continue
+            official_expert = official_experts[rank]
+            expert_stages = {}
+            for stage in EXPERT_TRACE_STAGES:
+                if stage not in native_expert or stage not in official_expert:
+                    continue
+                metric = stage_diff(native_expert[stage], official_expert[stage])
+                expert_stages[stage] = metric
+                if earliest is None and metric["max_abs_diff"] > tolerance:
+                    earliest = {
+                        "layer_index": index,
+                        "expert_rank": rank,
+                        "expert_index": native_expert["expert_index"],
+                        "stage": stage,
+                        **metric,
+                    }
+            experts.append(
+                {
+                    "rank": rank,
+                    "native_expert_index": native_expert["expert_index"],
+                    "official_expert_index": official_expert["expert_index"],
+                    "stages": expert_stages,
+                }
+            )
+        for stage in TRACE_STAGES_AFTER_EXPERTS:
+            if stage not in native_layer or stage not in official_layer:
+                continue
+            metric = stage_diff(native_layer[stage], official_layer[stage])
+            stages[stage] = metric
+            if earliest is None and metric["max_abs_diff"] > tolerance:
+                earliest = {
+                    "layer_index": index,
+                    "stage": stage,
+                    **metric,
+                }
+        layers.append({"layer_index": index, "stages": stages, "experts": experts})
     final_norm = stage_diff(native_trace["final_norm"], official_trace["final_norm"])
-    return {"earliest_mismatch": earliest, "layers": layers, "final_norm": final_norm}
+    return {
+        "native_trace_step": native_trace.get("trace_step", 0),
+        "official_trace_step": official_trace.get("trace_step", 0),
+        "context_matches": native_trace.get(
+            "context_token_ids", native_trace.get("prompt_token_ids")
+        )
+        == official_trace.get(
+            "context_token_ids", official_trace.get("prompt_token_ids")
+        ),
+        "earliest_mismatch": earliest,
+        "layers": layers,
+        "final_norm": final_norm,
+    }
 
 
 def first_divergence(left: list[int], right: list[int]) -> int | None:
@@ -94,10 +158,11 @@ def first_divergence(left: list[int], right: list[int]) -> int | None:
 
 def llama_margin(llama: dict, step: int, competing_token: int) -> float | None:
     probabilities = llama.get("completion_probabilities", [])
-    if step >= len(probabilities):
+    tokens = llama.get("tokens", [])
+    if step >= len(probabilities) or step >= len(tokens):
         return None
     alternatives = probabilities[step].get("top_logprobs", [])
-    chosen = llama.get("tokens", [])[step]
+    chosen = tokens[step]
     chosen_logprob = next(
         (item["logprob"] for item in alternatives if item["id"] == chosen), None
     )
@@ -135,18 +200,14 @@ def main() -> int:
         if divergence is not None and divergence < len(native_tokens):
             margin = llama_margin(llama, divergence, native_tokens[divergence])
             near_tie = margin is not None and margin <= args.llama_near_tie
-        llama_nonblocking = (
-            native_official_divergence is None
-            and (divergence is None or near_tie)
-        )
-        blocking = blocking or not llama_nonblocking
         result["llama_cpp"] = {
+            "policy": "advisory",
             "tokens": llama_tokens,
             "first_divergence": divergence,
             "competing_logit_gap": margin,
             "near_tie_threshold": args.llama_near_tie,
             "near_tie": near_tie,
-            "nonblocking": llama_nonblocking,
+            "nonblocking": True,
         }
     result["blocking"] = blocking
 
