@@ -121,12 +121,12 @@ pub fn validate_gpt_oss_runtime(
 ) -> Result<RuntimeDecision, String> {
     let is_gpt_oss = is_gpt_oss_model(model_name);
     let backend_path = match requested_device {
-        "auto" if gpu_available => RuntimeBackendPath::Cuda,
         "auto" if is_gpt_oss => RuntimeBackendPath::Cpu,
         "auto" => {
-            return Err(
-                "no CUDA device is usable and the native CPU backend only supports GPT-OSS".into(),
-            )
+            return Err("automatic serving only supports GPT-OSS models; select an explicit experimental backend for other model families".into())
+        }
+        "cuda" if runtime_mode == RuntimeMode::Trusted => {
+            return Err("trusted mode rejects CUDA serving; use --runtime-mode experimental".into())
         }
         "cuda" if gpu_available => RuntimeBackendPath::Cuda,
         "cuda" => return Err("CUDA was requested but no usable CUDA device was detected".into()),
@@ -153,11 +153,7 @@ pub fn validate_gpt_oss_runtime(
             Ok(RuntimeDecision {
                 runtime_mode,
                 backend_path,
-                reason: if requested_device == "auto" {
-                    "auto selected CUDA because a usable device is available".into()
-                } else {
-                    "explicit CUDA execution selected".into()
-                },
+                reason: "explicit experimental CUDA execution selected".into(),
             })
         }
         RuntimeBackendPath::Cpu => {
@@ -181,8 +177,7 @@ pub fn validate_gpt_oss_runtime(
                 runtime_mode,
                 backend_path,
                 reason: if requested_device == "auto" {
-                    "auto selected the native GPT-OSS CPU backend because CUDA is unavailable"
-                        .into()
+                    "auto selected the native GPT-OSS CPU backend".into()
                 } else {
                     "explicit native GPT-OSS CPU execution selected".into()
                 },
@@ -313,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_mode_rejects_missing_gpu_for_gpt_oss() {
+    fn trusted_mode_rejects_cpu_first_auto_for_gpt_oss() {
         let err = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Trusted,
@@ -331,22 +326,79 @@ mod tests {
     }
 
     #[test]
-    fn experimental_auto_uses_real_cpu_when_no_gpu_is_available() {
+    fn experimental_auto_uses_real_cpu_with_or_without_a_gpu() {
+        for gpu_available in [false, true] {
+            let decision = validate_gpt_oss_runtime(
+                "openai/gpt-oss-20b",
+                RuntimeMode::Experimental,
+                "auto",
+                gpu_available,
+                GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+                1,
+                1,
+                1,
+                Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
+                false,
+            )
+            .unwrap();
+            assert_eq!(decision.backend_path, RuntimeBackendPath::Cpu);
+            assert!(decision.reason.contains("native GPT-OSS CPU backend"));
+        }
+    }
+
+    #[test]
+    fn explicit_cuda_is_experimental_only() {
         let decision = validate_gpt_oss_runtime(
             "openai/gpt-oss-20b",
             RuntimeMode::Experimental,
-            "auto",
-            false,
+            "cuda",
+            true,
             GPT_OSS_CONSUMER_MAX_MODEL_LEN,
             1,
             1,
-            1,
-            None,
+            256,
+            Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
             false,
         )
         .unwrap();
-        assert_eq!(decision.backend_path, RuntimeBackendPath::Cpu);
-        assert!(decision.reason.contains("native GPT-OSS CPU backend"));
+        assert_eq!(decision.backend_path, RuntimeBackendPath::Cuda);
+        assert!(decision.reason.contains("experimental CUDA"));
+
+        let error = validate_gpt_oss_runtime(
+            "openai/gpt-oss-20b",
+            RuntimeMode::Trusted,
+            "cuda",
+            true,
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
+            256,
+            Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("trusted mode rejects CUDA"));
+        assert!(error.contains("--runtime-mode experimental"));
+    }
+
+    #[test]
+    fn auto_rejects_non_gpt_oss_even_when_a_gpu_is_available() {
+        for gpu_available in [false, true] {
+            let error = validate_gpt_oss_runtime(
+                "other/model",
+                RuntimeMode::Experimental,
+                "auto",
+                gpu_available,
+                2048,
+                1,
+                1,
+                1,
+                None,
+                false,
+            )
+            .unwrap_err();
+            assert!(error.contains("automatic serving only supports GPT-OSS"));
+        }
     }
 
     #[test]

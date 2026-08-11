@@ -273,6 +273,7 @@ impl ModelRunnerGreedyBackend {
                 self.graph_max_batch_size,
                 self.graph_padded_batch_size,
                 self.runner.config.dtype,
+                gpt_oss_runtime_plan::BackendPreference::Cuda,
             )
             .with_attention_config(
                 self.runner.config.layer_types.clone(),
@@ -382,6 +383,7 @@ impl ConformanceBackend for PlannedReferenceBackend {
                 self.config.graph_max_batch_size,
                 self.config.graph_padded_batch_size,
                 self.config.dtype,
+                gpt_oss_runtime_plan::BackendPreference::Cuda,
             )
             .with_attention_config(
                 self.config.reference.layer_types.clone(),

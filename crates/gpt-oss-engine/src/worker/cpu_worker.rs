@@ -60,6 +60,8 @@ impl CpuWorker {
             requested_path = %kernel_path,
             compatibility_path = %runner.kernel_path(),
             dispatch_plan = %runner.kernel_dispatch_plan(),
+            mxfp4_gemv = %runner.kernel_dispatch_plan().mxfp4_gemv(),
+            mxfp4_layout = %runner.kernel_dispatch_plan().mxfp4_weight_layout(),
             "resolved CPU kernel dispatch"
         );
         Ok(Self::from_runner(runner))

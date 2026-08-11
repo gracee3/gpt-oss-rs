@@ -250,10 +250,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             init_tracing(&log_level);
             info!("gpt-oss-rs v0.1.0");
 
-            let gpu_available = detect_gpu_and_log();
-
-            let cpu_selected = device == DeviceChoice::Cpu
-                || (device == DeviceChoice::Auto && !gpu_available && is_gpt_oss_model(&model));
+            let cpu_selected = matches!(device, DeviceChoice::Auto | DeviceChoice::Cpu)
+                && is_gpt_oss_model(&model);
             let resolved_profile = resolve_serve_profile(
                 &model,
                 profile,
@@ -396,7 +394,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_profile_uses_gpt_oss_3090_defaults() {
+    fn explicit_cuda_profile_uses_gpt_oss_3090_defaults() {
         let resolved = resolve_serve_profile(
             "openai/gpt-oss-20b",
             ServeProfile::Auto,
@@ -446,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_profile_uses_batch_one_cpu_defaults_without_cuda() {
+    fn auto_profile_uses_batch_one_cpu_defaults() {
         let resolved = resolve_serve_profile(
             "openai/gpt-oss-20b",
             ServeProfile::Auto,

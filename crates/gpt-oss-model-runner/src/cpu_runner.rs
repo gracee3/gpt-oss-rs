@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_cpu_kernels::{
-    accumulate_mxfp4_bf16_block, e8m0_scale, DispatchPlan, KernelPath, Kernels, Mxfp4Block,
-    Q8Block, ResidualQ8Block, QUANT_BLOCK_SIZE,
+    accumulate_mxfp4_bf16_block, DispatchPlan, KernelPath, Kernels, Mxfp4WeightLayout,
+    Q8ActivationView, Q8Block, ResidualQ8ActivationView, ResidualQ8Block, QUANT_BLOCK_SIZE,
 };
 
 use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
@@ -289,6 +289,8 @@ pub struct CpuPrefillTrace {
     pub expert_projection: CpuExpertProjection,
     pub compatibility_kernel_path: String,
     pub dispatch_plan: String,
+    pub mxfp4_gemv_kernel: String,
+    pub mxfp4_weight_layout: String,
     pub layers: Vec<CpuLayerTrace>,
     pub final_norm: Vec<f32>,
     pub top_logits: Vec<CpuTopLogit>,
@@ -439,8 +441,11 @@ impl CpuModelRunner {
         let store = CpuTensorStore::open(snapshot)?;
         let identity = SourceIdentity::from_store(&store)?;
         let repack = CpuRepackCache::new(repack_root.as_ref(), identity);
-        let kernels = Kernels::new(options.kernel_path)
+        let mut kernels = Kernels::new(options.kernel_path)
             .map_err(|error| LLMError::ConfigError(error.to_string()))?;
+        if options.expert_projection == CpuExpertProjection::ExactBf16 {
+            kernels = kernels.with_exact_bf16_mxfp4();
+        }
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(options.threads)
             .thread_name(|index| format!("gpt-oss-cpu-{index}"))
@@ -450,7 +455,13 @@ impl CpuModelRunner {
 
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for index in 0..config.num_hidden_layers {
-            layers.push(load_layer(&store, &repack, &config, index)?);
+            layers.push(load_layer(
+                &store,
+                &repack,
+                &config,
+                index,
+                kernels.dispatch_plan().mxfp4_weight_layout(),
+            )?);
         }
         let final_norm = load_vector_len(&store.tensor("model.norm.weight")?, config.hidden_size)?;
         validate_shape(
@@ -633,13 +644,16 @@ impl CpuModelRunner {
         top_k: usize,
         trace_step: usize,
     ) -> CpuPrefillTrace {
+        let dispatch_plan = self.kernel_dispatch_plan();
         CpuPrefillTrace {
             prompt_token_ids: self.token_history.clone(),
             context_token_ids: self.token_history.clone(),
             trace_step,
             expert_projection: self.expert_projection,
             compatibility_kernel_path: self.kernel_path().to_string(),
-            dispatch_plan: self.kernel_dispatch_plan().to_string(),
+            dispatch_plan: dispatch_plan.to_string(),
+            mxfp4_gemv_kernel: dispatch_plan.mxfp4_gemv().to_string(),
+            mxfp4_weight_layout: dispatch_plan.mxfp4_weight_layout().to_string(),
             layers,
             final_norm,
             top_logits: top_logits(logits, top_k),
@@ -956,65 +970,67 @@ impl CpuModelRunner {
             ));
         }
         let kernels = self.kernels;
+        let view = weights.expert_view(expert)?;
+        let expert_bias = &bias[expert * rows..(expert + 1) * rows];
         let mut output = vec![0.0_f32; rows];
-        self.pool.install(|| {
-            output
-                .par_iter_mut()
-                .enumerate()
-                .try_for_each(|(row, destination)| {
-                    let mut total = bias[expert * rows + row];
-                    match input {
-                        PreparedExpertInput::Q8(input) => {
-                            for (block_index, activation) in input.iter().enumerate() {
-                                let (scale, packed) = weights.record(expert, row, block_index)?;
-                                let weight = Mxfp4Block {
-                                    scale,
-                                    packed: *packed,
-                                };
-                                let integer = kernels.mxfp4_q8_block_dot_i32(&weight, activation);
-                                total +=
-                                    integer as f32 * 0.5 * e8m0_scale(scale) * activation.scale;
-                            }
+        match input {
+            PreparedExpertInput::Q8(input) => self.pool.install(|| {
+                output
+                    .par_chunks_mut(8)
+                    .enumerate()
+                    .try_for_each(|(tile, destination)| {
+                        kernels
+                            .mxfp4_q8_gemv_tile(
+                                view,
+                                tile * 8,
+                                Q8ActivationView::new(input),
+                                expert_bias,
+                                destination,
+                            )
+                            .map_err(kernel_error)
+                    })
+            })?,
+            PreparedExpertInput::ResidualQ8(input) => self.pool.install(|| {
+                output
+                    .par_chunks_mut(8)
+                    .enumerate()
+                    .try_for_each(|(tile, destination)| {
+                        kernels
+                            .mxfp4_residual_q8_gemv_tile(
+                                view,
+                                tile * 8,
+                                ResidualQ8ActivationView::new(input),
+                                expert_bias,
+                                destination,
+                            )
+                            .map_err(kernel_error)
+                    })
+            })?,
+            PreparedExpertInput::ExactBf16(input) => self.pool.install(|| {
+                output
+                    .par_iter_mut()
+                    .enumerate()
+                    .try_for_each(|(row, destination)| {
+                        let mut total = expert_bias[row];
+                        let mut lanes = [0.0_f32; 16];
+                        for (block_index, activation) in
+                            input.chunks_exact(QUANT_BLOCK_SIZE).enumerate()
+                        {
+                            let weight = view.block(row, block_index).map_err(kernel_error)?;
+                            let activation: &[bf16; QUANT_BLOCK_SIZE] =
+                                activation.try_into().map_err(|_| {
+                                    LLMError::ModelError(
+                                        "invalid exact BF16 activation block".into(),
+                                    )
+                                })?;
+                            accumulate_mxfp4_bf16_block(&weight, activation, &mut lanes);
                         }
-                        PreparedExpertInput::ResidualQ8(input) => {
-                            for (block_index, activation) in input.iter().enumerate() {
-                                let (scale, packed) = weights.record(expert, row, block_index)?;
-                                let weight = Mxfp4Block {
-                                    scale,
-                                    packed: *packed,
-                                };
-                                let [primary, residual] =
-                                    kernels.mxfp4_residual_q8_block_dot_i32(&weight, activation);
-                                let weight_scale = 0.5 * e8m0_scale(scale);
-                                total += primary as f32 * weight_scale * activation.primary.scale;
-                                total += residual as f32 * weight_scale * activation.residual.scale;
-                            }
-                        }
-                        PreparedExpertInput::ExactBf16(input) => {
-                            let mut lanes = [0.0_f32; 16];
-                            for (block_index, activation) in
-                                input.chunks_exact(QUANT_BLOCK_SIZE).enumerate()
-                            {
-                                let (scale, packed) = weights.record(expert, row, block_index)?;
-                                let weight = Mxfp4Block {
-                                    scale,
-                                    packed: *packed,
-                                };
-                                let activation: &[bf16; QUANT_BLOCK_SIZE] =
-                                    activation.try_into().map_err(|_| {
-                                        LLMError::ModelError(
-                                            "invalid exact BF16 activation block".into(),
-                                        )
-                                    })?;
-                                accumulate_mxfp4_bf16_block(&weight, activation, &mut lanes);
-                            }
-                            total += lanes.into_iter().sum::<f32>();
-                        }
-                    }
-                    *destination = total;
-                    Ok::<(), LLMError>(())
-                })
-        })?;
+                        total += lanes.into_iter().sum::<f32>();
+                        *destination = total;
+                        Ok::<(), LLMError>(())
+                    })
+            })?,
+        }
         Ok(output)
     }
 }
@@ -1024,6 +1040,7 @@ fn load_layer(
     repack: &CpuRepackCache,
     config: &CpuGptOssConfig,
     index: usize,
+    mxfp4_layout: Mxfp4WeightLayout,
 ) -> Result<CpuLayer> {
     let prefix = format!("model.layers.{index}");
     let attention = format!("{prefix}.self_attn");
@@ -1069,11 +1086,13 @@ fn load_layer(
         &gate_blocks_name,
         &store.tensor(&gate_blocks_name)?,
         &store.tensor(&gate_scales_name)?,
+        mxfp4_layout,
     )?;
     let down = repack.open_or_create(
         &down_blocks_name,
         &store.tensor(&down_blocks_name)?,
         &store.tensor(&down_scales_name)?,
+        mxfp4_layout,
     )?;
     if gate_up.shape()
         != [
@@ -1928,6 +1947,41 @@ mod tests {
             .unwrap();
             assert_eq!(traced, plain.prefill(&[1, 2]).unwrap());
             assert_eq!(trace.expert_projection, expert_projection);
+            if expert_projection == CpuExpertProjection::ExactBf16 {
+                assert_eq!(trace.mxfp4_gemv_kernel, "exact-bf16-row");
+                assert_eq!(trace.mxfp4_weight_layout, "CanonicalAdjacentV1");
+                assert!(trace.dispatch_plan.contains("mxfp4_gemv=exact-bf16-row"));
+                assert!(trace
+                    .dispatch_plan
+                    .contains("mxfp4_layout=CanonicalAdjacentV1"));
+            }
+        }
+    }
+
+    #[test]
+    fn x8_runner_matches_scalar_with_and_without_trace() {
+        if Kernels::new(KernelPath::Avx2).is_err() {
+            return;
+        }
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut scalar =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        let expected = scalar.prefill(&[1, 2, 3]).unwrap();
+
+        for path in [KernelPath::Avx2, KernelPath::Auto] {
+            let mut traced = CpuModelRunner::load(snapshot.path(), &cache, path, 2, 16).unwrap();
+            let (actual, trace) = traced.prefill_trace(&[1, 2, 3], &[0, 1], 3).unwrap();
+            assert_eq!(actual, expected, "{path} trace changed logits");
+            assert_eq!(trace.mxfp4_gemv_kernel, "avx2-x8");
+            assert_eq!(trace.mxfp4_weight_layout, "InterleavedSplitX8V2");
+            assert!(trace.dispatch_plan.contains("mxfp4_gemv=avx2-x8"));
+            assert!(trace
+                .dispatch_plan
+                .contains("mxfp4_layout=InterleavedSplitX8V2"));
+
+            let mut plain = CpuModelRunner::load(snapshot.path(), &cache, path, 2, 16).unwrap();
+            assert_eq!(plain.prefill(&[1, 2, 3]).unwrap(), actual);
         }
     }
 

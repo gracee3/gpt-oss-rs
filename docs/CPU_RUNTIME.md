@@ -14,8 +14,14 @@ that requirement.
 
 Only `gate_up_proj` and `down_proj` MXFP4 tensors are repacked. Cache keys cover
 the resolved model revision, every source-shard SHA-256, the tensor name and
-shape, repack format version, and layout version. A repacked record is the E8M0
-scale byte followed by the 16 adjacent-nibble bytes for one 32-value block.
+shape, repack format version, and exact layout identifier. Scalar,
+AVX-512/VNNI, and exact-BF16 projections use `CanonicalAdjacentV1`, whose
+record is one E8M0 scale byte followed by 16 adjacent-nibble bytes.
+Q8/residual-Q8 automatic and forced-AVX2 projections use
+`InterleavedSplitX8V2`: complete eight-row groups store eight scales and 128
+split-half packed bytes per K block, while one-to-seven tail rows remain
+canonical. Both layouts use exactly 17 bytes per row/block. Only the selected
+layout is mapped; an existing cache for another layout is left untouched.
 Writers use an exclusive lock, a synced temporary file, atomic rename, and a
 directory sync. Published files are mapped read-only and never changed in
 place.
@@ -37,20 +43,24 @@ place.
   multiply, sigmoid, and add boundary.
 - Expert activations use residual Q8 by default:
   `Q8(x) + Q8(x - dequantize(Q8(x)))`. Scalar, AVX2, and AVX-512/VNNI kernels
-  unpack each MXFP4 block once and compute both integer dots from that unpack.
+  unpack each MXFP4 group once and compute both integer dots from that unpack.
+  The AVX2 x8 kernel decodes and accumulates eight output rows together.
 - The parity runner can select `q8`, `residual-q8`, or streaming `exact-bf16`
   expert projections. Exact BF16 decodes repacked blocks on demand into the
-  deterministic FP32 reduction lanes; it is diagnostic-only and does not
-  expand or alter the repack cache.
+  deterministic FP32 reduction lanes; it is diagnostic-only and selects the
+  compact canonical cache rather than expanding weights.
 
-The runtime is an experimental mainline backend. Its maintained seven-scenario
-greedy suite matches the pinned official SafeTensors/PyTorch oracle across
-scalar, AVX2, AVX-512/VNNI, and automatic dispatch, with practical 32 GiB host
-memory use and no repack-cache format change. A stricter end-to-end trace still
-shows a rare BF16 reduction-order difference before the expert projection; it
-is retained as diagnostic evidence rather than hidden or compensated later.
-Trusted mode continues to reject CPU serving until a separate review revisits
-that policy against the next kernel architecture and full API/memory evidence.
+The runtime is an experimental mainline backend. Its preceding baseline passed
+the maintained seven-scenario suite across scalar, AVX2, AVX-512/VNNI, and
+automatic dispatch. The AVX2 x8 promotion uses a narrower full-model gate:
+`harmony_122` on cold automatic and warm forced-AVX2 paths, and `harmony_262`
+on automatic, forced-AVX2, and scalar paths. A repeat of the exhaustive 28-run
+matrix, Criterion suite, llama.cpp captures, and complete API permutation
+matrix is deferred rather than claimed by this milestone. A stricter
+end-to-end trace still shows a rare BF16 reduction-order difference before the
+expert projection; it is retained as diagnostic evidence rather than hidden or
+compensated later. Trusted mode continues to reject CPU serving pending a
+separate certification review.
 
 ## Serving policy
 
@@ -60,12 +70,15 @@ the existing sampler handles greedy and stochastic generation. Chat
 Completions and Responses, including their streaming forms, share that engine
 path and retain the existing Harmony rendering and parsing.
 
-`--device auto` prefers usable CUDA and otherwise selects CPU for GPT-OSS.
-`--device cpu` is explicit, while `--device mock` is an explicit test-only
-choice. CPU rejects non-GPT-OSS models, request batching, tensor parallelism,
-pipeline parallelism, CUDA graphs, and trusted mode. The `gpt-oss-cpu` profile
-sets `max_model_len=8192` and `max_num_seqs=1` unless the user supplies a
-stricter supported value.
+`--device auto` selects CPU for GPT-OSS regardless of CUDA availability and
+does not probe or initialize CUDA. `--device cpu` is explicit. CUDA requires
+`--device cuda --runtime-mode experimental`; trusted CUDA is rejected.
+Automatic selection rejects non-GPT-OSS models, while `--device mock` remains
+an explicit test-only choice. CPU rejects request batching, tensor parallelism,
+pipeline parallelism, CUDA graphs, and trusted mode. Automatic GPT-OSS serving
+uses the `gpt-oss-cpu` profile (`max_model_len=8192`, `max_num_seqs=1`) unless
+the user supplies a stricter supported value. The GPU profile is reserved for
+explicit CUDA.
 
 `--cpu-repack-cache` defaults first to `GPT_OSS_RS_CACHE`, then
 `XDG_CACHE_HOME/gpt-oss-rs`, then `$HOME/.cache/gpt-oss-rs`. Model snapshots,
@@ -74,17 +87,18 @@ Git.
 
 ## Kernel dispatch
 
-Forced `scalar`, `avx2`, and `avx512-vnni` requests use that path for every
-operation and fail before execution when the requested ISA is unavailable.
-The public compatibility `path()` remains the highest selected host path.
+Forced `scalar`, `avx2`, and `avx512-vnni` requests preserve their compatibility
+meaning for dense operations and fail before execution when their exact ISA
+requirements are unavailable. Scalar uses the canonical MXFP4 row reference,
+AVX2 uses the x8 GEMV and interleaved layout, and AVX-512/VNNI retains its
+canonical row kernel. The public compatibility `path()` remains unchanged.
 
 Automatic dispatch resolves an immutable per-operation plan. On the validated
 development host, BF16 matvec, Q8/residual-Q8 quantization, and RMS norm select
-the AVX-512/VNNI implementation while MXFP4/Q8 expert dots select AVX2 because
-it benchmarks faster for that operation. Residual-Q8 dots follow the same
-expert-dot selection. This is a measured operation policy, not a CPU-model
-policy; startup logs include both the compatibility path and the complete
-read-only dispatch-plan description.
+the AVX-512 implementations while MXFP4 GEMV selects AVX2 x8. Residual-Q8 uses
+the same x8 kernel and decodes weights once for both activation passes. This is
+a capability policy, not a CPU-model policy; startup logs and captures include
+the exact GEMV kernel and packed-layout identifiers in the immutable plan.
 
 The current plan is a baseline, not the final abstraction. Future dispatch
 must describe precise ISA requirements and include operation type, matrix

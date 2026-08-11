@@ -105,6 +105,7 @@ struct ParityCapture<'a> {
     generated_token_ids: Vec<u32>,
     expected_official_greedy_tokens: Option<&'a [u32]>,
     pinned_llama_ubatch_1_greedy_tokens: Option<&'a [u32]>,
+    startup_seconds: f64,
     prompt_seconds: f64,
     generation_seconds: f64,
     trace: Option<CpuPrefillTrace>,
@@ -130,6 +131,7 @@ fn main() -> Result<()> {
         .len()
         .checked_add(cli.max_new_tokens)
         .context("context length overflow")?;
+    let startup_start = Instant::now();
     let mut runner = CpuModelRunner::load_with_options(
         &cli.model,
         &cli.repack_cache,
@@ -140,6 +142,7 @@ fn main() -> Result<()> {
             expert_projection: cli.expert_projection,
         },
     )?;
+    let startup_seconds = startup_start.elapsed().as_secs_f64();
 
     let prompt_start = Instant::now();
     let target_trace_step = (!cli.trace_layers.is_empty()).then_some(cli.trace_step.unwrap_or(0));
@@ -197,6 +200,7 @@ fn main() -> Result<()> {
         generated_token_ids,
         expected_official_greedy_tokens: scenario.official_greedy_tokens.as_deref(),
         pinned_llama_ubatch_1_greedy_tokens: scenario.llama_ubatch_1_greedy_tokens.as_deref(),
+        startup_seconds,
         prompt_seconds,
         generation_seconds,
         trace,

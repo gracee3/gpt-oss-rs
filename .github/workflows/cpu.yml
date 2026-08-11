@@ -37,12 +37,16 @@ jobs:
       - name: AVX2 path
         if: ${{ contains(runner.arch, 'X64') }}
         run: |
-          if grep -qw avx2 /proc/cpuinfo; then
+          if grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo; then
             GPT_OSS_CPU_KERNEL=avx2 cargo test -p gpt-oss-cpu-kernels --locked
           fi
       - name: AVX-512 VNNI path
         if: ${{ contains(runner.arch, 'X64') }}
         run: |
-          if grep -Eqw 'avx512vnni|avx512_vnni' /proc/cpuinfo; then
+          if grep -qw avx2 /proc/cpuinfo \
+            && grep -qw avx512f /proc/cpuinfo \
+            && grep -qw avx512bw /proc/cpuinfo \
+            && grep -qw avx512vl /proc/cpuinfo \
+            && grep -Eqw 'avx512vnni|avx512_vnni' /proc/cpuinfo; then
             GPT_OSS_CPU_KERNEL=avx512-vnni cargo test -p gpt-oss-cpu-kernels --locked
           fi

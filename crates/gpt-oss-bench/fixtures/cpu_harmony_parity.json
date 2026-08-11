@@ -49,7 +49,8 @@
       "segments": 14,
       "expected_prompt_tokens": 262,
       "prompt_text_sha256": "e57b923c6e81085510e8480844ccf6ed7926ccfdfdc2c400556625524f6a256c",
-      "prompt_token_ids_sha256": "77b9852b3cd9de5f2ad9aed6a586d244b31f0da4f37b5a5aa65533e1c41f062e"
+      "prompt_token_ids_sha256": "77b9852b3cd9de5f2ad9aed6a586d244b31f0da4f37b5a5aa65533e1c41f062e",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 8967, 33749, 220]
     },
     {
       "id": "harmony_346",

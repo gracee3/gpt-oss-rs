@@ -4,13 +4,17 @@
 //! of llama.cpp `ggml/src/ggml-cpu/arch/x86/quants.c` at revision
 //! 030ebb558a5820b444a8f836ed5cdd46c9b4bd7a (MIT). SafeTensors nibble order
 //! follows mistral.rs `mistralrs-quant/src/mxfp4/mod.rs` at revision
-//! 8010b6a0578e416120b590ed72fd46ed5f24ee85 (MIT).
+//! 8010b6a0578e416120b590ed72fd46ed5f24ee85 (MIT). The x8 row-interleaved
+//! packing organization was also cross-checked against ik_llama.cpp's IQK
+//! row-interleaved kernels at revision
+//! 26ceed9d4091a1696cf50e2ed87e5767d5811d81 (MIT). This is an independent
+//! Rust implementation of those algorithmic ideas.
 
 use std::arch::x86_64::*;
 
 use half::bf16;
 
-use crate::{Mxfp4Block, Q8Block, ResidualQ8Block};
+use crate::{Mxfp4Block, Mxfp4MatrixView, Q8Block, ResidualQ8Block};
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn bf16_dot_avx2(left: &[bf16], right: &[bf16]) -> f32 {
@@ -179,6 +183,188 @@ pub(super) unsafe fn mxfp4_residual_q8_dot_avx2(
         unsafe { mxfp4_q8_dot_unpacked_avx2(weights, &activation.primary) },
         unsafe { mxfp4_q8_dot_unpacked_avx2(weights, &activation.residual) },
     ]
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn repeated_i8x8(values: *const i8) -> __m256i {
+    // SAFETY: callers pass a pointer to at least eight activation bytes.
+    let values = unsafe { values.cast::<i64>().read_unaligned() };
+    _mm256_set1_epi64x(values)
+}
+
+#[target_feature(enable = "avx2")]
+fn dot_four_rows_eight(weights: __m256i, activations: __m256i) -> [i32; 4] {
+    // VPMADDUBSW accepts unsigned bytes first and signed bytes second. Q8 is
+    // represented as abs(activation), while VPSIGNB transfers its sign to the
+    // small signed doubled-E2M1 weight. Each eight-byte segment is one row.
+    let absolute_activations = _mm256_abs_epi8(activations);
+    let signed_weights = _mm256_sign_epi8(weights, activations);
+    let pairs = _mm256_maddubs_epi16(absolute_activations, signed_weights);
+    let quads = _mm256_madd_epi16(pairs, _mm256_set1_epi16(1));
+    let mut partial = [0_i32; 8];
+    // SAFETY: `partial` has room for one 256-bit vector.
+    unsafe { _mm256_storeu_si256(partial.as_mut_ptr().cast(), quads) };
+    std::array::from_fn(|row| partial[row * 2] + partial[row * 2 + 1])
+}
+
+struct X8ChunkActivations {
+    primary_low: __m256i,
+    primary_high: __m256i,
+    residual_low: Option<__m256i>,
+    residual_high: Option<__m256i>,
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn accumulate_x8_chunk(
+    packed: *const u8,
+    activations: X8ChunkActivations,
+    row_start: usize,
+    primary: &mut [i32; 8],
+    residual: &mut [i32; 8],
+) {
+    const LUT: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
+    // SAFETY: callers pass 32 packed bytes and the fixed LUT has 16 bytes.
+    let packed = unsafe { _mm256_loadu_si256(packed.cast()) };
+    let lut = _mm256_broadcastsi128_si256(unsafe { _mm_loadu_si128(LUT.as_ptr().cast()) });
+    let mask = _mm256_set1_epi8(0x0f);
+    let low_weights = _mm256_shuffle_epi8(lut, _mm256_and_si256(packed, mask));
+    let high_weights =
+        _mm256_shuffle_epi8(lut, _mm256_and_si256(_mm256_srli_epi16(packed, 4), mask));
+
+    let low_dot = dot_four_rows_eight(low_weights, activations.primary_low);
+    let high_dot = dot_four_rows_eight(high_weights, activations.primary_high);
+    for row in 0..4 {
+        primary[row_start + row] += low_dot[row] + high_dot[row];
+    }
+    if let (Some(residual_low), Some(residual_high)) =
+        (activations.residual_low, activations.residual_high)
+    {
+        let low_dot = dot_four_rows_eight(low_weights, residual_low);
+        let high_dot = dot_four_rows_eight(high_weights, residual_high);
+        for row in 0..4 {
+            residual[row_start + row] += low_dot[row] + high_dot[row];
+        }
+    }
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn mxfp4_x8_block_dots(
+    packed: &[u8; 136],
+    primary_values: &[i8; 32],
+    residual_values: Option<&[i8; 32]>,
+) -> (__m256i, __m256i) {
+    let mut primary = [0_i32; 8];
+    let mut residual = [0_i32; 8];
+    for chunk in 0..2 {
+        // SAFETY: each chunk points at an eight-byte half-row.
+        let primary_low = unsafe { repeated_i8x8(primary_values.as_ptr().add(chunk * 8)) };
+        let primary_high = unsafe { repeated_i8x8(primary_values.as_ptr().add(16 + chunk * 8)) };
+        let residual_low = residual_values.map(|values| {
+            // SAFETY: same fixed 32-byte activation bound as the primary.
+            unsafe { repeated_i8x8(values.as_ptr().add(chunk * 8)) }
+        });
+        let residual_high = residual_values.map(|values| {
+            // SAFETY: same fixed 32-byte activation bound as the primary.
+            unsafe { repeated_i8x8(values.as_ptr().add(16 + chunk * 8)) }
+        });
+        for row_group in 0..2 {
+            let offset = 8 + chunk * 64 + row_group * 32;
+            // SAFETY: the x8 record has 128 packed bytes after its scales; each
+            // iteration consumes one in-bounds 32-byte four-row segment.
+            unsafe {
+                accumulate_x8_chunk(
+                    packed.as_ptr().add(offset),
+                    X8ChunkActivations {
+                        primary_low,
+                        primary_high,
+                        residual_low,
+                        residual_high,
+                    },
+                    row_group * 4,
+                    &mut primary,
+                    &mut residual,
+                )
+            };
+        }
+    }
+    // SAFETY: both arrays have room for one 256-bit vector.
+    (
+        unsafe { _mm256_loadu_si256(primary.as_ptr().cast()) },
+        unsafe { _mm256_loadu_si256(residual.as_ptr().cast()) },
+    )
+}
+
+#[target_feature(enable = "avx2")]
+fn x8_weight_scales(packed: &[u8; 136]) -> __m256 {
+    // SAFETY: an x8 record begins with eight E8M0 scale bytes.
+    let scales = unsafe { _mm_loadl_epi64(packed.as_ptr().cast()) };
+    let exponent_bits = _mm256_slli_epi32(_mm256_cvtepu8_epi32(scales), 23);
+    _mm256_castsi256_ps(exponent_bits)
+}
+
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn mxfp4_q8_gemv_x8_avx2(
+    weights: Mxfp4MatrixView<'_>,
+    row_start: usize,
+    activations: &[Q8Block],
+    bias: &[f32],
+    output: &mut [f32],
+) {
+    // SAFETY: the public projection entry point validates eight-element slices.
+    let mut accumulator = unsafe { _mm256_loadu_ps(bias.as_ptr()) };
+    let group = row_start / 8;
+    for (block_index, activation) in activations.iter().enumerate() {
+        let packed = weights.x8_block(group, block_index);
+        // SAFETY: activation arrays and packed group sizes are fixed.
+        let (dots, _) = unsafe { mxfp4_x8_block_dots(packed, &activation.values, None) };
+        let mut contribution = _mm256_cvtepi32_ps(dots);
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+        contribution = _mm256_mul_ps(contribution, x8_weight_scales(packed));
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(activation.scale));
+        accumulator = _mm256_add_ps(accumulator, contribution);
+    }
+    // SAFETY: the public projection entry point validates eight output lanes.
+    unsafe { _mm256_storeu_ps(output.as_mut_ptr(), accumulator) };
+}
+
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn mxfp4_residual_q8_gemv_x8_avx2(
+    weights: Mxfp4MatrixView<'_>,
+    row_start: usize,
+    activations: &[ResidualQ8Block],
+    bias: &[f32],
+    output: &mut [f32],
+) {
+    // SAFETY: the public projection entry point validates eight-element slices.
+    let mut accumulator = unsafe { _mm256_loadu_ps(bias.as_ptr()) };
+    let group = row_start / 8;
+    for (block_index, activation) in activations.iter().enumerate() {
+        let packed = weights.x8_block(group, block_index);
+        // SAFETY: activation arrays and packed group sizes are fixed. Both dots
+        // share each decoded weight vector before the K-block advances.
+        let (primary, residual) = unsafe {
+            mxfp4_x8_block_dots(
+                packed,
+                &activation.primary.values,
+                Some(&activation.residual.values),
+            )
+        };
+        let weight_scales = x8_weight_scales(packed);
+
+        let mut contribution = _mm256_cvtepi32_ps(primary);
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+        contribution = _mm256_mul_ps(contribution, weight_scales);
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(activation.primary.scale));
+        accumulator = _mm256_add_ps(accumulator, contribution);
+
+        let mut contribution = _mm256_cvtepi32_ps(residual);
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+        contribution = _mm256_mul_ps(contribution, weight_scales);
+        contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(activation.residual.scale));
+        accumulator = _mm256_add_ps(accumulator, contribution);
+    }
+    // SAFETY: the public projection entry point validates eight output lanes.
+    unsafe { _mm256_storeu_ps(output.as_mut_ptr(), accumulator) };
 }
 
 #[target_feature(enable = "avx2,avx512vl,avx512vnni")]

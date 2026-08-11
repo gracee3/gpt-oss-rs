@@ -203,7 +203,16 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
 
     info!(model = %model_name, "initializing engine");
 
-    let cuda_runtime = detect_cuda_runtime();
+    // Automatic GPT-OSS startup is CPU-first and must not initialize the CUDA
+    // driver. Discovery remains available for explicit CUDA and `info`.
+    let cuda_runtime = if config.device.device == "cuda" {
+        detect_cuda_runtime()
+    } else {
+        CudaRuntimeInfo {
+            available: false,
+            primary_gpu_total_memory: None,
+        }
+    };
     let allow_long_context_override = std::env::var("GPT_OSS_RS_ALLOW_LONG_CONTEXT")
         .ok()
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))

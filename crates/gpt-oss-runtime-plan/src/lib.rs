@@ -90,6 +90,7 @@ impl PlanRequest {
         graph_max_batch_size: usize,
         graph_padded_batch_size: Option<usize>,
         dtype: Dtype,
+        backend: BackendPreference,
     ) -> Self {
         Self {
             runtime_mode,
@@ -102,13 +103,8 @@ impl PlanRequest {
             dtype,
             layer_types: Vec::new(),
             sliding_window: None,
-            backend: BackendPreference::Cuda,
+            backend,
         }
-    }
-
-    pub fn with_backend(mut self, backend: BackendPreference) -> Self {
-        self.backend = backend;
-        self
     }
 
     pub fn with_attention_config(
@@ -298,6 +294,7 @@ mod tests {
             32,
             Some(8),
             Dtype::Float16,
+            BackendPreference::Cuda,
         ))
         .unwrap();
 
@@ -316,6 +313,7 @@ mod tests {
             32,
             Some(8),
             Dtype::Float16,
+            BackendPreference::Cuda,
         ))
         .unwrap();
 
@@ -339,6 +337,7 @@ mod tests {
             32,
             Some(8),
             Dtype::Float16,
+            BackendPreference::Cuda,
         ))
         .unwrap();
 
@@ -358,6 +357,7 @@ mod tests {
                 32,
                 None,
                 Dtype::Float16,
+                BackendPreference::Cuda,
             )
             .with_attention_config(vec!["sliding_attention".into()], Some(128)),
         )
@@ -368,19 +368,17 @@ mod tests {
 
     #[test]
     fn experimental_gpt_oss_cpu_forbids_cuda_graphs() {
-        let plan = plan_request(
-            &PlanRequest::new(
-                RuntimeMode::Experimental,
-                "openai/gpt-oss-20b",
-                false,
-                true,
-                true,
-                32,
-                Some(8),
-                Dtype::BFloat16,
-            )
-            .with_backend(BackendPreference::Cpu),
-        )
+        let plan = plan_request(&PlanRequest::new(
+            RuntimeMode::Experimental,
+            "openai/gpt-oss-20b",
+            false,
+            true,
+            true,
+            32,
+            Some(8),
+            Dtype::BFloat16,
+            BackendPreference::Cpu,
+        ))
         .unwrap();
 
         assert_eq!(plan.backend_path, BackendPath::Cpu);
@@ -398,8 +396,8 @@ mod tests {
             1,
             None,
             Dtype::BFloat16,
-        )
-        .with_backend(BackendPreference::Cpu);
+            BackendPreference::Cpu,
+        );
         assert!(plan_request(&non_gpt).is_err());
 
         let trusted = PlanRequest::new(
@@ -411,8 +409,8 @@ mod tests {
             1,
             None,
             Dtype::BFloat16,
-        )
-        .with_backend(BackendPreference::Cpu);
+            BackendPreference::Cpu,
+        );
         assert!(plan_request(&trusted).is_err());
     }
 }

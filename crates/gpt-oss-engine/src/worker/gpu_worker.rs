@@ -1383,6 +1383,7 @@ impl GpuWorker {
                 GRAPH_MAX_BATCH_SIZE,
                 graph_padded_batch_size,
                 self.config.dtype,
+                gpt_oss_runtime_plan::BackendPreference::Cuda,
             )
             .with_attention_config(self.config.layer_types.clone(), self.config.sliding_window),
         )
