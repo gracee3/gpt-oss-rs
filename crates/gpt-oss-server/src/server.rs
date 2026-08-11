@@ -429,6 +429,7 @@ async fn create_cpu_engine(
         mxfp4_gemv = %dispatch.mxfp4_gemv(),
         mxfp4_weight_layout = %cpu_model.mxfp4_weight_layout(),
         mxfp4_matmul_backend = %cpu_model.matmul_backend(),
+        amx_runtime = ?cpu_model.amx_runtime_status().map(|status| status.to_string()),
         context_cap,
         "loaded native CPU model"
     );

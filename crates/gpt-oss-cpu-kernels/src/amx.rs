@@ -179,7 +179,10 @@ pub(crate) fn execute_amx_int8_tile(
     }
 }
 
-#[cfg(not(all(feature = "amx-int8", target_os = "linux", target_arch = "x86_64")))]
+#[cfg(all(
+    feature = "amx-int8",
+    not(all(target_os = "linux", target_arch = "x86_64"))
+))]
 pub(crate) fn execute_amx_int8_tile(
     _rows: usize,
     _a_panel: &[u8],

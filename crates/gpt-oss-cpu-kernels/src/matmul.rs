@@ -1479,4 +1479,29 @@ mod tests {
             assert_eq!(i32::from_ne_bytes(value.try_into().unwrap()), 48_768);
         }
     }
+
+    #[cfg(feature = "amx-int8")]
+    #[test]
+    fn forced_amx_checks_runtime_before_scalar_fallback() {
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let (canonical, q8) = fixtures(16, 1);
+        let data = pack_x8(&canonical, 16, 1);
+        let weights =
+            Mxfp4MatrixView::new(&data, 16, 1, Mxfp4WeightLayout::InterleavedSplitX8V2).unwrap();
+        let activations = Q8MatrixView::new(&q8, 1, 1, 1).unwrap();
+        let mut output = vec![0.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, None, &mut output, 16).unwrap();
+        match crate::initialize_amx_int8() {
+            Ok(_) => kernels
+                .mxfp4_matmul(Mxfp4MatmulBackend::AmxInt8, problem, &mut [])
+                .unwrap(),
+            Err(expected) => {
+                let error = kernels
+                    .mxfp4_matmul(Mxfp4MatmulBackend::AmxInt8, problem, &mut [])
+                    .unwrap_err();
+                assert!(error.to_string().contains(expected.reason()));
+            }
+        }
+    }
 }

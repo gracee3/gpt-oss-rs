@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_core::types::{SequenceId, TokenId};
 use gpt_oss_cpu_kernels::{
-    accumulate_mxfp4_bf16_block, DispatchPlan, KernelPath, Kernels, Mxfp4MatmulBackend,
-    Mxfp4MatmulProblem, Mxfp4ScratchRequirement, Mxfp4WeightLayout, Q8ActivationView, Q8Block,
-    Q8MatrixView, ResidualQ8ActivationView, ResidualQ8Block, ResidualQ8MatrixView,
-    QUANT_BLOCK_SIZE,
+    accumulate_mxfp4_bf16_block, initialize_amx_int8, AmxRuntimeStatus, DispatchPlan, KernelPath,
+    Kernels, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement, Mxfp4WeightLayout,
+    Q8ActivationView, Q8Block, Q8MatrixView, ResidualQ8ActivationView, ResidualQ8Block,
+    ResidualQ8MatrixView, QUANT_BLOCK_SIZE,
 };
 
 use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
@@ -349,6 +349,7 @@ pub struct CpuModel {
     expert_projection: CpuExpertProjection,
     matmul_backend: Mxfp4MatmulBackend,
     mxfp4_weight_layout: Mxfp4WeightLayout,
+    amx_runtime_status: Option<AmxRuntimeStatus>,
 }
 
 /// Batch-one compatibility facade over one shared [`CpuModel`].
@@ -901,6 +902,15 @@ impl CpuModel {
                 "CPU thread count must be non-zero".into(),
             ));
         }
+        let amx_runtime_status = if matmul_backend == Mxfp4MatmulBackend::AmxInt8 {
+            Some(initialize_amx_int8().map_err(|error| {
+                LLMError::ConfigError(format!(
+                    "MXFP4 matrix backend 'amx-int8' is unavailable: {error}"
+                ))
+            })?)
+        } else {
+            None
+        };
         let snapshot = snapshot.as_ref();
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
         let store = CpuTensorStore::open(snapshot)?;
@@ -950,6 +960,7 @@ impl CpuModel {
             expert_projection,
             matmul_backend,
             mxfp4_weight_layout: weight_layout,
+            amx_runtime_status,
         }))
     }
 
@@ -975,6 +986,10 @@ impl CpuModel {
 
     pub const fn mxfp4_weight_layout(&self) -> Mxfp4WeightLayout {
         self.mxfp4_weight_layout
+    }
+
+    pub const fn amx_runtime_status(&self) -> Option<AmxRuntimeStatus> {
+        self.amx_runtime_status
     }
 
     pub fn new_sequence_state(&self, context_cap: usize) -> Result<CpuSequenceModelState> {
@@ -3373,10 +3388,30 @@ mod tests {
         .unwrap();
         assert_eq!(model.kernel_path(), KernelPath::Scalar);
         assert_eq!(model.matmul_backend(), Mxfp4MatmulBackend::Avx2);
+        assert_eq!(model.amx_runtime_status(), None);
         assert_eq!(
             model.mxfp4_weight_layout(),
             Mxfp4WeightLayout::InterleavedSplitX8V2
         );
+    }
+
+    #[cfg(not(feature = "amx-int8"))]
+    #[test]
+    fn explicit_amx_backend_fails_before_snapshot_or_worker_construction() {
+        let error = match CpuModel::load_with_matmul_backend(
+            "/definitely/missing/gpt-oss-snapshot",
+            "/definitely/missing/repack",
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::ResidualQ8,
+            Mxfp4MatmulBackend::AmxInt8,
+        ) {
+            Ok(_) => panic!("AMX backend unexpectedly loaded without its feature"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("the amx-int8 Cargo feature is not enabled"));
     }
 
     #[test]
