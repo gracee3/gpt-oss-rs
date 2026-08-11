@@ -18,7 +18,8 @@
   implementation research syntheses.
 - [`cpu-runtime-plans/`](cpu-runtime-plans/README.md): durable program and
   milestone implementation plans, validation gates, deviations, and completion
-  evidence for the experimental CPU feature set.
+  evidence for the experimental CPU feature set, including its
+  [final integration record](cpu-runtime-plans/FINAL_INTEGRATION.md).
 
 ## Project direction
 

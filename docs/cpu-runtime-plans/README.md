@@ -120,6 +120,7 @@ permutations, or AMX hardware tests during this feature program.
 - [M3 — Immutable model and sequence state](M3_MODEL_SEQUENCE_STATE.md)
 - [M4 — CPU batching and scheduling](M4_CPU_SCHEDULING.md)
 - [M5 — AMX-INT8 prototype](M5_AMX_INT8.md)
+- [Final integration record](FINAL_INTEGRATION.md)
 
 ## Completion record
 
@@ -140,5 +141,6 @@ permutations, or AMX hardware tests during this feature program.
   documentation/CI checkpoint; portable packing, emulation, diagnostics,
   feature compilation, and warnings-denied Clippy passed, while AMX-hardware
   execution remains deferred
-- Final integration commit and workflow: pending
+- Final integration evidence: [`FINAL_INTEGRATION.md`](FINAL_INTEGRATION.md);
+  complete local gate, short 20B smoke, and branch CPU workflow passed
 - `origin/main` verification: pending
