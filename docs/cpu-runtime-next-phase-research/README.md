@@ -114,7 +114,7 @@ gap with estimates.
 | E1 | [`00-evidence-and-observability.md`](00-evidence-and-observability.md) | planning-ready |
 | C1 | [`01-service-lifecycle-api.md`](01-service-lifecycle-api.md) | planning-ready |
 | C2 | [`02-memory-reservations.md`](02-memory-reservations.md) | planning-ready |
-| C3 | [`03-numerical-trust.md`](03-numerical-trust.md) | pending |
+| C3 | [`03-numerical-trust.md`](03-numerical-trust.md) | narrow experiment warranted |
 | C4-A | [`04a-moe-orchestration.md`](04a-moe-orchestration.md) | pending |
 | C4-B | [`04b-dense-bf16.md`](04b-dense-bf16.md) | pending |
 | C4-C | [`04c-attention.md`](04c-attention.md) | pending |
