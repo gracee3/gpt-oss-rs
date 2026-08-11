@@ -38,16 +38,17 @@ on 2026-08-11. No source or configuration file was edited.
   than commit-SHA pinned. Workspace fmt/check/test, forced kernel tests, and
   AMX feature check/test/Clippy are present. Warnings-denied Clippy is scoped to
   the CPU-kernel crate's AMX job, not the whole workspace.
-- **C7-E-004 / CURRENT-REPO FACT:** `README.md` says both that CPU serving is
-  batch size one/request batching unsupported and that opt-in multi-request
-  scheduling is implemented elsewhere. Source and `CPU_RUNTIME.md` establish
-  batch-one as the default profile and multi-request serving as experimental.
-  The README route list also omits mounted response retrieval, batch, and tool
-  alias routes.
-- **C7-E-005 / CURRENT-REPO FACT:** `docs/README.md` and
-  `CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md` still describe next-phase
-  research as not started. They are the intake entry points and must be changed
-  at research closeout. By contrast, the older
+- **C7-E-004 / CURRENT-REPO FACT:** at audit time, `README.md` said both that
+  CPU serving was batch size one/request batching unsupported and that opt-in
+  multi-request scheduling was implemented elsewhere. Source and
+  `CPU_RUNTIME.md` establish batch-one as the default profile and multi-request
+  serving as experimental. The route list also omitted mounted response
+  retrieval, batch, and tool alias routes; research closeout corrects both
+  status surfaces without changing a route.
+- **C7-E-005 / CURRENT-REPO FACT:** at audit time, `docs/README.md` and
+  `CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md` described next-phase research
+  as not started. The research closeout corrects those intake entry points
+  outside the maintenance slices. By contrast, the older
   `CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md` contains chronological “not started”
   and “completed” journal entries for M1-M5; that history is not stale text.
 - **C7-E-006 / CURRENT-REPO FACT:** `server.rs::build_router` maps

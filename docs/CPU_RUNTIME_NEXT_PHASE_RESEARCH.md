@@ -1,6 +1,6 @@
 # CPU Runtime Next-Phase Research
 
-- Status: research executed; implementation planning is not authorized
+- Status: research complete; implementation planning is not authorized
 - Started: 2026-08-11
 - Repository content baseline: `main` at
   `a090bb0e81457e4302deb36d6e52a0847c14bfb0`
@@ -59,6 +59,9 @@ Tiger Lake/Xe inspection was performed.
   stress-tests current seams without starting feature research.
 - [`07-maintenance-audit.md`](cpu-runtime-next-phase-research/07-maintenance-audit.md)
   records bounded cleanup candidates without fixing them.
+- [`08-cross-track-closeout.md`](cpu-runtime-next-phase-research/08-cross-track-closeout.md)
+  resolves dependencies, records planning-readiness gates, and attests the
+  documentation-only scope.
 
 ## Boundary
 

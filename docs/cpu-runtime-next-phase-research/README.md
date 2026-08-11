@@ -1,6 +1,6 @@
 # CPU Runtime Next-Phase Research Corpus
 
-- Status: research closeout pending
+- Status: research complete; implementation planning not authorized
 - Research date: 2026-08-11
 - Repository source baseline: `a090bb0e81457e4302deb36d6e52a0847c14bfb0`
 - Intake checkpoint: `9df99d24891aa95c2bd9aa39bab9d5a1fa4b1555`
@@ -11,6 +11,10 @@ Each synthesis states its own outcome using exactly one of: **planning-ready**,
 **narrow experiment warranted**, **deferred**, **rejected**, or
 **inconclusive**. Planning-ready means only that a later owner-authorized plan
 could be written; it is not implementation authority.
+
+The integrated dependency decisions, readiness gates, rejected inferences, and
+scope attestation are in
+[`08-cross-track-closeout.md`](08-cross-track-closeout.md).
 
 ## Baseline record
 
@@ -121,6 +125,7 @@ gap with estimates.
 | C5 | [`05-amx-hardware.md`](05-amx-hardware.md) | deferred |
 | C6 | [`06-long-horizon-seams.md`](06-long-horizon-seams.md) | planning-ready |
 | C7 | [`07-maintenance-audit.md`](07-maintenance-audit.md) | planning-ready |
+| Cross-track | [`08-cross-track-closeout.md`](08-cross-track-closeout.md) | planning-ready (foundation decisions only) |
 
 ## Cross-track rules
 

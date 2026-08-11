@@ -19,8 +19,9 @@ framework, or accelerator. See
   GPT-OSS even when CUDA is present.
 - CUDA serving requires the explicit combination `--device cuda
   --runtime-mode experimental`.
-- CPU serving supports official GPT-OSS SafeTensors, batch size one, BF16 dense
-  weights, MXFP4 experts, and layer-major multi-row prompt prefill.
+- CPU serving supports official GPT-OSS SafeTensors, a batch-one default with
+  opt-in experimental multi-request scheduling, BF16 dense weights, MXFP4
+  experts, and layer-major multi-row prompt prefill.
 - The preceding CPU baseline has exact greedy-token parity with the pinned
   official SafeTensors/PyTorch oracle across the seven maintained Harmony
   scenarios and four kernel choices. The promoted AVX2 x8 path is gated by the
@@ -31,8 +32,9 @@ framework, or accelerator. See
 - A small end-to-end BF16 reduction-order trace difference remains before the
   expert kernels. It does not change the maintained greedy sequences, but it is
   retained as an explicit diagnostic limitation.
-- CPU trusted mode, request batching, tensor/pipeline parallel CPU execution,
-  and CPU CUDA-graph behavior remain unsupported.
+- CPU trusted mode, tensor/pipeline parallel CPU execution, and CPU CUDA-graph
+  behavior remain unsupported. Multi-request scheduling is experimental rather
+  than a broad service-compatibility promise.
 
 The CPU backend now has capability-level dispatch, AVX2 and experimental
 AVX-512/VNNI x8 MXFP4 GEMV, plus a common matrix contract and an explicit AVX2
@@ -125,12 +127,20 @@ The server exposes:
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `GET /v1/responses/:response_id`
+- `GET /v1/responses/:response_id/input_items`
 - `GET /v1/models`
+- `POST /v1/batches`
+- `GET /v1/batches/:batch_id`
+- `GET /v1/batches/:batch_id/output`
+- `POST /v1/batches/:batch_id/cancel`
 - `GET /health`
 - `GET /metrics`
 
 Chat Completions and Responses support streaming and non-streaming Harmony
-text/tool flows through the same engine path.
+text/tool flows through the same engine path. The mounted
+`/v1/chat/completions/tools` and `/tools` routes are aliases of the chat
+handler, not separate compatibility contracts.
 
 ## CPU architecture
 
@@ -196,6 +206,9 @@ Current documentation:
 - [`docs/cpu-runtime-research/`](docs/cpu-runtime-research/README.md): completed
   source-grounded pre-planning for AVX-512 x8, GEMM/prefill, state separation,
   CPU scheduling, and AMX;
+- [`docs/CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](docs/CPU_RUNTIME_NEXT_PHASE_RESEARCH.md):
+  completed documentation-only research on evidence, service lifecycle, memory,
+  numerical trust, operator seams, AMX closure, and bounded future pressure;
 - [`docs/TIER2_FP16_CUDA_WORKFLOW.md`](docs/TIER2_FP16_CUDA_WORKFLOW.md): the
   retained restricted-fp16 CUDA investigation contract.
 

@@ -49,10 +49,12 @@ ownership; it is not a vLLM scheduler port. The local AMX prototype preserves
 MXFP4 per-block scaling and uses its own Rust contracts; it is not oneDNN
 BRGeMM integration.
 
-## Next-phase pre-research reference register
+## Next-phase research reference register
 
-These entries record why a pinned source may be inspected during a later
-approved charter. They do not claim adoption or implementation derivation.
+These entries record why a pinned source was inspected during the approved
+documentation-only research charter. They do not claim adoption or
+implementation derivation. Exact findings and limitations are in
+[`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md).
 
 | Source | Relationship | Candidate lesson | Boundary / local question |
 | --- | --- | --- | --- |
@@ -65,10 +67,10 @@ approved charter. They do not claim adoption or implementation derivation.
 | [OpenAI gpt-oss](https://github.com/openai/gpt-oss) at `7b583341fe16729127f6d5b94a7b09ccae97e1a1` | Semantic cross-check and research reference | Stable operator phase names and readable RMSNorm, RoPE, attention-sink, routing, and SwiGLU precision boundaries | Official semantics remain authoritative; GPU execution organization is not a local runtime template |
 | [MegaBlocks](https://github.com/databricks/megablocks) at `952db33d6eac334d22c61e47a0d5d41446298784` | Research reference | Expert-bucket distributions and route/group/compute/unroute stage accounting | Uniform routing is only a controlled stress shape, not evidence for real GPT-OSS routing |
 
-No code was copied or adapted for this register. Exact inspected paths,
-retained concepts, local expressions, differences, and validation obligations
-must be added if a later research conclusion or implementation relies on one
-of these sources.
+No code was copied or adapted for this register. The next-phase corpus records
+exact inspected paths, differences, and validation obligations. Any later
+implementation that relies on a concept must update its relationship and local
+expression here and, where applicable, in code-level provenance.
 
 ## Repository-native synthesis
 
@@ -97,11 +99,12 @@ relationship.
 | [Level Zero](https://github.com/oneapi-src/level-zero) at `1ca51c950d97f34d9d271615af8d797836fe6974` | Explicit discovery/context/memory/module/kernel/queue/event lifecycle; optional validation/tracing; capability-first dispatch | Maps cleanly to a small forced Intel-GPU backend | Require installed loader/driver evidence, reproducible SPIR-V, one scalar-equivalent operation, and comparison with Vulkan |
 | [rust-gpu](https://github.com/Rust-GPU/rust-gpu) | Rust-authored SPIR-V kernel path | Could preserve the project's Rust-first educational approach for later GPU work | Toolchain stability, artifact reproducibility, supported operations, and maintenance must be demonstrated separately |
 | Candle, RTen, and Burn | Reusable Rust tensor/kernel interfaces and test practices | Possible homes for independently useful CPU results | Audit only against a concrete primitive; framework compatibility is not itself a project goal |
-| llama.cpp, TGI, and local transactional ownership | Byte-bounded result delivery separated from canonical sequence authority | Prevents a slow or disconnected consumer from stalling or mutating committed inference progress | C1 must define commit, coalescing, abandonment, failure, and cleanup semantics before implementation |
-| vLLM, Sarathi-Serve, mistral.rs, and oneDNN evidence patterns | One effective-runtime snapshot plus distinct production metrics, diagnostic traces, and offline run manifests | Makes dispatch, work shape, latency, memory, correctness, and negative results reproducible without a telemetry platform | E1 must set overhead, cardinality, timestamp, redaction, and source-role rules |
-| Existing CPU memory ownership plus mature memory-manager references | Resource reservations with grant, expansion, refund, release, and stable rejection reasons | Can bound prompts, KV, scratch, delivery, and stored output while retaining contiguous KV initially | C1/C2 ownership and accounting research must precede policy or paged storage |
-| Official GPT-OSS, oneDNN, MegaBlocks, and existing typed CPU problems | Separate typed MoE, dense-BF16, and attention contracts with explicit scratch/threading/eligibility | Preserves semantic baselines and allows measured backend experiments without one general operator framework | Three bounded C4 charters must establish real consumers and correctness strategies before implementation |
-| ggml/llama.cpp graphs and oneDNN Graph | A limited inspectable execution-plan representation | Might centralize scratch liveness, operation tracing, or dispatch evidence | Require at least two real consumers or a measured maintenance/debugging problem; reject a general tensor/autodiff framework |
+| llama.cpp, TGI, and local transactional ownership | Byte-bounded result delivery separated from canonical sequence authority | Prevents a slow or disconnected consumer from stalling or mutating committed inference progress | C1 now defines commit, coalescing, abandonment, failure, and cleanup as a planning-ready candidate contract; implementation planning remains unauthorized |
+| vLLM, Sarathi-Serve, mistral.rs, and oneDNN evidence patterns | One effective-runtime snapshot plus distinct production metrics, diagnostic traces, and offline run manifests | Makes dispatch, work shape, latency, memory, correctness, and negative results reproducible without a telemetry platform | E1 now defines overhead, cardinality, timestamp, redaction, source-role, and negative-result rules; a later plan must retain all three evidence surfaces |
+| Existing CPU memory ownership plus mature memory-manager references | Resource reservations with grant, expansion, refund, release, and stable rejection reasons | Can bound prompts, KV, scratch, delivery, and stored output while retaining contiguous KV initially | C2 is planning-ready with distinct virtual/resident/allocator/logical dimensions; policy values still require measured pressure and C1 terminal ownership |
+| Official GPT-OSS, oneDNN, MegaBlocks, and existing typed CPU problems | Separate typed MoE, dense-BF16, and attention contracts with explicit scratch/threading/eligibility | Preserves semantic baselines and allows measured backend experiments without one general operator framework | C4 recorded all three descriptors and correctness strategies, but candidate ranking is deferred until the recoverable owner workload corpus arrives |
+| Official GPT-OSS and local transactional KV ownership | Attention rows keyed by sequence and absolute position plus a storage-neutral committed/staged KV read seam | Keeps causal/sliding/GQA/sink semantics independent of contiguous versus future fragmented storage | C4-C records the candidate only; contiguous KV remains current and paging/prefix reuse are not authorized |
+| Sarathi-Serve and current typed CPU problems | A limited inspectable internal iteration descriptor | Might centralize scratch liveness, operation tracing, and dispatch evidence without a general graph | C6 recommends only a later bounded research charter after C4 validation; reject a user-visible plan API, general DAG, allocator, or commit nodes |
 
 See [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md) for the
 detailed boundary between a small Rust host wrapper and the required system

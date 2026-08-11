@@ -11,9 +11,10 @@ opt-in.
 The M1-M5 experimental CPU architecture program is feature-complete and
 integrated. Its relaxed development gates and final verification remain a
 historical record of that program; they are not standing authorization for the
-next phase. Current work is limited to the intake and staged authorization
-workflow in
-[`CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md`](CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md).
+next phase. The documentation-only next-phase research is complete in
+[`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md).
+Only its E1/C1/C2 foundation is planning-ready, and no implementation planning
+or implementation is currently authorized.
 
 Each feature slice must still pass the checks that directly protect its
 correctness and safety:
@@ -124,9 +125,9 @@ portable emulation but no local AMX-hardware execution.
 
 The deferred exhaustive oracle/API matrix, repeated microbenchmarks, cross-host
 measurements, and advisory comparisons remain evidence inputs rather than an
-automatic next implementation milestone. When available, register them in the
-next-phase ledger before using them to tune packing or dispatch thresholds,
-promote kernels, or review trusted-mode eligibility.
+automatic next implementation milestone. When available, register them under
+the E1 manifest and artifact rules before using them to tune packing or
+dispatch thresholds, promote kernels, or review trusted-mode eligibility.
 
 The detailed handoff and guiding constraints are in
 [`MXFP4_CPU_BACKEND_HANDOFF.md`](MXFP4_CPU_BACKEND_HANDOFF.md). The living

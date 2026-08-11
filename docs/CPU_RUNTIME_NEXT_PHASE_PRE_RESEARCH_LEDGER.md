@@ -1,16 +1,16 @@
 # CPU Runtime Next-Phase Pre-Research Intake Ledger
 
-- Status: intake consolidated; awaiting approval of bounded research charters
+- Status: intake closed; bounded research complete
 - Created: 2026-08-11
 - Repository baseline: `main` at
   `a090bb0e81457e4302deb36d6e52a0847c14bfb0`
 - Predecessor program: M1-M5 experimental CPU runtime feature set
-- Research state: not started
-- Pre-planning state: not started
+- Research state: complete; see the next-phase research corpus
+- Planning-readiness assessment: complete; no implementation plan produced
 - Implementation authorization: none
 
-This is the durable pre-research, pre-pre-planning ledger for the CPU runtime
-phase after M1-M5. It preserves the post-implementation observations,
+This is the durable intake ledger for the CPU runtime phase after M1-M5. It
+preserves the post-implementation observations,
 candidate work areas, possible source-review lanes, and unanswered questions
 raised during the program closeout. It now also incorporates the owner-supplied
 next-phase handoff covering the service envelope, commit-versus-delivery
@@ -24,6 +24,11 @@ record, existing repository text/source, retained final-smoke evidence,
 user-supplied considerations, and explicitly pinned source-intake checkouts.
 The separate T14 Tiger Lake/Iris Xe investigation retains its own source and
 host records and is not a candidate workstream in this CPU ledger.
+
+The authorized documentation-only research is complete. Its source registry,
+independent E1/C1-C7 syntheses, outcome table, and cross-track closeout are in
+[`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md).
+That closeout does not authorize implementation planning or implementation.
 
 The completed program and its validation remain documented in the
 [`final integration record`](cpu-runtime-plans/FINAL_INTEGRATION.md). The
@@ -717,9 +722,9 @@ original wording where it affects intent.
   make a long run irreproducible even when both revisions are individually
   documented.
 
-## Preconditions for authorizing research
+## Preconditions used to authorize research
 
-Before a research pass starts:
+The completed research pass used these preconditions:
 
 - the user's additional sources and considerations are entered above;
 - the intended candidate tracks and explicit non-goals are confirmed;
@@ -735,10 +740,10 @@ Before a research pass starts:
 - the expected durable outputs and stopping criteria are agreed;
 - research remains distinct from implementation planning and code changes.
 
-## Later research and planning-readiness placeholders
+## Research handoff and retained synthesis template
 
-A future authorized research phase may create detailed topic syntheses using
-the established workstream template:
+The authorized research phase used the following intake template for detailed
+topic syntheses. It is retained as a historical handoff:
 
 ```text
 Status and planning-readiness:
@@ -766,8 +771,12 @@ Dependencies on other tracks, unavailable hardware, or owner decisions:
 Open questions and required evidence:
 ```
 
-Every candidate track is currently below planning readiness. There is no
-decision ledger for this phase because no decision has been made.
+The completed outcome is intentionally mixed: E1, C1, C2, C6, and C7 are
+planning-ready within their stated boundaries; C3 warrants one narrow
+diagnostic; C4-A/B/C and C5 are deferred. The decision ledger and exact gates
+are in
+[`08-cross-track-closeout.md`](cpu-runtime-next-phase-research/08-cross-track-closeout.md).
+No track outcome is implementation authorization.
 
 ## Intake journal
 
@@ -801,3 +810,14 @@ decision ledger for this phase because no decision has been made.
   official GPT-OSS and llama.cpp conformance checkouts.
 - Performed no benchmark, oracle run, tuning, implementation planning, or
   runtime code change.
+
+### 2026-08-11 — Research closed
+
+- Completed the E1 and C1-C7 documentation-only syntheses and cross-track
+  decision record at the pinned repository/source baseline.
+- Recorded planning-ready foundation contracts for evidence, lifecycle, and
+  memory; retained exact gates for numerical, operator, and AMX work.
+- Found the required new owner benchmark/oracle corpus unavailable and treated
+  older captures as advisory rather than inventing conclusions.
+- Performed no new 20B run, benchmark campaign, oracle capture, tuning,
+  implementation plan, source/configuration change, or T14 inspection.
