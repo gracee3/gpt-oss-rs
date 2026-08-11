@@ -46,9 +46,10 @@ pub use attention::{
     SplitKvAttention,
 };
 pub use cpu_runner::{
-    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuModel,
-    CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace, CpuStateRevision, CpuStepBatch,
-    CpuStepRow, CpuTopLogit,
+    CpuExecutionContext, CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache,
+    CpuLayerTrace, CpuModel, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
+    CpuSequenceModelState, CpuStateRevision, CpuStepBatch, CpuStepRow, CpuTopLogit, PreparedCpuRow,
+    PreparedCpuStep,
 };
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;

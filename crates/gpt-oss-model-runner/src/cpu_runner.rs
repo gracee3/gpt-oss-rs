@@ -349,10 +349,35 @@ pub struct CpuModel {
 /// Batch-one compatibility facade over one shared [`CpuModel`].
 pub struct CpuModelRunner {
     model: Arc<CpuModel>,
+    state: CpuSequenceModelState,
+    execution: CpuExecutionContext,
+}
+
+/// Mutable model state owned by exactly one CPU sequence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CpuSequenceModelState {
     caches: Vec<CpuKvCache>,
     context_cap: usize,
     position: usize,
-    token_history: Vec<u32>,
+    token_history: Vec<TokenId>,
+    revision: CpuStateRevision,
+    aborted: bool,
+}
+
+/// Worker-local reusable storage for transactional CPU execution.
+#[derive(Debug, Default)]
+pub struct CpuExecutionContext {
+    active: bool,
+    prepared_rows: usize,
+    failure: Option<CpuExecutionFailurePoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuExecutionFailurePoint {
+    BeforeStaging,
+    AfterLayer(usize),
+    BeforeLogits,
+    AfterLogits,
 }
 
 /// Selected intermediate values from the final token of a CPU prefill.
@@ -443,7 +468,7 @@ struct CpuLayer {
     sliding: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CpuKvCache {
     keys: Vec<bf16>,
     values: Vec<bf16>,
@@ -473,6 +498,14 @@ impl CpuKvCache {
         self.start_position
     }
 
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub const fn token_width(&self) -> usize {
+        self.token_width
+    }
+
     fn clear(&mut self) {
         self.keys.clear();
         self.values.clear();
@@ -480,10 +513,24 @@ impl CpuKvCache {
         self.start_position = 0;
     }
 
+    #[cfg(test)]
     fn append(&mut self, position: usize, key: &[bf16], value: &[bf16]) -> Result<()> {
         if key.len() != self.token_width || value.len() != self.token_width {
             return Err(LLMError::ModelError("invalid CPU KV token width".into()));
         }
+        if self.len > 0 && position != self.start_position + self.len {
+            return Err(LLMError::ModelError(
+                "non-consecutive CPU KV position".into(),
+            ));
+        }
+        self.append_validated(position, key, value);
+        Ok(())
+    }
+
+    fn append_validated(&mut self, position: usize, key: &[bf16], value: &[bf16]) {
+        debug_assert_eq!(key.len(), self.token_width);
+        debug_assert_eq!(value.len(), self.token_width);
+        debug_assert!(self.len == 0 || position == self.start_position + self.len);
         if self.len == self.capacity {
             self.keys.copy_within(self.token_width.., 0);
             self.values.copy_within(self.token_width.., 0);
@@ -498,7 +545,6 @@ impl CpuKvCache {
         self.keys.extend_from_slice(key);
         self.values.extend_from_slice(value);
         self.len += 1;
-        Ok(())
     }
 
     fn key(&self, token: usize, kv_head: usize, head_dim: usize) -> &[bf16] {
@@ -509,6 +555,207 @@ impl CpuKvCache {
     fn value(&self, token: usize, kv_head: usize, head_dim: usize) -> &[bf16] {
         let start = token * self.token_width + kv_head * head_dim;
         &self.values[start..start + head_dim]
+    }
+}
+
+impl CpuSequenceModelState {
+    pub const fn position(&self) -> usize {
+        self.position
+    }
+
+    pub const fn context_cap(&self) -> usize {
+        self.context_cap
+    }
+
+    pub const fn revision(&self) -> CpuStateRevision {
+        self.revision
+    }
+
+    pub const fn is_aborted(&self) -> bool {
+        self.aborted
+    }
+
+    pub fn token_history(&self) -> &[TokenId] {
+        &self.token_history
+    }
+
+    pub fn caches(&self) -> &[CpuKvCache] {
+        &self.caches
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        for cache in &mut self.caches {
+            cache.clear();
+        }
+        self.position = 0;
+        self.token_history.clear();
+        self.aborted = false;
+        self.revision = self.revision.next()?;
+        Ok(())
+    }
+
+    pub fn abort(&mut self) -> Result<()> {
+        self.aborted = true;
+        self.revision = self.revision.next()?;
+        Ok(())
+    }
+}
+
+impl CpuExecutionContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub const fn prepared_rows(&self) -> usize {
+        self.prepared_rows
+    }
+
+    fn begin(&mut self) -> Result<()> {
+        if self.active {
+            return Err(LLMError::ModelError(
+                "CPU execution context is already active".into(),
+            ));
+        }
+        self.active = true;
+        self.prepared_rows = 0;
+        Ok(())
+    }
+
+    fn finish(&mut self, prepared_rows: usize) {
+        self.prepared_rows = prepared_rows;
+        self.active = false;
+    }
+
+    #[cfg(test)]
+    fn inject_failure(&mut self, failure: CpuExecutionFailurePoint) {
+        self.failure = Some(failure);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StagedKvRow {
+    position: usize,
+    key: Vec<bf16>,
+    value: Vec<bf16>,
+}
+
+#[derive(Debug)]
+struct PreparedSequenceDelta {
+    sequence_id: SequenceId,
+    expected_revision: CpuStateRevision,
+    expected_position: usize,
+    tokens: Vec<TokenId>,
+    staged_layers: Vec<Vec<StagedKvRow>>,
+}
+
+/// Output metadata for one prepared CPU input row.
+#[derive(Debug, Clone)]
+pub struct PreparedCpuRow {
+    pub sequence_id: SequenceId,
+    pub token_id: TokenId,
+    pub absolute_position: usize,
+    logits: Option<Vec<f32>>,
+    layer_traces: Vec<CpuLayerTrace>,
+    final_norm: Vec<f32>,
+}
+
+impl PreparedCpuRow {
+    pub fn logits(&self) -> Option<&[f32]> {
+        self.logits.as_deref()
+    }
+}
+
+/// Fully computed CPU step whose model-state effects are not yet visible.
+///
+/// Dropping or explicitly discarding this value is a no-op. Commit first
+/// validates every state revision and shape, then applies all sequence deltas.
+#[derive(Debug)]
+pub struct PreparedCpuStep {
+    rows: Vec<PreparedCpuRow>,
+    sequences: Vec<PreparedSequenceDelta>,
+}
+
+impl PreparedCpuStep {
+    pub fn rows(&self) -> &[PreparedCpuRow] {
+        &self.rows
+    }
+
+    pub fn discard(self) {}
+
+    pub fn commit(
+        self,
+        sequences: &mut [(SequenceId, &mut CpuSequenceModelState)],
+    ) -> Result<Vec<PreparedCpuRow>> {
+        let mut supplied = HashMap::with_capacity(sequences.len());
+        for (index, (sequence_id, state)) in sequences.iter().enumerate() {
+            if supplied.insert(*sequence_id, index).is_some() {
+                return Err(LLMError::ModelError(format!(
+                    "duplicate mutable CPU sequence state {sequence_id}"
+                )));
+            }
+            if state.aborted {
+                return Err(LLMError::ModelError(format!(
+                    "CPU sequence {sequence_id} is aborted"
+                )));
+            }
+        }
+
+        let mut next_revisions = HashMap::with_capacity(self.sequences.len());
+        for delta in &self.sequences {
+            let Some(&index) = supplied.get(&delta.sequence_id) else {
+                return Err(LLMError::ModelError(format!(
+                    "missing mutable CPU sequence state {}",
+                    delta.sequence_id
+                )));
+            };
+            let state = &sequences[index].1;
+            if state.revision != delta.expected_revision
+                || state.position != delta.expected_position
+            {
+                return Err(LLMError::ModelError(format!(
+                    "stale prepared CPU step for sequence {}",
+                    delta.sequence_id
+                )));
+            }
+            if state.caches.len() != delta.staged_layers.len()
+                || delta.tokens.is_empty()
+                || delta.expected_position + delta.tokens.len() > state.context_cap
+            {
+                return Err(LLMError::ModelError(
+                    "invalid prepared CPU sequence delta".into(),
+                ));
+            }
+            for (cache, rows) in state.caches.iter().zip(&delta.staged_layers) {
+                if rows.len() != delta.tokens.len() {
+                    return Err(LLMError::ModelError(
+                        "incomplete prepared CPU KV layers".into(),
+                    ));
+                }
+                for (offset, row) in rows.iter().enumerate() {
+                    if row.position != delta.expected_position + offset
+                        || row.key.len() != cache.token_width
+                        || row.value.len() != cache.token_width
+                    {
+                        return Err(LLMError::ModelError("invalid prepared CPU KV row".into()));
+                    }
+                }
+            }
+            next_revisions.insert(delta.sequence_id, state.revision.next()?);
+        }
+
+        for delta in self.sequences {
+            let index = supplied[&delta.sequence_id];
+            let state = &mut sequences[index].1;
+            for (cache, rows) in state.caches.iter_mut().zip(delta.staged_layers) {
+                for row in rows {
+                    cache.append_validated(row.position, &row.key, &row.value);
+                }
+            }
+            state.position += delta.tokens.len();
+            state.token_history.extend(delta.tokens);
+            state.revision = next_revisions[&delta.sequence_id];
+        }
+        Ok(self.rows)
     }
 }
 
@@ -590,6 +837,38 @@ impl CpuModel {
     pub const fn expert_projection(&self) -> CpuExpertProjection {
         self.expert_projection
     }
+
+    pub fn new_sequence_state(&self, context_cap: usize) -> Result<CpuSequenceModelState> {
+        if context_cap == 0 || context_cap > self.config.max_position_embeddings {
+            return Err(LLMError::ConfigError(format!(
+                "CPU context cap {context_cap} exceeds checkpoint maximum {}",
+                self.config.max_position_embeddings
+            )));
+        }
+        let token_width = self.config.num_key_value_heads * self.config.head_dim;
+        let caches = self
+            .layers
+            .iter()
+            .map(|layer| {
+                CpuKvCache::new(
+                    token_width,
+                    if layer.sliding {
+                        self.config.sliding_window
+                    } else {
+                        context_cap
+                    },
+                )
+            })
+            .collect();
+        Ok(CpuSequenceModelState {
+            caches,
+            context_cap,
+            position: 0,
+            token_history: Vec::with_capacity(context_cap),
+            revision: CpuStateRevision::default(),
+            aborted: false,
+        })
+    }
 }
 
 impl CpuModelRunner {
@@ -633,33 +912,11 @@ impl CpuModelRunner {
     }
 
     pub fn from_model(model: Arc<CpuModel>, context_cap: usize) -> Result<Self> {
-        if context_cap == 0 || context_cap > model.config.max_position_embeddings {
-            return Err(LLMError::ConfigError(format!(
-                "CPU context cap {context_cap} exceeds checkpoint maximum {}",
-                model.config.max_position_embeddings
-            )));
-        }
-        let token_width = model.config.num_key_value_heads * model.config.head_dim;
-        let caches = model
-            .layers
-            .iter()
-            .map(|layer| {
-                CpuKvCache::new(
-                    token_width,
-                    if layer.sliding {
-                        model.config.sliding_window
-                    } else {
-                        context_cap
-                    },
-                )
-            })
-            .collect();
+        let state = model.new_sequence_state(context_cap)?;
         Ok(Self {
             model,
-            caches,
-            context_cap,
-            position: 0,
-            token_history: Vec::with_capacity(context_cap),
+            state,
+            execution: CpuExecutionContext::new(),
         })
     }
 
@@ -684,11 +941,11 @@ impl CpuModelRunner {
     }
 
     pub const fn position(&self) -> usize {
-        self.position
+        self.state.position()
     }
 
     pub fn caches(&self) -> &[CpuKvCache] {
-        &self.caches
+        self.state.caches()
     }
 
     /// Execute one isolated transformer layer for local conformance fixtures.
@@ -704,16 +961,26 @@ impl CpuModelRunner {
                 "invalid isolated CPU layer conformance input".into(),
             ));
         }
-        self.caches[layer_index].clear();
-        self.forward_layer(layer_index, hidden, position)
+        self.state.caches[layer_index].clear();
+        let mut staged = Vec::with_capacity(1);
+        let (output, _) = self.model.forward_layer_with_trace(
+            layer_index,
+            hidden,
+            position,
+            &self.state.caches[layer_index],
+            &mut staged,
+            false,
+        )?;
+        for row in staged {
+            self.state.caches[layer_index].append_validated(row.position, &row.key, &row.value);
+        }
+        Ok(output)
     }
 
     pub fn reset(&mut self) {
-        for cache in &mut self.caches {
-            cache.clear();
+        if self.state.reset().is_err() {
+            self.state.aborted = true;
         }
-        self.position = 0;
-        self.token_history.clear();
     }
 
     pub fn prefill(&mut self, token_ids: &[u32]) -> Result<Vec<f32>> {
@@ -752,7 +1019,7 @@ impl CpuModelRunner {
     }
 
     pub fn decode(&mut self, token_id: u32) -> Result<Vec<f32>> {
-        if self.position == 0 {
+        if self.state.position == 0 {
             return Err(LLMError::ModelError(
                 "CPU decode requires an existing prefill cache".into(),
             ));
@@ -769,7 +1036,7 @@ impl CpuModelRunner {
         top_k: usize,
         trace_step: usize,
     ) -> Result<(Vec<f32>, CpuPrefillTrace)> {
-        if self.position == 0 {
+        if self.state.position == 0 {
             return Err(LLMError::ModelError(
                 "CPU decode trace requires an existing prefill cache".into(),
             ));
@@ -808,8 +1075,8 @@ impl CpuModelRunner {
     ) -> CpuPrefillTrace {
         let dispatch_plan = self.kernel_dispatch_plan();
         CpuPrefillTrace {
-            prompt_token_ids: self.token_history.clone(),
-            context_token_ids: self.token_history.clone(),
+            prompt_token_ids: self.state.token_history.clone(),
+            context_token_ids: self.state.token_history.clone(),
             trace_step,
             expert_projection: self.model.expert_projection,
             compatibility_kernel_path: self.kernel_path().to_string(),
@@ -832,70 +1099,223 @@ impl CpuModelRunner {
         token_id: u32,
         selected_layers: &[usize],
     ) -> Result<(Vec<f32>, Vec<CpuLayerTrace>, Vec<f32>)> {
-        if self.position >= self.context_cap {
-            return Err(LLMError::ModelError(format!(
-                "CPU context cap {} exceeded",
-                self.context_cap
-            )));
-        }
-        let token = token_id as usize;
-        if token >= self.model.config.vocab_size {
-            return Err(LLMError::ModelError(format!(
-                "token {token} exceeds vocabulary {}",
-                self.model.config.vocab_size
-            )));
-        }
-        let embedding = self.model.store.tensor("model.embed_tokens.weight")?;
-        let embedding = embedding.bf16()?;
-        let start = token * self.model.config.hidden_size;
-        let mut hidden = embedding[start..start + self.model.config.hidden_size].to_vec();
-        let mut layer_traces = Vec::with_capacity(selected_layers.len());
+        let sequence_id = SequenceId(0);
+        let batch = CpuStepBatch::single(CpuStepRow::new(
+            sequence_id,
+            token_id,
+            self.state.position,
+            true,
+        ));
+        let prepared = self.model.prepare_step_with_trace(
+            &mut self.execution,
+            &batch,
+            &[(sequence_id, &self.state)],
+            Some((0, selected_layers)),
+        )?;
+        let rows = prepared.commit(&mut [(sequence_id, &mut self.state)])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| LLMError::ModelError("CPU prepared step returned no row".into()))?;
+        let logits = row.logits.ok_or_else(|| {
+            LLMError::ModelError("CPU compatibility step returned no logits".into())
+        })?;
+        Ok((logits, row.layer_traces, row.final_norm))
+    }
+}
 
-        for layer_index in 0..self.model.layers.len() {
-            let capture = selected_layers.contains(&layer_index);
-            let (next_hidden, trace) =
-                self.forward_layer_with_trace(layer_index, &hidden, self.position, capture)?;
-            hidden = next_hidden;
-            if let Some(trace) = trace {
-                layer_traces.push(trace);
-            }
-        }
-        let normalized = self.norm_boundary(&hidden, &self.model.final_norm)?;
-        let mut logits = self.project_bf16("lm_head.weight", &normalized, None)?;
-        fp32_to_bf16_roundtrip(&mut logits);
-        if logits.iter().any(|value| !value.is_finite()) {
-            return Err(LLMError::ModelError(
-                "CPU model produced non-finite logits".into(),
-            ));
-        }
-        self.position += 1;
-        self.token_history.push(token_id);
-        let final_norm = if selected_layers.is_empty() {
-            Vec::new()
-        } else {
-            bf16_slice_to_f32(&normalized)
-        };
-        Ok((logits, layer_traces, final_norm))
+impl CpuModel {
+    /// Execute an ordered CPU batch without changing committed sequence state.
+    pub fn prepare_step(
+        &self,
+        execution: &mut CpuExecutionContext,
+        batch: &CpuStepBatch,
+        sequences: &[(SequenceId, &CpuSequenceModelState)],
+    ) -> Result<PreparedCpuStep> {
+        self.prepare_step_with_trace(execution, batch, sequences, None)
     }
 
-    fn forward_layer(
-        &mut self,
-        index: usize,
-        hidden: &[bf16],
-        position: usize,
-    ) -> Result<Vec<bf16>> {
-        self.forward_layer_with_trace(index, hidden, position, false)
-            .map(|(hidden, _)| hidden)
+    fn prepare_step_with_trace(
+        &self,
+        execution: &mut CpuExecutionContext,
+        batch: &CpuStepBatch,
+        sequences: &[(SequenceId, &CpuSequenceModelState)],
+        trace_request: Option<(usize, &[usize])>,
+    ) -> Result<PreparedCpuStep> {
+        execution.begin()?;
+        let failure = execution.failure.take();
+        let result = self.prepare_step_inner(batch, sequences, trace_request, failure);
+        execution.finish(result.as_ref().map_or(0, |prepared| prepared.rows.len()));
+        result
+    }
+
+    fn prepare_step_inner(
+        &self,
+        batch: &CpuStepBatch,
+        sequences: &[(SequenceId, &CpuSequenceModelState)],
+        trace_request: Option<(usize, &[usize])>,
+        failure: Option<CpuExecutionFailurePoint>,
+    ) -> Result<PreparedCpuStep> {
+        if failure == Some(CpuExecutionFailurePoint::BeforeStaging) {
+            return Err(LLMError::ModelError(
+                "injected CPU failure before staging".into(),
+            ));
+        }
+        let mut states = HashMap::with_capacity(sequences.len());
+        let mut state_addresses = HashMap::with_capacity(sequences.len());
+        for (sequence_id, state) in sequences {
+            if states.insert(*sequence_id, *state).is_some() {
+                return Err(LLMError::ModelError(format!(
+                    "duplicate CPU sequence state {sequence_id}"
+                )));
+            }
+            let address = std::ptr::from_ref(*state) as usize;
+            if let Some(other_id) = state_addresses.insert(address, *sequence_id) {
+                return Err(LLMError::ModelError(format!(
+                    "CPU sequence state is aliased by IDs {other_id} and {sequence_id}"
+                )));
+            }
+            if state.aborted {
+                return Err(LLMError::ModelError(format!(
+                    "CPU sequence {sequence_id} is aborted"
+                )));
+            }
+            if state.caches.len() != self.layers.len() {
+                return Err(LLMError::ModelError(
+                    "CPU sequence layer count does not match model".into(),
+                ));
+            }
+        }
+
+        let mut deltas = Vec::<PreparedSequenceDelta>::new();
+        let mut delta_indices = HashMap::<SequenceId, usize>::new();
+        let mut outputs = Vec::with_capacity(batch.len());
+        for (row_index, row) in batch.rows().iter().enumerate() {
+            let state = states.get(&row.sequence_id).copied().ok_or_else(|| {
+                LLMError::ModelError(format!("missing CPU sequence state {}", row.sequence_id))
+            })?;
+            let delta_index = *delta_indices.entry(row.sequence_id).or_insert_with(|| {
+                let index = deltas.len();
+                deltas.push(PreparedSequenceDelta {
+                    sequence_id: row.sequence_id,
+                    expected_revision: state.revision,
+                    expected_position: state.position,
+                    tokens: Vec::new(),
+                    staged_layers: vec![Vec::new(); self.layers.len()],
+                });
+                index
+            });
+            let delta = &mut deltas[delta_index];
+            let expected_position = state
+                .position
+                .checked_add(delta.tokens.len())
+                .ok_or_else(|| LLMError::ModelError("CPU sequence position overflow".into()))?;
+            if row.absolute_position != expected_position {
+                return Err(LLMError::ModelError(format!(
+                    "CPU sequence {} expected position {expected_position}, got {}",
+                    row.sequence_id, row.absolute_position
+                )));
+            }
+            if expected_position >= state.context_cap {
+                return Err(LLMError::ModelError(format!(
+                    "CPU context cap {} exceeded",
+                    state.context_cap
+                )));
+            }
+            let token = row.token_id as usize;
+            if token >= self.config.vocab_size {
+                return Err(LLMError::ModelError(format!(
+                    "token {token} exceeds vocabulary {}",
+                    self.config.vocab_size
+                )));
+            }
+
+            let embedding = self.store.tensor("model.embed_tokens.weight")?;
+            let embedding = embedding.bf16()?;
+            let start = token * self.config.hidden_size;
+            let mut hidden = embedding[start..start + self.config.hidden_size].to_vec();
+            let trace_layers = trace_request
+                .filter(|(requested_row, _)| *requested_row == row_index)
+                .map_or(&[][..], |(_, layers)| layers);
+            let mut layer_traces = Vec::with_capacity(trace_layers.len());
+            for layer_index in 0..self.layers.len() {
+                let capture = trace_layers.contains(&layer_index);
+                let (next_hidden, trace) = self.forward_layer_with_trace(
+                    layer_index,
+                    &hidden,
+                    row.absolute_position,
+                    &state.caches[layer_index],
+                    &mut delta.staged_layers[layer_index],
+                    capture,
+                )?;
+                hidden = next_hidden;
+                if let Some(trace) = trace {
+                    layer_traces.push(trace);
+                }
+                if failure == Some(CpuExecutionFailurePoint::AfterLayer(layer_index)) {
+                    return Err(LLMError::ModelError(format!(
+                        "injected CPU failure after layer {layer_index}"
+                    )));
+                }
+            }
+
+            let mut final_norm = Vec::new();
+            let logits = if row.logits_required || !trace_layers.is_empty() {
+                if failure == Some(CpuExecutionFailurePoint::BeforeLogits) {
+                    return Err(LLMError::ModelError(
+                        "injected CPU failure before logits".into(),
+                    ));
+                }
+                let normalized = self.norm_boundary(&hidden, &self.final_norm)?;
+                if !trace_layers.is_empty() {
+                    final_norm = bf16_slice_to_f32(&normalized);
+                }
+                if row.logits_required {
+                    let mut logits = self.project_bf16("lm_head.weight", &normalized, None)?;
+                    fp32_to_bf16_roundtrip(&mut logits);
+                    if logits.iter().any(|value| !value.is_finite()) {
+                        return Err(LLMError::ModelError(
+                            "CPU model produced non-finite logits".into(),
+                        ));
+                    }
+                    if failure == Some(CpuExecutionFailurePoint::AfterLogits) {
+                        return Err(LLMError::ModelError(
+                            "injected CPU failure after logits".into(),
+                        ));
+                    }
+                    Some(logits)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            delta.tokens.push(row.token_id);
+            outputs.push(PreparedCpuRow {
+                sequence_id: row.sequence_id,
+                token_id: row.token_id,
+                absolute_position: row.absolute_position,
+                logits,
+                layer_traces,
+                final_norm,
+            });
+        }
+        Ok(PreparedCpuStep {
+            rows: outputs,
+            sequences: deltas,
+        })
     }
 
     fn forward_layer_with_trace(
-        &mut self,
+        &self,
         index: usize,
         hidden: &[bf16],
         position: usize,
+        cache: &CpuKvCache,
+        staged: &mut Vec<StagedKvRow>,
         capture: bool,
     ) -> Result<(Vec<bf16>, Option<CpuLayerTrace>)> {
-        let layer = &self.model.layers[index];
+        let layer = &self.layers[index];
         let normalized = self.norm_boundary(hidden, &layer.input_norm)?;
 
         let mut q = self.project_bf16(&layer.q_weight, &normalized, Some(&layer.q_bias))?;
@@ -903,12 +1323,10 @@ impl CpuModelRunner {
         let v = self.project_bf16(&layer.v_weight, &normalized, Some(&layer.v_bias))?;
         fp32_to_bf16_roundtrip(&mut q);
         fp32_to_bf16_roundtrip(&mut k);
-        self.model
-            .rope
-            .apply(&mut q, self.model.config.num_attention_heads, position)?;
-        self.model
-            .rope
-            .apply(&mut k, self.model.config.num_key_value_heads, position)?;
+        self.rope
+            .apply(&mut q, self.config.num_attention_heads, position)?;
+        self.rope
+            .apply(&mut k, self.config.num_key_value_heads, position)?;
         fp32_to_bf16_roundtrip(&mut q);
         fp32_to_bf16_roundtrip(&mut k);
         let key = k
@@ -919,15 +1337,21 @@ impl CpuModelRunner {
             .iter()
             .map(|value| bf16::from_f32(*value))
             .collect::<Vec<_>>();
-        self.caches[index].append(position, &key, &value)?;
+        let value_projection = capture.then(|| bf16_slice_to_f32(&value));
+        staged.push(StagedKvRow {
+            position,
+            key,
+            value,
+        });
 
-        let attention_context = attention_one(
+        let attention_context = attention_one_staged(
             &q,
-            &self.caches[index],
+            cache,
+            staged,
             &layer.sinks,
-            self.model.config.num_attention_heads,
-            self.model.config.num_key_value_heads,
-            self.model.config.head_dim,
+            self.config.num_attention_heads,
+            self.config.num_key_value_heads,
+            self.config.head_dim,
         )?;
         let attention = attention_context
             .iter()
@@ -948,7 +1372,7 @@ impl CpuModelRunner {
             input_norm: bf16_slice_to_f32(&normalized),
             query_after_rope: q,
             key_after_rope: k,
-            value_projection: bf16_slice_to_f32(&value),
+            value_projection: value_projection.unwrap_or_default(),
             attention_context,
             attention_projection: projected,
             post_attention_residual: bf16_slice_to_f32(&after_attention),
@@ -965,9 +1389,8 @@ impl CpuModelRunner {
     fn norm_boundary(&self, input: &[bf16], weight: &[f32]) -> Result<Vec<bf16>> {
         let input = input.iter().map(|value| value.to_f32()).collect::<Vec<_>>();
         let mut output = vec![0.0; input.len()];
-        self.model
-            .kernels
-            .rms_norm(&input, weight, self.model.config.rms_norm_eps, &mut output)
+        self.kernels
+            .rms_norm(&input, weight, self.config.rms_norm_eps, &mut output)
             .map_err(kernel_error)?;
         Ok(output.into_iter().map(bf16::from_f32).collect())
     }
@@ -978,7 +1401,7 @@ impl CpuModelRunner {
         input: &[bf16],
         bias: Option<&[f32]>,
     ) -> Result<Vec<f32>> {
-        let tensor = self.model.store.tensor(weight_name)?;
+        let tensor = self.store.tensor(weight_name)?;
         let shape = tensor.shape();
         if shape.len() != 2 || shape[1] != input.len() {
             return Err(LLMError::ModelError(format!(
@@ -993,9 +1416,9 @@ impl CpuModelRunner {
             )));
         }
         let weights = tensor.bf16()?;
-        let kernels = self.model.kernels;
+        let kernels = self.kernels;
         let mut output = vec![0.0_f32; rows];
-        self.model.pool.install(|| {
+        self.pool.install(|| {
             output
                 .par_iter_mut()
                 .enumerate()
@@ -1028,7 +1451,7 @@ impl CpuModelRunner {
                 "CPU router produced non-finite logits".into(),
             ));
         }
-        let selected = stable_top_k(&router, self.model.config.num_experts_per_tok);
+        let selected = stable_top_k(&router, self.config.num_experts_per_tok);
         let route_logits = selected
             .iter()
             .map(|index| router[*index])
@@ -1038,7 +1461,7 @@ impl CpuModelRunner {
             .map(|weight| bf16::from_f32(weight).to_f32())
             .collect::<Vec<_>>();
         let prepared_input = self.prepare_expert_input(input)?;
-        let mut output = vec![0.0_f32; self.model.config.hidden_size];
+        let mut output = vec![0.0_f32; self.config.hidden_size];
         let mut expert_traces = Vec::with_capacity(if capture { selected.len() } else { 0 });
 
         for (rank, &expert) in selected.iter().enumerate() {
@@ -1047,9 +1470,9 @@ impl CpuModelRunner {
             fp32_to_bf16_roundtrip(&mut gate_up);
             let activated = gpt_oss_swiglu(
                 &gate_up,
-                self.model.config.intermediate_size,
-                self.model.config.alpha,
-                self.model.config.swiglu_limit,
+                self.config.intermediate_size,
+                self.config.alpha,
+                self.config.swiglu_limit,
             )?;
             let activated = activated
                 .into_iter()
@@ -1097,21 +1520,17 @@ impl CpuModelRunner {
     }
 
     fn prepare_expert_input(&self, input: &[bf16]) -> Result<PreparedExpertInput> {
-        match self.model.expert_projection {
+        match self.expert_projection {
             CpuExpertProjection::Q8 => {
                 let input = bf16_slice_to_f32(input);
                 Ok(PreparedExpertInput::Q8(
-                    self.model
-                        .kernels
-                        .quantize_q8(&input)
-                        .map_err(kernel_error)?,
+                    self.kernels.quantize_q8(&input).map_err(kernel_error)?,
                 ))
             }
             CpuExpertProjection::ResidualQ8 => {
                 let input = bf16_slice_to_f32(input);
                 Ok(PreparedExpertInput::ResidualQ8(
-                    self.model
-                        .kernels
+                    self.kernels
                         .quantize_residual_q8(&input)
                         .map_err(kernel_error)?,
                 ))
@@ -1138,12 +1557,12 @@ impl CpuModelRunner {
                 "invalid CPU MXFP4 projection dimensions".into(),
             ));
         }
-        let kernels = self.model.kernels;
+        let kernels = self.kernels;
         let view = weights.expert_view(expert)?;
         let expert_bias = &bias[expert * rows..(expert + 1) * rows];
         let mut output = vec![0.0_f32; rows];
         match input {
-            PreparedExpertInput::Q8(input) => self.model.pool.install(|| {
+            PreparedExpertInput::Q8(input) => self.pool.install(|| {
                 output
                     .par_chunks_mut(8)
                     .enumerate()
@@ -1159,7 +1578,7 @@ impl CpuModelRunner {
                             .map_err(kernel_error)
                     })
             })?,
-            PreparedExpertInput::ResidualQ8(input) => self.model.pool.install(|| {
+            PreparedExpertInput::ResidualQ8(input) => self.pool.install(|| {
                 output
                     .par_chunks_mut(8)
                     .enumerate()
@@ -1175,7 +1594,7 @@ impl CpuModelRunner {
                             .map_err(kernel_error)
                     })
             })?,
-            PreparedExpertInput::ExactBf16(input) => self.model.pool.install(|| {
+            PreparedExpertInput::ExactBf16(input) => self.pool.install(|| {
                 output
                     .par_iter_mut()
                     .enumerate()
@@ -1502,9 +1921,22 @@ fn gpt_oss_swiglu(
         .collect())
 }
 
+#[cfg(test)]
 fn attention_one(
     query: &[f32],
     cache: &CpuKvCache,
+    sinks: &[f32],
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+) -> Result<Vec<f32>> {
+    attention_one_staged(query, cache, &[], sinks, num_heads, num_kv_heads, head_dim)
+}
+
+fn attention_one_staged(
+    query: &[f32],
+    cache: &CpuKvCache,
+    staged: &[StagedKvRow],
     sinks: &[f32],
     num_heads: usize,
     num_kv_heads: usize,
@@ -1516,6 +1948,9 @@ fn attention_one(
     if query.len() != num_heads * head_dim
         || sinks.len() != num_heads
         || cache.token_width != num_kv_heads * head_dim
+        || staged
+            .iter()
+            .any(|row| row.key.len() != cache.token_width || row.value.len() != cache.token_width)
     {
         return Err(LLMError::ModelError(
             "invalid CPU attention dimensions".into(),
@@ -1523,13 +1958,23 @@ fn attention_one(
     }
     let groups = num_heads / num_kv_heads;
     let scale = (head_dim as f32).sqrt().recip();
+    let combined_len = cache.len + staged.len();
+    let visible_len = combined_len.min(cache.capacity);
+    let skipped = combined_len - visible_len;
     let mut output = vec![0.0_f32; query.len()];
     for head in 0..num_heads {
         let q = &query[head * head_dim..(head + 1) * head_dim];
         let kv_head = head / groups;
-        let mut scores = Vec::with_capacity(cache.len);
-        for token in 0..cache.len {
-            let key = cache.key(token, kv_head, head_dim);
+        let mut scores = Vec::with_capacity(visible_len);
+        for token in 0..visible_len {
+            let combined = skipped + token;
+            let key = if combined < cache.len {
+                cache.key(combined, kv_head, head_dim)
+            } else {
+                let row = &staged[combined - cache.len];
+                let start = kv_head * head_dim;
+                &row.key[start..start + head_dim]
+            };
             let dot = q
                 .iter()
                 .zip(key)
@@ -1553,10 +1998,15 @@ fn attention_one(
             // torch.softmax retains the BF16 input dtype even though its
             // reduction is accumulated in FP32.
             let probability = bf16::from_f32((score - maximum).exp() / denominator).to_f32();
-            for (destination, value) in destination
-                .iter_mut()
-                .zip(cache.value(token, kv_head, head_dim))
-            {
+            let combined = skipped + token;
+            let value = if combined < cache.len {
+                cache.value(combined, kv_head, head_dim)
+            } else {
+                let row = &staged[combined - cache.len];
+                let start = kv_head * head_dim;
+                &row.value[start..start + head_dim]
+            };
+            for (destination, value) in destination.iter_mut().zip(value) {
                 *destination += probability * value.to_f32();
             }
         }
@@ -2218,6 +2668,183 @@ mod tests {
         assert_eq!(first.position(), 0);
         assert_eq!(second.position(), 0);
         assert_eq!(first.caches().len(), second.caches().len());
+    }
+
+    #[test]
+    fn prepared_steps_discard_on_drop_and_reject_stale_commit() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let mut state = model.new_sequence_state(16).unwrap();
+        let baseline = state.clone();
+        let batch = CpuStepBatch::single(CpuStepRow::new(SequenceId(1), 3, 0, true));
+        let mut execution = CpuExecutionContext::new();
+
+        let dropped = model
+            .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+            .unwrap();
+        assert!(dropped.rows()[0].logits().is_some());
+        drop(dropped);
+        assert_eq!(state, baseline);
+
+        let first = model
+            .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+            .unwrap();
+        let stale = model
+            .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+            .unwrap();
+        first.commit(&mut [(SequenceId(1), &mut state)]).unwrap();
+        let committed = state.clone();
+        assert!(stale.commit(&mut [(SequenceId(1), &mut state)]).is_err());
+        assert_eq!(state, committed);
+        assert_eq!(state.position(), 1);
+        assert_eq!(state.revision().value(), 1);
+    }
+
+    #[test]
+    fn shared_model_executes_independent_interleaved_sequences() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let mut first = model.new_sequence_state(16).unwrap();
+        let mut second = model.new_sequence_state(16).unwrap();
+        let batch = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 1, 0, false),
+            CpuStepRow::new(SequenceId(2), 2, 0, false),
+            CpuStepRow::new(SequenceId(1), 3, 1, true),
+            CpuStepRow::new(SequenceId(2), 4, 1, true),
+        ])
+        .unwrap();
+        let mut execution = CpuExecutionContext::new();
+        let prepared = model
+            .prepare_step(
+                &mut execution,
+                &batch,
+                &[(SequenceId(1), &first), (SequenceId(2), &second)],
+            )
+            .unwrap();
+        assert!(prepared.rows()[0].logits().is_none());
+        assert!(prepared.rows()[1].logits().is_none());
+        let first_logits = prepared.rows()[2].logits().unwrap().to_vec();
+        let second_logits = prepared.rows()[3].logits().unwrap().to_vec();
+        prepared
+            .commit(&mut [(SequenceId(1), &mut first), (SequenceId(2), &mut second)])
+            .unwrap();
+
+        let mut isolated_first = CpuModelRunner::from_model(model.clone(), 16).unwrap();
+        let mut isolated_second = CpuModelRunner::from_model(model.clone(), 16).unwrap();
+        assert_eq!(first_logits, isolated_first.prefill(&[1, 3]).unwrap());
+        assert_eq!(second_logits, isolated_second.prefill(&[2, 4]).unwrap());
+        assert_eq!(first.token_history(), &[1, 3]);
+        assert_eq!(second.token_history(), &[2, 4]);
+        assert_eq!(first.position(), 2);
+        assert_eq!(second.position(), 2);
+    }
+
+    #[test]
+    fn injected_failures_leave_full_and_sliding_state_unchanged() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let mut state = model.new_sequence_state(16).unwrap();
+        let mut execution = CpuExecutionContext::new();
+        let initial = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 1, 0, false),
+            CpuStepRow::new(SequenceId(1), 2, 1, true),
+        ])
+        .unwrap();
+        model
+            .prepare_step(&mut execution, &initial, &[(SequenceId(1), &state)])
+            .unwrap()
+            .commit(&mut [(SequenceId(1), &mut state)])
+            .unwrap();
+        assert_eq!(state.caches()[0].len(), 2);
+        assert_eq!(state.caches()[1].len(), 2);
+
+        for failure in [
+            CpuExecutionFailurePoint::BeforeStaging,
+            CpuExecutionFailurePoint::AfterLayer(0),
+            CpuExecutionFailurePoint::AfterLayer(1),
+            CpuExecutionFailurePoint::BeforeLogits,
+            CpuExecutionFailurePoint::AfterLogits,
+        ] {
+            let baseline = state.clone();
+            execution.inject_failure(failure);
+            let batch = CpuStepBatch::single(CpuStepRow::new(SequenceId(1), 3, 2, true));
+            assert!(model
+                .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+                .is_err());
+            assert_eq!(state, baseline, "failure={failure:?}");
+        }
+
+        let extension = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 3, 2, false),
+            CpuStepRow::new(SequenceId(1), 4, 3, true),
+        ])
+        .unwrap();
+        model
+            .prepare_step(&mut execution, &extension, &[(SequenceId(1), &state)])
+            .unwrap()
+            .commit(&mut [(SequenceId(1), &mut state)])
+            .unwrap();
+        assert_eq!(state.caches()[0].len(), 2);
+        assert_eq!(state.caches()[0].start_position(), 2);
+        assert_eq!(state.caches()[1].len(), 4);
+        assert_eq!(state.caches()[1].start_position(), 0);
+    }
+
+    #[test]
+    fn sequence_reset_abort_and_alias_validation_are_explicit() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let mut state = model.new_sequence_state(16).unwrap();
+        let mut execution = CpuExecutionContext::new();
+        let batch = CpuStepBatch::single(CpuStepRow::new(SequenceId(1), 1, 0, true));
+        assert!(model
+            .prepare_step(
+                &mut execution,
+                &batch,
+                &[(SequenceId(1), &state), (SequenceId(2), &state)],
+            )
+            .is_err());
+        state.abort().unwrap();
+        assert!(model
+            .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+            .is_err());
+        state.reset().unwrap();
+        assert!(!state.is_aborted());
+        assert_eq!(state.position(), 0);
+        assert!(state.caches().iter().all(|cache| cache.len() == 0));
+        model
+            .prepare_step(&mut execution, &batch, &[(SequenceId(1), &state)])
+            .unwrap()
+            .discard();
+        assert_eq!(state.position(), 0);
     }
 
     #[test]
