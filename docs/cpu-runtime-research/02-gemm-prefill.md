@@ -1,6 +1,6 @@
 # Step 2 — MXFP4 GEMM Contract and True CPU Prefill
 
-- Status: research complete; ready for implementation planning
+- Status: implemented and focused gates passed on the integration branch
 - Initial optimized exposure: explicit/experimental
 - Persistent layout default: `InterleavedSplitX8V2`
 
@@ -248,10 +248,37 @@ optimization is a separate later kernel decision.
 No tuned tile size, automatic threshold, prefill throughput target, or long
 oracle is required for the initial implementation gate.
 
-## Planning handoff
+## Research handoff
 
 The semantic matrix shape, two-level descriptor boundary, persistent layout,
 activation ownership, scalar accumulation, grouped-MoE order, and layer-major
-prefill flow are planning-ready. Exact Rust type spelling, tile register
-allocation, and the incremental commit sequence can be selected in the later
-implementation plan without reopening the architecture.
+prefill flow were handed to implementation without reopening the architecture.
+The concrete Rust types, tile body, and commit sequence are recorded below and
+in the M2 plan.
+
+## Implementation status
+
+M2 landed as checkpoints `a8a1e12`, `6c26e0f`, `85f5ab2`, and `fa1a733`.
+The implemented contract follows the research boundary: typed Q8 and
+residual-Q8 matrix views feed a validated `Mxfp4MatmulProblem`; scratch is
+queried from `Mxfp4MatmulBackend` and owned by the caller; the persistent x8
+cache is reused unchanged.
+
+The scalar reference and explicit AVX2 4x8 path cover Q8/residual-Q8 shapes,
+strides, scratch bounds/alignment, output canaries, extrema, and M/N tails.
+Automatic M=1 uses established GEMV and automatic M>1 remains scalar. No
+automatic crossover, tuning threshold, or new persistent matrix layout was
+introduced.
+
+Serving prefill now constructs a multi-row transactional batch. Execution is
+layer-major, uses absolute-position RoPE, keeps ragged attention row-wise,
+stably groups MoE routes by expert, restores original top-k rank before
+reduction, and emits logits only for marked rows. Synthetic independent and
+interleaved-sequence fixtures match isolated batch-one execution and preserve
+rollback behavior. One-token 20B `harmony_122` captures for `auto` and explicit
+AVX2 matrix execution both produced `200005`; captures remain outside Git
+under `/data/models/openai/gpt-oss-rs-cpu-work/results/`.
+
+Representative performance tuning, caller-side expert/tile parallelization,
+optimized ragged attention, automatic crossover policy, long generation, and
+the exhaustive oracle matrix remain deferred certification work.

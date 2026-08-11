@@ -16,7 +16,7 @@ runner, and the CPU backend is not yet enabled in trusted mode.
 - CUDA serving requires the explicit combination `--device cuda
   --runtime-mode experimental`.
 - CPU serving supports official GPT-OSS SafeTensors, batch size one, BF16 dense
-  weights, and MXFP4 experts.
+  weights, MXFP4 experts, and layer-major multi-row prompt prefill.
 - The preceding CPU baseline has exact greedy-token parity with the pinned
   official SafeTensors/PyTorch oracle across the seven maintained Harmony
   scenarios and four kernel choices. The promoted AVX2 x8 path is gated by the
@@ -30,10 +30,11 @@ runner, and the CPU backend is not yet enabled in trusted mode.
 - CPU trusted mode, request batching, tensor/pipeline parallel CPU execution,
   and CPU CUDA-graph behavior remain unsupported.
 
-The CPU backend now has capability-level dispatch and a size-neutral AVX2 x8
-MXFP4 GEMV layout while preserving scalar and canonical row references. Later
-milestones cover purpose-built AVX-512 GEMV, GEMM/prefill packing, and
-experimental AMX. See
+The CPU backend now has capability-level dispatch, AVX2 and experimental
+AVX-512/VNNI x8 MXFP4 GEMV, plus a common matrix contract and an explicit AVX2
+4x8 prefill path. Automatic multi-row matrix execution remains on the scalar
+reference. Later milestones cover CPU request scheduling and experimental AMX.
+See
 [`docs/MXFP4_CPU_BACKEND_HANDOFF.md`](docs/MXFP4_CPU_BACKEND_HANDOFF.md).
 
 ## Build
@@ -65,6 +66,7 @@ GPT_OSS_RS_CACHE=/path/to/gpt-oss-rs-cache \
   --model openai/gpt-oss-20b \
   --device cpu \
   --cpu-kernel auto \
+  --cpu-matmul-backend auto \
   --cpu-threads 8
 ```
 
@@ -74,6 +76,12 @@ capabilities once and builds an immutable per-operation dispatch plan. The
 plan also reports the exact MXFP4 GEMV kernel and packed layout.
 Forced `avx512-vnni` uses the experimental eight-output ZMM/VNNI MXFP4 path;
 automatic MXFP4 dispatch remains on the promoted AVX2 x8 baseline.
+
+`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8`.
+`auto` keeps M=1 expert work on the established GEMV path and uses the scalar
+matrix reference for M>1. Select `avx2` explicitly to exercise the experimental
+4-input-row by 8-output-row packed path. `amx-int8` is reserved for the
+optional feature and currently fails clearly as unavailable.
 
 CPU serving defaults to the `gpt-oss-cpu` profile: an 8192-token context cap
 and one active sequence. The first load creates a revision- and
@@ -125,8 +133,8 @@ engine:
 
 - `gpt-oss-cpu-kernels`: feature detection, dispatch plans, scalar and x86
   primitives, and Criterion microbenchmarks;
-- `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership, the
-  transformer loop, and parity tracing;
+- `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership,
+  transactional layer-major transformer execution, and parity tracing;
 - `gpt-oss-engine`: scheduling and the batch-one CPU worker;
 - `gpt-oss-bench`: pinned prompt parity tools and model-level measurements;
 - `gpt-oss-reference`, `gpt-oss-conformance`, and `gpt-oss-moe-semantics`:
@@ -152,9 +160,9 @@ The AVX2 x8 promotion used a targeted full-model gate: cold and warm
 `harmony_122`, plus automatic, AVX2, and scalar `harmony_262`, followed by
 streaming and non-streaming API requests. Performance measurements are
 informational for this milestone. The exhaustive oracle/API/benchmark matrix
-is intentionally deferred until the planned AVX-512, GEMM/prefill, AMX, and
-CPU scheduling features are developed; focused correctness and safety checks
-remain mandatory for each feature slice.
+is intentionally deferred until the experimental CPU feature set is complete
+and ready for a separate tuning/certification campaign; focused correctness
+and safety checks remain mandatory for each feature slice.
 
 The production runtime is Rust. Narrow Python tools under
 `crates/gpt-oss-bench/tools` are retained as diagnostic bridges to the pinned
@@ -164,6 +172,8 @@ Current documentation:
 
 - [`docs/CPU_RUNTIME.md`](docs/CPU_RUNTIME.md): CPU storage, numerical, serving,
   and dispatch invariants;
+- [`docs/MXFP4_MATRIX_API.md`](docs/MXFP4_MATRIX_API.md): typed matrix views,
+  scratch ownership, backend policy, and layer-major integration;
 - [`docs/MXFP4_CPU_BACKEND_HANDOFF.md`](docs/MXFP4_CPU_BACKEND_HANDOFF.md): Intel
   ISA backend direction and implementation milestones;
 - [`docs/CPU_I7_CONFORMANCE.md`](docs/CPU_I7_CONFORMANCE.md): repeatable

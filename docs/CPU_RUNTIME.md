@@ -49,6 +49,32 @@ Sliding eviction occurs only during that successful commit. A model error,
 stale commit, explicit discard, or dropped prepared value therefore leaves
 committed state unchanged.
 
+## Matrix prefill
+
+Serving prefill constructs one `CpuStepBatch` for the prompt and marks only its
+last row as requiring logits. The model gathers all embeddings, then advances
+the complete row set through one transformer layer at a time. Dense Q/K/V and
+output projections operate across the row set. RoPE uses each row's explicit
+absolute position, while attention remains row-wise and sees committed KV plus
+only earlier staged rows from the same sequence. Full and sliding cache effects
+remain staged until the complete batch commits.
+
+MoE routing produces stable records containing expert, source row, original
+top-k rank, and routing weight. Records are grouped by expert for gate/up and
+down matrix execution, then restored to source-row and top-k-rank order before
+weighted reduction. This keeps reduction order deterministic even when expert
+execution order changes. Rows without `logits_required` do not receive a
+logits allocation or result.
+
+MXFP4 expert matrices use the common `Mxfp4MatmulProblem` contract with typed
+Q8/residual-Q8 row views, checked output stride, and queryable caller-owned
+scratch. The scalar matrix reference is the semantic oracle. Explicit AVX2
+packs up to four activation rows and computes eight output rows over the
+existing x8 persistent cache; M tails stay in the bounded panel and N tails use
+the canonical-row scalar path. The worker-local `CpuExecutionContext` reuses
+aligned transient scratch. See [`MXFP4_MATRIX_API.md`](MXFP4_MATRIX_API.md) for
+the complete contract.
+
 ## Numeric and cache behavior
 
 - Dense BF16 and MXFP4 projections accumulate in FP32 and round at BF16 model
@@ -105,8 +131,10 @@ certification or a basis for changing automatic selection.
 ## Serving policy
 
 The server owns a real `CpuWorker` backed by `Arc<CpuModel>`; CPU requests never
-pass through the GPU or mock executor. Prefill and decode are sequential and
-the existing sampler handles greedy and stochastic generation. Chat
+pass through the GPU or mock executor. Request admission remains batch-one
+until the scheduling milestone, but each prompt executes as layer-major
+multi-row prefill. Decode is one row at a time and the existing sampler handles
+greedy and stochastic generation. Chat
 Completions and Responses, including their streaming forms, share that engine
 path and retain the existing Harmony rendering and parsing.
 
@@ -133,6 +161,14 @@ explicit CUDA.
 repacked expert tensors, build artifacts, and benchmark output remain outside
 Git.
 
+`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8` and is
+serialized as `device.cpu_matmul_backend`; the default is `auto`. During this
+experimental milestone, automatic M=1 expert projection uses the established
+dispatched GEMV path and automatic M>1 uses the scalar matrix reference.
+Optimized matrix execution therefore requires explicit `avx2`. `amx-int8`
+fails as unavailable until the optional feature and runtime support land; it is
+never selected automatically.
+
 ## Kernel dispatch
 
 Forced `scalar`, `avx2`, and `avx512-vnni` requests preserve their compatibility
@@ -151,6 +187,12 @@ the AVX-512 implementations while MXFP4 GEMV selects AVX2 x8. Residual-Q8 uses
 the same x8 kernel and decodes weights once for both activation passes. This is
 a capability policy, not a CPU-model policy; startup logs and captures include
 the exact GEMV kernel and packed-layout identifiers in the immutable plan.
+
+Matrix backend selection is deliberately separate from that compatibility
+kernel plan. Explicit AVX2 matrix execution selects the x8 layout and validates
+host support when invoked. Automatic matrix execution does not promote the new
+4x8 path: it preserves GEMV for M=1 and uses the scalar reference for M>1.
+There is no shape threshold, tuning table, or second persistent weight format.
 
 The current plan is a baseline, not the final abstraction. Future dispatch
 must describe precise ISA requirements and include operation type, matrix

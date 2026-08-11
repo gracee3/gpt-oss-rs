@@ -80,12 +80,43 @@ crossover, persistent matrix-specific weights, or scheduler policy here.
 
 ## Deviations and decisions
 
-- None recorded yet.
+- The landed M3 ownership boundary required no plan refinement: reusable
+  matrix scratch fits naturally in worker-local `CpuExecutionContext`, while
+  `PreparedCpuStep` continues to own staged state effects.
+- Dense BF16 projections execute across the row collection using the existing
+  dispatched matvec primitive per row. MXFP4 expert buckets use the new matrix
+  contract directly. This establishes true layer-major model flow without
+  introducing an unrelated persistent dense layout or tuned BF16 GEMM.
+- Ragged attention remains row-wise as planned. Exact-BF16 diagnostic expert
+  projection also remains a row-at-a-time fallback because the new typed
+  matrix views intentionally cover Q8 and residual Q8.
+- AVX2 input tails reuse the bounded four-row panel and output tails use the
+  scalar canonical-row reference. Automatic M>1 remains scalar and no
+  crossover or scheduling policy was added.
 
 ## Completion evidence
 
-- Implementation commits: pending
-- Commands/results: pending
-- Layer-major fixture evidence: pending
-- Closeout commit/workflow: pending
-
+- Implementation commits: `a8a1e12` (typed problem, backend, scratch, and
+  scalar reference), `6c26e0f` (AVX2 4x8 path), `85f5ab2` (configuration,
+  CLI, diagnostics, and layout selection), and `fa1a733` (transactional
+  layer-major model execution and stable grouped MoE).
+- `cargo test -p gpt-oss-cpu-kernels --locked`: 32 tests passed, including
+  Q8/residual-Q8 shapes and tails, exact/short/misaligned scratch, output
+  stride/canaries, invalid bounds, and scalar equivalence.
+- `cargo clippy -p gpt-oss-cpu-kernels --all-targets --locked -- -D warnings`:
+  passed after kernel changes.
+- `cargo test -p gpt-oss-model-runner --lib --locked`: 356 tests passed.
+  Layer-major fixtures cover two interleaved sequences, same-sequence prompt
+  rows, absolute positions, selective logits, stable routing, explicit AVX2
+  equivalence, scratch reuse, stale/drop rollback, and full/sliding KV state.
+- Affected configuration/worker/server gates passed: 250 engine library tests,
+  103 server library tests, and locked engine/server checks. The only check
+  warnings are the pre-existing unused semantic-spec members in the generic
+  model runner.
+- Full-model captures:
+  `/data/models/openai/gpt-oss-rs-cpu-work/results/m2-harmony_122-auto.json`
+  and `m2-harmony_122-avx2-matmul.json`. Both completed one-token generation
+  with first token `200005`, finite recorded durations, exit status zero, and
+  matching prompt identity. Timings are informational and impose no gate.
+- Closeout commit/workflow: this documentation and evidence checkpoint; remote
+  CPU workflow verification follows publication.

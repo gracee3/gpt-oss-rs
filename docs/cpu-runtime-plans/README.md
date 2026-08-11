@@ -128,9 +128,11 @@ permutations, or AMX hardware tests during this feature program.
 - M1 closeout: `849785e`, `eb92640`, and `250b1c6`; focused gates and short
   20B comparison passed
 - M3 closeout: `c9ca550`, `4c63de1`, `94a01a6`, `2247df9`, and the subsequent
-  documentation/evidence checkpoint; model/engine gates and short 20B smoke
-  passed
-- M2 closeout: pending
+  documentation/evidence checkpoint `fa72852`; model/engine gates and short
+  20B smoke passed
+- M2 closeout: `a8a1e12`, `6c26e0f`, `85f5ab2`, `fa1a733`, and this
+  documentation/evidence checkpoint; kernel/model/configuration gates and
+  short automatic/explicit-AVX2 20B comparison passed
 - M4 closeout: pending
 - M5 closeout: pending
 - Final integration commit and workflow: pending
