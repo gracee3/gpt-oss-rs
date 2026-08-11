@@ -30,6 +30,7 @@ pub enum Mxfp4GemvKernel {
     Avx2Row,
     Avx512VnniRow,
     Avx2X8,
+    Avx512VnniX8,
     ExactBf16,
 }
 
@@ -40,6 +41,7 @@ impl Mxfp4GemvKernel {
             Self::Avx2Row => "avx2-row",
             Self::Avx512VnniRow => "avx512-vnni-row",
             Self::Avx2X8 => "avx2-x8",
+            Self::Avx512VnniX8 => "avx512-vnni-x8",
             Self::ExactBf16 => "exact-bf16-row",
         }
     }
@@ -251,13 +253,14 @@ impl Kernels {
                 mxfp4_gemv: match path {
                     KernelPath::Scalar => Mxfp4GemvKernel::Scalar,
                     KernelPath::Avx2 => Mxfp4GemvKernel::Avx2X8,
-                    KernelPath::Avx512Vnni => Mxfp4GemvKernel::Avx512VnniRow,
+                    KernelPath::Avx512Vnni => Mxfp4GemvKernel::Avx512VnniX8,
                     KernelPath::Auto => Mxfp4GemvKernel::Scalar,
                 },
-                mxfp4_weight_layout: if path == KernelPath::Avx2 {
-                    Mxfp4WeightLayout::InterleavedSplitX8V2
-                } else {
-                    Mxfp4WeightLayout::CanonicalAdjacentV1
+                mxfp4_weight_layout: match path {
+                    KernelPath::Avx2 | KernelPath::Avx512Vnni => {
+                        Mxfp4WeightLayout::InterleavedSplitX8V2
+                    }
+                    KernelPath::Auto | KernelPath::Scalar => Mxfp4WeightLayout::CanonicalAdjacentV1,
                 },
                 rms_norm: path,
             }
@@ -517,6 +520,21 @@ impl Kernels {
                 };
                 Ok(())
             }
+            #[cfg(target_arch = "x86_64")]
+            Mxfp4GemvKernel::Avx512VnniX8 if output.len() == 8 => {
+                // SAFETY: construction verifies AVX-512F/BW/VNNI support;
+                // validation verifies an aligned complete x8 packed group.
+                unsafe {
+                    x86::mxfp4_q8_gemv_x8_avx512_vnni(
+                        weights,
+                        row_start,
+                        activations.blocks,
+                        &bias[row_start..row_start + 8],
+                        output,
+                    )
+                };
+                Ok(())
+            }
             kernel => self.mxfp4_q8_gemv_rows(
                 weights,
                 row_start,
@@ -546,6 +564,21 @@ impl Kernels {
                 // verifies an aligned complete x8 group and its packed layout.
                 unsafe {
                     x86::mxfp4_residual_q8_gemv_x8_avx2(
+                        weights,
+                        row_start,
+                        activations.blocks,
+                        &bias[row_start..row_start + 8],
+                        output,
+                    )
+                };
+                Ok(())
+            }
+            #[cfg(target_arch = "x86_64")]
+            Mxfp4GemvKernel::Avx512VnniX8 if output.len() == 8 => {
+                // SAFETY: construction verifies AVX-512F/BW/VNNI support;
+                // validation verifies an aligned complete x8 packed group.
+                unsafe {
+                    x86::mxfp4_residual_q8_gemv_x8_avx512_vnni(
                         weights,
                         row_start,
                         activations.blocks,
@@ -1044,6 +1077,7 @@ fn scalar_mxfp4_residual_q8_dot_i32(weight: &Mxfp4Block, activation: &ResidualQ8
 const fn canonical_row_kernel(kernel: Mxfp4GemvKernel) -> Mxfp4GemvKernel {
     match kernel {
         Mxfp4GemvKernel::Avx2X8 => Mxfp4GemvKernel::Avx2Row,
+        Mxfp4GemvKernel::Avx512VnniX8 => Mxfp4GemvKernel::Avx512VnniRow,
         other => other,
     }
 }
@@ -1181,7 +1215,11 @@ mod tests {
     }
 
     fn run_x8_projection_case(rows: usize, blocks: usize, seed: u64) {
-        let Ok(x8) = Kernels::new(KernelPath::Avx2) else {
+        run_x8_projection_case_for(KernelPath::Avx2, rows, blocks, seed);
+    }
+
+    fn run_x8_projection_case_for(path: KernelPath, rows: usize, blocks: usize, seed: u64) {
+        let Ok(x8) = Kernels::new(path) else {
             return;
         };
         let scalar = Kernels::new(KernelPath::Scalar).unwrap();
@@ -1417,11 +1455,11 @@ mod tests {
         assert_eq!(forced.path(), KernelPath::Avx512Vnni);
         assert_eq!(
             forced.dispatch_plan().mxfp4_gemv(),
-            Mxfp4GemvKernel::Avx512VnniRow
+            Mxfp4GemvKernel::Avx512VnniX8
         );
         assert_eq!(
             forced.dispatch_plan().mxfp4_weight_layout(),
-            Mxfp4WeightLayout::CanonicalAdjacentV1
+            Mxfp4WeightLayout::InterleavedSplitX8V2
         );
     }
 
@@ -1454,10 +1492,10 @@ mod tests {
         let avx512 = Kernels::with_features(KernelPath::Avx512Vnni, both)
             .unwrap()
             .dispatch_plan();
-        assert_eq!(avx512.mxfp4_gemv(), Mxfp4GemvKernel::Avx512VnniRow);
+        assert_eq!(avx512.mxfp4_gemv(), Mxfp4GemvKernel::Avx512VnniX8);
         assert_eq!(
             avx512.mxfp4_weight_layout(),
-            Mxfp4WeightLayout::CanonicalAdjacentV1
+            Mxfp4WeightLayout::InterleavedSplitX8V2
         );
     }
 
@@ -1525,6 +1563,51 @@ mod tests {
     fn x8_q8_and_residual_projections_match_canonical_for_every_tail() {
         for tail in 1..=7 {
             run_x8_projection_case(8 + tail, 5, 0x5820_0000 + tail as u64);
+            run_x8_projection_case_for(
+                KernelPath::Avx512Vnni,
+                8 + tail,
+                if tail <= 2 { tail } else { 5 },
+                0x5120_0000 + tail as u64,
+            );
+        }
+    }
+
+    #[test]
+    fn x8_e8m0_invalid_scale_propagates_nan_on_every_projection_path() {
+        let weights = vec![
+            Mxfp4Block {
+                scale: 0xff,
+                packed: [0x11; MXFP4_PACKED_BYTES],
+            };
+            8
+        ];
+        let activation = [Q8Block {
+            scale: 1.0,
+            values: [1; QUANT_BLOCK_SIZE],
+        }];
+        let bias = [0.0; 8];
+        for path in [KernelPath::Scalar, KernelPath::Avx2, KernelPath::Avx512Vnni] {
+            let Ok(kernels) = Kernels::new(path) else {
+                continue;
+            };
+            let data = match kernels.dispatch_plan().mxfp4_weight_layout() {
+                Mxfp4WeightLayout::CanonicalAdjacentV1 => pack_canonical(&weights),
+                Mxfp4WeightLayout::InterleavedSplitX8V2 => pack_x8(&weights, 8, 1),
+            };
+            let view =
+                Mxfp4MatrixView::new(&data, 8, 1, kernels.dispatch_plan().mxfp4_weight_layout())
+                    .unwrap();
+            let mut output = [0.0; 8];
+            kernels
+                .mxfp4_q8_gemv_tile(
+                    view,
+                    0,
+                    Q8ActivationView::new(&activation),
+                    &bias,
+                    &mut output,
+                )
+                .unwrap();
+            assert!(output.into_iter().all(f32::is_nan), "path={path}");
         }
     }
 
@@ -1590,11 +1673,20 @@ mod tests {
 
     #[test]
     fn x8_matches_gate_up_and_down_projection_shapes() {
-        if Kernels::new(KernelPath::Avx2).is_err() {
-            return;
+        for (path, seed_offset) in [(KernelPath::Avx2, 0), (KernelPath::Avx512Vnni, 0x1000_0000)] {
+            run_x8_projection_case_for(
+                path,
+                5760,
+                2880 / QUANT_BLOCK_SIZE,
+                0x5820_5760 + seed_offset,
+            );
+            run_x8_projection_case_for(
+                path,
+                2880,
+                2880 / QUANT_BLOCK_SIZE,
+                0x5820_2880 + seed_offset,
+            );
         }
-        run_x8_projection_case(5760, 2880 / QUANT_BLOCK_SIZE, 0x5820_5760);
-        run_x8_projection_case(2880, 2880 / QUANT_BLOCK_SIZE, 0x5820_2880);
     }
 
     #[test]

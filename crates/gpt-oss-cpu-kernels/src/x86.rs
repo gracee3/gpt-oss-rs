@@ -366,6 +366,150 @@ pub(super) unsafe fn mxfp4_residual_q8_gemv_x8_avx2(
     unsafe { _mm256_storeu_ps(output.as_mut_ptr(), accumulator) };
 }
 
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn decode_mxfp4_x8_chunk_avx512(packed: *const u8) -> (__m512i, __m512i) {
+    const LUT: [i8; 64] = [
+        0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12, 0, 1, 2, 3, 4, 6, 8, 12, 0, -1,
+        -2, -3, -4, -6, -8, -12, 0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12, 0, 1, 2,
+        3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12,
+    ];
+    // SAFETY: the caller passes one complete 64-byte x8 layout chunk. The
+    // fixed LUT has one copy in every 128-bit VPSHUFB lane.
+    let packed = unsafe { _mm512_loadu_si512(packed.cast()) };
+    let lut = unsafe { _mm512_loadu_si512(LUT.as_ptr().cast()) };
+    let mask = _mm512_set1_epi8(0x0f);
+    let low = _mm512_shuffle_epi8(lut, _mm512_and_si512(packed, mask));
+    let high = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_srli_epi16(packed, 4), mask));
+    (low, high)
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn dot_eight_rows_eight_avx512_vnni(weights: __m512i, activations: *const i8) -> [i32; 8] {
+    // Each output row occupies one 64-bit lane in `weights`. Replicating the
+    // matching eight activations produces two four-byte VNNI partials per row.
+    // SAFETY: the caller identifies an in-bounds eight-byte activation span.
+    let activation_sum = (0..8)
+        .map(|lane| {
+            // SAFETY: the same eight-byte bound used for the lane load below.
+            unsafe { *activations.add(lane) as i32 }
+        })
+        .sum::<i32>();
+    let activation_lane = unsafe { std::ptr::read_unaligned(activations.cast::<i64>()) };
+    let activations = _mm512_set1_epi64(activation_lane);
+    let shifted_weights = _mm512_add_epi8(weights, _mm512_set1_epi8(12));
+    let shifted_dot = _mm512_dpbusd_epi32(_mm512_setzero_si512(), shifted_weights, activations);
+
+    let mut partial = [0_i32; 16];
+    // SAFETY: `partial` has room for one 512-bit vector.
+    unsafe { _mm512_storeu_si512(partial.as_mut_ptr().cast(), shifted_dot) };
+
+    // The correction is identical in every replicated row lane. Accumulate it
+    // in scalar i32 to avoid adding any capability beyond the ZMM body.
+    std::array::from_fn(|row| partial[row * 2] + partial[row * 2 + 1] - 12 * activation_sum)
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn mxfp4_x8_block_dots_avx512_vnni(
+    packed: &[u8; 136],
+    primary_values: &[i8; 32],
+    residual_values: Option<&[i8; 32]>,
+) -> ([i32; 8], [i32; 8]) {
+    let mut primary = [0_i32; 8];
+    let mut residual = [0_i32; 8];
+    for chunk in 0..2 {
+        // SAFETY: each iteration addresses one complete 64-byte value chunk
+        // after the eight scale bytes in the fixed 136-byte record.
+        let (low_weights, high_weights) =
+            unsafe { decode_mxfp4_x8_chunk_avx512(packed.as_ptr().add(8 + chunk * 64)) };
+        // SAFETY: each pointer begins an in-bounds eight-value segment.
+        let low = unsafe {
+            dot_eight_rows_eight_avx512_vnni(low_weights, primary_values.as_ptr().add(chunk * 8))
+        };
+        let high = unsafe {
+            dot_eight_rows_eight_avx512_vnni(
+                high_weights,
+                primary_values.as_ptr().add(16 + chunk * 8),
+            )
+        };
+        for row in 0..8 {
+            primary[row] += low[row] + high[row];
+        }
+
+        if let Some(residual_values) = residual_values {
+            // The decoded ZMM weights stay live and are reused for the second
+            // activation dot before this K chunk advances.
+            let low = unsafe {
+                dot_eight_rows_eight_avx512_vnni(
+                    low_weights,
+                    residual_values.as_ptr().add(chunk * 8),
+                )
+            };
+            let high = unsafe {
+                dot_eight_rows_eight_avx512_vnni(
+                    high_weights,
+                    residual_values.as_ptr().add(16 + chunk * 8),
+                )
+            };
+            for row in 0..8 {
+                residual[row] += low[row] + high[row];
+            }
+        }
+    }
+    (primary, residual)
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub(super) unsafe fn mxfp4_q8_gemv_x8_avx512_vnni(
+    weights: Mxfp4MatrixView<'_>,
+    row_start: usize,
+    activations: &[Q8Block],
+    bias: &[f32],
+    output: &mut [f32],
+) {
+    // SAFETY: the public projection entry point validates eight-element slices.
+    output.copy_from_slice(bias);
+    let group = row_start / 8;
+    for (block_index, activation) in activations.iter().enumerate() {
+        let packed = weights.x8_block(group, block_index);
+        // SAFETY: activation arrays and packed x8 records have fixed sizes.
+        let (dots, _) =
+            unsafe { mxfp4_x8_block_dots_avx512_vnni(packed, &activation.values, None) };
+        for row in 0..8 {
+            output[row] += dots[row] as f32 * 0.5 * e8m0_scale(packed[row]) * activation.scale;
+        }
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub(super) unsafe fn mxfp4_residual_q8_gemv_x8_avx512_vnni(
+    weights: Mxfp4MatrixView<'_>,
+    row_start: usize,
+    activations: &[ResidualQ8Block],
+    bias: &[f32],
+    output: &mut [f32],
+) {
+    // SAFETY: the public projection entry point validates eight-element slices.
+    output.copy_from_slice(bias);
+    let group = row_start / 8;
+    for (block_index, activation) in activations.iter().enumerate() {
+        let packed = weights.x8_block(group, block_index);
+        // SAFETY: both activation arrays and the packed x8 record have fixed
+        // sizes. The helper reuses decoded weights for both dots.
+        let (primary, residual) = unsafe {
+            mxfp4_x8_block_dots_avx512_vnni(
+                packed,
+                &activation.primary.values,
+                Some(&activation.residual.values),
+            )
+        };
+        for row in 0..8 {
+            let weight_scale = 0.5 * e8m0_scale(packed[row]);
+            output[row] += primary[row] as f32 * weight_scale * activation.primary.scale;
+            output[row] += residual[row] as f32 * weight_scale * activation.residual.scale;
+        }
+    }
+}
+
 #[target_feature(enable = "avx2,avx512vl,avx512vnni")]
 pub(super) unsafe fn mxfp4_q8_dot_avx512_vnni(weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
     // VNNI's byte dot instruction accepts unsigned weights and signed
