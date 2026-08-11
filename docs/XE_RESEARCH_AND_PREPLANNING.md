@@ -1,7 +1,8 @@
 # Tiger Lake Iris Xe Research and Pre-Planning
 
-- Status: source corpus and initial OpenCL capability capture complete; no
-  backend selected or implemented
+- Status: OpenCL online compilation/program-binary reload and version-matched
+  Level Zero offline SPIR-V copy kernels pass; no backend selected or
+  implemented
 - Started: 2026-08-11
 - Research host: T14 with Tiger Lake-LP GT2 Iris Xe (`8086:9a49`)
 - External source corpus: `/home/emmy/src/xe-research`
@@ -70,9 +71,8 @@ Xe bound to `i915`, the generic `ocl-icd` loader 2.3.2, zero OpenCL platforms,
 no `/etc/OpenCL/vendors`, and no Intel OpenCL/Level Zero package set.
 
 At approximately 18:03 local time, while the source corpus was being cloned,
-the host package state changed independently of the commands used for this
-research task. This task did not run a package installation. The current host
-has:
+the user installed the Intel OpenCL and Level Zero packages through Ubuntu
+`apt`. The current host has:
 
 | Package | Version |
 | --- | --- |
@@ -84,9 +84,10 @@ has:
 
 The kernel is `7.0.0-28-generic`; the device remains bound to `i915` and the
 user has an explicit read/write ACL on `/dev/dri/renderD128`. The Intel ICD now
-discovers one `Intel(R) Iris(R) Xe Graphics` device. The Level Zero loader and
-Intel driver libraries are installed, but no `ze_info`, `zello_world`,
-`sycl-ls`, or `ocloc` command is currently available for a device-level probe.
+discovers one `Intel(R) Iris(R) Xe Graphics` device. The runtime packages do not
+provide `ze_info` or `zello_world`; version-matched copies have now been built
+locally. A cached user-local `ocloc` works, while `sycl-ls` is absent and is not
+required for the direct OpenCL/Level Zero research path.
 
 Initial OpenCL capability evidence is encouraging but constrained:
 
@@ -107,15 +108,50 @@ dedicated VRAM or permission to make a single model-sized allocation, and
 integrated physical memory does not prove zero-copy. FP16 and integer-dot make
 a bounded MXFP4 experiment plausible, but there is no native MXFP4 operation.
 OpenCL 3.0 makes features beyond the 1.2 baseline optional, so every used
-capability still needs an explicit query. The externally changed package set
-also needs a provenance, compatibility, and rollback audit before any refresh.
+capability still needs an explicit query. The user-installed package set still
+needs a kernel compatibility and rollback audit before any refresh.
+
+## Initial OpenCL, Level Zero, and compiler results
+
+The first Level Zero and R3 compiler gates now pass:
+
+- the current Level Zero 1.32 source builds, but its loader returns
+  `ZE_RESULT_ERROR_UNSUPPORTED_VERSION` against the installed 23.43 driver;
+- the package-matched Level Zero `v1.16.1` source at
+  `ac99dbfb937f0715171eb39f83b5fadf20474b68` discovers the Iris Xe, reports
+  driver API 1.3, and passes context, immediate-command-list, event, wait, and
+  cleanup operations;
+- Compute Runtime tag `23.43.27642.40` at
+  `54d973fca784cf71ed5e2c59bea6b9445d59547e` passes shared-allocation device
+  copy and byte validation;
+- Clang 18 plus `llvm-spirv-18` produces validated SPIR-V 1.0, within the
+  device's reported SPIR-V 1.2 maximum, that the matched Level Zero path loads
+  and executes successfully;
+- Intel `ocloc` 23.43 independently produces validated Tiger Lake SPIR-V and
+  a native device binary; its SPIR-V also executes successfully;
+- `opencl3` at `072410552fecfc1e3f5395856735cb8684501f74` builds offline and
+  successfully drives online OpenCL C compilation and an upstream SAXPY
+  example on the Iris Xe;
+- a research `opencl3` probe retrieves a 3,648-byte Intel program binary,
+  rebuilds a program from it, executes it, and validates all 4,096 results;
+- a minimally built `ze_info` from compute-samples revision
+  `efa767b95de64c4103d3fc17338ec03d63a9387a` records one compute/copy queue,
+  64 KiB shared local memory, SPIR-V 1.2, FP16, and read/write plus atomic
+  host/device/shared-single-device allocation capabilities.
+
+The successful shared-buffer tests prove usability, not zero-copy or useful
+model performance. Current upstream and installed-runtime source generations
+must not be mixed casually. Full artifact hashes and offline-cache provenance
+are retained in `/home/emmy/src/xe-research/PROBE_RESULTS_2026-08-11.md`.
 
 ## External research corpus
 
 The T14 source corpus is external to Git at `/home/emmy/src/xe-research`.
-`README.md` in that directory records the complete exact-revision manifest,
-license notes, baseline, questions, and refresh protocol. All repositories are
-shallow, blob-filtered, and clean.
+`README.md` in that directory records the exact-revision manifest, license
+notes, baseline, questions, and refresh protocol. The probe-results note
+records build inputs, hashes, and outcomes. The initial repositories were
+shallow and blob-filtered; compute-samples history was later fetched to select
+a compatible revision. All primary checkouts and matched worktrees are clean.
 
 The corpus groups are:
 
@@ -166,10 +202,10 @@ wrapper by copying the full upstream surface.
 
 ### R1 — environment provenance and compatibility plan
 
-Before changing the newly present packages, record:
+Before changing the user-installed packages, record:
 
 - distribution, kernel, Mesa, `i915`, firmware, PCI ID, and `/dev/dri` state;
-- how and why the current package set was installed;
+- the exact `apt` package selection and intended Xe research purpose;
 - distro package candidates versus Intel release packages;
 - a single mutually compatible Compute Runtime/IGC/loader version set;
 - expected files and ICD registration;
@@ -181,8 +217,8 @@ Do not combine distro and upstream release components opportunistically.
 
 ### R2 — device and capability inventory
 
-Preserve the initial OpenCL capture and obtain both API views of the same
-device:
+Preserve the initial OpenCL and Level Zero captures and complete the remaining
+capability evidence for the same device:
 
 - names, IDs, API/driver versions, compute units, work-group/subgroup limits;
 - global/local memory, maximum allocation, alignment, and SVM/shared-memory
@@ -205,9 +241,11 @@ For a simple integer buffer operation:
 4. record source, tools, versions, flags, hashes, cache key, and invalidation;
 5. compare cold compilation, warm reload, submission, and execution timing.
 
-This step decides whether a direct Level Zero path is reproducible without a
-runtime DPC++ dependency. A Rust-to-SPIR-V path is a candidate experiment, not
-a requirement.
+The OpenCL online-build/retrieved-binary path and the offline
+Clang/LLVM-SPIR-V and `ocloc` module paths pass without a runtime DPC++
+dependency. The remaining R3 work is structured failure logs, explicit cache
+keys/invalidation, and cold-versus-warm timing. A Rust-to-SPIR-V path is a
+candidate experiment, not a requirement.
 
 ### R4 — integrated-memory behavior
 
