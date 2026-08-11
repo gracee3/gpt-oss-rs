@@ -118,8 +118,18 @@ tiling/cache tuning, and automatic crossover are explicitly deferred.
 
 ## Completion evidence
 
-- Implementation commits: pending
-- Portable commands/results: pending
-- Native feature compilation: pending
+- Implementation commits: `59b6d99` adds feature propagation and independent
+  runtime gates; `6c8cba4` adds portable panels and tile emulation; `9dc1d2e`
+  adds the guarded C++ intrinsic shim; `9bba075` moves permission acquisition
+  ahead of model mappings and worker construction.
+- Portable commands/results: the feature-enabled CPU-kernel suite passed 41
+  tests, the default suite passed 36, and default/feature model-runner suites
+  passed 358/357 unit tests plus two integration tests each. Default and
+  feature-enabled CPU-kernel Clippy passed with warnings denied.
+- Native feature compilation: `cargo check -p gpt-oss-server --features
+  amx-int8 --locked` passed, including the repository C++17 shim. Forced AMX
+  selection on the development host is rejected at the missing CPUID gate
+  before snapshot mapping or worker construction.
 - AMX hardware execution: deferred/untested
-- Closeout commit/workflow: pending
+- Closeout commit/workflow: this documentation and portable CPU CI checkpoint;
+  workflow result recorded after push

@@ -1,6 +1,6 @@
 # Step 5 — AMX-INT8 Prototype and Integration Seam
 
-- Status: research complete; ready for implementation planning
+- Status: portable implementation complete; AMX hardware execution deferred
 - Hardware status: no AMX-capable local host
 - Planned exposure: explicit build feature plus forced/experimental backend
 - Initial numerical mapping: AMX-INT8, not AMX-BF16
@@ -244,3 +244,21 @@ transient panel ownership, x8 reuse, FFI/toolchain boundary, permission model,
 tile lifecycle, fallback, and no-hardware gate are ready for implementation
 planning. Hardware tuning cannot invalidate these interfaces; it can only
 change internal tiling, caching, and later selection policy.
+
+## Implementation outcome
+
+The `amx-int8` feature now propagates from CPU kernels through the model runner,
+engine, and server. Rust owns status diagnostics, permission acquisition,
+portable A/B/C panel packing, validation, scalar tile emulation, FP32 scale
+accumulation, tails, and fallbacks. A repository-owned C++17 intrinsic shim is
+built only for feature-enabled Linux x86-64 and performs the signed AMX tile
+dot while releasing tile state on every exit.
+
+The model requests tile-data permission before mapping the snapshot and before
+constructing worker pools. Explicit selection fails at the first unavailable
+build, target, CPUID, XSTATE, or permission gate; automatic selection neither
+chooses AMX nor requests permission. Portable tests cover matrix shapes,
+primary and residual Q8, extrema, scratch bounds, canaries, and injected status
+failures, and CPU CI compiles and tests the feature. The development host has
+no AMX CPUID support, so native execution, AMX-worker lifecycle stress, and
+performance remain deferred certification work.

@@ -80,8 +80,10 @@ automatic MXFP4 dispatch remains on the promoted AVX2 x8 baseline.
 `--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8`.
 `auto` keeps M=1 expert work on the established GEMV path and uses the scalar
 matrix reference for M>1. Select `avx2` explicitly to exercise the experimental
-4-input-row by 8-output-row packed path. `amx-int8` is reserved for the
-optional feature and currently fails clearly as unavailable.
+4-input-row by 8-output-row packed path. `amx-int8` requires the optional build
+feature plus Linux x86-64 AMX hardware, XSTATE support, and process permission;
+it is forced-only and never selected by `auto`. Portable packing and tile
+emulation are covered without claiming local AMX-hardware execution.
 
 CPU serving defaults to the `gpt-oss-cpu` profile: an 8192-token context cap
 and one active sequence. The first load creates a revision- and
@@ -181,6 +183,8 @@ Current documentation:
   ISA backend direction and implementation milestones;
 - [`docs/CPU_I7_CONFORMANCE.md`](docs/CPU_I7_CONFORMANCE.md): repeatable
   full-checkpoint CPU regression procedure;
+- [`docs/AMX_INT8.md`](docs/AMX_INT8.md): feature, capability, permission,
+  panel, fallback, and portable-validation contract for the forced AMX backend;
 - [`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md): audited upstream
   concepts and pinned revisions;
 - [`docs/cpu-runtime-research/`](docs/cpu-runtime-research/README.md): completed

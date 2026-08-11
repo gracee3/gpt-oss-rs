@@ -39,11 +39,13 @@ address alignment. Pass a suitably aligned mutable slice to
 `Kernels::mxfp4_matmul`; undersized or misaligned storage is rejected before
 the kernel runs.
 
-The scalar and automatic backends currently require no scratch. AVX2 uses
-32-byte-aligned caller storage for a transient panel of up to four activation
-rows. Q8 needs one pass per K block and residual Q8 needs two. The model runner
-keeps this reusable buffer in its worker-local `CpuExecutionContext`; no
-persistent activation panels or expanded weights are created.
+The scalar and automatic backends require no scratch. AVX2 uses 32-byte-aligned
+caller storage for a transient panel of up to four activation rows. The
+feature-gated AMX backend requires exactly 2048 bytes aligned to 64 bytes for
+one A panel, one B panel, and one C tile. Q8 needs one pass per K block and
+residual Q8 needs two. The model runner keeps this reusable buffer in its
+worker-local `CpuExecutionContext`; no persistent activation panels or
+expanded weights are created.
 
 ## Backend policy
 
@@ -54,7 +56,7 @@ persistent activation panels or expanded weights are created.
 | `auto` | Established dispatched GEMV | Scalar matrix reference |
 | `scalar` | Scalar matrix reference | Scalar matrix reference |
 | `avx2` | AVX2 matrix path | AVX2 4x8 path |
-| `amx-int8` | Unavailable until the optional AMX feature is built | Unavailable until the optional AMX feature is built |
+| `amx-int8` | Scalar fallback after explicit AMX gates | AMX Mx16 tiles plus scalar N tail after explicit AMX gates |
 
 Explicit AVX2 requires x86-64 AVX2 support and
 `InterleavedSplitX8V2` weights. Complete eight-output groups use the packed
@@ -66,6 +68,14 @@ disjoint-work partitioning policy.
 There is intentionally no automatic GEMV/GEMM crossover or tuned shape
 threshold. `auto` remains conservative until representative benchmarking and
 the deferred certification campaign justify a promotion.
+
+Explicit AMX requires the `amx-int8` build feature, Linux x86-64, CPUID
+AMX-TILE and AMX-INT8, Linux XSTATE support, and process tile-data permission.
+Permission is requested before model worker construction. Rust owns panel
+packing, validation, scale accumulation, and diagnostics; a small C++ shim
+performs only the signed tile dot and releases tile state on every exit. See
+the [AMX-INT8 prototype contract](AMX_INT8.md) for the exact lifecycle and
+portable-validation boundary.
 
 ## Model integration
 

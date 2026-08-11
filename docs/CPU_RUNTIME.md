@@ -175,8 +175,13 @@ serialized as `device.cpu_matmul_backend`; the default is `auto`. During this
 experimental milestone, automatic M=1 expert projection uses the established
 dispatched GEMV path and automatic M>1 uses the scalar matrix reference.
 Optimized matrix execution therefore requires explicit `avx2`. `amx-int8`
-fails as unavailable until the optional feature and runtime support land; it is
-never selected automatically.
+requires the optional feature, Linux x86-64 CPUID support, Linux XSTATE kernel
+support, and process tile-data permission. It is never selected automatically.
+The prototype consumes transient M<=16, N=16, K=32 panels, stores INT32 after
+every K block, and applies per-row activation and per-column E8M0 scales in
+FP32. M=1 and N tails use scalar fallbacks only after the forced AMX gates have
+succeeded. Portable emulation is tested; execution on AMX hardware remains
+deferred.
 
 ## Kernel dispatch
 

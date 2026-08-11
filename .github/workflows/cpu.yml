@@ -50,3 +50,17 @@ jobs:
             && grep -Eqw 'avx512vnni|avx512_vnni' /proc/cpuinfo; then
             GPT_OSS_CPU_KERNEL=avx512-vnni cargo test -p gpt-oss-cpu-kernels --locked
           fi
+
+  amx-portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Compile propagated AMX feature
+        run: cargo check -p gpt-oss-server --features amx-int8 --locked
+      - name: Test portable AMX packing and emulation
+        run: cargo test -p gpt-oss-cpu-kernels --features amx-int8 --locked
+      - name: Lint AMX kernel feature
+        run: cargo clippy -p gpt-oss-cpu-kernels --all-targets --features amx-int8 --locked -- -D warnings

@@ -108,6 +108,9 @@ Status: implemented with one canonical table and opt-in CPU batching.
 
 ## M5. Prototype AMX outside automatic serving
 
+Status: implemented behind the optional forced-only `amx-int8` feature, with
+portable emulation but no local AMX-hardware execution.
+
 - use signed doubled-E2M1 and signed Q8 with AMX-INT8 `TDPBSSD`;
 - preserve 32-element E8M0 scale boundaries through INT32 accumulation;
 - isolate tile configuration, OS permission handling, and fallback behavior;

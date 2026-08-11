@@ -136,6 +136,9 @@ permutations, or AMX hardware tests during this feature program.
 - M4 closeout: `671dd54`, `aa301f5`, `d58c335`, `818bff6`, `f1cce94`, and the
   documentation/evidence checkpoint; scheduler/model/server gates and a
   concurrent streaming/non-streaming 20B smoke passed
-- M5 closeout: pending
+- M5 closeout: `59b6d99`, `6c8cba4`, `9dc1d2e`, `9bba075`, and the
+  documentation/CI checkpoint; portable packing, emulation, diagnostics,
+  feature compilation, and warnings-denied Clippy passed, while AMX-hardware
+  execution remains deferred
 - Final integration commit and workflow: pending
 - `origin/main` verification: pending
