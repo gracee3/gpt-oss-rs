@@ -13,6 +13,35 @@ branches, and CUDA dependencies. Preserve CUDA scheduling unchanged. Refine the
 plan before code if one canonical table cannot be introduced without an
 adapter checkpoint.
 
+### Reconciled repository seam
+
+The existing synchronous `LLMEngine` scheduler/executor trait passes cloned
+`SequenceGroup` values into an executor that has already combined model
+execution and sampling. It cannot express a post-execution cancellation check
+or table-owned per-sequence model state without retaining two authorities.
+The unused `scheduler::Scheduler` has another local group type and advances
+prompt progress during `schedule`; CUDA serving does not use it.
+
+M4 therefore introduces a dedicated `CpuBatchEngine`/`AsyncCpuBatchEngine`
+path. That path owns the one `SequenceTable`, shared `CpuModel`, execution
+context, sampler, tokenizer, and ID-only CPU scheduler. Its iteration is split
+into reserve, blocking prepare/sample, cancellation recheck, and commit so the
+async owner can drain aborts and observe disconnected output receivers after
+kernels return but before state is published. Server CPU startup moves to this
+path. `AsyncGpuLLMEngine`, `GpuLLMEngine`, GPU block management, and the generic
+mock/test `AsyncLLMEngine` remain unchanged.
+
+The unused cloned-group scheduler implementation is replaced by the CPU ID
+scheduler rather than adapted. The existing batch-one `CpuWorker` may remain a
+compatibility/test facade, but it is not an authority in the server CPU path.
+Canonical records own model, generation, scheduler-progress, and output state;
+the async delivery map carries only request IDs and channels.
+
+`PreparedCpuStep` needs one narrow M4 extension: filter cancelled sequence
+deltas and commit the retained states from an owned ID/state map. Validation
+still completes for every retained state before any is mutated, allowing one
+in-flight cancellation to discard its rows while adjacent sequences commit.
+
 ## Interfaces
 
 ### Canonical state and queues
@@ -91,7 +120,17 @@ and their configuration paths unchanged.
 
 ## Deviations and decisions
 
-- None recorded yet.
+- CPU uses a dedicated engine rather than extending the generic cloned-group
+  scheduler/executor traits. This is the adapter boundary required to preserve
+  one canonical state owner and a real pre-commit cancellation recheck.
+- The generic mock engine and CUDA engines remain separate compatibility
+  systems. “Unified” here means all native CPU startup, scheduling, execution,
+  output, and cancellation use the one CPU sequence table; it does not mean
+  replacing CUDA block scheduling with CPU policy.
+- Output channels remain in the async delivery owner and are keyed only by
+  request ID. Token/text/logprob order and finish state live in the canonical
+  record, so dropping or replacing a channel cannot create a second progress
+  authority.
 
 ## Completion evidence
 
@@ -99,4 +138,3 @@ and their configuration paths unchanged.
 - Commands/results: pending
 - Concurrent server fixture/smoke: pending
 - Closeout commit/workflow: pending
-
