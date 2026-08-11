@@ -46,7 +46,7 @@ pub use attention::{
     SplitKvAttention,
 };
 pub use cpu_runner::{
-    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace,
+    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuModel,
     CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace, CpuStateRevision, CpuStepBatch,
     CpuStepRow, CpuTopLogit,
 };

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use half::bf16;
 use rayon::prelude::*;
@@ -333,7 +334,8 @@ impl CpuGptOssConfig {
     }
 }
 
-pub struct CpuModelRunner {
+/// Immutable, model-scale CPU resources shared by every sequence.
+pub struct CpuModel {
     config: CpuGptOssConfig,
     store: CpuTensorStore,
     layers: Vec<CpuLayer>,
@@ -341,11 +343,16 @@ pub struct CpuModelRunner {
     kernels: Kernels,
     pool: rayon::ThreadPool,
     rope: YarnRope,
+    expert_projection: CpuExpertProjection,
+}
+
+/// Batch-one compatibility facade over one shared [`CpuModel`].
+pub struct CpuModelRunner {
+    model: Arc<CpuModel>,
     caches: Vec<CpuKvCache>,
     context_cap: usize,
     position: usize,
     token_history: Vec<u32>,
-    expert_projection: CpuExpertProjection,
 }
 
 /// Selected intermediate values from the final token of a CPU prefill.
@@ -505,54 +512,32 @@ impl CpuKvCache {
     }
 }
 
-impl CpuModelRunner {
+impl CpuModel {
+    /// Load model-scale CPU resources once and return shared ownership.
     pub fn load(
         snapshot: impl AsRef<Path>,
         repack_root: impl AsRef<Path>,
         kernel_path: KernelPath,
         threads: usize,
-        context_cap: usize,
-    ) -> Result<Self> {
-        Self::load_with_options(
-            snapshot,
-            repack_root,
-            CpuModelRunnerOptions {
-                kernel_path,
-                threads,
-                context_cap,
-                expert_projection: CpuExpertProjection::default(),
-            },
-        )
-    }
-
-    pub fn load_with_options(
-        snapshot: impl AsRef<Path>,
-        repack_root: impl AsRef<Path>,
-        options: CpuModelRunnerOptions,
-    ) -> Result<Self> {
-        if options.threads == 0 || options.context_cap == 0 {
+        expert_projection: CpuExpertProjection,
+    ) -> Result<Arc<Self>> {
+        if threads == 0 {
             return Err(LLMError::ConfigError(
-                "CPU threads and context cap must be non-zero".into(),
+                "CPU thread count must be non-zero".into(),
             ));
         }
         let snapshot = snapshot.as_ref();
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
-        if options.context_cap > config.max_position_embeddings {
-            return Err(LLMError::ConfigError(format!(
-                "CPU context cap {} exceeds checkpoint maximum {}",
-                options.context_cap, config.max_position_embeddings
-            )));
-        }
         let store = CpuTensorStore::open(snapshot)?;
         let identity = SourceIdentity::from_store(&store)?;
         let repack = CpuRepackCache::new(repack_root.as_ref(), identity);
-        let mut kernels = Kernels::new(options.kernel_path)
-            .map_err(|error| LLMError::ConfigError(error.to_string()))?;
-        if options.expert_projection == CpuExpertProjection::ExactBf16 {
+        let mut kernels =
+            Kernels::new(kernel_path).map_err(|error| LLMError::ConfigError(error.to_string()))?;
+        if expert_projection == CpuExpertProjection::ExactBf16 {
             kernels = kernels.with_exact_bf16_mxfp4();
         }
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.threads)
+            .num_threads(threads)
             .thread_name(|index| format!("gpt-oss-cpu-{index}"))
             .build()
             .map_err(|error| LLMError::ModelError(format!("CPU thread pool: {error}")))?;
@@ -578,23 +563,7 @@ impl CpuModelRunner {
             &[config.vocab_size, config.hidden_size],
         )?;
 
-        let effective_cap = options.context_cap;
-        let token_width = config.num_key_value_heads * config.head_dim;
-        let caches = layers
-            .iter()
-            .map(|layer| {
-                CpuKvCache::new(
-                    token_width,
-                    if layer.sliding {
-                        config.sliding_window
-                    } else {
-                        effective_cap
-                    },
-                )
-            })
-            .collect();
-
-        Ok(Self {
+        Ok(Arc::new(Self {
             config,
             store,
             layers,
@@ -602,12 +571,8 @@ impl CpuModelRunner {
             kernels,
             pool,
             rope,
-            caches,
-            context_cap: effective_cap,
-            position: 0,
-            token_history: Vec::with_capacity(effective_cap),
-            expert_projection: options.expert_projection,
-        })
+            expert_projection,
+        }))
     }
 
     pub fn config(&self) -> &CpuGptOssConfig {
@@ -624,6 +589,98 @@ impl CpuModelRunner {
 
     pub const fn expert_projection(&self) -> CpuExpertProjection {
         self.expert_projection
+    }
+}
+
+impl CpuModelRunner {
+    pub fn load(
+        snapshot: impl AsRef<Path>,
+        repack_root: impl AsRef<Path>,
+        kernel_path: KernelPath,
+        threads: usize,
+        context_cap: usize,
+    ) -> Result<Self> {
+        Self::load_with_options(
+            snapshot,
+            repack_root,
+            CpuModelRunnerOptions {
+                kernel_path,
+                threads,
+                context_cap,
+                expert_projection: CpuExpertProjection::default(),
+            },
+        )
+    }
+
+    pub fn load_with_options(
+        snapshot: impl AsRef<Path>,
+        repack_root: impl AsRef<Path>,
+        options: CpuModelRunnerOptions,
+    ) -> Result<Self> {
+        if options.context_cap == 0 {
+            return Err(LLMError::ConfigError(
+                "CPU context cap must be non-zero".into(),
+            ));
+        }
+        let model = CpuModel::load(
+            snapshot,
+            repack_root,
+            options.kernel_path,
+            options.threads,
+            options.expert_projection,
+        )?;
+        Self::from_model(model, options.context_cap)
+    }
+
+    pub fn from_model(model: Arc<CpuModel>, context_cap: usize) -> Result<Self> {
+        if context_cap == 0 || context_cap > model.config.max_position_embeddings {
+            return Err(LLMError::ConfigError(format!(
+                "CPU context cap {context_cap} exceeds checkpoint maximum {}",
+                model.config.max_position_embeddings
+            )));
+        }
+        let token_width = model.config.num_key_value_heads * model.config.head_dim;
+        let caches = model
+            .layers
+            .iter()
+            .map(|layer| {
+                CpuKvCache::new(
+                    token_width,
+                    if layer.sliding {
+                        model.config.sliding_window
+                    } else {
+                        context_cap
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
+            model,
+            caches,
+            context_cap,
+            position: 0,
+            token_history: Vec::with_capacity(context_cap),
+        })
+    }
+
+    pub fn model(&self) -> &Arc<CpuModel> {
+        &self.model
+    }
+
+    pub fn config(&self) -> &CpuGptOssConfig {
+        self.model.config()
+    }
+
+    pub fn kernel_path(&self) -> KernelPath {
+        self.model.kernel_path()
+    }
+
+    pub fn kernel_dispatch_plan(&self) -> DispatchPlan {
+        self.model.kernel_dispatch_plan()
+    }
+
+    pub fn expert_projection(&self) -> CpuExpertProjection {
+        self.model.expert_projection()
     }
 
     pub const fn position(&self) -> usize {
@@ -642,7 +699,7 @@ impl CpuModelRunner {
         hidden: &[bf16],
         position: usize,
     ) -> Result<Vec<bf16>> {
-        if layer_index >= self.layers.len() || hidden.len() != self.config.hidden_size {
+        if layer_index >= self.model.layers.len() || hidden.len() != self.model.config.hidden_size {
             return Err(LLMError::ModelError(
                 "invalid isolated CPU layer conformance input".into(),
             ));
@@ -732,7 +789,7 @@ impl CpuModelRunner {
     fn validate_trace_layers(&self, selected_layers: &[usize]) -> Result<()> {
         if selected_layers
             .iter()
-            .any(|&index| index >= self.layers.len())
+            .any(|&index| index >= self.model.layers.len())
         {
             return Err(LLMError::ConfigError(
                 "CPU trace layer index is out of range".into(),
@@ -754,7 +811,7 @@ impl CpuModelRunner {
             prompt_token_ids: self.token_history.clone(),
             context_token_ids: self.token_history.clone(),
             trace_step,
-            expert_projection: self.expert_projection,
+            expert_projection: self.model.expert_projection,
             compatibility_kernel_path: self.kernel_path().to_string(),
             dispatch_plan: dispatch_plan.to_string(),
             mxfp4_gemv_kernel: dispatch_plan.mxfp4_gemv().to_string(),
@@ -782,19 +839,19 @@ impl CpuModelRunner {
             )));
         }
         let token = token_id as usize;
-        if token >= self.config.vocab_size {
+        if token >= self.model.config.vocab_size {
             return Err(LLMError::ModelError(format!(
                 "token {token} exceeds vocabulary {}",
-                self.config.vocab_size
+                self.model.config.vocab_size
             )));
         }
-        let embedding = self.store.tensor("model.embed_tokens.weight")?;
+        let embedding = self.model.store.tensor("model.embed_tokens.weight")?;
         let embedding = embedding.bf16()?;
-        let start = token * self.config.hidden_size;
-        let mut hidden = embedding[start..start + self.config.hidden_size].to_vec();
+        let start = token * self.model.config.hidden_size;
+        let mut hidden = embedding[start..start + self.model.config.hidden_size].to_vec();
         let mut layer_traces = Vec::with_capacity(selected_layers.len());
 
-        for layer_index in 0..self.layers.len() {
+        for layer_index in 0..self.model.layers.len() {
             let capture = selected_layers.contains(&layer_index);
             let (next_hidden, trace) =
                 self.forward_layer_with_trace(layer_index, &hidden, self.position, capture)?;
@@ -803,7 +860,7 @@ impl CpuModelRunner {
                 layer_traces.push(trace);
             }
         }
-        let normalized = self.norm_boundary(&hidden, &self.final_norm)?;
+        let normalized = self.norm_boundary(&hidden, &self.model.final_norm)?;
         let mut logits = self.project_bf16("lm_head.weight", &normalized, None)?;
         fp32_to_bf16_roundtrip(&mut logits);
         if logits.iter().any(|value| !value.is_finite()) {
@@ -838,7 +895,7 @@ impl CpuModelRunner {
         position: usize,
         capture: bool,
     ) -> Result<(Vec<bf16>, Option<CpuLayerTrace>)> {
-        let layer = &self.layers[index];
+        let layer = &self.model.layers[index];
         let normalized = self.norm_boundary(hidden, &layer.input_norm)?;
 
         let mut q = self.project_bf16(&layer.q_weight, &normalized, Some(&layer.q_bias))?;
@@ -846,10 +903,12 @@ impl CpuModelRunner {
         let v = self.project_bf16(&layer.v_weight, &normalized, Some(&layer.v_bias))?;
         fp32_to_bf16_roundtrip(&mut q);
         fp32_to_bf16_roundtrip(&mut k);
-        self.rope
-            .apply(&mut q, self.config.num_attention_heads, position)?;
-        self.rope
-            .apply(&mut k, self.config.num_key_value_heads, position)?;
+        self.model
+            .rope
+            .apply(&mut q, self.model.config.num_attention_heads, position)?;
+        self.model
+            .rope
+            .apply(&mut k, self.model.config.num_key_value_heads, position)?;
         fp32_to_bf16_roundtrip(&mut q);
         fp32_to_bf16_roundtrip(&mut k);
         let key = k
@@ -866,9 +925,9 @@ impl CpuModelRunner {
             &q,
             &self.caches[index],
             &layer.sinks,
-            self.config.num_attention_heads,
-            self.config.num_key_value_heads,
-            self.config.head_dim,
+            self.model.config.num_attention_heads,
+            self.model.config.num_key_value_heads,
+            self.model.config.head_dim,
         )?;
         let attention = attention_context
             .iter()
@@ -906,8 +965,9 @@ impl CpuModelRunner {
     fn norm_boundary(&self, input: &[bf16], weight: &[f32]) -> Result<Vec<bf16>> {
         let input = input.iter().map(|value| value.to_f32()).collect::<Vec<_>>();
         let mut output = vec![0.0; input.len()];
-        self.kernels
-            .rms_norm(&input, weight, self.config.rms_norm_eps, &mut output)
+        self.model
+            .kernels
+            .rms_norm(&input, weight, self.model.config.rms_norm_eps, &mut output)
             .map_err(kernel_error)?;
         Ok(output.into_iter().map(bf16::from_f32).collect())
     }
@@ -918,7 +978,7 @@ impl CpuModelRunner {
         input: &[bf16],
         bias: Option<&[f32]>,
     ) -> Result<Vec<f32>> {
-        let tensor = self.store.tensor(weight_name)?;
+        let tensor = self.model.store.tensor(weight_name)?;
         let shape = tensor.shape();
         if shape.len() != 2 || shape[1] != input.len() {
             return Err(LLMError::ModelError(format!(
@@ -933,9 +993,9 @@ impl CpuModelRunner {
             )));
         }
         let weights = tensor.bf16()?;
-        let kernels = self.kernels;
+        let kernels = self.model.kernels;
         let mut output = vec![0.0_f32; rows];
-        self.pool.install(|| {
+        self.model.pool.install(|| {
             output
                 .par_iter_mut()
                 .enumerate()
@@ -968,7 +1028,7 @@ impl CpuModelRunner {
                 "CPU router produced non-finite logits".into(),
             ));
         }
-        let selected = stable_top_k(&router, self.config.num_experts_per_tok);
+        let selected = stable_top_k(&router, self.model.config.num_experts_per_tok);
         let route_logits = selected
             .iter()
             .map(|index| router[*index])
@@ -978,7 +1038,7 @@ impl CpuModelRunner {
             .map(|weight| bf16::from_f32(weight).to_f32())
             .collect::<Vec<_>>();
         let prepared_input = self.prepare_expert_input(input)?;
-        let mut output = vec![0.0_f32; self.config.hidden_size];
+        let mut output = vec![0.0_f32; self.model.config.hidden_size];
         let mut expert_traces = Vec::with_capacity(if capture { selected.len() } else { 0 });
 
         for (rank, &expert) in selected.iter().enumerate() {
@@ -987,9 +1047,9 @@ impl CpuModelRunner {
             fp32_to_bf16_roundtrip(&mut gate_up);
             let activated = gpt_oss_swiglu(
                 &gate_up,
-                self.config.intermediate_size,
-                self.config.alpha,
-                self.config.swiglu_limit,
+                self.model.config.intermediate_size,
+                self.model.config.alpha,
+                self.model.config.swiglu_limit,
             )?;
             let activated = activated
                 .into_iter()
@@ -1037,17 +1097,21 @@ impl CpuModelRunner {
     }
 
     fn prepare_expert_input(&self, input: &[bf16]) -> Result<PreparedExpertInput> {
-        match self.expert_projection {
+        match self.model.expert_projection {
             CpuExpertProjection::Q8 => {
                 let input = bf16_slice_to_f32(input);
                 Ok(PreparedExpertInput::Q8(
-                    self.kernels.quantize_q8(&input).map_err(kernel_error)?,
+                    self.model
+                        .kernels
+                        .quantize_q8(&input)
+                        .map_err(kernel_error)?,
                 ))
             }
             CpuExpertProjection::ResidualQ8 => {
                 let input = bf16_slice_to_f32(input);
                 Ok(PreparedExpertInput::ResidualQ8(
-                    self.kernels
+                    self.model
+                        .kernels
                         .quantize_residual_q8(&input)
                         .map_err(kernel_error)?,
                 ))
@@ -1074,12 +1138,12 @@ impl CpuModelRunner {
                 "invalid CPU MXFP4 projection dimensions".into(),
             ));
         }
-        let kernels = self.kernels;
+        let kernels = self.model.kernels;
         let view = weights.expert_view(expert)?;
         let expert_bias = &bias[expert * rows..(expert + 1) * rows];
         let mut output = vec![0.0_f32; rows];
         match input {
-            PreparedExpertInput::Q8(input) => self.pool.install(|| {
+            PreparedExpertInput::Q8(input) => self.model.pool.install(|| {
                 output
                     .par_chunks_mut(8)
                     .enumerate()
@@ -1095,7 +1159,7 @@ impl CpuModelRunner {
                             .map_err(kernel_error)
                     })
             })?,
-            PreparedExpertInput::ResidualQ8(input) => self.pool.install(|| {
+            PreparedExpertInput::ResidualQ8(input) => self.model.pool.install(|| {
                 output
                     .par_chunks_mut(8)
                     .enumerate()
@@ -1111,7 +1175,7 @@ impl CpuModelRunner {
                             .map_err(kernel_error)
                     })
             })?,
-            PreparedExpertInput::ExactBf16(input) => self.pool.install(|| {
+            PreparedExpertInput::ExactBf16(input) => self.model.pool.install(|| {
                 output
                     .par_iter_mut()
                     .enumerate()
@@ -2132,6 +2196,28 @@ mod tests {
             let mut plain = CpuModelRunner::load(snapshot.path(), &cache, path, 2, 16).unwrap();
             assert_eq!(plain.prefill(&[1, 2, 3]).unwrap(), actual);
         }
+    }
+
+    #[test]
+    fn compatibility_runners_share_one_immutable_model_mapping() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let model = CpuModel::load(
+            snapshot.path(),
+            &cache,
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let first = CpuModelRunner::from_model(model.clone(), 16).unwrap();
+        let second = CpuModelRunner::from_model(model.clone(), 16).unwrap();
+
+        assert!(Arc::ptr_eq(first.model(), second.model()));
+        assert_eq!(Arc::strong_count(&model), 3);
+        assert_eq!(first.position(), 0);
+        assert_eq!(second.position(), 0);
+        assert_eq!(first.caches().len(), second.caches().len());
     }
 
     #[test]
