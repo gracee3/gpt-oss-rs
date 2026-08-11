@@ -134,7 +134,35 @@ and their configuration paths unchanged.
 
 ## Completion evidence
 
-- Implementation commits: pending
-- Commands/results: pending
-- Concurrent server fixture/smoke: pending
-- Closeout commit/workflow: pending
+- Implementation commits:
+  - `671dd54` defines canonical sequence records, table, ID-only queues,
+    budgets, and fairness;
+  - `aa301f5` adds validated retained-sequence model commits;
+  - `d58c335` adds transactional batch execution and sampling;
+  - `818bff6` adds the async owner, server/CLI integration, disconnect handling,
+    and removes both cloned-group schedulers;
+  - `f1cce94` adds read-only CPU topology diagnostics.
+- Commands/results:
+  - `cargo fmt --all --check` passed;
+  - `cargo check -p gpt-oss-engine -p gpt-oss-server --locked` passed;
+  - `cargo test -p gpt-oss-model-runner --locked` passed 357 tests during the
+    retained-state slice;
+  - `cargo test -p gpt-oss-engine --locked` passed 253 unit tests and three
+    integration regressions after obsolete scheduler removal;
+  - `cargo test -p gpt-oss-server --locked` passed 102 library, five CLI,
+    seven e2e, and six HTTP-contract tests;
+  - focused fixtures cover reservation no-progress, mixed fairness and chunk
+    bounds, stale and failure rollback, selective in-flight cancellation,
+    disconnect-before-commit, stream order, best-of/beam rejection, and
+    topology parsing/live observation.
+- Concurrent server smoke: release server on the pinned 20B snapshot used
+  `--max-num-seqs 2 --max-num-batched-tokens 64 --max-prefill-chunk 32`.
+  Concurrent two-token text-completion requests (one streaming and one
+  non-streaming) both completed with distinct IDs; the stream emitted ordered
+  incremental events and `[DONE]`, and the non-stream response reported
+  `finish_reason=length` and finite text. Captures are outside Git at
+  `/data/models/openai/gpt-oss-rs-cpu-work/results/m4-concurrent-*`.
+- Deferred: CPU affinity/NUMA placement, paged KV/swap, best-of/beam, load and
+  latency tuning, exhaustive API/oracle campaigns, and trusted promotion.
+- Closeout commit/workflow: this documentation checkpoint; remote workflow
+  verification follows the push.

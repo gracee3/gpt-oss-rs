@@ -259,3 +259,22 @@ shape, batch lifecycle, cancellation semantics, mixed-operation split, and
 topology boundary are ready for implementation planning. The next plan must
 choose concrete configuration names/defaults and a migration sequence that
 keeps batch-one server tests passing throughout the refactor.
+
+## Implementation outcome
+
+M4 implemented the researched design through one server-owned
+`CpuBatchEngine`/`AsyncCpuBatchEngine` and canonical `SequenceTable`. The old
+`SingleRequestScheduler` and unused cloned-group scheduler were removed.
+Reservations are progress-free, execution stages model/sampling/output state,
+and commit rechecks cancellation and revisions before publishing retained
+rows. Mixed decode and bounded prompt chunks honor all three configured
+budgets, including deterministic alternation at a one-token budget. Best-of
+and beam remain rejected.
+
+The server keeps `max_num_seqs=1` as the CPU profile default and permits an
+explicit larger value as experimental scheduling. A read-only Linux topology
+descriptor reports allowed CPU/memory-node masks, core relationships, NUMA
+observations, available parallelism, and configured worker count without
+applying policy. Focused synthetic tests and a concurrent streaming plus
+non-streaming 20B smoke passed; tuning, affinity, paged KV, swap, and broad
+certification remain deferred.

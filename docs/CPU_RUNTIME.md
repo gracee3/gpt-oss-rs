@@ -1,8 +1,8 @@
 # Native GPT-OSS CPU Runtime
 
-The initial CPU runtime is intentionally narrow: Linux, batch size one,
-official GPT-OSS SafeTensors, BF16 dense weights, and MXFP4 experts. It does
-not route through the CUDA runner or the mock architecture.
+The CPU runtime is intentionally narrow: Linux, official GPT-OSS SafeTensors,
+BF16 dense weights, and MXFP4 experts. It supports experimental multi-request
+batching without routing through the CUDA runner or mock architecture.
 
 ## Weight ownership
 
@@ -130,31 +130,40 @@ certification or a basis for changing automatic selection.
 
 ## Serving policy
 
-The server owns a real `CpuWorker` backed by `Arc<CpuModel>`; CPU requests never
-pass through the GPU or mock executor. Request admission remains batch-one
-until the scheduling milestone, but each prompt executes as layer-major
-multi-row prefill. Decode is one row at a time and the existing sampler handles
-greedy and stochastic generation. Chat
-Completions and Responses, including their streaming forms, share that engine
-path and retain the existing Harmony rendering and parsing.
+The server owns `AsyncCpuBatchEngine`, which wraps one `CpuBatchEngine`, one
+canonical `SequenceTable`, and the shared `Arc<CpuModel>`. CPU requests never
+pass through the GPU or mock executor. Prompt chunks and decode rows from
+several requests may share a `CpuStepBatch`; layer-major model execution and
+row-wise causal attention preserve sequence-local KV. Chat Completions,
+Responses, and text Completions, including streaming forms, share this path.
 
-The batch-one worker stages generation history and a cloned RNG while its model
-step is prepared. It publishes both only after sampling and model commit
-succeed. Sampling failure discards the prepared model step, so KV, position,
-token history, RNG, sampled tokens, and output stay aligned. Sequence reset,
-abort, removal, and worker shutdown are explicit ID-scoped lifecycle
-operations. Multi-sequence ownership and scheduling are introduced separately
-by the experimental batching milestone.
+Scheduling is reserve/execute/commit. Reservation records revisions and
+in-flight IDs but advances no prompt, KV, RNG, token, or output state. Model
+execution and sampling stage their results. Cancellation and client disconnect
+are checked again after kernels return; only retained, revision-matching rows
+commit. Failures and stale work are discarded atomically. Output channels are
+ID-keyed delivery handles rather than a second sequence authority. See
+[`CPU_SCHEDULER.md`](CPU_SCHEDULER.md) for budgets, fairness, lifecycle, and
+topology details. `CpuWorker` remains only as a batch-one compatibility/test
+facade.
 
 `--device auto` selects CPU for GPT-OSS regardless of CUDA availability and
 does not probe or initialize CUDA. `--device cpu` is explicit. CUDA requires
 `--device cuda --runtime-mode experimental`; trusted CUDA is rejected.
 Automatic selection rejects non-GPT-OSS models, while `--device mock` remains
-an explicit test-only choice. CPU rejects request batching, tensor parallelism,
-pipeline parallelism, CUDA graphs, and trusted mode. Automatic GPT-OSS serving
-uses the `gpt-oss-cpu` profile (`max_model_len=8192`, `max_num_seqs=1`) unless
-the user supplies a stricter supported value. The GPU profile is reserved for
-explicit CUDA.
+an explicit test-only choice. CPU rejects tensor parallelism, pipeline
+parallelism, CUDA graphs, best-of, beam search, and trusted mode. Automatic
+GPT-OSS serving uses the `gpt-oss-cpu` profile (`max_model_len=8192`,
+`max_num_seqs=1`). Explicit `--max-num-seqs > 1` enables experimental
+multi-request CPU scheduling. `--max-num-batched-tokens` bounds all rows per
+iteration, while `--max-prefill-chunk` bounds prompt rows per sequence; a zero
+prompt chunk means only the remaining iteration token budget applies. The GPU
+profile is reserved for explicit CUDA.
+
+CPU startup reports process-allowed CPUs and memory nodes, observed
+physical-core and NUMA relationships, available parallelism, and configured
+worker threads. These are read-only diagnostics: the runtime applies no
+affinity, placement, memory-binding, or automatic topology policy.
 
 `--cpu-repack-cache` defaults first to `GPT_OSS_RS_CACHE`, then
 `XDG_CACHE_HOME/gpt-oss-rs`, then `$HOME/.cache/gpt-oss-rs`. Model snapshots,

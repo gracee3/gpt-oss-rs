@@ -46,8 +46,10 @@ impl CpuTopology {
         allowed_cpus.sort_unstable();
         allowed_cpus.dedup();
         let allowed_memory_nodes = status_list(&status, "Mems_allowed_list").unwrap_or_default();
-        let physical_cores = observe_physical_cores(&allowed_cpus);
-        let numa_nodes = observe_numa_nodes(&allowed_cpus);
+        let physical_cores =
+            observe_physical_cores_at(Path::new("/sys/devices/system/cpu"), &allowed_cpus);
+        let numa_nodes =
+            observe_numa_nodes_at(Path::new("/sys/devices/system/node"), &allowed_cpus);
         Self {
             allowed_cpus,
             allowed_memory_nodes,
@@ -112,12 +114,10 @@ fn read_usize(path: impl AsRef<Path>) -> Option<usize> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-fn observe_physical_cores(allowed_cpus: &[usize]) -> Vec<CpuPhysicalCore> {
+fn observe_physical_cores_at(root: &Path, allowed_cpus: &[usize]) -> Vec<CpuPhysicalCore> {
     let mut cores = BTreeMap::<(usize, usize), CpuPhysicalCore>::new();
     for &cpu in allowed_cpus {
-        let topology = Path::new("/sys/devices/system/cpu")
-            .join(format!("cpu{cpu}"))
-            .join("topology");
+        let topology = root.join(format!("cpu{cpu}")).join("topology");
         let package_id = read_usize(topology.join("physical_package_id"));
         let core_id = read_usize(topology.join("core_id"));
         // Unknown identities remain distinct instead of collapsing unrelated
@@ -136,8 +136,8 @@ fn observe_physical_cores(allowed_cpus: &[usize]) -> Vec<CpuPhysicalCore> {
     cores.into_values().collect()
 }
 
-fn observe_numa_nodes(allowed_cpus: &[usize]) -> Vec<CpuNumaNode> {
-    let Ok(entries) = fs::read_dir("/sys/devices/system/node") else {
+fn observe_numa_nodes_at(root: &Path, allowed_cpus: &[usize]) -> Vec<CpuNumaNode> {
+    let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
     let mut nodes = entries
@@ -198,5 +198,31 @@ mod tests {
         assert!(topology.available_parallelism > 0);
         assert_eq!(topology.configured_worker_threads, 7);
         assert!(topology.summary().contains("worker_threads=7"));
+    }
+
+    #[test]
+    fn synthetic_sysfs_groups_allowed_core_siblings_and_numa_cpus() {
+        let temp = tempfile::tempdir().unwrap();
+        let cpu_root = temp.path().join("cpu");
+        for (cpu, package, core) in [(0, 0, 4), (1, 0, 4), (2, 1, 0)] {
+            let topology = cpu_root.join(format!("cpu{cpu}/topology"));
+            fs::create_dir_all(&topology).unwrap();
+            fs::write(topology.join("physical_package_id"), package.to_string()).unwrap();
+            fs::write(topology.join("core_id"), core.to_string()).unwrap();
+        }
+        let cores = observe_physical_cores_at(&cpu_root, &[0, 1, 2]);
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].logical_cpus, vec![0, 1]);
+        assert_eq!(cores[1].logical_cpus, vec![2]);
+
+        let node_root = temp.path().join("node");
+        fs::create_dir_all(node_root.join("node0")).unwrap();
+        fs::create_dir_all(node_root.join("node1")).unwrap();
+        fs::write(node_root.join("node0/cpulist"), "0-1").unwrap();
+        fs::write(node_root.join("node1/cpulist"), "2-5").unwrap();
+        let nodes = observe_numa_nodes_at(&node_root, &[0, 1, 2]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].allowed_cpus, vec![0, 1]);
+        assert_eq!(nodes[1].allowed_cpus, vec![2]);
     }
 }

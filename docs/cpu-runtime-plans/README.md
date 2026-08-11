@@ -133,7 +133,9 @@ permutations, or AMX hardware tests during this feature program.
 - M2 closeout: `a8a1e12`, `6c26e0f`, `85f5ab2`, `fa1a733`, and this
   documentation/evidence checkpoint; kernel/model/configuration gates and
   short automatic/explicit-AVX2 20B comparison passed
-- M4 closeout: pending
+- M4 closeout: `671dd54`, `aa301f5`, `d58c335`, `818bff6`, `f1cce94`, and the
+  documentation/evidence checkpoint; scheduler/model/server gates and a
+  concurrent streaming/non-streaming 20B smoke passed
 - M5 closeout: pending
 - Final integration commit and workflow: pending
 - `origin/main` verification: pending

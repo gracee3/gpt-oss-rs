@@ -1,9 +1,10 @@
 # Next Milestones
 
-The native batch-one GPT-OSS CPU serving path is the CPU-first experimental
-default. Capability-oriented dispatch and the size-neutral AVX2 x8 MXFP4 GEMV
-layout are now promoted. CPU trusted mode remains blocked, and CUDA remains an
-explicit experimental opt-in.
+The native GPT-OSS CPU serving path is the CPU-first experimental default.
+Capability-oriented dispatch, the size-neutral x8 MXFP4 layout, transactional
+layer-major prefill, and opt-in multi-request scheduling are implemented. CPU
+trusted mode remains blocked, and CUDA remains an explicit experimental
+opt-in.
 
 ## Development gate policy
 
@@ -57,6 +58,8 @@ receive its own decision-complete implementation plan before code work starts.
 
 ## M1. Build a real eight-output AVX-512 MXFP4 GEMV
 
+Status: implemented behind explicit AVX-512/VNNI selection.
+
 - prototype AVX-512 decode around relevant byte-manipulation subsets rather
   than mechanically widening AVX2;
 - preserve exact E2M1/E8M0 behavior and residual-Q8 weight reuse;
@@ -67,6 +70,8 @@ receive its own decision-complete implementation plan before code work starts.
   automatic dispatch on the validated AVX2 x8 baseline until later tuning.
 
 ## M2. Add a matrix contract and true GEMM-like prefill
+
+Status: implemented with scalar automatic and explicit AVX2 matrix backends.
 
 - keep separate model-step and matrix-problem descriptors so scheduling and
   attention metadata do not leak into microkernels;
@@ -79,6 +84,8 @@ receive its own decision-complete implementation plan before code work starts.
 
 ## M3. Separate immutable model and per-sequence state
 
+Status: implemented with transactional prepared steps and a batch-one facade.
+
 - separate immutable mapped weights, repack caches, model metadata, and shared
   execution resources from mutable token, attention/KV, sampler, and generation
   state;
@@ -88,6 +95,8 @@ receive its own decision-complete implementation plan before code work starts.
 - preserve batch-one behavior while creating the seam required by scheduling.
 
 ## M4. Develop engine-level CPU scheduling seams
+
+Status: implemented with one canonical table and opt-in CPU batching.
 
 - generalize the CPU worker and scheduler beyond a single active sequence
   behind an experimental configuration;

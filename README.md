@@ -135,7 +135,8 @@ engine:
   primitives, and Criterion microbenchmarks;
 - `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership,
   transactional layer-major transformer execution, and parity tracing;
-- `gpt-oss-engine`: scheduling and the batch-one CPU worker;
+- `gpt-oss-engine`: canonical CPU sequence scheduling, transactional batched
+  execution, and the batch-one compatibility worker;
 - `gpt-oss-bench`: pinned prompt parity tools and model-level measurements;
 - `gpt-oss-reference`, `gpt-oss-conformance`, and `gpt-oss-moe-semantics`:
   independent semantic and correctness fixtures.
@@ -174,6 +175,8 @@ Current documentation:
   and dispatch invariants;
 - [`docs/MXFP4_MATRIX_API.md`](docs/MXFP4_MATRIX_API.md): typed matrix views,
   scratch ownership, backend policy, and layer-major integration;
+- [`docs/CPU_SCHEDULER.md`](docs/CPU_SCHEDULER.md): canonical sequence
+  ownership, reserve/execute/commit, cancellation, fairness, and topology;
 - [`docs/MXFP4_CPU_BACKEND_HANDOFF.md`](docs/MXFP4_CPU_BACKEND_HANDOFF.md): Intel
   ISA backend direction and implementation milestones;
 - [`docs/CPU_I7_CONFORMANCE.md`](docs/CPU_I7_CONFORMANCE.md): repeatable
