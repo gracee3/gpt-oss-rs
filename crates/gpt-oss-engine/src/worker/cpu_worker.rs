@@ -1,11 +1,15 @@
 //! Batch-one native CPU executor for GPT-OSS.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use gpt_oss_core::prelude::{LLMError, RequestId, Result, TokenId};
+use gpt_oss_core::prelude::{LLMError, RequestId, Result, SequenceId, TokenId};
 use gpt_oss_cpu_kernels::KernelPath;
 use gpt_oss_model_runner::sampling::Sampler;
-use gpt_oss_model_runner::CpuModelRunner;
+use gpt_oss_model_runner::{
+    CpuExecutionContext, CpuModel, CpuModelRunner, CpuSequenceModelState, CpuStepBatch, CpuStepRow,
+    PreparedCpuStep,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -13,29 +17,171 @@ use crate::engine::{Executor, ExecutorInput, SamplerOutput};
 
 trait CpuForward: Send {
     fn vocab_size(&self) -> usize;
-    fn prefill(&mut self, token_ids: &[TokenId]) -> Result<Vec<f32>>;
-    fn decode(&mut self, token_id: TokenId) -> Result<Vec<f32>>;
+    fn prepare_prefill(
+        &mut self,
+        sequence_id: SequenceId,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<f32>>;
+    fn prepare_decode(&mut self, sequence_id: SequenceId, token_id: TokenId) -> Result<Vec<f32>>;
+    fn commit(&mut self) -> Result<()>;
+    fn discard(&mut self);
+    fn reset(&mut self) -> Result<()>;
+    fn abort(&mut self) -> Result<()>;
+    fn remove(&mut self) -> Result<()>;
 }
 
-impl CpuForward for CpuModelRunner {
+struct NativePendingStep {
+    sequence_id: SequenceId,
+    prepared: PreparedCpuStep,
+}
+
+struct NativeCpuForward {
+    model: Arc<CpuModel>,
+    state: CpuSequenceModelState,
+    execution: CpuExecutionContext,
+    pending: Option<NativePendingStep>,
+}
+
+impl NativeCpuForward {
+    fn from_runner(runner: CpuModelRunner) -> Self {
+        let (model, state, execution) = runner.into_parts();
+        Self {
+            model,
+            state,
+            execution,
+            pending: None,
+        }
+    }
+
+    fn store_prepared(
+        &mut self,
+        sequence_id: SequenceId,
+        prepared: PreparedCpuStep,
+    ) -> Result<Vec<f32>> {
+        let logits = prepared
+            .rows()
+            .iter()
+            .rev()
+            .find_map(|row| row.logits())
+            .ok_or_else(|| LLMError::ModelError("CPU prepared step has no logits".into()))?
+            .to_vec();
+        self.pending = Some(NativePendingStep {
+            sequence_id,
+            prepared,
+        });
+        Ok(logits)
+    }
+}
+
+impl CpuForward for NativeCpuForward {
     fn vocab_size(&self) -> usize {
-        self.config().vocab_size
+        self.model.config().vocab_size
     }
 
-    fn prefill(&mut self, token_ids: &[TokenId]) -> Result<Vec<f32>> {
-        CpuModelRunner::prefill(self, token_ids)
+    fn prepare_prefill(
+        &mut self,
+        sequence_id: SequenceId,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<f32>> {
+        if self.pending.is_some() {
+            return Err(LLMError::ModelError(
+                "CPU forward already has a prepared step".into(),
+            ));
+        }
+        let rows = token_ids
+            .iter()
+            .enumerate()
+            .map(|(offset, &token_id)| {
+                CpuStepRow::new(
+                    sequence_id,
+                    token_id,
+                    self.state.position() + offset,
+                    offset + 1 == token_ids.len(),
+                )
+            })
+            .collect();
+        let batch = CpuStepBatch::new(rows)?;
+        let prepared =
+            self.model
+                .prepare_step(&mut self.execution, &batch, &[(sequence_id, &self.state)])?;
+        self.store_prepared(sequence_id, prepared)
     }
 
-    fn decode(&mut self, token_id: TokenId) -> Result<Vec<f32>> {
-        CpuModelRunner::decode(self, token_id)
+    fn prepare_decode(&mut self, sequence_id: SequenceId, token_id: TokenId) -> Result<Vec<f32>> {
+        if self.pending.is_some() {
+            return Err(LLMError::ModelError(
+                "CPU forward already has a prepared step".into(),
+            ));
+        }
+        let batch = CpuStepBatch::single(CpuStepRow::new(
+            sequence_id,
+            token_id,
+            self.state.position(),
+            true,
+        ));
+        let prepared =
+            self.model
+                .prepare_step(&mut self.execution, &batch, &[(sequence_id, &self.state)])?;
+        self.store_prepared(sequence_id, prepared)
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        let pending = self.pending.take().ok_or_else(|| {
+            LLMError::ModelError("CPU forward has no prepared step to commit".into())
+        })?;
+        pending
+            .prepared
+            .commit(&mut [(pending.sequence_id, &mut self.state)])?;
+        Ok(())
+    }
+
+    fn discard(&mut self) {
+        self.pending.take();
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.discard();
+        self.state.reset()
+    }
+
+    fn abort(&mut self) -> Result<()> {
+        self.discard();
+        self.state.abort()
+    }
+
+    fn remove(&mut self) -> Result<()> {
+        self.discard();
+        self.state = self.model.new_sequence_state(self.state.context_cap())?;
+        Ok(())
     }
 }
 
-struct CpuSequenceState {
+/// Sampling state committed alongside the model's per-sequence KV state.
+#[derive(Clone)]
+pub struct CpuGenerationState {
     request_id: RequestId,
+    sequence_id: SequenceId,
     last_generated: Option<TokenId>,
     past_tokens: Vec<TokenId>,
     rng: StdRng,
+}
+
+impl CpuGenerationState {
+    pub fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    pub fn sequence_id(&self) -> SequenceId {
+        self.sequence_id
+    }
+
+    pub fn last_generated(&self) -> Option<TokenId> {
+        self.last_generated
+    }
+
+    pub fn past_tokens(&self) -> &[TokenId] {
+        &self.past_tokens
+    }
 }
 
 /// Real CPU executor owning a native [`CpuModelRunner`] and the sampling state
@@ -43,7 +189,8 @@ struct CpuSequenceState {
 pub struct CpuWorker {
     runner: Box<dyn CpuForward>,
     sampler: Sampler,
-    state: Option<CpuSequenceState>,
+    state: Option<CpuGenerationState>,
+    shutdown: bool,
 }
 
 impl CpuWorker {
@@ -69,9 +216,10 @@ impl CpuWorker {
 
     pub fn from_runner(runner: CpuModelRunner) -> Self {
         Self {
-            runner: Box::new(runner),
+            runner: Box::new(NativeCpuForward::from_runner(runner)),
             sampler: Sampler::new(),
             state: None,
+            shutdown: false,
         }
     }
 
@@ -81,12 +229,65 @@ impl CpuWorker {
             runner: Box::new(runner),
             sampler: Sampler::new(),
             state: None,
+            shutdown: false,
         }
+    }
+
+    pub fn abort_sequence(&mut self, sequence_id: SequenceId) -> Result<bool> {
+        if self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.sequence_id != sequence_id)
+        {
+            return Ok(false);
+        }
+        self.runner.abort()?;
+        self.state = None;
+        Ok(true)
+    }
+
+    pub fn reset_sequence(&mut self, sequence_id: SequenceId) -> Result<bool> {
+        if self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.sequence_id != sequence_id)
+        {
+            return Ok(false);
+        }
+        self.runner.reset()?;
+        self.state = None;
+        Ok(true)
+    }
+
+    pub fn remove_sequence(&mut self, sequence_id: SequenceId) -> Result<bool> {
+        if self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.sequence_id != sequence_id)
+        {
+            return Ok(false);
+        }
+        self.runner.remove()?;
+        self.state = None;
+        Ok(true)
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        if self.shutdown {
+            return Ok(());
+        }
+        self.runner.abort()?;
+        self.state = None;
+        self.shutdown = true;
+        Ok(())
     }
 }
 
 impl Executor for CpuWorker {
     fn execute_model(&mut self, input: ExecutorInput) -> Result<Vec<SamplerOutput>> {
+        if self.shutdown {
+            return Err(LLMError::SchedulerError("CPU worker is shut down".into()));
+        }
         if input.seq_group_metadata.len() != 1 {
             return Err(LLMError::SchedulerError(format!(
                 "CPU backend requires exactly one scheduled request, got {}",
@@ -108,10 +309,32 @@ impl Executor for CpuWorker {
                 LLMError::SchedulerError("CPU request has no sequence data".into())
             })?;
 
-        let continuing = self
-            .state
-            .as_ref()
-            .is_some_and(|state| state.request_id == metadata.request_id);
+        let continuing = self.state.as_ref().is_some_and(|state| {
+            state.request_id == metadata.request_id && state.sequence_id == seq_id
+        });
+        let mut staged_generation = if continuing {
+            self.state
+                .clone()
+                .ok_or_else(|| LLMError::SchedulerError("CPU state disappeared".into()))?
+        } else {
+            self.runner.remove()?;
+            self.state = None;
+            let prompt = &sequence.prompt_token_ids;
+            if prompt.is_empty() {
+                return Err(LLMError::SchedulerError(
+                    "CPU request has an empty prompt".into(),
+                ));
+            }
+            CpuGenerationState {
+                request_id: metadata.request_id,
+                sequence_id: seq_id,
+                last_generated: None,
+                past_tokens: prompt.clone(),
+                rng: StdRng::seed_from_u64(
+                    metadata.sampling_params.seed.unwrap_or_else(rand::random),
+                ),
+            }
+        };
         let logits = if continuing {
             let token = self
                 .state
@@ -120,39 +343,32 @@ impl Executor for CpuWorker {
                 .ok_or_else(|| {
                     LLMError::SchedulerError("CPU decode has no prior sampled token".into())
                 })?;
-            self.runner.decode(token)?
+            self.runner.prepare_decode(seq_id, token)?
         } else {
             let prompt = &sequence.prompt_token_ids;
-            if prompt.is_empty() {
-                return Err(LLMError::SchedulerError(
-                    "CPU request has an empty prompt".into(),
-                ));
-            }
-            let logits = self.runner.prefill(prompt)?;
-            self.state = Some(CpuSequenceState {
-                request_id: metadata.request_id,
-                last_generated: None,
-                past_tokens: prompt.clone(),
-                rng: StdRng::seed_from_u64(
-                    metadata.sampling_params.seed.unwrap_or_else(rand::random),
-                ),
-            });
-            logits
+            self.runner.prepare_prefill(seq_id, prompt)?
         };
 
-        let state = self
-            .state
-            .as_mut()
-            .ok_or_else(|| LLMError::SchedulerError("CPU sampling state is missing".into()))?;
-        let sampled = self.sampler.sample(
+        let sampled = match self.sampler.sample(
             &logits,
             self.runner.vocab_size(),
             &metadata.sampling_params,
-            &state.past_tokens,
-            &mut state.rng,
-        )?;
-        state.last_generated = Some(sampled.token_id);
-        state.past_tokens.push(sampled.token_id);
+            &staged_generation.past_tokens,
+            &mut staged_generation.rng,
+        ) {
+            Ok(sampled) => sampled,
+            Err(error) => {
+                self.runner.discard();
+                return Err(error);
+            }
+        };
+        staged_generation.last_generated = Some(sampled.token_id);
+        staged_generation.past_tokens.push(sampled.token_id);
+        if let Err(error) = self.runner.commit() {
+            self.runner.discard();
+            return Err(error);
+        }
+        self.state = Some(staged_generation);
         tracing::debug!(
             request_id = %metadata.request_id,
             seq_id = %seq_id,
@@ -184,10 +400,49 @@ mod tests {
     struct Calls {
         prefills: Vec<Vec<TokenId>>,
         decodes: Vec<TokenId>,
+        commits: usize,
+        discards: usize,
+        resets: usize,
+        aborts: usize,
+        removes: usize,
+    }
+
+    enum FakePending {
+        Prefill(Vec<TokenId>),
+        Decode(TokenId),
     }
 
     struct FakeForward {
         calls: Arc<Mutex<Calls>>,
+        pending: Option<FakePending>,
+        bad_logits_remaining: usize,
+    }
+
+    impl FakeForward {
+        fn new(calls: Arc<Mutex<Calls>>) -> Self {
+            Self {
+                calls,
+                pending: None,
+                bad_logits_remaining: 0,
+            }
+        }
+
+        fn with_bad_logits(calls: Arc<Mutex<Calls>>, count: usize) -> Self {
+            Self {
+                calls,
+                pending: None,
+                bad_logits_remaining: count,
+            }
+        }
+
+        fn logits(&mut self, normal: Vec<f32>) -> Vec<f32> {
+            if self.bad_logits_remaining == 0 {
+                normal
+            } else {
+                self.bad_logits_remaining -= 1;
+                vec![0.0; 3]
+            }
+        }
     }
 
     impl CpuForward for FakeForward {
@@ -195,14 +450,58 @@ mod tests {
             4
         }
 
-        fn prefill(&mut self, token_ids: &[TokenId]) -> Result<Vec<f32>> {
-            self.calls.lock().unwrap().prefills.push(token_ids.to_vec());
-            Ok(vec![0.0, 1.0, 4.0, 3.0])
+        fn prepare_prefill(
+            &mut self,
+            _sequence_id: SequenceId,
+            token_ids: &[TokenId],
+        ) -> Result<Vec<f32>> {
+            assert!(self.pending.is_none());
+            self.pending = Some(FakePending::Prefill(token_ids.to_vec()));
+            Ok(self.logits(vec![0.0, 1.0, 4.0, 3.0]))
         }
 
-        fn decode(&mut self, token_id: TokenId) -> Result<Vec<f32>> {
-            self.calls.lock().unwrap().decodes.push(token_id);
-            Ok(vec![0.0, 5.0, 2.0, 1.0])
+        fn prepare_decode(
+            &mut self,
+            _sequence_id: SequenceId,
+            token_id: TokenId,
+        ) -> Result<Vec<f32>> {
+            assert!(self.pending.is_none());
+            self.pending = Some(FakePending::Decode(token_id));
+            Ok(self.logits(vec![0.0, 5.0, 2.0, 1.0]))
+        }
+
+        fn commit(&mut self) -> Result<()> {
+            let pending = self.pending.take().unwrap();
+            let mut calls = self.calls.lock().unwrap();
+            match pending {
+                FakePending::Prefill(tokens) => calls.prefills.push(tokens),
+                FakePending::Decode(token) => calls.decodes.push(token),
+            }
+            calls.commits += 1;
+            Ok(())
+        }
+
+        fn discard(&mut self) {
+            self.pending.take();
+            self.calls.lock().unwrap().discards += 1;
+        }
+
+        fn reset(&mut self) -> Result<()> {
+            self.pending.take();
+            self.calls.lock().unwrap().resets += 1;
+            Ok(())
+        }
+
+        fn abort(&mut self) -> Result<()> {
+            self.pending.take();
+            self.calls.lock().unwrap().aborts += 1;
+            Ok(())
+        }
+
+        fn remove(&mut self) -> Result<()> {
+            self.pending.take();
+            self.calls.lock().unwrap().removes += 1;
+            Ok(())
         }
     }
 
@@ -234,9 +533,7 @@ mod tests {
     #[test]
     fn prefills_then_decodes_last_sample_and_resets_for_new_request() {
         let calls = Arc::new(Mutex::new(Calls::default()));
-        let mut worker = CpuWorker::from_forward(FakeForward {
-            calls: calls.clone(),
-        });
+        let mut worker = CpuWorker::from_forward(FakeForward::new(calls.clone()));
 
         let first = worker.execute_model(input(1, 10, &[1, 3])).unwrap();
         assert_eq!(first[0].token_id, 2);
@@ -247,12 +544,14 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert_eq!(calls.prefills, vec![vec![1, 3], vec![3, 2]]);
         assert_eq!(calls.decodes, vec![2]);
+        assert_eq!(calls.commits, 3);
+        assert_eq!(calls.removes, 2);
     }
 
     #[test]
     fn rejects_batching_and_best_of() {
         let calls = Arc::new(Mutex::new(Calls::default()));
-        let mut worker = CpuWorker::from_forward(FakeForward { calls });
+        let mut worker = CpuWorker::from_forward(FakeForward::new(calls));
         let mut batched = input(1, 10, &[1]);
         batched
             .seq_group_metadata
@@ -262,5 +561,49 @@ mod tests {
         let mut best_of = input(1, 10, &[1]);
         best_of.seq_group_metadata[0].sampling_params.best_of = 2;
         assert!(worker.execute_model(best_of).is_err());
+    }
+
+    #[test]
+    fn sampling_failure_discards_model_and_generation_state() {
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let mut worker = CpuWorker::from_forward(FakeForward::with_bad_logits(calls.clone(), 1));
+
+        assert!(worker.execute_model(input(1, 10, &[1, 3])).is_err());
+        assert!(worker.state.is_none());
+
+        let retried = worker.execute_model(input(1, 10, &[1, 3])).unwrap();
+        assert_eq!(retried[0].token_id, 2);
+        let state = worker.state.as_ref().unwrap();
+        assert_eq!(state.past_tokens(), &[1, 3, 2]);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.prefills, vec![vec![1, 3]]);
+        assert_eq!(calls.commits, 1);
+        assert_eq!(calls.discards, 1);
+    }
+
+    #[test]
+    fn lifecycle_operations_are_explicit_and_id_scoped() {
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let mut worker = CpuWorker::from_forward(FakeForward::new(calls.clone()));
+
+        worker.execute_model(input(1, 10, &[1])).unwrap();
+        assert!(!worker.reset_sequence(SequenceId(99)).unwrap());
+        assert!(worker.reset_sequence(SequenceId(10)).unwrap());
+
+        worker.execute_model(input(2, 20, &[2])).unwrap();
+        assert!(!worker.abort_sequence(SequenceId(99)).unwrap());
+        assert!(worker.abort_sequence(SequenceId(20)).unwrap());
+
+        worker.execute_model(input(3, 30, &[3])).unwrap();
+        assert!(worker.remove_sequence(SequenceId(30)).unwrap());
+        worker.shutdown().unwrap();
+        worker.shutdown().unwrap();
+        assert!(worker.execute_model(input(4, 40, &[1])).is_err());
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.resets, 1);
+        assert_eq!(calls.aborts, 2);
+        assert_eq!(calls.removes, 4);
     }
 }

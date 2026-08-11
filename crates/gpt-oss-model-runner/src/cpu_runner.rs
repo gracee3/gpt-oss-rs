@@ -924,6 +924,10 @@ impl CpuModelRunner {
         &self.model
     }
 
+    pub fn into_parts(self) -> (Arc<CpuModel>, CpuSequenceModelState, CpuExecutionContext) {
+        (self.model, self.state, self.execution)
+    }
+
     pub fn config(&self) -> &CpuGptOssConfig {
         self.model.config()
     }

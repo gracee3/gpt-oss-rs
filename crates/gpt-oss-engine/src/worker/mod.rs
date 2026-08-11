@@ -16,7 +16,7 @@ pub mod metrics;
 pub mod worker;
 
 pub use config::WorkerConfig;
-pub use cpu_worker::CpuWorker;
+pub use cpu_worker::{CpuGenerationState, CpuWorker};
 pub use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 pub use graph_runner::{GraphRunner, GraphRunnerConfig};
 pub use input::prepare_input;

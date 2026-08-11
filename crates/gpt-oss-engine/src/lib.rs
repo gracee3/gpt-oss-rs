@@ -58,7 +58,8 @@ pub use sequence::{Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata,
 pub use stop_checker::StopChecker;
 pub use telemetry::{init_telemetry, metrics_handler, MetricsRecorder, TelemetryGuard};
 pub use worker::{
-    CpuWorker, GraphRunner, GraphRunnerConfig, Worker, WorkerConfig, WorkerInput, WorkerOutput,
+    CpuGenerationState, CpuWorker, GraphRunner, GraphRunnerConfig, Worker, WorkerConfig,
+    WorkerInput, WorkerOutput,
 };
 
 #[cfg(feature = "cuda")]
