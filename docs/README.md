@@ -22,6 +22,9 @@
 
 ## Project direction
 
+- [`PROJECT_INTENT.md`](PROJECT_INTENT.md): educational purpose, current
+  hardware envelope, CPU-first scope, role of external references, and the
+  decision rule for future targets.
 - [`NEXT_MILESTONES.md`](NEXT_MILESTONES.md): current repository milestones.
 - [`REPO_ALIGNMENT_AND_WORKSTREAMS.md`](REPO_ALIGNMENT_AND_WORKSTREAMS.md):
   branch, worktree, and integration policy.
