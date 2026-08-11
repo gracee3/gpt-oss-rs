@@ -10,11 +10,13 @@ use std::str::FromStr;
 use half::bf16;
 use thiserror::Error;
 
+mod amx;
 mod features;
 mod matmul;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
+pub use amx::{initialize_amx_int8, AmxRuntimeError, AmxRuntimeStatus};
 pub use features::{CpuFeatures, KernelRequirements};
 pub use matmul::{
     Mxfp4ActivationMatrix, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement,

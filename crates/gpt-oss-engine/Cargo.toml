@@ -47,6 +47,7 @@ axum.workspace = true
 default = []
 cuda = ["dep:cudarc", "gpt-oss-gpu/cuda", "gpt-oss-model-runner/cuda"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-model-runner/cublaslt"]
+amx-int8 = ["gpt-oss-cpu-kernels/amx-int8", "gpt-oss-model-runner/amx-int8"]
 
 [dev-dependencies]
 tempfile = "3"

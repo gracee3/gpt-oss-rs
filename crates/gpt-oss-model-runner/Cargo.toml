@@ -15,6 +15,7 @@ categories = ["science", "hardware-support"]
 default = []
 cuda = ["gpt-oss-gpu/cuda", "dep:cudarc"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt"]
+amx-int8 = ["gpt-oss-cpu-kernels/amx-int8"]
 
 [dependencies]
 gpt-oss-core.workspace = true

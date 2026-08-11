@@ -19,6 +19,7 @@ path = "src/main.rs"
 default = []
 cuda = ["gpt-oss-gpu/cuda", "gpt-oss-engine/cuda"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-engine/cublaslt"]
+amx-int8 = ["gpt-oss-cpu-kernels/amx-int8", "gpt-oss-engine/amx-int8"]
 
 [dependencies]
 gpt-oss-core.workspace = true

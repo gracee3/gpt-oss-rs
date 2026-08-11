@@ -11,9 +11,16 @@ readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+amx-int8 = ["dep:libc"]
+
 [dependencies]
 half.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
