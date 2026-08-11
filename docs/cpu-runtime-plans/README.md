@@ -142,5 +142,8 @@ permutations, or AMX hardware tests during this feature program.
   feature compilation, and warnings-denied Clippy passed, while AMX-hardware
   execution remains deferred
 - Final integration evidence: [`FINAL_INTEGRATION.md`](FINAL_INTEGRATION.md);
-  complete local gate, short 20B smoke, and branch CPU workflow passed
-- `origin/main` verification: pending
+  complete local gate, short 20B smoke, and branch CPU workflow `31531169406`
+  passed
+- `origin/main` integration: `edee07e` was published by fast-forward and CPU
+  workflow `31531447410` passed; integration-branch cleanup followed this
+  closeout record

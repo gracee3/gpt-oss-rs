@@ -86,6 +86,11 @@ selection of the new AVX-512/matrix/AMX paths, crossover thresholds,
 performance tuning, AMX native equality and lifecycle stress, and broader
 cross-host certification remain later work.
 
-Publication still requires the evidence-only branch checkpoint to pass its
-CPU workflow, a fast-forward push to `origin/main`, verification of the remote
-commit and main workflow, and only then deletion of the integration branch.
+## Publication outcome
+
+The evidence-only branch checkpoint passed CPU workflow `31531169406`.
+`edee07e` was then fast-forwarded to `origin/main`; the remote ref was read
+back at that exact SHA, and main CPU workflow
+[31531447410](https://github.com/gracee3/gpt-oss-rs/actions/runs/31531447410)
+passed its workspace, forced-dispatch, and portable-AMX jobs. The integration
+branch became eligible for local and remote deletion only after those checks.
