@@ -9,20 +9,22 @@ impl StopChecker {
     /// Check if generation should stop, returning the finish reason if so.
     ///
     /// Checks in order:
-    /// 1. EOS token produced
+    /// 1. Terminal token produced
     /// 2. Max tokens reached
     /// 3. Stop string found in decoded text
     pub fn check_stop(
         text: &str,
         output_token_ids: &[TokenId],
         params: &SamplingParams,
-        eos_token_id: Option<TokenId>,
+        terminal_token_ids: &[TokenId],
     ) -> Option<FinishReason> {
-        // Check EOS token
-        if let Some(eos) = eos_token_id {
-            if output_token_ids.last().copied() == Some(eos) {
-                return Some(FinishReason::Stop);
-            }
+        // Terminal tokens take priority over the length limit so a call or
+        // return sampled exactly at max_tokens is still a semantic stop.
+        if output_token_ids
+            .last()
+            .is_some_and(|token| terminal_token_ids.contains(token))
+        {
+            return Some(FinishReason::Stop);
         }
 
         // Check max tokens
@@ -73,19 +75,19 @@ mod tests {
 
     #[test]
     fn no_stop_when_empty() {
-        let result = StopChecker::check_stop("", &[], &default_params(), None);
+        let result = StopChecker::check_stop("", &[], &default_params(), &[]);
         assert!(result.is_none());
     }
 
     #[test]
     fn stop_on_eos_token() {
-        let result = StopChecker::check_stop("hello", &[1, 2, 99], &default_params(), Some(99));
+        let result = StopChecker::check_stop("hello", &[1, 2, 99], &default_params(), &[99]);
         assert_eq!(result, Some(FinishReason::Stop));
     }
 
     #[test]
     fn no_stop_without_eos() {
-        let result = StopChecker::check_stop("hello", &[1, 2, 3], &default_params(), Some(99));
+        let result = StopChecker::check_stop("hello", &[1, 2, 3], &default_params(), &[99]);
         assert!(result.is_none());
     }
 
@@ -93,7 +95,7 @@ mod tests {
     fn stop_on_max_tokens() {
         let mut params = default_params();
         params.max_tokens = 3;
-        let result = StopChecker::check_stop("abc", &[1, 2, 3], &params, None);
+        let result = StopChecker::check_stop("abc", &[1, 2, 3], &params, &[]);
         assert_eq!(result, Some(FinishReason::Length));
     }
 
@@ -101,7 +103,7 @@ mod tests {
     fn stop_on_stop_string() {
         let mut params = default_params();
         params.stop_strings = vec!["<|end|>".to_string()];
-        let result = StopChecker::check_stop("hello world<|end|>more", &[1, 2], &params, None);
+        let result = StopChecker::check_stop("hello world<|end|>more", &[1, 2], &params, &[]);
         assert_eq!(result, Some(FinishReason::Stop));
     }
 
@@ -110,8 +112,44 @@ mod tests {
         let mut params = default_params();
         params.max_tokens = 3;
         // 3 tokens with last being eos -- eos checked first
-        let result = StopChecker::check_stop("abc", &[1, 2, 99], &params, Some(99));
+        let result = StopChecker::check_stop("abc", &[1, 2, 99], &params, &[98, 99]);
         assert_eq!(result, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn harmony_call_and_return_are_terminal_but_end_is_not() {
+        let terminals = [
+            gpt_oss_tokenizer::HARMONY_RETURN_TOKEN_ID,
+            gpt_oss_tokenizer::HARMONY_CALL_TOKEN_ID,
+        ];
+        let params = default_params();
+        assert_eq!(
+            StopChecker::check_stop(
+                "",
+                &[gpt_oss_tokenizer::HARMONY_RETURN_TOKEN_ID],
+                &params,
+                &terminals
+            ),
+            Some(FinishReason::Stop)
+        );
+        assert_eq!(
+            StopChecker::check_stop(
+                "",
+                &[gpt_oss_tokenizer::HARMONY_CALL_TOKEN_ID],
+                &params,
+                &terminals
+            ),
+            Some(FinishReason::Stop)
+        );
+        assert_eq!(
+            StopChecker::check_stop(
+                "",
+                &[gpt_oss_tokenizer::HARMONY_END_TOKEN_ID],
+                &params,
+                &terminals
+            ),
+            None
+        );
     }
 
     #[test]
@@ -150,7 +188,7 @@ mod tests {
     fn stop_on_multiple_stop_strings() {
         let mut params = default_params();
         params.stop_strings = vec!["END".to_string(), "STOP".to_string()];
-        let result = StopChecker::check_stop("text then STOP here", &[1], &params, None);
+        let result = StopChecker::check_stop("text then STOP here", &[1], &params, &[]);
         assert_eq!(result, Some(FinishReason::Stop));
     }
 }

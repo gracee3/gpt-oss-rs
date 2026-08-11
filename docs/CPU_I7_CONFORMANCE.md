@@ -57,10 +57,64 @@ Exercise non-streaming and streaming `/v1/chat/completions` and
 - a longer prompt crossing several sliding-window turnovers;
 - Harmony messages containing a function tool declaration and tool history.
 
-Capture the `CPU sampled token` records and compare token IDs, in order, with
-the current llama.cpp GPT-OSS GGUF run using the same prompt tokens and greedy
-settings. Investigate the first divergence; text-only similarity is not a
+For the tool class, cover an initial function call, assistant/tool Chat
+history, a stored Responses follow-up using `previous_response_id`, a manually
+supplied `function_call_output`, and both streaming forms. Also force a
+generation limit in the middle of a Harmony message. Chat must finish with
+`length`; Responses must finish with `status=incomplete` and
+`reason=max_output_tokens`. Neither case may return HTTP 500.
+
+### Pinned parity workflow
+
+The checked-in fixture manifest pins the exact rendered Harmony text and token
+IDs for the 63-, 122-, 136-, 262-, 346-, and 444-token prompts plus the tool
+history prompt. Generated captures, model files, traces, and benchmark output
+must remain outside Git. Set `MODEL_ROOT` to the resolved SafeTensors snapshot,
+`PINNED_GPT_OSS_SOURCE` to a clean checkout at the manifest's official source
+revision, and `ORACLE_PYTHON` to a Python environment containing CPU PyTorch
+and SafeTensors.
+
+```bash
+cargo run --release --locked -p gpt-oss-bench --bin cpu_parity -- \
+  --model "$MODEL_ROOT" \
+  --repack-cache "$GPT_OSS_RS_CACHE" \
+  --scenario harmony_122 \
+  --kernel auto \
+  --threads "$CPU_THREADS" \
+  --max-new-tokens 8 \
+  --trace-layers 0 \
+  --output "$BENCH_ROOT/native-harmony-122.json"
+
+"$ORACLE_PYTHON" crates/gpt-oss-bench/tools/official_cpu_oracle.py \
+  --native-capture "$BENCH_ROOT/native-harmony-122.json" \
+  --model "$MODEL_ROOT" \
+  --official-source "$PINNED_GPT_OSS_SOURCE" \
+  --max-new-tokens 8 \
+  --trace-layers 0 \
+  --threads "$CPU_THREADS" \
+  --output "$BENCH_ROOT/official-harmony-122.json"
+
+"$ORACLE_PYTHON" crates/gpt-oss-bench/tools/compare_cpu_parity.py \
+  --native "$BENCH_ROOT/native-harmony-122.json" \
+  --official "$BENCH_ROOT/official-harmony-122.json" \
+  --llama "$BENCH_ROOT/llama-harmony-122.json" \
+  --output "$BENCH_ROOT/compare-harmony-122.json"
+```
+
+The official SafeTensors/PyTorch capture at the source revision pinned in the
+manifest is the semantic authority. Run llama.cpp at its pinned revision with
+the manifest's exact prompt token IDs, greedy sampling, top-logprob capture,
+and physical `--ubatch-size 1`. A llama.cpp token divergence is non-blocking
+only when native exactly matches the official oracle and llama.cpp's chosen
+token versus the native token is a documented near-tie no larger than `1e-2`.
+Every other token divergence is blocking. Text-only similarity is not a
 substitute for token parity.
+
+Use the opt-in trace only to localize a failing prompt. Compare, in order,
+selected-layer input norm, post-RoPE query/key, value projection, attention,
+post-attention residual, router selection/weights, MoE output, layer output,
+final norm, and top logits. Correct and regress the earliest mismatching
+operator rather than compensating at a later layer.
 
 ## Required report
 
@@ -74,9 +128,14 @@ For cold repack and each scalar, AVX2, and AVX-512/VNNI run, record:
 - Chat Completions and Responses results in streaming and non-streaming modes.
 
 A forced unavailable ISA must fail before execution. Any NaN, token
-divergence, cache error, memory pressure beyond practical 32 GiB use, or
-AVX-512 regression relative to AVX2 must be investigated before merge. There
-is no absolute throughput threshold for the first correct MVP.
+divergence outside the oracle rule above, cache error, or memory pressure
+beyond practical 32 GiB use must be investigated before merge. Forced scalar,
+AVX2, and AVX-512/VNNI must agree on exact greedy tokens. Benchmark scalar,
+AVX2, forced AVX-512/VNNI, and automatic dispatch with three warm repeats per
+path. The automatic median throughput may not be worse than AVX2 by more than
+2%, and the automatic run may not regress correctness, peak RSS, or cache
+integrity. There is no absolute throughput threshold for the first correct
+MVP.
 
 When every item passes, attach the report to the serving PR, mark it ready,
 and make CPU eligible for trusted mode in a separately reviewable change.

@@ -24,8 +24,9 @@ place.
 
 - Dense BF16 and MXFP4 projections accumulate in FP32 and round at BF16 model
   operation boundaries.
-- YaRN uses GPT-NeoX half rotation and the checkpoint's correction range and
-  attention scale.
+- YaRN uses GPT-NeoX half rotation, the checkpoint's correction range and
+  attention scale, and the official PyTorch BF16 operation boundaries for its
+  trigonometric values and rotary arithmetic.
 - GQA maps eight query heads to each KV head for the 20B checkpoint.
 - Learned per-head sinks add a logit to the softmax denominator with an
   implicit zero value vector.
@@ -57,3 +58,16 @@ stricter supported value.
 `XDG_CACHE_HOME/gpt-oss-rs`, then `$HOME/.cache/gpt-oss-rs`. Model snapshots,
 repacked expert tensors, build artifacts, and benchmark output remain outside
 Git.
+
+## Kernel dispatch
+
+Forced `scalar`, `avx2`, and `avx512-vnni` requests use that path for every
+operation and fail before execution when the requested ISA is unavailable.
+The public compatibility `path()` remains the highest selected host path.
+
+Automatic dispatch resolves an immutable per-operation plan. On a host with
+AVX2/FMA and AVX-512/VNNI, BF16 matvec, Q8 quantization, and RMS norm use
+AVX-512/VNNI, while MXFP4/Q8 expert dot products use AVX2. This preserves the
+i7's faster AVX2 expert kernel without giving up the faster AVX-512 dense and
+normalization kernels. Startup logs include both the compatibility path and
+the complete read-only dispatch-plan description.

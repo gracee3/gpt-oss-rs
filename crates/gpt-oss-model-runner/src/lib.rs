@@ -45,7 +45,9 @@ pub use attention::{
     MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
     SplitKvAttention,
 };
-pub use cpu_runner::{CpuGptOssConfig, CpuKvCache, CpuModelRunner};
+pub use cpu_runner::{
+    CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuModelRunner, CpuPrefillTrace, CpuTopLogit,
+};
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;
 pub use kv_cache::{reshape_and_cache, CacheConfig, CacheEngine, KVCache};

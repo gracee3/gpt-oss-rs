@@ -107,6 +107,47 @@ impl Features {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kernels {
     path: KernelPath,
+    dispatch_plan: DispatchPlan,
+}
+
+/// Per-operation CPU kernel selection resolved at startup.
+///
+/// The fields are private so callers can inspect, but cannot mutate, the plan
+/// selected after host feature detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchPlan {
+    bf16_matvec: KernelPath,
+    quantize_q8: KernelPath,
+    mxfp4_q8_dot: KernelPath,
+    rms_norm: KernelPath,
+}
+
+impl DispatchPlan {
+    pub const fn bf16_matvec(self) -> KernelPath {
+        self.bf16_matvec
+    }
+
+    pub const fn quantize_q8(self) -> KernelPath {
+        self.quantize_q8
+    }
+
+    pub const fn mxfp4_q8_dot(self) -> KernelPath {
+        self.mxfp4_q8_dot
+    }
+
+    pub const fn rms_norm(self) -> KernelPath {
+        self.rms_norm
+    }
+}
+
+impl fmt::Display for DispatchPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "bf16_matvec={}, quantize_q8={}, mxfp4_q8_dot={}, rms_norm={}",
+            self.bf16_matvec, self.quantize_q8, self.mxfp4_q8_dot, self.rms_norm
+        )
+    }
 }
 
 impl Kernels {
@@ -135,11 +176,37 @@ impl Kernels {
             KernelPath::Avx512Vnni if features.avx512_vnni => KernelPath::Avx512Vnni,
             unavailable => return Err(KernelError::Unavailable(unavailable)),
         };
-        Ok(Self { path })
+        let dispatch_plan = if requested == KernelPath::Auto {
+            DispatchPlan {
+                bf16_matvec: path,
+                quantize_q8: path,
+                mxfp4_q8_dot: if features.avx2_fma {
+                    KernelPath::Avx2
+                } else {
+                    path
+                },
+                rms_norm: path,
+            }
+        } else {
+            DispatchPlan {
+                bf16_matvec: path,
+                quantize_q8: path,
+                mxfp4_q8_dot: path,
+                rms_norm: path,
+            }
+        };
+        Ok(Self {
+            path,
+            dispatch_plan,
+        })
     }
 
     pub const fn path(self) -> KernelPath {
         self.path
+    }
+
+    pub const fn dispatch_plan(self) -> DispatchPlan {
+        self.dispatch_plan
     }
 
     /// BF16 row-major matrix-vector multiplication with FP32 accumulation.
@@ -157,7 +224,7 @@ impl Kernels {
             )));
         }
         for (row, destination) in weights.chunks_exact(cols).zip(output.iter_mut()) {
-            *destination = match self.path {
+            *destination = match self.dispatch_plan.bf16_matvec {
                 KernelPath::Scalar => scalar_bf16_dot(row, input),
                 #[cfg(target_arch = "x86_64")]
                 KernelPath::Avx2 => {
@@ -190,7 +257,7 @@ impl Kernels {
         input
             .chunks_exact(QUANT_BLOCK_SIZE)
             .map(|block| {
-                let max_abs = match self.path {
+                let max_abs = match self.dispatch_plan.quantize_q8 {
                     KernelPath::Scalar => scalar_max_abs(block),
                     #[cfg(target_arch = "x86_64")]
                     KernelPath::Avx2 => {
@@ -211,7 +278,7 @@ impl Kernels {
 
     /// Exact integer dot product for one packed MXFP4/Q8 block.
     pub fn mxfp4_q8_block_dot_i32(self, weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
-        match self.path {
+        match self.dispatch_plan.mxfp4_q8_dot {
             KernelPath::Scalar => scalar_mxfp4_q8_dot_i32(weight, activation),
             #[cfg(target_arch = "x86_64")]
             KernelPath::Avx2 => {
@@ -292,7 +359,7 @@ impl Kernels {
                 "RMS norm slices must have the same non-zero length".into(),
             ));
         }
-        let sum_squares = match self.path {
+        let sum_squares = match self.dispatch_plan.rms_norm {
             KernelPath::Scalar => scalar_sum_squares(input),
             #[cfg(target_arch = "x86_64")]
             KernelPath::Avx2 => {
@@ -495,6 +562,40 @@ mod tests {
             Kernels::with_features(KernelPath::Avx512Vnni, none).unwrap_err(),
             KernelError::Unavailable(KernelPath::Avx512Vnni)
         );
+    }
+
+    #[test]
+    fn automatic_dispatch_uses_the_hybrid_i7_plan() {
+        let both = Features {
+            avx2_fma: true,
+            avx512_vnni: true,
+        };
+        let kernels = Kernels::with_features(KernelPath::Auto, both).unwrap();
+        let plan = kernels.dispatch_plan();
+        assert_eq!(kernels.path(), KernelPath::Avx512Vnni);
+        assert_eq!(plan.bf16_matvec(), KernelPath::Avx512Vnni);
+        assert_eq!(plan.quantize_q8(), KernelPath::Avx512Vnni);
+        assert_eq!(plan.mxfp4_q8_dot(), KernelPath::Avx2);
+        assert_eq!(plan.rms_norm(), KernelPath::Avx512Vnni);
+        assert_eq!(
+            plan.to_string(),
+            "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, rms_norm=avx512-vnni"
+        );
+    }
+
+    #[test]
+    fn forced_dispatch_uses_one_path_for_every_operation() {
+        let both = Features {
+            avx2_fma: true,
+            avx512_vnni: true,
+        };
+        for path in [KernelPath::Scalar, KernelPath::Avx2, KernelPath::Avx512Vnni] {
+            let plan = Kernels::with_features(path, both).unwrap().dispatch_plan();
+            assert_eq!(plan.bf16_matvec(), path);
+            assert_eq!(plan.quantize_q8(), path);
+            assert_eq!(plan.mxfp4_q8_dot(), path);
+            assert_eq!(plan.rms_norm(), path);
+        }
     }
 
     #[test]

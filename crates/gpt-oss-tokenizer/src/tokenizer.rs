@@ -14,6 +14,7 @@ use crate::incremental::IncrementalDecoder;
 pub struct Tokenizer {
     inner: HfTokenizer,
     special_tokens: Vec<TokenId>,
+    terminal_token_ids: Vec<TokenId>,
     eos_token_id: Option<TokenId>,
     bos_token_id: Option<TokenId>,
     pad_token_id: Option<TokenId>,
@@ -93,6 +94,7 @@ impl Tokenizer {
     /// Build from an already-loaded HuggingFace tokenizer.
     fn from_hf_tokenizer(hf: HfTokenizer) -> Self {
         let mut special_tokens = Vec::new();
+        let mut terminal_token_ids = Vec::new();
         let mut eos_token_id = None;
         let mut bos_token_id = None;
         let mut pad_token_id = None;
@@ -115,6 +117,13 @@ impl Tokenizer {
                     || content == "<|im_end|>"
                 {
                     eos_token_id = Some(id);
+                    terminal_token_ids.push(id);
+                }
+                // Harmony messages can contain multiple internal `<|end|>`
+                // boundaries before an assistant turn is complete. Only a
+                // return or a tool call terminates GPT-OSS generation.
+                if content == "<|return|>" || content == "<|call|>" {
+                    terminal_token_ids.push(id);
                 }
                 if content.contains("bos") || content == "<s>" || content == "<|begin_of_text|>" {
                     bos_token_id = Some(id);
@@ -127,6 +136,8 @@ impl Tokenizer {
 
         special_tokens.sort_unstable();
         special_tokens.dedup();
+        terminal_token_ids.sort_unstable();
+        terminal_token_ids.dedup();
 
         debug!(
             vocab_size = hf.get_vocab_size(true),
@@ -140,6 +151,7 @@ impl Tokenizer {
         Self {
             inner: hf,
             special_tokens,
+            terminal_token_ids,
             eos_token_id,
             bos_token_id,
             pad_token_id,
@@ -195,6 +207,14 @@ impl Tokenizer {
     /// End-of-sequence token ID, if detected.
     pub fn eos_token_id(&self) -> Option<TokenId> {
         self.eos_token_id
+    }
+
+    /// Generation-terminal token IDs for this tokenizer.
+    ///
+    /// This preserves ordinary EOS behavior while allowing protocols such as
+    /// Harmony to define more than one terminal token.
+    pub fn terminal_token_ids(&self) -> &[TokenId] {
+        &self.terminal_token_ids
     }
 
     /// Beginning-of-sequence token ID, if detected.
@@ -284,6 +304,34 @@ mod tests {
         let _ = tok.bos_token_id();
         let _ = tok.pad_token_id();
         let _ = tok.get_special_tokens();
+    }
+
+    #[test]
+    fn harmony_terminal_tokens_exclude_message_end() {
+        use tokenizers::models::wordpiece::WordPiece;
+        use tokenizers::AddedToken;
+
+        let mut vocab = std::collections::HashMap::new();
+        vocab.insert("[UNK]".to_string(), 0);
+        let wp = WordPiece::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".to_string())
+            .build()
+            .unwrap();
+        let mut hf = HfTokenizer::new(wp);
+        hf.add_special_tokens(&[
+            AddedToken::from("<|return|>", true),
+            AddedToken::from("<|end|>", true),
+            AddedToken::from("<|call|>", true),
+        ]);
+        let return_id = hf.token_to_id("<|return|>").unwrap();
+        let end_id = hf.token_to_id("<|end|>").unwrap();
+        let call_id = hf.token_to_id("<|call|>").unwrap();
+        let tokenizer = Tokenizer::from_hf_tokenizer(hf);
+
+        assert!(tokenizer.terminal_token_ids().contains(&return_id));
+        assert!(tokenizer.terminal_token_ids().contains(&call_id));
+        assert!(!tokenizer.terminal_token_ids().contains(&end_id));
     }
 
     #[test]

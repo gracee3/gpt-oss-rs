@@ -63,7 +63,7 @@ impl StreamedChatChoiceState {
         stream_id: &str,
         choice_index: usize,
         token_ids: &[u32],
-        finished: bool,
+        finalize: bool,
     ) -> Result<(Option<String>, Vec<ChatToolCallDelta>), ApiError> {
         for token in token_ids.iter().copied().skip(self.processed_tokens) {
             self.parser
@@ -71,7 +71,7 @@ impl StreamedChatChoiceState {
                 .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
         }
         self.processed_tokens = token_ids.len();
-        if finished {
+        if finalize {
             self.parser
                 .finish()
                 .map_err(|e| ApiError::Internal(format!("harmony stream finalize error: {}", e)))?;
@@ -79,7 +79,7 @@ impl StreamedChatChoiceState {
 
         let messages = self
             .parser
-            .messages()
+            .messages_including_partial()
             .map_err(|e| ApiError::Internal(format!("harmony stream read error: {}", e)))?;
         let visible_text = visible_text_from_protocol_messages(&messages).unwrap_or_default();
         let content_delta = diff_text(&self.visible_text, &visible_text);

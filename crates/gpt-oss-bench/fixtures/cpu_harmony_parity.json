@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "openai/gpt-oss-20b",
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "config_sha256": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+    "index_sha256": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+    "tokenizer_sha256": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3"
+  },
+  "official_oracle": {
+    "repository": "https://github.com/openai/gpt-oss",
+    "revision": "7802bf263f902efd4c7d18fcceff3ba72f941e80"
+  },
+  "llama_cpp": {
+    "revision": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",
+    "model_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+    "required_ubatch_size": 1
+  },
+  "scenarios": [
+    {
+      "id": "harmony_63",
+      "kind": "user_text",
+      "content": "Reply with exactly one short greeting.",
+      "expected_prompt_tokens": 63,
+      "prompt_text_sha256": "7aa26a600a0b5fe5172ba2ad9396d6cda381654f7d7c57342a589540b05450b4",
+      "prompt_token_ids_sha256": "ff9e5194630553a210511cf07197796dc07f8756b095b042580282261820cab3"
+    },
+    {
+      "id": "harmony_122",
+      "kind": "repeated_segments",
+      "segments": 4,
+      "expected_prompt_tokens": 122,
+      "prompt_text_sha256": "c5bf602e63ed39f3217b7c7856cbea05bff47950ab8176bf8f2af175b56e7a25",
+      "prompt_token_ids_sha256": "3048eed723a25bd16a4dbfef5c5beba3056e842464b247d0b5eb90b3ffe093fe",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 8967, 33749, 220],
+      "llama_ubatch_1_greedy_tokens": [200005, 35644, 200008, 2167, 1309, 316, 104833, 290]
+    },
+    {
+      "id": "harmony_136",
+      "kind": "repeated_segments",
+      "segments": 5,
+      "expected_prompt_tokens": 136,
+      "prompt_text_sha256": "1c066d4845e702f545d9d7ab4b9ebec5974e8cb03b09cce1ef8e71ed0af2a41b",
+      "prompt_token_ids_sha256": "6c5f7a90ea1389ebef150b3616a1406087ec2b0b0cac68b423cfbaba0cf064c0"
+    },
+    {
+      "id": "harmony_262",
+      "kind": "repeated_segments",
+      "segments": 14,
+      "expected_prompt_tokens": 262,
+      "prompt_text_sha256": "e57b923c6e81085510e8480844ccf6ed7926ccfdfdc2c400556625524f6a256c",
+      "prompt_token_ids_sha256": "77b9852b3cd9de5f2ad9aed6a586d244b31f0da4f37b5a5aa65533e1c41f062e"
+    },
+    {
+      "id": "harmony_346",
+      "kind": "repeated_segments",
+      "segments": 20,
+      "expected_prompt_tokens": 346,
+      "prompt_text_sha256": "c4a7867b9291a0aacd1fc96baf3d769743c7b1138fb751fae3cc7b5dc8f86b17",
+      "prompt_token_ids_sha256": "3a6273d7af6e437aff7e0f75aeb3105112a52ca51beb269dbf11ca1eba43815a"
+    },
+    {
+      "id": "harmony_444",
+      "kind": "repeated_segments",
+      "segments": 27,
+      "expected_prompt_tokens": 444,
+      "prompt_text_sha256": "3a6e5fdd3d3bdd9c3797371ab76748b64b1df03415756423801b04d43bd60740",
+      "prompt_token_ids_sha256": "49af11243d0269009ce2eb6870d4317e39570084224566800824cc82489aa087"
+    },
+    {
+      "id": "tool_history_180",
+      "kind": "tool_history",
+      "expected_prompt_tokens": 180,
+      "prompt_text_sha256": "780b310c1b2d9a5363f14ebeda9f4bbd3739cf8997349fc7f1c82921c783c34c",
+      "prompt_token_ids_sha256": "b07e49f0a2ca47550bdc74b111ede664075e4daf14819834cdffad7e2aa6fb31"
+    }
+  ]
+}

@@ -362,7 +362,7 @@ impl LLMEngine {
 
         // 4. Process outputs: update states, check stop, detokenize
         let mut results = Vec::new();
-        let eos = self.tokenizer.eos_token_id();
+        let terminal_token_ids = self.tokenizer.terminal_token_ids();
 
         // Index sampler outputs by seq_id for fast lookup
         let output_map: HashMap<SequenceId, &SamplerOutput> =
@@ -395,7 +395,7 @@ impl LLMEngine {
                             sampled.top_logprobs.clone(),
                             &decoded,
                             &req.sampling_params,
-                            eos,
+                            terminal_token_ids,
                         );
                     }
                 }

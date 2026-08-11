@@ -144,7 +144,10 @@ impl ChatCompletionResponse {
                 ChatChoice {
                     message: ChatMessage {
                         role: "assistant".to_string(),
-                        content: co.text.clone(),
+                        content: Some(co.text.clone()),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
                     },
                     index: co.index,
                     finish_reason: finish_reason_string(co.finish_reason),
@@ -224,7 +227,10 @@ mod tests {
             choices: vec![ChatChoice {
                 message: ChatMessage {
                     role: "assistant".into(),
-                    content: "hi".into(),
+                    content: Some("hi".into()),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
                 },
                 index: 0,
                 finish_reason: Some("stop".into()),
@@ -263,7 +269,7 @@ mod tests {
         assert_eq!(resp.object, "chat.completion");
         assert_eq!(resp.choices.len(), 1);
         assert_eq!(resp.choices[0].message.role, "assistant");
-        assert_eq!(resp.choices[0].message.content, " world");
+        assert_eq!(resp.choices[0].message.content.as_deref(), Some(" world"));
     }
 
     #[test]

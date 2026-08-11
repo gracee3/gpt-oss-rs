@@ -71,6 +71,7 @@ pub async fn create_response(
             .cloned()
             .map(StoredConversationItem::Input),
     );
+    validate_response_tool_history(&conversation_items)?;
 
     let prompt_style = preferred_tool_prompt_style(&state.model_name);
     let prompt_messages = render_conversation_items(&conversation_items, prompt_style);
@@ -99,7 +100,10 @@ pub async fn create_response(
                 0,
                 ChatMessage {
                     role: "system".to_string(),
-                    content: instructions,
+                    content: Some(instructions),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
                 },
             );
         }
@@ -123,7 +127,9 @@ pub async fn create_response(
     } else {
         let tokenizer_messages = templated_messages
             .iter()
-            .map(|message| gpt_oss_tokenizer::ChatMessage::new(&message.role, &message.content))
+            .map(|message| {
+                gpt_oss_tokenizer::ChatMessage::new(&message.role, message.content_text())
+            })
             .collect::<Vec<_>>();
         state
             .tokenizer
@@ -277,7 +283,10 @@ pub async fn create_response(
 
                 if let Some(choice) = output.outputs.first() {
                     let next_text = if let Some(state) = protocol_state.as_mut() {
-                        match state.ingest(&choice.token_ids, output.finished) {
+                        let finalize = output.finished
+                            && choice.finish_reason
+                                != Some(gpt_oss_core::prelude::FinishReason::Length);
+                        match state.ingest(&choice.token_ids, finalize) {
                             Ok(messages) => visible_response_text(&messages),
                             Err(_) => return,
                         }
@@ -340,21 +349,24 @@ pub async fn create_response(
             let output_items = vec![ResponseOutputItem::Message(
                 ResponseOutputMessage::completed(message_id.clone(), full_text.clone()),
             )];
-            let response = ResponseObject::completed(
-                response_id_clone.clone(),
-                model.clone(),
-                req_clone.instructions.clone(),
-                req_clone.max_output_tokens,
-                req_clone.previous_response_id.clone(),
-                req_clone.store,
-                req_clone.temperature,
-                req_clone.top_p,
-                req_clone.metadata.clone(),
-                output_items.clone(),
-                ResponseUsage::from_request_output(&output),
-                req_clone.parallel_tool_calls,
-                req_clone.effective_tool_choice(),
-                req_clone.tools.clone().unwrap_or_default(),
+            let response = mark_incomplete_if_length(
+                ResponseObject::completed(
+                    response_id_clone.clone(),
+                    model.clone(),
+                    req_clone.instructions.clone(),
+                    req_clone.max_output_tokens,
+                    req_clone.previous_response_id.clone(),
+                    req_clone.store,
+                    req_clone.temperature,
+                    req_clone.top_p,
+                    req_clone.metadata.clone(),
+                    output_items.clone(),
+                    ResponseUsage::from_request_output(&output),
+                    req_clone.parallel_tool_calls,
+                    req_clone.effective_tool_choice(),
+                    req_clone.tools.clone().unwrap_or_default(),
+                ),
+                &output,
             );
 
             if tx
@@ -407,11 +419,16 @@ pub async fn create_response(
             {
                 return;
             }
+            let response_event = if response.status == "incomplete" {
+                "response.incomplete"
+            } else {
+                "response.completed"
+            };
             if tx
                 .send(Ok(format_sse_event(
-                    "response.completed",
+                    response_event,
                     &serde_json::json!({
-                        "type": "response.completed",
+                        "type": response_event,
                         "response": response,
                     }),
                 )))
@@ -533,7 +550,7 @@ impl StreamedProtocolState {
     fn ingest(
         &mut self,
         token_ids: &[u32],
-        finished: bool,
+        finalize: bool,
     ) -> Result<Vec<gpt_oss_tokenizer::ParsedProtocolMessage>, ApiError> {
         for token in token_ids.iter().copied().skip(self.processed_tokens) {
             self.parser
@@ -541,13 +558,13 @@ impl StreamedProtocolState {
                 .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
         }
         self.processed_tokens = token_ids.len();
-        if finished {
+        if finalize {
             self.parser
                 .finish()
                 .map_err(|e| ApiError::Internal(format!("harmony stream finalize error: {}", e)))?;
         }
         self.parser
-            .messages()
+            .messages_including_partial()
             .map_err(|e| ApiError::Internal(format!("harmony stream read error: {}", e)))
     }
 }
@@ -658,7 +675,10 @@ async fn stream_tool_response(
         while let Some(output) = output_stream.next().await {
             if let Some(choice) = output.outputs.first() {
                 let parse_result = if let Some(state) = protocol_state.as_mut() {
-                    let messages = match state.ingest(&choice.token_ids, output.finished) {
+                    let finalize = output.finished
+                        && choice.finish_reason
+                            != Some(gpt_oss_core::prelude::FinishReason::Length);
+                    let messages = match state.ingest(&choice.token_ids, finalize) {
                         Ok(messages) => messages,
                         Err(_) => return,
                     };
@@ -1055,28 +1075,36 @@ async fn stream_tool_response(
             vec![item]
         };
 
-        let response = ResponseObject::completed(
-            response_id.clone(),
-            model.clone(),
-            req.instructions.clone(),
-            req.max_output_tokens,
-            req.previous_response_id.clone(),
-            req.store,
-            req.temperature,
-            req.top_p,
-            req.metadata.clone(),
-            output_items.clone(),
-            ResponseUsage::from_request_output(&output),
-            req.parallel_tool_calls,
-            tool_choice,
-            response_tools,
+        let response = mark_incomplete_if_length(
+            ResponseObject::completed(
+                response_id.clone(),
+                model.clone(),
+                req.instructions.clone(),
+                req.max_output_tokens,
+                req.previous_response_id.clone(),
+                req.store,
+                req.temperature,
+                req.top_p,
+                req.metadata.clone(),
+                output_items.clone(),
+                ResponseUsage::from_request_output(&output),
+                req.parallel_tool_calls,
+                tool_choice,
+                response_tools,
+            ),
+            &output,
         );
 
+        let response_event = if response.status == "incomplete" {
+            "response.incomplete"
+        } else {
+            "response.completed"
+        };
         if tx
             .send(Ok(format_sse_event(
-                "response.completed",
+                response_event,
                 &serde_json::json!({
-                    "type": "response.completed",
+                    "type": response_event,
                     "response": response,
                 }),
             )))
@@ -1163,22 +1191,45 @@ fn response_from_output(
         &tool_choice,
         model,
     )?;
-    Ok(ResponseObject::completed(
-        response_id.to_string(),
-        model.to_string(),
-        req.instructions.clone(),
-        req.max_output_tokens,
-        req.previous_response_id.clone(),
-        req.store,
-        req.temperature,
-        req.top_p,
-        req.metadata.clone(),
-        output_items,
-        ResponseUsage::from_request_output(output),
-        req.parallel_tool_calls,
-        tool_choice,
-        response_tools,
+    Ok(mark_incomplete_if_length(
+        ResponseObject::completed(
+            response_id.to_string(),
+            model.to_string(),
+            req.instructions.clone(),
+            req.max_output_tokens,
+            req.previous_response_id.clone(),
+            req.store,
+            req.temperature,
+            req.top_p,
+            req.metadata.clone(),
+            output_items,
+            ResponseUsage::from_request_output(output),
+            req.parallel_tool_calls,
+            tool_choice,
+            response_tools,
+        ),
+        output,
     ))
+}
+
+fn request_output_reached_length(output: &gpt_oss_core::prelude::RequestOutput) -> bool {
+    output.outputs.iter().any(|completion| {
+        completion.finish_reason == Some(gpt_oss_core::prelude::FinishReason::Length)
+    })
+}
+
+fn mark_incomplete_if_length(
+    mut response: ResponseObject,
+    output: &gpt_oss_core::prelude::RequestOutput,
+) -> ResponseObject {
+    if request_output_reached_length(output) {
+        response.status = "incomplete".to_string();
+        response.completed_at = None;
+        response.incomplete_details = Some(serde_json::json!({
+            "reason": "max_output_tokens"
+        }));
+    }
+    response
 }
 
 fn response_output_items_from_text(
@@ -1272,15 +1323,20 @@ fn response_output_items_from_completion(
     if is_gpt_oss_model(model_name) {
         let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
             .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-        let parsed = protocol
-            .parse_completion_tokens(&output.token_ids)
-            .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
+        let incomplete = output.finish_reason == Some(gpt_oss_core::prelude::FinishReason::Length);
+        let parsed = if incomplete {
+            protocol.parse_partial_completion_tokens(&output.token_ids)
+        } else {
+            protocol.parse_completion_tokens(&output.token_ids)
+        }
+        .map_err(|e| ApiError::Internal(format!("harmony parse error: {}", e)))?;
         return response_output_items_from_protocol_messages(
             response_id,
             &parsed,
             req,
             function_tools,
             tool_choice,
+            !incomplete,
         );
     }
 
@@ -1293,6 +1349,7 @@ fn response_output_items_from_protocol_messages(
     req: &CreateResponseRequest,
     function_tools: &[crate::types::responses::ResponseFunctionTool],
     tool_choice: &ResponseToolChoice,
+    enforce_required_tool: bool,
 ) -> Result<Vec<ResponseOutputItem>, ApiError> {
     let allowed_tools: HashSet<&str> = function_tools
         .iter()
@@ -1352,7 +1409,8 @@ fn response_output_items_from_protocol_messages(
         }
     }
 
-    if !saw_function_call
+    if enforce_required_tool
+        && !saw_function_call
         && (matches!(tool_choice, ResponseToolChoice::Mode(mode) if mode == "required")
             || tool_choice.forced_tool_name().is_some())
     {
@@ -1373,6 +1431,61 @@ fn response_output_items_from_protocol_messages(
     Ok(output_items)
 }
 
+fn validate_response_tool_history(items: &[StoredConversationItem]) -> Result<(), ApiError> {
+    let mut pending = HashMap::<String, String>::new();
+    let mut seen_calls = HashSet::<String>::new();
+    let mut seen_outputs = HashSet::<String>::new();
+
+    for item in items {
+        match item {
+            StoredConversationItem::Output(ResponseOutputItem::FunctionCall(call)) => {
+                if !seen_calls.insert(call.call_id.clone()) {
+                    return Err(ApiError::InvalidRequest(format!(
+                        "duplicate Responses function call id '{}'",
+                        call.call_id
+                    )));
+                }
+                pending.insert(call.call_id.clone(), call.name.clone());
+            }
+            StoredConversationItem::Input(ResponseInputItem::FunctionCallOutput(output)) => {
+                if !seen_outputs.insert(output.call_id.clone()) {
+                    return Err(ApiError::InvalidRequest(format!(
+                        "duplicate function_call_output for call_id '{}'",
+                        output.call_id
+                    )));
+                }
+                if pending.remove(&output.call_id).is_none() {
+                    return Err(ApiError::InvalidRequest(format!(
+                        "function_call_output references unresolved call_id '{}'",
+                        output.call_id
+                    )));
+                }
+            }
+            StoredConversationItem::Input(ResponseInputItem::Message(_))
+            | StoredConversationItem::Output(ResponseOutputItem::Message(_)) => {
+                if !pending.is_empty() {
+                    let mut ids: Vec<_> = pending.keys().cloned().collect();
+                    ids.sort();
+                    return Err(ApiError::InvalidRequest(format!(
+                        "Responses function calls are unresolved before the next message: {}",
+                        ids.join(", ")
+                    )));
+                }
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        let mut ids: Vec<_> = pending.keys().cloned().collect();
+        ids.sort();
+        return Err(ApiError::InvalidRequest(format!(
+            "Responses function calls are missing function_call_output items: {}",
+            ids.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 fn render_conversation_items(
     items: &[StoredConversationItem],
     style: gpt_oss_tokenizer::ToolPromptStyle,
@@ -1389,7 +1502,10 @@ fn render_conversation_items(
                 let function_name = function_names.get(&output.call_id).map(String::as_str);
                 messages.push(ChatMessage {
                     role: "user".to_string(),
-                    content: render_function_call_output(output, function_name, style),
+                    content: Some(render_function_call_output(output, function_name, style)),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
                 });
             }
             StoredConversationItem::Output(ResponseOutputItem::Message(message)) => {
@@ -1399,7 +1515,10 @@ fn render_conversation_items(
                 function_names.insert(call.call_id.clone(), call.name.clone());
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),
-                    content: render_function_call(call, style),
+                    content: Some(render_function_call(call, style)),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
                 });
             }
         }
@@ -1863,6 +1982,7 @@ mod tests {
             &req,
             &tools,
             &req.effective_tool_choice(),
+            true,
         )
         .unwrap_err();
 
@@ -1893,6 +2013,7 @@ mod tests {
             &req,
             &tools,
             &req.effective_tool_choice(),
+            true,
         )
         .unwrap_err();
 
@@ -1926,6 +2047,7 @@ mod tests {
             &req,
             &tools,
             &req.effective_tool_choice(),
+            true,
         )
         .unwrap();
 
@@ -1964,9 +2086,9 @@ mod tests {
         let messages =
             render_conversation_items(&items, gpt_oss_tokenizer::ToolPromptStyle::Hermes);
         assert_eq!(messages.len(), 3);
-        assert!(messages[1].content.contains("<tool_call>"));
-        assert!(messages[2].content.contains("get_weather"));
-        assert!(messages[2].content.contains("temp_c"));
+        assert!(messages[1].content_text().contains("<tool_call>"));
+        assert!(messages[2].content_text().contains("get_weather"));
+        assert!(messages[2].content_text().contains("temp_c"));
     }
 
     #[test]
@@ -2023,13 +2145,17 @@ mod tests {
         let messages =
             render_conversation_items(&items, gpt_oss_tokenizer::ToolPromptStyle::Harmony);
         assert_eq!(messages.len(), 3);
-        assert!(messages[1].content.contains("\"type\":\"function_call\""));
-        assert!(messages[1].content.contains("\"call_id\":\"call_1\""));
+        assert!(messages[1]
+            .content_text()
+            .contains("\"type\":\"function_call\""));
+        assert!(messages[1]
+            .content_text()
+            .contains("\"call_id\":\"call_1\""));
         assert!(messages[2]
-            .content
+            .content_text()
             .contains("\"type\":\"function_call_output\""));
-        assert!(messages[2].content.contains("\"temp_c\":18"));
-        assert!(!messages[1].content.contains("<tool_call>"));
+        assert!(messages[2].content_text().contains("\"temp_c\":18"));
+        assert!(!messages[1].content_text().contains("<tool_call>"));
     }
 
     #[test]
@@ -2668,7 +2794,11 @@ mod tests {
             .filter(|(name, _)| name == "response.output_text.delta")
             .map(|(_, payload)| payload["delta"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(text_deltas, vec!["Hello world".to_string()], "{body}");
+        assert_eq!(
+            text_deltas,
+            vec!["Hel".to_string(), "lo world".to_string()],
+            "{body}"
+        );
 
         let completed = events
             .iter()

@@ -56,6 +56,12 @@ impl CpuWorker {
     ) -> Result<Self> {
         let runner =
             CpuModelRunner::load(snapshot, repack_root, kernel_path, threads, context_cap)?;
+        tracing::info!(
+            requested_path = %kernel_path,
+            compatibility_path = %runner.kernel_path(),
+            dispatch_plan = %runner.kernel_dispatch_plan(),
+            "resolved CPU kernel dispatch"
+        );
         Ok(Self::from_runner(runner))
     }
 

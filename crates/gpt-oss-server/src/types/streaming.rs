@@ -305,10 +305,7 @@ mod tests {
 
     #[test]
     fn chat_message_in_response() {
-        let msg = crate::types::request::ChatMessage {
-            role: "assistant".into(),
-            content: "test".into(),
-        };
+        let msg = crate::types::request::ChatMessage::new("assistant", "test");
         let json = serde_json::to_string(&msg).unwrap();
         let back: crate::types::request::ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.role, "assistant");

@@ -139,8 +139,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/v1/chat/completions/tools",
-            post(routes::tools::create_chat_completion_with_tools),
+            post(routes::chat::create_chat_completion),
         )
+        .route("/tools", post(routes::chat::create_chat_completion))
         .route("/health", get(routes::health::health_check))
         .route("/metrics", get(metrics_placeholder))
         .layer(CorsLayer::permissive())

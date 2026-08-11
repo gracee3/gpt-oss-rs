@@ -1173,7 +1173,7 @@ mod inner {
             }
 
             let mut results = Vec::with_capacity(scheduled_groups.len());
-            let eos = self.tokenizer.eos_token_id();
+            let terminal_token_ids = self.tokenizer.terminal_token_ids();
 
             for group in scheduled_groups {
                 let request_id = group.request_id;
@@ -1220,7 +1220,7 @@ mod inner {
                                 top_logprobs,
                                 &decoded,
                                 &req.sampling_params,
-                                eos,
+                                terminal_token_ids,
                             );
                             if let Some(reason) = state.finish_reason {
                                 let status = match reason {
