@@ -14,7 +14,10 @@ use std::arch::x86_64::*;
 
 use half::bf16;
 
-use crate::{e8m0_scale, Mxfp4Block, Mxfp4MatrixView, Q8Block, ResidualQ8Block};
+use crate::{
+    e8m0_scale, Mxfp4ActivationMatrix, Mxfp4Block, Mxfp4MatrixView, Q8Block, ResidualQ8Block,
+    QUANT_BLOCK_SIZE,
+};
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn bf16_dot_avx2(left: &[bf16], right: &[bf16]) -> f32 {
@@ -364,6 +367,156 @@ pub(super) unsafe fn mxfp4_residual_q8_gemv_x8_avx2(
     }
     // SAFETY: the public projection entry point validates eight output lanes.
     unsafe { _mm256_storeu_ps(output.as_mut_ptr(), accumulator) };
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn decode_mxfp4_four_rows_avx2(packed: *const u8) -> (__m256i, __m256i) {
+    const LUT: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
+    // SAFETY: callers identify one in-bounds 32-byte four-output segment and
+    // the fixed LUT contains sixteen bytes.
+    let packed = unsafe { _mm256_loadu_si256(packed.cast()) };
+    let lut = _mm256_broadcastsi128_si256(unsafe { _mm_loadu_si128(LUT.as_ptr().cast()) });
+    let mask = _mm256_set1_epi8(0x0f);
+    let low = _mm256_shuffle_epi8(lut, _mm256_and_si256(packed, mask));
+    let high = _mm256_shuffle_epi8(lut, _mm256_and_si256(_mm256_srli_epi16(packed, 4), mask));
+    (low, high)
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn mxfp4_x8_panel_block_dots_avx2(
+    packed: &[u8; 136],
+    primary: *const i8,
+    residual: Option<*const i8>,
+    input_rows: usize,
+) -> ([[i32; 8]; 4], [[i32; 8]; 4]) {
+    let mut primary_dots = [[0_i32; 8]; 4];
+    let mut residual_dots = [[0_i32; 8]; 4];
+    for chunk in 0..2 {
+        for output_group in 0..2 {
+            let offset = 8 + chunk * 64 + output_group * 32;
+            // SAFETY: the x8 block contains the selected 32-byte segment.
+            let (low_weights, high_weights) =
+                unsafe { decode_mxfp4_four_rows_avx2(packed.as_ptr().add(offset)) };
+            for input_row in 0..input_rows {
+                // SAFETY: the packed panel contains four complete 32-byte rows.
+                let row = unsafe { primary.add(input_row * QUANT_BLOCK_SIZE) };
+                let low = unsafe { repeated_i8x8(row.add(chunk * 8)) };
+                let high = unsafe { repeated_i8x8(row.add(16 + chunk * 8)) };
+                let low_dots = dot_four_rows_eight(low_weights, low);
+                let high_dots = dot_four_rows_eight(high_weights, high);
+                for lane in 0..4 {
+                    primary_dots[input_row][output_group * 4 + lane] +=
+                        low_dots[lane] + high_dots[lane];
+                }
+
+                if let Some(residual) = residual {
+                    // SAFETY: residual uses the same fixed panel extent.
+                    let row = unsafe { residual.add(input_row * QUANT_BLOCK_SIZE) };
+                    let low = unsafe { repeated_i8x8(row.add(chunk * 8)) };
+                    let high = unsafe { repeated_i8x8(row.add(16 + chunk * 8)) };
+                    let low_dots = dot_four_rows_eight(low_weights, low);
+                    let high_dots = dot_four_rows_eight(high_weights, high);
+                    for lane in 0..4 {
+                        residual_dots[input_row][output_group * 4 + lane] +=
+                            low_dots[lane] + high_dots[lane];
+                    }
+                }
+            }
+        }
+    }
+    (primary_dots, residual_dots)
+}
+
+fn packed_panel_scale(panel: &[u8], base: usize, row: usize) -> f32 {
+    let start = base + row * std::mem::size_of::<f32>();
+    f32::from_ne_bytes(
+        panel[start..start + 4]
+            .try_into()
+            .expect("validated panel scale"),
+    )
+}
+
+/// Four-input-row by eight-output-row MXFP4 matrix kernel.
+///
+/// Each x8 weight chunk is decoded once and reused for every input row and for
+/// both residual passes before the next K block is loaded.
+pub(super) struct Avx2MatmulDestination<'a> {
+    pub(super) bias: Option<&'a [f32]>,
+    pub(super) output: &'a mut [f32],
+    pub(super) output_stride: usize,
+}
+
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn mxfp4_matmul_x8_avx2(
+    weights: Mxfp4MatrixView<'_>,
+    input_start: usize,
+    input_rows: usize,
+    activations: Mxfp4ActivationMatrix<'_>,
+    destination: Avx2MatmulDestination<'_>,
+    panel: &[u8],
+) {
+    let (blocks, passes) = match activations {
+        Mxfp4ActivationMatrix::Q8(view) => (view.blocks_per_row(), 1),
+        Mxfp4ActivationMatrix::ResidualQ8(view) => (view.blocks_per_row(), 2),
+    };
+    let pass_bytes = crate::matmul::avx2_panel_pass_bytes();
+    for group in 0..weights.complete_x8_groups() {
+        let output_start = group * 8;
+        let initial = if let Some(bias) = destination.bias {
+            // SAFETY: every group is a complete eight-output span.
+            unsafe { _mm256_loadu_ps(bias.as_ptr().add(output_start)) }
+        } else {
+            _mm256_setzero_ps()
+        };
+        let mut accumulators = [initial; 4];
+        for block in 0..blocks {
+            let packed = weights.x8_block(group, block);
+            let primary_base = (block * passes) * pass_bytes;
+            let residual_base = (block * passes + 1) * pass_bytes;
+            // SAFETY: the caller packed four 32-byte rows after sixteen scale
+            // bytes in every required panel pass.
+            let primary = unsafe { panel.as_ptr().add(primary_base + 16).cast::<i8>() };
+            let residual = (passes == 2)
+                .then(|| unsafe { panel.as_ptr().add(residual_base + 16).cast::<i8>() });
+            let (primary_dots, residual_dots) =
+                unsafe { mxfp4_x8_panel_block_dots_avx2(packed, primary, residual, input_rows) };
+            let weight_scales = x8_weight_scales(packed);
+            for input_row in 0..input_rows {
+                // SAFETY: each fixed array contains eight INT32 values.
+                let dots = unsafe {
+                    _mm256_loadu_si256(primary_dots[input_row].as_ptr().cast::<__m256i>())
+                };
+                let mut contribution = _mm256_cvtepi32_ps(dots);
+                contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+                contribution = _mm256_mul_ps(contribution, weight_scales);
+                contribution = _mm256_mul_ps(
+                    contribution,
+                    _mm256_set1_ps(packed_panel_scale(panel, primary_base, input_row)),
+                );
+                accumulators[input_row] = _mm256_add_ps(accumulators[input_row], contribution);
+
+                if passes == 2 {
+                    // SAFETY: each fixed array contains eight INT32 values.
+                    let dots = unsafe {
+                        _mm256_loadu_si256(residual_dots[input_row].as_ptr().cast::<__m256i>())
+                    };
+                    let mut contribution = _mm256_cvtepi32_ps(dots);
+                    contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+                    contribution = _mm256_mul_ps(contribution, weight_scales);
+                    contribution = _mm256_mul_ps(
+                        contribution,
+                        _mm256_set1_ps(packed_panel_scale(panel, residual_base, input_row)),
+                    );
+                    accumulators[input_row] = _mm256_add_ps(accumulators[input_row], contribution);
+                }
+            }
+        }
+        for (input_row, accumulator) in accumulators.iter().enumerate().take(input_rows) {
+            let offset = (input_start + input_row) * destination.output_stride + output_start;
+            // SAFETY: the validated problem reserves eight output elements.
+            unsafe { _mm256_storeu_ps(destination.output.as_mut_ptr().add(offset), *accumulator) };
+        }
+    }
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
