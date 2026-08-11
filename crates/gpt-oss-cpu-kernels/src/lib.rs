@@ -11,10 +11,15 @@ use half::bf16;
 use thiserror::Error;
 
 mod features;
+mod matmul;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
 pub use features::{CpuFeatures, KernelRequirements};
+pub use matmul::{
+    Mxfp4ActivationMatrix, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement,
+    Q8MatrixView, ResidualQ8MatrixView,
+};
 
 pub const QUANT_BLOCK_SIZE: usize = 32;
 pub const MXFP4_PACKED_BYTES: usize = QUANT_BLOCK_SIZE / 2;
@@ -131,6 +136,13 @@ pub enum KernelError {
     InvalidDimensions(String),
     #[error("CPU kernel input contains a non-finite value")]
     NonFiniteInput,
+    #[error("unknown MXFP4 matrix backend '{0}'")]
+    InvalidMatmulBackend(String),
+    #[error("MXFP4 matrix backend '{backend}' is unavailable: {reason}")]
+    UnavailableMatmulBackend {
+        backend: Mxfp4MatmulBackend,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
