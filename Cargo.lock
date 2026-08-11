@@ -1409,6 +1409,7 @@ dependencies = [
 name = "gpt-oss-cpu-kernels"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "criterion",
  "half",
  "libc",

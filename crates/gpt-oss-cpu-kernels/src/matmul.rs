@@ -396,7 +396,7 @@ impl Kernels {
             Mxfp4MatmulBackend::Auto if problem.m() == 1 => self.gemv_matmul(&mut problem),
             Mxfp4MatmulBackend::Scalar => scalar_matmul(&mut problem),
             Mxfp4MatmulBackend::Avx2 => avx2_matmul(&mut problem, scratch),
-            Mxfp4MatmulBackend::AmxInt8 => unavailable_amx_matmul(),
+            Mxfp4MatmulBackend::AmxInt8 => amx_matmul(&mut problem, scratch),
             Mxfp4MatmulBackend::Auto => unreachable!("multi-row auto resolves to scalar"),
         }
     }
@@ -471,15 +471,24 @@ fn amx_scratch_requirement(
     })
 }
 
-fn unavailable_amx_matmul() -> Result<(), KernelError> {
+#[cfg(not(feature = "amx-int8"))]
+fn amx_matmul(
+    _problem: &mut Mxfp4MatmulProblem<'_>,
+    _scratch: &mut [u8],
+) -> Result<(), KernelError> {
     Err(KernelError::UnavailableMatmulBackend {
         backend: Mxfp4MatmulBackend::AmxInt8,
-        reason: if cfg!(feature = "amx-int8") {
-            "the AMX-INT8 native tile shim is not integrated"
-        } else {
-            "the amx-int8 Cargo feature is not enabled"
-        },
+        reason: "the amx-int8 Cargo feature is not enabled",
     })
+}
+
+#[cfg(feature = "amx-int8")]
+fn amx_matmul(problem: &mut Mxfp4MatmulProblem<'_>, scratch: &mut [u8]) -> Result<(), KernelError> {
+    crate::initialize_amx_int8().map_err(|error| KernelError::UnavailableMatmulBackend {
+        backend: Mxfp4MatmulBackend::AmxInt8,
+        reason: error.reason(),
+    })?;
+    amx_matmul_with_tile(problem, scratch, crate::amx::execute_amx_int8_tile)
 }
 
 fn validate_scratch(
@@ -561,6 +570,15 @@ fn emulated_amx_matmul(
     problem: &mut Mxfp4MatmulProblem<'_>,
     scratch: &mut [u8],
 ) -> Result<(), KernelError> {
+    amx_matmul_with_tile(problem, scratch, emulate_amx_tile)
+}
+
+#[cfg(feature = "amx-int8")]
+fn amx_matmul_with_tile(
+    problem: &mut Mxfp4MatmulProblem<'_>,
+    scratch: &mut [u8],
+    tile: impl Fn(usize, &[u8], &[u8], &mut [u8]) -> Result<(), KernelError>,
+) -> Result<(), KernelError> {
     if problem.m() == 1 || problem.n() < AMX_TILE_OUTPUTS {
         return scalar_matmul(problem);
     }
@@ -589,7 +607,7 @@ fn emulated_amx_matmul(
                             block_index,
                             a_panel,
                         )?;
-                        emulate_amx_tile(input_rows, a_panel, b_panel, c_tile)?;
+                        tile(input_rows, a_panel, b_panel, c_tile)?;
                         accumulate_amx_tile(
                             problem,
                             input_start,
@@ -611,7 +629,7 @@ fn emulated_amx_matmul(
                                 residual_pass,
                                 a_panel,
                             )?;
-                            emulate_amx_tile(input_rows, a_panel, b_panel, c_tile)?;
+                            tile(input_rows, a_panel, b_panel, c_tile)?;
                             accumulate_amx_tile(
                                 problem,
                                 input_start,

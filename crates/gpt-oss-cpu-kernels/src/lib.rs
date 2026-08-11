@@ -145,6 +145,8 @@ pub enum KernelError {
         backend: Mxfp4MatmulBackend,
         reason: &'static str,
     },
+    #[error("AMX-INT8 tile shim failed with status {0}")]
+    AmxShim(i32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

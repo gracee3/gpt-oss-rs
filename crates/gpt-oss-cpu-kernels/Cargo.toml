@@ -22,6 +22,9 @@ thiserror.workspace = true
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 libc = { version = "0.2", optional = true }
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 criterion.workspace = true
 rand.workspace = true

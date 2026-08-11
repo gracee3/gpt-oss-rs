@@ -1,6 +1,7 @@
 //! AMX-INT8 capability, Linux XSTATE, and process-permission diagnostics.
 
 use std::fmt;
+use std::sync::OnceLock;
 
 use thiserror::Error;
 
@@ -131,7 +132,64 @@ impl AmxProbe for SystemAmxProbe {
 /// Request process AMX tile-data permission after checking every earlier gate.
 /// Callers must invoke this before constructing worker threads.
 pub fn initialize_amx_int8() -> Result<AmxRuntimeStatus, AmxRuntimeError> {
-    initialize_with(&SystemAmxProbe)
+    static INITIALIZED: OnceLock<Result<AmxRuntimeStatus, AmxRuntimeError>> = OnceLock::new();
+    *INITIALIZED.get_or_init(|| initialize_with(&SystemAmxProbe))
+}
+
+#[cfg(all(feature = "amx-int8", target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn execute_amx_int8_tile(
+    rows: usize,
+    a_panel: &[u8],
+    b_panel: &[u8],
+    c_tile: &mut [u8],
+) -> Result<(), crate::KernelError> {
+    if rows == 0
+        || rows > 16
+        || a_panel.len() < 16 * 32
+        || b_panel.len() < 8 * 64
+        || c_tile.len() < 16 * 16 * 4
+        || !(a_panel.as_ptr() as usize).is_multiple_of(64)
+        || !(b_panel.as_ptr() as usize).is_multiple_of(64)
+        || !(c_tile.as_ptr() as usize).is_multiple_of(64)
+    {
+        return Err(crate::KernelError::InvalidDimensions(
+            "invalid AMX-INT8 native tile buffers".into(),
+        ));
+    }
+
+    unsafe extern "C" {
+        fn gpt_oss_amx_int8_tile(a: *const i8, b: *const i8, c: *mut i32, rows: u32) -> i32;
+    }
+
+    // SAFETY: the checks above establish the fixed A/B/C extents, alignment,
+    // and row bound. Explicit runtime initialization establishes CPUID,
+    // kernel XSTATE, and process permission before this function is reached.
+    let status = unsafe {
+        gpt_oss_amx_int8_tile(
+            a_panel.as_ptr().cast::<i8>(),
+            b_panel.as_ptr().cast::<i8>(),
+            c_tile.as_mut_ptr().cast::<i32>(),
+            rows as u32,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(crate::KernelError::AmxShim(status))
+    }
+}
+
+#[cfg(not(all(feature = "amx-int8", target_os = "linux", target_arch = "x86_64")))]
+pub(crate) fn execute_amx_int8_tile(
+    _rows: usize,
+    _a_panel: &[u8],
+    _b_panel: &[u8],
+    _c_tile: &mut [u8],
+) -> Result<(), crate::KernelError> {
+    Err(crate::KernelError::UnavailableMatmulBackend {
+        backend: crate::Mxfp4MatmulBackend::AmxInt8,
+        reason: "AMX-INT8 native execution requires Linux x86-64",
+    })
 }
 
 fn initialize_with(probe: &impl AmxProbe) -> Result<AmxRuntimeStatus, AmxRuntimeError> {
