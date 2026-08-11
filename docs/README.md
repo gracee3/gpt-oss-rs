@@ -30,6 +30,17 @@
 - [`REPO_ALIGNMENT_AND_WORKSTREAMS.md`](REPO_ALIGNMENT_AND_WORKSTREAMS.md):
   branch, worktree, and integration policy.
 
+## External research and contribution tracking
+
+- [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md): Intel Level Zero
+  and oneAPI-rs architecture, dependency boundary, Rust design lessons, and
+  possible future integrated-GPU experiment.
+- [`UPSTREAM_CONTRIBUTION_DISCOVERY.md`](UPSTREAM_CONTRIBUTION_DISCOVERY.md):
+  Rust-first upstream opportunity map, qualification gates, and candidate
+  ledger.
+- [`BORROWED_CONCEPTS.md`](BORROWED_CONCEPTS.md): explicit design-influence and
+  conceptual provenance ledger, separate from code/license attribution.
+
 ## CUDA validation
 
 - [`TIER2_FP16_CUDA_WORKFLOW.md`](TIER2_FP16_CUDA_WORKFLOW.md): restricted-fp16
