@@ -2,7 +2,7 @@
 
 - Outcome: **planning-ready**
 - Scope: candidate evidence contracts only; no telemetry implementation
-- Source budget used: current repository, vLLM, TGI, mistral.rs, and official
+- Source budget used: current repository, vLLM, TGI, and official
   Rust/Prometheus timing and metric guidance
 
 ## Objective, questions, and non-questions
@@ -52,20 +52,6 @@ turn metrics into an execution architecture.
 - Limitation: TGI's router/shard topology and broad compatibility are outside
   this service envelope; upstream describes TGI as maintenance mode.
 - Confidence: high for the source observation, moderate for transfer.
-
-### E1-E-006 / LOCAL-SOURCE OBSERVATION
-
-- Question: may request identity be useful without becoming a metric label?
-- Source: NX-SRC-005, mistral.rs
-- Pin/path: `8010b6a...`;
-  `mistralrs-server-core/src/metrics.rs::{request_context_middleware,InFlightGuard}`
-- Observation: request IDs are used in access logs/headers while metric labels
-  use bounded method/route/status dimensions.
-- Implication: logs can correlate one request while metrics aggregate bounded
-  behavior.
-- Limitation: model label handling must be narrower here because configured
-  local paths are unbounded and may reveal filesystem data.
-- Confidence: high.
 
 ### E1-E-007 / LOCAL-SOURCE OBSERVATION
 
