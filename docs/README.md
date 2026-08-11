@@ -16,6 +16,9 @@
 - [`cpu-runtime-research/`](cpu-runtime-research/README.md): pinned source
   registry and the detailed AVX-512, GEMM/prefill, state, scheduling, and AMX
   implementation research syntheses.
+- [`cpu-runtime-plans/`](cpu-runtime-plans/README.md): durable program and
+  milestone implementation plans, validation gates, deviations, and completion
+  evidence for the experimental CPU feature set.
 
 ## Project direction
 
