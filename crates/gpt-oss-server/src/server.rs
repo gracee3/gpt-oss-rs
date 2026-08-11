@@ -18,8 +18,8 @@ use gpt_oss_core::prelude::RequestId;
 use gpt_oss_engine::config::EngineConfig;
 use gpt_oss_engine::AsyncLLMEngine;
 use gpt_oss_engine::{
-    AsyncCpuBatchEngine, CpuBatchEngine, CpuExpertProjection, CpuModel, ExecutorAdapter,
-    ExecutorConfig,
+    AsyncCpuBatchEngine, CpuBatchEngine, CpuExpertProjection, CpuModel, CpuTopology,
+    ExecutorAdapter, ExecutorConfig,
 };
 use gpt_oss_tokenizer::Tokenizer;
 
@@ -370,6 +370,13 @@ async fn create_cpu_engine(
         .map_err(|error| gpt_oss_core::prelude::LLMError::ConfigError(error.to_string()))?;
     let threads = config.device.cpu_threads;
     let context_cap = config.model.max_model_len;
+    let topology = CpuTopology::observe(threads);
+    info!(
+        topology = %topology,
+        allowed_cpus = ?topology.allowed_cpus,
+        allowed_memory_nodes = ?topology.allowed_memory_nodes,
+        "observed CPU topology without applying placement policy"
+    );
 
     let (cpu_model, snapshot) = tokio::task::spawn_blocking(move || {
         let model_path = std::path::Path::new(&model);
