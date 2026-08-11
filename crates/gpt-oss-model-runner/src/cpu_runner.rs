@@ -5,7 +5,7 @@
 //! Transformer operation boundaries are BF16 with FP32 accumulation.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -706,6 +706,61 @@ struct PreparedSequenceDelta {
     staged_layers: Vec<Vec<StagedKvRow>>,
 }
 
+impl PreparedSequenceDelta {
+    fn validate(&self, state: &CpuSequenceModelState) -> Result<CpuStateRevision> {
+        if state.aborted {
+            return Err(LLMError::ModelError(format!(
+                "CPU sequence {} is aborted",
+                self.sequence_id
+            )));
+        }
+        if state.revision != self.expected_revision || state.position != self.expected_position {
+            return Err(LLMError::ModelError(format!(
+                "stale prepared CPU step for sequence {}",
+                self.sequence_id
+            )));
+        }
+        if state.caches.len() != self.staged_layers.len()
+            || self.tokens.is_empty()
+            || self
+                .expected_position
+                .checked_add(self.tokens.len())
+                .is_none_or(|end| end > state.context_cap)
+        {
+            return Err(LLMError::ModelError(
+                "invalid prepared CPU sequence delta".into(),
+            ));
+        }
+        for (cache, rows) in state.caches.iter().zip(&self.staged_layers) {
+            if rows.len() != self.tokens.len() {
+                return Err(LLMError::ModelError(
+                    "incomplete prepared CPU KV layers".into(),
+                ));
+            }
+            for (offset, row) in rows.iter().enumerate() {
+                if row.position != self.expected_position + offset
+                    || row.key.len() != cache.token_width
+                    || row.value.len() != cache.token_width
+                {
+                    return Err(LLMError::ModelError("invalid prepared CPU KV row".into()));
+                }
+            }
+        }
+        state.revision.next()
+    }
+
+    fn apply(self, state: &mut CpuSequenceModelState, next_revision: CpuStateRevision) {
+        for (cache, rows) in state.caches.iter_mut().zip(self.staged_layers) {
+            for row in rows {
+                cache.append_validated(row.position, &row.key, &row.value);
+            }
+        }
+        state.position += self.tokens.len();
+        state.token_history.extend(self.tokens);
+        state.revision = next_revision;
+    }
+}
+
 /// Output metadata for one prepared CPU input row.
 #[derive(Debug, Clone)]
 pub struct PreparedCpuRow {
@@ -740,20 +795,55 @@ impl PreparedCpuStep {
 
     pub fn discard(self) {}
 
+    /// Keep only the named sequence deltas and rows before commit.
+    ///
+    /// M4 uses this after its post-execution cancellation recheck. Discarding
+    /// one sequence does not rewrite or recompute adjacent prepared rows.
+    pub fn retain_sequences(mut self, retained: &HashSet<SequenceId>) -> Self {
+        self.rows.retain(|row| retained.contains(&row.sequence_id));
+        self.sequences
+            .retain(|delta| retained.contains(&delta.sequence_id));
+        self
+    }
+
+    /// Commit into owned states keyed by sequence ID.
+    ///
+    /// Every retained delta is validated before any state is mutated, matching
+    /// the slice-based compatibility commit while allowing an engine table to
+    /// move selected states out temporarily without unsafe multi-borrowing.
+    pub fn commit_states(
+        self,
+        states: &mut HashMap<SequenceId, CpuSequenceModelState>,
+    ) -> Result<Vec<PreparedCpuRow>> {
+        let mut next_revisions = HashMap::with_capacity(self.sequences.len());
+        for delta in &self.sequences {
+            let state = states.get(&delta.sequence_id).ok_or_else(|| {
+                LLMError::ModelError(format!(
+                    "missing mutable CPU sequence state {}",
+                    delta.sequence_id
+                ))
+            })?;
+            next_revisions.insert(delta.sequence_id, delta.validate(state)?);
+        }
+        for delta in self.sequences {
+            let state = states
+                .get_mut(&delta.sequence_id)
+                .expect("all prepared CPU states were validated");
+            let next_revision = next_revisions[&delta.sequence_id];
+            delta.apply(state, next_revision);
+        }
+        Ok(self.rows)
+    }
+
     pub fn commit(
         self,
         sequences: &mut [(SequenceId, &mut CpuSequenceModelState)],
     ) -> Result<Vec<PreparedCpuRow>> {
         let mut supplied = HashMap::with_capacity(sequences.len());
-        for (index, (sequence_id, state)) in sequences.iter().enumerate() {
+        for (index, (sequence_id, _)) in sequences.iter().enumerate() {
             if supplied.insert(*sequence_id, index).is_some() {
                 return Err(LLMError::ModelError(format!(
                     "duplicate mutable CPU sequence state {sequence_id}"
-                )));
-            }
-            if state.aborted {
-                return Err(LLMError::ModelError(format!(
-                    "CPU sequence {sequence_id} is aborted"
                 )));
             }
         }
@@ -766,52 +856,14 @@ impl PreparedCpuStep {
                     delta.sequence_id
                 )));
             };
-            let state = &sequences[index].1;
-            if state.revision != delta.expected_revision
-                || state.position != delta.expected_position
-            {
-                return Err(LLMError::ModelError(format!(
-                    "stale prepared CPU step for sequence {}",
-                    delta.sequence_id
-                )));
-            }
-            if state.caches.len() != delta.staged_layers.len()
-                || delta.tokens.is_empty()
-                || delta.expected_position + delta.tokens.len() > state.context_cap
-            {
-                return Err(LLMError::ModelError(
-                    "invalid prepared CPU sequence delta".into(),
-                ));
-            }
-            for (cache, rows) in state.caches.iter().zip(&delta.staged_layers) {
-                if rows.len() != delta.tokens.len() {
-                    return Err(LLMError::ModelError(
-                        "incomplete prepared CPU KV layers".into(),
-                    ));
-                }
-                for (offset, row) in rows.iter().enumerate() {
-                    if row.position != delta.expected_position + offset
-                        || row.key.len() != cache.token_width
-                        || row.value.len() != cache.token_width
-                    {
-                        return Err(LLMError::ModelError("invalid prepared CPU KV row".into()));
-                    }
-                }
-            }
-            next_revisions.insert(delta.sequence_id, state.revision.next()?);
+            next_revisions.insert(delta.sequence_id, delta.validate(&sequences[index].1)?);
         }
 
         for delta in self.sequences {
             let index = supplied[&delta.sequence_id];
             let state = &mut sequences[index].1;
-            for (cache, rows) in state.caches.iter_mut().zip(delta.staged_layers) {
-                for row in rows {
-                    cache.append_validated(row.position, &row.key, &row.value);
-                }
-            }
-            state.position += delta.tokens.len();
-            state.token_history.extend(delta.tokens);
-            state.revision = next_revisions[&delta.sequence_id];
+            let next_revision = next_revisions[&delta.sequence_id];
+            delta.apply(state, next_revision);
         }
         Ok(self.rows)
     }
@@ -3408,6 +3460,60 @@ mod tests {
         assert_eq!(second.token_history(), &[2, 4]);
         assert_eq!(first.position(), 2);
         assert_eq!(second.position(), 2);
+    }
+
+    #[test]
+    fn retained_sequence_map_commit_discards_cancelled_rows_atomically() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+        )
+        .unwrap();
+        let batch = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 1, 0, true),
+            CpuStepRow::new(SequenceId(2), 2, 0, true),
+        ])
+        .unwrap();
+        let first = model.new_sequence_state(16).unwrap();
+        let second = model.new_sequence_state(16).unwrap();
+        let mut execution = CpuExecutionContext::new();
+        let prepared = model
+            .prepare_step(
+                &mut execution,
+                &batch,
+                &[(SequenceId(1), &first), (SequenceId(2), &second)],
+            )
+            .unwrap()
+            .retain_sequences(&HashSet::from([SequenceId(1)]));
+        let mut states = HashMap::from([(SequenceId(1), first), (SequenceId(2), second)]);
+        let rows = prepared.commit_states(&mut states).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.sequence_id).collect::<Vec<_>>(),
+            vec![SequenceId(1)]
+        );
+        assert_eq!(states[&SequenceId(1)].position(), 1);
+        assert_eq!(states[&SequenceId(1)].token_history(), &[1]);
+        assert_eq!(states[&SequenceId(2)].position(), 0);
+        assert!(states[&SequenceId(2)].token_history().is_empty());
+
+        let first = model.new_sequence_state(16).unwrap();
+        let second = model.new_sequence_state(16).unwrap();
+        let prepared = model
+            .prepare_step(
+                &mut execution,
+                &batch,
+                &[(SequenceId(1), &first), (SequenceId(2), &second)],
+            )
+            .unwrap();
+        let mut states = HashMap::from([(SequenceId(1), first), (SequenceId(2), second)]);
+        states.get_mut(&SequenceId(2)).unwrap().reset().unwrap();
+        let first_before = states[&SequenceId(1)].clone();
+        assert!(prepared.commit_states(&mut states).is_err());
+        assert_eq!(states[&SequenceId(1)], first_before);
     }
 
     #[test]
