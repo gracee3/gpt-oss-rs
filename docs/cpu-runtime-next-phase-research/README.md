@@ -115,9 +115,9 @@ gap with estimates.
 | C1 | [`01-service-lifecycle-api.md`](01-service-lifecycle-api.md) | planning-ready |
 | C2 | [`02-memory-reservations.md`](02-memory-reservations.md) | planning-ready |
 | C3 | [`03-numerical-trust.md`](03-numerical-trust.md) | narrow experiment warranted |
-| C4-A | [`04a-moe-orchestration.md`](04a-moe-orchestration.md) | pending |
-| C4-B | [`04b-dense-bf16.md`](04b-dense-bf16.md) | pending |
-| C4-C | [`04c-attention.md`](04c-attention.md) | pending |
+| C4-A | [`04a-moe-orchestration.md`](04a-moe-orchestration.md) | deferred |
+| C4-B | [`04b-dense-bf16.md`](04b-dense-bf16.md) | deferred |
+| C4-C | [`04c-attention.md`](04c-attention.md) | deferred |
 | C5 | [`05-amx-hardware.md`](05-amx-hardware.md) | pending |
 | C6 | [`06-long-horizon-seams.md`](06-long-horizon-seams.md) | pending |
 | C7 | [`07-maintenance-audit.md`](07-maintenance-audit.md) | pending |
