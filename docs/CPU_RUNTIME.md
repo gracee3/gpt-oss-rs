@@ -14,10 +14,10 @@ that requirement.
 
 Only `gate_up_proj` and `down_proj` MXFP4 tensors are repacked. Cache keys cover
 the resolved model revision, every source-shard SHA-256, the tensor name and
-shape, repack format version, and exact layout identifier. Scalar,
-AVX-512/VNNI, and exact-BF16 projections use `CanonicalAdjacentV1`, whose
-record is one E8M0 scale byte followed by 16 adjacent-nibble bytes.
-Q8/residual-Q8 automatic and forced-AVX2 projections use
+shape, repack format version, and exact layout identifier. Scalar and
+exact-BF16 projections use `CanonicalAdjacentV1`, whose record is one E8M0
+scale byte followed by 16 adjacent-nibble bytes. Q8/residual-Q8 automatic,
+forced-AVX2, and forced-AVX-512/VNNI projections use
 `InterleavedSplitX8V2`: complete eight-row groups store eight scales and 128
 split-half packed bytes per K block, while one-to-seven tail rows remain
 canonical. Both layouts use exactly 17 bytes per row/block. Only the selected
@@ -44,7 +44,13 @@ place.
 - Expert activations use residual Q8 by default:
   `Q8(x) + Q8(x - dequantize(Q8(x)))`. Scalar, AVX2, and AVX-512/VNNI kernels
   unpack each MXFP4 group once and compute both integer dots from that unpack.
-  The AVX2 x8 kernel decodes and accumulates eight output rows together.
+  The AVX2 and AVX-512/VNNI x8 kernels decode and accumulate eight output rows
+  together. The AVX-512 body uses 64-byte ZMM layout loads and VNNI byte dots;
+  canonical output tails retain the audited AVX-512 row kernel.
+- E8M0 follows the MX specification for all paths: `0x00` is `2^-127`, normal
+  encodings are exact powers of two, and invalid `0xff` propagates NaN. The
+  pinned 20B checkpoint contains only normal scale bytes, so this fixes
+  synthetic/special-value semantics without changing its values.
 - The parity runner can select `q8`, `residual-q8`, or streaming `exact-bf16`
   expert projections. Exact BF16 decodes repacked blocks on demand into the
   deterministic FP32 reduction lanes; it is diagnostic-only and selects the
@@ -66,6 +72,12 @@ tuning phase. A stricter end-to-end trace still shows a rare BF16
 reduction-order difference before the expert projection; it is retained as
 diagnostic evidence rather than hidden or compensated later. Trusted mode
 continues to reject CPU serving pending a separate certification review.
+
+The experimental AVX-512 x8 milestone passed scalar equivalence for Q8 and
+residual-Q8 across x8/tail and real projection shapes. A short `harmony_122`
+20B run produced first token `200005` on both automatic AVX2 x8 and forced
+AVX-512 x8. This is targeted feature evidence, not the deferred exhaustive
+certification or a basis for changing automatic selection.
 
 ## Serving policy
 
@@ -95,8 +107,12 @@ Git.
 Forced `scalar`, `avx2`, and `avx512-vnni` requests preserve their compatibility
 meaning for dense operations and fail before execution when their exact ISA
 requirements are unavailable. Scalar uses the canonical MXFP4 row reference,
-AVX2 uses the x8 GEMV and interleaved layout, and AVX-512/VNNI retains its
-canonical row kernel. The public compatibility `path()` remains unchanged.
+AVX2 uses its x8 GEMV and interleaved layout, and AVX-512/VNNI uses the genuine
+ZMM/VNNI x8 GEMV with that same layout. Incomplete output groups use canonical
+bytes and the existing AVX-512 row kernel. The x8 body requires AVX-512F,
+AVX-512BW, and AVX-512VNNI; the complete forced path also requires AVX2 and
+AVX-512VL for its canonical-row and other compatibility operations. The public
+compatibility `path()` remains unchanged.
 
 Automatic dispatch resolves an immutable per-operation plan. On the validated
 development host, BF16 matvec, Q8/residual-Q8 quantization, and RMS norm select

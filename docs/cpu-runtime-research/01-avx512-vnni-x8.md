@@ -1,8 +1,20 @@
 # Step 1 — AVX-512/VNNI Eight-Output MXFP4 GEMV
 
-- Status: research complete; ready for implementation planning
-- Planned exposure: forced/experimental only
+- Status: implemented and focused gate complete
+- Exposure: forced/experimental only
 - Automatic baseline retained: AVX2 x8 with `InterleavedSplitX8V2`
+
+Implementation landed in `849785e` (shared E8M0 semantics) and `eb92640`
+(ZMM/VNNI x8 GEMV, dispatch, and focused kernel tests). The implementation
+follows the researched layout and shifted-weight correction without adding a
+persistent format. Release assembly on the i7-1185G7 contains ZMM `VPSHUFB`
+and `VPDPBUSD`. Canonical one-to-seven-row tails retain the row kernel.
+
+The short 20B closeout used the existing external repack cache and generated
+one token for `harmony_122`. Automatic and forced AVX-512 x8 both selected
+token `200005`; captures are under
+`/data/models/openai/gpt-oss-rs-cpu-work/results/m1-harmony_122-*`. Exhaustive
+oracle, benchmark, and automatic-selection work remains deferred as planned.
 
 ## Objective and terminology
 
@@ -16,7 +28,7 @@ per-32-value E8M0 scale, Q8 and residual-Q8 modes, FP32 accumulation order at
 block boundaries, bias, and canonical row tails. Performance is not a gate and
 the kernel will not become automatic in this sprint.
 
-## Current repository baseline
+## Pre-implementation repository baseline
 
 `crates/gpt-oss-cpu-kernels/src/lib.rs` defines scalar, AVX2 row, AVX-512/VNNI
 row, AVX2 x8, and exact-BF16 choices. Automatic dispatch selects AVX2 x8 on an

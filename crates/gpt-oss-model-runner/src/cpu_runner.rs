@@ -1969,13 +1969,22 @@ mod tests {
             CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
         let expected = scalar.prefill(&[1, 2, 3]).unwrap();
 
-        for path in [KernelPath::Avx2, KernelPath::Auto] {
+        for (path, expected_kernel) in [
+            (KernelPath::Avx2, "avx2-x8"),
+            (KernelPath::Auto, "avx2-x8"),
+            (KernelPath::Avx512Vnni, "avx512-vnni-x8"),
+        ] {
+            if Kernels::new(path).is_err() {
+                continue;
+            }
             let mut traced = CpuModelRunner::load(snapshot.path(), &cache, path, 2, 16).unwrap();
             let (actual, trace) = traced.prefill_trace(&[1, 2, 3], &[0, 1], 3).unwrap();
             assert_eq!(actual, expected, "{path} trace changed logits");
-            assert_eq!(trace.mxfp4_gemv_kernel, "avx2-x8");
+            assert_eq!(trace.mxfp4_gemv_kernel, expected_kernel);
             assert_eq!(trace.mxfp4_weight_layout, "InterleavedSplitX8V2");
-            assert!(trace.dispatch_plan.contains("mxfp4_gemv=avx2-x8"));
+            assert!(trace
+                .dispatch_plan
+                .contains(&format!("mxfp4_gemv={expected_kernel}")));
             assert!(trace
                 .dispatch_plan
                 .contains("mxfp4_layout=InterleavedSplitX8V2"));

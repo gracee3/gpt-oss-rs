@@ -13,6 +13,9 @@ diagnostics, and tests. Confirm compiler support for the intended intrinsics.
 If stable Rust cannot express a required AVX-512 intrinsic, revise this plan in
 a standalone commit while preserving the public identity and semantics.
 
+Completed on Rust 1.97.1. Stable intrinsics expressed the intended ZMM decode
+and VNNI dot directly, so no pre-implementation plan refinement was required.
+
 ## Interfaces
 
 - Add `Mxfp4GemvKernel::Avx512VnniX8` distinct from the existing row kernel.
@@ -68,12 +71,30 @@ before the affected implementation slice.
 
 ## Deviations and decisions
 
-- None recorded yet.
+- No architectural deviations. FP32 scaling is applied lane-by-lane after the
+  ZMM integer dots so accumulation order remains identical to the scalar row
+  contract. This is an internal implementation choice, not a changed API or
+  numerical boundary.
+- Release assembly confirms the x8 body itself uses AVX-512F/BW/VNNI without
+  AVX-512VL. The complete forced compatibility path retains AVX2 and
+  AVX-512VL requirements because canonical tails use the existing row kernel.
 
 ## Completion evidence
 
-- Implementation commits: pending
-- Commands/results: pending
-- Full-model artifact path/result: pending
-- Closeout commit/workflow: pending
-
+- Implementation commits: `849785e`, `eb92640`.
+- `cargo test -p gpt-oss-cpu-kernels --locked`: 25 passed on the
+  AVX-512/VNNI-capable i7-1185G7.
+- `cargo test -p gpt-oss-model-runner --lib --locked`: 345 passed before the
+  final explicit AVX-512 diagnostic extension; the closeout gate reruns the
+  affected test.
+- `cargo clippy -p gpt-oss-cpu-kernels --all-targets --locked -- -D warnings`:
+  passed.
+- Release instruction audit: ZMM `vpshufb` and ZMM `vpdpbusd` present in the
+  x8 block-dot body.
+- Full-model captures:
+  `/data/models/openai/gpt-oss-rs-cpu-work/results/m1-harmony_122-auto.json`
+  and `m1-harmony_122-avx512-x8.json`. Both completed with first token
+  `200005`, finite model output, exit status zero, and zero swaps. Wall times
+  were 28.05 s and 27.57 s respectively; timing is informational.
+- Closeout commit/workflow: this documentation and diagnostic checkpoint;
+  remote CPU workflow verification follows publication.

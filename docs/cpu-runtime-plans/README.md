@@ -125,11 +125,11 @@ permutations, or AMX hardware tests during this feature program.
 
 - Research checkpoint: `7aaa26f`
 - Plan checkpoint: pending
-- M1 closeout: pending
+- M1 closeout: `849785e`, `eb92640`, and the subsequent documentation/evidence
+  checkpoint; focused gates and short 20B comparison passed
 - M3 closeout: pending
 - M2 closeout: pending
 - M4 closeout: pending
 - M5 closeout: pending
 - Final integration commit and workflow: pending
 - `origin/main` verification: pending
-

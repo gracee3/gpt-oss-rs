@@ -72,6 +72,8 @@ Current forced CPU kernel values are `scalar`, `avx2`, and `avx512-vnni`.
 Forcing an unavailable ISA fails before model execution. `auto` detects host
 capabilities once and builds an immutable per-operation dispatch plan. The
 plan also reports the exact MXFP4 GEMV kernel and packed layout.
+Forced `avx512-vnni` uses the experimental eight-output ZMM/VNNI MXFP4 path;
+automatic MXFP4 dispatch remains on the promoted AVX2 x8 baseline.
 
 CPU serving defaults to the `gpt-oss-cpu` profile: an 8192-token context cap
 and one active sequence. The first load creates a revision- and
