@@ -8,11 +8,12 @@ opt-in.
 
 ## Development gate policy
 
-The project is intentionally in a feature-development phase. Until the current
-CPU architecture milestone is feature-complete—eight-output AVX-512 MXFP4,
-GEMM-like prefill, model/sequence state separation, the engine seams needed for
-CPU batching/scheduling, and an AMX prototype—promotion gates remain targeted
-rather than exhaustive.
+The M1-M5 experimental CPU architecture program is feature-complete and
+integrated. Its relaxed development gates and final verification remain a
+historical record of that program; they are not standing authorization for the
+next phase. Current work is limited to the intake and staged authorization
+workflow in
+[`CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md`](CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md).
 
 Each feature slice must still pass the checks that directly protect its
 correctness and safety:
@@ -24,8 +25,7 @@ correctness and safety:
 - relevant streaming/non-streaming API smoke tests when engine behavior changes;
 - formatting, locked workspace tests, and warnings-denied kernel linting.
 
-For this development phase, the following are explicitly deferred and do not
-block architectural progress:
+The completed program deferred the following certification and tuning work:
 
 - the exhaustive 28-run official-oracle matrix;
 - repeated Criterion suites, percentage performance thresholds, and cross-host
@@ -34,11 +34,10 @@ block architectural progress:
 - the complete API permutation matrix;
 - trusted-mode certification review.
 
-Semantic failures, cache corruption, memory-safety defects, and broken APIs are
-not relaxed. New kernels may be implemented and exposed through forced or
-experimental paths, but automatic dispatch should remain on the validated
-baseline until the deferred benchmark-and-tuning phase supplies selection
-evidence.
+Semantic failures, cache corruption, memory-safety defects, and broken APIs
+were never relaxed. Existing new kernels remain forced or experimental where
+documented, and automatic dispatch stays on the validated baseline until later
+evidence supports a separately reviewed promotion.
 
 ## Completed foundation
 
@@ -51,10 +50,12 @@ evidence.
 - targeted full-model promotion on `harmony_122` and `harmony_262`, with peak
   RSS, startup, generation, and API evidence recorded outside Git.
 
-The source-grounded research and pre-planning pass for M1-M5 is complete. The
-implementation contracts, evidence, alternatives, and focused gates are in
-[`cpu-runtime-research/`](cpu-runtime-research/README.md). Each milestone will
-receive its own decision-complete implementation plan before code work starts.
+The source-grounded research, implementation plans, and execution for M1-M5
+are complete. Their contracts, evidence, alternatives, and gates remain in
+[`cpu-runtime-research/`](cpu-runtime-research/README.md) and
+[`cpu-runtime-plans/`](cpu-runtime-plans/README.md). New CPU work must pass the
+separate research-planning and implementation-planning gates in the next-phase
+intake ledger.
 
 ## M1. Build a real eight-output AVX-512 MXFP4 GEMV
 
@@ -119,13 +120,13 @@ portable emulation but no local AMX-hardware execution.
 - compile- and unit-test portable code without requiring local AMX hardware;
 - do not select AMX automatically before the later AMX-host benchmark phase.
 
-## After feature completion: certify and tune
+## Deferred certification and tuning
 
-Once M1-M5 are implemented and integrated, rerun the deferred exhaustive
-oracle/API matrix, repeated microbenchmarks, cross-host measurements, and
-advisory comparisons. Use that evidence to tune packing and dispatch
-thresholds, decide which new kernels become automatic, and separately review
-trusted-mode eligibility.
+The deferred exhaustive oracle/API matrix, repeated microbenchmarks, cross-host
+measurements, and advisory comparisons remain evidence inputs rather than an
+automatic next implementation milestone. When available, register them in the
+next-phase ledger before using them to tune packing or dispatch thresholds,
+promote kernels, or review trusted-mode eligibility.
 
 The detailed handoff and guiding constraints are in
 [`MXFP4_CPU_BACKEND_HANDOFF.md`](MXFP4_CPU_BACKEND_HANDOFF.md). The living

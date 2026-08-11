@@ -32,6 +32,11 @@
 
 ## External research and contribution tracking
 
+- [`CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md`](CPU_RUNTIME_NEXT_PHASE_PRE_RESEARCH_LEDGER.md):
+  consolidated CPU-only intake ledger for post-M1-M5 service/lifecycle,
+  evidence, memory, numerical, operator-contract, AMX, maintenance, and
+  long-horizon seam questions; next-phase research and planning have not
+  started.
 - [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md): Intel Level Zero
   and oneAPI-rs architecture, dependency boundary, Rust design lessons, and
   possible future integrated-GPU experiment.
