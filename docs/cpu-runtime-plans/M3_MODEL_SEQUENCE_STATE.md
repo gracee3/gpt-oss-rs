@@ -87,12 +87,36 @@ existing prefill, token, logits, trace, reset, and diagnostics behavior.
 
 ## Deviations and decisions
 
-- None recorded yet.
+- Staged KV rows and requested logits are owned by `PreparedCpuStep`, while
+  `CpuExecutionContext` enforces one active preparation and records reusable
+  execution metadata. This makes drop/discard self-contained and avoids a
+  borrow across the sampling boundary. M2 adds reusable matrix panels and
+  scratch to the context.
+- Sampling/RNG changes are staged by `CpuWorker` beside the prepared model
+  step rather than stored inside `PreparedCpuStep`. This preserves the model
+  layer's independence from sampling policy while retaining one publish point
+  after both model execution and sampling succeed.
+- The canonical multi-sequence engine table remains in M4. M3 exposes the
+  shared-model and per-sequence types and proves interleaved ownership with
+  direct model fixtures; the compatibility worker intentionally remains
+  batch-one until scheduling is replaced.
 
 ## Completion evidence
 
-- Implementation commits: pending
-- Commands/results: pending
-- Fixture and rollback evidence: pending
-- Closeout commit/workflow: pending
-
+- Implementation commits: `c9ca550` (rows/batches/revisions), `4c63de1`
+  (shared immutable model), `94a01a6` (transactional KV/state), and `2247df9`
+  (transactional sampling and lifecycle).
+- `cargo fmt --all --check` and `cargo check -p gpt-oss-engine --locked`:
+  passed.
+- `cargo test -p gpt-oss-model-runner -p gpt-oss-engine --lib --locked`:
+  353 model-runner tests and 249 engine tests passed.
+- Shared-mapping, independent/interleaved sequence, cache-boundary,
+  stale/drop/discard, injected model failure, sampling rollback, and lifecycle
+  fixtures are included in those suites. State equality assertions cover KV
+  content, position, token history, revision, and abort state.
+- Full-model capture:
+  `/data/models/openai/gpt-oss-rs-cpu-work/results/m3-harmony_122-auto.json`.
+  The 122-token prompt completed one-token generation with token `200005`,
+  finite recorded durations, and exit status zero.
+- Closeout commit/workflow: this documentation checkpoint; remote CPU workflow
+  verification follows publication.

@@ -1,6 +1,6 @@
 # Step 3 — Immutable Model and Per-Sequence CPU State
 
-- Status: research complete; ready for implementation planning
+- Status: implemented and verified in M3
 - Compatibility goal: preserve existing batch-one results and CLI behavior
 - Concurrency goal: one execution owner, many independent sequence states
 
@@ -264,3 +264,35 @@ The ownership classes, authoritative table, transaction boundary, staged-KV
 strategy, explicit lifecycle, and initial contiguous cache choice are settled
 for implementation planning. The later plan must order the refactor so the
 batch-one adapter stays usable after each commit.
+
+## Implementation status
+
+M3 implemented the ownership split as researched:
+
+- `CpuModel` contains the immutable model-scale resources and is shared through
+  `Arc`; multiple compatibility runners share the same mapping ownership.
+- `CpuSequenceModelState` contains per-layer KV, position, context cap, token
+  history, abort state, and a monotonic revision.
+- `CpuStepRow`/`CpuStepBatch` carry sequence identity, token, absolute position,
+  and `logits_required`, including consecutive same-sequence prompt rows.
+- `CpuModel::prepare_step` evaluates against committed state plus a bounded
+  staged-KV overlay. `PreparedCpuStep::commit` validates every revision and
+  delta before any mutation and applies sliding eviction only during commit.
+- `CpuWorker` stages its RNG and generation history until sampling succeeds,
+  then commits model and generation progress together at the worker boundary.
+  Reset, abort, remove, and shutdown are explicit operations.
+- `CpuModelRunner` remains the batch-one compatibility facade used by existing
+  parity and trace fixtures.
+
+The implementation keeps staged KV and requested logits in the self-contained
+`PreparedCpuStep` rather than borrowing storage from `CpuExecutionContext`.
+This preserves simple drop/discard semantics without cloning committed KV;
+M2 extends the execution context with caller-owned matrix scratch. The
+authoritative multi-sequence engine `SequenceTable` remains an M4 deliverable,
+as planned.
+
+Focused synthetic tests cover shared mappings, isolated versus interleaved
+sequences, full/sliding boundaries, failures before staging and after early or
+late layers/logits, dropped and stale prepared work, lifecycle operations, and
+sampling rollback. A one-token 20B `harmony_122` compatibility smoke retained
+the expected first token `200005` on automatic dispatch.

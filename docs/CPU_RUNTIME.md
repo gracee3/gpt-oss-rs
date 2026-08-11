@@ -26,6 +26,29 @@ Writers use an exclusive lock, a synced temporary file, atomic rename, and a
 directory sync. Published files are mapped read-only and never changed in
 place.
 
+The loaded resources now live in one immutable `Arc<CpuModel>`. Configuration,
+the tensor store and shard mappings, repacked expert mappings, layer
+descriptors, final norm, RoPE state, kernel plan, and Rayon pool are loaded
+once and shared. `CpuModel` never owns or infers a current sequence.
+
+Each sequence instead owns a `CpuSequenceModelState`: its per-layer full and
+sliding KV caches, absolute next position, context cap, model token history,
+abort state, and monotonic revision. `CpuExecutionContext` is worker-local and
+may be used by only one preparation at a time. The existing `CpuModelRunner`
+remains a batch-one compatibility facade containing one shared model, one
+sequence state, and one execution context; constructing several facades from
+the same model does not clone mapped weight or repack bytes.
+
+CPU execution is prepare/commit based. `CpuStepBatch` rows explicitly name the
+sequence, input token, absolute position, and whether logits are required.
+`CpuModel::prepare_step` reads committed KV plus same-sequence staged rows and
+returns a self-contained `PreparedCpuStep`. It does not mutate sequence state.
+Commit first validates every supplied sequence ID, revision, position, layer,
+and row shape, then publishes all KV rows, positions, histories, and revisions.
+Sliding eviction occurs only during that successful commit. A model error,
+stale commit, explicit discard, or dropped prepared value therefore leaves
+committed state unchanged.
+
 ## Numeric and cache behavior
 
 - Dense BF16 and MXFP4 projections accumulate in FP32 and round at BF16 model
@@ -81,11 +104,19 @@ certification or a basis for changing automatic selection.
 
 ## Serving policy
 
-The server owns a real `CpuWorker` and `CpuModelRunner`; CPU requests never
+The server owns a real `CpuWorker` backed by `Arc<CpuModel>`; CPU requests never
 pass through the GPU or mock executor. Prefill and decode are sequential and
 the existing sampler handles greedy and stochastic generation. Chat
 Completions and Responses, including their streaming forms, share that engine
 path and retain the existing Harmony rendering and parsing.
+
+The batch-one worker stages generation history and a cloned RNG while its model
+step is prepared. It publishes both only after sampling and model commit
+succeed. Sampling failure discards the prepared model step, so KV, position,
+token history, RNG, sampled tokens, and output stay aligned. Sequence reset,
+abort, removal, and worker shutdown are explicit ID-scoped lifecycle
+operations. Multi-sequence ownership and scheduling are introduced separately
+by the experimental batching milestone.
 
 `--device auto` selects CPU for GPT-OSS regardless of CUDA availability and
 does not probe or initialize CUDA. `--device cpu` is explicit. CUDA requires

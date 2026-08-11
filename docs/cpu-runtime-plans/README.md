@@ -124,10 +124,12 @@ permutations, or AMX hardware tests during this feature program.
 ## Completion record
 
 - Research checkpoint: `7aaa26f`
-- Plan checkpoint: pending
-- M1 closeout: `849785e`, `eb92640`, and the subsequent documentation/evidence
-  checkpoint; focused gates and short 20B comparison passed
-- M3 closeout: pending
+- Plan checkpoint: `67e0d4c`
+- M1 closeout: `849785e`, `eb92640`, and `250b1c6`; focused gates and short
+  20B comparison passed
+- M3 closeout: `c9ca550`, `4c63de1`, `94a01a6`, `2247df9`, and the subsequent
+  documentation/evidence checkpoint; model/engine gates and short 20B smoke
+  passed
 - M2 closeout: pending
 - M4 closeout: pending
 - M5 closeout: pending
