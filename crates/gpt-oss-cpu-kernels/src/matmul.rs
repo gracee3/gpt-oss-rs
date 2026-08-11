@@ -10,6 +10,18 @@ use crate::{
 const AVX2_PANEL_ROWS: usize = 4;
 const AVX2_PANEL_PASS_BYTES: usize =
     4 * std::mem::size_of::<f32>() + AVX2_PANEL_ROWS * QUANT_BLOCK_SIZE;
+#[cfg(feature = "amx-int8")]
+const AMX_TILE_ROWS: usize = 16;
+#[cfg(feature = "amx-int8")]
+const AMX_TILE_OUTPUTS: usize = 16;
+#[cfg(feature = "amx-int8")]
+const AMX_A_PANEL_BYTES: usize = AMX_TILE_ROWS * QUANT_BLOCK_SIZE;
+#[cfg(feature = "amx-int8")]
+const AMX_B_PANEL_BYTES: usize = 8 * 64;
+#[cfg(feature = "amx-int8")]
+const AMX_C_TILE_BYTES: usize = AMX_TILE_ROWS * AMX_TILE_OUTPUTS * 4;
+#[cfg(feature = "amx-int8")]
+const AMX_SCRATCH_BYTES: usize = AMX_A_PANEL_BYTES + AMX_B_PANEL_BYTES + AMX_C_TILE_BYTES;
 
 /// Explicit MXFP4 matrix implementation preference.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +78,7 @@ impl Mxfp4MatmulBackend {
                     alignment: 32,
                 })
             }
-            Self::AmxInt8 => Err(KernelError::UnavailableMatmulBackend {
-                backend: Self::AmxInt8,
-                reason: "the amx-int8 Cargo feature is not enabled",
-            }),
+            Self::AmxInt8 => amx_scratch_requirement(problem),
         }
     }
 }
@@ -387,12 +396,22 @@ impl Kernels {
             Mxfp4MatmulBackend::Auto if problem.m() == 1 => self.gemv_matmul(&mut problem),
             Mxfp4MatmulBackend::Scalar => scalar_matmul(&mut problem),
             Mxfp4MatmulBackend::Avx2 => avx2_matmul(&mut problem, scratch),
-            Mxfp4MatmulBackend::AmxInt8 => Err(KernelError::UnavailableMatmulBackend {
-                backend: Mxfp4MatmulBackend::AmxInt8,
-                reason: "the amx-int8 Cargo feature is not enabled",
-            }),
+            Mxfp4MatmulBackend::AmxInt8 => unavailable_amx_matmul(),
             Mxfp4MatmulBackend::Auto => unreachable!("multi-row auto resolves to scalar"),
         }
+    }
+
+    /// Execute the portable AMX-INT8 tile emulator without capability or
+    /// permission checks. This is a correctness oracle, not a serving path.
+    #[cfg(feature = "amx-int8")]
+    pub fn mxfp4_matmul_amx_int8_emulated(
+        self,
+        mut problem: Mxfp4MatmulProblem<'_>,
+        scratch: &mut [u8],
+    ) -> Result<(), KernelError> {
+        let requirement = Mxfp4MatmulBackend::AmxInt8.scratch_requirement(&problem)?;
+        validate_scratch(requirement, scratch)?;
+        emulated_amx_matmul(&mut problem, scratch)
     }
 
     fn gemv_matmul(self, problem: &mut Mxfp4MatmulProblem<'_>) -> Result<(), KernelError> {
@@ -422,6 +441,45 @@ impl Kernels {
         }
         Ok(())
     }
+}
+
+#[cfg(not(feature = "amx-int8"))]
+fn amx_scratch_requirement(
+    _problem: &Mxfp4MatmulProblem<'_>,
+) -> Result<Mxfp4ScratchRequirement, KernelError> {
+    Err(KernelError::UnavailableMatmulBackend {
+        backend: Mxfp4MatmulBackend::AmxInt8,
+        reason: "the amx-int8 Cargo feature is not enabled",
+    })
+}
+
+#[cfg(feature = "amx-int8")]
+fn amx_scratch_requirement(
+    problem: &Mxfp4MatmulProblem<'_>,
+) -> Result<Mxfp4ScratchRequirement, KernelError> {
+    if problem.weights.layout() != Mxfp4WeightLayout::InterleavedSplitX8V2 {
+        return Err(KernelError::InvalidDimensions(
+            "AMX-INT8 MXFP4 matmul requires InterleavedSplitX8V2 weights".into(),
+        ));
+    }
+    if problem.m() == 1 || problem.n() < AMX_TILE_OUTPUTS {
+        return Ok(Mxfp4ScratchRequirement::NONE);
+    }
+    Ok(Mxfp4ScratchRequirement {
+        size: AMX_SCRATCH_BYTES,
+        alignment: 64,
+    })
+}
+
+fn unavailable_amx_matmul() -> Result<(), KernelError> {
+    Err(KernelError::UnavailableMatmulBackend {
+        backend: Mxfp4MatmulBackend::AmxInt8,
+        reason: if cfg!(feature = "amx-int8") {
+            "the AMX-INT8 native tile shim is not integrated"
+        } else {
+            "the amx-int8 Cargo feature is not enabled"
+        },
+    })
 }
 
 fn validate_scratch(
@@ -496,6 +554,246 @@ fn scalar_matmul_range(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "amx-int8")]
+fn emulated_amx_matmul(
+    problem: &mut Mxfp4MatmulProblem<'_>,
+    scratch: &mut [u8],
+) -> Result<(), KernelError> {
+    if problem.m() == 1 || problem.n() < AMX_TILE_OUTPUTS {
+        return scalar_matmul(problem);
+    }
+    let complete_outputs = problem.n() / AMX_TILE_OUTPUTS * AMX_TILE_OUTPUTS;
+    for input_row in 0..problem.m() {
+        for output_row in 0..complete_outputs {
+            problem.output[input_row * problem.output_stride + output_row] =
+                problem.bias.map_or(0.0, |bias| bias[output_row]);
+        }
+    }
+
+    let (a_panel, rest) = scratch.split_at_mut(AMX_A_PANEL_BYTES);
+    let (b_panel, c_tile) = rest.split_at_mut(AMX_B_PANEL_BYTES);
+    for output_start in (0..complete_outputs).step_by(AMX_TILE_OUTPUTS) {
+        for block_index in 0..problem.weights.blocks() {
+            let weight_scales =
+                pack_amx_b_panel(problem.weights, output_start, block_index, b_panel)?;
+            for input_start in (0..problem.m()).step_by(AMX_TILE_ROWS) {
+                let input_rows = (problem.m() - input_start).min(AMX_TILE_ROWS);
+                match problem.activations {
+                    Mxfp4ActivationMatrix::Q8(activations) => {
+                        let activation_scales = pack_amx_q8_a_panel(
+                            activations,
+                            input_start,
+                            input_rows,
+                            block_index,
+                            a_panel,
+                        )?;
+                        emulate_amx_tile(input_rows, a_panel, b_panel, c_tile)?;
+                        accumulate_amx_tile(
+                            problem,
+                            input_start,
+                            input_rows,
+                            output_start,
+                            &activation_scales,
+                            &weight_scales,
+                            c_tile,
+                            false,
+                        );
+                    }
+                    Mxfp4ActivationMatrix::ResidualQ8(activations) => {
+                        for residual_pass in [false, true] {
+                            let activation_scales = pack_amx_residual_a_panel(
+                                activations,
+                                input_start,
+                                input_rows,
+                                block_index,
+                                residual_pass,
+                                a_panel,
+                            )?;
+                            emulate_amx_tile(input_rows, a_panel, b_panel, c_tile)?;
+                            accumulate_amx_tile(
+                                problem,
+                                input_start,
+                                input_rows,
+                                output_start,
+                                &activation_scales,
+                                &weight_scales,
+                                c_tile,
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if complete_outputs != problem.n() {
+        scalar_matmul_range(
+            problem,
+            0,
+            problem.m(),
+            complete_outputs,
+            problem.n() - complete_outputs,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "amx-int8")]
+fn pack_amx_b_panel(
+    weights: Mxfp4MatrixView<'_>,
+    output_start: usize,
+    block_index: usize,
+    panel: &mut [u8],
+) -> Result<[f32; AMX_TILE_OUTPUTS], KernelError> {
+    if panel.len() < AMX_B_PANEL_BYTES
+        || output_start
+            .checked_add(AMX_TILE_OUTPUTS)
+            .is_none_or(|end| end > weights.rows())
+        || block_index >= weights.blocks()
+    {
+        return Err(KernelError::InvalidDimensions(
+            "invalid AMX-INT8 B-panel bounds".into(),
+        ));
+    }
+    panel[..AMX_B_PANEL_BYTES].fill(0);
+    let mut scales = [0.0; AMX_TILE_OUTPUTS];
+    for (output, scale) in scales.iter_mut().enumerate() {
+        let weight = weights.block(output_start + output, block_index)?;
+        *scale = e8m0_scale(weight.scale);
+        for (k, value) in weight.unpack().into_iter().enumerate() {
+            let index = (k / 4) * 64 + output * 4 + k % 4;
+            panel[index] = value.to_ne_bytes()[0];
+        }
+    }
+    Ok(scales)
+}
+
+#[cfg(feature = "amx-int8")]
+fn pack_amx_q8_a_panel(
+    activations: Q8MatrixView<'_>,
+    input_start: usize,
+    input_rows: usize,
+    block_index: usize,
+    panel: &mut [u8],
+) -> Result<[f32; AMX_TILE_ROWS], KernelError> {
+    pack_amx_a_panel(input_rows, panel, |row| {
+        activations
+            .row(input_start + row)?
+            .get(block_index)
+            .ok_or_else(|| KernelError::InvalidDimensions("invalid AMX Q8 block".into()))
+    })
+}
+
+#[cfg(feature = "amx-int8")]
+fn pack_amx_residual_a_panel(
+    activations: ResidualQ8MatrixView<'_>,
+    input_start: usize,
+    input_rows: usize,
+    block_index: usize,
+    residual_pass: bool,
+    panel: &mut [u8],
+) -> Result<[f32; AMX_TILE_ROWS], KernelError> {
+    pack_amx_a_panel(input_rows, panel, |row| {
+        let block = activations
+            .row(input_start + row)?
+            .get(block_index)
+            .ok_or_else(|| {
+                KernelError::InvalidDimensions("invalid AMX residual-Q8 block".into())
+            })?;
+        Ok(if residual_pass {
+            &block.residual
+        } else {
+            &block.primary
+        })
+    })
+}
+
+#[cfg(feature = "amx-int8")]
+fn pack_amx_a_panel<'a>(
+    input_rows: usize,
+    panel: &mut [u8],
+    mut block: impl FnMut(usize) -> Result<&'a Q8Block, KernelError>,
+) -> Result<[f32; AMX_TILE_ROWS], KernelError> {
+    if input_rows == 0 || input_rows > AMX_TILE_ROWS || panel.len() < AMX_A_PANEL_BYTES {
+        return Err(KernelError::InvalidDimensions(
+            "invalid AMX-INT8 A-panel bounds".into(),
+        ));
+    }
+    panel[..AMX_A_PANEL_BYTES].fill(0);
+    let mut scales = [0.0; AMX_TILE_ROWS];
+    for row in 0..input_rows {
+        let block = block(row)?;
+        scales[row] = block.scale;
+        for (destination, value) in panel[row * QUANT_BLOCK_SIZE..(row + 1) * QUANT_BLOCK_SIZE]
+            .iter_mut()
+            .zip(block.values)
+        {
+            *destination = value.to_ne_bytes()[0];
+        }
+    }
+    Ok(scales)
+}
+
+#[cfg(feature = "amx-int8")]
+fn emulate_amx_tile(
+    input_rows: usize,
+    a_panel: &[u8],
+    b_panel: &[u8],
+    c_tile: &mut [u8],
+) -> Result<(), KernelError> {
+    if input_rows == 0
+        || input_rows > AMX_TILE_ROWS
+        || a_panel.len() < AMX_A_PANEL_BYTES
+        || b_panel.len() < AMX_B_PANEL_BYTES
+        || c_tile.len() < AMX_C_TILE_BYTES
+    {
+        return Err(KernelError::InvalidDimensions(
+            "invalid AMX-INT8 tile-emulation bounds".into(),
+        ));
+    }
+    c_tile[..AMX_C_TILE_BYTES].fill(0);
+    for row in 0..input_rows {
+        for output in 0..AMX_TILE_OUTPUTS {
+            let mut integer = 0_i32;
+            for k in 0..QUANT_BLOCK_SIZE {
+                let activation = i8::from_ne_bytes([a_panel[row * QUANT_BLOCK_SIZE + k]]);
+                let weight = i8::from_ne_bytes([b_panel[(k / 4) * 64 + output * 4 + k % 4]]);
+                integer += activation as i32 * weight as i32;
+            }
+            let index = (row * AMX_TILE_OUTPUTS + output) * 4;
+            c_tile[index..index + 4].copy_from_slice(&integer.to_ne_bytes());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "amx-int8")]
+#[allow(clippy::too_many_arguments)]
+fn accumulate_amx_tile(
+    problem: &mut Mxfp4MatmulProblem<'_>,
+    input_start: usize,
+    input_rows: usize,
+    output_start: usize,
+    activation_scales: &[f32; AMX_TILE_ROWS],
+    weight_scales: &[f32; AMX_TILE_OUTPUTS],
+    c_tile: &[u8],
+    residual_contract: bool,
+) {
+    for (row, &activation_scale) in activation_scales.iter().take(input_rows).enumerate() {
+        for (output, &weight_scale) in weight_scales.iter().enumerate() {
+            let index = (row * AMX_TILE_OUTPUTS + output) * 4;
+            let integer = i32::from_ne_bytes(c_tile[index..index + 4].try_into().unwrap());
+            let contribution = if residual_contract {
+                integer as f32 * (0.5 * weight_scale) * activation_scale
+            } else {
+                integer as f32 * 0.5 * weight_scale * activation_scale
+            };
+            problem.output[(input_start + row) * problem.output_stride + output_start + output] +=
+                contribution;
+        }
+    }
 }
 
 fn avx2_matmul(
@@ -665,7 +963,7 @@ mod tests {
                 }),
             })
             .collect();
-        let activations = (0..5 * blocks)
+        let activations = (0..16 * blocks)
             .map(|index| Q8Block {
                 scale: 0.01 + index as f32 * 0.001,
                 values: std::array::from_fn(|lane| ((index * 31 + lane) % 255) as i16 as i8),
@@ -957,5 +1255,210 @@ mod tests {
                 &mut storage[offset + 1..offset + 1 + requirement.size],
             )
             .is_err());
+    }
+
+    #[cfg(feature = "amx-int8")]
+    #[test]
+    fn amx_panels_preserve_semantic_a_and_vnni_b_order() {
+        let blocks = 2;
+        let (canonical, q8) = fixtures(16, blocks);
+        let data = pack_x8(&canonical, 16, blocks);
+        let weights =
+            Mxfp4MatrixView::new(&data, 16, blocks, Mxfp4WeightLayout::InterleavedSplitX8V2)
+                .unwrap();
+        let activations = Q8MatrixView::new(&q8, 16, blocks, blocks).unwrap();
+        let mut a = [0xa5; AMX_A_PANEL_BYTES];
+        let scales = pack_amx_q8_a_panel(activations, 0, 15, 1, &mut a).unwrap();
+        for row in 0..15 {
+            assert_eq!(scales[row], activations.row(row).unwrap()[1].scale);
+            for k in 0..QUANT_BLOCK_SIZE {
+                assert_eq!(
+                    i8::from_ne_bytes([a[row * QUANT_BLOCK_SIZE + k]]),
+                    activations.row(row).unwrap()[1].values[k]
+                );
+            }
+        }
+        assert!(a[15 * QUANT_BLOCK_SIZE..].iter().all(|byte| *byte == 0));
+
+        let mut b = [0xa5; AMX_B_PANEL_BYTES];
+        let scales = pack_amx_b_panel(weights, 0, 1, &mut b).unwrap();
+        for output in 0..16 {
+            let block = weights.block(output, 1).unwrap();
+            assert_eq!(scales[output], e8m0_scale(block.scale));
+            let unpacked = block.unpack();
+            for k in 0..QUANT_BLOCK_SIZE {
+                assert_eq!(
+                    i8::from_ne_bytes([b[(k / 4) * 64 + output * 4 + k % 4]]),
+                    unpacked[k]
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "amx-int8")]
+    #[test]
+    fn amx_tile_emulator_matches_scalar_q8_for_tiles_blocks_and_tails() {
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        for m in [2, 4, 15, 16] {
+            for n in [16, 19] {
+                for blocks in [1, 3] {
+                    let (canonical, q8) = fixtures(n, blocks);
+                    let data = pack_x8(&canonical, n, blocks);
+                    let weights = Mxfp4MatrixView::new(
+                        &data,
+                        n,
+                        blocks,
+                        Mxfp4WeightLayout::InterleavedSplitX8V2,
+                    )
+                    .unwrap();
+                    let activations = Q8MatrixView::new(&q8, m, blocks, blocks).unwrap();
+                    let bias = (0..n)
+                        .map(|index| index as f32 * 0.03125 - 0.125)
+                        .collect::<Vec<_>>();
+                    let stride = n + 3;
+                    let mut expected = vec![4567.0; m * stride];
+                    let scalar = Mxfp4MatmulProblem::new_q8(
+                        weights,
+                        activations,
+                        Some(&bias),
+                        &mut expected,
+                        stride,
+                    )
+                    .unwrap();
+                    kernels
+                        .mxfp4_matmul(Mxfp4MatmulBackend::Scalar, scalar, &mut [])
+                        .unwrap();
+
+                    let mut actual = vec![4567.0; m * stride];
+                    let problem = Mxfp4MatmulProblem::new_q8(
+                        weights,
+                        activations,
+                        Some(&bias),
+                        &mut actual,
+                        stride,
+                    )
+                    .unwrap();
+                    let requirement = Mxfp4MatmulBackend::AmxInt8
+                        .scratch_requirement(&problem)
+                        .unwrap();
+                    assert_eq!(requirement.size, AMX_SCRATCH_BYTES);
+                    assert_eq!(requirement.alignment, 64);
+                    let mut storage = vec![0xa5; requirement.size + 2 * requirement.alignment];
+                    let offset = aligned_offset(&storage, requirement.alignment);
+                    kernels
+                        .mxfp4_matmul_amx_int8_emulated(
+                            problem,
+                            &mut storage[offset..offset + requirement.size],
+                        )
+                        .unwrap();
+                    assert_eq!(actual, expected, "M={m}, N={n}, blocks={blocks}");
+                    assert!(storage[..offset].iter().all(|byte| *byte == 0xa5));
+                    assert!(storage[offset + requirement.size..]
+                        .iter()
+                        .all(|byte| *byte == 0xa5));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "amx-int8")]
+    #[test]
+    fn amx_tile_emulator_matches_scalar_residual_primary_then_residual() {
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let m = 15;
+        let n = 21;
+        let blocks = 3;
+        let (canonical, q8) = fixtures(n, blocks);
+        let data = pack_x8(&canonical, n, blocks);
+        let weights =
+            Mxfp4MatrixView::new(&data, n, blocks, Mxfp4WeightLayout::InterleavedSplitX8V2)
+                .unwrap();
+        let residual = q8
+            .into_iter()
+            .map(|primary| ResidualQ8Block {
+                residual: Q8Block {
+                    scale: primary.scale / 113.0,
+                    values: primary.values.map(|value| value.wrapping_mul(-3)),
+                },
+                primary,
+            })
+            .collect::<Vec<_>>();
+        let activations = ResidualQ8MatrixView::new(&residual, m, blocks, blocks).unwrap();
+        let bias = (0..n).map(|index| index as f32 / 64.0).collect::<Vec<_>>();
+        let mut expected = vec![0.0; m * n];
+        let scalar = Mxfp4MatmulProblem::new_residual_q8(
+            weights,
+            activations,
+            Some(&bias),
+            &mut expected,
+            n,
+        )
+        .unwrap();
+        kernels
+            .mxfp4_matmul(Mxfp4MatmulBackend::Scalar, scalar, &mut [])
+            .unwrap();
+        let mut actual = vec![0.0; m * n];
+        let problem =
+            Mxfp4MatmulProblem::new_residual_q8(weights, activations, Some(&bias), &mut actual, n)
+                .unwrap();
+        let requirement = Mxfp4MatmulBackend::AmxInt8
+            .scratch_requirement(&problem)
+            .unwrap();
+        let mut storage = vec![0; requirement.size + requirement.alignment];
+        let offset = aligned_offset(&storage, requirement.alignment);
+        kernels
+            .mxfp4_matmul_amx_int8_emulated(
+                problem,
+                &mut storage[offset..offset + requirement.size],
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "amx-int8")]
+    #[test]
+    fn amx_scratch_fallback_bounds_alignment_and_integer_extrema() {
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let (canonical, q8) = fixtures(16, 1);
+        let data = pack_x8(&canonical, 16, 1);
+        let weights =
+            Mxfp4MatrixView::new(&data, 16, 1, Mxfp4WeightLayout::InterleavedSplitX8V2).unwrap();
+
+        let one = Q8MatrixView::new(&q8, 1, 1, 1).unwrap();
+        let mut one_output = vec![0.0; 16];
+        let one_problem =
+            Mxfp4MatmulProblem::new_q8(weights, one, None, &mut one_output, 16).unwrap();
+        assert_eq!(
+            Mxfp4MatmulBackend::AmxInt8
+                .scratch_requirement(&one_problem)
+                .unwrap(),
+            Mxfp4ScratchRequirement::NONE
+        );
+        kernels
+            .mxfp4_matmul_amx_int8_emulated(one_problem, &mut [])
+            .unwrap();
+
+        let activations = Q8MatrixView::new(&q8, 2, 1, 1).unwrap();
+        let mut storage = vec![0; AMX_SCRATCH_BYTES + 65];
+        let offset = aligned_offset(&storage, 64);
+        for (start, len) in [
+            (offset, AMX_SCRATCH_BYTES - 1),
+            (offset + 1, AMX_SCRATCH_BYTES),
+        ] {
+            let mut output = vec![0.0; 32];
+            let problem =
+                Mxfp4MatmulProblem::new_q8(weights, activations, None, &mut output, 16).unwrap();
+            assert!(kernels
+                .mxfp4_matmul_amx_int8_emulated(problem, &mut storage[start..start + len],)
+                .is_err());
+        }
+
+        let a = [127_u8; AMX_A_PANEL_BYTES];
+        let b = [12_u8; AMX_B_PANEL_BYTES];
+        let mut c = [0_u8; AMX_C_TILE_BYTES];
+        emulate_amx_tile(16, &a, &b, &mut c).unwrap();
+        for value in c.chunks_exact(4) {
+            assert_eq!(i32::from_ne_bytes(value.try_into().unwrap()), 48_768);
+        }
     }
 }
