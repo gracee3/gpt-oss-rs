@@ -893,9 +893,17 @@ pub const fn decode_mxfp4(code: u8) -> f32 {
     MXFP4_VALUES[(code & 0x0f) as usize]
 }
 
-/// Decode an E8M0 scale in the same bit-exact form as the official tensors.
+/// Decode one OCP MX E8M0 scale.
+///
+/// Finite normal encodings are exact powers of two. The two special encodings
+/// are not obtained by shifting the byte into an IEEE-754 exponent field:
+/// zero denotes `2^-127`, while `0xff` is invalid and produces NaN.
 pub const fn e8m0_scale(scale: u8) -> f32 {
-    f32::from_bits((scale as u32) << 23)
+    match scale {
+        0 => f32::from_bits(0x0040_0000),
+        0xff => f32::NAN,
+        scale => f32::from_bits((scale as u32) << 23),
+    }
 }
 
 pub fn bf16_to_f32(input: &[bf16], output: &mut [f32]) -> Result<(), KernelError> {
@@ -1591,9 +1599,11 @@ mod tests {
 
     #[test]
     fn e8m0_scale_edges_are_bit_exact() {
-        for scale in [0_u8, 1, 2, 126, 127, 128, 254, 255] {
+        assert_eq!(e8m0_scale(0).to_bits(), 0x0040_0000);
+        for scale in [1_u8, 2, 126, 127, 128, 254] {
             assert_eq!(e8m0_scale(scale).to_bits(), (scale as u32) << 23);
         }
+        assert!(e8m0_scale(0xff).is_nan());
     }
 
     #[test]

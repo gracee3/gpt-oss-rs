@@ -14,7 +14,7 @@ use std::arch::x86_64::*;
 
 use half::bf16;
 
-use crate::{Mxfp4Block, Mxfp4MatrixView, Q8Block, ResidualQ8Block};
+use crate::{e8m0_scale, Mxfp4Block, Mxfp4MatrixView, Q8Block, ResidualQ8Block};
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn bf16_dot_avx2(left: &[bf16], right: &[bf16]) -> f32 {
@@ -296,10 +296,9 @@ unsafe fn mxfp4_x8_block_dots(
 
 #[target_feature(enable = "avx2")]
 fn x8_weight_scales(packed: &[u8; 136]) -> __m256 {
-    // SAFETY: an x8 record begins with eight E8M0 scale bytes.
-    let scales = unsafe { _mm_loadl_epi64(packed.as_ptr().cast()) };
-    let exponent_bits = _mm256_slli_epi32(_mm256_cvtepu8_epi32(scales), 23);
-    _mm256_castsi256_ps(exponent_bits)
+    let scales = std::array::from_fn::<_, 8, _>(|lane| e8m0_scale(packed[lane]));
+    // SAFETY: `scales` contains eight contiguous FP32 lanes.
+    unsafe { _mm256_loadu_ps(scales.as_ptr()) }
 }
 
 #[target_feature(enable = "avx2")]
