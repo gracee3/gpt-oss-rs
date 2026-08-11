@@ -10,7 +10,7 @@ use super::engine::EngineConfig;
 /// - `gpu_memory_utilization` is in (0.0, 1.0]
 /// - `block_size` is a power of two
 /// - `tensor_parallel_size` and `pipeline_parallel_size` are >= 1
-/// - `max_num_batched_tokens` >= `max_num_seqs`
+/// - `max_num_batched_tokens` > 0
 /// - CPU device cannot have `tensor_parallel_size > 1`
 /// - `swap_space_gb` is non-negative
 /// - `max_model_len` > 0
@@ -99,11 +99,8 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
         ));
     }
 
-    if config.scheduler.max_num_batched_tokens < config.scheduler.max_num_seqs {
-        return Err(format!(
-            "max_num_batched_tokens ({}) must be >= max_num_seqs ({})",
-            config.scheduler.max_num_batched_tokens, config.scheduler.max_num_seqs
-        ));
+    if config.scheduler.max_num_batched_tokens == 0 {
+        return Err("max_num_batched_tokens must be > 0".into());
     }
 
     if config.scheduler.max_num_seqs == 0 {
@@ -182,10 +179,17 @@ mod tests {
     }
 
     #[test]
-    fn batched_tokens_less_than_seqs() {
+    fn token_budget_may_be_less_than_sequence_capacity() {
         let mut cfg = valid_config();
         cfg.scheduler.max_num_seqs = 512;
         cfg.scheduler.max_num_batched_tokens = 256;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn zero_batched_token_budget_rejected() {
+        let mut cfg = valid_config();
+        cfg.scheduler.max_num_batched_tokens = 0;
         assert!(validate(&cfg)
             .unwrap_err()
             .contains("max_num_batched_tokens"));

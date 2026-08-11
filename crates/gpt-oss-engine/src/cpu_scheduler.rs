@@ -52,6 +52,27 @@ impl CpuSequenceRecord {
         sampling_params: SamplingParams,
         model_state: CpuSequenceModelState,
     ) -> Result<Self> {
+        Self::new_with_optional_state(
+            request_id,
+            sequence_id,
+            arrival_order,
+            prompt,
+            prompt_token_ids,
+            sampling_params,
+            Some(model_state),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_optional_state(
+        request_id: RequestId,
+        sequence_id: SequenceId,
+        arrival_order: u64,
+        prompt: String,
+        prompt_token_ids: Vec<TokenId>,
+        sampling_params: SamplingParams,
+        model_state: Option<CpuSequenceModelState>,
+    ) -> Result<Self> {
         if prompt_token_ids.is_empty() {
             return Err(LLMError::SchedulerError(
                 "CPU sequence prompt must not be empty".into(),
@@ -74,7 +95,7 @@ impl CpuSequenceRecord {
             prompt_tokens_computed: 0,
             revision: 0,
             lifecycle: CpuSequenceLifecycle::Waiting,
-            model_state: Some(model_state),
+            model_state,
             generation,
             output: SequenceOutputState::new(),
         })
@@ -130,15 +151,6 @@ impl CpuSequenceRecord {
 
     pub fn model_state(&self) -> Result<&CpuSequenceModelState> {
         self.model_state.as_ref().ok_or_else(|| {
-            LLMError::SchedulerError(format!(
-                "CPU sequence {} model state is temporarily unavailable",
-                self.sequence_id
-            ))
-        })
-    }
-
-    pub(crate) fn model_state_mut(&mut self) -> Result<&mut CpuSequenceModelState> {
-        self.model_state.as_mut().ok_or_else(|| {
             LLMError::SchedulerError(format!(
                 "CPU sequence {} model state is temporarily unavailable",
                 self.sequence_id
@@ -204,7 +216,7 @@ impl CpuSequenceRecord {
         self.prompt_tokens_computed < self.prompt_token_ids.len()
     }
 
-    fn decode_position(&self) -> Result<usize> {
+    pub(crate) fn decode_position(&self) -> Result<usize> {
         self.prompt_tokens_computed
             .checked_add(self.output.token_ids.len())
             .and_then(|position| position.checked_sub(1))
@@ -305,6 +317,10 @@ impl SequenceTable {
 
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    pub fn sequence_ids(&self) -> Vec<SequenceId> {
+        self.records.keys().copied().collect()
     }
 }
 

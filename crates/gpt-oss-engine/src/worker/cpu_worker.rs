@@ -198,6 +198,7 @@ impl CpuGenerationState {
         &self.past_tokens
     }
 
+    #[cfg(test)]
     pub(crate) fn rng(&self) -> &StdRng {
         &self.rng
     }

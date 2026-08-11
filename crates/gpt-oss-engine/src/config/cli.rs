@@ -74,6 +74,11 @@ pub struct CliArgs {
     #[arg(long, default_value_t = 256)]
     pub max_paddings: usize,
 
+    /// Max prompt tokens per sequence and iteration. Zero uses the remaining
+    /// batch token budget.
+    #[arg(long, default_value_t = 0)]
+    pub max_prefill_chunk: usize,
+
     /// Preemption mode: "swap" or "recompute".
     #[arg(long, default_value = "recompute")]
     pub preemption_mode: String,

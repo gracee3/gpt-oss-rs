@@ -101,6 +101,7 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
     config.scheduler.max_num_seqs = args.max_num_seqs;
     config.scheduler.max_num_batched_tokens = args.max_num_batched_tokens;
     config.scheduler.max_paddings = args.max_paddings;
+    config.scheduler.max_prefill_chunk = args.max_prefill_chunk;
     if let Ok(mode) = args.preemption_mode.parse::<PreemptionMode>() {
         config.scheduler.preemption_mode = mode;
     }
@@ -150,6 +151,7 @@ mod tests {
             max_num_seqs: 256,
             max_num_batched_tokens: 4096,
             max_paddings: 256,
+            max_prefill_chunk: 0,
             preemption_mode: "recompute".into(),
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
@@ -193,6 +195,7 @@ swap_space_gb = 2.0
 max_num_seqs = 128
 max_num_batched_tokens = 1024
 max_paddings = 64
+max_prefill_chunk = 128
 preemption_mode = "Swap"
 
 [parallel]
@@ -226,6 +229,7 @@ log_level = "warn"
             max_num_seqs: 128,
             max_num_batched_tokens: 1024,
             max_paddings: 64,
+            max_prefill_chunk: 128,
             preemption_mode: "swap".into(),
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
@@ -245,6 +249,7 @@ log_level = "warn"
         assert_eq!(cfg.model.model_path, "bigscience/bloom-560m");
         assert_eq!(cfg.cache.block_size, 8);
         assert_eq!(cfg.scheduler.preemption_mode, PreemptionMode::Swap);
+        assert_eq!(cfg.scheduler.max_prefill_chunk, 128);
     }
 
     #[test]
@@ -266,6 +271,7 @@ log_level = "warn"
             max_num_seqs: 256,
             max_num_batched_tokens: 2048,
             max_paddings: 256,
+            max_prefill_chunk: 0,
             preemption_mode: "recompute".into(),
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,

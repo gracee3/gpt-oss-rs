@@ -47,6 +47,10 @@ pub struct SchedulerConfigImpl {
     pub max_num_batched_tokens: usize,
     /// Maximum padding tokens allowed in a batch.
     pub max_paddings: usize,
+    /// Maximum prompt tokens from one sequence per iteration. Zero means the
+    /// remaining batch token budget is the only chunk bound.
+    #[serde(default)]
+    pub max_prefill_chunk: usize,
     /// Preemption strategy.
     pub preemption_mode: PreemptionMode,
 }
@@ -57,6 +61,7 @@ impl Default for SchedulerConfigImpl {
             max_num_seqs: 256,
             max_num_batched_tokens: 2048,
             max_paddings: 256,
+            max_prefill_chunk: 0,
             preemption_mode: PreemptionMode::default(),
         }
     }
@@ -89,6 +94,13 @@ impl SchedulerConfigBuilder {
     /// Set max paddings.
     pub fn max_paddings(mut self, v: usize) -> Self {
         self.0.max_paddings = v;
+        self
+    }
+
+    /// Set the maximum per-sequence prompt chunk. Zero disables this
+    /// additional bound.
+    pub fn max_prefill_chunk(mut self, v: usize) -> Self {
+        self.0.max_prefill_chunk = v;
         self
     }
 
