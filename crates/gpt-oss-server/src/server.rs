@@ -1,6 +1,6 @@
 //! HTTP server setup, AppState, router construction, and graceful shutdown.
 //!
-//! Device policy selects the CUDA engine, native batch-one GPT-OSS CPU worker,
+//! Device policy selects the CUDA engine, native batched GPT-OSS CPU runtime,
 //! or an explicitly requested test-only mock executor.
 
 use std::collections::HashMap;
@@ -17,7 +17,10 @@ use tracing::info;
 use gpt_oss_core::prelude::RequestId;
 use gpt_oss_engine::config::EngineConfig;
 use gpt_oss_engine::AsyncLLMEngine;
-use gpt_oss_engine::{CpuWorker, ExecutorAdapter, ExecutorConfig};
+use gpt_oss_engine::{
+    AsyncCpuBatchEngine, CpuBatchEngine, CpuExpertProjection, CpuModel, ExecutorAdapter,
+    ExecutorConfig,
+};
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::routes;
@@ -52,6 +55,20 @@ impl InferenceEngine for AsyncLLMEngine {
         tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
     )> {
         self.generate(prompt, params).await
+    }
+}
+
+#[async_trait::async_trait]
+impl InferenceEngine for AsyncCpuBatchEngine {
+    async fn generate(
+        &self,
+        prompt: String,
+        params: gpt_oss_core::prelude::SamplingParams,
+    ) -> gpt_oss_core::prelude::Result<(
+        RequestId,
+        tokio_stream::wrappers::ReceiverStream<gpt_oss_core::prelude::RequestOutput>,
+    )> {
+        AsyncCpuBatchEngine::generate(self, prompt, params).await
     }
 }
 
@@ -241,7 +258,7 @@ pub async fn serve(config: EngineConfig) -> gpt_oss_core::prelude::Result<()> {
                 (create_gpu_engine(config).await?, tokenizer)
             }
             RuntimeBackendPath::Cpu => {
-                info!("native CPU runtime selected, creating CpuWorker");
+                info!("native CPU runtime selected, creating batched CPU engine");
                 create_cpu_engine(config).await?
             }
             RuntimeBackendPath::Mock => {
@@ -354,7 +371,7 @@ async fn create_cpu_engine(
     let threads = config.device.cpu_threads;
     let context_cap = config.model.max_model_len;
 
-    let (worker, snapshot) = tokio::task::spawn_blocking(move || {
+    let (cpu_model, snapshot) = tokio::task::spawn_blocking(move || {
         let model_path = std::path::Path::new(&model);
         let snapshot = if model_path.is_dir() {
             model_path.to_path_buf()
@@ -368,15 +385,15 @@ async fn create_cpu_engine(
             )?
             .snapshot_dir
         };
-        let worker = CpuWorker::load(
+        let cpu_model = CpuModel::load_with_matmul_backend(
             &snapshot,
             &repack_cache,
             kernel_path,
-            matmul_backend,
             threads,
-            context_cap,
+            CpuExpertProjection::default(),
+            matmul_backend,
         )?;
-        Ok::<_, gpt_oss_core::prelude::LLMError>((worker, snapshot))
+        Ok::<_, gpt_oss_core::prelude::LLMError>((cpu_model, snapshot))
     })
     .await
     .map_err(|error| {
@@ -398,63 +415,23 @@ async fn create_cpu_engine(
     };
     let engine_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
     let app_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
-    let scheduler = Box::new(SingleRequestScheduler::new());
+    let dispatch = cpu_model.kernel_dispatch_plan();
+    info!(
+        kernel = %cpu_model.kernel_path(),
+        dispatch = %dispatch,
+        mxfp4_gemv = %dispatch.mxfp4_gemv(),
+        mxfp4_weight_layout = %cpu_model.mxfp4_weight_layout(),
+        mxfp4_matmul_backend = %cpu_model.matmul_backend(),
+        context_cap,
+        "loaded native CPU model"
+    );
     config.device.device = "cpu".into();
-    let engine = AsyncLLMEngine::new(config, Box::new(worker), scheduler, engine_tokenizer)?;
-    Ok((Arc::new(engine), app_tokenizer))
+    let engine = CpuBatchEngine::new(config, cpu_model, engine_tokenizer)?;
+    Ok((Arc::new(AsyncCpuBatchEngine::new(engine)), app_tokenizer))
 }
 
 struct PlaceholderScheduler {
     groups: Vec<gpt_oss_engine::sequence::SequenceGroup>,
-}
-
-/// FIFO scheduler that exposes only the front request to the batch-one CPU
-/// executor. The engine removes that group when its output state finishes.
-struct SingleRequestScheduler {
-    groups: Vec<gpt_oss_engine::sequence::SequenceGroup>,
-}
-
-impl SingleRequestScheduler {
-    fn new() -> Self {
-        Self { groups: Vec::new() }
-    }
-}
-
-impl gpt_oss_engine::Scheduler for SingleRequestScheduler {
-    fn add_seq_group(&mut self, seq_group: gpt_oss_engine::sequence::SequenceGroup) {
-        self.groups.push(seq_group);
-    }
-
-    fn abort_seq_group(&mut self, request_id: &RequestId) {
-        self.groups.retain(|group| group.request_id != *request_id);
-    }
-
-    fn schedule(&mut self) -> gpt_oss_engine::SchedulerOutputs {
-        let scheduled_seq_groups = self.groups.first().cloned().into_iter().collect::<Vec<_>>();
-        let num_batched_tokens = scheduled_seq_groups
-            .first()
-            .map(|group| {
-                group
-                    .get_seqs()
-                    .iter()
-                    .map(|sequence| sequence.num_new_tokens().max(1))
-                    .sum()
-            })
-            .unwrap_or(0);
-        gpt_oss_engine::SchedulerOutputs {
-            scheduled_seq_groups,
-            num_batched_tokens,
-            preempted: false,
-        }
-    }
-
-    fn has_unfinished_seqs(&self) -> bool {
-        !self.groups.is_empty()
-    }
-
-    fn get_num_unfinished_seq_groups(&self) -> usize {
-        self.groups.len()
-    }
 }
 
 impl PlaceholderScheduler {
@@ -519,35 +496,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
-    use gpt_oss_core::prelude::{SamplingParams, SequenceId};
-    use gpt_oss_engine::{Scheduler, Sequence, SequenceGroup};
-
     use super::*;
-
-    fn group(request_id: u64) -> SequenceGroup {
-        SequenceGroup::new(
-            RequestId(request_id),
-            vec![Sequence::new(SequenceId(request_id), vec![1, 2])],
-            SamplingParams::default(),
-            Instant::now(),
-            "prompt".into(),
-        )
-    }
-
-    #[test]
-    fn single_request_scheduler_is_fifo_and_never_batches() {
-        let mut scheduler = SingleRequestScheduler::new();
-        scheduler.add_seq_group(group(1));
-        scheduler.add_seq_group(group(2));
-        let first = scheduler.schedule();
-        assert_eq!(first.scheduled_seq_groups.len(), 1);
-        assert_eq!(first.scheduled_seq_groups[0].request_id, RequestId(1));
-        scheduler.abort_seq_group(&RequestId(1));
-        let second = scheduler.schedule();
-        assert_eq!(second.scheduled_seq_groups[0].request_id, RequestId(2));
-    }
 
     #[tokio::test]
     async fn cpu_engine_rejects_non_bf16_request_before_loading() {

@@ -1,14 +1,9 @@
-#![forbid(unsafe_code)]
-//! Continuous batching scheduler for gpt-oss-rs.
+//! Compatibility path for the canonical CPU scheduler.
 //!
-//! Decides which sequences run, wait, or get preempted each iteration.
-//! Supports chunked prefill, multiple scheduling policies, and swap/recompute
-//! preemption modes.
+//! CPU scheduling state lives only in [`crate::cpu_scheduler::SequenceTable`].
+//! This module intentionally contains no scheduler-local sequence groups.
 
-pub mod outputs;
-pub mod policy;
-pub mod scheduler;
-
-pub use outputs::{ScheduledSequenceGroup, SchedulerOutputs};
-pub use policy::{PreemptionMode, SchedulerPolicy};
-pub use scheduler::{Scheduler, SchedulerConfig};
+pub use crate::cpu_scheduler::{
+    CpuReservation, CpuScheduledPhase, CpuScheduledRow, CpuScheduler as Scheduler,
+    CpuSchedulerConfig as SchedulerConfig, CpuSequenceLifecycle, CpuSequenceRecord, SequenceTable,
+};

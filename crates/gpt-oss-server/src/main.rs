@@ -41,6 +41,10 @@ enum Commands {
         tensor_parallel_size: usize,
         #[arg(long)]
         max_num_seqs: Option<usize>,
+        #[arg(long)]
+        max_num_batched_tokens: Option<usize>,
+        #[arg(long)]
+        max_prefill_chunk: Option<usize>,
         #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
         device: DeviceChoice,
         #[arg(long, value_enum, default_value_t = CpuKernelChoice::Auto)]
@@ -157,6 +161,8 @@ struct ResolvedServeProfile {
     max_model_len: usize,
     gpu_memory_utilization: f32,
     max_num_seqs: usize,
+    max_num_batched_tokens: usize,
+    max_prefill_chunk: usize,
 }
 
 fn init_tracing(log_level: &str) {
@@ -194,6 +200,8 @@ fn resolve_serve_profile(
     max_model_len: Option<usize>,
     gpu_memory_utilization: Option<f32>,
     max_num_seqs: Option<usize>,
+    max_num_batched_tokens: Option<usize>,
+    max_prefill_chunk: Option<usize>,
 ) -> ResolvedServeProfile {
     let profile = match requested_profile {
         ServeProfile::Auto if is_gpt_oss_model(model) && cpu_selected => ServeProfile::GptOssCpu,
@@ -218,6 +226,8 @@ fn resolve_serve_profile(
         max_model_len: max_model_len.unwrap_or(default_max_model_len),
         gpu_memory_utilization: gpu_memory_utilization.unwrap_or(default_gpu_memory_utilization),
         max_num_seqs: max_num_seqs.unwrap_or(default_max_num_seqs),
+        max_num_batched_tokens: max_num_batched_tokens.unwrap_or(2048),
+        max_prefill_chunk: max_prefill_chunk.unwrap_or(0),
     }
 }
 
@@ -258,6 +268,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             gpu_memory_utilization,
             tensor_parallel_size,
             max_num_seqs,
+            max_num_batched_tokens,
+            max_prefill_chunk,
             device,
             cpu_kernel,
             cpu_matmul_backend,
@@ -281,6 +293,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 max_model_len,
                 gpu_memory_utilization,
                 max_num_seqs,
+                max_num_batched_tokens,
+                max_prefill_chunk,
             );
             if matches!(
                 resolved_profile.profile,
@@ -318,6 +332,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     .scheduler(
                         SchedulerConfigImpl::builder()
                             .max_num_seqs(resolved_profile.max_num_seqs)
+                            .max_num_batched_tokens(resolved_profile.max_num_batched_tokens)
+                            .max_prefill_chunk(resolved_profile.max_prefill_chunk)
                             .build(),
                     )
                     .runtime_mode(runtime_mode)
@@ -354,6 +370,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 max_model_len = resolved_profile.max_model_len,
                 gpu_memory_utilization = resolved_profile.gpu_memory_utilization,
                 max_num_seqs = resolved_profile.max_num_seqs,
+                max_num_batched_tokens = resolved_profile.max_num_batched_tokens,
+                max_prefill_chunk = resolved_profile.max_prefill_chunk,
                 tp_size = tensor_parallel_size,
                 requested_device = device.as_str(),
                 cpu_kernel = cpu_kernel.as_str(),
@@ -426,6 +444,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert_eq!(resolved.profile, ServeProfile::GptOss3090);
         assert_eq!(resolved.max_model_len, GPT_OSS_CONSUMER_MAX_MODEL_LEN);
@@ -445,6 +465,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert_eq!(resolved.profile, ServeProfile::Generic);
         assert_eq!(resolved.max_model_len, 2048);
@@ -460,11 +482,15 @@ mod tests {
             Some(4096),
             Some(0.82),
             Some(8),
+            Some(1024),
+            Some(64),
         );
         assert_eq!(resolved.profile, ServeProfile::GptOss3090);
         assert_eq!(resolved.max_model_len, 4096);
         assert_eq!(resolved.gpu_memory_utilization, 0.82);
         assert_eq!(resolved.max_num_seqs, 8);
+        assert_eq!(resolved.max_num_batched_tokens, 1024);
+        assert_eq!(resolved.max_prefill_chunk, 64);
     }
 
     #[test]
@@ -476,10 +502,14 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert_eq!(resolved.profile, ServeProfile::GptOssCpu);
         assert_eq!(resolved.max_model_len, 8192);
         assert_eq!(resolved.max_num_seqs, 1);
+        assert_eq!(resolved.max_num_batched_tokens, 2048);
+        assert_eq!(resolved.max_prefill_chunk, 0);
     }
 
     #[test]

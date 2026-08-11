@@ -510,6 +510,15 @@ impl CpuBatchEngine {
         })
     }
 
+    pub fn discard(&mut self, prepared: PreparedCpuIteration) -> Result<()> {
+        let PreparedCpuIteration {
+            reservation, model, ..
+        } = prepared;
+        model.discard();
+        self.scheduler
+            .release(&mut self.table, reservation.step_id())
+    }
+
     fn validate_commit_rows(
         &self,
         reservation: &CpuReservation,
@@ -606,6 +615,7 @@ mod tests {
         discards: usize,
         fail_prepare: bool,
         bad_logits: bool,
+        prepare_delay_ms: u64,
     }
 
     struct FakeForward {
@@ -658,7 +668,11 @@ mod tests {
             calls.batches.push(batch.rows().to_vec());
             let bad_logits = calls.bad_logits;
             calls.bad_logits = false;
+            let prepare_delay_ms = calls.prepare_delay_ms;
             drop(calls);
+            if prepare_delay_ms != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(prepare_delay_ms));
+            }
             let rows = batch
                 .rows()
                 .iter()
@@ -913,5 +927,54 @@ mod tests {
         assert!(engine
             .add_tokenized_request(RequestId(2), "b".into(), vec![11], beam)
             .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_engine_preserves_each_concurrent_request_stream_order() {
+        use tokio_stream::StreamExt;
+
+        let (engine, _) = engine(2, 2, 0);
+        let engine = crate::AsyncCpuBatchEngine::new(engine);
+        let (first, second) = tokio::join!(
+            engine.generate("hello".into(), params(2)),
+            engine.generate("world".into(), params(2)),
+        );
+        let (first_id, mut first) = first.unwrap();
+        let (second_id, mut second) = second.unwrap();
+        let mut first_outputs = Vec::new();
+        let mut second_outputs = Vec::new();
+        while let Some(output) = first.next().await {
+            first_outputs.push(output);
+        }
+        while let Some(output) = second.next().await {
+            second_outputs.push(output);
+        }
+        assert_eq!(first_outputs.len(), 2);
+        assert_eq!(second_outputs.len(), 2);
+        assert!(first_outputs
+            .iter()
+            .all(|output| output.request_id == first_id));
+        assert!(second_outputs
+            .iter()
+            .all(|output| output.request_id == second_id));
+        assert_eq!(first_outputs[0].outputs[0].token_ids.len(), 1);
+        assert_eq!(first_outputs[1].outputs[0].token_ids.len(), 2);
+        assert_eq!(second_outputs[0].outputs[0].token_ids.len(), 1);
+        assert_eq!(second_outputs[1].outputs[0].token_ids.len(), 2);
+        assert!(first_outputs.last().unwrap().finished);
+        assert!(second_outputs.last().unwrap().finished);
+        engine.shutdown();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnected_inflight_stream_is_cancelled_before_commit() {
+        let (engine, calls) = engine(1, 1, 0);
+        calls.lock().unwrap().prepare_delay_ms = 50;
+        let engine = crate::AsyncCpuBatchEngine::new(engine);
+        let (_, stream) = engine.generate("hello".into(), params(2)).await.unwrap();
+        drop(stream);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(calls.lock().unwrap().commits, 0);
+        engine.shutdown();
     }
 }

@@ -14,7 +14,7 @@ pub const GPT_OSS_CONSUMER_MAX_VRAM_BYTES: usize = 24 * 1024 * 1024 * 1024;
 pub enum RuntimeBackendPath {
     /// CUDA-backed execution.
     Cuda,
-    /// Native batch-one GPT-OSS CPU execution.
+    /// Native batched GPT-OSS CPU execution.
     Cpu,
     /// Explicit test-only mock execution.
     Mock,
@@ -168,15 +168,14 @@ pub fn validate_gpt_oss_runtime(
                     "CPU serving requires tensor_parallel_size=1 and pipeline_parallel_size=1; got {tensor_parallel_size} and {pipeline_parallel_size}"
                 ));
             }
-            if max_num_seqs != 1 {
-                return Err(format!(
-                    "CPU serving is batch-one and requires max_num_seqs=1; got {max_num_seqs}"
-                ));
-            }
             Ok(RuntimeDecision {
                 runtime_mode,
                 backend_path,
-                reason: if requested_device == "auto" {
+                reason: if max_num_seqs > 1 {
+                    format!(
+                        "experimental native GPT-OSS CPU batching selected with max_num_seqs={max_num_seqs}"
+                    )
+                } else if requested_device == "auto" {
                     "auto selected the native GPT-OSS CPU backend".into()
                 } else {
                     "explicit native GPT-OSS CPU execution selected".into()
@@ -402,8 +401,8 @@ mod tests {
     }
 
     #[test]
-    fn cpu_rejects_parallelism_and_request_batching() {
-        for (tp, pp, seqs) in [(2, 1, 1), (1, 2, 1), (1, 1, 2)] {
+    fn cpu_rejects_parallelism_but_allows_explicit_request_batching() {
+        for (tp, pp) in [(2, 1), (1, 2)] {
             assert!(validate_gpt_oss_runtime(
                 "openai/gpt-oss-20b",
                 RuntimeMode::Experimental,
@@ -412,11 +411,27 @@ mod tests {
                 GPT_OSS_CONSUMER_MAX_MODEL_LEN,
                 tp,
                 pp,
-                seqs,
+                2,
                 None,
                 false,
             )
             .is_err());
         }
+        let decision = validate_gpt_oss_runtime(
+            "openai/gpt-oss-20b",
+            RuntimeMode::Experimental,
+            "cpu",
+            false,
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
+            2,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(decision
+            .reason
+            .contains("experimental native GPT-OSS CPU batching"));
     }
 }

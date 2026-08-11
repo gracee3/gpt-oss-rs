@@ -15,6 +15,7 @@
 //! pending that crate's API alignment with `gpt_oss_sequence` types.
 extern crate self as gpt_oss_engine;
 
+pub mod async_cpu_engine;
 pub mod async_engine;
 #[cfg(feature = "cuda")]
 pub mod async_gpu_engine;
@@ -40,6 +41,7 @@ pub mod stop_checker;
 pub mod telemetry;
 pub mod worker;
 
+pub use async_cpu_engine::AsyncCpuBatchEngine;
 pub use async_engine::AsyncLLMEngine;
 pub use beam_search::BeamSearchState;
 pub use best_of_n::{build_best_of_n_output, select_best_of_n};
@@ -60,6 +62,7 @@ pub use engine::LLMEngine;
 pub use engine::{Executor, ExecutorAdapter, Scheduler};
 pub use engine::{ExecutorInput, SamplerOutput, SchedulerOutputs};
 pub use executor::{ExecutorConfig, ExecutorFactory};
+pub use gpt_oss_model_runner::{CpuExpertProjection, CpuModel};
 pub use output::OutputProcessor;
 pub use sequence::{Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus};
 pub use stop_checker::StopChecker;
