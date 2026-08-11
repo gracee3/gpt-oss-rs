@@ -32,6 +32,9 @@
 
 ## External research and contribution tracking
 
+- [`XE_RESEARCH_AND_PREPLANNING.md`](XE_RESEARCH_AND_PREPLANNING.md): T14
+  OpenCL/Level Zero source corpus, host baseline, workstream split, research
+  gates, and decision deliverable for a possible Iris Xe backend.
 - [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md): Intel Level Zero
   and oneAPI-rs architecture, dependency boundary, Rust design lessons, and
   possible future integrated-GPU experiment.

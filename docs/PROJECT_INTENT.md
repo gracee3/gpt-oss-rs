@@ -62,8 +62,9 @@ consumers. In particular:
 - Canonical checkpoints remain unchanged; generated packed caches are
   disposable, versioned derivatives.
 - CUDA remains an explicit path to revisit on the available NVIDIA systems.
-- Vulkan and Apple Silicon are interesting later investigations, not current
-  implementation commitments.
+- OpenCL/Level Zero on available Intel integrated graphics and Apple Silicon
+  are interesting later investigations, not current implementation
+  commitments. Vulkan is not an active research target.
 - General framework compatibility is not a design goal unless it directly
   improves this runtime or makes a specific result meaningfully reusable.
 

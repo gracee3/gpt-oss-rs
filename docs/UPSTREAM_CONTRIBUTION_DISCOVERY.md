@@ -62,16 +62,19 @@ change belongs upstream.
 | Project | Current overlap | Possible contribution | State | Priority / next gate |
 | --- | --- | --- | --- | --- |
 | [mistral.rs](https://github.com/EricLBuehler/mistral.rs) | Strong: Rust GPT-OSS runtime, MXFP4 semantics, MoE, attention, scheduling | Portable MXFP4 edge fixtures; older-Intel scalar/SIMD findings; repack-cache or matrix-kernel work if its contracts align; diagnostics/docs | OBSERVED | **High.** Re-audit current upstream after local CPU certification, identify an unfilled issue, and discuss API fit before porting code. |
+| [`cl3`](https://github.com/kenba/cl3) / [`opencl3`](https://github.com/kenba/opencl3) | Direct Rust overlap with the T14 OpenCL host lifecycle and capability/error surface | Missing-platform/build-log diagnostics, optional-feature queries, asynchronous lifetime tests, and an evidence-backed Intel integrated-GPU example | WATCH | **Medium research.** Complete the T14 lifecycle/source map and hardware capability capture before claiming a gap. |
 | [oneAPI-rs](https://github.com/oneapi-src/oneapi-rs) | Medium: young Rust/SYCL ownership layer for Intel heterogeneous compute | Runtime/device diagnostics, query coverage, USM safety tests, older-iGPU examples; possibly reusable typed-resource fixes | OBSERVED | **Medium.** Run or reproduce one bounded issue on an equipped host; ask before proposing direct Level Zero scope. |
 | [Candle](https://github.com/huggingface/candle) | Potential: Rust tensor and model ecosystem with CPU kernels | A reusable numerical fixture or CPU primitive only if Candle has the matching datatype/operation and accepts the maintenance cost | WATCH | **Medium research.** Inspect current quantized CPU/MX support and open issues; do not design against an assumed API. |
 | [RTen](https://github.com/robertknight/rten) | Potential: Rust CPU inference and low-level tensor operations | Quantized-matmul fixtures, packing/dispatch methodology, or older-x86 correctness/performance fixes when contracts overlap | WATCH | **Medium-low research.** Establish whether its formats and target CPUs overlap before proposing anything. |
 | [Burn](https://github.com/tracel-ai/burn) | Broad Rust ML framework; limited current GPT-OSS-specific overlap | Small backend-independent tests or Rust kernel techniques only if an exact gap is found | WATCH | **Low.** Framework breadth is not a reason to generalize this runtime. |
-| [rust-gpu](https://github.com/Rust-GPU/rust-gpu) | Future Rust-to-SPIR-V path for integrated-GPU experiments | Minimal compute-kernel compatibility reproducer, documentation, or compiler issue discovered by a bounded Level Zero/Vulkan experiment | WATCH | **Later.** Requires an actual SPIR-V experiment and toolchain evidence. |
+| [rust-gpu](https://github.com/Rust-GPU/rust-gpu) | Future Rust-to-SPIR-V path for integrated-GPU experiments | Minimal compute-kernel compatibility reproducer, documentation, or compiler issue discovered by a bounded Level Zero compute experiment | WATCH | **Later.** Requires an actual SPIR-V experiment and toolchain evidence. |
 
 The reviewed mistral.rs revision used by the CPU semantic audit is
 `8010b6a0578e416120b590ed72fd46ed5f24ee85`. The reviewed oneAPI-rs revision is
-`1581663fdd0fd73e79df2900a2576d6cca8ff2a1`. Refresh both before preparing an
-upstream proposal.
+`1581663fdd0fd73e79df2900a2576d6cca8ff2a1`; the initial T14 `cl3` and
+`opencl3` research pins are `9e2cdd8f34f09abfe49a8c2718ac58f1f762ae61`
+and `072410552fecfc1e3f5395856735cb8684501f74`. Refresh the relevant source
+before preparing an upstream proposal.
 
 ## Current mistral.rs candidate areas
 
@@ -177,8 +180,9 @@ Issue/PR URL and outcome:
    mistral.rs rather than the older audit pin.
 3. Select at most one small mistral.rs candidate for an upstream-fit
    discussion.
-4. During future integrated-GPU setup, record oneAPI-rs and Level Zero
-   diagnostic gaps instead of immediately building a wrapper.
+4. During the T14 Xe research, record `cl3`, `opencl3`, oneAPI-rs, OpenCL, and
+   Level Zero diagnostic or lifecycle gaps instead of immediately building a
+   wrapper.
 5. Triage Candle and RTen source only against a concrete reusable primitive;
    close them as non-overlapping if their formats or policies differ.
 

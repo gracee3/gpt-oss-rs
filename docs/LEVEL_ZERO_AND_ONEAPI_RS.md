@@ -5,6 +5,7 @@
 - Repository baseline: `752b0c5138eb46efd573759bf2ea9f89afc29298`
 - Implementation decision: no new runtime or Cargo dependency
 - Possible future target: explicit, experimental Intel integrated-GPU backend
+- Active T14 lane: [`XE_RESEARCH_AND_PREPLANNING.md`](XE_RESEARCH_AND_PREPLANNING.md)
 
 This note is a handoff for hosts participating in `gpt-oss-rs` development.
 It records what oneAPI-rs and Level Zero are, where they overlap with this
@@ -12,8 +13,8 @@ project, which design ideas are worth retaining, and what would actually be
 required to run a GPT-OSS operation on an Intel GPU.
 
 The current project priority remains native CPU execution. Nothing here makes
-Level Zero, SYCL, Intel's compute runtime, or an integrated GPU part of the
-supported runtime.
+OpenCL, Level Zero, SYCL, Intel's compute runtime, or an integrated GPU part of
+the supported runtime.
 
 ## Reviewed sources
 
@@ -122,10 +123,10 @@ lightweight path considered here.
 
 Practical kernel-source choices for a later experiment are:
 
-1. commit or fetch a reproducibly generated SPIR-V artifact built offline from
-   a small auditable kernel source;
-2. use Vulkan compute and the same class of SPIR-V artifact for a broader
-   first integrated-GPU experiment;
+1. use OpenCL C online compilation to establish a small auditable kernel and
+   retrieve a device-specific program binary where supported;
+2. produce and validate a reproducible offline SPIR-V artifact for direct
+   Level Zero module creation;
 3. investigate a Rust-to-SPIR-V toolchain separately, without making an
    unstable compiler path a runtime requirement;
 4. use Level Zero native binaries only after documenting device/version
@@ -180,11 +181,12 @@ separate versioned GPU layout.
 
 ## Ideas deliberately not adopted
 
-- no oneAPI-rs, SYCL, Level Zero, or GPU-driver dependency now;
+- no oneAPI-rs, OpenCL, SYCL, Level Zero, or GPU-driver dependency now;
 - no general SYCL compatibility layer;
 - no runtime dependency on DPC++ or C++ kernel compilation;
 - no claim that a host wrapper makes the complete GPU stack pure Rust;
 - no direct translation of broad upstream APIs or implementation files;
+- no Vulkan work in the current Xe research phase;
 - no automatic integrated-GPU selection before full correctness and measured
   benefit on named hardware;
 - no attempt to replace Intel Compute Runtime.
@@ -200,7 +202,8 @@ each candidate host:
 4. supported module formats and relevant integer/FP16/subgroup properties;
 5. available shared/device memory behavior;
 6. a copy-and-integer-kernel smoke test with validation logging;
-7. comparison with the same SPIR-V operation through Vulkan, where possible;
+7. an OpenCL and Level Zero comparison for the same numerical operation when
+   both compiler/module routes are reproducible;
 8. a concrete GPT-OSS operation and the scalar equivalence fixture.
 
 The experiment remains forced-only until failures are clear, artifacts are
@@ -230,8 +233,8 @@ policy and candidate ledger live in
 
 ## Handoff questions for the next research pass
 
-- Does Vulkan or Level Zero expose the cleaner minimal path on the available
-  Tiger Lake host once both stacks are installed?
+- Does OpenCL online compilation, cached OpenCL binaries, or Level Zero with
+  offline SPIR-V provide the cleanest reproducible path on the T14?
 - Which one existing MXFP4 matrix shape best isolates transfer, module,
   submission, and compute costs?
 - Can the current x8 packed cache feed the GPU efficiently, or would any GPU
