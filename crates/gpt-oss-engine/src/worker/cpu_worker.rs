@@ -157,7 +157,7 @@ impl CpuForward for NativeCpuForward {
 }
 
 /// Sampling state committed alongside the model's per-sequence KV state.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuGenerationState {
     request_id: RequestId,
     sequence_id: SequenceId,
@@ -167,6 +167,21 @@ pub struct CpuGenerationState {
 }
 
 impl CpuGenerationState {
+    pub(crate) fn new(
+        request_id: RequestId,
+        sequence_id: SequenceId,
+        prompt_token_ids: &[TokenId],
+        seed: Option<u64>,
+    ) -> Self {
+        Self {
+            request_id,
+            sequence_id,
+            last_generated: None,
+            past_tokens: prompt_token_ids.to_vec(),
+            rng: StdRng::seed_from_u64(seed.unwrap_or_else(rand::random)),
+        }
+    }
+
     pub fn request_id(&self) -> RequestId {
         self.request_id
     }
@@ -181,6 +196,22 @@ impl CpuGenerationState {
 
     pub fn past_tokens(&self) -> &[TokenId] {
         &self.past_tokens
+    }
+
+    pub(crate) fn rng(&self) -> &StdRng {
+        &self.rng
+    }
+
+    pub(crate) fn rng_mut(&mut self) -> &mut StdRng {
+        &mut self.rng
+    }
+
+    pub(crate) fn set_last_generated(&mut self, token_id: TokenId) {
+        self.last_generated = Some(token_id);
+    }
+
+    pub(crate) fn push_past_token(&mut self, token_id: TokenId) {
+        self.past_tokens.push(token_id);
     }
 }
 
@@ -337,15 +368,12 @@ impl Executor for CpuWorker {
                     "CPU request has an empty prompt".into(),
                 ));
             }
-            CpuGenerationState {
-                request_id: metadata.request_id,
-                sequence_id: seq_id,
-                last_generated: None,
-                past_tokens: prompt.clone(),
-                rng: StdRng::seed_from_u64(
-                    metadata.sampling_params.seed.unwrap_or_else(rand::random),
-                ),
-            }
+            CpuGenerationState::new(
+                metadata.request_id,
+                seq_id,
+                prompt,
+                metadata.sampling_params.seed,
+            )
         };
         let logits = if continuing {
             let token = self

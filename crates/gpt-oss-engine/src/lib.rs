@@ -22,6 +22,7 @@ pub mod beam_search;
 pub mod best_of_n;
 pub mod block_manager;
 pub mod config;
+pub mod cpu_scheduler;
 pub mod engine;
 pub mod executor;
 #[cfg(feature = "cuda")]
@@ -48,6 +49,10 @@ pub use config::{
     load_config, validate, CacheConfigImpl, CliArgs, ConfigError, DeviceConfig, EngineConfig,
     ModelConfigImpl, ParallelConfigImpl, PreemptionMode, RuntimeMode, SchedulerConfigImpl,
     TelemetryConfig,
+};
+pub use cpu_scheduler::{
+    CpuReservation, CpuScheduledPhase, CpuScheduledRow, CpuScheduler, CpuSchedulerConfig,
+    CpuSequenceLifecycle, CpuSequenceRecord, SequenceTable,
 };
 pub use engine::LLMEngine;
 pub use engine::{Executor, ExecutorAdapter, Scheduler};
