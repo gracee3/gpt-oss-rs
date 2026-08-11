@@ -10,6 +10,12 @@
   CPU regression and comparison procedure.
 - [`UPSTREAM_PROVENANCE.md`](UPSTREAM_PROVENANCE.md): pinned upstream audits and
   attribution map.
+- [`CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md`](CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md):
+  control record for the completed first research pass over the next five CPU
+  runtime steps, including evidence standards, decisions, and readiness gates.
+- [`cpu-runtime-research/`](cpu-runtime-research/README.md): pinned source
+  registry and the detailed AVX-512, GEMM/prefill, state, scheduling, and AMX
+  implementation research syntheses.
 
 ## Project direction
 

@@ -150,7 +150,9 @@ The AVX2 x8 promotion used a targeted full-model gate: cold and warm
 `harmony_122`, plus automatic, AVX2, and scalar `harmony_262`, followed by
 streaming and non-streaming API requests. Performance measurements are
 informational for this milestone. The exhaustive oracle/API/benchmark matrix
-remains documented follow-up work.
+is intentionally deferred until the planned AVX-512, GEMM/prefill, AMX, and
+CPU scheduling features are developed; focused correctness and safety checks
+remain mandatory for each feature slice.
 
 The production runtime is Rust. Narrow Python tools under
 `crates/gpt-oss-bench/tools` are retained as diagnostic bridges to the pinned
@@ -166,6 +168,9 @@ Current documentation:
   full-checkpoint CPU regression procedure;
 - [`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md): audited upstream
   concepts and pinned revisions;
+- [`docs/cpu-runtime-research/`](docs/cpu-runtime-research/README.md): completed
+  source-grounded pre-planning for AVX-512 x8, GEMM/prefill, state separation,
+  CPU scheduling, and AMX;
 - [`docs/TIER2_FP16_CUDA_WORKFLOW.md`](docs/TIER2_FP16_CUDA_WORKFLOW.md): the
   retained restricted-fp16 CUDA investigation contract.
 

@@ -56,11 +56,16 @@ automatic dispatch. The AVX2 x8 promotion uses a narrower full-model gate:
 `harmony_122` on cold automatic and warm forced-AVX2 paths, and `harmony_262`
 on automatic, forced-AVX2, and scalar paths. A repeat of the exhaustive 28-run
 matrix, Criterion suite, llama.cpp captures, and complete API permutation
-matrix is deferred rather than claimed by this milestone. A stricter
-end-to-end trace still shows a rare BF16 reduction-order difference before the
-expert projection; it is retained as diagnostic evidence rather than hidden or
-compensated later. Trusted mode continues to reject CPU serving pending a
-separate certification review.
+matrix is intentionally deferred until the planned AVX-512, GEMM/prefill, AMX,
+and CPU scheduling features are developed. During that feature-development
+phase, each new path still requires focused scalar equivalence, targeted
+full-model parity, cache-integrity checks, and relevant API smoke coverage;
+semantic, memory-safety, cache, and API failures remain blocking. Performance
+thresholds and broad certification are not promotion gates until the later
+tuning phase. A stricter end-to-end trace still shows a rare BF16
+reduction-order difference before the expert projection; it is retained as
+diagnostic evidence rather than hidden or compensated later. Trusted mode
+continues to reject CPU serving pending a separate certification review.
 
 ## Serving policy
 
