@@ -39,6 +39,10 @@
 - [`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md):
   completed documentation-only next-phase research entry point, including
   per-track outcomes and the cross-track planning-readiness closeout.
+- [`XE_RESEARCH_AND_PREPLANNING.md`](XE_RESEARCH_AND_PREPLANNING.md): T14
+  OpenCL/Level Zero source corpus, passing online-build/binary-cache and SPIR-V
+  kernel probes, host baseline, workstream split, and decision gates for a
+  possible Iris Xe backend.
 - [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md): Intel Level Zero
   and oneAPI-rs architecture, dependency boundary, Rust design lessons, and
   possible future integrated-GPU experiment.
