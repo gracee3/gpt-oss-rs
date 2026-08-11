@@ -241,7 +241,10 @@ impl ResponseInputMessage {
     pub fn to_chat_message(&self) -> ChatMessage {
         ChatMessage {
             role: self.role.clone(),
-            content: self.content.iter().map(|part| part.text.as_str()).collect(),
+            content: Some(self.content.iter().map(|part| part.text.as_str()).collect()),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
         }
     }
 }
@@ -396,7 +399,10 @@ impl ResponseOutputMessage {
     pub fn to_chat_message(&self) -> ChatMessage {
         ChatMessage {
             role: self.role.clone(),
-            content: self.content.iter().map(|part| part.text.as_str()).collect(),
+            content: Some(self.content.iter().map(|part| part.text.as_str()).collect()),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
         }
     }
 }
@@ -572,6 +578,47 @@ impl ResponseObject {
             usage: Some(usage),
             metadata,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn incomplete(
+        id: impl Into<String>,
+        model: impl Into<String>,
+        instructions: Option<String>,
+        max_output_tokens: Option<usize>,
+        previous_response_id: Option<String>,
+        store: bool,
+        temperature: f32,
+        top_p: f32,
+        metadata: BTreeMap<String, String>,
+        output: Vec<ResponseOutputItem>,
+        usage: ResponseUsage,
+        parallel_tool_calls: bool,
+        tool_choice: ResponseToolChoice,
+        tools: Vec<serde_json::Value>,
+    ) -> Self {
+        let mut response = Self::completed(
+            id,
+            model,
+            instructions,
+            max_output_tokens,
+            previous_response_id,
+            store,
+            temperature,
+            top_p,
+            metadata,
+            output,
+            usage,
+            parallel_tool_calls,
+            tool_choice,
+            tools,
+        );
+        response.status = "incomplete".to_string();
+        response.completed_at = None;
+        response.incomplete_details = Some(serde_json::json!({
+            "reason": "max_output_tokens"
+        }));
+        response
     }
 }
 
@@ -934,7 +981,7 @@ mod tests {
         match &input[0] {
             ResponseInputItem::Message(message) => {
                 assert_eq!(message.content.len(), 2);
-                assert_eq!(message.to_chat_message().content, "Hello there");
+                assert_eq!(message.to_chat_message().content_text(), "Hello there");
             }
             _ => panic!("expected message item"),
         }

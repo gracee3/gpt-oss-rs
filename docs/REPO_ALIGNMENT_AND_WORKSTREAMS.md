@@ -1,121 +1,75 @@
-# Repo Alignment And Workstreams
+# Repository Alignment and Workstreams
 
-## Alignment Summary
+## Mainline policy
 
-This repo is organized around three active workstreams only:
+`main` is the integration baseline. CPU kernel work should land as small,
+reviewable patches with independent correctness and benchmark evidence. Avoid
+long-lived branches that mix engine restructuring, ISA kernels, cache-format
+changes, and model semantics in one diff.
 
-1. `integration/mainline-alignment`
-2. `harness/tier2-workflow`
-3. `feature/runtime-forward`
+The earlier April Tier-2 three-worktree topology is historical. Its CUDA
+validation contract remains useful, but it is no longer the repository's
+active branch map.
 
-The operating rule is simple:
+## Active workstreams
 
-- land safe harness, docs, validation plumbing, and narrow correctness fixes aggressively
-- keep speculative runtime/semantic work isolated
-- preserve exploratory history, but do not merge it wholesale
+### CPU baseline and conformance
 
-## What Landed On Main
+- preserve current scalar/SIMD correctness and seven-scenario token parity;
+- keep generated traces, model files, repack caches, and benchmark output out
+  of Git;
+- update `CPU_RUNTIME.md` when serving or numerical invariants change;
+- record host-specific long runs under `cpu-agent-coordination/`.
 
-The current mainline landing batch is the safe probe/harness stack:
+### MXFP4 kernel architecture
 
-- restricted prefill trace probe and restricted logit diff entrypoints
-- restricted model-view generator and oracle compare helpers
-- tiered validation script and Tier-2 workflow docs
-- bounded decode and representative parity cases that support harness validation
-- Tier-2 compare-mode, seed-capture, and same-input local replay workflow
+- own `gpt-oss-cpu-kernels`, kernel-facing packed-weight interfaces, and
+  microbenchmarks;
+- dispatch by capabilities and workload shape, never CPU product names;
+- keep scalar, AVX2, AVX-512, and AMX patches independently reviewable;
+- require before/after microbenchmarks for optimized paths.
 
-These changes are intended to make live testing and future extraction disciplined. They do not claim a settled runtime root cause.
+### Runtime integration
 
-## What Stays On Integration
+- own model-runner selection of GEMV/GEMM operations and packed-weight
+  lifetime;
+- keep ISA-specific implementation details below the model-runner boundary;
+- change cache format only with explicit versioning, integrity tests, and load
+  and RSS measurements;
+- defer CPU batching/NUMA scheduling until kernel thresholds are measured.
 
-`integration/mainline-alignment` is the branch reserved for:
+### CUDA validation
 
-- follow-up cherry-picks that are coherent but not yet ready for direct mainline landing
-- post-merge validation batches
-- cleanup needed to keep archived branches and active worktrees understandable
+- retain the Tier-2 raw/runtime-emulated/same-input replay contract;
+- do not conflate CUDA numerical investigations with CPU MXFP4 dispatch work;
+- promote independently validated changes through normal pull requests.
 
-## What Was Archived Or Preserved Only
+## Branch and worktree rules
 
-The following branches were preserved and pushed as historical or reference lanes, but are not the canonical active workstreams:
+- Start feature branches from current `main`.
+- Prefer names that describe the capability or outcome, for example
+  `agent/mxfp4-avx512-gemv`, not a CPU generation.
+- One worktree should own a file while a patch is active.
+- Preserve user changes and generated evidence before switching branches.
+- Do not commit model artifacts, repack caches, traces, Criterion output, or
+  external reference repositories.
+- Keep llama.cpp, mistral.rs, and ik_llama.cpp as sibling checkouts, not git
+  submodules or vendored source, unless a later design explicitly chooses a
+  dependency.
 
-- `archive/replay-probe-enablement-proven-fixes`
-- `codex/cleanup-2026-04-01`
-- `debug/probe-enablement-k-rope-preserve-20260330`
-- `debug/replay-k-seam-audit-20260331`
-- `gpt-oss/deferred-frontier-recon`
-- `gpt-oss/deferred-frontier-shape-audit`
-- `gpt-oss/full-attention-next-case`
-- `gpt-oss/graph-first-case`
-- `gpt-oss/sink-first-case`
-- `gpt-oss/sink-gating-fix`
-- `gpt-oss/sliding-attention-first-case`
-- `gpt-oss/tier2-warm-oracle-core`
-- `integration/tier01-lane`
+## Integration sequence
 
-## What Was Archived Or Left As History
+The intended patch progression is:
 
-The following branch families are historical reference unless explicitly reopened:
+```text
+baseline inventory and benchmarks
+    -> feature model and kernel-plan API
+    -> AVX2 audit/improvement
+    -> AVX-512 MXFP4 GEMV experiments
+    -> versioned packed GEMM layout
+    -> standalone AMX prototype
+    -> shape-based automatic dispatch
+```
 
-- `debug/*`
-- `gpt-oss/*first-case`
-- `gpt-oss/sink-*`
-- `gpt-oss/deferred-*`
-
-They contain useful investigation history, but their durable knowledge should live in docs and extracted commits rather than wholesale merges.
-
-## What Was Pruned
-
-The following local worktrees were pruned after their branch state was merged, pushed, or otherwise preserved:
-
-- `/home/emmy/openai/worktrees/codex-cleanup-ops`
-- `/home/emmy/openai/worktrees/deferred-doc-curation`
-- `/home/emmy/openai/worktrees/deferred-frontier-recon`
-- `/home/emmy/openai/worktrees/deferred-frontier-shape-audit`
-- `/home/emmy/openai/worktrees/full-attention-next-case`
-- `/home/emmy/openai/worktrees/graph-first-case`
-- `/home/emmy/openai/worktrees/integration-tier01-lane-repro`
-- `/home/emmy/openai/worktrees/replay-k-seam-audit-20260331`
-- `/home/emmy/openai/worktrees/sink-first-case`
-- `/home/emmy/openai/worktrees/sink-gating-fix`
-- `/home/emmy/openai/worktrees/sliding-attention-first-case`
-- `/home/emmy/openai/worktrees/tier2-warm-oracle-core`
-
-## Active Workstreams
-
-### 1. Mainline Hygiene / Integration Alignment
-
-- Branch: `integration/mainline-alignment`
-- Worktree: `~/openai/gpt-oss-rs`
-- TODO file: `docs/WORKSTREAM_INTEGRATION_TODO.md`
-- Scope:
-  - post-merge hygiene
-  - remaining safe extraction and validation batches
-  - branch/archive cleanup
-
-### 2. Harness / Live Testing / Contract Follow-Up
-
-- Branch: `harness/tier2-workflow`
-- Worktree: `~/openai/worktrees/tier2-workflow`
-- TODO file: `docs/WORKSTREAM_HARNESS_TODO.md`
-- Scope:
-  - seed-capture and local-replay ergonomics
-  - compare-mode and live-testing workflow polish
-  - representative sentinel-layer reruns and harness-only improvements
-
-### 3. Forward Implementation / Runtime Work
-
-- Branch: `feature/runtime-forward`
-- Worktree: `~/openai/worktrees/runtime-forward`
-- TODO file: `docs/WORKSTREAM_RUNTIME_TODO.md`
-- Scope:
-  - runtime/semantic implementation work that is still incomplete
-  - selective extraction from deeper investigative branches
-  - future integration candidates that are not yet mainline-safe
-
-## Worktree Policy
-
-- Keep only the minimum active set of named worktrees.
-- The root checkout serves as the active `integration/mainline-alignment` worktree so the repo ends with exactly three active worktrees total.
-- Push or otherwise preserve important branches before pruning worktrees.
-- Do not delete dirty or unpushed work without an explicit preservation step.
-- Prefer archive branches or untouched historical refs over merging noisy debug stacks.
+Each arrow is a review boundary. Benchmark results may change the order or
+reject a proposed backend without forcing an engine redesign.

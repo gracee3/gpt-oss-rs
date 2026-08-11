@@ -1,30 +1,77 @@
 # gpt-oss-rs
 
-`gpt-oss-rs` is a Rust-only workspace for serving OpenAI GPT-OSS checkpoints behind an OpenAI-compatible HTTP API.
+`gpt-oss-rs` is an experimental Rust inference engine for OpenAI GPT-OSS
+checkpoints. It provides an OpenAI-compatible HTTP server, Harmony-native
+prompt/tool handling, CUDA execution, and a native Linux CPU backend that keeps
+MXFP4 expert weights compact in memory.
 
-## Scope
+The project is deliberately focused on GPT-OSS. It is not a general model
+runner, and the CPU backend is not yet enabled in trusted mode.
 
-- GPT-OSS checkpoints only
-- Harmony-native GPT-OSS protocol rendering only
-- Rust crates, CUDA kernels, and Criterion benchmarks only
-- OpenAI-compatible text generation endpoints for the server binary
-- No Python bindings, Python benchmark harnesses, or fork-era comparison tooling
+## Current status
 
-## Quick Start
+- CUDA and native CPU serving are available in experimental mode.
+- CPU serving supports official GPT-OSS SafeTensors, batch size one, BF16 dense
+  weights, and MXFP4 experts.
+- The CPU path has exact greedy-token parity with the pinned official
+  SafeTensors/PyTorch oracle across the seven maintained Harmony scenarios on
+  scalar, AVX2, AVX-512/VNNI, and automatic dispatch.
+- Residual Q8 is the current expert-activation path. A streaming exact-BF16
+  projection exists for diagnostics only.
+- A small end-to-end BF16 reduction-order trace difference remains before the
+  expert kernels. It does not change the maintained greedy sequences, but it is
+  retained as an explicit diagnostic limitation.
+- CPU trusted mode, request batching, tensor/pipeline parallel CPU execution,
+  and CPU CUDA-graph behavior remain unsupported.
+
+The next CPU milestone is a capability- and workload-dispatched MXFP4 kernel
+stack: strong scalar and AVX2 references, a purpose-built AVX-512 GEMV path,
+backend-specific GEMM packing, and an experimental AMX path. See
+[`docs/MXFP4_CPU_BACKEND_HANDOFF.md`](docs/MXFP4_CPU_BACKEND_HANDOFF.md).
+
+## Build
 
 ```bash
-# CPU / mock backend
+# Native CPU build
 cargo build --release -p gpt-oss-server
 
-# CUDA backend
+# CUDA-enabled build
 cargo build --release --features cuda -p gpt-oss-server
 ```
 
+The server binary is `target/release/gpt-oss-rs`.
+
+## Serve GPT-OSS
+
 ```bash
-./target/release/gpt-oss-rs serve --model openai/gpt-oss-20b
+./target/release/gpt-oss-rs serve \
+  --model openai/gpt-oss-20b
 ```
 
-Download a revision-pinned native snapshot without loading it:
+`--device auto` prefers a usable CUDA device when CUDA support is compiled in;
+otherwise it selects the native CPU backend for GPT-OSS. Select CPU explicitly
+and control its cache and worker count with:
+
+```bash
+GPT_OSS_RS_CACHE=/path/to/gpt-oss-rs-cache \
+./target/release/gpt-oss-rs serve \
+  --model openai/gpt-oss-20b \
+  --device cpu \
+  --cpu-kernel auto \
+  --cpu-threads 8
+```
+
+Current forced CPU kernel values are `scalar`, `avx2`, and `avx512-vnni`.
+Forcing an unavailable ISA fails before model execution. `auto` detects host
+capabilities once and builds an immutable per-operation dispatch plan.
+
+CPU serving defaults to the `gpt-oss-cpu` profile: an 8192-token context cap
+and one active sequence. The first load creates a revision- and
+checksum-keyed MXFP4 repack cache; later loads memory-map that cache read-only.
+
+`--device mock` is test-only and is never an automatic fallback.
+
+## Fetch a pinned snapshot
 
 ```bash
 ./target/release/gpt-oss-rs fetch \
@@ -34,73 +81,88 @@ Download a revision-pinned native snapshot without loading it:
 ```
 
 The fetch command uses resumable Hugging Face cache downloads and writes a
-`gpt-oss-rs-fetch-manifest.json` containing the resolved revision, file sizes,
-and SHA-256 hashes.
+manifest containing the resolved revision, file sizes, and SHA-256 hashes.
+
+## HTTP API
 
 The server exposes:
 
-- `/v1/completions`
-- `/v1/chat/completions`
-- `/v1/responses`
-- `/v1/models`
-- `/health`
-- `/metrics`
+- `POST /v1/completions`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/models`
+- `GET /health`
+- `GET /metrics`
 
-## Development
+Chat Completions and Responses support streaming and non-streaming Harmony
+text/tool flows through the same engine path.
+
+## CPU architecture
+
+The CPU implementation is split so ISA-specific code does not leak into the
+engine:
+
+- `gpt-oss-cpu-kernels`: feature detection, dispatch plans, scalar and x86
+  primitives, and Criterion microbenchmarks;
+- `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership, the
+  transformer loop, and parity tracing;
+- `gpt-oss-engine`: scheduling and the batch-one CPU worker;
+- `gpt-oss-bench`: pinned prompt parity tools and model-level measurements;
+- `gpt-oss-reference`, `gpt-oss-conformance`, and `gpt-oss-moe-semantics`:
+  independent semantic and correctness fixtures.
+
+Canonical checkpoints remain unchanged. CPU backends may construct
+load-time, versioned packed representations when a kernel can amortize the
+cost. Dispatch must be based on required ISA features and workload shape—not
+CPU product names.
+
+## Development and validation
 
 ```bash
-cargo fmt --all
-cargo check --workspace
-cargo test --workspace
-cargo bench -p gpt-oss-bench --bench sampling_bench
-docker build -t gpt-oss-rs -f Dockerfile .
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo test --workspace --locked
+python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'
+cargo bench -p gpt-oss-cpu-kernels --bench kernels
 ```
 
-Useful entry points:
+The production runtime is Rust. Narrow Python tools under
+`crates/gpt-oss-bench/tools` are retained as diagnostic bridges to the pinned
+official PyTorch oracle; they are not runtime dependencies.
 
-- `crates/gpt-oss-server`: CLI and HTTP server binary
-- `crates/gpt-oss-bench`: repository-level Rust benchmarks
-- `docs/CPU_RUNTIME.md`: native mmap/repack, numeric, and cache invariants
-- `kernels/`: CUDA kernels loaded by the GPU path
+Current documentation:
 
-## Tier-2 Workflow
+- [`docs/CPU_RUNTIME.md`](docs/CPU_RUNTIME.md): CPU storage, numerical, serving,
+  and dispatch invariants;
+- [`docs/MXFP4_CPU_BACKEND_HANDOFF.md`](docs/MXFP4_CPU_BACKEND_HANDOFF.md): Intel
+  ISA backend direction and implementation milestones;
+- [`docs/CPU_I7_CONFORMANCE.md`](docs/CPU_I7_CONFORMANCE.md): repeatable
+  full-checkpoint CPU regression procedure;
+- [`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md): audited upstream
+  concepts and pinned revisions;
+- [`docs/TIER2_FP16_CUDA_WORKFLOW.md`](docs/TIER2_FP16_CUDA_WORKFLOW.md): the
+  retained restricted-fp16 CUDA investigation contract.
 
-Restricted fp16 CUDA Tier 2 now uses an explicit three-step contract:
+## Design principles
 
-- raw global compare = telemetry
-- runtime-emulated global compare = localization
-- same-input local replay = ownership proof
+- Preserve MXFP4's compact 4.25-bit-per-weight representation for as long as
+  practical.
+- Keep a simple scalar oracle and test every optimized kernel against it.
+- Detect CPU capabilities once; do not put CPUID checks in hot loops.
+- Dispatch on ISA, operation type, matrix shape, batch size, packing
+  availability, and measured thresholds.
+- Treat GEMV decode and GEMM-like prefill/batched decode as different
+  workloads.
+- Let benchmarks contradict architectural hypotheses.
 
-Current docs:
+## Lineage, license, and attribution
 
-- `docs/TIER2_FP16_CUDA_WORKFLOW.md`: canonical harness usage, compare modes, seed capture, and local replay
-- `docs/TIER2_RESULTS_AND_STATUS.md`: current findings and what remains unresolved
-- `docs/REPO_ALIGNMENT_AND_WORKSTREAMS.md`: active branch/worktree policy and forward workstreams
-
-## Notes
-
-- The workspace intentionally stays narrow. If a new script, test harness, or package format is not part of the Rust serving path, it should not live here by default.
-- A narrow Tier-2 validation harness is intentionally retained under `crates/gpt-oss-bench` and `scripts/` because it is the current source of truth for restricted fp16 CUDA investigation and live testing.
-- Historical optimization notes and fork migration collateral were removed to keep the repository easier to maintain. Add new docs only when they are current and directly useful.
-- Related project: [m0at/rvllm](https://github.com/m0at/rvllm)
-
-## Lineage
-
-This repository began as a narrowed fork of [m0at/rvllm](https://github.com/m0at/rvllm).
-It was then renamed and refocused into `gpt-oss-rs`, a GPT-OSS inference engine.
-
-Credit for the original `rvllm` foundation and inherited upstream work goes to `m0at`
-and the other upstream contributors whose authorship remains preserved in git history.
-
-## License And Attribution
-
-This repository contains inherited upstream work from `m0at/rvllm`, so the repository
-continues to preserve Apache-2.0 licensing and attribution for that code.
-
-The current fork intentionally credits the original upstream work in this README, in
-the git history, and in the repository notice file rather than pretending the codebase
-started here.
+This repository began as a narrowed fork of
+[m0at/rvllm](https://github.com/m0at/rvllm) and was renamed and refocused into
+a GPT-OSS inference engine. The inherited work remains Apache-2.0, with
+authorship preserved in git history and repository notices.
 
 Focused CPU work is additionally attributed in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
-[`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md).
+[`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md). Upstream projects
+are design and semantic references, not linked runtime dependencies.

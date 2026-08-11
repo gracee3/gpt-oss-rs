@@ -153,7 +153,6 @@ pub struct ToolChatChoice {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolChatMessage {
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ResponseToolCall>>,
@@ -287,14 +286,20 @@ pub fn augment_messages_with_tools(
         let sys = &messages[0];
         result.push(ChatMessage {
             role: "system".to_string(),
-            content: format!("{}\n\n{}", tool_text, sys.content),
+            content: Some(format!("{}\n\n{}", tool_text, sys.content_text())),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
         });
         result.extend_from_slice(&messages[1..]);
     } else {
         // Insert a new system message with tool definitions
         result.push(ChatMessage {
             role: "system".to_string(),
-            content: tool_text,
+            content: Some(tool_text),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
         });
         result.extend_from_slice(messages);
     }
@@ -347,7 +352,7 @@ pub async fn create_chat_completion_with_tools(
     let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
         .messages
         .iter()
-        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
+        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, m.content_text()))
         .collect();
     let prompt = protocol
         .render_prompt(&protocol_messages, None, &tool_defs)
@@ -728,7 +733,7 @@ mod tests {
             }]),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(!json.contains("\"content\""));
+        assert!(json.contains("\"content\":null"));
         assert!(json.contains("tool_calls"));
     }
 
@@ -748,10 +753,7 @@ mod tests {
     fn tools_enabled_checks() {
         let base = ChatCompletionToolRequest {
             model: "m".into(),
-            messages: vec![ChatMessage {
-                role: "user".into(),
-                content: "hi".into(),
-            }],
+            messages: vec![ChatMessage::new("user", "hi")],
             max_tokens: 256,
             temperature: 1.0,
             top_p: 1.0,
@@ -801,10 +803,7 @@ mod tests {
 
     #[test]
     fn augment_messages_prepends_system() {
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: "What's the weather?".into(),
-        }];
+        let msgs = vec![ChatMessage::new("user", "What's the weather?")];
         let tools = vec![gpt_oss_tokenizer::ToolDefinition {
             tool_type: "function".to_string(),
             function: gpt_oss_tokenizer::FunctionDefinition {
@@ -817,21 +816,15 @@ mod tests {
             augment_messages_with_tools(&msgs, &tools, gpt_oss_tokenizer::ToolPromptStyle::Hermes);
         assert_eq!(augmented.len(), 2);
         assert_eq!(augmented[0].role, "system");
-        assert!(augmented[0].content.contains("get_weather"));
-        assert_eq!(augmented[1].content, "What's the weather?");
+        assert!(augmented[0].content_text().contains("get_weather"));
+        assert_eq!(augmented[1].content_text(), "What's the weather?");
     }
 
     #[test]
     fn augment_messages_merges_system() {
         let msgs = vec![
-            ChatMessage {
-                role: "system".into(),
-                content: "You are helpful.".into(),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: "Hi".into(),
-            },
+            ChatMessage::new("system", "You are helpful."),
+            ChatMessage::new("user", "Hi"),
         ];
         let tools = vec![gpt_oss_tokenizer::ToolDefinition {
             tool_type: "function".to_string(),
@@ -845,18 +838,15 @@ mod tests {
             augment_messages_with_tools(&msgs, &tools, gpt_oss_tokenizer::ToolPromptStyle::Hermes);
         assert_eq!(augmented.len(), 2);
         assert_eq!(augmented[0].role, "system");
-        assert!(augmented[0].content.contains("search"));
-        assert!(augmented[0].content.contains("You are helpful."));
+        assert!(augmented[0].content_text().contains("search"));
+        assert!(augmented[0].content_text().contains("You are helpful."));
     }
 
     #[test]
     fn validate_bad_tool_choice() {
         let req = ChatCompletionToolRequest {
             model: "m".into(),
-            messages: vec![ChatMessage {
-                role: "user".into(),
-                content: "hi".into(),
-            }],
+            messages: vec![ChatMessage::new("user", "hi")],
             max_tokens: 256,
             temperature: 1.0,
             top_p: 1.0,
@@ -948,10 +938,7 @@ mod tests {
     fn to_sampling_params_maps_fields() {
         let req = ChatCompletionToolRequest {
             model: "m".into(),
-            messages: vec![ChatMessage {
-                role: "user".into(),
-                content: "hi".into(),
-            }],
+            messages: vec![ChatMessage::new("user", "hi")],
             max_tokens: 42,
             temperature: 0.8,
             top_p: 0.95,

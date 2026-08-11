@@ -63,11 +63,7 @@ pub async fn create_chat_completion(
 
     let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
         .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
-    let protocol_messages: Vec<gpt_oss_tokenizer::ProtocolMessage> = req
-        .messages
-        .iter()
-        .map(|m| gpt_oss_tokenizer::ProtocolMessage::new(&m.role, &m.content))
-        .collect();
+    let protocol_messages = req.to_protocol_messages()?;
     let prompt = protocol
         .render_prompt(&protocol_messages, None, &tool_defs)
         .map(|rendered| rendered.text)
@@ -135,7 +131,9 @@ pub async fn create_chat_completion(
                             &stream_id_clone,
                             co.index,
                             &co.token_ids,
-                            output.finished,
+                            output.finished
+                                && co.finish_reason
+                                    != Some(gpt_oss_core::prelude::FinishReason::Length),
                         ) {
                             Ok(value) => value,
                             Err(_) => return,
@@ -176,6 +174,8 @@ pub async fn create_chat_completion(
                     if let Some(reason) = finish {
                         let finish_reason = if is_gpt_oss
                             && tools_active_for_stream
+                            && co.token_ids.last().copied()
+                                == Some(gpt_oss_tokenizer::HARMONY_CALL_TOKEN_ID)
                             && choice_states
                                 .get(&co.index)
                                 .is_some_and(|state| state.has_tool_calls())
@@ -243,15 +243,35 @@ pub async fn create_chat_completion(
                 .iter()
                 .map(|co| {
                     total_completion += co.token_ids.len();
-                    let parsed = protocol
-                        .parse_completion_tokens(&co.token_ids)
-                        .unwrap_or_default();
-                    let content = visible_text_from_protocol_messages(&parsed)
-                        .unwrap_or_else(|| co.text.clone());
+                    let parsed =
+                        if co.finish_reason == Some(gpt_oss_core::prelude::FinishReason::Length) {
+                            protocol
+                                .parse_partial_completion_tokens(&co.token_ids)
+                                .unwrap_or_default()
+                        } else {
+                            protocol
+                                .parse_completion_tokens(&co.token_ids)
+                                .unwrap_or_default()
+                        };
+                    let content =
+                        visible_text_from_protocol_messages(&parsed).unwrap_or_else(|| {
+                            // A length cap can land in a hidden analysis message.
+                            // Do not fall back to decoded Harmony control/header
+                            // text when there is no user-visible partial yet.
+                            if co.finish_reason == Some(gpt_oss_core::prelude::FinishReason::Length)
+                            {
+                                String::new()
+                            } else {
+                                co.text.clone()
+                            }
+                        });
                     ChatChoice {
                         message: crate::types::request::ChatMessage {
                             role: "assistant".to_string(),
-                            content,
+                            content: Some(content),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
                         },
                         index: co.index,
                         finish_reason: co.finish_reason.map(|r| match r {
@@ -301,9 +321,17 @@ pub async fn create_chat_completion(
                             .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))
                             .ok();
                         if let Some(protocol) = protocol {
-                            let parsed = protocol
-                                .parse_completion_tokens(&co.token_ids)
-                                .unwrap_or_default();
+                            let parsed = if co.finish_reason
+                                == Some(gpt_oss_core::prelude::FinishReason::Length)
+                            {
+                                protocol
+                                    .parse_partial_completion_tokens(&co.token_ids)
+                                    .unwrap_or_default()
+                            } else {
+                                protocol
+                                    .parse_completion_tokens(&co.token_ids)
+                                    .unwrap_or_default()
+                            };
                             let tool_calls: Vec<crate::routes::tools::ResponseToolCall> = parsed
                                 .iter()
                                 .filter_map(|message| {
@@ -334,7 +362,10 @@ pub async fn create_chat_completion(
                                     },
                                 },
                                 finish_reason: Some(
-                                    if parsed.iter().any(|message| message.recipient.is_some()) {
+                                    if co.token_ids.last().copied()
+                                        == Some(gpt_oss_tokenizer::HARMONY_CALL_TOKEN_ID)
+                                        && parsed.iter().any(|message| message.recipient.is_some())
+                                    {
                                         "tool_calls".to_string()
                                     } else {
                                         finish_reason_val.unwrap_or("stop").to_string()

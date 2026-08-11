@@ -30,6 +30,15 @@ impl Default for RuntimeMode {
 pub enum BackendPath {
     CudaEager,
     CudaGraph,
+    Cpu,
+    Mock,
+}
+
+/// Backend family requested before graph/eager CUDA refinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackendPreference {
+    Cuda,
+    Cpu,
     Mock,
 }
 
@@ -67,6 +76,7 @@ pub struct PlanRequest {
     pub dtype: Dtype,
     pub layer_types: Vec<String>,
     pub sliding_window: Option<usize>,
+    pub backend: BackendPreference,
 }
 
 impl PlanRequest {
@@ -92,7 +102,13 @@ impl PlanRequest {
             dtype,
             layer_types: Vec::new(),
             sliding_window: None,
+            backend: BackendPreference::Cuda,
         }
+    }
+
+    pub fn with_backend(mut self, backend: BackendPreference) -> Self {
+        self.backend = backend;
+        self
     }
 
     pub fn with_attention_config(
@@ -156,6 +172,52 @@ pub fn plan_request(request: &PlanRequest) -> Result<ExecutionPlan, PlanError> {
             .layer_types
             .iter()
             .any(|layer| matches!(layer.as_str(), "sliding_attention" | "local_attention"));
+
+    if request.backend == BackendPreference::Cpu {
+        if !is_gpt_oss {
+            return Err(PlanError::InvalidRequest(
+                "CPU backend only supports GPT-OSS models".into(),
+            ));
+        }
+        if request.runtime_mode == RuntimeMode::Trusted {
+            return Err(PlanError::InvalidRequest(
+                "trusted GPT-OSS CPU execution is blocked until the final i7 conformance gate"
+                    .into(),
+            ));
+        }
+        return Ok(ExecutionPlan {
+            runtime_mode: request.runtime_mode,
+            model_name: request.model_name.clone(),
+            request_kind,
+            backend_path: BackendPath::Cpu,
+            graph_policy: GraphPolicy::Forbidden {
+                reason: "CUDA graphs are unavailable on the CPU backend".into(),
+            },
+            output_policy,
+            dtype: request.dtype,
+            reason: "selected native GPT-OSS CPU execution".into(),
+        });
+    }
+
+    if request.backend == BackendPreference::Mock {
+        if request.runtime_mode == RuntimeMode::Trusted && is_gpt_oss {
+            return Err(PlanError::InvalidRequest(
+                "trusted GPT-OSS execution rejects the mock backend".into(),
+            ));
+        }
+        return Ok(ExecutionPlan {
+            runtime_mode: request.runtime_mode,
+            model_name: request.model_name.clone(),
+            request_kind,
+            backend_path: BackendPath::Mock,
+            graph_policy: GraphPolicy::Forbidden {
+                reason: "CUDA graphs are unavailable on the mock backend".into(),
+            },
+            output_policy,
+            dtype: request.dtype,
+            reason: "selected explicit test-only mock execution".into(),
+        });
+    }
 
     if request.runtime_mode == RuntimeMode::Trusted && is_gpt_oss && uses_sliding_attention {
         return Err(PlanError::InvalidRequest(
@@ -302,5 +364,55 @@ mod tests {
         .expect_err("trusted sliding attention should be rejected");
 
         assert!(err.to_string().contains("sliding/local attention"));
+    }
+
+    #[test]
+    fn experimental_gpt_oss_cpu_forbids_cuda_graphs() {
+        let plan = plan_request(
+            &PlanRequest::new(
+                RuntimeMode::Experimental,
+                "openai/gpt-oss-20b",
+                false,
+                true,
+                true,
+                32,
+                Some(8),
+                Dtype::BFloat16,
+            )
+            .with_backend(BackendPreference::Cpu),
+        )
+        .unwrap();
+
+        assert_eq!(plan.backend_path, BackendPath::Cpu);
+        assert!(matches!(plan.graph_policy, GraphPolicy::Forbidden { .. }));
+    }
+
+    #[test]
+    fn cpu_rejects_non_gpt_oss_and_trusted_gpt_oss() {
+        let non_gpt = PlanRequest::new(
+            RuntimeMode::Experimental,
+            "other/model",
+            true,
+            true,
+            false,
+            1,
+            None,
+            Dtype::BFloat16,
+        )
+        .with_backend(BackendPreference::Cpu);
+        assert!(plan_request(&non_gpt).is_err());
+
+        let trusted = PlanRequest::new(
+            RuntimeMode::Trusted,
+            "openai/gpt-oss-20b",
+            true,
+            true,
+            false,
+            1,
+            None,
+            Dtype::BFloat16,
+        )
+        .with_backend(BackendPreference::Cpu);
+        assert!(plan_request(&trusted).is_err());
     }
 }

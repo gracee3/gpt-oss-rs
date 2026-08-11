@@ -51,7 +51,7 @@ impl OutputProcessor {
         top_logprobs: Option<Vec<(TokenId, LogProb)>>,
         decoded_text: &str,
         params: &SamplingParams,
-        eos_token_id: Option<TokenId>,
+        terminal_token_ids: &[TokenId],
     ) {
         state.token_ids.push(token_id);
         state.cumulative_logprob += logprob;
@@ -63,7 +63,7 @@ impl OutputProcessor {
 
         // Check stop conditions
         if let Some(reason) =
-            StopChecker::check_stop(&state.text, &state.token_ids, params, eos_token_id)
+            StopChecker::check_stop(&state.text, &state.token_ids, params, terminal_token_ids)
         {
             state.finish_reason = Some(reason);
 
@@ -156,13 +156,13 @@ mod tests {
         let mut state = SequenceOutputState::new();
         let params = default_params();
 
-        OutputProcessor::process_token(&mut state, 10, -0.5, None, "hello", &params, None);
+        OutputProcessor::process_token(&mut state, 10, -0.5, None, "hello", &params, &[]);
         assert_eq!(state.token_ids, vec![10]);
         assert_eq!(state.text, "hello");
         assert!((state.cumulative_logprob - (-0.5)).abs() < 1e-6);
         assert!(!state.is_finished());
 
-        OutputProcessor::process_token(&mut state, 20, -1.0, None, " world", &params, None);
+        OutputProcessor::process_token(&mut state, 20, -1.0, None, " world", &params, &[]);
         assert_eq!(state.token_ids, vec![10, 20]);
         assert_eq!(state.text, "hello world");
         assert!((state.cumulative_logprob - (-1.5)).abs() < 1e-6);
@@ -173,7 +173,7 @@ mod tests {
         let mut state = SequenceOutputState::new();
         let params = default_params();
 
-        OutputProcessor::process_token(&mut state, 99, -0.1, None, "done", &params, Some(99));
+        OutputProcessor::process_token(&mut state, 99, -0.1, None, "done", &params, &[99]);
         assert!(state.is_finished());
         assert_eq!(state.finish_reason, Some(FinishReason::Stop));
     }
@@ -184,9 +184,9 @@ mod tests {
         let mut params = default_params();
         params.max_tokens = 2;
 
-        OutputProcessor::process_token(&mut state, 1, -0.1, None, "a", &params, None);
+        OutputProcessor::process_token(&mut state, 1, -0.1, None, "a", &params, &[]);
         assert!(!state.is_finished());
-        OutputProcessor::process_token(&mut state, 2, -0.2, None, "b", &params, None);
+        OutputProcessor::process_token(&mut state, 2, -0.2, None, "b", &params, &[]);
         assert!(state.is_finished());
         assert_eq!(state.finish_reason, Some(FinishReason::Length));
     }
@@ -197,7 +197,7 @@ mod tests {
         let mut params = default_params();
         params.stop_strings = vec!["<end>".to_string()];
 
-        OutputProcessor::process_token(&mut state, 1, -0.1, None, "text<end>more", &params, None);
+        OutputProcessor::process_token(&mut state, 1, -0.1, None, "text<end>more", &params, &[]);
         assert!(state.is_finished());
         assert_eq!(state.finish_reason, Some(FinishReason::Stop));
         // Text should be truncated at the stop string
@@ -210,7 +210,7 @@ mod tests {
         let params = default_params();
         let top = vec![(10, -0.5_f32), (20, -1.0)];
 
-        OutputProcessor::process_token(&mut state, 10, -0.5, Some(top.clone()), "a", &params, None);
+        OutputProcessor::process_token(&mut state, 10, -0.5, Some(top.clone()), "a", &params, &[]);
         assert_eq!(state.logprobs.len(), 1);
         assert_eq!(state.logprobs[0], top);
     }

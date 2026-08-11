@@ -111,6 +111,13 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
 
     // Device
     config.device.device = args.device.clone();
+    config.device.cpu_kernel = args.cpu_kernel.clone();
+    if let Some(cpu_threads) = args.cpu_threads {
+        config.device.cpu_threads = cpu_threads;
+    }
+    if let Some(cpu_repack_cache) = &args.cpu_repack_cache {
+        config.device.cpu_repack_cache = cpu_repack_cache.clone();
+    }
 
     // Telemetry
     config.telemetry.enabled = !args.disable_telemetry;
@@ -146,6 +153,9 @@ mod tests {
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            cpu_kernel: "auto".into(),
+            cpu_threads: None,
+            cpu_repack_cache: None,
             disable_telemetry: false,
             prometheus_port: Some(9090),
             otlp_endpoint: None,
@@ -217,6 +227,9 @@ log_level = "warn"
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            cpu_kernel: "auto".into(),
+            cpu_threads: None,
+            cpu_repack_cache: None,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,
@@ -253,6 +266,9 @@ log_level = "warn"
             tensor_parallel_size: 1,
             pipeline_parallel_size: 1,
             device: "cuda".into(),
+            cpu_kernel: "auto".into(),
+            cpu_threads: None,
+            cpu_repack_cache: None,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,

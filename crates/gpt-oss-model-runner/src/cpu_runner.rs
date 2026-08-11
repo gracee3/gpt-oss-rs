@@ -5,14 +5,19 @@
 //! Transformer operation boundaries are BF16 with FP32 accumulation.
 
 use std::cmp::Ordering;
+use std::fmt;
 use std::path::Path;
+use std::str::FromStr;
 
 use half::bf16;
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use gpt_oss_core::error::{LLMError, Result};
-use gpt_oss_cpu_kernels::{e8m0_scale, KernelPath, Kernels, Mxfp4Block, Q8Block, QUANT_BLOCK_SIZE};
+use gpt_oss_cpu_kernels::{
+    accumulate_mxfp4_bf16_block, e8m0_scale, DispatchPlan, KernelPath, Kernels, Mxfp4Block,
+    Q8Block, ResidualQ8Block, QUANT_BLOCK_SIZE,
+};
 
 use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
 use crate::cpu_tensor_store::{CpuTensor, CpuTensorStore};
@@ -20,6 +25,58 @@ use crate::model_loader::dtype::DType;
 
 const DEFAULT_SWIGLU_ALPHA: f32 = 1.702;
 const DEFAULT_SWIGLU_LIMIT: f32 = 7.0;
+
+/// Internal activation-projection strategy for CPU MXFP4 experts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CpuExpertProjection {
+    Q8,
+    ResidualQ8,
+    ExactBf16,
+}
+
+impl CpuExpertProjection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Q8 => "q8",
+            Self::ResidualQ8 => "residual-q8",
+            Self::ExactBf16 => "exact-bf16",
+        }
+    }
+}
+
+impl Default for CpuExpertProjection {
+    fn default() -> Self {
+        Self::ResidualQ8
+    }
+}
+
+impl fmt::Display for CpuExpertProjection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CpuExpertProjection {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "q8" => Ok(Self::Q8),
+            "residual-q8" | "residual_q8" => Ok(Self::ResidualQ8),
+            "exact-bf16" | "exact_bf16" => Ok(Self::ExactBf16),
+            _ => Err(format!("unknown CPU expert projection mode '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CpuModelRunnerOptions {
+    pub kernel_path: KernelPath,
+    pub threads: usize,
+    pub context_cap: usize,
+    pub expert_projection: CpuExpertProjection,
+}
 
 fn default_alpha() -> f32 {
     DEFAULT_SWIGLU_ALPHA
@@ -182,6 +239,73 @@ pub struct CpuModelRunner {
     caches: Vec<CpuKvCache>,
     context_cap: usize,
     position: usize,
+    token_history: Vec<u32>,
+    expert_projection: CpuExpertProjection,
+}
+
+/// Selected intermediate values from the final token of a CPU prefill.
+///
+/// Captures are opt-in and intended for offline oracle comparison. Normal
+/// serving does not allocate these vectors.
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuLayerTrace {
+    pub layer_index: usize,
+    pub input_norm: Vec<f32>,
+    pub query_after_rope: Vec<f32>,
+    pub key_after_rope: Vec<f32>,
+    pub value_projection: Vec<f32>,
+    pub attention_context: Vec<f32>,
+    pub attention_projection: Vec<f32>,
+    pub post_attention_residual: Vec<f32>,
+    pub router_logits: Vec<f32>,
+    pub selected_experts: Vec<usize>,
+    pub routing_weights: Vec<f32>,
+    pub experts: Vec<CpuExpertTrace>,
+    pub moe_output: Vec<f32>,
+    pub layer_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuExpertTrace {
+    pub rank: usize,
+    pub expert_index: usize,
+    pub gate_up_projection: Vec<f32>,
+    pub swiglu: Vec<f32>,
+    pub down_projection: Vec<f32>,
+    pub weighted_output: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuTopLogit {
+    pub token_id: usize,
+    pub logit: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuPrefillTrace {
+    pub prompt_token_ids: Vec<u32>,
+    pub context_token_ids: Vec<u32>,
+    pub trace_step: usize,
+    pub expert_projection: CpuExpertProjection,
+    pub compatibility_kernel_path: String,
+    pub dispatch_plan: String,
+    pub layers: Vec<CpuLayerTrace>,
+    pub final_norm: Vec<f32>,
+    pub top_logits: Vec<CpuTopLogit>,
+}
+
+struct CpuMoeStep {
+    router_logits: Vec<f32>,
+    selected_experts: Vec<usize>,
+    routing_weights: Vec<f32>,
+    experts: Vec<CpuExpertTrace>,
+    output: Vec<f32>,
+}
+
+enum PreparedExpertInput {
+    Q8(Vec<Q8Block>),
+    ResidualQ8(Vec<ResidualQ8Block>),
+    ExactBf16(Vec<bf16>),
 }
 
 struct CpuLayer {
@@ -282,26 +406,43 @@ impl CpuModelRunner {
         threads: usize,
         context_cap: usize,
     ) -> Result<Self> {
-        if threads == 0 || context_cap == 0 {
+        Self::load_with_options(
+            snapshot,
+            repack_root,
+            CpuModelRunnerOptions {
+                kernel_path,
+                threads,
+                context_cap,
+                expert_projection: CpuExpertProjection::default(),
+            },
+        )
+    }
+
+    pub fn load_with_options(
+        snapshot: impl AsRef<Path>,
+        repack_root: impl AsRef<Path>,
+        options: CpuModelRunnerOptions,
+    ) -> Result<Self> {
+        if options.threads == 0 || options.context_cap == 0 {
             return Err(LLMError::ConfigError(
                 "CPU threads and context cap must be non-zero".into(),
             ));
         }
         let snapshot = snapshot.as_ref();
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
-        if context_cap > config.max_position_embeddings {
+        if options.context_cap > config.max_position_embeddings {
             return Err(LLMError::ConfigError(format!(
-                "CPU context cap {context_cap} exceeds checkpoint maximum {}",
-                config.max_position_embeddings
+                "CPU context cap {} exceeds checkpoint maximum {}",
+                options.context_cap, config.max_position_embeddings
             )));
         }
         let store = CpuTensorStore::open(snapshot)?;
         let identity = SourceIdentity::from_store(&store)?;
         let repack = CpuRepackCache::new(repack_root.as_ref(), identity);
-        let kernels =
-            Kernels::new(kernel_path).map_err(|error| LLMError::ConfigError(error.to_string()))?;
+        let kernels = Kernels::new(options.kernel_path)
+            .map_err(|error| LLMError::ConfigError(error.to_string()))?;
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
+            .num_threads(options.threads)
             .thread_name(|index| format!("gpt-oss-cpu-{index}"))
             .build()
             .map_err(|error| LLMError::ModelError(format!("CPU thread pool: {error}")))?;
@@ -321,7 +462,7 @@ impl CpuModelRunner {
             &[config.vocab_size, config.hidden_size],
         )?;
 
-        let effective_cap = context_cap;
+        let effective_cap = options.context_cap;
         let token_width = config.num_key_value_heads * config.head_dim;
         let caches = layers
             .iter()
@@ -348,6 +489,8 @@ impl CpuModelRunner {
             caches,
             context_cap: effective_cap,
             position: 0,
+            token_history: Vec::with_capacity(effective_cap),
+            expert_projection: options.expert_projection,
         })
     }
 
@@ -357,6 +500,14 @@ impl CpuModelRunner {
 
     pub const fn kernel_path(&self) -> KernelPath {
         self.kernels.path()
+    }
+
+    pub const fn kernel_dispatch_plan(&self) -> DispatchPlan {
+        self.kernels.dispatch_plan()
+    }
+
+    pub const fn expert_projection(&self) -> CpuExpertProjection {
+        self.expert_projection
     }
 
     pub const fn position(&self) -> usize {
@@ -389,6 +540,7 @@ impl CpuModelRunner {
             cache.clear();
         }
         self.position = 0;
+        self.token_history.clear();
     }
 
     pub fn prefill(&mut self, token_ids: &[u32]) -> Result<Vec<f32>> {
@@ -403,6 +555,29 @@ impl CpuModelRunner {
         Ok(logits)
     }
 
+    /// Run a normal prefill while capturing selected layer intermediates for
+    /// the final prompt token. Generated trace data is never retained by the
+    /// serving path.
+    pub fn prefill_trace(
+        &mut self,
+        token_ids: &[u32],
+        selected_layers: &[usize],
+        top_k: usize,
+    ) -> Result<(Vec<f32>, CpuPrefillTrace)> {
+        if token_ids.is_empty() {
+            return Err(LLMError::ModelError("CPU prefill is empty".into()));
+        }
+        self.validate_trace_layers(selected_layers)?;
+        self.reset();
+        for &token in &token_ids[..token_ids.len() - 1] {
+            self.forward_token(token)?;
+        }
+        let (logits, layers, final_norm) =
+            self.forward_token_with_trace(token_ids[token_ids.len() - 1], selected_layers)?;
+        let trace = self.finish_trace(&logits, layers, final_norm, top_k, 0);
+        Ok((logits, trace))
+    }
+
     pub fn decode(&mut self, token_id: u32) -> Result<Vec<f32>> {
         if self.position == 0 {
             return Err(LLMError::ModelError(
@@ -412,7 +587,75 @@ impl CpuModelRunner {
         self.forward_token(token_id)
     }
 
+    /// Decode one context token and capture the resulting logits used to
+    /// select generated token `trace_step`.
+    pub fn decode_trace(
+        &mut self,
+        token_id: u32,
+        selected_layers: &[usize],
+        top_k: usize,
+        trace_step: usize,
+    ) -> Result<(Vec<f32>, CpuPrefillTrace)> {
+        if self.position == 0 {
+            return Err(LLMError::ModelError(
+                "CPU decode trace requires an existing prefill cache".into(),
+            ));
+        }
+        if trace_step == 0 {
+            return Err(LLMError::ConfigError(
+                "CPU decode trace step must be greater than zero".into(),
+            ));
+        }
+        self.validate_trace_layers(selected_layers)?;
+        let (logits, layers, final_norm) =
+            self.forward_token_with_trace(token_id, selected_layers)?;
+        let trace = self.finish_trace(&logits, layers, final_norm, top_k, trace_step);
+        Ok((logits, trace))
+    }
+
+    fn validate_trace_layers(&self, selected_layers: &[usize]) -> Result<()> {
+        if selected_layers
+            .iter()
+            .any(|&index| index >= self.layers.len())
+        {
+            return Err(LLMError::ConfigError(
+                "CPU trace layer index is out of range".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn finish_trace(
+        &self,
+        logits: &[f32],
+        layers: Vec<CpuLayerTrace>,
+        final_norm: Vec<f32>,
+        top_k: usize,
+        trace_step: usize,
+    ) -> CpuPrefillTrace {
+        CpuPrefillTrace {
+            prompt_token_ids: self.token_history.clone(),
+            context_token_ids: self.token_history.clone(),
+            trace_step,
+            expert_projection: self.expert_projection,
+            compatibility_kernel_path: self.kernel_path().to_string(),
+            dispatch_plan: self.kernel_dispatch_plan().to_string(),
+            layers,
+            final_norm,
+            top_logits: top_logits(logits, top_k),
+        }
+    }
+
     fn forward_token(&mut self, token_id: u32) -> Result<Vec<f32>> {
+        self.forward_token_with_trace(token_id, &[])
+            .map(|(logits, _, _)| logits)
+    }
+
+    fn forward_token_with_trace(
+        &mut self,
+        token_id: u32,
+        selected_layers: &[usize],
+    ) -> Result<(Vec<f32>, Vec<CpuLayerTrace>, Vec<f32>)> {
         if self.position >= self.context_cap {
             return Err(LLMError::ModelError(format!(
                 "CPU context cap {} exceeded",
@@ -430,9 +673,16 @@ impl CpuModelRunner {
         let embedding = embedding.bf16()?;
         let start = token * self.config.hidden_size;
         let mut hidden = embedding[start..start + self.config.hidden_size].to_vec();
+        let mut layer_traces = Vec::with_capacity(selected_layers.len());
 
         for layer_index in 0..self.layers.len() {
-            hidden = self.forward_layer(layer_index, &hidden, self.position)?;
+            let capture = selected_layers.contains(&layer_index);
+            let (next_hidden, trace) =
+                self.forward_layer_with_trace(layer_index, &hidden, self.position, capture)?;
+            hidden = next_hidden;
+            if let Some(trace) = trace {
+                layer_traces.push(trace);
+            }
         }
         let normalized = self.norm_boundary(&hidden, &self.final_norm)?;
         let mut logits = self.project_bf16("lm_head.weight", &normalized, None)?;
@@ -443,7 +693,13 @@ impl CpuModelRunner {
             ));
         }
         self.position += 1;
-        Ok(logits)
+        self.token_history.push(token_id);
+        let final_norm = if selected_layers.is_empty() {
+            Vec::new()
+        } else {
+            bf16_slice_to_f32(&normalized)
+        };
+        Ok((logits, layer_traces, final_norm))
     }
 
     fn forward_layer(
@@ -452,6 +708,17 @@ impl CpuModelRunner {
         hidden: &[bf16],
         position: usize,
     ) -> Result<Vec<bf16>> {
+        self.forward_layer_with_trace(index, hidden, position, false)
+            .map(|(hidden, _)| hidden)
+    }
+
+    fn forward_layer_with_trace(
+        &mut self,
+        index: usize,
+        hidden: &[bf16],
+        position: usize,
+        capture: bool,
+    ) -> Result<(Vec<bf16>, Option<CpuLayerTrace>)> {
         let layer = &self.layers[index];
         let normalized = self.norm_boundary(hidden, &layer.input_norm)?;
 
@@ -476,7 +743,7 @@ impl CpuModelRunner {
             .collect::<Vec<_>>();
         self.caches[index].append(position, &key, &value)?;
 
-        let attention = attention_one(
+        let attention_context = attention_one(
             &q,
             &self.caches[index],
             &layer.sinks,
@@ -484,17 +751,37 @@ impl CpuModelRunner {
             self.config.num_key_value_heads,
             self.config.head_dim,
         )?;
-        let attention = attention
-            .into_iter()
+        let attention = attention_context
+            .iter()
+            .copied()
             .map(bf16::from_f32)
             .collect::<Vec<_>>();
-        let projected = self.project_bf16(&layer.o_weight, &attention, Some(&layer.o_bias))?;
-        let mut after_attention = add_residual(hidden, &projected);
+        let mut projected = self.project_bf16(&layer.o_weight, &attention, Some(&layer.o_bias))?;
+        // Official F.linear returns BF16 here before the residual addition.
+        fp32_to_bf16_roundtrip(&mut projected);
+        let after_attention = add_residual(hidden, &projected);
 
-        let normalized = self.norm_boundary(&after_attention, &layer.post_attention_norm)?;
-        let moe = self.moe_one(layer, &normalized)?;
-        after_attention = add_residual(&after_attention, &moe);
-        Ok(after_attention)
+        let post_attention_normalized =
+            self.norm_boundary(&after_attention, &layer.post_attention_norm)?;
+        let moe = self.moe_one(layer, &post_attention_normalized, capture)?;
+        let layer_output = add_residual(&after_attention, &moe.output);
+        let trace = capture.then(|| CpuLayerTrace {
+            layer_index: index,
+            input_norm: bf16_slice_to_f32(&normalized),
+            query_after_rope: q,
+            key_after_rope: k,
+            value_projection: bf16_slice_to_f32(&value),
+            attention_context,
+            attention_projection: projected,
+            post_attention_residual: bf16_slice_to_f32(&after_attention),
+            router_logits: moe.router_logits,
+            selected_experts: moe.selected_experts,
+            routing_weights: moe.routing_weights,
+            experts: moe.experts,
+            moe_output: moe.output,
+            layer_output: bf16_slice_to_f32(&layer_output),
+        });
+        Ok((layer_output, trace))
     }
 
     fn norm_boundary(&self, input: &[bf16], weight: &[f32]) -> Result<Vec<bf16>> {
@@ -553,7 +840,7 @@ impl CpuModelRunner {
         Ok(output)
     }
 
-    fn moe_one(&self, layer: &CpuLayer, input: &[bf16]) -> Result<Vec<f32>> {
+    fn moe_one(&self, layer: &CpuLayer, input: &[bf16], capture: bool) -> Result<CpuMoeStep> {
         let mut router =
             self.project_bf16(&layer.router_weight, input, Some(&layer.router_bias))?;
         fp32_to_bf16_roundtrip(&mut router);
@@ -567,14 +854,17 @@ impl CpuModelRunner {
             .iter()
             .map(|index| router[*index])
             .collect::<Vec<_>>();
-        let route_weights = softmax(&route_logits);
-        let input_f32 = input.iter().map(|value| value.to_f32()).collect::<Vec<_>>();
-        let input_q8 = self.kernels.quantize_q8(&input_f32).map_err(kernel_error)?;
+        let route_weights = softmax(&route_logits)
+            .into_iter()
+            .map(|weight| bf16::from_f32(weight).to_f32())
+            .collect::<Vec<_>>();
+        let prepared_input = self.prepare_expert_input(input)?;
         let mut output = vec![0.0_f32; self.config.hidden_size];
+        let mut expert_traces = Vec::with_capacity(if capture { selected.len() } else { 0 });
 
-        for (rank, expert) in selected.into_iter().enumerate() {
+        for (rank, &expert) in selected.iter().enumerate() {
             let mut gate_up =
-                self.project_mxfp4(&layer.gate_up, expert, &input_q8, &layer.gate_up_bias)?;
+                self.project_mxfp4(&layer.gate_up, expert, &prepared_input, &layer.gate_up_bias)?;
             fp32_to_bf16_roundtrip(&mut gate_up);
             let activated = gpt_oss_swiglu(
                 &gate_up,
@@ -587,27 +877,80 @@ impl CpuModelRunner {
                 .map(bf16::from_f32)
                 .map(|value| value.to_f32())
                 .collect::<Vec<_>>();
-            let activated_q8 = self.kernels.quantize_q8(&activated).map_err(kernel_error)?;
+            let activated_bf16 = activated
+                .iter()
+                .copied()
+                .map(bf16::from_f32)
+                .collect::<Vec<_>>();
+            let prepared_activated = self.prepare_expert_input(&activated_bf16)?;
             let mut expert_output =
-                self.project_mxfp4(&layer.down, expert, &activated_q8, &layer.down_bias)?;
+                self.project_mxfp4(&layer.down, expert, &prepared_activated, &layer.down_bias)?;
             fp32_to_bf16_roundtrip(&mut expert_output);
             let route_weight = bf16::from_f32(route_weights[rank]).to_f32();
-            for (destination, value) in output.iter_mut().zip(expert_output) {
-                *destination += value * route_weight;
+            let weighted_output = expert_output
+                .iter()
+                .map(|value| *value * route_weight)
+                .collect::<Vec<_>>();
+            for (destination, value) in output.iter_mut().zip(&weighted_output) {
+                *destination += *value;
+            }
+            if capture {
+                expert_traces.push(CpuExpertTrace {
+                    rank,
+                    expert_index: expert,
+                    gate_up_projection: gate_up,
+                    swiglu: activated,
+                    down_projection: expert_output,
+                    weighted_output,
+                });
             }
         }
-        Ok(output)
+        // The official expert-weight einsum returns BF16 before the residual
+        // addition.
+        fp32_to_bf16_roundtrip(&mut output);
+        Ok(CpuMoeStep {
+            router_logits: router,
+            selected_experts: selected,
+            routing_weights: route_weights,
+            experts: expert_traces,
+            output,
+        })
+    }
+
+    fn prepare_expert_input(&self, input: &[bf16]) -> Result<PreparedExpertInput> {
+        match self.expert_projection {
+            CpuExpertProjection::Q8 => {
+                let input = bf16_slice_to_f32(input);
+                Ok(PreparedExpertInput::Q8(
+                    self.kernels.quantize_q8(&input).map_err(kernel_error)?,
+                ))
+            }
+            CpuExpertProjection::ResidualQ8 => {
+                let input = bf16_slice_to_f32(input);
+                Ok(PreparedExpertInput::ResidualQ8(
+                    self.kernels
+                        .quantize_residual_q8(&input)
+                        .map_err(kernel_error)?,
+                ))
+            }
+            CpuExpertProjection::ExactBf16 => Ok(PreparedExpertInput::ExactBf16(input.to_vec())),
+        }
     }
 
     fn project_mxfp4(
         &self,
         weights: &RepackedMxfp4,
         expert: usize,
-        input: &[Q8Block],
+        input: &PreparedExpertInput,
         bias: &[f32],
     ) -> Result<Vec<f32>> {
         let [experts, rows, blocks] = weights.shape();
-        if expert >= experts || input.len() != blocks || bias.len() != experts * rows {
+        let input_blocks = match input {
+            PreparedExpertInput::Q8(input) => input.len(),
+            PreparedExpertInput::ResidualQ8(input) => input.len(),
+            PreparedExpertInput::ExactBf16(input) => input.len() / QUANT_BLOCK_SIZE,
+        };
+        if expert >= experts || input_blocks != blocks || bias.len() != experts * rows {
             return Err(LLMError::ModelError(
                 "invalid CPU MXFP4 projection dimensions".into(),
             ));
@@ -620,14 +963,53 @@ impl CpuModelRunner {
                 .enumerate()
                 .try_for_each(|(row, destination)| {
                     let mut total = bias[expert * rows + row];
-                    for (block_index, activation) in input.iter().enumerate() {
-                        let (scale, packed) = weights.record(expert, row, block_index)?;
-                        let weight = Mxfp4Block {
-                            scale,
-                            packed: *packed,
-                        };
-                        let integer = kernels.mxfp4_q8_block_dot_i32(&weight, activation);
-                        total += integer as f32 * 0.5 * e8m0_scale(scale) * activation.scale;
+                    match input {
+                        PreparedExpertInput::Q8(input) => {
+                            for (block_index, activation) in input.iter().enumerate() {
+                                let (scale, packed) = weights.record(expert, row, block_index)?;
+                                let weight = Mxfp4Block {
+                                    scale,
+                                    packed: *packed,
+                                };
+                                let integer = kernels.mxfp4_q8_block_dot_i32(&weight, activation);
+                                total +=
+                                    integer as f32 * 0.5 * e8m0_scale(scale) * activation.scale;
+                            }
+                        }
+                        PreparedExpertInput::ResidualQ8(input) => {
+                            for (block_index, activation) in input.iter().enumerate() {
+                                let (scale, packed) = weights.record(expert, row, block_index)?;
+                                let weight = Mxfp4Block {
+                                    scale,
+                                    packed: *packed,
+                                };
+                                let [primary, residual] =
+                                    kernels.mxfp4_residual_q8_block_dot_i32(&weight, activation);
+                                let weight_scale = 0.5 * e8m0_scale(scale);
+                                total += primary as f32 * weight_scale * activation.primary.scale;
+                                total += residual as f32 * weight_scale * activation.residual.scale;
+                            }
+                        }
+                        PreparedExpertInput::ExactBf16(input) => {
+                            let mut lanes = [0.0_f32; 16];
+                            for (block_index, activation) in
+                                input.chunks_exact(QUANT_BLOCK_SIZE).enumerate()
+                            {
+                                let (scale, packed) = weights.record(expert, row, block_index)?;
+                                let weight = Mxfp4Block {
+                                    scale,
+                                    packed: *packed,
+                                };
+                                let activation: &[bf16; QUANT_BLOCK_SIZE] =
+                                    activation.try_into().map_err(|_| {
+                                        LLMError::ModelError(
+                                            "invalid exact BF16 activation block".into(),
+                                        )
+                                    })?;
+                                accumulate_mxfp4_bf16_block(&weight, activation, &mut lanes);
+                            }
+                            total += lanes.into_iter().sum::<f32>();
+                        }
                     }
                     *destination = total;
                     Ok::<(), LLMError>(())
@@ -854,6 +1236,28 @@ fn fp32_to_bf16_roundtrip(values: &mut [f32]) {
     }
 }
 
+fn bf16_slice_to_f32(values: &[bf16]) -> Vec<f32> {
+    values.iter().map(|value| value.to_f32()).collect()
+}
+
+fn top_logits(logits: &[f32], k: usize) -> Vec<CpuTopLogit> {
+    let mut indices = (0..logits.len()).collect::<Vec<_>>();
+    indices.sort_by(|left, right| {
+        logits[*right]
+            .partial_cmp(&logits[*left])
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.cmp(right))
+    });
+    indices.truncate(k.min(indices.len()));
+    indices
+        .into_iter()
+        .map(|token_id| CpuTopLogit {
+            token_id,
+            logit: logits[token_id],
+        })
+        .collect()
+}
+
 fn stable_top_k(values: &[f32], k: usize) -> Vec<usize> {
     let mut indices = (0..values.len()).collect::<Vec<_>>();
     indices.sort_by(|left, right| {
@@ -897,8 +1301,15 @@ fn gpt_oss_swiglu(
         .map(|index| {
             let gate = gate_up[index * 2].min(limit);
             let up = gate_up[index * 2 + 1].clamp(-limit, limit);
-            let glu = gate * (1.0 / (1.0 + (-gate * alpha).exp()));
-            (up + 1.0) * glu
+            // The official operator retains the BF16 input dtype at every
+            // tensor operation. PyTorch applies the scalar alpha in FP32 and
+            // rounds the product, sigmoid, both multiplies, and the add back
+            // to BF16.
+            let scaled_gate = bf16::from_f32(gate * alpha).to_f32();
+            let sigmoid = bf16::from_f32(1.0 / (1.0 + (-scaled_gate).exp())).to_f32();
+            let glu = bf16::from_f32(gate * sigmoid).to_f32();
+            let linear = bf16::from_f32(up + 1.0).to_f32();
+            bf16::from_f32(glu * linear).to_f32()
         })
         .collect())
 }
@@ -931,12 +1342,16 @@ fn attention_one(
         let mut scores = Vec::with_capacity(cache.len);
         for token in 0..cache.len {
             let key = cache.key(token, kv_head, head_dim);
-            let score = q
+            let dot = q
                 .iter()
                 .zip(key)
                 .map(|(query, key)| *query * key.to_f32())
-                .sum::<f32>()
-                * scale;
+                .sum::<f32>();
+            // The official PyTorch reference executes both the BF16 QK
+            // contraction and its in-place scale in BF16. Preserve both
+            // rounding boundaries before softmax.
+            let dot = bf16::from_f32(dot).to_f32();
+            let score = bf16::from_f32(dot * scale).to_f32();
             scores.push(score);
         }
         let maximum = scores.iter().copied().fold(sinks[head], f32::max);
@@ -947,7 +1362,9 @@ fn attention_one(
                 .sum::<f32>();
         let destination = &mut output[head * head_dim..(head + 1) * head_dim];
         for (token, score) in scores.into_iter().enumerate() {
-            let probability = (score - maximum).exp() / denominator;
+            // torch.softmax retains the BF16 input dtype even though its
+            // reduction is accumulated in FP32.
+            let probability = bf16::from_f32((score - maximum).exp() / denominator).to_f32();
             for (destination, value) in destination
                 .iter_mut()
                 .zip(cache.value(token, kv_head, head_dim))
@@ -955,13 +1372,18 @@ fn attention_one(
                 *destination += probability * value.to_f32();
             }
         }
+        // The final BF16 einsum rounds the attention/value contraction before
+        // the output projection.
+        for value in destination {
+            *value = bf16::from_f32(*value).to_f32();
+        }
     }
     Ok(output)
 }
 
 #[derive(Debug, Clone)]
 struct YarnRope {
-    inv_freq: Vec<f64>,
+    inv_freq: Vec<f32>,
     attention_scale: f32,
     head_dim: usize,
 }
@@ -975,9 +1397,7 @@ impl YarnRope {
             let inv_freq = (0..config.head_dim)
                 .step_by(2)
                 .map(|index| {
-                    1.0 / config
-                        .rope_theta
-                        .powf(index as f64 / config.head_dim as f64)
+                    1.0_f32 / (config.rope_theta as f32).powf(index as f32 / config.head_dim as f32)
                 })
                 .collect();
             return Ok(Self {
@@ -1005,9 +1425,13 @@ impl YarnRope {
         let range = (high - low).abs().max(0.001);
         let inv_freq = (0..dim / 2)
             .map(|index| {
-                let extrapolation = 1.0 / config.rope_theta.powf((index * 2) as f64 / dim as f64);
-                let interpolation = extrapolation / scaling.factor;
-                let ramp = ((index as f64 - low) / range).clamp(0.0, 1.0);
+                // Match the official PyTorch reference's float32 tensor
+                // construction. The correction bounds are Python/f64 scalar
+                // values, but every tensor operation rounds to float32.
+                let frequency = (config.rope_theta as f32).powf((index * 2) as f32 / dim as f32);
+                let extrapolation = 1.0_f32 / frequency;
+                let interpolation = 1.0_f32 / (scaling.factor as f32 * frequency);
+                let ramp = ((index as f32 - low as f32) / range as f32).clamp(0.0, 1.0);
                 interpolation * ramp + extrapolation * (1.0 - ramp)
             })
             .collect();
@@ -1026,13 +1450,20 @@ impl YarnRope {
         for head in 0..heads {
             let start = head * self.head_dim;
             for index in 0..half {
-                let angle = position as f64 * self.inv_freq[index];
-                let cosine = angle.cos() as f32 * self.attention_scale;
-                let sine = angle.sin() as f32 * self.attention_scale;
-                let left = values[start + index];
-                let right = values[start + half + index];
-                values[start + index] = left * cosine - right * sine;
-                values[start + half + index] = right * cosine + left * sine;
+                let angle = position as f32 * self.inv_freq[index];
+                // The official reference converts cos/sin to the query's
+                // BF16 dtype before applying rotary embedding. Preserve each
+                // BF16 multiply and add/subtract boundary here.
+                let cosine = bf16::from_f32(angle.cos() * self.attention_scale).to_f32();
+                let sine = bf16::from_f32(angle.sin() * self.attention_scale).to_f32();
+                let left = bf16::from_f32(values[start + index]).to_f32();
+                let right = bf16::from_f32(values[start + half + index]).to_f32();
+                let left_cosine = bf16::from_f32(left * cosine).to_f32();
+                let right_sine = bf16::from_f32(right * sine).to_f32();
+                let right_cosine = bf16::from_f32(right * cosine).to_f32();
+                let left_sine = bf16::from_f32(left * sine).to_f32();
+                values[start + index] = bf16::from_f32(left_cosine - right_sine).to_f32();
+                values[start + half + index] = bf16::from_f32(right_cosine + left_sine).to_f32();
             }
         }
         Ok(())
@@ -1248,6 +1679,31 @@ mod tests {
     }
 
     #[test]
+    fn attention_preserves_official_bf16_operator_boundaries() {
+        let mut cache = CpuKvCache::new(2, 3);
+        let keys = [[0.5, -0.25], [-0.75, 0.125], [0.375, 0.625]];
+        let values = [[1.25, -0.5], [-0.75, 2.0], [0.375, -1.5]];
+        for (position, (key, value)) in keys.into_iter().zip(values).enumerate() {
+            cache
+                .append(
+                    position,
+                    &key.map(bf16::from_f32),
+                    &value.map(bf16::from_f32),
+                )
+                .unwrap();
+        }
+
+        let output = attention_one(&[0.3125, -0.6875], &cache, &[0.2], 1, 1, 2).unwrap();
+        assert_eq!(
+            output
+                .into_iter()
+                .map(|value| bf16::from_f32(value).to_bits())
+                .collect::<Vec<_>>(),
+            vec![16032, 48494]
+        );
+    }
+
+    #[test]
     fn full_and_sliding_attention_share_current_token_semantics() {
         let mut full = CpuKvCache::new(2, 8);
         let mut sliding = CpuKvCache::new(2, 2);
@@ -1266,7 +1722,7 @@ mod tests {
 
     #[test]
     fn yarn_position_zero_applies_attention_scale() {
-        let config = CpuGptOssConfig {
+        let mut config = CpuGptOssConfig {
             architectures: vec!["GptOssForCausalLM".into()],
             vocab_size: 8,
             hidden_size: 4,
@@ -1298,18 +1754,37 @@ mod tests {
         let rope = YarnRope::new(&config).unwrap();
         let mut values = [1.0, 2.0, 3.0, 4.0];
         rope.apply(&mut values, 1, 0).unwrap();
-        let scale = (0.1 * 32_f32.ln() + 1.0) as f32;
-        assert!((values[0] - scale).abs() < 1e-6);
-        assert!((values[3] - 4.0 * scale).abs() < 1e-6);
+        let scale = bf16::from_f32(0.1 * 32_f32.ln() + 1.0).to_f32();
+        assert_eq!(values[0], bf16::from_f32(scale).to_f32());
+        assert_eq!(values[3], bf16::from_f32(4.0 * scale).to_f32());
+
+        config.head_dim = 64;
+        let rope = YarnRope::new(&config).unwrap();
+        let mut values = (0..64)
+            .map(|index| (index as f32 - 32.0) * 0.03125)
+            .collect::<Vec<_>>();
+        rope.apply(&mut values, 1, 121).unwrap();
+        let expected_bits = [
+            15750, 15856, 48986, 16004, 16128, 49040, 49038, 16200, 49012, 16252, 16047, 48923,
+            49010, 49014, 48994, 48970, 48950, 48932, 48919, 48909, 48897, 48877, 48855, 48834,
+            48812, 48790, 48769, 48727, 48684, 48641, 48556, 48428, 49068, 49063, 49008, 49050,
+            49035, 16012, 48692, 48964, 16112, 16042, 49013, 48971, 48780, 15876, 16066, 16137,
+            16162, 16180, 16193, 16204, 16215, 16226, 16236, 16247, 16257, 16262, 16268, 16273,
+            16278, 16284, 16289, 16295,
+        ];
+        assert_eq!(
+            values
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect::<Vec<_>>(),
+            expected_bits
+        );
     }
 
     #[test]
     fn interleaved_swiglu_matches_scalar_formula() {
         let output = gpt_oss_swiglu(&[2.0, 3.0, -1.0, 8.0], 2, 1.702, 7.0).unwrap();
-        let expected0 = 4.0 * 2.0 / (1.0 + (-2.0_f32 * 1.702).exp());
-        let expected1 = 8.0 * -1.0 / (1.0 + (1.702_f32).exp());
-        assert!((output[0] - expected0).abs() < 1e-6);
-        assert!((output[1] - expected1).abs() < 1e-6);
+        assert_eq!(output, vec![7.75, -1.234375]);
     }
 
     #[test]
@@ -1335,6 +1810,125 @@ mod tests {
         let expected = full.prefill(&[1, 2, 3]).unwrap();
         assert_eq!(decoded, expected);
         assert!(decoded.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn opt_in_prefill_trace_preserves_logits_and_selected_layers() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut traced =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        let (traced_logits, trace) = traced.prefill_trace(&[1, 2, 3], &[0, 1], 3).unwrap();
+
+        let mut plain =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        let plain_logits = plain.prefill(&[1, 2, 3]).unwrap();
+        assert_eq!(traced_logits, plain_logits);
+        assert_eq!(trace.layers.len(), 2);
+        assert_eq!(trace.layers[0].layer_index, 0);
+        assert_eq!(trace.layers[1].layer_index, 1);
+        assert_eq!(trace.trace_step, 0);
+        assert_eq!(trace.context_token_ids, vec![1, 2, 3]);
+        assert_eq!(trace.expert_projection, CpuExpertProjection::ResidualQ8);
+        assert_eq!(trace.final_norm.len(), 32);
+        assert_eq!(trace.top_logits.len(), 3);
+        assert!(trace.dispatch_plan.contains("mxfp4_q8_dot=scalar"));
+    }
+
+    #[test]
+    fn decode_trace_step_captures_selecting_context_without_changing_logits() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut traced =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        traced.prefill(&[1, 2]).unwrap();
+        let (traced_logits, trace) = traced.decode_trace(3, &[0], 4, 1).unwrap();
+
+        let mut plain =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        plain.prefill(&[1, 2]).unwrap();
+        let plain_logits = plain.decode(3).unwrap();
+
+        assert_eq!(traced_logits, plain_logits);
+        assert_eq!(trace.trace_step, 1);
+        assert_eq!(trace.prompt_token_ids, vec![1, 2, 3]);
+        assert_eq!(trace.context_token_ids, vec![1, 2, 3]);
+        assert_eq!(trace.layers.len(), 1);
+        assert_eq!(trace.layers[0].experts.len(), 1);
+    }
+
+    #[test]
+    fn decode_trace_step_six_captures_six_generated_context_tokens() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut traced =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        traced.prefill(&[1]).unwrap();
+        for token in 2..=6 {
+            traced.decode(token).unwrap();
+        }
+        let (traced_logits, trace) = traced.decode_trace(7, &[1], 2, 6).unwrap();
+
+        let mut plain =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        plain.prefill(&[1]).unwrap();
+        let mut plain_logits = Vec::new();
+        for token in 2..=7 {
+            plain_logits = plain.decode(token).unwrap();
+        }
+
+        assert_eq!(traced_logits, plain_logits);
+        assert_eq!(trace.trace_step, 6);
+        assert_eq!(trace.context_token_ids, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn trace_rejects_invalid_layer_and_decode_step_zero() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut runner =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        assert!(runner.prefill_trace(&[1], &[2], 1).is_err());
+        runner.prefill(&[1]).unwrap();
+        assert!(runner.decode_trace(2, &[0], 1, 0).is_err());
+    }
+
+    #[test]
+    fn every_expert_projection_mode_is_traceable_and_deterministic() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        for expert_projection in [
+            CpuExpertProjection::Q8,
+            CpuExpertProjection::ResidualQ8,
+            CpuExpertProjection::ExactBf16,
+        ] {
+            let mut runner = CpuModelRunner::load_with_options(
+                snapshot.path(),
+                &cache,
+                CpuModelRunnerOptions {
+                    kernel_path: KernelPath::Scalar,
+                    threads: 2,
+                    context_cap: 16,
+                    expert_projection,
+                },
+            )
+            .unwrap();
+            let (traced, trace) = runner.prefill_trace(&[1, 2], &[0], 2).unwrap();
+
+            let mut plain = CpuModelRunner::load_with_options(
+                snapshot.path(),
+                &cache,
+                CpuModelRunnerOptions {
+                    kernel_path: KernelPath::Scalar,
+                    threads: 2,
+                    context_cap: 16,
+                    expert_projection,
+                },
+            )
+            .unwrap();
+            assert_eq!(traced, plain.prefill(&[1, 2]).unwrap());
+            assert_eq!(trace.expert_projection, expert_projection);
+        }
     }
 
     #[test]

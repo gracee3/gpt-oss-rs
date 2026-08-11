@@ -509,7 +509,7 @@ async fn process_single_request(
             let prompt = req
                 .messages
                 .iter()
-                .map(|m| format!("{}: {}", m.role, m.content))
+                .map(|m| format!("{}: {}", m.role, m.content_text()))
                 .collect::<Vec<_>>()
                 .join("\n");
 

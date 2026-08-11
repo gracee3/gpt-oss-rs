@@ -7,6 +7,7 @@
 //! and returns `WorkerOutput`.
 
 pub mod config;
+pub mod cpu_worker;
 #[cfg(feature = "cuda")]
 pub mod gpu_worker;
 pub mod graph_runner;
@@ -15,6 +16,7 @@ pub mod metrics;
 pub mod worker;
 
 pub use config::WorkerConfig;
+pub use cpu_worker::CpuWorker;
 pub use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 pub use graph_runner::{GraphRunner, GraphRunnerConfig};
 pub use input::prepare_input;

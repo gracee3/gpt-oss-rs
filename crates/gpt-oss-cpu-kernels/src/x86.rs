@@ -10,7 +10,7 @@ use std::arch::x86_64::*;
 
 use half::bf16;
 
-use crate::{Mxfp4Block, Q8Block};
+use crate::{Mxfp4Block, Q8Block, ResidualQ8Block};
 
 #[target_feature(enable = "avx2,fma")]
 pub(super) unsafe fn bf16_dot_avx2(left: &[bf16], right: &[bf16]) -> f32 {
@@ -146,6 +146,12 @@ unsafe fn unpack_mxfp4_avx2(weight: &Mxfp4Block) -> __m256i {
 pub(super) unsafe fn mxfp4_q8_dot_avx2(weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
     // SAFETY: caller verified AVX2 availability.
     let weights = unsafe { unpack_mxfp4_avx2(weight) };
+    // SAFETY: caller verified AVX2 availability.
+    unsafe { mxfp4_q8_dot_unpacked_avx2(weights, activation) }
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn mxfp4_q8_dot_unpacked_avx2(weights: __m256i, activation: &Q8Block) -> i32 {
     // SAFETY: the fixed activation array contains 32 bytes.
     let activations = unsafe { _mm256_loadu_si256(activation.values.as_ptr().cast()) };
     let weight_low = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(weights));
@@ -161,6 +167,20 @@ pub(super) unsafe fn mxfp4_q8_dot_avx2(weight: &Mxfp4Block, activation: &Q8Block
     lanes.into_iter().sum()
 }
 
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn mxfp4_residual_q8_dot_avx2(
+    weight: &Mxfp4Block,
+    activation: &ResidualQ8Block,
+) -> [i32; 2] {
+    // SAFETY: caller verified AVX2 availability. The unpacked vector is reused
+    // for both integer dots.
+    let weights = unsafe { unpack_mxfp4_avx2(weight) };
+    [
+        unsafe { mxfp4_q8_dot_unpacked_avx2(weights, &activation.primary) },
+        unsafe { mxfp4_q8_dot_unpacked_avx2(weights, &activation.residual) },
+    ]
+}
+
 #[target_feature(enable = "avx2,avx512vl,avx512vnni")]
 pub(super) unsafe fn mxfp4_q8_dot_avx512_vnni(weight: &Mxfp4Block, activation: &Q8Block) -> i32 {
     // VNNI's byte dot instruction accepts unsigned weights and signed
@@ -169,6 +189,12 @@ pub(super) unsafe fn mxfp4_q8_dot_avx512_vnni(weight: &Mxfp4Block, activation: &
     // while avoiding two 8-to-16-bit expansions.
     // SAFETY: caller verified AVX2, AVX-512 VL, and VNNI availability.
     let signed_weights = unsafe { unpack_mxfp4_avx2(weight) };
+    // SAFETY: caller verified the VNNI feature set.
+    unsafe { mxfp4_q8_dot_unpacked_avx512_vnni(signed_weights, activation) }
+}
+
+#[target_feature(enable = "avx2,avx512vl,avx512vnni")]
+unsafe fn mxfp4_q8_dot_unpacked_avx512_vnni(signed_weights: __m256i, activation: &Q8Block) -> i32 {
     // SAFETY: the fixed activation array contains 32 bytes.
     let activations = unsafe { _mm256_loadu_si256(activation.values.as_ptr().cast()) };
     let shifted_weights = _mm256_add_epi8(signed_weights, _mm256_set1_epi8(12));
@@ -184,6 +210,20 @@ pub(super) unsafe fn mxfp4_q8_dot_avx512_vnni(weight: &Mxfp4Block, activation: &
     // SAFETY: `lanes` has room for one 256-bit vector.
     unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sums) };
     lanes.into_iter().sum()
+}
+
+#[target_feature(enable = "avx2,avx512vl,avx512vnni")]
+pub(super) unsafe fn mxfp4_residual_q8_dot_avx512_vnni(
+    weight: &Mxfp4Block,
+    activation: &ResidualQ8Block,
+) -> [i32; 2] {
+    // SAFETY: caller verified the VNNI feature set. The unpacked vector is
+    // reused for both integer dots.
+    let weights = unsafe { unpack_mxfp4_avx2(weight) };
+    [
+        unsafe { mxfp4_q8_dot_unpacked_avx512_vnni(weights, &activation.primary) },
+        unsafe { mxfp4_q8_dot_unpacked_avx512_vnni(weights, &activation.residual) },
+    ]
 }
 
 #[target_feature(enable = "avx2,fma")]

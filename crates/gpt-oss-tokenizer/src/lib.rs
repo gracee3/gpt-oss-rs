@@ -14,7 +14,8 @@ pub use chat::{ChatMessage, ChatRole};
 pub use incremental::IncrementalDecoder;
 pub use protocol::{
     initialize_harmony_encoding, HarmonyProtocol, HarmonyStreamParser, ParsedProtocolMessage,
-    ProtocolMessage, RenderedPrompt,
+    ProtocolMessage, RenderedPrompt, HARMONY_CALL_TOKEN_ID, HARMONY_END_TOKEN_ID,
+    HARMONY_RETURN_TOKEN_ID,
 };
 pub use tokenizer::Tokenizer;
 pub use tool_parser::{

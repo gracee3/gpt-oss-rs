@@ -19,6 +19,10 @@ use crate::tool_parser::ToolDefinition;
 static GPT_OSS_ENCODING: OnceLock<std::result::Result<openai_harmony::HarmonyEncoding, String>> =
     OnceLock::new();
 
+pub const HARMONY_RETURN_TOKEN_ID: TokenId = 200_002;
+pub const HARMONY_END_TOKEN_ID: TokenId = 200_007;
+pub const HARMONY_CALL_TOKEN_ID: TokenId = 200_012;
+
 fn shared_gpt_oss_encoding() -> Result<openai_harmony::HarmonyEncoding> {
     let encoding = GPT_OSS_ENCODING.get_or_init(|| {
         // `openai-harmony` currently builds a blocking reqwest client while it
@@ -223,6 +227,19 @@ impl HarmonyProtocol {
             .collect()
     }
 
+    /// Parse the messages currently available in a length-truncated Harmony
+    /// completion without pretending that an EOS marker was observed.
+    pub fn parse_partial_completion_tokens(
+        &self,
+        token_ids: &[TokenId],
+    ) -> Result<Vec<ParsedProtocolMessage>> {
+        let mut parser = self.stream_parser()?;
+        for token in token_ids {
+            parser.push_token(*token)?;
+        }
+        parser.messages_including_partial()
+    }
+
     pub fn encode_completion_text(&self, text: &str) -> Vec<TokenId> {
         self.encoding.tokenizer().encode_with_special_tokens(text)
     }
@@ -301,22 +318,45 @@ impl HarmonyStreamParser {
             })
             .collect()
     }
+
+    /// Completed messages plus the currently open message, if its header or
+    /// content has begun. This is used for streaming deltas and length-limited
+    /// results; it does not synthesize an end marker.
+    pub fn messages_including_partial(&self) -> Result<Vec<ParsedProtocolMessage>> {
+        let mut messages = self.messages()?;
+        let content = self.current_content()?;
+        let channel = self.parser.current_channel();
+        let recipient = self.parser.current_recipient();
+        let content_type = self.parser.current_content_type();
+        if !content.is_empty() || channel.is_some() || recipient.is_some() || content_type.is_some()
+        {
+            messages.push(ParsedProtocolMessage {
+                role: self
+                    .parser
+                    .current_role()
+                    .map(|role| role.as_str().to_string())
+                    .unwrap_or_else(|| "assistant".to_string()),
+                author_name: None,
+                content,
+                channel,
+                recipient,
+                content_type,
+            });
+        }
+        Ok(messages)
+    }
 }
 
 fn protocol_to_harmony_message(message: &ProtocolMessage) -> Result<Message> {
     let role = Role::try_from(message.role.as_str()).map_err(|_| {
         LLMError::TokenizerError(format!("unsupported protocol role '{}'", message.role))
     })?;
-    let mut converted = if role == Role::Tool {
-        match &message.author_name {
-            Some(name) => Message::from_author_and_content(
-                Author::new(Role::Tool, name.clone()),
-                message.content.clone(),
-            ),
-            None => Message::from_role_and_content(Role::Tool, message.content.clone()),
-        }
-    } else {
-        Message::from_role_and_content(role, message.content.clone())
+    let mut converted = match &message.author_name {
+        Some(name) => Message::from_author_and_content(
+            Author::new(role, name.clone()),
+            message.content.clone(),
+        ),
+        None => Message::from_role_and_content(role, message.content.clone()),
     };
 
     if let Some(channel) = &message.channel {
@@ -537,5 +577,23 @@ mod tests {
         );
         assert_eq!(messages[1].channel.as_deref(), Some("commentary"));
         assert_eq!(messages[1].content, "{\"location\":\"Boston\"}");
+    }
+
+    #[test]
+    fn partial_parser_preserves_length_truncated_message() {
+        let protocol = HarmonyProtocol::gpt_oss().unwrap();
+        let token_ids = protocol.encode_completion_text(
+            "<|channel|>final<|message|>A partial answer without a return token",
+        );
+        let messages = protocol
+            .parse_partial_completion_tokens(&token_ids)
+            .unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].channel.as_deref(), Some("final"));
+        assert_eq!(
+            messages[0].content,
+            "A partial answer without a return token"
+        );
     }
 }

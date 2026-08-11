@@ -1,14 +1,36 @@
-# Docs
+# Documentation
 
-Current maintained docs:
+## Runtime and backend
 
-- `TIER2_FP16_CUDA_WORKFLOW.md`: canonical Tier-2 contract, seed capture, and local replay workflow
-- `TIER2_RESULTS_AND_STATUS.md`: current findings and unresolved status
-- `REPO_ALIGNMENT_AND_WORKSTREAMS.md`: current branch/worktree policy and active workstreams
-- `NEXT_MILESTONES.md`: shared cross-workstream near-term milestones
-- `WORKSTREAM_HARNESS_TODO.md`: active harness/live-testing TODOs
-- `WORKSTREAM_INTEGRATION_TODO.md`: active integration/mainline TODOs
-- `WORKSTREAM_RUNTIME_TODO.md`: active runtime-forward TODOs
-- `integration_plan.md`: older integration history retained for context
+- [`CPU_RUNTIME.md`](CPU_RUNTIME.md): native CPU storage, numerical, serving,
+  and current dispatch invariants.
+- [`MXFP4_CPU_BACKEND_HANDOFF.md`](MXFP4_CPU_BACKEND_HANDOFF.md): forward Intel
+  CPU architecture, research questions, benchmarks, and staged kernel plan.
+- [`CPU_I7_CONFORMANCE.md`](CPU_I7_CONFORMANCE.md): repeatable full-checkpoint
+  CPU regression and comparison procedure.
+- [`UPSTREAM_PROVENANCE.md`](UPSTREAM_PROVENANCE.md): pinned upstream audits and
+  attribution map.
 
-Treat the Tier-2 workflow and results docs as the current source of truth. `integration_plan.md` remains useful as a historical merge log, but it is no longer the primary operator guide.
+## Project direction
+
+- [`NEXT_MILESTONES.md`](NEXT_MILESTONES.md): current repository milestones.
+- [`REPO_ALIGNMENT_AND_WORKSTREAMS.md`](REPO_ALIGNMENT_AND_WORKSTREAMS.md):
+  branch, worktree, and integration policy.
+
+## CUDA validation
+
+- [`TIER2_FP16_CUDA_WORKFLOW.md`](TIER2_FP16_CUDA_WORKFLOW.md): restricted-fp16
+  compare, localization, and same-input replay contract.
+- [`TIER2_RESULTS_AND_STATUS.md`](TIER2_RESULTS_AND_STATUS.md): retained CUDA
+  investigation results.
+- `WORKSTREAM_*_TODO.md`: historical lane-specific TODOs. These are not the
+  current CPU backend plan.
+
+## Historical records
+
+- [`integration_plan.md`](integration_plan.md): earlier integration history.
+- [`cpu-agent-coordination/`](cpu-agent-coordination/): host-specific CPU
+  validation logs. These are evidence records, not public API contracts.
+
+When a status document and a runtime/design document disagree, prefer
+`CPU_RUNTIME.md`, `MXFP4_CPU_BACKEND_HANDOFF.md`, and the current source tree.

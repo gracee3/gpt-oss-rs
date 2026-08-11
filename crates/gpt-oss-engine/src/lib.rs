@@ -57,7 +57,9 @@ pub use output::OutputProcessor;
 pub use sequence::{Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus};
 pub use stop_checker::StopChecker;
 pub use telemetry::{init_telemetry, metrics_handler, MetricsRecorder, TelemetryGuard};
-pub use worker::{GraphRunner, GraphRunnerConfig, Worker, WorkerConfig, WorkerInput, WorkerOutput};
+pub use worker::{
+    CpuWorker, GraphRunner, GraphRunnerConfig, Worker, WorkerConfig, WorkerInput, WorkerOutput,
+};
 
 #[cfg(feature = "cuda")]
 pub use async_gpu_engine::AsyncGpuLLMEngine;

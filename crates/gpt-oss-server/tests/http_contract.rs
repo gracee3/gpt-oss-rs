@@ -100,10 +100,17 @@ fn make_test_tokenizer() -> Tokenizer {
 }
 
 fn make_app(outputs: Vec<Vec<RequestOutput>>) -> (TestServer, Arc<ScriptedEngine>) {
+    make_app_with_model(outputs, "test-model")
+}
+
+fn make_app_with_model(
+    outputs: Vec<Vec<RequestOutput>>,
+    model: &str,
+) -> (TestServer, Arc<ScriptedEngine>) {
     let engine = ScriptedEngine::new(outputs);
     let mut state = AppState::new(
         engine.clone(),
-        "test-model".to_string(),
+        model.to_string(),
         RuntimeDecision {
             runtime_mode: RuntimeMode::Experimental,
             backend_path: RuntimeBackendPath::Mock,
@@ -114,6 +121,21 @@ fn make_app(outputs: Vec<Vec<RequestOutput>>) -> (TestServer, Arc<ScriptedEngine
     state.batch_store = None;
     let state = Arc::new(state);
     (TestServer::new(build_router(state)).unwrap(), engine)
+}
+
+fn harmony_output(request_id: u64, completion: &str, finish_reason: FinishReason) -> RequestOutput {
+    let token_ids = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
+        .unwrap()
+        .encode_completion_text(completion);
+    output_with_text(
+        request_id,
+        "harmony prompt",
+        &[1, 2, 3],
+        completion,
+        &token_ids,
+        Some(finish_reason),
+        true,
+    )
 }
 
 fn output_with_text(
@@ -306,4 +328,269 @@ async fn chat_completions_returns_openai_style_model_not_found_error() {
         .as_str()
         .unwrap()
         .contains("model 'wrong-model' not found"));
+}
+
+fn function_tools() -> serde_json::Value {
+    serde_json::json!([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"]
+            }
+        }
+    }])
+}
+
+#[tokio::test]
+async fn chat_function_calls_and_tool_history_work_on_primary_and_legacy_routes() {
+    let call = " to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"city\":\"Boston\"}<|call|>";
+    let final_answer = "<|channel|>final<|message|>It is 18C.<|return|>";
+    let scripted = vec![
+        vec![harmony_output(1, call, FinishReason::Stop)],
+        vec![harmony_output(2, call, FinishReason::Stop)],
+        vec![harmony_output(3, call, FinishReason::Stop)],
+        vec![harmony_output(4, final_answer, FinishReason::Stop)],
+    ];
+    let (server, engine) = make_app_with_model(scripted, "openai/gpt-oss-20b");
+
+    for route in ["/v1/chat/completions", "/tools"] {
+        let response = server
+            .post(route)
+            .json(&serde_json::json!({
+                "model": "openai/gpt-oss-20b",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": function_tools()
+            }))
+            .await;
+        response.assert_status_ok();
+        let json = response.json::<serde_json::Value>();
+        assert!(json["choices"][0]["message"]["content"].is_null());
+        assert_eq!(
+            json["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "get_weather"
+        );
+        assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    let streamed = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "stream": true,
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": function_tools()
+        }))
+        .await;
+    streamed.assert_status_ok();
+    let body = streamed.text();
+    assert!(body.contains("\"tool_calls\""), "{body}");
+    assert!(body.contains("\"finish_reason\":\"tool_calls\""), "{body}");
+    assert!(body.contains("data: [DONE]"), "{body}");
+
+    let history = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "messages": [
+                {"role": "user", "content": "Weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"Boston\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_weather", "content": "{\"temp_c\":18}"}
+            ],
+            "tools": function_tools()
+        }))
+        .await;
+    history.assert_status_ok();
+    let history_json = history.json::<serde_json::Value>();
+    assert_eq!(
+        history_json["choices"][0]["message"]["content"],
+        "It is 18C."
+    );
+    assert!(engine.prompts()[3].contains("<|start|>functions.get_weather"));
+
+    let unresolved = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "tool", "tool_call_id": "missing", "content": "nope"}]
+        }))
+        .await;
+    unresolved.assert_status(StatusCode::BAD_REQUEST);
+    assert!(unresolved.json::<serde_json::Value>()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unresolved tool call"));
+}
+
+#[tokio::test]
+async fn responses_function_call_follow_up_and_manual_output_validation() {
+    let call = " to=functions.get_weather<|channel|>commentary<|constrain|>json<|message|>{\"city\":\"Boston\"}<|call|>";
+    let final_answer = "<|channel|>final<|message|>It is 18C.<|return|>";
+    let scripted = vec![
+        vec![harmony_output(1, call, FinishReason::Stop)],
+        vec![harmony_output(2, final_answer, FinishReason::Stop)],
+        vec![harmony_output(3, call, FinishReason::Stop)],
+    ];
+    let (server, engine) = make_app_with_model(scripted, "openai/gpt-oss-20b");
+
+    let first = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "store": true,
+            "input": "Weather?",
+            "tools": [{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}]
+        }))
+        .await;
+    first.assert_status_ok();
+    let first_json = first.json::<serde_json::Value>();
+    assert_eq!(first_json["output"][0]["type"], "function_call");
+    let response_id = first_json["id"].as_str().unwrap();
+    let call_id = first_json["output"][0]["call_id"].as_str().unwrap();
+
+    let follow_up = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "store": true,
+            "previous_response_id": response_id,
+            "input": [{"type": "function_call_output", "call_id": call_id, "output": {"temp_c": 18}}],
+            "tools": [{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}]
+        }))
+        .await;
+    follow_up.assert_status_ok();
+    let follow_up_json = follow_up.json::<serde_json::Value>();
+    assert_eq!(
+        follow_up_json["output"][0]["content"][0]["text"],
+        "It is 18C."
+    );
+    assert!(engine.prompts()[1].contains("<|start|>functions.get_weather"));
+
+    let streamed = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "stream": true,
+            "store": false,
+            "input": "Weather?",
+            "tools": [{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}]
+        }))
+        .await;
+    streamed.assert_status_ok();
+    let body = streamed.text();
+    assert!(body.contains("event: response.function_call_arguments.done"));
+    assert!(body.contains("event: response.completed"));
+
+    let unresolved = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "input": [{"type": "function_call_output", "call_id": "missing", "output": "nope"}]
+        }))
+        .await;
+    unresolved.assert_status(StatusCode::BAD_REQUEST);
+    assert!(unresolved.json::<serde_json::Value>()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unresolved call_id"));
+}
+
+#[tokio::test]
+async fn length_truncated_harmony_returns_partial_chat_and_incomplete_responses() {
+    let partial = "<|channel|>final<|message|>A partial answer";
+    let mut scripted = (1..=4)
+        .map(|id| vec![harmony_output(id, partial, FinishReason::Length)])
+        .collect::<Vec<_>>();
+    scripted.push(vec![harmony_output(
+        5,
+        "<|channel|>analysis<|message|>Hidden partial reasoning",
+        FinishReason::Length,
+    )]);
+    let (server, _) = make_app_with_model(scripted, "openai/gpt-oss-20b");
+
+    let chat = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "user", "content": "Answer"}],
+            "max_tokens": 3
+        }))
+        .await;
+    chat.assert_status_ok();
+    let chat_json = chat.json::<serde_json::Value>();
+    assert_eq!(
+        chat_json["choices"][0]["message"]["content"],
+        "A partial answer"
+    );
+    assert_eq!(chat_json["choices"][0]["finish_reason"], "length");
+
+    let chat_stream = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "stream": true,
+            "messages": [{"role": "user", "content": "Answer"}],
+            "max_tokens": 3
+        }))
+        .await;
+    chat_stream.assert_status_ok();
+    let chat_body = chat_stream.text();
+    assert!(chat_body.contains("A partial answer"), "{chat_body}");
+    assert!(chat_body.contains("\"finish_reason\":\"length\""));
+    assert!(chat_body.contains("data: [DONE]"));
+
+    let response = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "input": "Answer",
+            "max_output_tokens": 3
+        }))
+        .await;
+    response.assert_status_ok();
+    let response_json = response.json::<serde_json::Value>();
+    assert_eq!(response_json["status"], "incomplete");
+    assert_eq!(
+        response_json["incomplete_details"]["reason"],
+        "max_output_tokens"
+    );
+    assert_eq!(
+        response_json["output"][0]["content"][0]["text"],
+        "A partial answer"
+    );
+
+    let response_stream = server
+        .post("/v1/responses")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "stream": true,
+            "input": "Answer",
+            "max_output_tokens": 3
+        }))
+        .await;
+    response_stream.assert_status_ok();
+    let response_body = response_stream.text();
+    assert!(response_body.contains("event: response.incomplete"));
+    assert!(response_body.contains("\"status\":\"incomplete\""));
+    assert!(response_body.contains("\"reason\":\"max_output_tokens\""));
+
+    let hidden_analysis = server
+        .post("/v1/chat/completions")
+        .json(&serde_json::json!({
+            "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "user", "content": "Answer"}],
+            "max_tokens": 3
+        }))
+        .await;
+    hidden_analysis.assert_status_ok();
+    let hidden_json = hidden_analysis.json::<serde_json::Value>();
+    assert_eq!(hidden_json["choices"][0]["message"]["content"], "");
+    assert_eq!(hidden_json["choices"][0]["finish_reason"], "length");
 }
