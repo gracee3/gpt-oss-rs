@@ -8,6 +8,10 @@ experimental backend.
 
 The project is deliberately focused on GPT-OSS. It is not a general model
 runner, and the CPU backend is not yet enabled in trusted mode.
+It is also an educational, evidence-producing project centered on hardware
+available to its owner rather than a compatibility exercise for every model,
+framework, or accelerator. See
+[`docs/PROJECT_INTENT.md`](docs/PROJECT_INTENT.md).
 
 ## Current status
 
@@ -173,6 +177,8 @@ official PyTorch oracle; they are not runtime dependencies.
 
 Current documentation:
 
+- [`docs/PROJECT_INTENT.md`](docs/PROJECT_INTENT.md): project purpose, present
+  hardware focus, CPU-first scope, and criteria for future targets;
 - [`docs/CPU_RUNTIME.md`](docs/CPU_RUNTIME.md): CPU storage, numerical, serving,
   and dispatch invariants;
 - [`docs/MXFP4_MATRIX_API.md`](docs/MXFP4_MATRIX_API.md): typed matrix views,
