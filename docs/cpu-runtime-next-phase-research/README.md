@@ -118,9 +118,9 @@ gap with estimates.
 | C4-A | [`04a-moe-orchestration.md`](04a-moe-orchestration.md) | deferred |
 | C4-B | [`04b-dense-bf16.md`](04b-dense-bf16.md) | deferred |
 | C4-C | [`04c-attention.md`](04c-attention.md) | deferred |
-| C5 | [`05-amx-hardware.md`](05-amx-hardware.md) | pending |
-| C6 | [`06-long-horizon-seams.md`](06-long-horizon-seams.md) | pending |
-| C7 | [`07-maintenance-audit.md`](07-maintenance-audit.md) | pending |
+| C5 | [`05-amx-hardware.md`](05-amx-hardware.md) | deferred |
+| C6 | [`06-long-horizon-seams.md`](06-long-horizon-seams.md) | planning-ready |
+| C7 | [`07-maintenance-audit.md`](07-maintenance-audit.md) | planning-ready |
 
 ## Cross-track rules
 
