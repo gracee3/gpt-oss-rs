@@ -112,6 +112,7 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
     // Device
     config.device.device = args.device.clone();
     config.device.cpu_kernel = args.cpu_kernel.clone();
+    config.device.cpu_matmul_backend = args.cpu_matmul_backend.clone();
     if let Some(cpu_threads) = args.cpu_threads {
         config.device.cpu_threads = cpu_threads;
     }
@@ -154,6 +155,7 @@ mod tests {
             pipeline_parallel_size: 1,
             device: "cuda".into(),
             cpu_kernel: "auto".into(),
+            cpu_matmul_backend: "avx2".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
             disable_telemetry: false,
@@ -169,6 +171,7 @@ mod tests {
         assert_eq!(cfg.model.max_model_len, 4096);
         assert_eq!(cfg.telemetry.prometheus_port, Some(9090));
         assert_eq!(cfg.telemetry.log_level, "debug");
+        assert_eq!(cfg.device.cpu_matmul_backend, "avx2");
     }
 
     #[test]
@@ -228,6 +231,7 @@ log_level = "warn"
             pipeline_parallel_size: 1,
             device: "cuda".into(),
             cpu_kernel: "auto".into(),
+            cpu_matmul_backend: "auto".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
             disable_telemetry: false,
@@ -267,6 +271,7 @@ log_level = "warn"
             pipeline_parallel_size: 1,
             device: "cuda".into(),
             cpu_kernel: "auto".into(),
+            cpu_matmul_backend: "auto".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
             disable_telemetry: false,
@@ -293,6 +298,7 @@ log_level = "warn"
             .build();
 
         let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"cpu_matmul_backend\":\"auto\""));
         let back: EngineConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, back);
     }

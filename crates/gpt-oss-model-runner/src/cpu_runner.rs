@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_core::types::{SequenceId, TokenId};
 use gpt_oss_cpu_kernels::{
-    accumulate_mxfp4_bf16_block, DispatchPlan, KernelPath, Kernels, Mxfp4WeightLayout,
-    Q8ActivationView, Q8Block, ResidualQ8ActivationView, ResidualQ8Block, QUANT_BLOCK_SIZE,
+    accumulate_mxfp4_bf16_block, DispatchPlan, KernelPath, Kernels, Mxfp4MatmulBackend,
+    Mxfp4WeightLayout, Q8ActivationView, Q8Block, ResidualQ8ActivationView, ResidualQ8Block,
+    QUANT_BLOCK_SIZE,
 };
 
 use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
@@ -76,6 +77,7 @@ impl FromStr for CpuExpertProjection {
 #[derive(Debug, Clone, Copy)]
 pub struct CpuModelRunnerOptions {
     pub kernel_path: KernelPath,
+    pub matmul_backend: Mxfp4MatmulBackend,
     pub threads: usize,
     pub context_cap: usize,
     pub expert_projection: CpuExpertProjection,
@@ -344,6 +346,8 @@ pub struct CpuModel {
     pool: rayon::ThreadPool,
     rope: YarnRope,
     expert_projection: CpuExpertProjection,
+    matmul_backend: Mxfp4MatmulBackend,
+    mxfp4_weight_layout: Mxfp4WeightLayout,
 }
 
 /// Batch-one compatibility facade over one shared [`CpuModel`].
@@ -428,6 +432,7 @@ pub struct CpuPrefillTrace {
     pub dispatch_plan: String,
     pub mxfp4_gemv_kernel: String,
     pub mxfp4_weight_layout: String,
+    pub mxfp4_matmul_backend: String,
     pub layers: Vec<CpuLayerTrace>,
     pub final_norm: Vec<f32>,
     pub top_logits: Vec<CpuTopLogit>,
@@ -768,6 +773,24 @@ impl CpuModel {
         threads: usize,
         expert_projection: CpuExpertProjection,
     ) -> Result<Arc<Self>> {
+        Self::load_with_matmul_backend(
+            snapshot,
+            repack_root,
+            kernel_path,
+            threads,
+            expert_projection,
+            Mxfp4MatmulBackend::Auto,
+        )
+    }
+
+    pub fn load_with_matmul_backend(
+        snapshot: impl AsRef<Path>,
+        repack_root: impl AsRef<Path>,
+        kernel_path: KernelPath,
+        threads: usize,
+        expert_projection: CpuExpertProjection,
+        matmul_backend: Mxfp4MatmulBackend,
+    ) -> Result<Arc<Self>> {
         if threads == 0 {
             return Err(LLMError::ConfigError(
                 "CPU thread count must be non-zero".into(),
@@ -790,15 +813,16 @@ impl CpuModel {
             .map_err(|error| LLMError::ModelError(format!("CPU thread pool: {error}")))?;
         let rope = YarnRope::new(&config)?;
 
+        let weight_layout = match (expert_projection, matmul_backend) {
+            (CpuExpertProjection::ExactBf16, _) => Mxfp4WeightLayout::CanonicalAdjacentV1,
+            (_, Mxfp4MatmulBackend::Avx2 | Mxfp4MatmulBackend::AmxInt8) => {
+                Mxfp4WeightLayout::InterleavedSplitX8V2
+            }
+            _ => kernels.dispatch_plan().mxfp4_weight_layout(),
+        };
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for index in 0..config.num_hidden_layers {
-            layers.push(load_layer(
-                &store,
-                &repack,
-                &config,
-                index,
-                kernels.dispatch_plan().mxfp4_weight_layout(),
-            )?);
+            layers.push(load_layer(&store, &repack, &config, index, weight_layout)?);
         }
         let final_norm = load_vector_len(&store.tensor("model.norm.weight")?, config.hidden_size)?;
         validate_shape(
@@ -819,6 +843,8 @@ impl CpuModel {
             pool,
             rope,
             expert_projection,
+            matmul_backend,
+            mxfp4_weight_layout: weight_layout,
         }))
     }
 
@@ -836,6 +862,14 @@ impl CpuModel {
 
     pub const fn expert_projection(&self) -> CpuExpertProjection {
         self.expert_projection
+    }
+
+    pub const fn matmul_backend(&self) -> Mxfp4MatmulBackend {
+        self.matmul_backend
+    }
+
+    pub const fn mxfp4_weight_layout(&self) -> Mxfp4WeightLayout {
+        self.mxfp4_weight_layout
     }
 
     pub fn new_sequence_state(&self, context_cap: usize) -> Result<CpuSequenceModelState> {
@@ -884,6 +918,7 @@ impl CpuModelRunner {
             repack_root,
             CpuModelRunnerOptions {
                 kernel_path,
+                matmul_backend: Mxfp4MatmulBackend::Auto,
                 threads,
                 context_cap,
                 expert_projection: CpuExpertProjection::default(),
@@ -901,12 +936,13 @@ impl CpuModelRunner {
                 "CPU context cap must be non-zero".into(),
             ));
         }
-        let model = CpuModel::load(
+        let model = CpuModel::load_with_matmul_backend(
             snapshot,
             repack_root,
             options.kernel_path,
             options.threads,
             options.expert_projection,
+            options.matmul_backend,
         )?;
         Self::from_model(model, options.context_cap)
     }
@@ -942,6 +978,14 @@ impl CpuModelRunner {
 
     pub fn expert_projection(&self) -> CpuExpertProjection {
         self.model.expert_projection()
+    }
+
+    pub fn matmul_backend(&self) -> Mxfp4MatmulBackend {
+        self.model.matmul_backend()
+    }
+
+    pub fn mxfp4_weight_layout(&self) -> Mxfp4WeightLayout {
+        self.model.mxfp4_weight_layout()
     }
 
     pub const fn position(&self) -> usize {
@@ -1086,7 +1130,8 @@ impl CpuModelRunner {
             compatibility_kernel_path: self.kernel_path().to_string(),
             dispatch_plan: dispatch_plan.to_string(),
             mxfp4_gemv_kernel: dispatch_plan.mxfp4_gemv().to_string(),
-            mxfp4_weight_layout: dispatch_plan.mxfp4_weight_layout().to_string(),
+            mxfp4_weight_layout: self.mxfp4_weight_layout().to_string(),
+            mxfp4_matmul_backend: self.matmul_backend().to_string(),
             layers,
             final_norm,
             top_logits: top_logits(logits, top_k),
@@ -2584,6 +2629,7 @@ mod tests {
                 &cache,
                 CpuModelRunnerOptions {
                     kernel_path: KernelPath::Scalar,
+                    matmul_backend: Mxfp4MatmulBackend::Auto,
                     threads: 2,
                     context_cap: 16,
                     expert_projection,
@@ -2597,6 +2643,7 @@ mod tests {
                 &cache,
                 CpuModelRunnerOptions {
                     kernel_path: KernelPath::Scalar,
+                    matmul_backend: Mxfp4MatmulBackend::Auto,
                     threads: 2,
                     context_cap: 16,
                     expert_projection,
@@ -2672,6 +2719,29 @@ mod tests {
         assert_eq!(first.position(), 0);
         assert_eq!(second.position(), 0);
         assert_eq!(first.caches().len(), second.caches().len());
+    }
+
+    #[test]
+    fn explicit_avx2_matrix_backend_selects_x8_persistent_layout() {
+        if Kernels::new(KernelPath::Avx2).is_err() {
+            return;
+        }
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load_with_matmul_backend(
+            snapshot.path(),
+            snapshot.path().join("repack"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::default(),
+            Mxfp4MatmulBackend::Avx2,
+        )
+        .unwrap();
+        assert_eq!(model.kernel_path(), KernelPath::Scalar);
+        assert_eq!(model.matmul_backend(), Mxfp4MatmulBackend::Avx2);
+        assert_eq!(
+            model.mxfp4_weight_layout(),
+            Mxfp4WeightLayout::InterleavedSplitX8V2
+        );
     }
 
     #[test]

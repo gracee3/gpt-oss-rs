@@ -12,6 +12,10 @@ fn default_cpu_kernel() -> String {
     "auto".into()
 }
 
+fn default_cpu_matmul_backend() -> String {
+    "auto".into()
+}
+
 fn default_cpu_threads() -> usize {
     num_cpus::get_physical().max(1)
 }
@@ -38,6 +42,9 @@ pub struct DeviceConfig {
     /// Native CPU kernel dispatch path.
     #[serde(default = "default_cpu_kernel")]
     pub cpu_kernel: String,
+    /// MXFP4 matrix backend used for multi-row CPU execution.
+    #[serde(default = "default_cpu_matmul_backend")]
+    pub cpu_matmul_backend: String,
     /// Rayon worker threads used by the batch-one CPU runner.
     #[serde(default = "default_cpu_threads")]
     pub cpu_threads: usize,
@@ -51,6 +58,7 @@ impl Default for DeviceConfig {
         Self {
             device: default_device(),
             cpu_kernel: default_cpu_kernel(),
+            cpu_matmul_backend: default_cpu_matmul_backend(),
             cpu_threads: default_cpu_threads(),
             cpu_repack_cache: default_cpu_repack_cache(),
         }
@@ -83,6 +91,12 @@ impl DeviceConfigBuilder {
     /// Select the native CPU kernel path.
     pub fn cpu_kernel(mut self, v: impl Into<String>) -> Self {
         self.0.cpu_kernel = v.into();
+        self
+    }
+
+    /// Select the MXFP4 matrix backend.
+    pub fn cpu_matmul_backend(mut self, v: impl Into<String>) -> Self {
+        self.0.cpu_matmul_backend = v.into();
         self
     }
 

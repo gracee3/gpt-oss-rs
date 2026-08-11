@@ -346,6 +346,11 @@ async fn create_cpu_engine(
         .cpu_kernel
         .parse::<gpt_oss_cpu_kernels::KernelPath>()
         .map_err(|error| gpt_oss_core::prelude::LLMError::ConfigError(error.to_string()))?;
+    let matmul_backend = config
+        .device
+        .cpu_matmul_backend
+        .parse::<gpt_oss_cpu_kernels::Mxfp4MatmulBackend>()
+        .map_err(|error| gpt_oss_core::prelude::LLMError::ConfigError(error.to_string()))?;
     let threads = config.device.cpu_threads;
     let context_cap = config.model.max_model_len;
 
@@ -363,7 +368,14 @@ async fn create_cpu_engine(
             )?
             .snapshot_dir
         };
-        let worker = CpuWorker::load(&snapshot, &repack_cache, kernel_path, threads, context_cap)?;
+        let worker = CpuWorker::load(
+            &snapshot,
+            &repack_cache,
+            kernel_path,
+            matmul_backend,
+            threads,
+            context_cap,
+        )?;
         Ok::<_, gpt_oss_core::prelude::LLMError>((worker, snapshot))
     })
     .await

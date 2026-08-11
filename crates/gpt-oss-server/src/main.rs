@@ -45,6 +45,8 @@ enum Commands {
         device: DeviceChoice,
         #[arg(long, value_enum, default_value_t = CpuKernelChoice::Auto)]
         cpu_kernel: CpuKernelChoice,
+        #[arg(long, value_enum, default_value_t = CpuMatmulBackendChoice::Auto)]
+        cpu_matmul_backend: CpuMatmulBackendChoice,
         #[arg(long)]
         cpu_threads: Option<usize>,
         #[arg(long)]
@@ -126,6 +128,25 @@ impl CpuKernelChoice {
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2",
             Self::Avx512Vnni => "avx512-vnni",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CpuMatmulBackendChoice {
+    Auto,
+    Scalar,
+    Avx2,
+    AmxInt8,
+}
+
+impl CpuMatmulBackendChoice {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Scalar => "scalar",
+            Self::Avx2 => "avx2",
+            Self::AmxInt8 => "amx-int8",
         }
     }
 }
@@ -239,6 +260,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             max_num_seqs,
             device,
             cpu_kernel,
+            cpu_matmul_backend,
             cpu_threads,
             cpu_repack_cache,
             runtime_mode,
@@ -308,6 +330,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         DeviceConfig::builder()
                             .device(device.as_str())
                             .cpu_kernel(cpu_kernel.as_str())
+                            .cpu_matmul_backend(cpu_matmul_backend.as_str())
                             .cpu_threads(cpu_threads)
                             .cpu_repack_cache(cpu_repack_cache.clone())
                             .build(),
@@ -334,6 +357,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 tp_size = tensor_parallel_size,
                 requested_device = device.as_str(),
                 cpu_kernel = cpu_kernel.as_str(),
+                cpu_matmul_backend = cpu_matmul_backend.as_str(),
                 cpu_threads,
                 cpu_repack_cache = %cpu_repack_cache.display(),
                 "starting server"

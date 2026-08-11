@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use gpt_oss_cpu_kernels::KernelPath;
+use gpt_oss_cpu_kernels::{KernelPath, Mxfp4MatmulBackend};
 use gpt_oss_model_runner::{
     CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
 };
@@ -34,6 +34,9 @@ struct Cli {
 
     #[arg(long, default_value = "auto")]
     kernel: KernelPath,
+
+    #[arg(long, default_value = "auto")]
+    cpu_matmul_backend: Mxfp4MatmulBackend,
 
     #[arg(long, default_value = "residual-q8")]
     expert_projection: CpuExpertProjection,
@@ -99,6 +102,7 @@ struct ParityCapture<'a> {
     model_path: &'a Path,
     repack_cache: &'a Path,
     kernel: String,
+    cpu_matmul_backend: String,
     expert_projection: CpuExpertProjection,
     prompt_text: String,
     prompt_token_ids: Vec<u32>,
@@ -137,6 +141,7 @@ fn main() -> Result<()> {
         &cli.repack_cache,
         CpuModelRunnerOptions {
             kernel_path: cli.kernel,
+            matmul_backend: cli.cpu_matmul_backend,
             threads: cli.threads,
             context_cap,
             expert_projection: cli.expert_projection,
@@ -194,6 +199,7 @@ fn main() -> Result<()> {
         model_path: &cli.model,
         repack_cache: &cli.repack_cache,
         kernel: cli.kernel.to_string(),
+        cpu_matmul_backend: runner.matmul_backend().to_string(),
         expert_projection: runner.expert_projection(),
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,

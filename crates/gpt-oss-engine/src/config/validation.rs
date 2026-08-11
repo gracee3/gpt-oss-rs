@@ -78,6 +78,18 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
         ));
     }
 
+    if config
+        .device
+        .cpu_matmul_backend
+        .parse::<gpt_oss_cpu_kernels::Mxfp4MatmulBackend>()
+        .is_err()
+    {
+        return Err(format!(
+            "unknown cpu_matmul_backend '{}': expected auto, scalar, avx2, or amx-int8",
+            config.device.cpu_matmul_backend
+        ));
+    }
+
     if config.device.device == "cpu"
         && (config.parallel.tensor_parallel_size > 1 || config.parallel.pipeline_parallel_size > 1)
     {
@@ -124,6 +136,13 @@ mod tests {
     fn valid_default_passes() {
         let cfg = valid_config();
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn invalid_cpu_matmul_backend_is_rejected() {
+        let mut cfg = valid_config();
+        cfg.device.cpu_matmul_backend = "neon".into();
+        assert!(validate(&cfg).unwrap_err().contains("cpu_matmul_backend"));
     }
 
     #[test]

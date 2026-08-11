@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpt_oss_core::prelude::{LLMError, RequestId, Result, SequenceId, TokenId};
-use gpt_oss_cpu_kernels::KernelPath;
+use gpt_oss_cpu_kernels::{KernelPath, Mxfp4MatmulBackend};
 use gpt_oss_model_runner::sampling::Sampler;
 use gpt_oss_model_runner::{
     CpuExecutionContext, CpuModel, CpuModelRunner, CpuSequenceModelState, CpuStepBatch, CpuStepRow,
@@ -198,17 +198,29 @@ impl CpuWorker {
         snapshot: impl AsRef<Path>,
         repack_root: impl AsRef<Path>,
         kernel_path: KernelPath,
+        matmul_backend: Mxfp4MatmulBackend,
         threads: usize,
         context_cap: usize,
     ) -> Result<Self> {
-        let runner =
-            CpuModelRunner::load(snapshot, repack_root, kernel_path, threads, context_cap)?;
+        let runner = CpuModelRunner::load_with_options(
+            snapshot,
+            repack_root,
+            gpt_oss_model_runner::CpuModelRunnerOptions {
+                kernel_path,
+                matmul_backend,
+                threads,
+                context_cap,
+                expert_projection: Default::default(),
+            },
+        )?;
         tracing::info!(
             requested_path = %kernel_path,
             compatibility_path = %runner.kernel_path(),
             dispatch_plan = %runner.kernel_dispatch_plan(),
             mxfp4_gemv = %runner.kernel_dispatch_plan().mxfp4_gemv(),
             mxfp4_layout = %runner.kernel_dispatch_plan().mxfp4_weight_layout(),
+            persistent_mxfp4_layout = %runner.mxfp4_weight_layout(),
+            mxfp4_matmul_backend = %runner.matmul_backend(),
             "resolved CPU kernel dispatch"
         );
         Ok(Self::from_runner(runner))

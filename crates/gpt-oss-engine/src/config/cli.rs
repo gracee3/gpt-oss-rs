@@ -96,6 +96,10 @@ pub struct CliArgs {
     #[arg(long, default_value = "auto")]
     pub cpu_kernel: String,
 
+    /// MXFP4 matrix backend: auto, scalar, avx2, or amx-int8.
+    #[arg(long, default_value = "auto")]
+    pub cpu_matmul_backend: String,
+
     /// Native CPU worker threads (defaults to physical core count).
     #[arg(long)]
     pub cpu_threads: Option<usize>,
