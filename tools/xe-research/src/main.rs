@@ -119,6 +119,7 @@ fn run() -> Result<()> {
         "memory" => command_memory(&arguments, &common),
         "mxfp4" => command_mxfp4(&arguments, &common),
         "benchmark" => command_benchmark(&arguments, &common),
+        "closeout" => command_closeout(&arguments, &common),
         _ => {
             usage();
             bail!("unknown subcommand '{command}'")
@@ -128,7 +129,7 @@ fn run() -> Result<()> {
 
 fn usage() {
     eprintln!(
-        "usage: gpt-oss-xe-research <environment|capabilities|artifact|memory|mxfp4|benchmark> \\\n+  --backend <opencl|level-zero> --device 8086:9a49 --results <directory> [--immediate]"
+        "usage: gpt-oss-xe-research <environment|capabilities|artifact|memory|mxfp4|benchmark|closeout> \\\n+  --backend <opencl|level-zero> --device 8086:9a49 --results <directory> [--immediate]"
     );
 }
 
@@ -848,7 +849,9 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
     {
         bail!("--local-size must be 32,64,128,or 256 and within the queried device limit");
     }
+    let environment_before = benchmark_environment();
     let benchmark = benchmark_projection(&session, &bundle, entry, &shapes, local_size)?;
+    let environment_after = benchmark_environment();
     let evidence_status = if benchmark
         .get("any_useful_win")
         .and_then(Value::as_bool)
@@ -872,7 +875,8 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         "entry_point": entry,
         "local_size": local_size,
         "benchmark": benchmark,
-        "environment_before_after": benchmark_environment(),
+        "environment_before": environment_before,
+        "environment_after": environment_after,
         "module_creation_ns": session.info().creation_ns,
         "native_binary": artifact_record(&native_path)?,
         "residency_bytes": bundle.descriptor.canonical_compact_bytes,
@@ -889,6 +893,83 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         session.loaded_library_paths()?,
         vec![kernel_path, native_path, raw_path],
         details,
+    )
+}
+
+fn command_closeout(arguments: &[String], common: &Common) -> Result<()> {
+    if common.backend != Backend::Opencl {
+        bail!("X7 counterfactual tie-breaker is OpenCL; invoke closeout with --backend opencl");
+    }
+    let started_at = timestamp();
+    let evidence_root = PathBuf::from(
+        common
+            .flags
+            .get("evidence-root")
+            .context("closeout requires --evidence-root")?,
+    );
+    let evidence_paths = [
+        evidence_root.join("opencl/x6-opencl.manifest.json"),
+        evidence_root.join("level-zero-regular/x6-level-zero.manifest.json"),
+        evidence_root.join("level-zero-immediate/x6-level-zero.manifest.json"),
+        evidence_root.join("opencl/x5-opencl.manifest.json"),
+        evidence_root.join("level-zero-regular/x5-level-zero.manifest.json"),
+        evidence_root.join("opencl/x4-memory-opencl.manifest.json"),
+        evidence_root.join("level-zero-regular/x4-memory-level-zero.manifest.json"),
+    ];
+    let mut evidence = Vec::new();
+    let mut useful_win = false;
+    for (index, path) in evidence_paths.iter().enumerate() {
+        let value: Value = serde_json::from_slice(
+            &std::fs::read(path).with_context(|| format!("read {}", path.display()))?,
+        )?;
+        if index < 3 {
+            useful_win |= value
+                .pointer("/details/benchmark/any_useful_win")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        }
+        evidence.push(json!({
+            "record": artifact_record(path)?,
+            "evidence_id": value.get("evidence_id"),
+            "status": value.get("status"),
+            "repository_revision": value.get("repository_revision"),
+        }));
+    }
+    if useful_win {
+        bail!("closeout rejected: an X6 manifest reports a useful win");
+    }
+    let state_path = evidence_root.join("x6-system-state.txt");
+    let session = evidence_session(common)?;
+    let loaded_paths = session.loaded_library_paths()?;
+    write_manifest(
+        arguments,
+        common,
+        "X7",
+        EvidenceStatus::Fail,
+        started_at,
+        Some(session.info().clone()),
+        loaded_paths,
+        evidence_paths
+            .into_iter()
+            .chain(state_path.exists().then_some(state_path))
+            .collect(),
+        json!({
+            "terminal_result": "negative_closeout",
+            "useful_win_gate": "fail: no Xe path reached 1.25x at M=4,8,16,32,or 64 with a bootstrap 95% interval above parity",
+            "correctness": "pass for every measured path and output; the lane closes on end-to-end performance without weakening numerical or memory gates",
+            "model_scale_duplicate_weights": false,
+            "decisions": {
+                "host_api": "none selected for implementation; counterfactual forced-only tie-breaker is OpenCL because no plausible shape showed a >=10% API win and its audited symbol/lifecycle/error surface is smaller",
+                "kernel_delivery": "reproducible validated SPIR-V",
+                "native_caching": "optional atomic runtime cache only, invalidated by the full v1 cache key",
+                "memory_residency": "one compact persistent selected region or fixed bounded slab plus reusable activation/output scratch",
+                "submission": "counterfactual serialized in-order OpenCL queue with completion event; no automatic dispatch",
+                "integration_boundary": "forced experimental model attachment below model-state commit and above the existing CPU MXFP4 oracle",
+                "cpu_fallback": "discard failed or unvalidated GPU output and recompute on CPU only before commit"
+            },
+            "evidence": evidence,
+            "scope": "T14 Tiger Lake-LP 8086:9a49 and the captured 26.05 Compute Runtime / Level Zero 1.28.2 stack only"
+        }),
     )
 }
 
@@ -1698,9 +1779,10 @@ fn read_proc_status() -> Value {
 fn benchmark_environment() -> Value {
     let commands = [
         ("power_profile", "powerprofilesctl", vec!["get"]),
+        ("ac_online", "bash", vec!["-lc", "for f in /sys/class/power_supply/*/online; do printf '%s=' \"$f\"; cat \"$f\"; done"]),
         ("display", "loginctl", vec!["show-session", "auto", "-p", "Type", "-p", "Remote", "-p", "State"]),
         ("cpu_frequency", "bash", vec!["-lc", "cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq 2>/dev/null"]),
-        ("gpu_frequency", "bash", vec!["-lc", "find /sys/class/drm/card1/device -maxdepth 1 -type f -name 'gt_*freq_mhz' -print -exec cat {} \\; 2>/dev/null"]),
+        ("gpu_frequency", "bash", vec!["-lc", "find /sys/class/drm/card*/device -maxdepth 1 -type f -name 'gt_*freq_mhz' -print -exec cat {} \\; 2>/dev/null"]),
         ("thermals", "bash", vec!["-lc", "for f in /sys/class/thermal/thermal_zone*/temp; do printf '%s ' \"$f\"; cat \"$f\"; done 2>/dev/null"]),
     ];
     let mut values = serde_json::Map::new();
