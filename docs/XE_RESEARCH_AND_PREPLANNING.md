@@ -8,6 +8,7 @@
 - External source corpus: `/home/emmy/src/xe-research`
 - Active API comparison: OpenCL and Level Zero
 - Explicit exclusion: Vulkan is not part of this research phase
+- Current sprint intake: [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md)
 
 This document separates two concurrent project lanes:
 
@@ -22,18 +23,16 @@ backend, or reduce the priority of CPU work.
 
 ## Decision to produce
 
-The research must select and justify one of these outcomes:
-
-1. OpenCL host API with online OpenCL C kernel compilation;
-2. OpenCL host API with a versioned offline program/binary cache;
-3. Level Zero host API with reproducibly generated SPIR-V;
-4. a staged path that uses OpenCL to establish kernel semantics and Level Zero
-   only where a measured control or submission advantage exists;
-5. no Iris Xe backend because the toolchain, shared-memory behavior,
-   performance, or maintenance burden does not justify it.
+The authoritative expanded charter is
+[`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md). Its X7 result must
+decide host API, kernel delivery, memory/residency, submission, integration
+boundary, and fallback/commit independently. OpenCL source, SPIR-V, native
+cache, and Level Zero are not pre-bundled outcomes. A no-backend result remains
+valid when correctness, real checkpoint ingestion, shared-memory behavior,
+performance, tooling, dependency cost, or maintenance fails a gate.
 
 Cloning source repositories does not favor an outcome. A final pre-plan must
-state the evidence for the chosen path and the reasons the alternatives were
+state the evidence for every selected axis and the reasons alternatives were
 rejected.
 
 ## OpenCL and Level Zero: the actual distinction
@@ -72,7 +71,7 @@ no `/etc/OpenCL/vendors`, and no Intel OpenCL/Level Zero package set.
 
 At approximately 18:03 local time, while the source corpus was being cloned,
 the user installed the Intel OpenCL and Level Zero packages through Ubuntu
-`apt`. The current host has:
+`apt`. The initial working package set was:
 
 | Package | Version |
 | --- | --- |
@@ -143,6 +142,41 @@ The successful shared-buffer tests prove usability, not zero-copy or useful
 model performance. Current upstream and installed-runtime source generations
 must not be mixed casually. Full artifact hashes and offline-cache provenance
 are retained in `/home/emmy/src/xe-research/PROBE_RESULTS_2026-08-11.md`.
+
+### Post-distribution-upgrade revalidation
+
+After an Ubuntu distribution upgrade later on 2026-08-11, the installed stack
+changed from Compute Runtime 23.43 and Level Zero loader 1.16.1 to Compute
+Runtime 26.05 and system loader 1.28.2; the kernel changed from 7.0.0-28 to
+7.0.0-29. The core feasibility results still pass:
+
+- OpenCL discovery, online compilation, execution, fresh program-binary
+  retrieval, binary reload, and result validation pass;
+- shared-allocation copy and validation pass;
+- the previously generated Clang and `ocloc` SPIR-V modules both load, execute,
+  synchronize, and validate through the upgraded system loader;
+- the upgraded driver reports Level Zero API 1.14 and OpenCL SPIR-V support
+  through 1.5, while the main device and memory limits used by this research
+  remain unchanged.
+
+The system 1.28.2 loader works with both the matched probe and the probe built
+from the current Level Zero source headers. The separately built current
+Level Zero 1.32 loader still returns `ZE_RESULT_ERROR_UNSUPPORTED_VERSION`, so
+"current upstream" remains an invalid substitute for the distribution-matched
+loader. The old compute-samples `ze_info` capture is no longer reusable: it
+initially returned `ZE_RESULT_ERROR_UNSUPPORTED_VERSION` with the system loader
+and aborted inside the upgraded Compute Runtime when forced through the old
+1.16.1 loader. These were not driver regressions: adding the entire cached
+23.43 sysroot to `LD_LIBRARY_PATH` to find Boost also selected the old Intel
+GPU driver. A clean rebuild against extracted 1.28.2 headers and the system
+loader, with only cached Boost isolated, passes and produces a fresh JSON
+capability capture.
+
+The newly retrieved OpenCL program binary changed from 3,648 to 4,184 bytes,
+as expected across a compiler/runtime upgrade. This reinforces the requirement
+that cached device programs include the runtime/compiler/device generation in
+their cache key. Detailed commands and results are retained in
+`/home/emmy/src/xe-research/POST_UPGRADE_VALIDATION_2026-08-11.md`.
 
 ## External research corpus
 
