@@ -10,8 +10,12 @@ oracle remains usable on the 32 GiB i7; generated artifacts stay outside Git.
 import argparse
 import json
 import math
+import os
+import struct
 import sys
+import tempfile
 import time
+import traceback
 from pathlib import Path
 
 import torch
@@ -42,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--dense-boundary-projection", choices=("k", "v"))
+    parser.add_argument("--dense-boundary-output", type=int)
     return parser.parse_args()
 
 
@@ -114,13 +120,32 @@ def cpu_values(value: torch.Tensor) -> list[float]:
     return value.float().reshape(-1).tolist()
 
 
+def bf16_bits(value: torch.Tensor) -> list[int]:
+    raw = value.detach().to(device="cpu", dtype=torch.bfloat16).contiguous().view(torch.uint16)
+    return [int(item) for item in raw.reshape(-1).tolist()]
+
+
+def fp32_bits(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
 class Oracle:
-    def __init__(self, model: Path, official_source: Path, trace_layers: list[int], top_k: int):
+    def __init__(
+        self,
+        model: Path,
+        official_source: Path,
+        trace_layers: list[int],
+        top_k: int,
+        dense_boundary_projection: str | None,
+        dense_boundary_output: int | None,
+    ):
         self.store = TensorStore(model)
         self.config = json.loads((model / "config.json").read_text())
         self.official = load_official_operators(official_source)
         self.trace_layers = set(trace_layers)
         self.top_k = top_k
+        self.dense_boundary_projection = dense_boundary_projection
+        self.dense_boundary_output = dense_boundary_output
         self.epsilon = float(self.config["rms_norm_eps"])
         rope = self.config["rope_scaling"]
         self.rotary = self.official.RotaryEmbedding(
@@ -183,6 +208,47 @@ class Oracle:
             self.store.tensor(f"{attention}.v_proj.weight"),
             self.store.tensor(f"{attention}.v_proj.bias"),
         )
+        dense_boundary = None
+        if capture_trace and layer_index == 0:
+            dense_boundary = {
+                "normalized_input_bf16_bits": bf16_bits(normalized[-1]),
+                "key_pre_rope_bf16_bits": bf16_bits(k[-1]),
+                "value_pre_rope_bf16_bits": bf16_bits(v[-1]),
+            }
+            if self.dense_boundary_projection is not None:
+                output_index = self.dense_boundary_output
+                if output_index is None:
+                    raise ValueError("dense boundary output is required with a projection")
+                weight_name = f"{attention}.{self.dense_boundary_projection}_proj.weight"
+                bias_name = f"{attention}.{self.dense_boundary_projection}_proj.bias"
+                weight = self.store.tensor(weight_name)[output_index]
+                bias = self.store.tensor(bias_name)[output_index].float()
+                prefixes = []
+                for prefix_len in range(1, normalized.shape[-1] + 1):
+                    dot = torch.sum(
+                        normalized[-1, :prefix_len].float()
+                        * weight[:prefix_len].float(),
+                        dtype=torch.float32,
+                    )
+                    post_bias = dot + bias
+                    prefixes.append(
+                        {
+                            "prefix_len": prefix_len,
+                            "dot_fp32_bits": fp32_bits(float(dot)),
+                            "post_bias_fp32_bits": fp32_bits(float(post_bias)),
+                            "result_bf16_bits": bf16_bits(post_bias.to(torch.bfloat16))[0],
+                        }
+                    )
+                observed = k[-1] if self.dense_boundary_projection == "k" else v[-1]
+                dense_boundary["isolated_probe"] = {
+                    "projection": self.dense_boundary_projection,
+                    "output_index": output_index,
+                    "normalized_input_bf16_bits": bf16_bits(normalized[-1]),
+                    "weight_row_bf16_bits": bf16_bits(weight),
+                    "bias_fp32_bits": fp32_bits(float(bias)),
+                    "observed_projection_bf16_bits": bf16_bits(observed)[output_index],
+                    "prefixes": prefixes,
+                }
         token_count = hidden.shape[0]
         head_dim = self.config["head_dim"]
         kv_heads = self.config["num_key_value_heads"]
@@ -293,19 +359,47 @@ class Oracle:
                 "experts": [traced_experts[rank] for rank in sorted(traced_experts)],
                 "moe_output": cpu_values(moe_output[-1]),
                 "layer_output": cpu_values(layer_output[-1]),
+                "dense_boundary": dense_boundary,
             }
         return layer_output, trace
 
 
-def main() -> int:
-    args = parse_args()
+def write_new_atomic(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        os.unlink(temporary)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def run(args: argparse.Namespace) -> int:
     if args.trace_step < 0 or args.trace_step >= args.max_new_tokens:
         raise ValueError("--trace-step must be in [0, --max-new-tokens)")
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     native_capture = json.loads(args.native_capture.read_text())
     prompt_token_ids = native_capture["prompt_token_ids"]
-    oracle = Oracle(args.model, args.official_source, args.trace_layers, args.top_k)
+    if (args.dense_boundary_projection is None) != (args.dense_boundary_output is None):
+        raise ValueError("dense boundary projection and output must be supplied together")
+    oracle = Oracle(
+        args.model,
+        args.official_source,
+        args.trace_layers,
+        args.top_k,
+        args.dense_boundary_projection,
+        args.dense_boundary_output,
+    )
 
     start = time.monotonic()
     tokens = list(prompt_token_ids)
@@ -329,6 +423,7 @@ def main() -> int:
 
     report = {
         "schema_version": 1,
+        "evidence_status": "insufficient_evidence",
         "scenario": native_capture["scenario"],
         "model_path": str(args.model),
         "official_source_path": str(args.official_source),
@@ -340,10 +435,30 @@ def main() -> int:
         "elapsed_seconds": elapsed,
         "trace": selected_trace,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
+    write_new_atomic(args.output, report)
     print(json.dumps(report, indent=2))
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        return run(args)
+    except BaseException as error:
+        failure = {
+            "schema_version": 1,
+            "evidence_status": "incomplete",
+            "worker": "official_cpu_oracle",
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "traceback": traceback.format_exc(),
+        }
+        try:
+            write_new_atomic(args.output, failure)
+        except FileExistsError:
+            pass
+        print(json.dumps(failure, indent=2), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

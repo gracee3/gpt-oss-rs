@@ -3,6 +3,8 @@
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -42,8 +44,59 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+NEGATIVE_INPUT_STATUSES = {
+    "fail",
+    "unsupported",
+    "unavailable",
+    "invalid",
+    "incomplete",
+}
+
+
 def load(path: Path) -> dict:
-    return json.loads(path.read_text())
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"capture {path} is not a JSON object")
+    return value
+
+
+def write_new_atomic(path: Path, value: dict) -> None:
+    """Atomically publish JSON without replacing a completed comparator result."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        os.unlink(temporary)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def input_status(capture: dict) -> str:
+    return capture.get("evidence_status", capture.get("status", "insufficient_evidence"))
+
+
+def workload_mismatch(native: dict, official: dict) -> str | None:
+    if native.get("scenario") != official.get("scenario", native.get("scenario")):
+        return "scenario mismatch"
+    for field in ("prompt_token_ids", "prompt_token_ids_sha256"):
+        if field in native and field in official and native[field] != official[field]:
+            return f"{field} mismatch"
+    native_model = native.get("pinned_model", native.get("model"))
+    official_model = official.get("pinned_model", official.get("model"))
+    if native_model is not None and official_model is not None and native_model != official_model:
+        return "model provenance mismatch"
+    return None
 
 
 def trace_from(capture: dict) -> dict | None:
@@ -174,14 +227,31 @@ def llama_margin(llama: dict, step: int, competing_token: int) -> float | None:
     return abs(chosen_logprob - competing_logprob)
 
 
-def main() -> int:
-    args = parse_args()
+def compare(args: argparse.Namespace) -> tuple[int, dict]:
     native = load(args.native)
     official = load(args.official)
+    for role, capture in (("native", native), ("official", official)):
+        status = input_status(capture)
+        if status in NEGATIVE_INPUT_STATUSES:
+            return 2, {
+                "status": status,
+                "blocking": True,
+                "reason": f"{role} input retained negative status {status}",
+            }
+        if status not in ("insufficient_evidence", "pass"):
+            return 2, {
+                "status": "invalid",
+                "blocking": True,
+                "reason": f"{role} input has unknown status {status}",
+            }
+    mismatch = workload_mismatch(native, official)
+    if mismatch:
+        return 2, {"status": "invalid", "blocking": True, "reason": mismatch}
     native_tokens = native["generated_token_ids"]
     official_tokens = official["generated_token_ids"]
     native_official_divergence = first_divergence(native_tokens, official_tokens)
     result = {
+        "status": "pass" if native_official_divergence is None else "fail",
         "scenario": native["scenario"],
         "native_tokens": native_tokens,
         "official_tokens": official_tokens,
@@ -193,6 +263,15 @@ def main() -> int:
     blocking = native_official_divergence is not None
     if args.llama:
         llama = load(args.llama)
+        llama_status = input_status(llama)
+        if llama_status in NEGATIVE_INPUT_STATUSES:
+            result["llama_cpp"] = {
+                "policy": "advisory",
+                "status": llama_status,
+                "nonblocking": True,
+            }
+            result["blocking"] = blocking
+            return (1 if blocking else 0), result
         llama_tokens = llama["tokens"]
         divergence = first_divergence(native_tokens, llama_tokens)
         margin = None
@@ -210,11 +289,29 @@ def main() -> int:
             "nonblocking": True,
         }
     result["blocking"] = blocking
+    return (1 if blocking else 0), result
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+
+def main() -> int:
+    args = parse_args()
+    try:
+        code, result = compare(args)
+    except FileNotFoundError as error:
+        code, result = 2, {
+            "status": "unavailable",
+            "blocking": True,
+            "reason": f"missing input: {error}",
+        }
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        code, result = 2, {
+            "status": "invalid",
+            "blocking": True,
+            "reason": str(error),
+        }
+
+    write_new_atomic(args.output, result)
     print(json.dumps(result, indent=2))
-    return 1 if blocking else 0
+    return code
 
 
 if __name__ == "__main__":
