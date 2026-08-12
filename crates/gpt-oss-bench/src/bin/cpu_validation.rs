@@ -22,7 +22,7 @@ const INDEX_FILE: &str = "campaign-index.json";
 #[derive(Debug, Parser)]
 #[command(about = "Resumable, hash-verified CPU validation campaign driver")]
 struct Cli {
-    #[arg(long, global = true)]
+    #[arg(long)]
     root: PathBuf,
 
     #[command(subcommand)]
