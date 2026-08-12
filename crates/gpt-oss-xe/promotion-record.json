@@ -1,0 +1,21 @@
+{
+  "schema": "gpt-oss-rs.xe-auto-promotion/v1",
+  "automatic_enabled": false,
+  "reason": "X8 validates bounded projection kernels only; full-model correctness, lifecycle, memory, and paired performance gates remain unrun",
+  "pci_vendor_id": "8086",
+  "pci_device_id": "9a49",
+  "driver_version": "26.05.037020",
+  "opencl_loader_sha256": "3a24c22deedc682eb864596ef301a75d54dea23ca4c35a50deda9480694137c2",
+  "opencl_driver_sha256": "e5945d50bf0fd8352df80d322d5b71291bff3f96795ed6baca236907a21a5702",
+  "igc_sha256": "7034ccb0013c7a52c087d6ac7cbb1c83579d8bcdb1659ba6fd7aa014bd903fec",
+  "kernel_source_sha256": "dd467aa3fed7a4a4f5ef5c811bf478bf392eb943c633c2480fce0ac101dfedf6",
+  "kernel_abi_sha256": "62f13d73158f6b136993f5031b75f14cce2484cddb8482d2f0972119949bfcbe",
+  "build_options": "-cl-std=CL3.0 -DXE_ENABLE_DP4A=1",
+  "gate_up_min_rows": 4,
+  "down_min_rows": 4,
+  "workgroup_size": 32,
+  "evidence": {
+    "x8_selection_summary_sha256": "ff2fdd40244a7e2dae18ca5e7e3c500425b0e8701b9df3affa0023de85254428",
+    "production_gate": "not_run"
+  }
+}

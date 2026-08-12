@@ -23,7 +23,7 @@ gpt-oss-runtime-plan.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
-hf-hub = "0.4"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
 clap.workspace = true
 config.workspace = true
 half.workspace = true

@@ -16,6 +16,7 @@ members = [
     "crates/gpt-oss-moe-semantics",
     "crates/gpt-oss-cpu-kernels",
     "crates/gpt-oss-evidence",
+    "crates/gpt-oss-xe",
 ]
 
 [workspace.package]
@@ -45,6 +46,7 @@ gpt-oss-moe-semantics = { path = "crates/gpt-oss-moe-semantics" }
 gpt-oss-conformance = { path = "crates/gpt-oss-conformance" }
 gpt-oss-cpu-kernels = { path = "crates/gpt-oss-cpu-kernels" }
 gpt-oss-evidence = { path = "crates/gpt-oss-evidence" }
+gpt-oss-xe = { path = "crates/gpt-oss-xe" }
 
 # External dependencies
 thiserror = "2"
@@ -77,6 +79,7 @@ dashmap = "6"
 bytemuck = { version = "1", features = ["derive"] }
 memmap2 = "0.9"
 sha2 = "0.10"
+libloading = "0.9"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 anyhow = "1"
