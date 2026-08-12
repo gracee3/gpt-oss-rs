@@ -816,6 +816,10 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         entry,
         common.immediate,
     )?;
+    let native_path = common
+        .results
+        .join(format!("benchmark-{}-{entry}.native", common.backend));
+    std::fs::write(&native_path, session.native_binary()?)?;
     let shapes = common
         .flags
         .get("shapes")
@@ -858,6 +862,7 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         "benchmark": benchmark,
         "environment_before_after": benchmark_environment(),
         "module_creation_ns": session.info().creation_ns,
+        "native_binary": artifact_record(&native_path)?,
         "residency_bytes": bundle.descriptor.canonical_compact_bytes,
         "scratch_policy": "one reusable activation/output allocation sized to the current M; weights remain one persistent compact expert slice"
     });
@@ -870,7 +875,7 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         started_at,
         Some(session.info().clone()),
         session.loaded_library_paths()?,
-        vec![kernel_path, raw_path],
+        vec![kernel_path, native_path, raw_path],
         details,
     )
 }
