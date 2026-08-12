@@ -165,10 +165,13 @@ from the current Level Zero source headers. The separately built current
 Level Zero 1.32 loader still returns `ZE_RESULT_ERROR_UNSUPPORTED_VERSION`, so
 "current upstream" remains an invalid substitute for the distribution-matched
 loader. The old compute-samples `ze_info` capture is no longer reusable: it
-returns `ZE_RESULT_ERROR_UNSUPPORTED_VERSION` with the system loader and aborts
-inside the upgraded Compute Runtime when forced through the old 1.16.1 loader.
-This auxiliary-tool regression does not invalidate the passing Level Zero
-execution probes, but a new version-matched capability capture is required.
+initially returned `ZE_RESULT_ERROR_UNSUPPORTED_VERSION` with the system loader
+and aborted inside the upgraded Compute Runtime when forced through the old
+1.16.1 loader. These were not driver regressions: adding the entire cached
+23.43 sysroot to `LD_LIBRARY_PATH` to find Boost also selected the old Intel
+GPU driver. A clean rebuild against extracted 1.28.2 headers and the system
+loader, with only cached Boost isolated, passes and produces a fresh JSON
+capability capture.
 
 The newly retrieved OpenCL program binary changed from 3,648 to 4,184 bytes,
 as expected across a compiler/runtime upgrade. This reinforces the requirement
