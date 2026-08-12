@@ -86,6 +86,16 @@ struct Common {
     flags: HashMap<String, String>,
 }
 
+struct ManifestEvidence {
+    evidence_id: &'static str,
+    status: EvidenceStatus,
+    started_at: String,
+    session: Option<SessionInfo>,
+    loaded_paths: Vec<PathBuf>,
+    artifact_paths: Vec<PathBuf>,
+    details: Value,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -240,13 +250,15 @@ fn command_environment(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X0",
-        EvidenceStatus::Pass,
-        started_at,
-        Some(session.info().clone()),
-        loaded_paths,
-        vec![capture_path],
-        details,
+        ManifestEvidence {
+            evidence_id: "X0",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths,
+            artifact_paths: vec![capture_path],
+            details,
+        },
     )
 }
 
@@ -338,18 +350,20 @@ fn command_capabilities(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X1-X2",
-        EvidenceStatus::Pass,
-        started_at,
-        Some(info.clone()),
-        loaded_paths,
-        vec![raw_path],
-        json!({
-            "capabilities": info,
-            "negative_cases": negatives,
-            "transactional_fallback": "CPU recomputation is permitted only before model-state commit; no GPU output mutates externally committed state.",
-            "unsafe_device_loss_simulation": "unavailable"
-        }),
+        ManifestEvidence {
+            evidence_id: "X1-X2",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(info.clone()),
+            loaded_paths,
+            artifact_paths: vec![raw_path],
+            details: json!({
+                "capabilities": info,
+                "negative_cases": negatives,
+                "transactional_fallback": "CPU recomputation is permitted only before model-state commit; no GPU output mutates externally committed state.",
+                "unsafe_device_loss_simulation": "unavailable"
+            }),
+        },
     )
 }
 
@@ -542,13 +556,15 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X3",
-        EvidenceStatus::Pass,
-        started_at,
-        Some(evidence_session.info().clone()),
-        loaded_paths,
-        paths,
-        details,
+        ManifestEvidence {
+            evidence_id: "X3",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(evidence_session.info().clone()),
+            loaded_paths,
+            artifact_paths: paths,
+            details,
+        },
     )
 }
 
@@ -669,13 +685,15 @@ fn command_memory(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X4-memory",
-        EvidenceStatus::Pass,
-        started_at,
-        Some(evidence_session.info().clone()),
-        loaded_paths,
-        vec![raw_path],
-        details,
+        ManifestEvidence {
+            evidence_id: "X4-memory",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(evidence_session.info().clone()),
+            loaded_paths,
+            artifact_paths: vec![raw_path],
+            details,
+        },
     )
 }
 
@@ -759,13 +777,15 @@ fn command_mxfp4(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X5",
-        EvidenceStatus::Pass,
-        started_at,
-        Some(session.info().clone()),
-        session.loaded_library_paths()?,
-        paths,
-        details,
+        ManifestEvidence {
+            evidence_id: "X5",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths: session.loaded_library_paths()?,
+            artifact_paths: paths,
+            details,
+        },
     )
 }
 
@@ -886,13 +906,15 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X6",
-        evidence_status,
-        started_at,
-        Some(session.info().clone()),
-        session.loaded_library_paths()?,
-        vec![kernel_path, native_path, raw_path],
-        details,
+        ManifestEvidence {
+            evidence_id: "X6",
+            status: evidence_status,
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths: session.loaded_library_paths()?,
+            artifact_paths: vec![kernel_path, native_path, raw_path],
+            details,
+        },
     )
 }
 
@@ -944,32 +966,34 @@ fn command_closeout(arguments: &[String], common: &Common) -> Result<()> {
     write_manifest(
         arguments,
         common,
-        "X7",
-        EvidenceStatus::Fail,
-        started_at,
-        Some(session.info().clone()),
-        loaded_paths,
-        evidence_paths
-            .into_iter()
-            .chain(state_path.exists().then_some(state_path))
-            .collect(),
-        json!({
-            "terminal_result": "negative_closeout",
-            "useful_win_gate": "fail: no Xe path reached 1.25x at M=4,8,16,32,or 64 with a bootstrap 95% interval above parity",
-            "correctness": "pass for every measured path and output; the lane closes on end-to-end performance without weakening numerical or memory gates",
-            "model_scale_duplicate_weights": false,
-            "decisions": {
-                "host_api": "none selected for implementation; counterfactual forced-only tie-breaker is OpenCL because no plausible shape showed a >=10% API win and its audited symbol/lifecycle/error surface is smaller",
-                "kernel_delivery": "reproducible validated SPIR-V",
-                "native_caching": "optional atomic runtime cache only, invalidated by the full v1 cache key",
-                "memory_residency": "one compact persistent selected region or fixed bounded slab plus reusable activation/output scratch",
-                "submission": "counterfactual serialized in-order OpenCL queue with completion event; no automatic dispatch",
-                "integration_boundary": "forced experimental model attachment below model-state commit and above the existing CPU MXFP4 oracle",
-                "cpu_fallback": "discard failed or unvalidated GPU output and recompute on CPU only before commit"
-            },
-            "evidence": evidence,
-            "scope": "T14 Tiger Lake-LP 8086:9a49 and the captured 26.05 Compute Runtime / Level Zero 1.28.2 stack only"
-        }),
+        ManifestEvidence {
+            evidence_id: "X7",
+            status: EvidenceStatus::Fail,
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths,
+            artifact_paths: evidence_paths
+                .into_iter()
+                .chain(state_path.exists().then_some(state_path))
+                .collect(),
+            details: json!({
+                "terminal_result": "negative_closeout",
+                "useful_win_gate": "fail: no Xe path reached 1.25x at M=4,8,16,32,or 64 with a bootstrap 95% interval above parity",
+                "correctness": "pass for every measured path and output; the lane closes on end-to-end performance without weakening numerical or memory gates",
+                "model_scale_duplicate_weights": false,
+                "decisions": {
+                    "host_api": "none selected for implementation; counterfactual forced-only tie-breaker is OpenCL because no plausible shape showed a >=10% API win and its audited symbol/lifecycle/error surface is smaller",
+                    "kernel_delivery": "reproducible validated SPIR-V",
+                    "native_caching": "optional atomic runtime cache only, invalidated by the full v1 cache key",
+                    "memory_residency": "one compact persistent selected region or fixed bounded slab plus reusable activation/output scratch",
+                    "submission": "counterfactual serialized in-order OpenCL queue with completion event; no automatic dispatch",
+                    "integration_boundary": "forced experimental model attachment below model-state commit and above the existing CPU MXFP4 oracle",
+                    "cpu_fallback": "discard failed or unvalidated GPU output and recompute on CPU only before commit"
+                },
+                "evidence": evidence,
+                "scope": "T14 Tiger Lake-LP 8086:9a49 and the captured 26.05 Compute Runtime / Level Zero 1.28.2 stack only"
+            }),
+        },
     )
 }
 
@@ -1441,28 +1465,18 @@ fn round_up(value: usize, alignment: usize) -> usize {
     value.div_ceil(alignment) * alignment
 }
 
-fn write_manifest(
-    arguments: &[String],
-    common: &Common,
-    evidence_id: &str,
-    status: EvidenceStatus,
-    started_at: String,
-    session: Option<SessionInfo>,
-    loaded_paths: Vec<PathBuf>,
-    artifact_paths: Vec<PathBuf>,
-    details: Value,
-) -> Result<()> {
+fn write_manifest(arguments: &[String], common: &Common, evidence: ManifestEvidence) -> Result<()> {
     let manifest = Manifest {
         schema: SCHEMA.into(),
-        evidence_id: evidence_id.into(),
+        evidence_id: evidence.evidence_id.into(),
         run_id: common
             .results
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("unnamed-run")
             .into(),
-        status,
-        started_at,
+        status: evidence.status,
+        started_at: evidence.started_at,
         finished_at: timestamp(),
         command: arguments.to_vec(),
         repository_revision: git_output(&["rev-parse", "HEAD"]),
@@ -1470,22 +1484,24 @@ fn write_manifest(
         host: hostname(),
         backend: common.backend,
         device_selector: DEVICE_SELECTOR.into(),
-        session,
-        loaded_libraries: loaded_paths
+        session: evidence.session,
+        loaded_libraries: evidence
+            .loaded_paths
             .into_iter()
             .filter(|path| path.is_file())
             .map(|path| artifact_record(&path))
             .collect::<Result<Vec<_>>>()?,
-        artifacts: artifact_paths
+        artifacts: evidence
+            .artifact_paths
             .into_iter()
             .filter(|path| path.is_file())
             .map(|path| artifact_record(&path))
             .collect::<Result<Vec<_>>>()?,
-        details,
+        details: evidence.details,
     };
     let path = common.results.join(format!(
         "{}-{}.manifest.json",
-        evidence_id.to_ascii_lowercase(),
+        evidence.evidence_id.to_ascii_lowercase(),
         common.backend
     ));
     std::fs::write(&path, serde_json::to_vec_pretty(&manifest)?)?;
@@ -1513,14 +1529,14 @@ fn artifact_record(path: &Path) -> Result<ArtifactRecord> {
     })
 }
 
-fn environment_commands(
-    backend: Backend,
-) -> Vec<(
+type CaptureCommand = (
     &'static str,
     &'static str,
     Vec<OsString>,
     Vec<(OsString, OsString)>,
-)> {
+);
+
+fn environment_commands(backend: Backend) -> Vec<CaptureCommand> {
     let mut commands = vec![
         ("kernel", "uname", vec!["-a".into()], vec![]),
         (

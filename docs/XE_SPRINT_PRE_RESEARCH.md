@@ -1,6 +1,7 @@
 # Iris Xe One-Sweep Research Sprint Intake
 
-- Status: expanded pre-research charter complete; ready for one-sweep research
+- Status: executed; negative closeout published in
+  [`xe-research/README.md`](xe-research/README.md)
 - Created: 2026-08-11
 - Original intake input baseline: `main` at
   `29537feb59d3e3526f2ebd9f4a186a43e8bd977f`
@@ -404,16 +405,12 @@ outside Git under `/home/emmy/src/xe-research/results/<run-id>/`, referenced by
 manifest and SHA-256. Small source fixtures and scripts may be committed when
 their license/provenance and role are explicit.
 
-## Pre-research readiness verdict
+## Execution outcome
 
-The expanded scope, host, oracle, initial probes, focused source corpus,
-orthogonal decision axes, evidence order, stop conditions, useful-win floor,
-and deliverables are defined. Exact 26.05/1.28.2 source worktrees and the three
-focused reference repositories are present and clean. The local corpus is
-sufficient to begin the one-sweep research goal.
-
-X0 still must produce the current environment/rollback snapshot, dependency
-budget, artifact manifest, and mixed-library guard before later experiments.
-Those are first research work inside the one-sweep goal, not another intake or
-approval cycle. Completion of this charter changes research readiness only; it
-does not claim implementation readiness, performance, or a selected backend.
+X0-X7 executed on 2026-08-11. Provenance, artifact, memory, checkpoint,
+numerical, and code-generation gates passed, but no real-tensor Xe path met the
+end-to-end useful-win gate. The implementation lane therefore closed without a
+backend selection. The completed reports and raw-hash index are in
+[`xe-research/`](xe-research/README.md). This charter remains the authoritative
+record of the predeclared scope and gates; it does not authorize reopening,
+production implementation, automatic dispatch, or serving integration.

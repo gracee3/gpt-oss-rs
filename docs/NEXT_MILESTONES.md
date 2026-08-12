@@ -42,21 +42,16 @@ evidence supports a separately reviewed promotion.
 
 ## Iris Xe research sprint
 
-Status: expanded pre-research charter and focused source intake complete;
-one-sweep X0-X7 research goal ready to begin.
+Status: one-sweep X0-X7 research complete with a negative closeout.
 
-The T14 OpenCL and Level Zero feasibility paths pass on the post-upgrade
-Compute Runtime 26.05/Level Zero 1.28.2 stack. A clean rebuilt `ze_info`
-capture reports Level Zero API 1.14 and SPIR-V 1.5. The next Xe milestone is
-the bounded research sweep in
-[`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md): freeze the evidence
-manifest and dependency budget, map host/model/execution ownership, complete
-diagnostic/artifact/ABI/memory evidence, prove exact MXFP4 semantics and Xe-LP
-code generation, ingest one real SafeTensors tensor, measure one real-tensor
-prefill vertical slice, and publish either a decision-complete forced-backend
-pre-plan or a no-backend result. Exact Compute Runtime 26.05 and Level Zero
-1.28.2 source worktrees plus the focused `llama.cpp`, `level-zero-tests`, and
-PTI references are present locally and clean.
+The T14 OpenCL and Level Zero paths pass provenance, exact artifact, memory,
+real-checkpoint, MXFP4 correctness, and current-native DP4A code-generation
+gates on Compute Runtime 26.05/Level Zero 1.28.2. They fail the real-tensor
+end-to-end useful-win gate: every plausible M=4-64 path is slower than the
+AVX2 baseline with its confidence interval below parity. The evidence and X7
+decision are published in [`xe-research/`](xe-research/README.md). No Xe
+implementation milestone remains open; reopening requires a material
+driver/compiler, kernel, or target-device change and a fresh gated sweep.
 
 This milestone does not authorize production implementation, automatic
 dispatch, decode offload, or model-scale serving integration. CPU remains the

@@ -1,14 +1,14 @@
 # Tiger Lake Iris Xe Research and Pre-Planning
 
-- Status: OpenCL online compilation/program-binary reload and version-matched
-  Level Zero offline SPIR-V copy kernels pass; no backend selected or
-  implemented
+- Status: X0-X7 complete with a performance-gated negative closeout; no backend
+  selected or implemented
 - Started: 2026-08-11
 - Research host: T14 with Tiger Lake-LP GT2 Iris Xe (`8086:9a49`)
 - External source corpus: `/home/emmy/src/xe-research`
 - Active API comparison: OpenCL and Level Zero
 - Explicit exclusion: Vulkan is not part of this research phase
 - Current sprint intake: [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md)
+- Completed evidence and decision: [`xe-research/README.md`](xe-research/README.md)
 
 This document separates two concurrent project lanes:
 
