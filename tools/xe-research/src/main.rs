@@ -837,7 +837,18 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
     {
         bail!("--shapes must be a comma-separated subset of 1,2,4,8,16,32,64,128");
     }
-    let benchmark = benchmark_projection(&session, &bundle, entry, &shapes)?;
+    let local_size = common
+        .flags
+        .get("local-size")
+        .map(|value| value.parse::<usize>().context("parse --local-size"))
+        .transpose()?
+        .unwrap_or(64);
+    if ![32, 64, 128, 256].contains(&local_size)
+        || local_size > session.info().max_group_size as usize
+    {
+        bail!("--local-size must be 32,64,128,or 256 and within the queried device limit");
+    }
+    let benchmark = benchmark_projection(&session, &bundle, entry, &shapes, local_size)?;
     let evidence_status = if benchmark
         .get("any_useful_win")
         .and_then(Value::as_bool)
@@ -859,6 +870,7 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         },
         "tensor": bundle.descriptor,
         "entry_point": entry,
+        "local_size": local_size,
         "benchmark": benchmark,
         "environment_before_after": benchmark_environment(),
         "module_creation_ns": session.info().creation_ns,
@@ -1795,6 +1807,7 @@ fn benchmark_projection(
     bundle: &ProjectionBundle,
     _entry: &str,
     shapes: &[usize],
+    local_size: usize,
 ) -> Result<Value> {
     let max_rows = *shapes
         .iter()
@@ -1834,7 +1847,7 @@ fn benchmark_projection(
     {
         session.set_buffer(index as u32, buffer)?;
     }
-    session.set_group_size(64, 1, 1)?;
+    session.set_group_size(u32::try_from(local_size)?, 1, 1)?;
 
     let mut scratch_storage = vec![0_u8; (1 << 20) + 4096];
     let scratch_offset = scratch_storage.as_ptr().align_offset(4096);
@@ -1860,7 +1873,7 @@ fn benchmark_projection(
             &mut avx2_output,
             scratch,
         )?;
-        let (_, xe_output) = gpu_request(session, &gpu, &inputs, rows)?;
+        let (_, xe_output) = gpu_request(session, &gpu, &inputs, rows, local_size)?;
         let scalar_vs_avx2 = compare_projection(&scalar_output, &avx2_output);
         let scalar_vs_xe = compare_projection(&scalar_output, &xe_output);
         let pass = comparison_passes(&scalar_vs_avx2) && comparison_passes(&scalar_vs_xe);
@@ -1924,7 +1937,7 @@ fn benchmark_projection(
                             )?;
                         }
                         "xe" => {
-                            gpu_request(session, &gpu, &inputs, rows)?;
+                            gpu_request(session, &gpu, &inputs, rows, local_size)?;
                         }
                         _ => unreachable!(),
                     }
@@ -1947,7 +1960,7 @@ fn benchmark_projection(
                             &mut avx2_output,
                             scratch,
                         )?,
-                        "xe" => gpu_request(session, &gpu, &inputs, rows)?.0,
+                        "xe" => gpu_request(session, &gpu, &inputs, rows, local_size)?.0,
                         _ => unreachable!(),
                     };
                     match method {
@@ -2045,6 +2058,7 @@ fn gpu_request(
     gpu: &GpuBuffers<'_>,
     inputs: &[f32],
     rows: usize,
+    local_size: usize,
 ) -> Result<(u64, Vec<f32>)> {
     let started = Instant::now();
     let prepared = quantize_residual_rows(inputs)?;
@@ -2060,8 +2074,8 @@ fn gpu_request(
     session.set_scalar(8, &rows_u32)?;
     session.set_scalar(9, &columns_u32)?;
     session.set_scalar(10, &blocks_u32)?;
-    let global = round_up(rows * N, 64);
-    session.run([global, 1, 1], [64, 1, 1], TIMEOUT_NS)?;
+    let global = round_up(rows * N, local_size);
+    session.run([global, 1, 1], [local_size, 1, 1], TIMEOUT_NS)?;
     let mut output = vec![0.0_f32; rows * N];
     gpu.output.read(&mut output)?;
     let boundary = output
