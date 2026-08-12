@@ -72,3 +72,13 @@ artifact hashes. Allowed top-level statuses are `pass`, `fail`, `unsupported`,
 
 The structured negative results are evidence about this T14 and validated
 stack only. They are not general OpenCL or Level Zero conformance claims.
+
+## Evidence records
+
+| ID | Manifest SHA-256 | Capability/negative raw SHA-256 |
+| --- | --- | --- |
+| X1-X2-OCL | `7ffb8c17ee16632064f037abfe53c3e41c1285ab16578587a9ee6e11c6beb6d7` | `b55a48ed080d2ee6d195e734246d0fed261a79662dfe54f0dd0c7452bfbc87f2` |
+| X1-X2-L0 | `c79ab93e9413493824a6bd2c88ae788297070495c1c454d47b9a284e17efd3d9` | `d78d495b02d17dd48e7ab36bb46bf7cf1828ebb6c053463941e607e26c01bded` |
+
+Both manifests report repository revision
+`a9de8f8653eda75acce838899ac816fbf32735c7` and status `pass`.

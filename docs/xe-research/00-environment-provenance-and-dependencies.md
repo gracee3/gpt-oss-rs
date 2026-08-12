@@ -100,3 +100,13 @@ No rollback was needed because no package or system-policy change was made.
 If restoration is separately authorized, the captured `dpkg-query` and
 `apt-cache policy` records are the package inventory to resolve first; this
 document does not prescribe an unaudited downgrade command.
+
+## Evidence records
+
+| ID | Manifest SHA-256 | Primary raw artifact SHA-256 |
+| --- | --- | --- |
+| X0-OCL | `60ef6bb4805f9d7deb264add62e8a09263f75b47134ca68f4d839e1ef42cfddb` | environment capture `4468af874fce4a966dc4b6e2b72ff97ce77da15c819d8f9f134c00783a734497` |
+| X0-L0 | `5d42149ec1184119b3e87d417785413f4ae9f1bad0f8b27e32006365e5768e24` | environment capture `f86d8a07083afa3ae2d2bddda9ec26d409c5de81cd3b3c9ef0eceb9f5c9475a7` |
+
+Both manifests report repository revision
+`a9de8f8653eda75acce838899ac816fbf32735c7` and status `pass`.
