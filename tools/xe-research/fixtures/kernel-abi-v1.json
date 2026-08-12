@@ -1,43 +1,68 @@
 {
   "schema": "gpt-oss-rs.xe-kernel-abi/v1",
-  "artifact_identity": [
+  "cache_identity": [
     "backend_format",
     "kernel_source_sha256",
     "spirv_sha256",
-    "compiler_identity",
+    "compiler_path_and_sha256",
+    "compiler_version",
     "build_options",
     "vendor_id",
     "device_id",
-    "driver_version",
-    "abi_version"
+    "driver_library_path_and_sha256",
+    "driver_api_version",
+    "entry_point",
+    "abi_schema"
   ],
+  "argument_sets": {
+    "i32_add_v1": [
+      {"index": 0, "name": "left", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "count * 4"},
+      {"index": 1, "name": "right", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "count * 4"},
+      {"index": 2, "name": "output", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 3, "name": "count", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"}
+    ],
+    "mxfp4_exact_blocks_v1": [
+      {"index": 0, "name": "packed", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "count * 16"},
+      {"index": 1, "name": "weight_scales", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "count"},
+      {"index": 2, "name": "primary", "type": "i8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "count * 32"},
+      {"index": 3, "name": "residual", "type": "i8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "count * 32"},
+      {"index": 4, "name": "primary_scales", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "count * 4"},
+      {"index": 5, "name": "residual_scales", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "count * 4"},
+      {"index": 6, "name": "primary_integer", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 7, "name": "residual_integer", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 8, "name": "q8_output", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 9, "name": "residual_q8_output", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 10, "name": "count", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"}
+    ],
+    "mxfp4_project_v1": [
+      {"index": 0, "name": "packed", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "columns * blocks * 16"},
+      {"index": 1, "name": "weight_scales", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "columns * blocks"},
+      {"index": 2, "name": "primary", "type": "i8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "rows * blocks * 32"},
+      {"index": 3, "name": "residual", "type": "i8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "rows * blocks * 32"},
+      {"index": 4, "name": "primary_scales", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "rows * blocks * 4"},
+      {"index": 5, "name": "residual_scales", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "rows * blocks * 4"},
+      {"index": 6, "name": "bias", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "const", "extent": "columns * 4"},
+      {"index": 7, "name": "output", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "rows * columns * 4"},
+      {"index": 8, "name": "rows", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"},
+      {"index": 9, "name": "columns", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"},
+      {"index": 10, "name": "blocks", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"}
+    ]
+  },
   "entry_points": {
-    "xe_i32_add": {
-      "global_size": "round_up(count, local_size)",
-      "local_size": 64,
-      "arguments": [
-        {"index": 0, "type": "global const i32*", "size": "pointer", "alignment": 4, "access": "read", "extent": "count * 4"},
-        {"index": 1, "type": "global const i32*", "size": "pointer", "alignment": 4, "access": "read", "extent": "count * 4"},
-        {"index": 2, "type": "global i32*", "size": "pointer", "alignment": 4, "access": "write", "extent": "count * 4"},
-        {"index": 3, "type": "u32", "size": 4, "alignment": 4, "access": "value"}
-      ]
-    },
-    "mxfp4_exact_blocks": {
-      "global_size": "round_up(count, local_size)",
-      "local_size": 64,
-      "argument_contract": "See kernels/mxfp4.cl; canonical adjacent low-nibble-first weights, K=32 only, exact doubled-E2M1 i32 intermediates."
-    },
-    "mxfp4_project_scalar": {
-      "global_size": "round_up(rows * columns, local_size)",
-      "local_size": 64,
-      "weight_layout": "canonical packed blocks and parallel E8M0 scale array",
-      "argument_contract": "Eight buffers followed by rows:u32, columns:u32, blocks:u32; all extents are validated by the Rust caller before FFI."
-    }
+    "xe_i32_add": {"argument_set": "i32_add_v1", "global_size": "round_up(count, 64)", "local_size": [64, 1, 1], "subgroup": "unconstrained"},
+    "mxfp4_exact_blocks": {"argument_set": "mxfp4_exact_blocks_v1", "global_size": "round_up(count, 64)", "local_size": [64, 1, 1], "subgroup": "unconstrained", "k": 32},
+    "mxfp4_project_scalar": {"argument_set": "mxfp4_project_v1", "global_size": "round_up(rows * columns, 64)", "local_size": [64, 1, 1], "subgroup": "unconstrained", "k": "blocks * 32"},
+    "mxfp4_project_dp4a_sg8": {"argument_set": "mxfp4_project_v1", "global_size": "round_up(rows * columns, 64)", "local_size": [64, 1, 1], "subgroup": 8, "k": "blocks * 32"},
+    "mxfp4_project_dp4a_sg16": {"argument_set": "mxfp4_project_v1", "global_size": "round_up(rows * columns, 64)", "local_size": [64, 1, 1], "subgroup": 16, "k": "blocks * 32"},
+    "mxfp4_project_dp4a_sg32": {"argument_set": "mxfp4_project_v1", "global_size": "round_up(rows * columns, 64)", "local_size": [64, 1, 1], "subgroup": 32, "k": "blocks * 32"}
   },
   "rules": {
+    "weight_layout": "canonical adjacent values, low nibble first, 16 packed bytes plus one parallel E8M0 byte per K=32 block",
+    "aliasing": "write buffers must not overlap any input or each other",
+    "buffer_bounds": "the Rust caller validates every extent and checked multiplication before allocation or FFI",
     "fast_math": false,
     "fp_contract": false,
-    "tail_policy": "host rounds launch size; kernels bounds-check; K must be divisible by 32",
+    "tail_policy": "K must be divisible by 32; other K tails are rejected; global launches round up and kernels bounds-check",
     "native_binary": "runtime cache only, never portable or checked in"
   }
 }

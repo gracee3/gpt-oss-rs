@@ -358,7 +358,8 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
     let source = std::fs::read(&source_path)?;
     let spirv_path = ensure_spirv_path("elementwise.cl", &common.results)?;
     let spirv = std::fs::read(&spirv_path)?;
-    let mut paths = vec![source_path.clone(), spirv_path.clone()];
+    let abi_path = manifest_dir().join("fixtures/kernel-abi-v1.json");
+    let mut paths = vec![source_path.clone(), spirv_path.clone(), abi_path.clone()];
     let mut variants = Vec::new();
 
     if common.backend == Backend::Opencl {
@@ -516,6 +517,7 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
     let details = json!({
         "canonical_source": artifact_record(&source_path)?,
         "same_spirv": artifact_record(&spirv_path)?,
+        "kernel_abi": artifact_record(&abi_path)?,
         "variants": variants,
         "corrupt_artifact": corrupt,
         "stale_cache_identity": stale,
