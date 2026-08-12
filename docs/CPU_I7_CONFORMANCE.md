@@ -9,6 +9,17 @@ MoE layers; they do not substitute for this complete-model regression.
 Passing this procedure does not automatically enable CPU in trusted mode.
 Trusted-mode eligibility requires a separate policy review.
 
+## 2026-08-12 closure-campaign status
+
+The new campaign at candidate
+`fbfefdb48f0e1cd7f756bd76522976559c7b4faa` is paused at preflight because
+the exact pinned oracle interpreter was absent. It records `0/28` new
+authoritative comparisons and `0/7` new llama.cpp captures; no model-scale or
+performance run was attempted. This does not alter or supersede the historical
+28-cell result documented by the i7 record. The resumable disposition and
+artifact-set hashes are in
+[`CPU_VALIDATION_CLOSURE.md`](CPU_VALIDATION_CLOSURE.md).
+
 ## Host setup
 
 Keep every large or generated artifact outside Git. Example host-local paths:

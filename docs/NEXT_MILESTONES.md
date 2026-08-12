@@ -38,6 +38,15 @@ The completed program deferred the following certification and tuning work:
 - the complete API permutation matrix;
 - trusted-mode certification review.
 
+The separate 2026-08-12 CPU validation campaign implemented the resumable E1
+evidence harness and passed its model-free build, lifecycle, HTTP-contract,
+and forced-kernel checks. It is paused at preflight because the exact pinned
+oracle interpreter is absent; it produced no new C3 result, 28-cell matrix, or
+performance claim. See
+[`CPU_VALIDATION_CLOSURE.md`](CPU_VALIDATION_CLOSURE.md) for the candidate SHA,
+artifact-set hashes, completed evidence, and exact resume gate. The historical
+28-cell i7 results below remain historical and have not been superseded.
+
 Semantic failures, cache corruption, memory-safety defects, and broken APIs
 were never relaxed. Existing new kernels remain forced or experimental where
 documented, and automatic dispatch stays on the validated baseline until later

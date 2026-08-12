@@ -21,6 +21,19 @@ matching oracle revision precisely enough to justify that checkout.
 
 ## Evidence gate and current baseline
 
+### 2026-08-12 execution update
+
+Candidate `fbfefdb48f0e1cd7f756bd76522976559c7b4faa` implements the bounded
+C3 dense-boundary capture and resumable evidence machinery described here,
+but C3-X-001 did not execute. Preflight recorded the required pinned oracle
+interpreter as unavailable and stopped without installing or substituting an
+environment. There is therefore no new `localized` or `not_reproduced`
+outcome, no candidate B, and no change to the trusted-evidence state. The
+campaign-index snapshot is
+`e8f9d841286c65320d119b3a3b6a7b800346457e745d4236581450dfee1199bf`;
+the complete paused disposition is in
+[`../CPU_VALIDATION_CLOSURE.md`](../CPU_VALIDATION_CLOSURE.md).
+
 - **C3-E-001 / CURRENT-REPO FACT:**
   `docs/cpu-agent-coordination/i7.md` records that corrected explicit BF16
   boundaries restored the pinned `harmony_262` greedy sequence. It then records
