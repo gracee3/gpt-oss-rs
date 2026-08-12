@@ -434,6 +434,36 @@ pub struct CpuLayerTrace {
     pub experts: Vec<CpuExpertTrace>,
     pub moe_output: Vec<f32>,
     pub layer_output: Vec<f32>,
+    pub dense_boundary: CpuDenseBoundaryTrace,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuDenseBoundaryTrace {
+    pub normalized_input_bf16_bits: Vec<u16>,
+    pub key_pre_rope_bf16_bits: Vec<u16>,
+    pub value_pre_rope_bf16_bits: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuDensePrefixAccumulator {
+    pub prefix_len: usize,
+    pub dot_fp32_bits: u32,
+    pub post_bias_fp32_bits: u32,
+    pub result_bf16_bits: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuDenseBoundaryProbe {
+    pub layer_index: usize,
+    pub projection: String,
+    pub output_index: usize,
+    pub compatibility_kernel_path: String,
+    pub dispatch_plan: String,
+    pub normalized_input_bf16_bits: Vec<u16>,
+    pub weight_row_bf16_bits: Vec<u16>,
+    pub bias_fp32_bits: u32,
+    pub observed_projection_bf16_bits: u16,
+    pub prefixes: Vec<CpuDensePrefixAccumulator>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1392,6 +1422,100 @@ impl CpuModelRunner {
         Ok((logits, trace))
     }
 
+    /// Extract one exact layer-0 dense reduction boundary from an offline
+    /// trace. This API is not connected to the HTTP serving surface.
+    pub fn dense_boundary_probe(
+        &self,
+        layer_trace: &CpuLayerTrace,
+        projection: &str,
+        output_index: usize,
+    ) -> Result<CpuDenseBoundaryProbe> {
+        let layer = self
+            .model
+            .layers
+            .get(layer_trace.layer_index)
+            .ok_or_else(|| {
+                LLMError::ConfigError("dense boundary layer index is out of range".into())
+            })?;
+        let (weight_name, bias, observed) = match projection {
+            "k" => (
+                layer.k_weight.as_str(),
+                layer.k_bias.as_slice(),
+                layer_trace.dense_boundary.key_pre_rope_bf16_bits.as_slice(),
+            ),
+            "v" => (
+                layer.v_weight.as_str(),
+                layer.v_bias.as_slice(),
+                layer_trace
+                    .dense_boundary
+                    .value_pre_rope_bf16_bits
+                    .as_slice(),
+            ),
+            _ => {
+                return Err(LLMError::ConfigError(
+                    "dense boundary projection must be 'k' or 'v'".into(),
+                ))
+            }
+        };
+        let input = layer_trace
+            .dense_boundary
+            .normalized_input_bf16_bits
+            .iter()
+            .map(|bits| bf16::from_bits(*bits))
+            .collect::<Vec<_>>();
+        let tensor = self.model.store.tensor(weight_name)?;
+        let shape = tensor.shape();
+        if shape.len() != 2
+            || shape[1] != input.len()
+            || output_index >= shape[0]
+            || output_index >= bias.len()
+            || output_index >= observed.len()
+        {
+            return Err(LLMError::ConfigError(
+                "dense boundary output index or shape is invalid".into(),
+            ));
+        }
+        let weights = tensor.bf16()?;
+        let columns = shape[1];
+        let row = &weights[output_index * columns..(output_index + 1) * columns];
+        let mut prefixes = Vec::with_capacity(columns);
+        for prefix_len in 1..=columns {
+            let mut dot = [0.0_f32];
+            self.model
+                .kernels
+                .bf16_matvec(
+                    &row[..prefix_len],
+                    1,
+                    prefix_len,
+                    &input[..prefix_len],
+                    &mut dot,
+                )
+                .map_err(kernel_error)?;
+            let post_bias = dot[0] + bias[output_index];
+            prefixes.push(CpuDensePrefixAccumulator {
+                prefix_len,
+                dot_fp32_bits: dot[0].to_bits(),
+                post_bias_fp32_bits: post_bias.to_bits(),
+                result_bf16_bits: bf16::from_f32(post_bias).to_bits(),
+            });
+        }
+        Ok(CpuDenseBoundaryProbe {
+            layer_index: layer_trace.layer_index,
+            projection: projection.into(),
+            output_index,
+            compatibility_kernel_path: self.kernel_path().to_string(),
+            dispatch_plan: self.kernel_dispatch_plan().to_string(),
+            normalized_input_bf16_bits: layer_trace
+                .dense_boundary
+                .normalized_input_bf16_bits
+                .clone(),
+            weight_row_bf16_bits: row.iter().map(|value| value.to_bits()).collect(),
+            bias_fp32_bits: bias[output_index].to_bits(),
+            observed_projection_bf16_bits: observed[output_index],
+            prefixes,
+        })
+    }
+
     fn validate_trace_layers(&self, selected_layers: &[usize]) -> Result<()> {
         if selected_layers
             .iter()
@@ -1720,9 +1844,26 @@ impl CpuModel {
 
         let mut attention_contexts = Vec::with_capacity(work.len());
         let mut value_projections = Vec::with_capacity(work.len());
+        let mut dense_boundaries = Vec::with_capacity(work.len());
         for row_index in 0..work.len() {
             fp32_to_bf16_roundtrip(&mut q[row_index]);
             fp32_to_bf16_roundtrip(&mut k[row_index]);
+            let key_pre_rope_bf16_bits = k[row_index]
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect();
+            let value_pre_rope_bf16_bits = v[row_index]
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect();
+            dense_boundaries.push(CpuDenseBoundaryTrace {
+                normalized_input_bf16_bits: normalized[row_index]
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect(),
+                key_pre_rope_bf16_bits,
+                value_pre_rope_bf16_bits,
+            });
             self.rope.apply(
                 &mut q[row_index],
                 self.config.num_attention_heads,
@@ -1811,6 +1952,7 @@ impl CpuModel {
                     .collect(),
                 moe_output: moe[row_index].output.clone(),
                 layer_output: bf16_slice_to_f32(&layer_output),
+                dense_boundary: dense_boundaries[row_index].clone(),
             });
             output.push(layer_output);
             traces.push(trace);
@@ -1835,6 +1977,17 @@ impl CpuModel {
         let v = self.project_bf16(&layer.v_weight, &normalized, Some(&layer.v_bias))?;
         fp32_to_bf16_roundtrip(&mut q);
         fp32_to_bf16_roundtrip(&mut k);
+        let dense_boundary = CpuDenseBoundaryTrace {
+            normalized_input_bf16_bits: normalized.iter().map(|value| value.to_bits()).collect(),
+            key_pre_rope_bf16_bits: k
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect(),
+            value_pre_rope_bf16_bits: v
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect(),
+        };
         self.rope
             .apply(&mut q, self.config.num_attention_heads, position)?;
         self.rope
@@ -1894,6 +2047,7 @@ impl CpuModel {
             experts: moe.experts,
             moe_output: moe.output,
             layer_output: bf16_slice_to_f32(&layer_output),
+            dense_boundary,
         });
         Ok((layer_output, trace))
     }
@@ -3376,6 +3530,32 @@ mod tests {
         assert_eq!(trace.final_norm.len(), 32);
         assert_eq!(trace.top_logits.len(), 3);
         assert!(trace.dispatch_plan.contains("mxfp4_q8_dot=scalar"));
+    }
+
+    #[test]
+    fn offline_dense_boundary_probe_preserves_bf16_inputs_weights_and_all_prefixes() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut runner =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        let (_, trace) = runner.prefill_trace(&[1, 2, 3], &[0], 1).unwrap();
+        let probe = runner
+            .dense_boundary_probe(&trace.layers[0], "k", 0)
+            .unwrap();
+        assert_eq!(probe.layer_index, 0);
+        assert_eq!(probe.projection, "k");
+        assert_eq!(probe.normalized_input_bf16_bits.len(), 32);
+        assert_eq!(probe.weight_row_bf16_bits.len(), 32);
+        assert_eq!(probe.prefixes.len(), 32);
+        assert_eq!(probe.prefixes[0].prefix_len, 1);
+        assert_eq!(probe.prefixes[31].prefix_len, 32);
+        assert_eq!(
+            probe.prefixes[31].result_bf16_bits,
+            probe.observed_projection_bf16_bits
+        );
+        assert!(runner
+            .dense_boundary_probe(&trace.layers[0], "q", 0)
+            .is_err());
     }
 
     #[test]

@@ -90,6 +90,7 @@ class CompareCpuParityTests(unittest.TestCase):
         self.assertTrue(result["blocking"])
         self.assertFalse(result["native_matches_official"])
         self.assertEqual(result["native_official_first_divergence"], 1)
+        self.assertEqual(result["status"], "fail")
 
     def test_llama_match_cannot_waive_official_divergence(self):
         completed, result = self.run_comparator(
@@ -150,6 +151,76 @@ class CompareCpuParityTests(unittest.TestCase):
         self.assertFalse(result["blocking"])
         self.assertTrue(result["native_matches_official"])
         self.assertNotIn("llama_cpp", result)
+        self.assertEqual(result["status"], "pass")
+
+    def test_negative_input_status_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native.json"
+            official = root / "official.json"
+            output = root / "comparison.json"
+            native.write_text(
+                json.dumps(
+                    {
+                        "scenario": "test_scenario",
+                        "status": "incomplete",
+                        "generated_token_ids": [],
+                    }
+                )
+            )
+            official.write_text(json.dumps({"generated_token_ids": []}))
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARATOR),
+                    "--native",
+                    str(native),
+                    "--official",
+                    str(official),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            result = json.loads(output.read_text())
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(result["status"], "incomplete")
+
+    def test_mismatched_prompt_provenance_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native.json"
+            official = root / "official.json"
+            output = root / "comparison.json"
+            native.write_text(
+                json.dumps(
+                    {
+                        "scenario": "test_scenario",
+                        "prompt_token_ids": [1],
+                        "generated_token_ids": [2],
+                    }
+                )
+            )
+            official.write_text(
+                json.dumps({"prompt_token_ids": [9], "generated_token_ids": [2]})
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARATOR),
+                    "--native",
+                    str(native),
+                    "--official",
+                    str(official),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(json.loads(output.read_text())["status"], "invalid")
 
     def test_decode_step_expert_trace_comparison_preserves_context_and_order(self):
         def trace(gate_up):

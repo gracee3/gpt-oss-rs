@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const EVIDENCE_SCHEMA_V1: &str = "gpt-oss-rs.cpu-evidence/v1";
 pub const RUNTIME_SNAPSHOT_SCHEMA_V1: &str = "gpt-oss-rs.cpu-runtime/v1";
 pub const DIAGNOSTIC_SCHEMA_V1: &str = "gpt-oss-rs.cpu-diagnostic/v1";
+pub const CAMPAIGN_INDEX_SCHEMA_V1: &str = "gpt-oss-rs.cpu-campaign-index/v1";
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -164,6 +165,47 @@ pub struct TimerEvidence {
     pub excludes: Vec<String>,
 }
 
+/// Campaign coordinates are optional on legacy v1 records, but mandatory for
+/// campaign-complete records. Keeping them inside v1 preserves the stable
+/// schema identity while allowing older captures to deserialize unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampaignIdentity {
+    pub campaign_id: String,
+    pub candidate_sha: String,
+    pub phase: String,
+    pub scenario: String,
+    pub requested_kernel: String,
+    pub attempt_number: u32,
+    pub attempt_id: String,
+    pub cell_key: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryEvidence {
+    pub role: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchEvidence {
+    pub requested_kernel: String,
+    pub effective_kernel: String,
+    pub requested_matrix_backend: String,
+    pub effective_matrix_backend: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeasuredResources {
+    pub wall_time_ns: u64,
+    pub startup_time_ns: u64,
+    pub prompt_time_ns: u64,
+    pub generation_time_ns: u64,
+    pub peak_rss_bytes: u64,
+    pub process_swap_bytes: u64,
+    pub system_swap_used_bytes: u64,
+    pub available_memory_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunManifestV1 {
     pub schema: String,
@@ -182,6 +224,16 @@ pub struct RunManifestV1 {
     pub artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub limitations: Vec<String>,
+    #[serde(default)]
+    pub campaign: CampaignIdentity,
+    #[serde(default)]
+    pub build_binaries: Vec<BinaryEvidence>,
+    #[serde(default)]
+    pub dispatch: DispatchEvidence,
+    #[serde(default)]
+    pub measured: MeasuredResources,
+    #[serde(default)]
+    pub related_runs: Vec<String>,
 }
 
 impl RunManifestV1 {
@@ -204,6 +256,11 @@ impl RunManifestV1 {
             timers: Vec::new(),
             artifacts: Vec::new(),
             limitations: Vec::new(),
+            campaign: CampaignIdentity::default(),
+            build_binaries: Vec::new(),
+            dispatch: DispatchEvidence::default(),
+            measured: MeasuredResources::default(),
+            related_runs: Vec::new(),
         }
     }
 
@@ -265,6 +322,83 @@ impl RunManifestV1 {
         self.artifacts.iter().try_for_each(ArtifactRef::verify)
     }
 
+    /// Validate fields required for a terminal campaign attempt. Legacy v1
+    /// captures should continue to call `validate`; campaign finalization must
+    /// call this stricter surface.
+    pub fn validate_campaign_complete(&self) -> Result<()> {
+        self.validate()?;
+        for (name, value) in [
+            ("campaign_id", self.campaign.campaign_id.as_str()),
+            ("phase", self.campaign.phase.as_str()),
+            ("scenario", self.campaign.scenario.as_str()),
+            ("requested_kernel", self.campaign.requested_kernel.as_str()),
+            ("attempt_id", self.campaign.attempt_id.as_str()),
+            ("cell_key", self.campaign.cell_key.as_str()),
+        ] {
+            require_nonempty(value, name)?;
+        }
+        if self.campaign.candidate_sha.len() != 40
+            || !self
+                .campaign
+                .candidate_sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(EvidenceError::Invalid(
+                "candidate_sha must contain exactly 40 hexadecimal characters".into(),
+            ));
+        }
+        if self.campaign.attempt_number == 0 {
+            return Err(EvidenceError::Invalid(
+                "attempt_number must be positive".into(),
+            ));
+        }
+        if self.run_id != self.campaign.attempt_id {
+            return Err(EvidenceError::Invalid(
+                "run_id must equal campaign attempt_id".into(),
+            ));
+        }
+        if self.build_binaries.is_empty() {
+            return Err(EvidenceError::Invalid(
+                "campaign attempt requires at least one build binary hash".into(),
+            ));
+        }
+        for binary in &self.build_binaries {
+            require_nonempty(&binary.role, "binary role")?;
+            validate_sha256(&binary.sha256, "binary sha256")?;
+        }
+        for (name, value) in [
+            (
+                "requested dispatch",
+                self.dispatch.requested_kernel.as_str(),
+            ),
+            (
+                "effective dispatch",
+                self.dispatch.effective_kernel.as_str(),
+            ),
+            (
+                "requested matrix backend",
+                self.dispatch.requested_matrix_backend.as_str(),
+            ),
+            (
+                "effective matrix backend",
+                self.dispatch.effective_matrix_backend.as_str(),
+            ),
+        ] {
+            require_nonempty(value, name)?;
+        }
+        let mut related = BTreeSet::new();
+        for run in &self.related_runs {
+            require_nonempty(run, "related run")?;
+            if !related.insert(run) {
+                return Err(EvidenceError::Invalid(format!(
+                    "duplicate related run '{run}'"
+                )));
+            }
+        }
+        self.verify_artifacts()
+    }
+
     /// Return a publishable copy with secret-looking values and host paths removed.
     pub fn redacted(&self) -> Self {
         let mut copy = self.clone();
@@ -313,6 +447,11 @@ impl RunManifestV1 {
         canonical.artifacts.sort_by(|left, right| {
             (&left.role, &left.absolute_path).cmp(&(&right.role, &right.absolute_path))
         });
+        canonical
+            .build_binaries
+            .sort_by(|left, right| (&left.role, &left.sha256).cmp(&(&right.role, &right.sha256)));
+        canonical.related_runs.sort();
+        canonical.related_runs.dedup();
         canonical.limitations.sort();
         canonical.limitations.dedup();
         stable_json(&canonical)
@@ -320,6 +459,160 @@ impl RunManifestV1 {
 
     pub fn write_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
         atomic_write(path.as_ref(), &self.stable_json()?)
+    }
+
+    /// Publish a terminal artifact exactly once. Existing output is never
+    /// replaced, even if a prior process raced this writer.
+    pub fn write_atomic_new(&self, path: impl AsRef<Path>) -> Result<()> {
+        atomic_write_new(path.as_ref(), &self.stable_json()?)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampaignAttemptV1 {
+    pub cell_key: String,
+    pub attempt_id: String,
+    pub attempt_number: u32,
+    pub status: EvidenceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_manifest: Option<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampaignIndexV1 {
+    pub schema: String,
+    pub campaign_id: String,
+    pub candidate_sha: String,
+    #[serde(default)]
+    pub parent_candidate_sha: Option<String>,
+    #[serde(default)]
+    pub attempts: Vec<CampaignAttemptV1>,
+}
+
+impl CampaignIndexV1 {
+    pub fn new(campaign_id: impl Into<String>, candidate_sha: impl Into<String>) -> Self {
+        Self {
+            schema: CAMPAIGN_INDEX_SCHEMA_V1.into(),
+            campaign_id: campaign_id.into(),
+            candidate_sha: candidate_sha.into(),
+            parent_candidate_sha: None,
+            attempts: Vec::new(),
+        }
+    }
+
+    pub fn stable_cell_key(
+        phase: &str,
+        scenario: &str,
+        requested_kernel: &str,
+        backend: &str,
+    ) -> Result<String> {
+        for (name, value) in [
+            ("phase", phase),
+            ("scenario", scenario),
+            ("requested_kernel", requested_kernel),
+            ("backend", backend),
+        ] {
+            require_nonempty(value, name)?;
+            if value.contains('/') || value.contains(char::is_whitespace) {
+                return Err(EvidenceError::Invalid(format!(
+                    "{name} contains a path separator or whitespace"
+                )));
+            }
+        }
+        Ok(format!(
+            "{phase}--{scenario}--{requested_kernel}--{backend}"
+        ))
+    }
+
+    pub fn next_attempt(&self, cell_key: &str) -> u32 {
+        self.attempts
+            .iter()
+            .filter(|attempt| attempt.cell_key == cell_key)
+            .map(|attempt| attempt.attempt_number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    pub fn push(&mut self, attempt: CampaignAttemptV1) -> Result<()> {
+        if self
+            .attempts
+            .iter()
+            .any(|existing| existing.attempt_id == attempt.attempt_id)
+        {
+            return Err(EvidenceError::Invalid(format!(
+                "duplicate attempt ID '{}'",
+                attempt.attempt_id
+            )));
+        }
+        let expected = self.next_attempt(&attempt.cell_key);
+        if attempt.attempt_number != expected {
+            return Err(EvidenceError::Invalid(format!(
+                "attempt number {} for '{}' is not next expected number {expected}",
+                attempt.attempt_number, attempt.cell_key
+            )));
+        }
+        self.attempts.push(attempt);
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != CAMPAIGN_INDEX_SCHEMA_V1 {
+            return Err(EvidenceError::Invalid(format!(
+                "unsupported campaign index schema '{}'",
+                self.schema
+            )));
+        }
+        require_nonempty(&self.campaign_id, "campaign_id")?;
+        if self.candidate_sha.len() != 40
+            || !self
+                .candidate_sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(EvidenceError::Invalid(
+                "candidate_sha must contain exactly 40 hexadecimal characters".into(),
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        let mut numbers: BTreeMap<&str, u32> = BTreeMap::new();
+        for attempt in &self.attempts {
+            require_nonempty(&attempt.cell_key, "cell_key")?;
+            require_nonempty(&attempt.attempt_id, "attempt_id")?;
+            if !ids.insert(attempt.attempt_id.as_str()) {
+                return Err(EvidenceError::Invalid(format!(
+                    "duplicate attempt ID '{}'",
+                    attempt.attempt_id
+                )));
+            }
+            let next = numbers.entry(&attempt.cell_key).or_default();
+            *next += 1;
+            if attempt.attempt_number != *next {
+                return Err(EvidenceError::Invalid(format!(
+                    "non-contiguous attempt number for '{}'",
+                    attempt.cell_key
+                )));
+            }
+            if let Some(manifest) = &attempt.terminal_manifest {
+                manifest.verify()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn stable_json(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        stable_json(self)
+    }
+
+    pub fn write_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
+        atomic_write(path.as_ref(), &self.stable_json()?)
+    }
+
+    pub fn read(path: impl AsRef<Path>) -> Result<Self> {
+        let index: Self = serde_json::from_slice(&fs::read(path)?)?;
+        index.validate()?;
+        Ok(index)
     }
 }
 
@@ -633,6 +926,36 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Atomically publish bytes without replacing an existing destination.
+pub fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| EvidenceError::Invalid("output path has no UTF-8 file name".into()))?;
+    let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::hard_link(&temporary, path)?;
+        fs::remove_file(&temporary)?;
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn require_nonempty(value: &str, name: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(EvidenceError::Invalid(format!("{name} must not be empty")))
@@ -724,6 +1047,82 @@ mod tests {
         let output = temp.path().join("nested/manifest.json");
         manifest.write_atomic(&output).unwrap();
         assert_eq!(fs::read(output).unwrap(), manifest.stable_json().unwrap());
+    }
+
+    #[test]
+    fn create_new_atomic_output_never_replaces_terminal_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("terminal.json");
+        atomic_write_new(&output, b"first").unwrap();
+        assert!(atomic_write_new(&output, b"second").is_err());
+        assert_eq!(fs::read(output).unwrap(), b"first");
+    }
+
+    #[test]
+    fn campaign_index_has_stable_cells_unique_attempts_and_verified_terminals() {
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = temp.path().join("terminal.json");
+        atomic_write_new(&terminal, b"terminal").unwrap();
+        let artifact = ArtifactRef::from_path("terminal-manifest", terminal).unwrap();
+        let cell =
+            CampaignIndexV1::stable_cell_key("official", "harmony_262", "scalar", "auto").unwrap();
+        let mut index = CampaignIndexV1::new("campaign", "a".repeat(40));
+        index
+            .push(CampaignAttemptV1 {
+                cell_key: cell.clone(),
+                attempt_id: "campaign--candidate--official--harmony_262--scalar--1".into(),
+                attempt_number: 1,
+                status: EvidenceStatus::InsufficientEvidence,
+                terminal_manifest: Some(artifact),
+            })
+            .unwrap();
+        assert_eq!(index.next_attempt(&cell), 2);
+        assert!(index
+            .push(CampaignAttemptV1 {
+                cell_key: cell,
+                attempt_id: "campaign--candidate--official--harmony_262--scalar--1".into(),
+                attempt_number: 2,
+                status: EvidenceStatus::Incomplete,
+                terminal_manifest: None,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn strict_campaign_validation_requires_identity_dispatch_and_binary_hashes() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("raw");
+        fs::write(&raw, b"raw").unwrap();
+        let mut record = RunManifestV1::new(
+            "campaign--candidate--phase--scenario--scalar--1",
+            "correctness",
+            EvidenceStatus::InsufficientEvidence,
+        );
+        record.workload.repetitions = 1;
+        record.campaign = CampaignIdentity {
+            campaign_id: "campaign".into(),
+            candidate_sha: "a".repeat(40),
+            phase: "phase".into(),
+            scenario: "scenario".into(),
+            requested_kernel: "scalar".into(),
+            attempt_number: 1,
+            attempt_id: record.run_id.clone(),
+            cell_key: "phase--scenario--scalar--auto".into(),
+        };
+        record.build_binaries.push(BinaryEvidence {
+            role: "worker".into(),
+            sha256: "b".repeat(64),
+        });
+        record.dispatch = DispatchEvidence {
+            requested_kernel: "scalar".into(),
+            effective_kernel: "scalar".into(),
+            requested_matrix_backend: "auto".into(),
+            effective_matrix_backend: "rayon".into(),
+        };
+        record
+            .artifacts
+            .push(ArtifactRef::from_path("raw", raw).unwrap());
+        record.validate_campaign_complete().unwrap();
     }
 
     #[test]

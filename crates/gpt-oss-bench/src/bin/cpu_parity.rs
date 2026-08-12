@@ -9,7 +9,8 @@ use gpt_oss_evidence::{
     ArtifactRef, EvidenceStatus, ModelEvidence, RunManifestV1, SourceProvenance, WorkloadEvidence,
 };
 use gpt_oss_model_runner::{
-    CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
+    CpuDenseBoundaryProbe, CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions,
+    CpuPrefillTrace,
 };
 use gpt_oss_tokenizer::{
     FunctionDefinition, HarmonyProtocol, ProtocolMessage, ToolDefinition, ToolParameterProperty,
@@ -61,6 +62,13 @@ struct Cli {
 
     #[arg(long, default_value_t = 8)]
     top_k: usize,
+
+    /// Offline-only layer-0 dense boundary projection (`k` or `v`).
+    #[arg(long, requires = "dense_boundary_output")]
+    dense_boundary_projection: Option<String>,
+
+    #[arg(long, requires = "dense_boundary_projection")]
+    dense_boundary_output: Option<usize>,
 
     #[arg(long)]
     output: PathBuf,
@@ -116,6 +124,7 @@ struct ParityCapture<'a> {
     prompt_seconds: f64,
     generation_seconds: f64,
     trace: Option<CpuPrefillTrace>,
+    dense_boundary_probe: Option<CpuDenseBoundaryProbe>,
     pinned_model: &'a serde_json::Value,
     pinned_official_oracle: &'a serde_json::Value,
     pinned_llama_cpp: &'a serde_json::Value,
@@ -123,6 +132,33 @@ struct ParityCapture<'a> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Err(error) = run(&cli) {
+        let failure = serde_json::json!({
+            "schema_version": 1,
+            "evidence_status": "incomplete",
+            "worker": "cpu_parity",
+            "scenario": cli.scenario,
+            "requested_kernel": cli.kernel.to_string(),
+            "requested_matrix_backend": cli.cpu_matmul_backend.to_string(),
+            "error": format!("{error:#}"),
+        });
+        let file_name = cli
+            .output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("capture");
+        let failure_path = cli
+            .output
+            .with_file_name(format!("{file_name}.failure.json"));
+        if let Ok(bytes) = gpt_oss_evidence::stable_json(&failure) {
+            let _ = gpt_oss_evidence::atomic_write_new(&failure_path, &bytes);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn run(cli: &Cli) -> Result<()> {
     validate_trace_step(cli.trace_step, cli.max_new_tokens)?;
     let manifest = load_manifest(&cli.fixtures)?;
     let scenario = manifest
@@ -184,6 +220,20 @@ fn main() -> Result<()> {
         bail!("generation stopped before the requested --trace-step");
     }
     let generation_seconds = generation_start.elapsed().as_secs_f64();
+    let dense_boundary_probe = match (
+        cli.dense_boundary_projection.as_deref(),
+        cli.dense_boundary_output,
+    ) {
+        (Some(projection), Some(output_index)) => {
+            let layer = trace
+                .as_ref()
+                .and_then(|trace| trace.layers.iter().find(|layer| layer.layer_index == 0))
+                .context("dense boundary probe requires --trace-layers to include layer 0")?;
+            Some(runner.dense_boundary_probe(layer, projection, output_index)?)
+        }
+        (None, None) => None,
+        _ => bail!("dense boundary projection and output must be supplied together"),
+    };
     if let Some(expected) = &scenario.official_greedy_tokens {
         if cli.max_new_tokens >= expected.len() && &generated_token_ids != expected {
             bail!(
@@ -213,6 +263,7 @@ fn main() -> Result<()> {
         prompt_seconds,
         generation_seconds,
         trace,
+        dense_boundary_probe,
         pinned_model: &manifest.model,
         pinned_official_oracle: &manifest.official_oracle,
         pinned_llama_cpp: &manifest.llama_cpp,
@@ -221,7 +272,7 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let encoded = serde_json::to_vec_pretty(&capture)?;
-    gpt_oss_evidence::atomic_write(&cli.output, &encoded)?;
+    gpt_oss_evidence::atomic_write_new(&cli.output, &encoded)?;
     write_evidence_sidecar(&cli, &manifest, scenario, &encoded)?;
     println!("{}", String::from_utf8(encoded)?);
     Ok(())
@@ -240,7 +291,7 @@ fn write_evidence_sidecar(
     let mut evidence = RunManifestV1::new(
         format!("cpu-parity-{}", scenario.id),
         "correctness",
-        EvidenceStatus::Pass,
+        EvidenceStatus::InsufficientEvidence,
     );
     evidence.source = local_source_provenance();
     evidence.model = ModelEvidence {
@@ -288,7 +339,7 @@ fn write_evidence_sidecar(
     let sidecar = cli
         .output
         .with_file_name(format!("{file_name}.manifest.json"));
-    evidence.write_atomic(sidecar)?;
+    evidence.write_atomic_new(sidecar)?;
     Ok(())
 }
 
