@@ -85,3 +85,18 @@ if any primary X6 manifest reports a useful win.
 These results are bounded to this T14, device, checkpoint slice, and captured
 driver stack. They do not establish behavior on another Xe generation or
 driver and do not justify full-model or serving claims.
+
+## Validation
+
+- standalone `cargo test --locked --offline`: 3 passed;
+- standalone warnings-denied Clippy: passed;
+- production `gpt-oss-cpu-kernels`: 36 unit tests and doc tests passed;
+- all hardware environment/capability/artifact/memory/MXFP4 commands completed;
+- all primary and exploratory X6 paths completed with structured manifests;
+- `git diff --check`: required before each checkpoint and final merge.
+
+The full production `cargo test --workspace --locked --offline` build is
+unavailable on this host because the existing `openssl-sys` dependency cannot
+find OpenSSL development headers or `openssl.pc`. No package change was made.
+This limitation is outside the standalone research graph and does not replace
+the passing focused CPU-kernel validation.
