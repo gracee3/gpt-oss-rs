@@ -402,6 +402,18 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
             "",
             "xe_i32_add",
         )?);
+        let spirv_session = Session::create(
+            common.backend,
+            ArtifactKind::Spirv,
+            &spirv,
+            "",
+            "xe_i32_add",
+            common.immediate,
+        )?;
+        let spirv_native = spirv_session.native_binary()?;
+        let spirv_native_path = common.results.join("elementwise.opencl-spirv-native.bin");
+        std::fs::write(&spirv_native_path, &spirv_native)?;
+        paths.push(spirv_native_path);
     } else {
         variants.push(artifact_variant(
             common,
@@ -435,6 +447,51 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
         )?);
     }
 
+    let mut ocloc_scope = json!({
+        "status": "unavailable",
+        "role": "No current-generation ocloc is installed. Preserved 23.43 output may be supplied only as historical cross-generation compatibility evidence; it is never canonical or cache-reusable.",
+    });
+    if let Some(path) = common.flags.get("ocloc-spv").map(PathBuf::from) {
+        let bytes = std::fs::read(&path)?;
+        variants.push(artifact_variant(
+            common,
+            "historical-ocloc-23.43-spirv-compatibility-only",
+            ArtifactKind::Spirv,
+            &path,
+            &bytes,
+            "",
+            "xe_i32_add",
+        )?);
+        paths.push(path.clone());
+        let mut native_record = Value::Null;
+        if let Some(native_path) = common.flags.get("ocloc-native").map(PathBuf::from) {
+            let native = std::fs::read(&native_path)?;
+            variants.push(artifact_variant(
+                common,
+                "historical-ocloc-23.43-native-compatibility-only",
+                if common.backend == Backend::Opencl {
+                    ArtifactKind::OpenclBinary
+                } else {
+                    ArtifactKind::Native
+                },
+                &native_path,
+                &native,
+                "",
+                "xe_i32_add",
+            )?);
+            native_record = serde_json::to_value(artifact_record(&native_path)?)?;
+            paths.push(native_path);
+        }
+        ocloc_scope = json!({
+            "status": "pass",
+            "role": "23.43 historical cross-generation compatibility evidence only; excluded from canonical production artifacts and cache identity",
+            "compiler_version": "23.43.027642",
+            "spirv": artifact_record(&path)?,
+            "native": native_record,
+            "hardware_process_guard": "the artifact is loaded in a clean child using only current 26.05 runtime libraries; the 23.43 compiler sysroot is not mapped"
+        });
+    }
+
     let mut corrupted = spirv.clone();
     if corrupted.len() >= 4 {
         corrupted[0..4].copy_from_slice(b"BAD!");
@@ -466,7 +523,7 @@ fn command_artifact(arguments: &[String], common: &Common) -> Result<()> {
         "warmups_per_variant": 10,
         "warm_samples_per_variant": 30,
         "build_options": "No fast-math; canonical SPIR-V built by scripts/build-spirv.sh with Clang 18 and llvm-spirv-18, validated for OpenCL 2.2 semantics.",
-        "ocloc_scope": "Not used to produce canonical bytes. Preserved 23.43 ocloc is compiler-history evidence only and is prohibited by the mixed-generation hardware guard."
+        "ocloc_scope": ocloc_scope
     });
     std::fs::write(&raw_path, serde_json::to_vec_pretty(&details)?)?;
     paths.push(raw_path);
