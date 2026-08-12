@@ -16,14 +16,18 @@ import sys
 import tempfile
 import time
 import traceback
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message="Failed to initialize NumPy")
 
 import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
 
-OFFICIAL_SOURCE_REVISION = "7802bf263f902efd4c7d18fcceff3ba72f941e80"
+OFFICIAL_SOURCE_REVISION = "599476783c6f88508dab8577808b5ead5cbee8d2"
+OFFICIAL_SOURCE_ARCHIVE_SHA256 = "7306d68ae017f461f2ebb82d04628f8dcba7cc7b431ef28e8786c947510c6f6b"
 MXFP4_VALUES = [
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
     -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
@@ -73,11 +77,18 @@ class TensorStore:
 
 
 def load_official_operators(source: Path):
-    revision = (
-        __import__("subprocess")
-        .check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True)
-        .strip()
-    )
+    marker = source / ".official-source.json"
+    if marker.is_file():
+        identity = json.loads(marker.read_text())
+        revision = identity.get("revision")
+        if identity.get("archive_sha256") != OFFICIAL_SOURCE_ARCHIVE_SHA256:
+            raise RuntimeError("official source archive identity is not v0.0.9")
+    else:
+        revision = (
+            __import__("subprocess")
+            .check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True)
+            .strip()
+        )
     if revision != OFFICIAL_SOURCE_REVISION:
         raise RuntimeError(
             f"official source revision {revision} does not match {OFFICIAL_SOURCE_REVISION}"
@@ -225,18 +236,30 @@ class Oracle:
                 bias = self.store.tensor(bias_name)[output_index].float()
                 prefixes = []
                 for prefix_len in range(1, normalized.shape[-1] + 1):
-                    dot = torch.sum(
-                        normalized[-1, :prefix_len].float()
-                        * weight[:prefix_len].float(),
-                        dtype=torch.float32,
-                    )
-                    post_bias = dot + bias
+                    repeated = []
+                    for _ in range(5):
+                        dot = torch.sum(
+                            normalized[-1, :prefix_len].float()
+                            * weight[:prefix_len].float(),
+                            dtype=torch.float32,
+                        )
+                        post_bias = dot + bias
+                        repeated.append(
+                            (
+                                fp32_bits(float(dot)),
+                                fp32_bits(float(post_bias)),
+                                bf16_bits(post_bias.to(torch.bfloat16))[0],
+                            )
+                        )
+                    if len(set(repeated)) != 1:
+                        raise RuntimeError("dense boundary prefix was not repeat-identical")
+                    dot_bits, post_bias_bits, result_bits = repeated[0]
                     prefixes.append(
                         {
                             "prefix_len": prefix_len,
-                            "dot_fp32_bits": fp32_bits(float(dot)),
-                            "post_bias_fp32_bits": fp32_bits(float(post_bias)),
-                            "result_bf16_bits": bf16_bits(post_bias.to(torch.bfloat16))[0],
+                            "dot_fp32_bits": dot_bits,
+                            "post_bias_fp32_bits": post_bias_bits,
+                            "result_bf16_bits": result_bits,
                         }
                     )
                 observed = k[-1] if self.dense_boundary_projection == "k" else v[-1]
@@ -247,6 +270,8 @@ class Oracle:
                     "weight_row_bf16_bits": bf16_bits(weight),
                     "bias_fp32_bits": fp32_bits(float(bias)),
                     "observed_projection_bf16_bits": bf16_bits(observed)[output_index],
+                    "repetitions": 5,
+                    "repeat_identical": True,
                     "prefixes": prefixes,
                 }
         token_count = hidden.shape[0]
@@ -421,6 +446,8 @@ def run(args: argparse.Namespace) -> int:
         raise RuntimeError("generation stopped before the requested --trace-step")
     elapsed = time.monotonic() - start
 
+    identity_json = os.environ.get("GPT_OSS_ORACLE_IDENTITY_JSON")
+    oracle_identity = json.loads(identity_json) if identity_json else None
     report = {
         "schema_version": 1,
         "evidence_status": "insufficient_evidence",
@@ -428,6 +455,7 @@ def run(args: argparse.Namespace) -> int:
         "model_path": str(args.model),
         "official_source_path": str(args.official_source),
         "official_source_revision": OFFICIAL_SOURCE_REVISION,
+        "oracle_identity": oracle_identity,
         "prompt_token_ids": prompt_token_ids,
         "generated_token_ids": generated,
         "expert_projection": "exact-bf16",

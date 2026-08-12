@@ -8,16 +8,29 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use gpt_oss_evidence::{
     atomic_write_new, stable_json, ArtifactRef, BinaryEvidence, CampaignAttemptV1,
-    CampaignIdentity, CampaignIndexV1, DispatchEvidence, EvidenceStatus, RunManifestV1,
-    SourceProvenance, WorkloadEvidence,
+    CampaignIdentity, CampaignIndexV1, DispatchEvidence, EvidenceStatus, OracleIdentityEvidence,
+    RunManifestV1, SourceProvenance, WorkloadEvidence,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const REQUIRED_ANCESTOR: &str = "ac3eea350c2e926087f0b4eb67afa75ee5eecde1";
-const OFFICIAL_REVISION: &str = "7802bf263f902efd4c7d18fcceff3ba72f941e80";
+const REQUIRED_ANCESTOR: &str = "f86674d6acf17484899f5d17e286dcb2c6d1f850";
+const REQUIRED_BRANCH: &str = "agent/cpu-validation-fresh-oracle";
+const OFFICIAL_REVISION: &str = "599476783c6f88508dab8577808b5ead5cbee8d2";
 const LLAMA_REVISION: &str = "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a";
+const LLAMA_GGUF_SHA256: &str = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901";
+const FIXTURE_SHA256: &str = "9d8397acf8fe20268e5a5d96fd43b3a6cc2138830585971a0accaf7ef90878ee";
 const INDEX_FILE: &str = "campaign-index.json";
+const SCENARIOS: [&str; 7] = [
+    "harmony_63",
+    "harmony_122",
+    "harmony_136",
+    "harmony_262",
+    "harmony_346",
+    "harmony_444",
+    "tool_history_180",
+];
+const KERNELS: [&str; 4] = ["automatic", "scalar", "avx2", "avx512-vnni"];
 
 #[derive(Debug, Parser)]
 #[command(about = "Resumable, hash-verified CPU validation campaign driver")]
@@ -39,22 +52,33 @@ enum CampaignCommand {
 
 #[derive(Debug, Args)]
 struct InitArgs {
-    #[arg(long, default_value = "/data/models/.venv-awq")]
-    oracle_venv: PathBuf,
+    #[arg(long, default_value = "oracle/cpu-oracle.lock.json")]
+    oracle_lock: PathBuf,
+    #[arg(long)]
+    oci_archive: PathBuf,
     #[arg(
         long,
-        default_value = "/home/emmy/src/cpu-runtime-research/openai-gpt-oss-oracle-7802bf263"
+        default_value = "crates/gpt-oss-bench/fixtures/cpu_harmony_parity.json"
     )]
-    official_source: PathBuf,
+    fixtures: PathBuf,
+    #[arg(long, default_value = "/data/models/openai/gpt-oss-20b")]
+    model: PathBuf,
     #[arg(
         long,
         default_value = "/home/emmy/src/cpu-runtime-research/llama.cpp-oracle-030ebb558"
     )]
     llama_source: PathBuf,
+    #[arg(
+        long,
+        default_value = "/data/models/llama-cpp/gpt-oss-20b/gpt-oss-20b-MXFP4.gguf"
+    )]
+    llama_model: PathBuf,
     #[arg(long, default_value_t = 40)]
     minimum_free_gib: u64,
     #[arg(long, default_value_t = 20)]
     reserve_gib: u64,
+    #[arg(long)]
+    parent_candidate_sha: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -71,6 +95,8 @@ struct RunArgs {
     effective_kernel: Option<String>,
     #[arg(long)]
     effective_backend: Option<String>,
+    #[arg(long, default_value = "native", value_parser = ["native", "generic"])]
+    execution_mode: String,
     #[arg(long, default_value_t = 20)]
     reserve_gib: u64,
     #[arg(last = true, required = true)]
@@ -99,18 +125,22 @@ struct PreflightSnapshot {
     available_memory_bytes: u64,
     swap_total_bytes: u64,
     swap_used_bytes: u64,
-    oracle_venv: DependencyCheck,
-    official_source: RevisionCheck,
+    oracle_lock: OracleLockCheck,
+    model_path: String,
+    oci_archive: String,
+    fixtures: FileCheck,
     llama_source: RevisionCheck,
+    llama_model: FileCheck,
+    cache_initial_entries: usize,
+    cache_initial_sha256: String,
     commands: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
-struct DependencyCheck {
+struct OracleLockCheck {
     path: String,
-    available: bool,
-    python: Option<String>,
-    fingerprint: Option<String>,
+    sha256: Option<String>,
+    valid: bool,
     reason: Option<String>,
 }
 
@@ -120,6 +150,15 @@ struct RevisionCheck {
     expected: &'static str,
     observed: Option<String>,
     clean: bool,
+    valid: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FileCheck {
+    path: String,
+    expected_sha256: &'static str,
+    observed_sha256: Option<String>,
+    bytes: Option<u64>,
     valid: bool,
 }
 
@@ -135,7 +174,37 @@ struct FinalSummary {
     service_cells: usize,
     performance_cells: usize,
     terminal_attempts: usize,
+    artifact_set_sha256: String,
     limitations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OracleLockCoordinates {
+    image_manifest_digest: String,
+    image_config_digest: String,
+    software_lock_sha256: String,
+    official_source_revision: String,
+    container_policy_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OraclePreflight {
+    status: String,
+    lock_path: Option<PathBuf>,
+    lock_sha256: Option<String>,
+    probes: Option<BTreeMap<String, OracleProbeArtifact>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OracleProbeArtifact {
+    path: PathBuf,
+    sha256: String,
+    record: OracleProbeRecord,
+}
+
+#[derive(Debug, Deserialize)]
+struct OracleProbeRecord {
+    host_fingerprint: String,
 }
 
 fn main() -> ExitCode {
@@ -164,7 +233,11 @@ fn init(root: &Path, args: &InitArgs) -> Result<()> {
     }
     let parent = root.parent().context("campaign root has no parent")?;
     fs::create_dir_all(parent)?;
-    let free_bytes = filesystem_free_bytes(parent)?;
+    let parent = fs::canonicalize(parent)?;
+    if !parent.starts_with("/home") {
+        bail!("fresh campaign roots must live on /home");
+    }
+    let free_bytes = filesystem_free_bytes(&parent)?;
     let minimum_free_bytes = gib(args.minimum_free_gib)?;
     let reserve_bytes = gib(args.reserve_gib)?;
     if free_bytes < minimum_free_bytes {
@@ -176,14 +249,17 @@ fn init(root: &Path, args: &InitArgs) -> Result<()> {
     }
 
     let candidate_sha = command_text("git", &["rev-parse", "HEAD"])?;
+    if root.file_name().and_then(|name| name.to_str()) != Some(candidate_sha.as_str()) {
+        bail!("fresh campaign root must be named with the full candidate SHA");
+    }
     let origin_main_sha = command_text("git", &["rev-parse", "origin/main"])?;
     let branch = command_text("git", &["branch", "--show-current"])?;
     let repository_clean = command_text("git", &["status", "--porcelain"])?.is_empty();
     if !repository_clean {
         bail!("candidate repository must be clean before campaign init");
     }
-    if branch != "agent/cpu-validation-closure" {
-        bail!("campaign must run from agent/cpu-validation-closure, observed {branch}");
+    if branch != REQUIRED_BRANCH {
+        bail!("campaign must run from {REQUIRED_BRANCH}, observed {branch}");
     }
     command_ok(
         "git",
@@ -195,6 +271,10 @@ fn init(root: &Path, args: &InitArgs) -> Result<()> {
         ],
     )?;
 
+    let oracle_lock = oracle_lock_check(&args.oracle_lock, &args.oci_archive);
+    let fixtures = file_check(&args.fixtures, FIXTURE_SHA256);
+    let llama_source = revision_check(&args.llama_source, LLAMA_REVISION);
+    let llama_model = file_check(&args.llama_model, LLAMA_GGUF_SHA256);
     let (available_memory_bytes, swap_total_bytes, swap_used_bytes) = memory_snapshot()?;
     let snapshot = PreflightSnapshot {
         schema: "gpt-oss-rs.cpu-validation-preflight/v1",
@@ -210,9 +290,14 @@ fn init(root: &Path, args: &InitArgs) -> Result<()> {
         available_memory_bytes,
         swap_total_bytes,
         swap_used_bytes,
-        oracle_venv: dependency_check(&args.oracle_venv),
-        official_source: revision_check(&args.official_source, OFFICIAL_REVISION),
-        llama_source: revision_check(&args.llama_source, LLAMA_REVISION),
+        oracle_lock,
+        model_path: args.model.display().to_string(),
+        oci_archive: args.oci_archive.display().to_string(),
+        fixtures,
+        llama_source,
+        llama_model,
+        cache_initial_entries: 0,
+        cache_initial_sha256: format!("{:x}", Sha256::digest([])),
         commands: tool_fingerprints(),
     };
 
@@ -228,24 +313,87 @@ fn init(root: &Path, args: &InitArgs) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("campaign root has no UTF-8 name")?;
-    let index = CampaignIndexV1::new(campaign_id, candidate_sha);
+    let mut index = CampaignIndexV1::new(campaign_id, candidate_sha);
+    if let Some(parent) = &args.parent_candidate_sha {
+        if parent.len() != 40 || !parent.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("parent candidate SHA must contain exactly 40 hexadecimal characters");
+        }
+        index.parent_candidate_sha = Some(parent.clone());
+    }
     index.write_atomic(root.join(INDEX_FILE))?;
 
-    if !snapshot.oracle_venv.available
-        || !snapshot.official_source.valid
+    if !snapshot.oracle_lock.valid
+        || !snapshot.fixtures.valid
         || !snapshot.llama_source.valid
+        || !snapshot.llama_model.valid
     {
-        write_preflight_unavailable(root, &snapshot, index)?;
+        write_preflight_terminal(
+            root,
+            index,
+            EvidenceStatus::Unavailable,
+            vec!["static oracle lock, fixture, or llama.cpp validation failed".into()],
+        )?;
         bail!("pinned preflight dependency unavailable; recorded terminal unavailable attempt");
     }
+
+    let repository = fs::canonicalize(".")?;
+    let oracle_output = Command::new("python3")
+        .args([
+            "oracle/cpu_oracle.py",
+            "preflight",
+            "--lock",
+            args.oracle_lock.to_string_lossy().as_ref(),
+            "--repository",
+            repository.to_string_lossy().as_ref(),
+            "--model",
+            args.model.to_string_lossy().as_ref(),
+            "--llama-source",
+            args.llama_source.to_string_lossy().as_ref(),
+            "--oci-archive",
+            args.oci_archive.to_string_lossy().as_ref(),
+            "--attempt-directory",
+            root.join("private/oracle-probes")
+                .to_string_lossy()
+                .as_ref(),
+            "--output",
+            root.join("private/oracle-preflight.json")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .context("failed to launch immutable oracle preflight")?;
+    atomic_write_new(
+        &root.join("private/oracle-preflight.stdout"),
+        &oracle_output.stdout,
+    )?;
+    atomic_write_new(
+        &root.join("private/oracle-preflight.stderr"),
+        &oracle_output.stderr,
+    )?;
+    if !oracle_output.status.success() {
+        write_preflight_terminal(
+            root,
+            index,
+            EvidenceStatus::Unavailable,
+            vec!["immutable image/model/probe qualification failed".into()],
+        )?;
+        bail!("oracle preflight failed; recorded terminal unavailable attempt");
+    }
+    let preflight: OraclePreflight =
+        serde_json::from_slice(&fs::read(root.join("private/oracle-preflight.json"))?)?;
+    if preflight.status != "pass" {
+        bail!("oracle preflight exited successfully without pass status");
+    }
+    write_preflight_terminal(root, index, EvidenceStatus::Pass, Vec::new())?;
     println!("initialized campaign {}", root.display());
     Ok(())
 }
 
-fn write_preflight_unavailable(
+fn write_preflight_terminal(
     root: &Path,
-    snapshot: &PreflightSnapshot,
     mut index: CampaignIndexV1,
+    status: EvidenceStatus,
+    limitations: Vec<String>,
 ) -> Result<()> {
     let cell_key = CampaignIndexV1::stable_cell_key("preflight", "identity", "none", "none")?;
     let attempt_number = index.next_attempt(&cell_key);
@@ -260,22 +408,32 @@ fn write_preflight_unavailable(
     let directory = root.join("attempts").join(&attempt_id);
     fs::create_dir(&directory)?;
     let preflight = ArtifactRef::from_path("preflight", root.join("private/preflight.json"))?;
-    let mut manifest = base_manifest(
-        &index,
-        &attempt_id,
-        &cell_key,
+    let coordinates = ManifestCoordinates {
+        attempt_id: &attempt_id,
+        cell_key: &cell_key,
         attempt_number,
-        "preflight",
-        "identity",
-        "none",
-        "none",
-        EvidenceStatus::Unavailable,
-    )?;
+        phase: "preflight",
+        scenario: "identity",
+        kernel: "none",
+        backend: "none",
+    };
+    let mut manifest = base_manifest(&index, &coordinates, status)?;
     manifest.artifacts.push(preflight);
-    manifest.limitations.push(format!(
-        "oracle environment available: {}",
-        snapshot.oracle_venv.available
-    ));
+    for file in [
+        root.join("private/oracle-preflight.json"),
+        root.join("private/oracle-preflight.stdout"),
+        root.join("private/oracle-preflight.stderr"),
+    ] {
+        if file.is_file() {
+            manifest
+                .artifacts
+                .push(ArtifactRef::from_path("oracle-preflight", file)?);
+        }
+    }
+    manifest.limitations.extend(limitations);
+    if status == EvidenceStatus::Pass {
+        manifest.oracle_identity = oracle_identity(root, "native")?;
+    }
     write_manifest_pair(&directory, &manifest)?;
     let private =
         ArtifactRef::from_path("terminal-manifest", directory.join("private.manifest.json"))?;
@@ -283,7 +441,7 @@ fn write_preflight_unavailable(
         cell_key,
         attempt_id,
         attempt_number,
-        status: EvidenceStatus::Unavailable,
+        status,
         terminal_manifest: Some(private),
     })?;
     index.write_atomic(root.join(INDEX_FILE))?;
@@ -292,7 +450,12 @@ fn write_preflight_unavailable(
 
 fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
     ensure_reserve(root, args.reserve_gib)?;
+    validate_command_policy(args)?;
     let mut index = CampaignIndexV1::read(root.join(INDEX_FILE))?;
+    validate_campaign_context(&index)?;
+    if args.phase == "performance" {
+        require_correctness_and_service_gates(&index)?;
+    }
     let cell_key =
         CampaignIndexV1::stable_cell_key(&args.phase, &args.scenario, &args.kernel, &args.backend)?;
     if let Some(valid) = valid_completed_attempt(&index, &cell_key)? {
@@ -310,27 +473,32 @@ fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
     );
     let directory = root.join("attempts").join(&attempt_id);
     fs::create_dir(&directory)?;
+    let oracle_identity = oracle_identity(root, &args.execution_mode)?;
+    let identity_json = serde_json::to_string(&oracle_identity)?;
     let started = Instant::now();
     let output = Command::new(&args.command[0])
         .args(&args.command[1..])
+        .env("GPT_OSS_ORACLE_IDENTITY_JSON", &identity_json)
+        .env("GPT_OSS_CAMPAIGN_ROOT", root)
+        .env("GPT_OSS_ATTEMPT_DIR", &directory)
+        .env("GPT_OSS_ORACLE_LOCK", campaign_lock_path(root)?)
         .output()
         .with_context(|| format!("failed to launch {}", args.command[0]))?;
     let elapsed = started.elapsed();
     atomic_write_new(&directory.join("stdout.raw"), &output.stdout)?;
     atomic_write_new(&directory.join("stderr.raw"), &output.stderr)?;
 
-    let status = authoritative_status(&args.phase, output.status.code());
-    let mut manifest = base_manifest(
-        &index,
-        &attempt_id,
-        &cell_key,
+    let status = authoritative_status(&args.phase, output.status.code(), &args.execution_mode);
+    let coordinates = ManifestCoordinates {
+        attempt_id: &attempt_id,
+        cell_key: &cell_key,
         attempt_number,
-        &args.phase,
-        &args.scenario,
-        &args.kernel,
-        &args.backend,
-        status,
-    )?;
+        phase: &args.phase,
+        scenario: &args.scenario,
+        kernel: &args.kernel,
+        backend: &args.backend,
+    };
+    let mut manifest = base_manifest(&index, &coordinates, status)?;
     manifest.command.argv_redacted = args.command.iter().map(|arg| redact_cli_arg(arg)).collect();
     manifest.dispatch = DispatchEvidence {
         requested_kernel: args.kernel.clone(),
@@ -345,6 +513,7 @@ fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
             .unwrap_or_else(|| args.backend.clone()),
     };
     manifest.measured.wall_time_ns = elapsed.as_nanos().try_into().unwrap_or(u64::MAX);
+    manifest.oracle_identity = oracle_identity;
     manifest.artifacts.extend([
         ArtifactRef::from_path("stdout", directory.join("stdout.raw"))?,
         ArtifactRef::from_path("stderr", directory.join("stderr.raw"))?,
@@ -372,8 +541,61 @@ fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
     Ok(())
 }
 
+fn validate_command_policy(args: &RunArgs) -> Result<()> {
+    if args.phase == "compare"
+        && !args
+            .command
+            .iter()
+            .any(|argument| argument.ends_with("run_cpu_comparison.py"))
+    {
+        bail!("authoritative compare cells must use run_cpu_comparison.py");
+    }
+    if args.phase == "official"
+        && !(args
+            .command
+            .iter()
+            .any(|argument| argument == "oracle/cpu_oracle.py")
+            && args.command.iter().any(|argument| argument == "exec"))
+    {
+        bail!("official captures must execute through oracle/cpu_oracle.py exec");
+    }
+    if args.phase == "c3"
+        && !args
+            .command
+            .iter()
+            .any(|argument| argument.ends_with("run_c3_x001.py"))
+    {
+        bail!("C3-X-001 cells must use run_c3_x001.py");
+    }
+    if args.phase == "llama"
+        && SCENARIOS.contains(&args.scenario.as_str())
+        && !args
+            .command
+            .iter()
+            .any(|argument| argument.ends_with("select_llama_cpu_capture.py"))
+    {
+        bail!("counted llama cells must use select_llama_cpu_capture.py");
+    }
+    let required_service_worker = match (args.phase.as_str(), args.scenario.as_str()) {
+        ("service", "model-free-lifecycle-http") => Some("run_model_free_service_suite.py"),
+        ("service", "bounded-20b") => Some("run_bounded_20b_service.py"),
+        _ => None,
+    };
+    if let Some(worker) = required_service_worker {
+        if !args
+            .command
+            .iter()
+            .any(|argument| argument.ends_with(worker))
+        {
+            bail!("counted service cell must use {worker}");
+        }
+    }
+    Ok(())
+}
+
 fn resume(root: &Path) -> Result<()> {
     let index = CampaignIndexV1::read(root.join(INDEX_FILE))?;
+    validate_campaign_context(&index)?;
     let mut completed = BTreeSet::new();
     let mut retry = BTreeSet::new();
     for attempt in &index.attempts {
@@ -392,28 +614,29 @@ fn resume(root: &Path) -> Result<()> {
 
 fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
     let index = CampaignIndexV1::read(root.join(INDEX_FILE))?;
-    let terminal = index
-        .attempts
-        .iter()
-        .filter(|attempt| attempt.terminal_manifest.is_some())
-        .collect::<Vec<_>>();
-    let accepted_c3 = count_phase(
+    validate_campaign_context(&index)?;
+    let terminal = terminal_cells(&index)?;
+    let accepted_c3 = usize::from(cell_accepted(
         &terminal,
         "c3",
+        "c3-x-001",
+        "automatic",
+        "auto",
         &[EvidenceStatus::Pass, EvidenceStatus::InsufficientEvidence],
-    );
-    let official_comparisons = count_phase(&terminal, "compare", &[EvidenceStatus::Pass]);
-    let llama_captures = count_phase(&terminal, "llama", &[EvidenceStatus::InsufficientEvidence]);
-    let service_cells = count_phase(&terminal, "service", &[EvidenceStatus::Pass]);
+        true,
+    )?);
+    let official_comparisons = expected_comparison_cells(&terminal)?;
+    let llama_captures = expected_llama_cells(&terminal)?;
+    let service_cells = expected_service_cells(&terminal)?;
     let performance_cells = count_phase(
         &terminal,
         "performance",
         &[EvidenceStatus::Pass, EvidenceStatus::InsufficientEvidence],
     );
-    let complete = accepted_c3 >= 1
-        && official_comparisons >= 28
-        && llama_captures >= 7
-        && service_cells >= 1
+    let complete = accepted_c3 == 1
+        && official_comparisons == 28
+        && llama_captures == 7
+        && service_cells == 2
         && performance_cells >= 1;
     let mut limitations = Vec::new();
     if !complete {
@@ -421,8 +644,8 @@ fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
     }
     let summary = FinalSummary {
         schema: "gpt-oss-rs.cpu-validation-final/v1",
-        campaign_id: index.campaign_id,
-        candidate_sha: index.candidate_sha,
+        campaign_id: index.campaign_id.clone(),
+        candidate_sha: index.candidate_sha.clone(),
         complete,
         accepted_c3,
         official_comparisons,
@@ -430,6 +653,7 @@ fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
         service_cells,
         performance_cells,
         terminal_attempts: terminal.len(),
+        artifact_set_sha256: artifact_set_sha256(&terminal),
         limitations,
     };
     atomic_write_new(
@@ -446,21 +670,25 @@ fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
     Ok(())
 }
 
+struct ManifestCoordinates<'a> {
+    attempt_id: &'a str,
+    cell_key: &'a str,
+    attempt_number: u32,
+    phase: &'a str,
+    scenario: &'a str,
+    kernel: &'a str,
+    backend: &'a str,
+}
+
 fn base_manifest(
     index: &CampaignIndexV1,
-    attempt_id: &str,
-    cell_key: &str,
-    attempt_number: u32,
-    phase: &str,
-    scenario: &str,
-    kernel: &str,
-    backend: &str,
+    coordinates: &ManifestCoordinates<'_>,
     status: EvidenceStatus,
 ) -> Result<RunManifestV1> {
-    let mut manifest = RunManifestV1::new(attempt_id, phase, status);
+    let mut manifest = RunManifestV1::new(coordinates.attempt_id, coordinates.phase, status);
     manifest.source = source_provenance(&index.candidate_sha);
     manifest.workload = WorkloadEvidence {
-        id: scenario.into(),
+        id: coordinates.scenario.into(),
         prompt_sha256: None,
         seed: 0,
         repetitions: 1,
@@ -468,18 +696,18 @@ fn base_manifest(
     manifest.campaign = CampaignIdentity {
         campaign_id: index.campaign_id.clone(),
         candidate_sha: index.candidate_sha.clone(),
-        phase: phase.into(),
-        scenario: scenario.into(),
-        requested_kernel: kernel.into(),
-        attempt_number,
-        attempt_id: attempt_id.into(),
-        cell_key: cell_key.into(),
+        phase: coordinates.phase.into(),
+        scenario: coordinates.scenario.into(),
+        requested_kernel: coordinates.kernel.into(),
+        attempt_number: coordinates.attempt_number,
+        attempt_id: coordinates.attempt_id.into(),
+        cell_key: coordinates.cell_key.into(),
     };
     manifest.dispatch = DispatchEvidence {
-        requested_kernel: kernel.into(),
-        effective_kernel: kernel.into(),
-        requested_matrix_backend: backend.into(),
-        effective_matrix_backend: backend.into(),
+        requested_kernel: coordinates.kernel.into(),
+        effective_kernel: coordinates.kernel.into(),
+        requested_matrix_backend: coordinates.backend.into(),
+        effective_matrix_backend: coordinates.backend.into(),
     };
     let executable = std::env::current_exe()?;
     manifest.build_binaries.push(BinaryEvidence {
@@ -509,13 +737,13 @@ fn write_manifest_pair(directory: &Path, manifest: &RunManifestV1) -> Result<()>
     Ok(())
 }
 
-fn authoritative_status(phase: &str, code: Option<i32>) -> EvidenceStatus {
-    match (phase, code) {
-        ("compare" | "service", Some(0)) => EvidenceStatus::Pass,
-        ("compare" | "service", Some(1)) => EvidenceStatus::Fail,
-        (_, Some(0)) => EvidenceStatus::InsufficientEvidence,
-        (_, Some(_)) => EvidenceStatus::Invalid,
-        (_, None) => EvidenceStatus::Incomplete,
+fn authoritative_status(phase: &str, code: Option<i32>, execution_mode: &str) -> EvidenceStatus {
+    match (phase, code, execution_mode) {
+        ("compare" | "service", Some(0), "native") => EvidenceStatus::Pass,
+        ("compare" | "service", Some(1), "native") => EvidenceStatus::Fail,
+        (_, Some(0), _) => EvidenceStatus::InsufficientEvidence,
+        (_, Some(_), _) => EvidenceStatus::Invalid,
+        (_, None, _) => EvidenceStatus::Incomplete,
     }
 }
 
@@ -524,15 +752,11 @@ fn valid_completed_attempt<'a>(
     cell_key: &str,
 ) -> Result<Option<&'a CampaignAttemptV1>> {
     for attempt in index.attempts.iter().rev() {
-        if attempt.cell_key == cell_key
-            && attempt.status != EvidenceStatus::Incomplete
-            && attempt.terminal_manifest.is_some()
-        {
-            attempt
-                .terminal_manifest
-                .as_ref()
-                .expect("checked terminal")
-                .verify()?;
+        if attempt.cell_key != cell_key || attempt.status == EvidenceStatus::Incomplete {
+            continue;
+        }
+        if let Some(terminal_manifest) = &attempt.terminal_manifest {
+            terminal_manifest.verify()?;
             return Ok(Some(attempt));
         }
     }
@@ -547,6 +771,222 @@ fn count_phase(attempts: &[&CampaignAttemptV1], phase: &str, accepted: &[Evidenc
                 && accepted.contains(&attempt.status)
         })
         .count()
+}
+
+fn cell_accepted(
+    attempts: &[&CampaignAttemptV1],
+    phase: &str,
+    scenario: &str,
+    kernel: &str,
+    backend: &str,
+    accepted: &[EvidenceStatus],
+    require_native: bool,
+) -> Result<bool> {
+    let key = CampaignIndexV1::stable_cell_key(phase, scenario, kernel, backend)?;
+    let Some(attempt) = attempts
+        .iter()
+        .find(|attempt| attempt.cell_key == key && accepted.contains(&attempt.status))
+    else {
+        return Ok(false);
+    };
+    if require_native {
+        let reference = attempt
+            .terminal_manifest
+            .as_ref()
+            .context("accepted attempt lacks terminal manifest")?;
+        let manifest: RunManifestV1 = serde_json::from_slice(&fs::read(&reference.absolute_path)?)?;
+        if manifest.oracle_identity.execution_mode.as_deref() != Some("native") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn expected_comparison_cells(attempts: &[&CampaignAttemptV1]) -> Result<usize> {
+    let mut count = 0;
+    for scenario in SCENARIOS {
+        for kernel in KERNELS {
+            count += usize::from(cell_accepted(
+                attempts,
+                "compare",
+                scenario,
+                kernel,
+                "auto",
+                &[EvidenceStatus::Pass],
+                true,
+            )?);
+        }
+    }
+    Ok(count)
+}
+
+fn expected_llama_cells(attempts: &[&CampaignAttemptV1]) -> Result<usize> {
+    let mut count = 0;
+    for scenario in SCENARIOS {
+        count += usize::from(cell_accepted(
+            attempts,
+            "llama",
+            scenario,
+            "llama-cpp",
+            "ubatch-1",
+            &[EvidenceStatus::InsufficientEvidence],
+            true,
+        )?);
+    }
+    Ok(count)
+}
+
+fn expected_service_cells(attempts: &[&CampaignAttemptV1]) -> Result<usize> {
+    let model_free = cell_accepted(
+        attempts,
+        "service",
+        "model-free-lifecycle-http",
+        "none",
+        "test-suite",
+        &[EvidenceStatus::Pass],
+        true,
+    )?;
+    let bounded_model = cell_accepted(
+        attempts,
+        "service",
+        "bounded-20b",
+        "automatic",
+        "auto",
+        &[EvidenceStatus::Pass],
+        true,
+    )?;
+    Ok(usize::from(model_free) + usize::from(bounded_model))
+}
+
+fn terminal_cells(index: &CampaignIndexV1) -> Result<Vec<&CampaignAttemptV1>> {
+    let mut cells = BTreeMap::new();
+    for attempt in &index.attempts {
+        let Some(reference) = &attempt.terminal_manifest else {
+            continue;
+        };
+        reference.verify()?;
+        let manifest: RunManifestV1 = serde_json::from_slice(&fs::read(&reference.absolute_path)?)?;
+        manifest.validate_campaign_complete()?;
+        if manifest.campaign.campaign_id != index.campaign_id
+            || manifest.campaign.candidate_sha != index.candidate_sha
+            || manifest.campaign.cell_key != attempt.cell_key
+            || manifest.campaign.attempt_id != attempt.attempt_id
+            || manifest.status != attempt.status
+        {
+            bail!(
+                "terminal attempt {} crosses campaign identity",
+                attempt.attempt_id
+            );
+        }
+        cells.insert(attempt.cell_key.as_str(), attempt);
+    }
+    Ok(cells.into_values().collect())
+}
+
+fn artifact_set_sha256(attempts: &[&CampaignAttemptV1]) -> String {
+    let mut hashes = attempts
+        .iter()
+        .filter_map(|attempt| {
+            attempt
+                .terminal_manifest
+                .as_ref()
+                .map(|manifest| manifest.sha256.as_str())
+        })
+        .collect::<Vec<_>>();
+    hashes.sort_unstable();
+    format!("{:x}", Sha256::digest(hashes.join("\n")))
+}
+
+fn require_correctness_and_service_gates(index: &CampaignIndexV1) -> Result<()> {
+    let terminal = terminal_cells(index)?;
+    let c3 = cell_accepted(
+        &terminal,
+        "c3",
+        "c3-x-001",
+        "automatic",
+        "auto",
+        &[EvidenceStatus::Pass, EvidenceStatus::InsufficientEvidence],
+        true,
+    )?;
+    let comparisons = expected_comparison_cells(&terminal)?;
+    let llama = expected_llama_cells(&terminal)?;
+    let service = expected_service_cells(&terminal)?;
+    if !c3 || comparisons != 28 || llama != 7 || service != 2 {
+        bail!(
+            "performance is locked until C3, 28 official comparisons, seven llama captures, and service gates pass"
+        );
+    }
+    Ok(())
+}
+
+fn validate_campaign_context(index: &CampaignIndexV1) -> Result<()> {
+    let head = command_text("git", &["rev-parse", "HEAD"])?;
+    if head != index.candidate_sha {
+        bail!(
+            "campaign candidate {} does not match HEAD {head}",
+            index.candidate_sha
+        );
+    }
+    let branch = command_text("git", &["branch", "--show-current"])?;
+    if branch != REQUIRED_BRANCH {
+        bail!("campaign must remain on {REQUIRED_BRANCH}");
+    }
+    if !command_text("git", &["status", "--porcelain"])?.is_empty() {
+        bail!("campaign execution requires a clean candidate repository");
+    }
+    if index.campaign_id != index.candidate_sha {
+        bail!("fresh campaign ID must equal its full candidate SHA");
+    }
+    Ok(())
+}
+
+fn read_oracle_preflight(root: &Path) -> Result<OraclePreflight> {
+    let preflight: OraclePreflight =
+        serde_json::from_slice(&fs::read(root.join("private/oracle-preflight.json"))?)?;
+    if preflight.status != "pass" {
+        bail!("oracle preflight is not passing");
+    }
+    Ok(preflight)
+}
+
+fn oracle_identity(root: &Path, execution_mode: &str) -> Result<OracleIdentityEvidence> {
+    let preflight = read_oracle_preflight(root)?;
+    let lock_path = preflight
+        .lock_path
+        .context("oracle preflight lacks lock_path")?;
+    let lock_bytes = fs::read(&lock_path)?;
+    let observed_lock_hash = format!("{:x}", Sha256::digest(&lock_bytes));
+    if preflight.lock_sha256.as_deref() != Some(observed_lock_hash.as_str()) {
+        bail!("oracle lock changed after campaign preflight");
+    }
+    let lock: OracleLockCoordinates = serde_json::from_slice(&lock_bytes)?;
+    if lock.official_source_revision != OFFICIAL_REVISION {
+        bail!("oracle lock official source revision changed");
+    }
+    let probes = preflight.probes.context("oracle preflight lacks probes")?;
+    let probe = probes
+        .get(execution_mode)
+        .with_context(|| format!("oracle preflight lacks {execution_mode} probe"))?;
+    let observed_probe_hash = gpt_oss_evidence::sha256_file(&probe.path)?;
+    if observed_probe_hash != probe.sha256 {
+        bail!("{execution_mode} probe artifact changed after preflight");
+    }
+    Ok(OracleIdentityEvidence {
+        image_manifest_digest: Some(lock.image_manifest_digest),
+        image_config_digest: Some(lock.image_config_digest),
+        software_lock_sha256: Some(lock.software_lock_sha256),
+        official_source_revision: Some(lock.official_source_revision),
+        execution_mode: Some(execution_mode.into()),
+        host_fingerprint: Some(probe.record.host_fingerprint.clone()),
+        container_policy_sha256: Some(lock.container_policy_sha256),
+        probe_artifact_sha256: Some(probe.sha256.clone()),
+    })
+}
+
+fn campaign_lock_path(root: &Path) -> Result<PathBuf> {
+    read_oracle_preflight(root)?
+        .lock_path
+        .context("oracle preflight lacks lock_path")
 }
 
 fn attempt_id(
@@ -603,41 +1043,52 @@ fn revision_check(path: &Path, expected: &'static str) -> RevisionCheck {
     }
 }
 
-fn dependency_check(venv: &Path) -> DependencyCheck {
-    let python = venv.join("bin/python");
-    if !python.is_file() {
-        return DependencyCheck {
-            path: venv.display().to_string(),
-            available: false,
-            python: None,
-            fingerprint: None,
-            reason: Some("required pinned interpreter is absent".into()),
-        };
+fn file_check(path: &Path, expected_sha256: &'static str) -> FileCheck {
+    let metadata = fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file());
+    let observed_sha256 = metadata
+        .as_ref()
+        .and_then(|_| gpt_oss_evidence::sha256_file(path).ok());
+    FileCheck {
+        path: path.display().to_string(),
+        valid: observed_sha256.as_deref() == Some(expected_sha256),
+        expected_sha256,
+        observed_sha256,
+        bytes: metadata.map(|metadata| metadata.len()),
     }
-    let script = "import hashlib,importlib.metadata,json,sys,torch; d={'python':sys.version,'packages':sorted((x.metadata['Name'],x.version) for x in importlib.metadata.distributions()),'torch':torch.__config__.show()}; print(hashlib.sha256(json.dumps(d,sort_keys=True).encode()).hexdigest())";
-    let output = Command::new(&python).args(["-c", script]).output();
+}
+
+fn oracle_lock_check(lock: &Path, archive: &Path) -> OracleLockCheck {
+    let output = Command::new("python3")
+        .args([
+            "oracle/cpu_oracle.py",
+            "verify-lock",
+            "--lock",
+            lock.to_string_lossy().as_ref(),
+            "--repository",
+            ".",
+            "--oci-archive",
+            archive.to_string_lossy().as_ref(),
+        ])
+        .output();
     match output {
-        Ok(output) if output.status.success() => DependencyCheck {
-            path: venv.display().to_string(),
-            available: true,
-            python: command_text(python.to_string_lossy().as_ref(), &["--version"]).ok(),
-            fingerprint: String::from_utf8(output.stdout)
-                .ok()
-                .map(|value| value.trim().to_string()),
+        Ok(output) if output.status.success() => OracleLockCheck {
+            path: lock.display().to_string(),
+            sha256: gpt_oss_evidence::sha256_file(lock).ok(),
+            valid: true,
             reason: None,
         },
-        Ok(output) => DependencyCheck {
-            path: venv.display().to_string(),
-            available: false,
-            python: None,
-            fingerprint: None,
+        Ok(output) => OracleLockCheck {
+            path: lock.display().to_string(),
+            sha256: gpt_oss_evidence::sha256_file(lock).ok(),
+            valid: false,
             reason: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
         },
-        Err(error) => DependencyCheck {
-            path: venv.display().to_string(),
-            available: false,
-            python: None,
-            fingerprint: None,
+        Err(error) => OracleLockCheck {
+            path: lock.display().to_string(),
+            sha256: None,
+            valid: false,
             reason: Some(error.to_string()),
         },
     }
@@ -759,20 +1210,24 @@ mod tests {
     #[test]
     fn standalone_workers_never_assign_authoritative_pass() {
         assert_eq!(
-            authoritative_status("native", Some(0)),
+            authoritative_status("native", Some(0), "native"),
             EvidenceStatus::InsufficientEvidence
         );
         assert_eq!(
-            authoritative_status("official", Some(0)),
+            authoritative_status("official", Some(0), "native"),
             EvidenceStatus::InsufficientEvidence
         );
         assert_eq!(
-            authoritative_status("llama", Some(0)),
+            authoritative_status("llama", Some(0), "native"),
             EvidenceStatus::InsufficientEvidence
         );
         assert_eq!(
-            authoritative_status("compare", Some(0)),
+            authoritative_status("compare", Some(0), "native"),
             EvidenceStatus::Pass
+        );
+        assert_eq!(
+            authoritative_status("compare", Some(0), "generic"),
+            EvidenceStatus::InsufficientEvidence
         );
     }
 

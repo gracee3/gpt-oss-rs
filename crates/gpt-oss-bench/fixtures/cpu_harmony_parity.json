@@ -9,7 +9,7 @@
   },
   "official_oracle": {
     "repository": "https://github.com/openai/gpt-oss",
-    "revision": "7802bf263f902efd4c7d18fcceff3ba72f941e80"
+    "revision": "599476783c6f88508dab8577808b5ead5cbee8d2"
   },
   "llama_cpp": {
     "revision": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",

@@ -52,6 +52,17 @@ NEGATIVE_INPUT_STATUSES = {
     "incomplete",
 }
 
+ORACLE_IDENTITY_FIELDS = (
+    "image_manifest_digest",
+    "image_config_digest",
+    "software_lock_sha256",
+    "official_source_revision",
+    "execution_mode",
+    "host_fingerprint",
+    "container_policy_sha256",
+    "probe_artifact_sha256",
+)
+
 
 def load(path: Path) -> dict:
     if not path.is_file():
@@ -96,6 +107,20 @@ def workload_mismatch(native: dict, official: dict) -> str | None:
     official_model = official.get("pinned_model", official.get("model"))
     if native_model is not None and official_model is not None and native_model != official_model:
         return "model provenance mismatch"
+    native_identity = native.get("oracle_identity")
+    official_identity = official.get("oracle_identity")
+    if not isinstance(native_identity, dict) or not isinstance(official_identity, dict):
+        return "native and official captures require oracle_identity"
+    for role, identity in (("native", native_identity), ("official", official_identity)):
+        missing = [field for field in ORACLE_IDENTITY_FIELDS if not identity.get(field)]
+        if missing:
+            return f"{role} oracle identity lacks {', '.join(missing)}"
+    if native_identity != official_identity:
+        if native_identity.get("execution_mode") != official_identity.get("execution_mode"):
+            return "cross-mode comparator mixing is forbidden"
+        return "oracle identity mismatch"
+    if native_identity["execution_mode"] != "native":
+        return "generic diagnostic captures cannot determine official comparison status"
     return None
 
 

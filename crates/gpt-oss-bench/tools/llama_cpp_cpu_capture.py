@@ -201,6 +201,9 @@ def run(args: argparse.Namespace) -> int:
         "cache_prompt": False,
         "top_logprobs": 20,
         "captures": results,
+        "oracle_identity": json.loads(os.environ["GPT_OSS_ORACLE_IDENTITY_JSON"])
+        if "GPT_OSS_ORACLE_IDENTITY_JSON" in os.environ
+        else None,
     }
     write_new_atomic(args.output, report)
     print(json.dumps(report, indent=2))

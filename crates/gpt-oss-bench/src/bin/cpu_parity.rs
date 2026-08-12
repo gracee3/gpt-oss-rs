@@ -6,7 +6,8 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use gpt_oss_cpu_kernels::{KernelPath, Mxfp4MatmulBackend};
 use gpt_oss_evidence::{
-    ArtifactRef, EvidenceStatus, ModelEvidence, RunManifestV1, SourceProvenance, WorkloadEvidence,
+    ArtifactRef, EvidenceStatus, ModelEvidence, OracleIdentityEvidence, RunManifestV1,
+    SourceProvenance, WorkloadEvidence,
 };
 use gpt_oss_model_runner::{
     CpuDenseBoundaryProbe, CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions,
@@ -125,9 +126,15 @@ struct ParityCapture<'a> {
     generation_seconds: f64,
     trace: Option<CpuPrefillTrace>,
     dense_boundary_probe: Option<CpuDenseBoundaryProbe>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dense_boundary_probe_repetitions: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dense_boundary_probe_repeat_identical: Option<bool>,
     pinned_model: &'a serde_json::Value,
     pinned_official_oracle: &'a serde_json::Value,
     pinned_llama_cpp: &'a serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oracle_identity: Option<OracleIdentityEvidence>,
 }
 
 fn main() -> Result<()> {
@@ -159,6 +166,7 @@ fn main() -> Result<()> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    let oracle_identity = oracle_identity_from_environment()?;
     validate_trace_step(cli.trace_step, cli.max_new_tokens)?;
     let manifest = load_manifest(&cli.fixtures)?;
     let scenario = manifest
@@ -229,11 +237,24 @@ fn run(cli: &Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|trace| trace.layers.iter().find(|layer| layer.layer_index == 0))
                 .context("dense boundary probe requires --trace-layers to include layer 0")?;
-            Some(runner.dense_boundary_probe(layer, projection, output_index)?)
+            let mut probes = Vec::with_capacity(5);
+            for _ in 0..5 {
+                probes.push(runner.dense_boundary_probe(layer, projection, output_index)?);
+            }
+            let encoded = probes
+                .iter()
+                .map(serde_json::to_vec)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            if encoded.windows(2).any(|pair| pair[0] != pair[1]) {
+                bail!("dense boundary probe was not repeat-identical");
+            }
+            probes.into_iter().next()
         }
         (None, None) => None,
         _ => bail!("dense boundary projection and output must be supplied together"),
     };
+    let dense_boundary_probe_repetitions = dense_boundary_probe.as_ref().map(|_| 5);
+    let dense_boundary_probe_repeat_identical = dense_boundary_probe.as_ref().map(|_| true);
     if let Some(expected) = &scenario.official_greedy_tokens {
         if cli.max_new_tokens >= expected.len() && &generated_token_ids != expected {
             bail!(
@@ -264,16 +285,19 @@ fn run(cli: &Cli) -> Result<()> {
         generation_seconds,
         trace,
         dense_boundary_probe,
+        dense_boundary_probe_repetitions,
+        dense_boundary_probe_repeat_identical,
         pinned_model: &manifest.model,
         pinned_official_oracle: &manifest.official_oracle,
         pinned_llama_cpp: &manifest.llama_cpp,
+        oracle_identity: oracle_identity.clone(),
     };
     if let Some(parent) = cli.output.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let encoded = serde_json::to_vec_pretty(&capture)?;
     gpt_oss_evidence::atomic_write_new(&cli.output, &encoded)?;
-    write_evidence_sidecar(&cli, &manifest, scenario, &encoded)?;
+    write_evidence_sidecar(cli, &manifest, scenario, &encoded, oracle_identity)?;
     println!("{}", String::from_utf8(encoded)?);
     Ok(())
 }
@@ -283,6 +307,7 @@ fn write_evidence_sidecar(
     fixture: &FixtureManifest,
     scenario: &Scenario,
     raw_bytes: &[u8],
+    oracle_identity: Option<OracleIdentityEvidence>,
 ) -> Result<()> {
     let artifact = ArtifactRef::from_path("raw-output", &cli.output)?;
     if artifact.sha256 != sha256(raw_bytes) {
@@ -328,6 +353,7 @@ fn write_evidence_sidecar(
         repetitions: 1,
     };
     evidence.artifacts.push(artifact);
+    evidence.oracle_identity = oracle_identity.unwrap_or_default();
     evidence
         .limitations
         .push("single local CPU parity capture".into());
@@ -341,6 +367,23 @@ fn write_evidence_sidecar(
         .with_file_name(format!("{file_name}.manifest.json"));
     evidence.write_atomic_new(sidecar)?;
     Ok(())
+}
+
+fn oracle_identity_from_environment() -> Result<Option<OracleIdentityEvidence>> {
+    let Some(value) = std::env::var_os("GPT_OSS_ORACLE_IDENTITY_JSON") else {
+        return Ok(None);
+    };
+    let identity: OracleIdentityEvidence = serde_json::from_str(&value.to_string_lossy())
+        .context("GPT_OSS_ORACLE_IDENTITY_JSON is invalid")?;
+    let mut validation = RunManifestV1::new(
+        "oracle-identity-check",
+        "identity",
+        EvidenceStatus::Incomplete,
+    );
+    validation.workload.repetitions = 1;
+    validation.oracle_identity = identity.clone();
+    validation.validate()?;
+    Ok(Some(identity))
 }
 
 fn local_source_provenance() -> SourceProvenance {

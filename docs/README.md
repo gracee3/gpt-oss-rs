@@ -8,6 +8,9 @@
   CPU architecture, research questions, benchmarks, and staged kernel plan.
 - [`CPU_I7_CONFORMANCE.md`](CPU_I7_CONFORMANCE.md): repeatable full-checkpoint
   CPU regression and comparison procedure.
+- [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md): immutable
+  v0.0.9 CPU-oracle image publication, lock, fresh-lineage campaign order, and
+  closure rules.
 - [`UPSTREAM_PROVENANCE.md`](UPSTREAM_PROVENANCE.md): pinned upstream audits and
   attribution map.
 - [`CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md`](CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md):

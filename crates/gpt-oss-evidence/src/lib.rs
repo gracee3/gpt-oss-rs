@@ -206,6 +206,34 @@ pub struct MeasuredResources {
     pub available_memory_bytes: u64,
 }
 
+/// Immutable CPU-oracle coordinates. All fields remain optional so evidence
+/// v1 records created before the container oracle continue to deserialize.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OracleIdentityEvidence {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_manifest_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_config_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_lock_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_source_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_policy_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_artifact_sha256: Option<String>,
+}
+
+impl OracleIdentityEvidence {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunManifestV1 {
     pub schema: String,
@@ -234,6 +262,8 @@ pub struct RunManifestV1 {
     pub measured: MeasuredResources,
     #[serde(default)]
     pub related_runs: Vec<String>,
+    #[serde(default, skip_serializing_if = "OracleIdentityEvidence::is_empty")]
+    pub oracle_identity: OracleIdentityEvidence,
 }
 
 impl RunManifestV1 {
@@ -261,6 +291,7 @@ impl RunManifestV1 {
             dispatch: DispatchEvidence::default(),
             measured: MeasuredResources::default(),
             related_runs: Vec::new(),
+            oracle_identity: OracleIdentityEvidence::default(),
         }
     }
 
@@ -299,6 +330,50 @@ impl RunManifestV1 {
         }
         for file in &self.model.files {
             validate_sha256(&file.sha256, "model file sha256")?;
+        }
+        for (name, hash) in [
+            (
+                "oracle image manifest digest",
+                &self.oracle_identity.image_manifest_digest,
+            ),
+            (
+                "oracle image config digest",
+                &self.oracle_identity.image_config_digest,
+            ),
+            (
+                "oracle software lock sha256",
+                &self.oracle_identity.software_lock_sha256,
+            ),
+            (
+                "oracle host fingerprint",
+                &self.oracle_identity.host_fingerprint,
+            ),
+            (
+                "oracle container policy sha256",
+                &self.oracle_identity.container_policy_sha256,
+            ),
+            (
+                "oracle probe artifact sha256",
+                &self.oracle_identity.probe_artifact_sha256,
+            ),
+        ] {
+            if let Some(hash) = hash {
+                validate_sha256(hash, name)?;
+            }
+        }
+        if let Some(revision) = &self.oracle_identity.official_source_revision {
+            if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(EvidenceError::Invalid(
+                    "oracle official source revision must be 40 hexadecimal characters".into(),
+                ));
+            }
+        }
+        if let Some(mode) = &self.oracle_identity.execution_mode {
+            if !matches!(mode.as_str(), "native" | "generic") {
+                return Err(EvidenceError::Invalid(
+                    "oracle execution mode must be native or generic".into(),
+                ));
+            }
         }
         for artifact in &self.artifacts {
             if !artifact.absolute_path.is_absolute() {
@@ -573,6 +648,18 @@ impl CampaignIndexV1 {
             return Err(EvidenceError::Invalid(
                 "candidate_sha must contain exactly 40 hexadecimal characters".into(),
             ));
+        }
+        if let Some(parent) = &self.parent_candidate_sha {
+            if parent.len() != 40 || !parent.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(EvidenceError::Invalid(
+                    "parent_candidate_sha must contain exactly 40 hexadecimal characters".into(),
+                ));
+            }
+            if parent == &self.candidate_sha {
+                return Err(EvidenceError::Invalid(
+                    "parent_candidate_sha must differ from candidate_sha".into(),
+                ));
+            }
         }
         let mut ids = BTreeSet::new();
         let mut numbers: BTreeMap<&str, u32> = BTreeMap::new();
@@ -1165,6 +1252,31 @@ mod tests {
         let value: Value = serde_json::from_slice(&manifest.stable_json().unwrap()).unwrap();
         assert_eq!(value["status"], "incomplete");
         assert_eq!(value["source"]["dirty"], true);
+    }
+
+    #[test]
+    fn oracle_identity_is_optional_but_present_coordinates_are_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("raw");
+        fs::write(&raw, b"raw").unwrap();
+        let mut manifest = manifest(ArtifactRef::from_path("raw", raw).unwrap());
+        manifest.validate().unwrap();
+        manifest.oracle_identity = OracleIdentityEvidence {
+            image_manifest_digest: Some("a".repeat(64)),
+            image_config_digest: Some("b".repeat(64)),
+            software_lock_sha256: Some("c".repeat(64)),
+            official_source_revision: Some("d".repeat(40)),
+            execution_mode: Some("native".into()),
+            host_fingerprint: Some("e".repeat(64)),
+            container_policy_sha256: Some("f".repeat(64)),
+            probe_artifact_sha256: Some("0".repeat(64)),
+        };
+        manifest.validate().unwrap();
+        manifest.oracle_identity.execution_mode = Some("mixed".into());
+        assert!(manifest.validate().is_err());
+        manifest.oracle_identity.execution_mode = Some("native".into());
+        manifest.oracle_identity.host_fingerprint = Some("short".into());
+        assert!(manifest.validate().is_err());
     }
 
     #[test]
