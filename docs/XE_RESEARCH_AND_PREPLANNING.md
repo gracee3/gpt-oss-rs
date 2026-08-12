@@ -23,18 +23,16 @@ backend, or reduce the priority of CPU work.
 
 ## Decision to produce
 
-The research must select and justify one of these outcomes:
-
-1. OpenCL host API with online OpenCL C kernel compilation;
-2. OpenCL host API with a versioned offline program/binary cache;
-3. Level Zero host API with reproducibly generated SPIR-V;
-4. a staged path that uses OpenCL to establish kernel semantics and Level Zero
-   only where a measured control or submission advantage exists;
-5. no Iris Xe backend because the toolchain, shared-memory behavior,
-   performance, or maintenance burden does not justify it.
+The authoritative expanded charter is
+[`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md). Its X7 result must
+decide host API, kernel delivery, memory/residency, submission, integration
+boundary, and fallback/commit independently. OpenCL source, SPIR-V, native
+cache, and Level Zero are not pre-bundled outcomes. A no-backend result remains
+valid when correctness, real checkpoint ingestion, shared-memory behavior,
+performance, tooling, dependency cost, or maintenance fails a gate.
 
 Cloning source repositories does not favor an outcome. A final pre-plan must
-state the evidence for the chosen path and the reasons the alternatives were
+state the evidence for every selected axis and the reasons alternatives were
 rejected.
 
 ## OpenCL and Level Zero: the actual distinction
