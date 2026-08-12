@@ -13,11 +13,10 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tokio_stream::StreamExt;
 use tracing::{error, info};
 
 use crate::error::ApiError;
-use crate::server::AppState;
+use crate::server::{AppState, RequestOutputAccumulator};
 use crate::types::request::{ChatCompletionRequest, CompletionRequest};
 use crate::types::response::{ChatCompletionResponse, CompletionResponse};
 
@@ -220,7 +219,7 @@ pub async fn create_batch(
     }
 
     // Spawn background processing.
-    let engine = state.engine.clone();
+    let engine = state.engine().await.map_err(ApiError::from)?;
     let model_name = state.model_name.clone();
     let store_clone = Arc::clone(store);
     let bid = batch_id.clone();
@@ -466,21 +465,22 @@ async fn process_single_request(
             }
 
             let sampling_params = req.to_sampling_params();
-            let (_rid, mut stream) = engine
+            let mut stream = engine
                 .generate(req.prompt, sampling_params)
                 .await
                 .map_err(ApiError::from)?;
 
-            let mut last = None;
-            while let Some(output) = stream.next().await {
-                if output.finished {
-                    last = Some(output);
+            let mut accumulator = RequestOutputAccumulator::default();
+            while let Some(output) = stream.recv().await.map_err(ApiError::from)? {
+                let finished = output.finished;
+                accumulator.push(output).map_err(ApiError::from)?;
+                if finished {
                     break;
                 }
-                last = Some(output);
             }
-            let output =
-                last.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+            let output = accumulator
+                .finish()
+                .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
             let resp = CompletionResponse::from_request_output(&output, model_name);
             serde_json::to_value(&resp).map_err(|e| ApiError::Internal(e.to_string()))
@@ -513,21 +513,22 @@ async fn process_single_request(
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let (_rid, mut stream) = engine
+            let mut stream = engine
                 .generate(prompt, sampling_params)
                 .await
                 .map_err(ApiError::from)?;
 
-            let mut last = None;
-            while let Some(output) = stream.next().await {
-                if output.finished {
-                    last = Some(output);
+            let mut accumulator = RequestOutputAccumulator::default();
+            while let Some(output) = stream.recv().await.map_err(ApiError::from)? {
+                let finished = output.finished;
+                accumulator.push(output).map_err(ApiError::from)?;
+                if finished {
                     break;
                 }
-                last = Some(output);
             }
-            let output =
-                last.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+            let output = accumulator
+                .finish()
+                .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
             let resp = ChatCompletionResponse::from_request_output(&output, model_name);
             serde_json::to_value(&resp).map_err(|e| ApiError::Internal(e.to_string()))

@@ -1,6 +1,6 @@
 # CPU Runtime Next-Phase Research
 
-- Status: research complete; implementation planning is not authorized
+- Status: research complete; E1/C1/C2 foundation implemented separately
 - Started: 2026-08-11
 - Repository content baseline: `main` at
   `a090bb0e81457e4302deb36d6e52a0847c14bfb0`
@@ -17,6 +17,10 @@ The research does not change a Rust interface, runtime policy, kernel, API,
 test, workflow, or configuration. Rust-like interfaces and JSON examples in
 the corpus are candidate contracts only. They are not implementation plans or
 authorization to begin implementation planning.
+
+The later owner-authorized E1/C1/C2 implementation is recorded in
+[`cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md`](cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md).
+That implementation does not alter the research outcomes or authorize C3-C7.
 
 ## Evidence-gate status
 

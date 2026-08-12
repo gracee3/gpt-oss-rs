@@ -94,6 +94,11 @@ emulation are covered without claiming local AMX-hardware execution.
 CPU serving defaults to the `gpt-oss-cpu` profile: an 8192-token context cap
 and one active sequence. The first load creates a revision- and
 checksum-keyed MXFP4 repack cache; later loads memory-map that cache read-only.
+The native CPU service also applies bounded admission, logical request-memory
+reservations, byte-charged delivery, and a terminal-only bounded Responses
+store. For a local model directory that was not created by `fetch`, pass a
+stable public identity with `--served-model-name`; filesystem paths are never
+published as API model IDs or metric labels.
 
 Select CUDA only as an explicit experimental opt-in:
 
@@ -130,17 +135,26 @@ The server exposes:
 - `GET /v1/responses/:response_id`
 - `GET /v1/responses/:response_id/input_items`
 - `GET /v1/models`
-- `POST /v1/batches`
-- `GET /v1/batches/:batch_id`
-- `GET /v1/batches/:batch_id/output`
-- `POST /v1/batches/:batch_id/cancel`
 - `GET /health`
-- `GET /metrics`
+- `GET /ready`
+- `GET /metrics` unless telemetry exposition is disabled
 
 Chat Completions and Responses support streaming and non-streaming Harmony
-text/tool flows through the same engine path. The mounted
+text/tool flows through the same engine path. Streaming text is emitted as
+committed suffix deltas; cancellation and service failures use typed errors
+and are not reported as successful `stop` finishes. The mounted
 `/v1/chat/completions/tools` and `/tools` routes are aliases of the chat
-handler, not separate compatibility contracts.
+handler, not separate compatibility contracts. Batch route source is retained
+for later work, but no `/v1/batches` route is currently mounted.
+
+`/health` is a liveness probe. `/ready` returns 200 only after model,
+tokenizer, owner, delivery, reservations, and the hashed effective runtime
+snapshot are ready; otherwise it returns a typed 503. The default limits are a
+2 MiB request body, 8 MiB non-streaming response/store entry, 256 KiB stream
+event, 1 MiB queued delivery per request, `max_num_seqs` MiB global delivery,
+and a 64 MiB/64-entry Responses store. `serve --help` lists the corresponding
+overrides, `--cpu-request-budget-mib`, `--evidence-dir`, and bounded diagnostic
+options. HTTP serving permits metadata and summary diagnostics only.
 
 ## CPU architecture
 
@@ -152,7 +166,10 @@ engine:
 - `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership,
   transactional layer-major transformer execution, and parity tracing;
 - `gpt-oss-engine`: canonical CPU sequence scheduling, transactional batched
-  execution, and the batch-one compatibility worker;
+  execution, logical reservations, managed delivery/lifecycle, and the
+  batch-one compatibility worker;
+- `gpt-oss-evidence`: versioned run manifests, artifact verification,
+  effective-runtime snapshots, redaction, and bounded diagnostics;
 - `gpt-oss-bench`: pinned prompt parity tools and model-level measurements;
 - `gpt-oss-reference`, `gpt-oss-conformance`, and `gpt-oss-moe-semantics`:
   independent semantic and correctness fixtures.
@@ -172,6 +189,12 @@ python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'
 cargo clippy -p gpt-oss-cpu-kernels --all-targets --locked -- -D warnings
 cargo bench -p gpt-oss-cpu-kernels --bench kernels
 ```
+
+`cpu_parity`, the model-independent `cpu_service_probe`, and the paired release
+`cpu_service_overhead` gate write atomic raw captures with automatic
+`gpt-oss-rs.cpu-evidence/v1` manifest sidecars. The service probe checks only
+public service metadata and can be run against an already-ready server without
+generating tokens.
 
 The AVX2 x8 promotion used a targeted full-model gate: cold and warm
 `harmony_122`, plus automatic, AVX2, and scalar `harmony_262`, followed by

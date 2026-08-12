@@ -17,17 +17,20 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 use tracing::info;
 use utoipa::ToSchema;
 
 use crate::error::ApiError;
 use crate::protocol_stream::{visible_text_from_protocol_messages, StreamedChatChoiceState};
 use crate::runtime_policy::is_gpt_oss_model;
-use crate::server::AppState;
+use crate::server::{
+    ensure_non_streaming_size, AppState, BoundedSseSender, RequestOutputAccumulator,
+};
 use crate::types::request::ChatMessage;
 use crate::types::response::Usage;
-use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
+use crate::types::streaming::{
+    format_sse_data, format_sse_failure, ChatCompletionStreamChunk, SSE_DONE,
+};
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -228,7 +231,7 @@ impl ChatCompletionToolRequest {
 
     /// Returns true if tools are provided and tool_choice is not "none".
     pub fn tools_enabled(&self) -> bool {
-        if self.tools.as_ref().map_or(true, |t| t.is_empty()) {
+        if self.tools.as_ref().is_none_or(|t| t.is_empty()) {
             return false;
         }
         if let Some(ToolChoice::Mode(ref m)) = self.tool_choice {
@@ -279,7 +282,7 @@ pub fn augment_messages_with_tools(
     let mut result = Vec::with_capacity(messages.len() + 1);
 
     // Check if there's already a system message
-    let has_system = messages.first().map_or(false, |m| m.role == "system");
+    let has_system = messages.first().is_some_and(|m| m.role == "system");
 
     if has_system {
         // Prepend tool definitions to existing system message
@@ -372,13 +375,17 @@ pub async fn create_chat_completion_with_tools(
         let model = state.model_name.clone();
         let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
+        let (raw_tx, rx) =
+            tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+        let tx = BoundedSseSender::new(raw_tx, state.limits.max_stream_event_bytes);
         let stream_id_clone = stream_id.clone();
         let model_clone = model.clone();
 
@@ -396,13 +403,21 @@ pub async fn create_chat_completion_with_tools(
 
             let mut choice_states: HashMap<usize, StreamedChatChoiceState> = HashMap::new();
 
-            while let Some(output) = output_stream.next().await {
+            loop {
+                let output = match output_stream.recv().await {
+                    Ok(Some(output)) => output,
+                    Ok(None) => break,
+                    Err(failure) => {
+                        let _ = tx.send(Ok(format_sse_failure(&failure))).await;
+                        return;
+                    }
+                };
                 let mut events = String::new();
                 for co in &output.outputs {
-                    let finish = co.finish_reason.map(|r| match r {
-                        gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                        gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                        gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                    let finish = co.finish_reason.and_then(|r| match r {
+                        gpt_oss_core::prelude::FinishReason::Stop => Some("stop".to_string()),
+                        gpt_oss_core::prelude::FinishReason::Length => Some("length".to_string()),
+                        gpt_oss_core::prelude::FinishReason::Abort => None,
                     });
 
                     if is_gpt_oss {
@@ -483,6 +498,9 @@ pub async fn create_chat_completion_with_tools(
                 if tx.send(Ok(events)).await.is_err() {
                     return;
                 }
+                if output.finished {
+                    break;
+                }
             }
         });
         let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
@@ -496,23 +514,26 @@ pub async fn create_chat_completion_with_tools(
             .into_response())
     } else {
         // Non-streaming: collect output, then parse for tool calls
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let mut last_output = None;
-        while let Some(output) = output_stream.next().await {
-            if output.finished {
-                last_output = Some(output);
+        let mut accumulator = RequestOutputAccumulator::default();
+        while let Some(output) = output_stream.recv().await.map_err(ApiError::from)? {
+            let finished = output.finished;
+            accumulator.push(output).map_err(ApiError::from)?;
+            if finished {
                 break;
             }
-            last_output = Some(output);
         }
 
-        let output =
-            last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+        let output = accumulator
+            .finish()
+            .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -528,10 +549,10 @@ pub async fn create_chat_completion_with_tools(
             .map(|co| {
                 total_completion += co.token_ids.len();
 
-                let finish_reason_val = co.finish_reason.map(|r| match r {
-                    gpt_oss_core::prelude::FinishReason::Stop => "stop",
-                    gpt_oss_core::prelude::FinishReason::Length => "length",
-                    gpt_oss_core::prelude::FinishReason::Abort => "stop",
+                let finish_reason_val = co.finish_reason.and_then(|r| match r {
+                    gpt_oss_core::prelude::FinishReason::Stop => Some("stop"),
+                    gpt_oss_core::prelude::FinishReason::Length => Some("length"),
+                    gpt_oss_core::prelude::FinishReason::Abort => None,
                 });
 
                 if tools_active && is_gpt_oss_model(&state.model_name) {
@@ -653,6 +674,7 @@ pub async fn create_chat_completion_with_tools(
             },
         };
 
+        ensure_non_streaming_size(&resp, state.limits.max_non_streaming_bytes)?;
         Ok(Json(resp).into_response())
     }
 }

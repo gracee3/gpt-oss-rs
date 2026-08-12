@@ -15,7 +15,10 @@ gpt-oss-engine.workspace = true
 gpt-oss-tokenizer.workspace = true
 gpt-oss-model-runner.workspace = true
 gpt-oss-cpu-kernels.workspace = true
+gpt-oss-evidence.workspace = true
 sha2.workspace = true
+tokio.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [features]
 default = []

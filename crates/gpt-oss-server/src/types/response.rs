@@ -69,10 +69,10 @@ pub struct ModelListResponse {
 }
 
 fn finish_reason_string(reason: Option<gpt_oss_core::prelude::FinishReason>) -> Option<String> {
-    reason.map(|r| match r {
-        gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-        gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-        gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+    reason.and_then(|r| match r {
+        gpt_oss_core::prelude::FinishReason::Stop => Some("stop".to_string()),
+        gpt_oss_core::prelude::FinishReason::Length => Some("length".to_string()),
+        gpt_oss_core::prelude::FinishReason::Abort => None,
     })
 }
 
@@ -310,10 +310,7 @@ mod tests {
             finish_reason_string(Some(FinishReason::Length)),
             Some("length".into())
         );
-        assert_eq!(
-            finish_reason_string(Some(FinishReason::Abort)),
-            Some("stop".into())
-        );
+        assert_eq!(finish_reason_string(Some(FinishReason::Abort)), None);
         assert_eq!(finish_reason_string(None), None);
     }
 }

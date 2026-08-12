@@ -1,6 +1,6 @@
 # CPU Runtime Next-Phase Research Corpus
 
-- Status: research complete; implementation planning not authorized
+- Status: research complete; E1/C1/C2 foundation implemented separately
 - Research date: 2026-08-11
 - Repository source baseline: `a090bb0e81457e4302deb36d6e52a0847c14bfb0`
 - Intake checkpoint: `9df99d24891aa95c2bd9aa39bab9d5a1fa4b1555`
@@ -15,6 +15,8 @@ could be written; it is not implementation authority.
 The integrated dependency decisions, readiness gates, rejected inferences, and
 scope attestation are in
 [`08-cross-track-closeout.md`](08-cross-track-closeout.md).
+The later bounded implementation and its unchanged exclusions are recorded in
+[`../cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md`](../cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md).
 
 ## Baseline record
 
@@ -115,9 +117,9 @@ gap with estimates.
 
 | Track | Document | Outcome |
 | --- | --- | --- |
-| E1 | [`00-evidence-and-observability.md`](00-evidence-and-observability.md) | planning-ready |
-| C1 | [`01-service-lifecycle-api.md`](01-service-lifecycle-api.md) | planning-ready |
-| C2 | [`02-memory-reservations.md`](02-memory-reservations.md) | planning-ready |
+| E1 | [`00-evidence-and-observability.md`](00-evidence-and-observability.md) | implemented foundation |
+| C1 | [`01-service-lifecycle-api.md`](01-service-lifecycle-api.md) | implemented foundation |
+| C2 | [`02-memory-reservations.md`](02-memory-reservations.md) | implemented foundation |
 | C3 | [`03-numerical-trust.md`](03-numerical-trust.md) | narrow experiment warranted |
 | C4-A | [`04a-moe-orchestration.md`](04a-moe-orchestration.md) | deferred |
 | C4-B | [`04b-dense-bf16.md`](04b-dense-bf16.md) | deferred |

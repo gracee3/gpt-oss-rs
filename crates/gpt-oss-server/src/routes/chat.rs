@@ -7,17 +7,20 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
 use crate::protocol_stream::{visible_text_from_protocol_messages, StreamedChatChoiceState};
 use crate::routes::tools::ToolChoice;
 use crate::runtime_policy::is_gpt_oss_model;
-use crate::server::AppState;
+use crate::server::{
+    ensure_non_streaming_size, AppState, BoundedSseSender, RequestOutputAccumulator,
+};
 use crate::types::request::ChatCompletionRequest;
 use crate::types::response::{ChatChoice, ChatCompletionResponse, Usage};
-use crate::types::streaming::{format_sse_data, ChatCompletionStreamChunk, SSE_DONE};
+use crate::types::streaming::{
+    format_sse_data, format_sse_failure, ChatCompletionStreamChunk, SSE_DONE,
+};
 
 /// POST /v1/chat/completions -- chat completion (streaming or non-streaming).
 pub async fn create_chat_completion(
@@ -36,7 +39,7 @@ pub async fn create_chat_completion(
     let sampling_params = req.to_sampling_params();
 
     // Check if tools are active
-    let tools_active = req.tools.as_ref().map_or(false, |t| !t.is_empty())
+    let tools_active = req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !matches!(req.tool_choice.as_ref(), Some(ToolChoice::Mode(m)) if m == "none");
 
     let tool_defs: Vec<gpt_oss_tokenizer::ToolDefinition> = req
@@ -83,13 +86,17 @@ pub async fn create_chat_completion(
         let is_gpt_oss = is_gpt_oss_model(&state.model_name);
         let tools_active_for_stream = tools_active;
 
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
+        let (raw_tx, rx) =
+            tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+        let tx = BoundedSseSender::new(raw_tx, state.limits.max_stream_event_bytes);
         let stream_id_clone = stream_id.clone();
         let model_clone = model.clone();
 
@@ -107,13 +114,21 @@ pub async fn create_chat_completion(
 
             let mut choice_states: HashMap<usize, StreamedChatChoiceState> = HashMap::new();
 
-            while let Some(output) = output_stream.next().await {
+            loop {
+                let output = match output_stream.recv().await {
+                    Ok(Some(output)) => output,
+                    Ok(None) => break,
+                    Err(failure) => {
+                        let _ = tx.send(Ok(format_sse_failure(&failure))).await;
+                        return;
+                    }
+                };
                 let mut events = String::new();
                 for co in &output.outputs {
-                    let finish = co.finish_reason.map(|r| match r {
-                        gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                        gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                        gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                    let finish = co.finish_reason.and_then(|r| match r {
+                        gpt_oss_core::prelude::FinishReason::Stop => Some("stop".to_string()),
+                        gpt_oss_core::prelude::FinishReason::Length => Some("length".to_string()),
+                        gpt_oss_core::prelude::FinishReason::Abort => None,
                     });
 
                     if is_gpt_oss {
@@ -199,6 +214,9 @@ pub async fn create_chat_completion(
                 if tx.send(Ok(events)).await.is_err() {
                     return;
                 }
+                if output.finished {
+                    break;
+                }
             }
         });
 
@@ -212,23 +230,26 @@ pub async fn create_chat_completion(
             .into_response())
     } else {
         // Non-streaming: collect all outputs until finished.
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let mut last_output = None;
-        while let Some(output) = output_stream.next().await {
-            if output.finished {
-                last_output = Some(output);
+        let mut accumulator = RequestOutputAccumulator::default();
+        while let Some(output) = output_stream.recv().await.map_err(ApiError::from)? {
+            let finished = output.finished;
+            accumulator.push(output).map_err(ApiError::from)?;
+            if finished {
                 break;
             }
-            last_output = Some(output);
         }
 
-        let output =
-            last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+        let output = accumulator
+            .finish()
+            .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
         if is_gpt_oss_model(&state.model_name) && !tools_active {
             let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
@@ -274,10 +295,12 @@ pub async fn create_chat_completion(
                             tool_calls: None,
                         },
                         index: co.index,
-                        finish_reason: co.finish_reason.map(|r| match r {
-                            gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                            gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                            gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
+                        finish_reason: co.finish_reason.and_then(|r| match r {
+                            gpt_oss_core::prelude::FinishReason::Stop => Some("stop".to_string()),
+                            gpt_oss_core::prelude::FinishReason::Length => {
+                                Some("length".to_string())
+                            }
+                            gpt_oss_core::prelude::FinishReason::Abort => None,
                         }),
                     }
                 })
@@ -294,6 +317,7 @@ pub async fn create_chat_completion(
                     total_tokens: output.prompt_token_ids.len() + total_completion,
                 },
             };
+            ensure_non_streaming_size(&resp, state.limits.max_non_streaming_bytes)?;
             return Ok(Json(resp).into_response());
         }
 
@@ -311,10 +335,10 @@ pub async fn create_chat_completion(
                 .iter()
                 .map(|co| {
                     total_completion += co.token_ids.len();
-                    let finish_reason_val = co.finish_reason.map(|r| match r {
-                        gpt_oss_core::prelude::FinishReason::Stop => "stop",
-                        gpt_oss_core::prelude::FinishReason::Length => "length",
-                        gpt_oss_core::prelude::FinishReason::Abort => "stop",
+                    let finish_reason_val = co.finish_reason.and_then(|r| match r {
+                        gpt_oss_core::prelude::FinishReason::Stop => Some("stop"),
+                        gpt_oss_core::prelude::FinishReason::Length => Some("length"),
+                        gpt_oss_core::prelude::FinishReason::Abort => None,
                     });
                     if is_gpt_oss_model(&state.model_name) {
                         let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
@@ -430,9 +454,11 @@ pub async fn create_chat_completion(
                     total_tokens: output.prompt_token_ids.len() + total_completion,
                 },
             };
+            ensure_non_streaming_size(&resp, state.limits.max_non_streaming_bytes)?;
             Ok(Json(resp).into_response())
         } else {
             let resp = ChatCompletionResponse::from_request_output(&output, &state.model_name);
+            ensure_non_streaming_size(&resp, state.limits.max_non_streaming_bytes)?;
             Ok(Json(resp).into_response())
         }
     }

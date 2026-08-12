@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -350,6 +350,33 @@ pub struct CpuModel {
     matmul_backend: Mxfp4MatmulBackend,
     mxfp4_weight_layout: Mxfp4WeightLayout,
     amx_runtime_status: Option<AmxRuntimeStatus>,
+}
+
+/// One immutable file currently mapped by the native CPU model.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CpuMappedFile {
+    pub path: PathBuf,
+    pub bytes: u128,
+}
+
+/// Static model-owned memory facts. Mapped, disk, and logical quantities are
+/// intentionally separate and must not be summed as if they were RSS.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CpuMemoryDescriptor {
+    pub mapped_weight_files: Vec<CpuMappedFile>,
+    pub mapped_repack_files: Vec<CpuMappedFile>,
+    pub mapped_virtual_file_bytes: u128,
+    pub selected_disk_cache_bytes: u128,
+    pub kv_scalar_bytes: u128,
+    pub kv_heads: u128,
+    pub head_dim: u128,
+    pub full_layers: u128,
+    pub sliding_layers: u128,
+    pub sliding_window: u128,
+    pub staged_kv_high_water_bytes: u128,
+    pub model_owned_metadata_bytes: u128,
+    pub operator_scratch_bound_bytes: u128,
+    pub allocator_omissions: Vec<String>,
 }
 
 /// Batch-one compatibility facade over one shared [`CpuModel`].
@@ -992,6 +1019,128 @@ impl CpuModel {
         self.amx_runtime_status
     }
 
+    /// Report exact mapped files and checked structural bounds for a configured
+    /// maximum number of staged rows. This does not claim physical residency.
+    pub fn memory_descriptor(&self, max_staged_rows: usize) -> Result<CpuMemoryDescriptor> {
+        let mapped_weight_files = mapped_file_inventory(self.store.shard_paths())?;
+        let mut repack_paths = self
+            .layers
+            .iter()
+            .flat_map(|layer| [layer.gate_up.path(), layer.down.path()])
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>();
+        repack_paths.sort();
+        repack_paths.dedup();
+        let mapped_repack_files = mapped_file_inventory(&repack_paths)?;
+        let mapped_virtual_file_bytes = mapped_weight_files
+            .iter()
+            .chain(&mapped_repack_files)
+            .try_fold(0u128, |total, file| total.checked_add(file.bytes))
+            .ok_or_else(|| LLMError::MemoryError("mapped CPU file byte total overflows".into()))?;
+        let selected_disk_cache_bytes = mapped_repack_files
+            .iter()
+            .try_fold(0u128, |total, file| total.checked_add(file.bytes))
+            .ok_or_else(|| LLMError::MemoryError("selected repack byte total overflows".into()))?;
+
+        let full_layers = self.layers.iter().filter(|layer| !layer.sliding).count() as u128;
+        let sliding_layers = self.layers.iter().filter(|layer| layer.sliding).count() as u128;
+        let kv_row_layer = checked_memory_product(&[
+            2,
+            std::mem::size_of::<bf16>() as u128,
+            self.config.num_key_value_heads as u128,
+            self.config.head_dim as u128,
+        ])?;
+        let staged_kv_high_water_bytes = checked_memory_product(&[
+            max_staged_rows as u128,
+            kv_row_layer,
+            full_layers
+                .checked_add(sliding_layers)
+                .ok_or_else(|| LLMError::MemoryError("CPU layer count overflows".into()))?,
+        ])?;
+
+        let mut model_owned_metadata_bytes = (self.final_norm.capacity() as u128)
+            .checked_mul(std::mem::size_of::<f32>() as u128)
+            .ok_or_else(|| LLMError::MemoryError("CPU metadata estimate overflows".into()))?;
+        for layer in &self.layers {
+            for values in [
+                &layer.input_norm,
+                &layer.post_attention_norm,
+                &layer.q_bias,
+                &layer.k_bias,
+                &layer.v_bias,
+                &layer.o_bias,
+                &layer.sinks,
+                &layer.router_bias,
+                &layer.gate_up_bias,
+                &layer.down_bias,
+            ] {
+                let bytes = (values.capacity() as u128)
+                    .checked_mul(std::mem::size_of::<f32>() as u128)
+                    .ok_or_else(|| {
+                        LLMError::MemoryError("CPU metadata estimate overflows".into())
+                    })?;
+                model_owned_metadata_bytes = model_owned_metadata_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| {
+                        LLMError::MemoryError("CPU metadata estimate overflows".into())
+                    })?;
+            }
+            for name in [
+                &layer.q_weight,
+                &layer.k_weight,
+                &layer.v_weight,
+                &layer.o_weight,
+                &layer.router_weight,
+            ] {
+                model_owned_metadata_bytes = model_owned_metadata_bytes
+                    .checked_add(name.capacity() as u128)
+                    .ok_or_else(|| {
+                        LLMError::MemoryError("CPU metadata estimate overflows".into())
+                    })?;
+            }
+        }
+
+        // Structural upper bound for one row's simultaneously owned f32
+        // intermediates, logits, and all routed expert work. Backend-private
+        // allocator retention remains an explicit omission below.
+        let routed = checked_memory_product(&[
+            self.config.num_experts_per_tok as u128,
+            self.config.intermediate_size as u128,
+            3,
+        ])?;
+        let f32_values = (self.config.hidden_size as u128)
+            .checked_mul(12)
+            .and_then(|value| value.checked_add(routed))
+            .and_then(|value| value.checked_add(self.config.vocab_size as u128))
+            .ok_or_else(|| LLMError::MemoryError("CPU scratch bound overflows".into()))?;
+        let operator_scratch_bound_bytes = checked_memory_product(&[
+            max_staged_rows.max(1) as u128,
+            f32_values,
+            std::mem::size_of::<f32>() as u128,
+        ])?;
+
+        Ok(CpuMemoryDescriptor {
+            mapped_weight_files,
+            mapped_repack_files,
+            mapped_virtual_file_bytes,
+            selected_disk_cache_bytes,
+            kv_scalar_bytes: std::mem::size_of::<bf16>() as u128,
+            kv_heads: self.config.num_key_value_heads as u128,
+            head_dim: self.config.head_dim as u128,
+            full_layers,
+            sliding_layers,
+            sliding_window: self.config.sliding_window as u128,
+            staged_kv_high_water_bytes,
+            model_owned_metadata_bytes,
+            operator_scratch_bound_bytes,
+            allocator_omissions: vec![
+                "allocator_active_unavailable".into(),
+                "allocator_retained_unavailable".into(),
+                "thread_stack_residency_unavailable".into(),
+            ],
+        })
+    }
+
     pub fn new_sequence_state(&self, context_cap: usize) -> Result<CpuSequenceModelState> {
         if context_cap == 0 || context_cap > self.config.max_position_embeddings {
             return Err(LLMError::ConfigError(format!(
@@ -1023,6 +1172,28 @@ impl CpuModel {
             aborted: false,
         })
     }
+}
+
+fn mapped_file_inventory(paths: &[PathBuf]) -> Result<Vec<CpuMappedFile>> {
+    paths
+        .iter()
+        .map(|path| {
+            let absolute = path.canonicalize()?;
+            let bytes = std::fs::metadata(&absolute)?.len() as u128;
+            Ok(CpuMappedFile {
+                path: absolute,
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn checked_memory_product(values: &[u128]) -> Result<u128> {
+    values.iter().try_fold(1u128, |product, value| {
+        product.checked_mul(*value).ok_or_else(|| {
+            LLMError::MemoryError("CPU memory descriptor arithmetic overflows".into())
+        })
+    })
 }
 
 impl CpuModelRunner {

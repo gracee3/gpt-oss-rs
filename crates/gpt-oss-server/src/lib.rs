@@ -8,4 +8,7 @@ pub mod runtime_policy;
 pub mod server;
 pub mod types;
 
-pub use server::{build_router, serve, AppState};
+pub use server::{
+    build_router, resolve_served_model_id, serve, AppState, EvidenceConfig, ServerConfig,
+    ServiceLimits,
+};

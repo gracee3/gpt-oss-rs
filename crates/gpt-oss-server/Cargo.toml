@@ -27,6 +27,7 @@ gpt-oss-gpu.workspace = true
 gpt-oss-engine.workspace = true
 gpt-oss-cpu-kernels.workspace = true
 gpt-oss-tokenizer.workspace = true
+gpt-oss-evidence.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true
@@ -42,6 +43,8 @@ utoipa.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 thiserror.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
