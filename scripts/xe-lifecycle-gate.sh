@@ -271,7 +271,7 @@ if [[ $auto_ready -ne 1 ]]; then
   echo "automatic CPU server did not become ready" >&2
   exit 1
 fi
-if [[ $(jq -c 'keys' "$results_dir/ready.json") != $(jq -c 'keys' "$results_dir/auto-cpu-ready.json") ]]; then
+if [[ "$(jq -c 'keys' "$results_dir/ready.json")" != "$(jq -c 'keys' "$results_dir/auto-cpu-ready.json")" ]]; then
   echo "explicit Xe and automatic CPU readiness wire keys differ" >&2
   exit 1
 fi
