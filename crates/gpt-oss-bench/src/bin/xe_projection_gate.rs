@@ -473,7 +473,7 @@ impl Projection {
             }
             let columns = shape[1];
             let blocks = shape[2];
-            if columns % 32 != 0
+            if !columns.is_multiple_of(32)
                 || scales_tensor.shape != [EXPERTS, columns, blocks]
                 || bias_tensor.shape != [EXPERTS, columns]
                 || blocks_tensor.dtype.size() != 1

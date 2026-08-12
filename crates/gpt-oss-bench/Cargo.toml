@@ -40,6 +40,8 @@ cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 
 [dev-dependencies]
 criterion.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
 rayon.workspace = true
 
 [[bench]]

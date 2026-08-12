@@ -84,13 +84,17 @@ X0–X8 artifacts were not modified. PMU data is absent because it requires a
 separately authorized sudo command; this remains `insufficient_evidence` and is
 not used as a production claim.
 
-The paired full-model runner is pinned by SHA-256 in the combined summary.
-Each of ten CPU/Xe pairs per scenario has a passing sidecar that hashes its raw
-capture. Samples alternate method order after one warmup per method. The
-summary tool rejects missing sample IDs, token/oracle disagreement, descriptor
-drift, sidecar/hash failure, and executable-source drift. An early-to-late
-Cargo.lock hash change is exposed as source variants; the executable and all
-runtime code were unchanged during the measurement series.
+The paired full-model runner supplied to the summary is pinned by SHA-256 in
+the combined summary. Each of ten CPU/Xe pairs per scenario has a passing
+sidecar that hashes its raw capture. Samples alternate method order after one
+warmup per method. The summary tool rejects missing sample IDs, token/oracle
+disagreement, descriptor drift, sidecar/hash failure, and executable-source
+drift. These negative-promotion captures predate the capture-level executable
+hash field and their sidecars expose a dirty `c9b9f14` candidate plus an
+early-to-late Cargo.lock hash change. They are therefore sufficient only to
+reject automatic promotion, never to enable it. The later seven-scenario
+correctness matrix was captured from clean `8d3c634` and embeds the measured
+runner hash.
 
 ## Correctness and performance results
 
@@ -102,12 +106,23 @@ projection evidence separately covers all 4,096 E2M1/E8M0 cases and 10,000
 randomized residual-Q8 cases with exact integer intermediates, the four-ULP or
 `1e-6` float bound, and identical BF16 boundaries.
 
+Clean full-model correctness summary SHA-256:
+`10b24225bb07d716b3949f401b16652a56f9347ccd8c052dea51f802462409af`.
+Exhaustive projection manifest SHA-256:
+`dc37aee155d581372a187d7135f4d46053bf1252851b84d0dadac3ecf0b87f96`.
+
 The transfer-inclusive projection gate uses real layer-0 expert-0 gate/up and
 down tensors. Timings include residual-Q8 preparation, expert repack, weight and
 bias staging, activation packing, argument setup, submission, terminal wait,
 readback, and BF16 conversion. Scalar, current CPU auto, explicit AVX2, and Xe
 run in three rotated trials with ten warmups and thirty measured samples per
 method and shape.
+
+Both projection roles pass independently at every M in
+`{4,8,16,32,64,128}`. At M=4, the conservative CPU-auto/Xe lower bounds are
+8.9912 for gate/up and 8.8549 for down, so both explicit thresholds remain 4.
+Transfer-inclusive projection summary SHA-256:
+`2a6d59891de0a29653e1af5075a2b6cef9767c6deba87ecc16f2f767fdcaea38`.
 
 The automatic full-model performance decision is based on `harmony_122` and
 `harmony_444`. It requires both TTFT and full-request paired-bootstrap 95% lower
@@ -147,6 +162,17 @@ material artifact. A second startup supplies a deliberately invalid OpenCL
 loader path under `--device auto` and proves the disabled record selects CPU
 without probing OpenCL. `/ready` retains its existing wire shape.
 
+The gate passed with 83 repeated requests over 1,812 seconds, one active
+`kwin_wayland`, a peak server RSS of 11,825,856 KiB, zero server-process swap
+growth, and 57 server major faults. System-wide swap use increased by 81,616
+KiB during the run; this is retained rather than attributed to the server. The
+corrupt native binary rebuilt to the original SHA-256, both explicit servers
+shut down gracefully, and the automatic server selected CPU without loading
+or probing OpenCL. Lifecycle summary SHA-256:
+`3f2c09a2c22bd2774d86506fb37400d3d13c8b290cfe6a56be1c252a3aea1e96`.
+Lifecycle artifact-index SHA-256:
+`d4cc67ff98c077f369ef3fb7018ad90d0a67a50e1d94e3c438bd51ac2c1b411c`.
+
 ## Repository validation
 
 The final validation covers locked/offline workspace checks and tests, default
@@ -157,8 +183,9 @@ hashes, dynamic-link inspection, remote SHA verification, and GitHub Actions.
 
 ## Immutable result
 
-The promotion record contains `automatic_enabled: false` and
-`production_gate: fail_performance`. Correctness or lifecycle failure would
-have blocked the production path entirely; none is waived. The explicit path
-is published because those gates pass, while the failed statistical speed gate
-is preserved exactly and prevents automatic selection.
+The promotion record contains `automatic_enabled: false`,
+`production_gate: fail_performance`, and `explicit_integration: pass`.
+Correctness or lifecycle failure would have blocked the production path
+entirely; none is waived. The explicit path is published because those gates
+pass, while the failed statistical speed gate is preserved exactly and
+prevents automatic selection.

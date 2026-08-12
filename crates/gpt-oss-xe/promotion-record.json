@@ -16,8 +16,14 @@
   "workgroup_size": 32,
   "evidence": {
     "x8_selection_summary_sha256": "ff2fdd40244a7e2dae18ca5e7e3c500425b0e8701b9df3affa0023de85254428",
+    "exhaustive_correctness_manifest_sha256": "dc37aee155d581372a187d7135f4d46053bf1252851b84d0dadac3ecf0b87f96",
+    "full_model_correctness_summary_sha256": "10b24225bb07d716b3949f401b16652a56f9347ccd8c052dea51f802462409af",
+    "transfer_inclusive_projection_summary_sha256": "2a6d59891de0a29653e1af5075a2b6cef9767c6deba87ecc16f2f767fdcaea38",
     "paired_performance_summary_sha256": "d4705c9857ac83caec2f31cd4f591bd6bc35a977ffb4ba41483d27a3c4d7170e",
+    "lifecycle_summary_sha256": "3f2c09a2c22bd2774d86506fb37400d3d13c8b290cfe6a56be1c252a3aea1e96",
+    "lifecycle_artifact_index_sha256": "d4cc67ff98c077f369ef3fb7018ad90d0a67a50e1d94e3c438bd51ac2c1b411c",
+    "lifecycle_server_sha256": "b7672082ca3879ecd959d80242bf12f7c28cf11f871b313ea4ab803e25c99942",
     "production_gate": "fail_performance",
-    "explicit_integration": "pending_final_validation"
+    "explicit_integration": "pass"
   }
 }
