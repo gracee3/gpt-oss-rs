@@ -1,0 +1,43 @@
+{
+  "schema": "gpt-oss-rs.xe-kernel-abi/v1",
+  "artifact_identity": [
+    "backend_format",
+    "kernel_source_sha256",
+    "spirv_sha256",
+    "compiler_identity",
+    "build_options",
+    "vendor_id",
+    "device_id",
+    "driver_version",
+    "abi_version"
+  ],
+  "entry_points": {
+    "xe_i32_add": {
+      "global_size": "round_up(count, local_size)",
+      "local_size": 64,
+      "arguments": [
+        {"index": 0, "type": "global const i32*", "size": "pointer", "alignment": 4, "access": "read", "extent": "count * 4"},
+        {"index": 1, "type": "global const i32*", "size": "pointer", "alignment": 4, "access": "read", "extent": "count * 4"},
+        {"index": 2, "type": "global i32*", "size": "pointer", "alignment": 4, "access": "write", "extent": "count * 4"},
+        {"index": 3, "type": "u32", "size": 4, "alignment": 4, "access": "value"}
+      ]
+    },
+    "mxfp4_exact_blocks": {
+      "global_size": "round_up(count, local_size)",
+      "local_size": 64,
+      "argument_contract": "See kernels/mxfp4.cl; canonical adjacent low-nibble-first weights, K=32 only, exact doubled-E2M1 i32 intermediates."
+    },
+    "mxfp4_project_scalar": {
+      "global_size": "round_up(rows * columns, local_size)",
+      "local_size": 64,
+      "weight_layout": "canonical packed blocks and parallel E8M0 scale array",
+      "argument_contract": "Eight buffers followed by rows:u32, columns:u32, blocks:u32; all extents are validated by the Rust caller before FFI."
+    }
+  },
+  "rules": {
+    "fast_math": false,
+    "fp_contract": false,
+    "tail_policy": "host rounds launch size; kernels bounds-check; K must be divisible by 32",
+    "native_binary": "runtime cache only, never portable or checked in"
+  }
+}
