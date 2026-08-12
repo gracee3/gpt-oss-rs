@@ -1,19 +1,19 @@
-# Iris Xe X0–X7 One-Sweep Research
+# Iris Xe X0–X8 Research
 
-- Status: complete — negative closeout
+- Status: X0–X7 complete; X8 forced-only optimization complete
 - Host: Lenovo T14, Tiger Lake-LP Iris Xe `8086:9a49`
 - Validated stack: Compute Runtime 26.05.37020.3, Level Zero 1.28.2
-- Raw evidence: `/home/emmy/src/xe-research/results/20260811-xe-one-sweep/`
+- X0–X7 raw evidence: `/home/emmy/src/xe-research/results/20260811-xe-one-sweep/`
+- X8 raw evidence: `/home/emmy/src/xe-research/results/20260812-xe-optimization-sprint/`
 - X7 manifest SHA-256: `1378bd9ab319254d19ae95c91fc601e888ec56b34c301f2ffc2dbfe564a81430`
 
-The sprint is complete and the implementation lane is closed. Both APIs pass
-the exact numerical, artifact, memory, and real-checkpoint gates, and current
-native modules contain identified Xe-LP DP4A instructions. No Xe path passes
-the end-to-end useful-win gate. At every plausible M=4–64 shape, OpenCL and
-both Level Zero modes are slower than
-`ResidualQ8 + Avx2 + InterleavedSplitX8V2`, with confidence intervals below
-parity. No production backend, dispatch change, serving integration, or public
-runtime API was added.
+X7's `fail` is its predeclared promotion-gate result, not an overall research
+failure: numerical, artifact, memory, checkpoint, and native-code evidence all
+passed. X8 preserves that checkpoint and adds correct, faster forced OpenCL
+research variants. It selects separate M=1, M=2, and M>=4 winners with
+conservative intervals above canonical Xe parity. No production backend,
+automatic dispatch, serving integration, dependency, or public runtime API was
+added.
 
 ## Reports
 
@@ -27,6 +27,7 @@ runtime API was added.
 | X5 | [MXFP4 exactness and Xe-LP code generation](05-mxfp4-exactness-and-xelp-codegen.md) | pass |
 | X6 | [Real-tensor prefill vertical slice](06-real-tensor-prefill-vertical-slice.md) | useful-win fail |
 | X7 | [Decision and forced implementation pre-plan](07-decision-and-forced-implementation-preplan.md) | negative closeout |
+| X8 | [Performance diagnosis and forced-only optimization](08-performance-diagnosis-and-optimization.md) | selected forced decode/prefill winners |
 
 ## Claim-to-evidence index
 
@@ -50,6 +51,11 @@ libraries and hashes, artifacts, exit status, and detailed result.
 | X6-L0-R | all-shape recycled regular-list performance | `level-zero-regular/x6-level-zero.manifest.json` | `6f903c4b9b224bdbeb4fff4b9a1204c3679d63d6f66332e6a1f4439331616639` |
 | X6-L0-I | all-shape immediate-list performance | `level-zero-immediate/x6-level-zero.manifest.json` | `0e9d556a5f64531a6bbee4f475b5aa4089ea578e1ad367f07e2c6c74b446a5af` |
 | X7 | performance-gated negative closeout and decisions | `closeout/x7-opencl.manifest.json` | `1378bd9ab319254d19ae95c91fc601e888ec56b34c301f2ffc2dbfe564a81430` |
+
+The X0–X7 table above remains an immutable index into the original evidence
+root. X8's independent claim and hash table is in the X8 report; its full raw
+artifact index has SHA-256
+`71ca42ae91d77c3b93a2fec22958e19582cf6ff38b75463601cf323d6aeeb000`.
 
 Supplemental X6 subgroup/work-group manifest hashes are listed in the X6
 report. The final AC/display/frequency/thermal capture is
@@ -75,6 +81,9 @@ Every hardware subcommand requires both an exact API and device:
 ```console
 tools/xe-research/target/release/gpt-oss-xe-research capabilities \
   --backend opencl --device 8086:9a49 --results RESULTS
+tools/xe-research/target/release/gpt-oss-xe-research benchmark \
+  --backend opencl --device 8086:9a49 --results RESULTS \
+  --variant tile32-m4-v2 --shapes 4,8,16,32,64,128 --local-size 32
 ```
 
 OpenCL runs also set `OCL_ICD_VENDORS=/etc/OpenCL/vendors/intel.icd`. Level
@@ -88,7 +97,7 @@ driver and do not justify full-model or serving claims.
 
 ## Validation
 
-- standalone `cargo test --locked --offline`: 3 passed;
+- standalone `cargo test --locked --offline`: 7 passed after X8;
 - standalone warnings-denied Clippy: passed;
 - production `gpt-oss-cpu-kernels`: 36 unit tests and doc tests passed;
 - all hardware environment/capability/artifact/memory/MXFP4 commands completed;

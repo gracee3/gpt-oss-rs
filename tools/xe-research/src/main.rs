@@ -1152,7 +1152,11 @@ fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
         common.immediate,
     )?;
 
-    let exact_bytes = bundle.canonical_records.len();
+    let mut exact_expert = bundle.xe_v2_records.clone();
+    for value in &bundle.bias {
+        exact_expert.extend_from_slice(&value.to_le_bytes());
+    }
+    let exact_bytes = exact_expert.len();
     let available = available_memory_bytes()?;
     let large_bytes = (256_usize << 20).min(usize::try_from(available / 20)?);
     let mut large = vec![0_u8; large_bytes];
@@ -1163,7 +1167,7 @@ fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
     for &local_size in &[32_usize, 64, 128] {
         bandwidth.push(bandwidth_case(
             &session,
-            &bundle.canonical_records,
+            &exact_expert,
             "exact-canonical-coalesced",
             "xe_bandwidth_coalesced",
             local_size,
@@ -1171,7 +1175,7 @@ fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
         )?);
         bandwidth.push(bandwidth_case(
             &session,
-            &bundle.canonical_records,
+            &exact_expert,
             "exact-canonical-strided",
             "xe_bandwidth_strided",
             local_size,
@@ -1179,7 +1183,7 @@ fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
         )?);
         bandwidth.push(bandwidth_case(
             &session,
-            &bundle.xe_v2_records,
+            &exact_expert,
             "exact-v2-repacked-coalesced",
             "xe_bandwidth_coalesced",
             local_size,

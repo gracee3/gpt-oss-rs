@@ -45,20 +45,21 @@ evidence supports a separately reviewed promotion.
 
 ## Iris Xe research sprint
 
-Status: one-sweep X0-X7 research complete with a negative closeout.
+Status: X0-X7 promotion gate preserved; X8 forced-only optimization complete.
 
 The T14 OpenCL and Level Zero paths pass provenance, exact artifact, memory,
 real-checkpoint, MXFP4 correctness, and current-native DP4A code-generation
-gates on Compute Runtime 26.05/Level Zero 1.28.2. They fail the real-tensor
-end-to-end useful-win gate: every plausible M=4-64 path is slower than the
-AVX2 baseline with its confidence interval below parity. The evidence and X7
-decision are published in [`xe-research/`](xe-research/README.md). No Xe
-implementation milestone remains open; reopening requires a material
-driver/compiler, kernel, or target-device change and a fresh gated sweep.
+gates on Compute Runtime 26.05/Level Zero 1.28.2. X7's canonical paths failed
+the original end-to-end useful-win gate; that `fail` remains an immutable
+promotion result rather than an overall research failure. X8's versioned
+layout and multi-row OpenCL kernels now beat canonical Xe conservatively and
+beat AVX2 at the selected decode/prefill shapes. The evidence and decisions are
+published in [`xe-research/`](xe-research/README.md).
 
 This milestone does not authorize production implementation, automatic
 dispatch, decode offload, or model-scale serving integration. CPU remains the
-default and the numerical oracle throughout the Xe research sweep.
+default and the numerical oracle. Further Xe work requires an explicit new
+goal and must begin from the forced-only X8 boundary.
 
 ## Completed foundation
 

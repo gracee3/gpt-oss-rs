@@ -45,10 +45,10 @@
   possible Iris Xe backend.
 - [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md): current source and
   tool inventory plus the authoritative expanded one-sweep X0-X7 research
-  charter, now executed to a negative closeout.
-- [`xe-research/`](xe-research/README.md): completed X0-X7 reports, claim and
-  raw-hash index, exact/memory/codegen evidence, real-tensor benchmark, and
-  performance-gated no-backend decision.
+  charter, preserved with its original performance-gated closeout.
+- [`xe-research/`](xe-research/README.md): completed X0-X8 reports, immutable
+  X0-X7 claim/hash index, X8 ABI/layout/codegen/diagnostic evidence, and
+  selected forced-only decode/prefill variants with no production dispatch.
 - [`XE_SPRINT_PRE_RESEARCH_EXPANSION_HANDOFF.md`](XE_SPRINT_PRE_RESEARCH_EXPANSION_HANDOFF.md):
   owner-supplied documentation handoff that expanded the charter from bounded
   kernel feasibility to real runtime attachment research.
