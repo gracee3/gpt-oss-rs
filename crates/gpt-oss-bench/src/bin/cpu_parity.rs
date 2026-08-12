@@ -5,6 +5,9 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use gpt_oss_cpu_kernels::{KernelPath, Mxfp4MatmulBackend};
+use gpt_oss_evidence::{
+    ArtifactRef, EvidenceStatus, ModelEvidence, RunManifestV1, SourceProvenance, WorkloadEvidence,
+};
 use gpt_oss_model_runner::{
     CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
 };
@@ -218,9 +221,112 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let encoded = serde_json::to_vec_pretty(&capture)?;
-    std::fs::write(&cli.output, &encoded)?;
+    gpt_oss_evidence::atomic_write(&cli.output, &encoded)?;
+    write_evidence_sidecar(&cli, &manifest, scenario, &encoded)?;
     println!("{}", String::from_utf8(encoded)?);
     Ok(())
+}
+
+fn write_evidence_sidecar(
+    cli: &Cli,
+    fixture: &FixtureManifest,
+    scenario: &Scenario,
+    raw_bytes: &[u8],
+) -> Result<()> {
+    let artifact = ArtifactRef::from_path("raw-output", &cli.output)?;
+    if artifact.sha256 != sha256(raw_bytes) {
+        bail!("written parity output does not match its in-memory capture");
+    }
+    let mut evidence = RunManifestV1::new(
+        format!("cpu-parity-{}", scenario.id),
+        "correctness",
+        EvidenceStatus::Pass,
+    );
+    evidence.source = local_source_provenance();
+    evidence.model = ModelEvidence {
+        id: fixture
+            .model
+            .get("id")
+            .or_else(|| fixture.model.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("cpu-parity-model")
+            .to_string(),
+        revision: fixture
+            .model
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("fixture-pinned")
+            .to_string(),
+        ..ModelEvidence::default()
+    };
+    evidence.command.argv_redacted = std::env::args()
+        .map(|argument| {
+            if argument == cli.model.to_string_lossy()
+                || argument == cli.repack_cache.to_string_lossy()
+            {
+                "<redacted-local-path>".to_string()
+            } else {
+                argument
+            }
+        })
+        .collect();
+    evidence.workload = WorkloadEvidence {
+        id: scenario.id.clone(),
+        prompt_sha256: Some(scenario.prompt_text_sha256.clone()),
+        seed: 0,
+        repetitions: 1,
+    };
+    evidence.artifacts.push(artifact);
+    evidence
+        .limitations
+        .push("single local CPU parity capture".into());
+    let file_name = cli
+        .output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("output has no UTF-8 file name")?;
+    let sidecar = cli
+        .output
+        .with_file_name(format!("{file_name}.manifest.json"));
+    evidence.write_atomic(sidecar)?;
+    Ok(())
+}
+
+fn local_source_provenance() -> SourceProvenance {
+    let repository_commit = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.len() == 40)
+        .unwrap_or_default();
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .is_some_and(|output| output.status.success() && !output.stdout.is_empty());
+    let cargo_lock_sha256 = std::fs::read("Cargo.lock")
+        .ok()
+        .map(|bytes| sha256(&bytes))
+        .unwrap_or_default();
+    let toolchain = std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    SourceProvenance {
+        repository_commit,
+        dirty,
+        branch_role: "candidate".into(),
+        cargo_lock_sha256,
+        toolchain,
+        profile: "release".into(),
+        features: Vec::new(),
+    }
 }
 
 fn validate_trace_step(trace_step: Option<usize>, max_new_tokens: usize) -> Result<()> {

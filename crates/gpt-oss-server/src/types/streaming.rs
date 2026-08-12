@@ -79,6 +79,18 @@ pub fn format_sse_data<T: Serialize>(chunk: &T) -> String {
 /// The final SSE message indicating the stream is done.
 pub const SSE_DONE: &str = "data: [DONE]\n\n";
 
+pub fn format_sse_failure(failure: &gpt_oss_engine::StableFailure) -> String {
+    let body = serde_json::json!({
+        "error": {
+            "code": failure.code.as_str(),
+            "message": failure.message,
+            "retryable": failure.retryable,
+            "phase": format!("{:?}", failure.phase).to_ascii_lowercase(),
+        }
+    });
+    format!("data: {body}\n\n{SSE_DONE}")
+}
+
 impl CompletionStreamChunk {
     /// Create a chunk with incremental text for a single choice.
     pub fn new(

@@ -61,10 +61,45 @@ enum Commands {
         profile: ServeProfile,
         #[arg(long)]
         tokenizer: Option<String>,
+        /// Stable public model ID. Required for local paths without a fetch manifest.
+        #[arg(long)]
+        served_model_name: Option<String>,
         #[arg(long, default_value = "info")]
         log_level: String,
         #[arg(long)]
         disable_telemetry: bool,
+        #[arg(long, default_value_t = 2)]
+        request_body_limit_mib: usize,
+        #[arg(long, default_value_t = 8)]
+        non_streaming_limit_mib: usize,
+        #[arg(long, default_value_t = 256)]
+        stream_event_limit_kib: usize,
+        #[arg(long, default_value_t = 1)]
+        delivery_limit_mib: usize,
+        #[arg(long)]
+        global_delivery_limit_mib: Option<usize>,
+        #[arg(long, default_value_t = 64)]
+        response_store_limit_mib: usize,
+        #[arg(long, default_value_t = 64)]
+        response_store_max_entries: usize,
+        #[arg(long, default_value_t = 8)]
+        response_store_entry_limit_mib: usize,
+        #[arg(long, default_value_t = 20)]
+        max_logprobs: usize,
+        #[arg(long, default_value_t = 30)]
+        drain_deadline_seconds: u64,
+        #[arg(long)]
+        cpu_request_budget_mib: Option<u128>,
+        #[arg(long)]
+        evidence_dir: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = DiagnosticModeChoice::Off)]
+        diagnostic_mode: DiagnosticModeChoice,
+        #[arg(long)]
+        diagnostic_cap_mib: Option<u64>,
+        #[arg(long)]
+        diagnostic_boundary: Option<String>,
+        #[arg(long)]
+        diagnostic_acknowledge: bool,
     },
     /// Show system info (GPU, memory, etc.)
     Info,
@@ -142,6 +177,25 @@ enum CpuMatmulBackendChoice {
     Scalar,
     Avx2,
     AmxInt8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DiagnosticModeChoice {
+    Off,
+    Metadata,
+    Summary,
+    Tensor,
+}
+
+impl From<DiagnosticModeChoice> for gpt_oss_evidence::DiagnosticMode {
+    fn from(value: DiagnosticModeChoice) -> Self {
+        match value {
+            DiagnosticModeChoice::Off => Self::Off,
+            DiagnosticModeChoice::Metadata => Self::Metadata,
+            DiagnosticModeChoice::Summary => Self::Summary,
+            DiagnosticModeChoice::Tensor => Self::Tensor,
+        }
+    }
 }
 
 impl CpuMatmulBackendChoice {
@@ -278,8 +332,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             runtime_mode,
             profile,
             tokenizer,
+            served_model_name,
             log_level,
             disable_telemetry,
+            request_body_limit_mib,
+            non_streaming_limit_mib,
+            stream_event_limit_kib,
+            delivery_limit_mib,
+            global_delivery_limit_mib,
+            response_store_limit_mib,
+            response_store_max_entries,
+            response_store_entry_limit_mib,
+            max_logprobs,
+            drain_deadline_seconds,
+            cpu_request_budget_mib,
+            evidence_dir,
+            diagnostic_mode,
+            diagnostic_cap_mib,
+            diagnostic_boundary,
+            diagnostic_acknowledge,
         } => {
             init_tracing(&log_level);
             info!("gpt-oss-rs v0.1.0");
@@ -381,12 +452,73 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 "starting server"
             );
 
-            // Pass host/port to the server via env vars so gpt_oss_server::serve
-            // can pick them up without changing its public signature.
-            std::env::set_var("VLLM_HOST", &host);
-            std::env::set_var("VLLM_PORT", port.to_string());
+            let mib = 1024usize * 1024;
+            let checked_mib = |value: usize, name: &str| -> anyhow::Result<usize> {
+                value
+                    .checked_mul(mib)
+                    .ok_or_else(|| anyhow::anyhow!("{name} overflows bytes"))
+            };
+            let mut limits =
+                gpt_oss_server::ServiceLimits::for_max_num_seqs(resolved_profile.max_num_seqs);
+            limits.request_body_bytes = checked_mib(request_body_limit_mib, "request body limit")?;
+            limits.max_non_streaming_bytes =
+                checked_mib(non_streaming_limit_mib, "non-streaming limit")?;
+            limits.max_stream_event_bytes = stream_event_limit_kib
+                .checked_mul(1024)
+                .ok_or_else(|| anyhow::anyhow!("stream event limit overflows bytes"))?;
+            limits.per_request_delivery_bytes = checked_mib(delivery_limit_mib, "delivery limit")?;
+            limits.global_delivery_bytes = checked_mib(
+                global_delivery_limit_mib.unwrap_or(
+                    resolved_profile
+                        .max_num_seqs
+                        .checked_mul(delivery_limit_mib)
+                        .ok_or_else(|| anyhow::anyhow!("global delivery limit overflows MiB"))?,
+                ),
+                "global delivery limit",
+            )?;
+            limits.response_store_bytes =
+                checked_mib(response_store_limit_mib, "response store limit")?;
+            limits.response_store_entries = response_store_max_entries;
+            limits.max_store_entry_bytes =
+                checked_mib(response_store_entry_limit_mib, "response store entry limit")?;
+            limits.max_logprobs = max_logprobs;
+            limits.drain_deadline = std::time::Duration::from_secs(drain_deadline_seconds);
+            limits.cpu_request_budget_bytes = match cpu_request_budget_mib {
+                Some(value) => Some(
+                    value
+                        .checked_mul(mib as u128)
+                        .ok_or_else(|| anyhow::anyhow!("CPU request budget overflows bytes"))?,
+                ),
+                None => None,
+            };
 
-            gpt_oss_server::serve(config).await?;
+            let diagnostics = gpt_oss_evidence::DiagnosticConfig {
+                mode: diagnostic_mode.into(),
+                directory: evidence_dir.as_ref().map(|dir| dir.join("diagnostics")),
+                byte_cap: diagnostic_cap_mib
+                    .unwrap_or(0)
+                    .checked_mul(mib as u64)
+                    .ok_or_else(|| anyhow::anyhow!("diagnostic cap overflows bytes"))?,
+                boundary: diagnostic_boundary,
+                acknowledge_sensitive_payload: diagnostic_acknowledge,
+            };
+            diagnostics
+                .validate(true)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let bind_address = format!("{host}:{port}")
+                .parse()
+                .map_err(|error| anyhow::anyhow!("invalid bind address {host}:{port}: {error}"))?;
+            gpt_oss_server::serve(gpt_oss_server::ServerConfig {
+                bind_address,
+                served_model_name,
+                limits,
+                evidence: gpt_oss_server::EvidenceConfig {
+                    directory: evidence_dir,
+                    diagnostics,
+                },
+                engine: config,
+            })
+            .await?;
         }
         Commands::Info => {
             init_tracing("info");

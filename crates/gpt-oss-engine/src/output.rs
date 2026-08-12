@@ -1,7 +1,8 @@
 //! Output processing: detokenization, logprob formatting, RequestOutput construction.
 
 use gpt_oss_core::prelude::{
-    CompletionOutput, FinishReason, LogProb, RequestId, RequestOutput, SamplingParams, TokenId,
+    CompletionOutput, FinishReason, LogProb, RequestId, RequestOutput, Result, SamplingParams,
+    TokenId,
 };
 
 use crate::stop_checker::StopChecker;
@@ -131,6 +132,64 @@ impl OutputProcessor {
             outputs,
             finished,
         }
+    }
+
+    /// Build a suffix-only committed output. Text that is still a possible
+    /// prefix of a configured stop string remains held back until it is stable
+    /// or the sequence becomes terminal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_request_delta(
+        request_id: RequestId,
+        prompt: &str,
+        prompt_token_ids: &[TokenId],
+        state: &SequenceOutputState,
+        params: &SamplingParams,
+        metadata_published: bool,
+        published_text_bytes: usize,
+        published_token_count: usize,
+        published_logprob_count: usize,
+        published_cumulative_logprob: LogProb,
+    ) -> Result<RequestOutput> {
+        let stable_text_bytes = if state.is_finished() {
+            state.text.len()
+        } else {
+            StopChecker::stable_prefix_len(&state.text, &params.stop_strings)
+        };
+        if published_text_bytes > stable_text_bytes
+            || published_token_count > state.token_ids.len()
+            || published_logprob_count > state.logprobs.len()
+        {
+            return Err(gpt_oss_core::prelude::LLMError::SchedulerError(
+                "committed output would retract an already published suffix".into(),
+            ));
+        }
+        let text = state.text[published_text_bytes..stable_text_bytes].to_string();
+        let token_ids = state.token_ids[published_token_count..].to_vec();
+        let logprobs = (!state.logprobs.is_empty())
+            .then(|| state.logprobs[published_logprob_count..].to_vec());
+        Ok(RequestOutput {
+            request_id,
+            prompt: if metadata_published {
+                String::new()
+            } else {
+                prompt.to_string()
+            },
+            prompt_token_ids: if metadata_published {
+                Vec::new()
+            } else {
+                prompt_token_ids.to_vec()
+            },
+            prompt_logprobs: None,
+            outputs: vec![CompletionOutput {
+                index: 0,
+                text,
+                token_ids,
+                cumulative_logprob: state.cumulative_logprob - published_cumulative_logprob,
+                logprobs,
+                finish_reason: state.finish_reason,
+            }],
+            finished: state.is_finished(),
+        })
     }
 }
 

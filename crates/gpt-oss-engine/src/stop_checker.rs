@@ -63,6 +63,26 @@ impl StopChecker {
             (text.to_string(), false)
         }
     }
+
+    /// Number of leading bytes safe to publish without risking later stop
+    /// string retraction. The longest suffix that is a prefix of any stop
+    /// string remains private.
+    pub fn stable_prefix_len(text: &str, stop_strings: &[String]) -> usize {
+        let mut holdback = 0usize;
+        for stop in stop_strings.iter().filter(|stop| !stop.is_empty()) {
+            let max = text.len().min(stop.len().saturating_sub(1));
+            for suffix_len in (1..=max).rev() {
+                let start = text.len() - suffix_len;
+                if text.is_char_boundary(start)
+                    && stop.as_bytes().starts_with(&text.as_bytes()[start..])
+                {
+                    holdback = holdback.max(suffix_len);
+                    break;
+                }
+            }
+        }
+        text.len() - holdback
+    }
 }
 
 #[cfg(test)]
@@ -190,5 +210,14 @@ mod tests {
         params.stop_strings = vec!["END".to_string(), "STOP".to_string()];
         let result = StopChecker::check_stop("text then STOP here", &[1], &params, &[]);
         assert_eq!(result, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn stable_prefix_holds_only_possible_stop_suffix() {
+        let stops = vec!["<end>".to_string(), "STOP".to_string()];
+        assert_eq!(StopChecker::stable_prefix_len("hello<en", &stops), 5);
+        assert_eq!(StopChecker::stable_prefix_len("hello<ex", &stops), 8);
+        assert_eq!(StopChecker::stable_prefix_len("helloS", &stops), 5);
+        assert_eq!(StopChecker::stable_prefix_len("hello", &[]), 5);
     }
 }

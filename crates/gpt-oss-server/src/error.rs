@@ -36,6 +36,9 @@ pub enum ApiError {
 
     #[error("not found: {0}")]
     NotFound(String),
+
+    #[error("{0}")]
+    Stable(#[from] gpt_oss_engine::StableFailure),
 }
 
 impl From<gpt_oss_core::prelude::LLMError> for ApiError {
@@ -58,6 +61,30 @@ impl ApiError {
             ApiError::EngineError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Stable(failure) => match failure.code {
+                gpt_oss_engine::StableFailureCode::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+                gpt_oss_engine::StableFailureCode::ModelNotFound
+                | gpt_oss_engine::StableFailureCode::StoredResponseNotFound => {
+                    StatusCode::NOT_FOUND
+                }
+                gpt_oss_engine::StableFailureCode::UnsupportedOption => {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
+                gpt_oss_engine::StableFailureCode::OverloadedRequests
+                | gpt_oss_engine::StableFailureCode::OverloadedTokens
+                | gpt_oss_engine::StableFailureCode::OverloadedMemory
+                | gpt_oss_engine::StableFailureCode::OverloadedDelivery => {
+                    StatusCode::TOO_MANY_REQUESTS
+                }
+                gpt_oss_engine::StableFailureCode::NotReady
+                | gpt_oss_engine::StableFailureCode::Draining
+                | gpt_oss_engine::StableFailureCode::EngineFailed
+                | gpt_oss_engine::StableFailureCode::OwnerStopped
+                | gpt_oss_engine::StableFailureCode::Shutdown => StatusCode::SERVICE_UNAVAILABLE,
+                gpt_oss_engine::StableFailureCode::InvalidRequest
+                | gpt_oss_engine::StableFailureCode::ContextLimit => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
         }
     }
 
@@ -68,6 +95,8 @@ impl ApiError {
             ApiError::EngineError(_) => "server_error",
             ApiError::Internal(_) => "server_error",
             ApiError::NotFound(_) => "invalid_request_error",
+            ApiError::Stable(failure) if failure.retryable => "service_unavailable_error",
+            ApiError::Stable(_) => "server_error",
         }
     }
 
@@ -78,6 +107,7 @@ impl ApiError {
             ApiError::EngineError(_) => "engine_error",
             ApiError::Internal(_) => "internal_error",
             ApiError::NotFound(_) => "not_found",
+            ApiError::Stable(failure) => failure.code.as_str(),
         }
     }
 }

@@ -66,6 +66,7 @@ struct GptOssLayer {
 }
 
 struct GptOssMlp {
+    #[cfg_attr(not(test), allow(dead_code))]
     semantic_spec: MoeSemanticSpec,
     router_weight: GpuBuffer<f16>,
     router_bias: GpuBuffer<f16>,
@@ -101,6 +102,7 @@ struct GptOssExpertWeights {
 }
 
 impl GptOssMlp {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn semantic_spec(&self) -> &MoeSemanticSpec {
         &self.semantic_spec
     }

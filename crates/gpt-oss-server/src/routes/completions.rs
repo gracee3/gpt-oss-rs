@@ -6,11 +6,12 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
-use crate::server::AppState;
+use crate::server::{
+    ensure_non_streaming_size, AppState, BoundedSseSender, RequestOutputAccumulator,
+};
 use crate::types::request::CompletionRequest;
 use crate::types::response::CompletionResponse;
 use crate::types::streaming::{format_sse_data, CompletionStreamChunk, SSE_DONE};
@@ -21,6 +22,17 @@ pub async fn create_completion(
     Json(req): Json<CompletionRequest>,
 ) -> Result<Response, ApiError> {
     req.validate()?;
+    if req
+        .logprobs
+        .is_some_and(|value| value > state.limits.max_logprobs)
+    {
+        return Err(ApiError::from(gpt_oss_engine::StableFailure::new(
+            gpt_oss_engine::StableFailureCode::UnsupportedOption,
+            gpt_oss_engine::FailurePhase::Validation,
+            false,
+            format!("logprobs exceeds maximum {}", state.limits.max_logprobs),
+        )));
+    }
 
     if req.model != state.model_name {
         return Err(ApiError::ModelNotFound(format!(
@@ -43,31 +55,53 @@ pub async fn create_completion(
         let stream_id = format!("cmpl-{}", uuid::Uuid::new_v4());
         let model = state.model_name.clone();
 
-        let (_request_id, output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(req.prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let sse_stream = output_stream.map(move |output| {
-            let mut events = String::new();
-            for co in &output.outputs {
-                let finish = co.finish_reason.map(|r| match r {
-                    gpt_oss_core::prelude::FinishReason::Stop => "stop".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Length => "length".to_string(),
-                    gpt_oss_core::prelude::FinishReason::Abort => "stop".to_string(),
-                });
-                let chunk =
-                    CompletionStreamChunk::new(&stream_id, &model, co.index, &co.text, finish);
-                events.push_str(&format_sse_data(&chunk));
+        let (raw_tx, rx) =
+            tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+        let tx = BoundedSseSender::new(raw_tx, state.limits.max_stream_event_bytes);
+        tokio::spawn(async move {
+            loop {
+                match output_stream.recv().await {
+                    Ok(Some(output)) => {
+                        let mut events = String::new();
+                        for co in &output.outputs {
+                            let finish = co.finish_reason.and_then(finish_reason);
+                            let chunk = CompletionStreamChunk::new(
+                                &stream_id, &model, co.index, &co.text, finish,
+                            );
+                            events.push_str(&format_sse_data(&chunk));
+                        }
+                        if output.finished {
+                            events.push_str(SSE_DONE);
+                        }
+                        if tx.send(Ok(events)).await.is_err() || output.finished {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(failure) => {
+                        let event = serde_json::json!({
+                            "error": {
+                                "code": failure.code.as_str(),
+                                "message": failure.message,
+                                "retryable": failure.retryable,
+                            }
+                        });
+                        let _ = tx.send(Ok(format!("data: {event}\n\n{SSE_DONE}"))).await;
+                        break;
+                    }
+                }
             }
-            if output.finished {
-                events.push_str(SSE_DONE);
-            }
-            Ok::<_, std::convert::Infallible>(events)
         });
 
-        let body = axum::body::Body::from_stream(sse_stream);
+        let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
         Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/event-stream")
             .header(header::CACHE_CONTROL, "no-cache")
@@ -77,25 +111,37 @@ pub async fn create_completion(
             .into_response())
     } else {
         // Non-streaming: collect all outputs from the stream until finished.
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(req.prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let mut last_output = None;
-        while let Some(output) = output_stream.next().await {
-            if output.finished {
-                last_output = Some(output);
+        let mut accumulator = RequestOutputAccumulator::default();
+        while let Some(output) = output_stream.recv().await.map_err(ApiError::from)? {
+            let finished = output.finished;
+            accumulator.push(output).map_err(ApiError::from)?;
+            if finished {
                 break;
             }
-            last_output = Some(output);
         }
 
-        let output =
-            last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+        let output = accumulator
+            .finish()
+            .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
         let resp = CompletionResponse::from_request_output(&output, &state.model_name);
+        ensure_non_streaming_size(&resp, state.limits.max_non_streaming_bytes)?;
         Ok(Json(resp).into_response())
+    }
+}
+
+fn finish_reason(reason: gpt_oss_core::prelude::FinishReason) -> Option<String> {
+    match reason {
+        gpt_oss_core::prelude::FinishReason::Stop => Some("stop".into()),
+        gpt_oss_core::prelude::FinishReason::Length => Some("length".into()),
+        gpt_oss_core::prelude::FinishReason::Abort => None,
     }
 }

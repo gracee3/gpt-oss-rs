@@ -10,6 +10,10 @@ feature set researched in [`../cpu-runtime-research/`](../cpu-runtime-research/R
 The research documents establish the architectural evidence; these plans
 define repository interfaces, commit slices, gates, and closeout evidence.
 
+The later native CPU service-foundation plan is maintained separately in
+[`CPU_SERVICE_FOUNDATION.md`](CPU_SERVICE_FOUNDATION.md). It covers only E1
+observability, C2 reservations, and C1 lifecycle/delivery.
+
 ## Program invariants
 
 - Keep one integration branch for the complete program and never force-push it.

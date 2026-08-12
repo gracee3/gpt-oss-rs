@@ -1,5 +1,6 @@
 //! Responses API routes: unified text generation with stored follow-up turns.
 
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -9,34 +10,211 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 use tokio::sync::RwLock;
-use tokio_stream::StreamExt;
 use tracing::info;
 
 use crate::error::ApiError;
 use crate::routes::tools::{augment_messages_with_tools, preferred_tool_prompt_style};
 use crate::runtime_policy::is_gpt_oss_model;
-use crate::server::AppState;
+use crate::server::{
+    ensure_non_streaming_size, AppState, BoundedSseSender, RequestOutputAccumulator,
+};
 use crate::types::request::ChatMessage;
 use crate::types::responses::{
     CreateResponseRequest, ResponseFunctionCallItem, ResponseFunctionCallOutputItem,
     ResponseInputItem, ResponseInputItemsList, ResponseObject, ResponseOutputItem,
     ResponseOutputMessage, ResponseToolChoice, ResponseUsage,
 };
+use crate::types::streaming::format_sse_failure;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum StoredConversationItem {
     Input(ResponseInputItem),
     Output(ResponseOutputItem),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredResponse {
     pub response: ResponseObject,
     pub input_items: Vec<ResponseInputItem>,
     pub conversation_items: Vec<StoredConversationItem>,
 }
 
-pub type SharedResponseStore = Arc<RwLock<HashMap<String, StoredResponse>>>;
+#[derive(Debug)]
+pub struct BoundedResponseStore {
+    entries: HashMap<String, (StoredResponse, usize, gpt_oss_engine::GrantId)>,
+    order: VecDeque<String>,
+    bytes: usize,
+    max_bytes: usize,
+    max_entries: usize,
+    max_entry_bytes: usize,
+    reservations: gpt_oss_engine::ReservationLedger,
+    next_owner_id: u64,
+}
+
+impl BoundedResponseStore {
+    pub fn new(max_bytes: usize, max_entries: usize, max_entry_bytes: usize) -> Self {
+        let reservation_limits = gpt_oss_engine::ReservationLimits::bounded(
+            max_entries.max(1),
+            max_entry_bytes as u128,
+            max_bytes as u128,
+        )
+        .with_class_limit(
+            gpt_oss_engine::MemoryClass::ResponseStore,
+            max_bytes as u128,
+        );
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            max_bytes,
+            max_entries,
+            max_entry_bytes,
+            reservations: gpt_oss_engine::ReservationLedger::new(reservation_limits)
+                .expect("positive response store reservation capacity"),
+            next_owner_id: 1,
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<&StoredResponse> {
+        self.entries.get(id).map(|(response, _, _)| response)
+    }
+
+    pub fn insert(
+        &mut self,
+        id: String,
+        response: StoredResponse,
+    ) -> Result<(), gpt_oss_engine::StableFailure> {
+        if response.response.status != "completed" {
+            return Err(gpt_oss_engine::StableFailure::new(
+                gpt_oss_engine::StableFailureCode::UnsupportedOption,
+                gpt_oss_engine::FailurePhase::Storage,
+                false,
+                "only protocol-complete terminal responses are storage eligible",
+            ));
+        }
+        let bytes = serde_json::to_vec(&response)
+            .map_err(|error| {
+                gpt_oss_engine::StableFailure::new(
+                    gpt_oss_engine::StableFailureCode::SerializationFailed,
+                    gpt_oss_engine::FailurePhase::Storage,
+                    false,
+                    error.to_string(),
+                )
+            })?
+            .len();
+        if bytes > self.max_entry_bytes || bytes > self.max_bytes {
+            return Err(gpt_oss_engine::StableFailure::new(
+                gpt_oss_engine::StableFailureCode::OverloadedMemory,
+                gpt_oss_engine::FailurePhase::Storage,
+                true,
+                "response exceeds the bounded store entry limit",
+            ));
+        }
+        let owner_id = self.next_owner_id;
+        self.next_owner_id = self.next_owner_id.checked_add(1).ok_or_else(|| {
+            gpt_oss_engine::StableFailure::new(
+                gpt_oss_engine::StableFailureCode::OverloadedMemory,
+                gpt_oss_engine::FailurePhase::Storage,
+                false,
+                "response store owner ID space is exhausted",
+            )
+        })?;
+        if let Some((_, old_bytes, grant_id)) = self.entries.remove(&id) {
+            self.bytes -= old_bytes;
+            self.order.retain(|existing| existing != &id);
+            self.release_store_grant(grant_id);
+        }
+        while self.entries.len() >= self.max_entries
+            || self
+                .bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > self.max_bytes)
+        {
+            let Some(oldest) = self.order.pop_front() else {
+                return Err(gpt_oss_engine::StableFailure::new(
+                    gpt_oss_engine::StableFailureCode::OverloadedMemory,
+                    gpt_oss_engine::FailurePhase::Storage,
+                    true,
+                    "response store has no evictable terminal entry",
+                ));
+            };
+            if let Some((_, old_bytes, grant_id)) = self.entries.remove(&oldest) {
+                self.bytes -= old_bytes;
+                self.release_store_grant(grant_id);
+            }
+        }
+        let estimate = gpt_oss_engine::MemoryEstimate::new()
+            .with(gpt_oss_engine::MemoryClass::ResponseStore, bytes as u128)
+            .map_err(store_grant_failure)?;
+        let grant = self
+            .reservations
+            .grant(gpt_oss_core::prelude::RequestId(owner_id), estimate)
+            .map_err(store_grant_failure)?;
+        if let Err(error) = self
+            .reservations
+            .consume(
+                grant.id,
+                gpt_oss_engine::MemoryClass::ResponseStore,
+                bytes as u128,
+            )
+            .and_then(|()| self.reservations.transfer_to_persistent_store(grant.id))
+        {
+            let _ = self.reservations.release(grant.id);
+            return Err(store_grant_failure(error));
+        }
+        gpt_oss_engine::telemetry::metrics::record_reservation(
+            gpt_oss_engine::telemetry::metrics::ReservationEvent::Grant,
+            gpt_oss_engine::MemoryClass::ResponseStore,
+            gpt_oss_engine::telemetry::metrics::ResultClass::Accepted,
+            self.reservations
+                .reserved(gpt_oss_engine::MemoryClass::ResponseStore),
+        );
+        self.bytes += bytes;
+        self.order.push_back(id.clone());
+        self.entries.insert(id, (response, bytes, grant.id));
+        Ok(())
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn release_store_grant(&mut self, grant_id: gpt_oss_engine::GrantId) {
+        let _ = self.reservations.release(grant_id);
+        gpt_oss_engine::telemetry::metrics::record_reservation(
+            gpt_oss_engine::telemetry::metrics::ReservationEvent::Release,
+            gpt_oss_engine::MemoryClass::ResponseStore,
+            gpt_oss_engine::telemetry::metrics::ResultClass::Completed,
+            self.reservations
+                .reserved(gpt_oss_engine::MemoryClass::ResponseStore),
+        );
+    }
+}
+
+impl Drop for BoundedResponseStore {
+    fn drop(&mut self) {
+        let _ = self.reservations.release_all();
+    }
+}
+
+fn store_grant_failure(error: gpt_oss_engine::GrantFailure) -> gpt_oss_engine::StableFailure {
+    gpt_oss_engine::StableFailure::new(
+        gpt_oss_engine::StableFailureCode::OverloadedMemory,
+        gpt_oss_engine::FailurePhase::Storage,
+        true,
+        error.to_string(),
+    )
+}
+
+pub type SharedResponseStore = Arc<RwLock<BoundedResponseStore>>;
 
 /// POST /v1/responses -- create a unified response.
 pub async fn create_response(
@@ -135,6 +313,12 @@ pub async fn create_response(
             .tokenizer
             .read()
             .await
+            .as_ref()
+            .ok_or_else(|| {
+                ApiError::from(gpt_oss_engine::StableFailure::unavailable(
+                    state.lifecycle.status().state,
+                ))
+            })?
             .apply_chat_template(&tokenizer_messages, true)
             .map_err(|e| ApiError::Internal(format!("chat template error: {}", e)))?
     };
@@ -178,13 +362,17 @@ pub async fn create_response(
         let response_tools_clone = response_tools.clone();
         let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(16);
+        let (raw_tx, rx) =
+            tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+        let tx = BoundedSseSender::new(raw_tx, state.limits.max_stream_event_bytes);
 
         tokio::spawn(async move {
             let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
@@ -234,14 +422,22 @@ pub async fn create_response(
 
             let mut content_open = false;
             let mut full_text = String::new();
-            let mut final_output = None;
+            let mut accumulator = RequestOutputAccumulator::default();
             let mut protocol_state = if is_gpt_oss {
                 StreamedProtocolState::new().ok()
             } else {
                 None
             };
 
-            while let Some(output) = output_stream.next().await {
+            loop {
+                let output = match output_stream.recv().await {
+                    Ok(Some(output)) => output,
+                    Ok(None) => break,
+                    Err(failure) => {
+                        let _ = tx.send(Ok(format_sse_failure(&failure))).await;
+                        return;
+                    }
+                };
                 if !content_open {
                     let item = ResponseOutputMessage::in_progress(message_id.clone());
                     if tx
@@ -291,7 +487,7 @@ pub async fn create_response(
                             Err(_) => return,
                         }
                     } else {
-                        choice.text.clone()
+                        format!("{full_text}{}", choice.text)
                     };
                     let delta = diff_text(&full_text, &next_text);
                     full_text = next_text;
@@ -314,13 +510,16 @@ pub async fn create_response(
                     }
                 }
 
-                final_output = Some(output.clone());
-                if output.finished {
+                let finished = output.finished;
+                if accumulator.push(output).is_err() {
+                    return;
+                }
+                if finished {
                     break;
                 }
             }
 
-            let Some(output) = final_output else {
+            let Some(output) = accumulator.finish() else {
                 let _ = tx
                     .send(Ok(format_sse_event(
                         "response.completed",
@@ -438,12 +637,12 @@ pub async fn create_response(
                 return;
             }
 
-            if req_clone.store {
+            if req_clone.store && response.status == "completed" {
                 let mut stored_items = conversation_items_clone;
                 stored_items.extend(output_items.into_iter().map(StoredConversationItem::Output));
 
                 let mut store = response_store.write().await;
-                store.insert(
+                let _ = store.insert(
                     response_id_clone,
                     StoredResponse {
                         response,
@@ -463,22 +662,26 @@ pub async fn create_response(
             .unwrap()
             .into_response())
     } else {
-        let (_request_id, mut output_stream) = state
-            .engine
+        let mut output_stream = state
+            .engine()
+            .await
+            .map_err(ApiError::from)?
             .generate(prompt, sampling_params)
             .await
             .map_err(ApiError::from)?;
 
-        let mut last_output = None;
-        while let Some(output) = output_stream.next().await {
-            last_output = Some(output.clone());
-            if output.finished {
+        let mut accumulator = RequestOutputAccumulator::default();
+        while let Some(output) = output_stream.recv().await.map_err(ApiError::from)? {
+            let finished = output.finished;
+            accumulator.push(output).map_err(ApiError::from)?;
+            if finished {
                 break;
             }
         }
 
-        let output =
-            last_output.ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
+        let output = accumulator
+            .finish()
+            .ok_or_else(|| ApiError::Internal("engine produced no output".into()))?;
 
         let response = response_from_output(
             &response_id,
@@ -490,7 +693,7 @@ pub async fn create_response(
             response_tools,
         )?;
 
-        if req.store {
+        if req.store && response.status == "completed" {
             let mut stored_items = conversation_items;
             stored_items.extend(
                 response
@@ -501,16 +704,19 @@ pub async fn create_response(
             );
 
             let mut store = state.response_store.write().await;
-            store.insert(
-                response_id,
-                StoredResponse {
-                    response: response.clone(),
-                    input_items,
-                    conversation_items: stored_items,
-                },
-            );
+            store
+                .insert(
+                    response_id,
+                    StoredResponse {
+                        response: response.clone(),
+                        input_items,
+                        conversation_items: stored_items,
+                    },
+                )
+                .map_err(ApiError::from)?;
         }
 
+        ensure_non_streaming_size(&response, state.limits.max_non_streaming_bytes)?;
         Ok(Json(response).into_response())
     }
 }
@@ -530,7 +736,6 @@ struct StreamedFunctionCallState {
 }
 
 struct StreamedProtocolState {
-    processed_tokens: usize,
     parser: gpt_oss_tokenizer::HarmonyStreamParser,
 }
 
@@ -541,10 +746,7 @@ impl StreamedProtocolState {
         let parser = protocol
             .stream_parser()
             .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?;
-        Ok(Self {
-            processed_tokens: 0,
-            parser,
-        })
+        Ok(Self { parser })
     }
 
     fn ingest(
@@ -552,12 +754,11 @@ impl StreamedProtocolState {
         token_ids: &[u32],
         finalize: bool,
     ) -> Result<Vec<gpt_oss_tokenizer::ParsedProtocolMessage>, ApiError> {
-        for token in token_ids.iter().copied().skip(self.processed_tokens) {
+        for token in token_ids.iter().copied() {
             self.parser
                 .push_token(token)
                 .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
         }
-        self.processed_tokens = token_ids.len();
         if finalize {
             self.parser
                 .finish()
@@ -596,13 +797,16 @@ async fn stream_tool_response(
     let response_tools = req.tools.clone().unwrap_or_default();
     let is_gpt_oss = is_gpt_oss_model(&state.model_name);
 
-    let (_request_id, mut output_stream) = state
-        .engine
+    let mut output_stream = state
+        .engine()
+        .await
+        .map_err(ApiError::from)?
         .generate(prompt, sampling_params)
         .await
         .map_err(ApiError::from)?;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(32);
+    let (raw_tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+    let tx = BoundedSseSender::new(raw_tx, state.limits.max_stream_event_bytes);
 
     tokio::spawn(async move {
         let initial = ResponseObject::in_progress(
@@ -662,7 +866,7 @@ async fn stream_tool_response(
         }
 
         let mut full_text = String::new();
-        let mut final_output = None;
+        let mut accumulator = RequestOutputAccumulator::default();
         let mut prefix_state: Option<StreamedMessageState> = None;
         let mut tool_states: Vec<StreamedFunctionCallState> = Vec::new();
         let mut saw_tool_calls = false;
@@ -672,7 +876,15 @@ async fn stream_tool_response(
             None
         };
 
-        while let Some(output) = output_stream.next().await {
+        loop {
+            let output = match output_stream.recv().await {
+                Ok(Some(output)) => output,
+                Ok(None) => break,
+                Err(failure) => {
+                    let _ = tx.send(Ok(format_sse_failure(&failure))).await;
+                    return;
+                }
+            };
             if let Some(choice) = output.outputs.first() {
                 let parse_result = if let Some(state) = protocol_state.as_mut() {
                     let finalize = output.finished
@@ -710,7 +922,7 @@ async fn stream_tool_response(
                         gpt_oss_tokenizer::ToolParseResult::ToolCalls { prefix_text, calls }
                     }
                 } else {
-                    full_text = choice.text.clone();
+                    full_text.push_str(&choice.text);
                     gpt_oss_tokenizer::parse_tool_calls(&full_text, &format!("{response_id}_0_"))
                 };
 
@@ -846,13 +1058,16 @@ async fn stream_tool_response(
                 }
             }
 
-            final_output = Some(output.clone());
-            if output.finished {
+            let finished = output.finished;
+            if accumulator.push(output).is_err() {
+                return;
+            }
+            if finished {
                 break;
             }
         }
 
-        let Some(output) = final_output else {
+        let Some(output) = accumulator.finish() else {
             return;
         };
 
@@ -1114,12 +1329,12 @@ async fn stream_tool_response(
             return;
         }
 
-        if req.store {
+        if req.store && response.status == "completed" {
             let mut stored_items = conversation_items;
             stored_items.extend(output_items.into_iter().map(StoredConversationItem::Output));
 
             let mut store = response_store.write().await;
-            store.insert(
+            let _ = store.insert(
                 response_id,
                 StoredResponse {
                     response,
@@ -1686,13 +1901,58 @@ mod tests {
         }
     }
 
+    fn terminal_stored_response(id: &str) -> StoredResponse {
+        let mut response = ResponseObject::in_progress(
+            id,
+            "test-model",
+            None,
+            Some(1),
+            None,
+            true,
+            1.0,
+            1.0,
+            Default::default(),
+            false,
+            ResponseToolChoice::Mode("auto".into()),
+            Vec::new(),
+        );
+        response.status = "completed".into();
+        response.completed_at = Some(1);
+        StoredResponse {
+            response,
+            input_items: Vec::new(),
+            conversation_items: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn bounded_store_evicts_oldest_completed_entry_first() {
+        let sample = terminal_stored_response("one");
+        let entry_bytes = serde_json::to_vec(&sample).unwrap().len();
+        let mut store = BoundedResponseStore::new(entry_bytes * 3, 2, entry_bytes * 2);
+        store.insert("one".into(), sample).unwrap();
+        store
+            .insert("two".into(), terminal_stored_response("two"))
+            .unwrap();
+        store
+            .insert("three".into(), terminal_stored_response("three"))
+            .unwrap();
+        assert!(store.get("one").is_none());
+        assert!(store.get("two").is_some());
+        assert!(store.get("three").is_some());
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.reservations.active_grants(), 2);
+        assert_eq!(store.reservations.total_reserved(), store.bytes() as u128);
+        assert!(store.reservations.invariants_hold());
+    }
+
     #[async_trait::async_trait]
     impl crate::server::InferenceEngine for FakeEngine {
         async fn generate(
             &self,
             prompt: String,
             _params: SamplingParams,
-        ) -> gpt_oss_core::prelude::Result<(RequestId, ReceiverStream<RequestOutput>)> {
+        ) -> Result<crate::server::InferenceStream, gpt_oss_engine::StableFailure> {
             self.prompts.lock().unwrap().push(prompt);
             let maybe_outputs = self.outputs.lock().await.pop_front();
             let outputs = maybe_outputs.expect("fake engine ran out of queued outputs");
@@ -1701,7 +1961,10 @@ mod tests {
                 tx.send(output).await.unwrap();
             }
             drop(tx);
-            Ok((RequestId(1), ReceiverStream::new(rx)))
+            Ok(crate::server::InferenceStream::from_cumulative(
+                RequestId(1),
+                ReceiverStream::new(rx),
+            ))
         }
     }
 

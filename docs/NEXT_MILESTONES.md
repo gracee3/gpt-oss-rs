@@ -13,8 +13,11 @@ integrated. Its relaxed development gates and final verification remain a
 historical record of that program; they are not standing authorization for the
 next phase. The documentation-only next-phase research is complete in
 [`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md).
-Only its E1/C1/C2 foundation is planning-ready, and no implementation planning
-or implementation is currently authorized.
+Its authorized E1/C1/C2 service foundation has now been implemented under the
+bounded plan in
+[`cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md`](cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md).
+C3-C7, trusted-mode policy, paging, kernel/dispatch tuning, and CUDA behavior
+remain outside that implementation and require separate authorization.
 
 Each feature slice must still pass the checks that directly protect its
 correctness and safety:
@@ -67,6 +70,14 @@ default and the numerical oracle throughout the Xe research sweep.
   benchmarks, and exact-BF16 diagnostics;
 - targeted full-model promotion on `harmony_122` and `harmony_262`, with peak
   RSS, startup, generation, and API evidence recorded outside Git.
+- versioned E1 evidence manifests, artifact hashes/redaction, effective runtime
+  snapshots, and bounded diagnostics;
+- C2 checked logical reservations and a CPU memory descriptor that keeps
+  mapped files, resident observations, logical grants, disk cache bytes, and
+  allocator omissions distinct;
+- C1 managed native-CPU admission, lifecycle/readiness, suffix-only committed
+  delivery, typed failures, deterministic drain/join, and bounded terminal
+  response storage.
 
 The source-grounded research, implementation plans, and execution for M1-M5
 are complete. Their contracts, evidence, alternatives, and gates remain in

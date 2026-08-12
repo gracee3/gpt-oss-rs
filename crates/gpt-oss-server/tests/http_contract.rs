@@ -12,11 +12,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use gpt_oss_core::prelude::{
-    CompletionOutput, FinishReason, LLMError, RequestId, RequestOutput, SamplingParams,
+    CompletionOutput, FinishReason, RequestId, RequestOutput, SamplingParams,
 };
 use gpt_oss_engine::RuntimeMode;
 use gpt_oss_server::runtime_policy::{RuntimeBackendPath, RuntimeDecision};
-use gpt_oss_server::server::InferenceEngine;
+use gpt_oss_server::server::{InferenceEngine, InferenceStream};
 use gpt_oss_server::{build_router, AppState};
 use gpt_oss_tokenizer::Tokenizer;
 
@@ -47,15 +47,17 @@ impl InferenceEngine for ScriptedEngine {
         &self,
         prompt: String,
         _params: SamplingParams,
-    ) -> Result<(RequestId, ReceiverStream<RequestOutput>), LLMError> {
+    ) -> Result<InferenceStream, gpt_oss_engine::StableFailure> {
         self.prompts.lock().unwrap().push(prompt);
 
-        let scripted = self
-            .outputs
-            .lock()
-            .await
-            .pop_front()
-            .ok_or_else(|| LLMError::SchedulerError("missing scripted output".into()))?;
+        let scripted = self.outputs.lock().await.pop_front().ok_or_else(|| {
+            gpt_oss_engine::StableFailure::new(
+                gpt_oss_engine::StableFailureCode::ExecutionFailed,
+                gpt_oss_engine::FailurePhase::Execution,
+                false,
+                "missing scripted output",
+            )
+        })?;
 
         let request_id = RequestId(self.next_request_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = tokio::sync::mpsc::channel(scripted.len().max(1));
@@ -67,7 +69,10 @@ impl InferenceEngine for ScriptedEngine {
             }
         });
 
-        Ok((request_id, ReceiverStream::new(rx)))
+        Ok(InferenceStream::from_cumulative(
+            request_id,
+            ReceiverStream::new(rx),
+        ))
     }
 }
 
@@ -173,6 +178,71 @@ fn parse_sse_data_lines(body: &str) -> Vec<serde_json::Value> {
 }
 
 #[tokio::test]
+async fn service_foundation_routes_are_bounded_and_batch_is_unmounted() {
+    let (server, _) = make_app(Vec::new());
+
+    server.get("/health").await.assert_status_ok();
+    let ready = server.get("/ready").await;
+    ready.assert_status_ok();
+    assert_eq!(ready.json::<serde_json::Value>()["model"], "test-model");
+    assert_eq!(
+        ready.json::<serde_json::Value>()["runtime_snapshot_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+
+    server.get("/metrics").await.assert_status_not_found();
+    for (method, path) in [
+        ("post", "/v1/batches"),
+        ("get", "/v1/batches/batch-1"),
+        ("get", "/v1/batches/batch-1/output"),
+        ("post", "/v1/batches/batch-1/cancel"),
+    ] {
+        let response = if method == "post" {
+            server.post(path).json(&serde_json::json!({})).await
+        } else {
+            server.get(path).await
+        };
+        response.assert_status_not_found();
+    }
+}
+
+#[tokio::test]
+async fn request_body_and_logprobs_limits_return_typed_errors() {
+    let (server, _) = make_app(Vec::new());
+    let too_large = server
+        .post("/v1/completions")
+        .json(&serde_json::json!({
+            "model": "test-model",
+            "prompt": "x".repeat(2 * 1024 * 1024),
+            "max_tokens": 1,
+        }))
+        .await;
+    too_large.assert_status(StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        too_large.json::<serde_json::Value>()["error"]["code"],
+        "body_too_large"
+    );
+
+    let unsupported = server
+        .post("/v1/completions")
+        .json(&serde_json::json!({
+            "model": "test-model",
+            "prompt": "hello",
+            "max_tokens": 1,
+            "logprobs": 21,
+        }))
+        .await;
+    unsupported.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        unsupported.json::<serde_json::Value>()["error"]["code"],
+        "unsupported_option"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_stream_emits_ordered_sse_events() {
     let scripted = vec![vec![
         output_with_text(1, "hello", &[3], "Hel", &[10], None, false),
@@ -205,7 +275,7 @@ async fn chat_completions_stream_emits_ordered_sse_events() {
     let body = response.text();
     let role_idx = body.find("\"role\":\"assistant\"").unwrap();
     let first_delta_idx = body.find("\"content\":\"Hel\"").unwrap();
-    let second_delta_idx = body.find("\"content\":\"Hello\"").unwrap();
+    let second_delta_idx = body.find("\"content\":\"lo\"").unwrap();
     let finish_idx = body.find("\"finish_reason\":\"stop\"").unwrap();
     let done_idx = body.find("data: [DONE]").unwrap();
 
@@ -217,7 +287,7 @@ async fn chat_completions_stream_emits_ordered_sse_events() {
     let data_lines = parse_sse_data_lines(&body);
     assert_eq!(data_lines[0]["choices"][0]["delta"]["role"], "assistant");
     assert_eq!(data_lines[1]["choices"][0]["delta"]["content"], "Hel");
-    assert_eq!(data_lines[2]["choices"][0]["delta"]["content"], "Hello");
+    assert_eq!(data_lines[2]["choices"][0]["delta"]["content"], "lo");
     assert_eq!(data_lines[3]["choices"][0]["finish_reason"], "stop");
 }
 

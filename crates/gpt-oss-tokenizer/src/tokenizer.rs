@@ -21,6 +21,20 @@ pub struct Tokenizer {
     incremental: IncrementalDecoder,
 }
 
+impl Clone for Tokenizer {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            special_tokens: self.special_tokens.clone(),
+            terminal_token_ids: self.terminal_token_ids.clone(),
+            eos_token_id: self.eos_token_id,
+            bos_token_id: self.bos_token_id,
+            pad_token_id: self.pad_token_id,
+            incremental: IncrementalDecoder::new(),
+        }
+    }
+}
+
 impl Tokenizer {
     /// Load a tokenizer from a HuggingFace model name or local directory.
     pub fn from_pretrained(model_name_or_path: &str) -> Result<Self> {
@@ -204,6 +218,22 @@ impl Tokenizer {
         self.inner.get_vocab_size(true)
     }
 
+    /// Conservative tokenizer-derived bound for decoded bytes contributed by
+    /// one token. Stateful decoders may hold bytes across tokens, but cannot
+    /// emit more than the sum of these per-token bounds.
+    pub fn max_decoded_token_bytes(&self) -> Result<usize> {
+        let mut maximum = 4usize;
+        for token in 0..self.vocab_size() {
+            let token = TokenId::try_from(token).map_err(|_| {
+                LLMError::TokenizerError("tokenizer vocabulary exceeds token ID range".into())
+            })?;
+            if let Ok(decoded) = self.inner.decode(&[token], true) {
+                maximum = maximum.max(decoded.len());
+            }
+        }
+        Ok(maximum)
+    }
+
     /// End-of-sequence token ID, if detected.
     pub fn eos_token_id(&self) -> Option<TokenId> {
         self.eos_token_id
@@ -294,6 +324,16 @@ mod tests {
     fn vocab_size_positive() {
         let tok = make_test_tokenizer();
         assert!(tok.vocab_size() > 0);
+    }
+
+    #[test]
+    fn decoded_token_byte_bound_covers_every_vocabulary_entry() {
+        let tok = make_test_tokenizer();
+        let bound = tok.max_decoded_token_bytes().unwrap();
+        assert!(bound >= 4);
+        for token in 0..tok.vocab_size() as u32 {
+            assert!(tok.decode(&[token]).unwrap_or_default().len() <= bound);
+        }
     }
 
     #[test]

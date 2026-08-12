@@ -33,16 +33,18 @@ pub mod gpu_engine;
 pub mod gpu_metrics;
 #[cfg(any(feature = "cuda", test))]
 mod hf_snapshot;
+pub mod memory;
 pub mod model_fetch;
 pub mod output;
 pub mod scheduler;
 pub mod sequence;
+pub mod service;
 pub mod speculative;
 pub mod stop_checker;
 pub mod telemetry;
 pub mod worker;
 
-pub use async_cpu_engine::AsyncCpuBatchEngine;
+pub use async_cpu_engine::{AsyncCpuBatchEngine, ManagedRequest};
 pub use async_engine::AsyncLLMEngine;
 pub use beam_search::BeamSearchState;
 pub use best_of_n::{build_best_of_n_output, select_best_of_n};
@@ -65,8 +67,17 @@ pub use engine::{Executor, ExecutorAdapter, Scheduler};
 pub use engine::{ExecutorInput, SamplerOutput, SchedulerOutputs};
 pub use executor::{ExecutorConfig, ExecutorFactory};
 pub use gpt_oss_model_runner::{CpuExpertProjection, CpuModel};
+pub use memory::{
+    CpuKvGeometry, GrantFailure, GrantId, GrantPhase, MemoryClass, MemoryEstimate, MemoryGrant,
+    ReservationLedger, ReservationLimits, SmapsRollup,
+};
 pub use output::OutputProcessor;
 pub use sequence::{Sequence, SequenceData, SequenceGroup, SequenceGroupMetadata, SequenceStatus};
+pub use service::{
+    delivery_session, CommittedEvent, DeliveryLimits, DeliveryPublisher, DeliveryReceiver,
+    FailurePhase, GlobalDeliveryBudget, RequestLease, ServiceLifecycle, ServiceState,
+    ServiceStatus, StableFailure, StableFailureCode,
+};
 pub use stop_checker::StopChecker;
 pub use telemetry::{init_telemetry, metrics_handler, MetricsRecorder, TelemetryGuard};
 pub use worker::{

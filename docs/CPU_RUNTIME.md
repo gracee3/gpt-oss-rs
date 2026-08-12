@@ -137,15 +137,38 @@ several requests may share a `CpuStepBatch`; layer-major model execution and
 row-wise causal attention preserve sequence-local KV. Chat Completions,
 Responses, and text Completions, including streaming forms, share this path.
 
+The managed CPU service exposes `Starting`, `Ready`, `Draining`, `Failed`, and
+`Stopped` lifecycle states. `/health` remains liveness; `/ready` succeeds only
+after the effective runtime snapshot is frozen and hashed. Admission is
+bounded, logical request memory is granted after tokenization and before the
+canonical sequence table, and shutdown closes admission before draining and
+joining the owner. Owner failure is retained as a typed service failure rather
+than being inferred from a closed channel.
+
 Scheduling is reserve/execute/commit. Reservation records revisions and
 in-flight IDs but advances no prompt, KV, RNG, token, or output state. Model
 execution and sampling stage their results. Cancellation and client disconnect
 are checked again after kernels return; only retained, revision-matching rows
 commit. Failures and stale work are discarded atomically. Output channels are
-ID-keyed delivery handles rather than a second sequence authority. See
+ID-keyed delivery handles rather than a second sequence authority. The owner
+publishes committed suffix events without awaiting HTTP consumers. Delivery
+is byte-charged, reserves terminal control capacity, and may coalesce only
+adjacent text deltas for the same choice. Stop-string prefixes are held back
+until stable, so published bytes are never retracted. Disconnect or overflow
+tombstones the request before its next commit; cancellation and failure are
+never translated into `finish_reason=stop`. See
 [`CPU_SCHEDULER.md`](CPU_SCHEDULER.md) for budgets, fairness, lifecycle, and
 topology details. `CpuWorker` remains only as a batch-one compatibility/test
 facade.
+
+Service defaults are 2 MiB request bodies, 8 MiB non-streaming responses and
+stored entries, 256 KiB serialized stream events, 1 MiB queued delivery per
+request (including 16 KiB terminal control), `max_num_seqs` MiB global queued
+delivery, and a 64 MiB/64-entry terminal Responses store with FIFO eviction.
+The logical CPU request budget defaults to a checked worst-case estimate per
+sequence; `--cpu-request-budget-mib` overrides it. Response storage and
+delivery are separately budgeted. Batch source remains in the tree, but batch
+routes are not mounted by this service foundation.
 
 `--device auto` selects CPU for GPT-OSS regardless of CUDA availability and
 does not probe or initialize CUDA. `--device cpu` is explicit. CUDA requires
@@ -169,6 +192,22 @@ affinity, placement, memory-binding, or automatic topology policy.
 `XDG_CACHE_HOME/gpt-oss-rs`, then `$HOME/.cache/gpt-oss-rs`. Model snapshots,
 repacked expert tensors, build artifacts, and benchmark output remain outside
 Git.
+
+Remote model IDs serve as their own public identity. A fetched local snapshot
+may recover the model ID from its manifest; any other local path requires
+`--served-model-name`. The service never exposes a local path as an API ID or
+metric label. `--evidence-dir` writes the canonical effective runtime snapshot,
+while readiness exposes only its hash and sanitized identity. Prometheus
+exposition uses bounded `gpt_oss_*` label vocabularies and is absent when
+`--disable-telemetry` is set; correctness bookkeeping remains active.
+`cpu_parity` and `cpu_service_probe` atomically write a raw capture plus a
+`gpt-oss-rs.cpu-evidence/v1` manifest sidecar with an absolute artifact path
+and SHA-256. The service probe is model-independent: it inspects liveness,
+readiness, public model identity, metrics policy, and the absent batch route
+against an already-running server without issuing inference.
+`cpu_service_overhead` runs paired release subprocesses over the bounded
+delivery fixture and the real Prometheus recorder, then emits a pass/fail E1
+sidecar for the 1% median-throughput and 2% median-p99-latency gates.
 
 `--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8` and is
 serialized as `device.cpu_matmul_backend`; the default is `auto`. During this

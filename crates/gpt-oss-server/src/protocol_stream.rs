@@ -38,7 +38,6 @@ struct StreamedChatToolCallState {
 }
 
 pub(crate) struct StreamedChatChoiceState {
-    processed_tokens: usize,
     parser: gpt_oss_tokenizer::HarmonyStreamParser,
     visible_text: String,
     tool_calls: Vec<StreamedChatToolCallState>,
@@ -49,7 +48,6 @@ impl StreamedChatChoiceState {
         let protocol = gpt_oss_tokenizer::HarmonyProtocol::gpt_oss()
             .map_err(|e| ApiError::Internal(format!("harmony init error: {}", e)))?;
         Ok(Self {
-            processed_tokens: 0,
             parser: protocol
                 .stream_parser()
                 .map_err(|e| ApiError::Internal(format!("harmony stream init error: {}", e)))?,
@@ -65,12 +63,11 @@ impl StreamedChatChoiceState {
         token_ids: &[u32],
         finalize: bool,
     ) -> Result<(Option<String>, Vec<ChatToolCallDelta>), ApiError> {
-        for token in token_ids.iter().copied().skip(self.processed_tokens) {
+        for token in token_ids.iter().copied() {
             self.parser
                 .push_token(token)
                 .map_err(|e| ApiError::Internal(format!("harmony stream parse error: {}", e)))?;
         }
-        self.processed_tokens = token_ids.len();
         if finalize {
             self.parser
                 .finish()

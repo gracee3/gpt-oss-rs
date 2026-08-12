@@ -17,7 +17,11 @@ use crate::cpu_scheduler::{
     CpuReservation, CpuScheduledPhase, CpuScheduler, CpuSchedulerConfig, CpuSequenceLifecycle,
     CpuSequenceRecord, SequenceTable,
 };
+use crate::memory::{
+    CpuKvGeometry, GrantId, MemoryClass, MemoryEstimate, ReservationLedger, ReservationLimits,
+};
 use crate::output::{OutputProcessor, SequenceOutputState};
+use crate::service::CommittedEvent;
 use crate::worker::CpuGenerationState;
 
 #[derive(Debug, Clone)]
@@ -200,8 +204,21 @@ impl PreparedCpuIteration {
 /// Result published by one successful CPU iteration.
 #[derive(Debug, Default)]
 pub struct CpuBatchCommitResult {
+    /// Suffix-only compatibility outputs. Prompt metadata is present exactly
+    /// once; generated text/tokens/logprobs are never cumulative.
     pub outputs: Vec<RequestOutput>,
+    /// Canonical ordered events ready for byte-charged delivery.
+    pub events: Vec<(RequestId, CommittedEvent)>,
     pub cancelled_requests: Vec<RequestId>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PublishedCursor {
+    metadata_published: bool,
+    text_bytes: usize,
+    token_count: usize,
+    logprob_count: usize,
+    cumulative_logprob: f32,
 }
 
 /// Synchronous owner of all native-CPU request and execution state.
@@ -213,24 +230,97 @@ pub struct CpuBatchEngine {
     sampler: Sampler,
     tokenizer: Tokenizer,
     terminal_token_ids: Vec<u32>,
+    decoded_token_byte_bound: usize,
     next_sequence_id: u64,
     next_arrival_order: u64,
+    published: HashMap<SequenceId, PublishedCursor>,
+    reservations: Option<ReservationLedger>,
+    request_grants: HashMap<RequestId, GrantId>,
+    kv_geometry: Option<CpuKvGeometry>,
     shutdown: bool,
 }
 
 impl CpuBatchEngine {
+    pub fn max_num_seqs(&self) -> usize {
+        self.config.scheduler.max_num_seqs
+    }
+
     pub fn new(config: EngineConfig, model: Arc<CpuModel>, tokenizer: Tokenizer) -> Result<Self> {
-        Self::from_forward(
+        Self::new_with_request_budget(config, model, tokenizer, None)
+    }
+
+    pub fn new_with_request_budget(
+        config: EngineConfig,
+        model: Arc<CpuModel>,
+        tokenizer: Tokenizer,
+        request_budget_bytes: Option<u128>,
+    ) -> Result<Self> {
+        let model_config = model.config();
+        let decoded_token_byte_bound = tokenizer.max_decoded_token_bytes()?;
+        let kv_geometry = CpuKvGeometry {
+            scalar_bytes: 2,
+            kv_heads: model_config.num_key_value_heads as u128,
+            head_dim: model_config.head_dim as u128,
+            full_layers: model_config
+                .layer_types
+                .iter()
+                .filter(|kind| kind.as_str() == "full_attention")
+                .count() as u128,
+            sliding_layers: model_config
+                .layer_types
+                .iter()
+                .filter(|kind| kind.as_str() != "full_attention")
+                .count() as u128,
+            sliding_window: model_config.sliding_window as u128,
+        };
+        let worst = estimate_cpu_request(
+            &config,
+            kv_geometry,
+            2 * 1024 * 1024,
+            config.model.max_model_len,
+            20,
+            decoded_token_byte_bound,
+        )?;
+        let worst_total = worst.total().map_err(grant_error)?;
+        let global_budget = match request_budget_bytes {
+            Some(bytes) => bytes,
+            None => worst_total
+                .checked_mul(config.scheduler.max_num_seqs as u128)
+                .ok_or_else(|| LLMError::MemoryError("CPU request budget overflows".into()))?,
+        };
+        let delivery_limit = (config.scheduler.max_num_seqs as u128)
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| LLMError::MemoryError("CPU delivery budget overflows".into()))?;
+        let limits =
+            ReservationLimits::bounded(config.scheduler.max_num_seqs, worst_total, global_budget)
+                .with_class_limit(MemoryClass::Delivery, delivery_limit);
+        let ledger = ReservationLedger::new(limits).map_err(grant_error)?;
+        let mut engine = Self::from_forward_with_decoded_bound(
             config,
             Box::new(NativeCpuBatchForward::new(model)),
             tokenizer,
-        )
+            decoded_token_byte_bound,
+        )?;
+        engine.kv_geometry = Some(kv_geometry);
+        engine.reservations = Some(ledger);
+        Ok(engine)
     }
 
+    #[cfg(test)]
     fn from_forward(
         config: EngineConfig,
         forward: Box<dyn CpuBatchForward>,
         tokenizer: Tokenizer,
+    ) -> Result<Self> {
+        let decoded_token_byte_bound = tokenizer.max_decoded_token_bytes()?;
+        Self::from_forward_with_decoded_bound(config, forward, tokenizer, decoded_token_byte_bound)
+    }
+
+    fn from_forward_with_decoded_bound(
+        config: EngineConfig,
+        forward: Box<dyn CpuBatchForward>,
+        tokenizer: Tokenizer,
+        decoded_token_byte_bound: usize,
     ) -> Result<Self> {
         let scheduler = CpuScheduler::new(CpuSchedulerConfig {
             max_num_seqs: config.scheduler.max_num_seqs,
@@ -246,8 +336,13 @@ impl CpuBatchEngine {
             sampler: Sampler::new(),
             tokenizer,
             terminal_token_ids,
+            decoded_token_byte_bound,
             next_sequence_id: 0,
             next_arrival_order: 0,
+            published: HashMap::new(),
+            reservations: None,
+            request_grants: HashMap::new(),
+            kv_geometry: None,
             shutdown: false,
         })
     }
@@ -262,7 +357,7 @@ impl CpuBatchEngine {
         self.add_tokenized_request(request_id, prompt, prompt_token_ids, sampling_params)
     }
 
-    fn add_tokenized_request(
+    pub fn add_tokenized_request(
         &mut self,
         request_id: RequestId,
         prompt: String,
@@ -292,6 +387,55 @@ impl CpuBatchEngine {
                 self.config.model.max_model_len
             )));
         }
+        let memory_estimate = self
+            .kv_geometry
+            .map(|geometry| {
+                let reachable_context = prompt_token_ids
+                    .len()
+                    .checked_add(sampling_params.max_tokens)
+                    .ok_or_else(|| {
+                        LLMError::MemoryError("request context estimate overflows".into())
+                    })?;
+                estimate_cpu_request(
+                    &self.config,
+                    geometry,
+                    prompt.len(),
+                    reachable_context,
+                    sampling_params.logprobs.unwrap_or(0),
+                    self.decoded_token_byte_bound,
+                )
+            })
+            .transpose()?;
+        let memory_grant = match (&mut self.reservations, memory_estimate) {
+            (Some(ledger), Some(estimate)) => {
+                let classes = estimate.by_class.keys().copied().collect::<Vec<_>>();
+                match ledger.grant(request_id, estimate) {
+                    Ok(grant) => {
+                        for class in classes {
+                            crate::telemetry::metrics::record_reservation(
+                                crate::telemetry::metrics::ReservationEvent::Grant,
+                                class,
+                                crate::telemetry::metrics::ResultClass::Accepted,
+                                ledger.reserved(class),
+                            );
+                        }
+                        Some(grant)
+                    }
+                    Err(error) => {
+                        for class in classes {
+                            crate::telemetry::metrics::record_reservation(
+                                crate::telemetry::metrics::ReservationEvent::Reject,
+                                class,
+                                crate::telemetry::metrics::ResultClass::Rejected,
+                                ledger.reserved(class),
+                            );
+                        }
+                        return Err(grant_error(error));
+                    }
+                }
+            }
+            _ => None,
+        };
         let sequence_id = SequenceId(self.next_sequence_id);
         self.next_sequence_id = self
             .next_sequence_id
@@ -302,31 +446,67 @@ impl CpuBatchEngine {
             .next_arrival_order
             .checked_add(1)
             .ok_or_else(|| LLMError::SchedulerError("CPU arrival order overflows".into()))?;
-        let model_state = self
-            .forward
-            .new_sequence_state(self.config.model.max_model_len)?;
-        let record = CpuSequenceRecord::new_with_optional_state(
-            request_id,
-            sequence_id,
-            arrival_order,
-            prompt,
-            prompt_token_ids,
-            sampling_params,
-            model_state,
-        )?;
-        self.scheduler.add_sequence(&mut self.table, record)?;
+        let admission = (|| {
+            let model_state = self
+                .forward
+                .new_sequence_state(self.config.model.max_model_len)?;
+            let record = CpuSequenceRecord::new_with_optional_state(
+                request_id,
+                sequence_id,
+                arrival_order,
+                prompt,
+                prompt_token_ids,
+                sampling_params,
+                model_state,
+            )?;
+            self.scheduler.add_sequence(&mut self.table, record)
+        })();
+        if let Err(error) = admission {
+            if let (Some(ledger), Some(grant)) = (&mut self.reservations, &memory_grant) {
+                let _ = ledger.release(grant.id);
+            }
+            return Err(error);
+        }
+        if let Some(grant) = memory_grant {
+            self.reservations
+                .as_mut()
+                .expect("native memory grant has a ledger")
+                .activate(grant.id)
+                .map_err(grant_error)?;
+            self.request_grants.insert(request_id, grant.id);
+        }
+        self.published
+            .insert(sequence_id, PublishedCursor::default());
         Ok(sequence_id)
     }
 
     pub fn cancel_request(&mut self, request_id: RequestId) -> Result<bool> {
-        self.scheduler.cancel_request(&mut self.table, request_id)
+        let sequence_id = self.table.sequence_for_request(request_id);
+        let cancelled = self.scheduler.cancel_request(&mut self.table, request_id)?;
+        if cancelled {
+            if let Some(sequence_id) = sequence_id {
+                self.published.remove(&sequence_id);
+            }
+            if self.table.get_by_request(request_id).is_none() {
+                self.release_request_grant(request_id)?;
+            }
+        }
+        Ok(cancelled)
     }
 
     pub fn reserve(&mut self) -> Result<Option<CpuReservation>> {
         if self.shutdown {
             return Ok(None);
         }
-        self.scheduler.reserve(&mut self.table)
+        let reservation = self.scheduler.reserve(&mut self.table)?;
+        if let Some(reservation) = &reservation {
+            metrics::histogram!(
+                crate::telemetry::metrics::SCHEDULED_ROWS,
+                "backend" => crate::telemetry::metrics::BackendClass::Cpu.as_str()
+            )
+            .record(reservation.rows().len() as f64);
+        }
+        Ok(reservation)
     }
 
     pub fn execute(&mut self, reservation: CpuReservation) -> Result<PreparedCpuIteration> {
@@ -421,6 +601,7 @@ impl CpuBatchEngine {
         let step_id = reservation.step_id();
         let mut retained = HashSet::new();
         let mut cancelled_requests = Vec::new();
+        let mut cancelled_sequences = Vec::new();
         for &(sequence_id, expected_revision) in reservation.sequence_revisions() {
             let Some(record) = self.table.get(sequence_id) else {
                 model.discard();
@@ -431,6 +612,7 @@ impl CpuBatchEngine {
             };
             if record.lifecycle() == CpuSequenceLifecycle::Cancelled {
                 cancelled_requests.push(record.request_id());
+                cancelled_sequences.push(sequence_id);
                 continue;
             }
             if record.lifecycle() != (CpuSequenceLifecycle::InFlight { step_id })
@@ -465,6 +647,8 @@ impl CpuBatchEngine {
         }
 
         let mut outputs = Vec::new();
+        let mut events = Vec::new();
+        let mut finished_sequences = Vec::new();
         for &sequence_id in reservation.sequence_ids().collect::<Vec<_>>().iter() {
             if !retained.contains(&sequence_id) {
                 continue;
@@ -495,17 +679,88 @@ impl CpuBatchEngine {
                 record.set_lifecycle(CpuSequenceLifecycle::Finished);
             }
             if has_sample {
-                outputs.push(OutputProcessor::build_request_output(
+                let cursor = self
+                    .published
+                    .get_mut(&sequence_id)
+                    .expect("admitted CPU sequence has a publication cursor");
+                let output = OutputProcessor::build_request_delta(
                     record.request_id(),
                     record.prompt(),
                     record.prompt_token_ids(),
-                    std::slice::from_ref(record.output()),
+                    record.output(),
+                    record.sampling_params(),
+                    cursor.metadata_published,
+                    cursor.text_bytes,
+                    cursor.token_count,
+                    cursor.logprob_count,
+                    cursor.cumulative_logprob,
+                )?;
+                cursor.metadata_published = true;
+                cursor.text_bytes = cursor
+                    .text_bytes
+                    .checked_add(output.outputs[0].text.len())
+                    .ok_or_else(|| {
+                        LLMError::SchedulerError("published text cursor overflows".into())
+                    })?;
+                cursor.token_count = record.output().token_ids.len();
+                cursor.logprob_count = record.output().logprobs.len();
+                cursor.cumulative_logprob = record.output().cumulative_logprob;
+
+                let request_id = record.request_id();
+                let completion = &output.outputs[0];
+                events.push((
+                    request_id,
+                    CommittedEvent::Delta {
+                        choice: completion.index as u32,
+                        text: completion.text.clone(),
+                        token_ids: completion.token_ids.clone(),
+                        logprobs: completion.logprobs.clone(),
+                    },
                 ));
+                if output.finished {
+                    finished_sequences.push(sequence_id);
+                    events.push((
+                        request_id,
+                        CommittedEvent::Usage {
+                            committed_prompt: record.prompt_token_ids().len() as u64,
+                            committed_completion: record.output().token_ids.len() as u64,
+                        },
+                    ));
+                    events.push((
+                        request_id,
+                        CommittedEvent::Finish {
+                            choice: 0,
+                            reason: record
+                                .output()
+                                .finish_reason
+                                .expect("finished output has a reason"),
+                        },
+                    ));
+                    events.push((request_id, CommittedEvent::Done));
+                }
+                outputs.push(output);
             }
         }
         self.scheduler.complete(&mut self.table, step_id)?;
+        for sequence_id in cancelled_sequences.into_iter().chain(finished_sequences) {
+            self.published.remove(&sequence_id);
+        }
+        let terminal_requests = cancelled_requests
+            .iter()
+            .copied()
+            .chain(
+                outputs
+                    .iter()
+                    .filter(|output| output.finished)
+                    .map(|output| output.request_id),
+            )
+            .collect::<Vec<_>>();
+        for request_id in terminal_requests {
+            self.release_request_grant(request_id)?;
+        }
         Ok(CpuBatchCommitResult {
             outputs,
+            events,
             cancelled_requests,
         })
     }
@@ -594,8 +849,103 @@ impl CpuBatchEngine {
         for request_id in request_ids {
             self.cancel_request(request_id)?;
         }
+        if let Some(ledger) = &mut self.reservations {
+            ledger.release_all().map_err(grant_error)?;
+        }
+        self.request_grants.clear();
         Ok(())
     }
+
+    pub fn reservation_ledger(&self) -> Option<&ReservationLedger> {
+        self.reservations.as_ref()
+    }
+
+    pub fn tokenizer_clone(&self) -> Tokenizer {
+        self.tokenizer.clone()
+    }
+
+    fn release_request_grant(&mut self, request_id: RequestId) -> Result<()> {
+        if let Some(id) = self.request_grants.remove(&request_id) {
+            let ledger = self
+                .reservations
+                .as_mut()
+                .expect("request grant has a ledger");
+            let classes = ledger
+                .grant_snapshot(id)
+                .map(|grant| grant.granted.by_class.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
+            ledger.release(id).map_err(grant_error)?;
+            for class in classes {
+                crate::telemetry::metrics::record_reservation(
+                    crate::telemetry::metrics::ReservationEvent::Release,
+                    class,
+                    crate::telemetry::metrics::ResultClass::Completed,
+                    ledger.reserved(class),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn estimate_cpu_request(
+    config: &EngineConfig,
+    geometry: CpuKvGeometry,
+    prompt_bytes: usize,
+    reachable_context: usize,
+    logprobs: usize,
+    decoded_token_byte_bound: usize,
+) -> Result<MemoryEstimate> {
+    let context = reachable_context as u128;
+    let mut estimate = MemoryEstimate::new();
+    estimate
+        .checked_add(MemoryClass::Request, prompt_bytes as u128)
+        .map_err(grant_error)?;
+    estimate
+        .checked_add(
+            MemoryClass::KvCache,
+            geometry.logical_bytes(context).map_err(grant_error)?,
+        )
+        .map_err(grant_error)?;
+    estimate
+        .checked_add(
+            MemoryClass::StagedKv,
+            geometry
+                .staged_bytes(context.min(config.scheduler.max_num_batched_tokens as u128))
+                .map_err(grant_error)?,
+        )
+        .map_err(grant_error)?;
+    let token_vectors = context
+        .checked_mul(std::mem::size_of::<u32>() as u128)
+        .and_then(|value| value.checked_mul(3))
+        .ok_or_else(|| LLMError::MemoryError("token vector estimate overflows".into()))?;
+    estimate
+        .checked_add(MemoryClass::TokenVectors, token_vectors)
+        .map_err(grant_error)?;
+    let logprob_bytes = context
+        .checked_mul(logprobs as u128)
+        .and_then(|value| value.checked_mul(8))
+        .ok_or_else(|| LLMError::MemoryError("logprob estimate overflows".into()))?;
+    let decoded_bytes = context
+        .checked_mul(decoded_token_byte_bound as u128)
+        .ok_or_else(|| LLMError::MemoryError("decoded byte estimate overflows".into()))?;
+    estimate
+        .checked_add(
+            MemoryClass::GenerationState,
+            logprob_bytes
+                .checked_add(decoded_bytes)
+                .and_then(|bytes| bytes.checked_add(4096))
+                .ok_or_else(|| LLMError::MemoryError("generation estimate overflows".into()))?,
+        )
+        .map_err(grant_error)?;
+    estimate
+        .checked_add(MemoryClass::Delivery, 1024 * 1024)
+        .map_err(grant_error)?;
+    Ok(estimate)
+}
+
+fn grant_error(error: crate::memory::GrantFailure) -> LLMError {
+    LLMError::MemoryError(format!("CPU logical reservation failed: {error}"))
 }
 
 #[cfg(test)]
@@ -931,39 +1281,50 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn async_engine_preserves_each_concurrent_request_stream_order() {
-        use tokio_stream::StreamExt;
-
         let (engine, _) = engine(2, 2, 0);
         let engine = crate::AsyncCpuBatchEngine::new(engine);
         let (first, second) = tokio::join!(
             engine.generate("hello".into(), params(2)),
             engine.generate("world".into(), params(2)),
         );
-        let (first_id, mut first) = first.unwrap();
-        let (second_id, mut second) = second.unwrap();
+        let mut first = first.unwrap();
+        let mut second = second.unwrap();
+        let first_id = first.request_id;
+        let second_id = second.request_id;
         let mut first_outputs = Vec::new();
         let mut second_outputs = Vec::new();
-        while let Some(output) = first.next().await {
+        while let Some(output) = first.events.recv().await {
             first_outputs.push(output);
         }
-        while let Some(output) = second.next().await {
+        while let Some(output) = second.events.recv().await {
             second_outputs.push(output);
         }
-        assert_eq!(first_outputs.len(), 2);
-        assert_eq!(second_outputs.len(), 2);
-        assert!(first_outputs
-            .iter()
-            .all(|output| output.request_id == first_id));
-        assert!(second_outputs
-            .iter()
-            .all(|output| output.request_id == second_id));
-        assert_eq!(first_outputs[0].outputs[0].token_ids.len(), 1);
-        assert_eq!(first_outputs[1].outputs[0].token_ids.len(), 2);
-        assert_eq!(second_outputs[0].outputs[0].token_ids.len(), 1);
-        assert_eq!(second_outputs[1].outputs[0].token_ids.len(), 2);
-        assert!(first_outputs.last().unwrap().finished);
-        assert!(second_outputs.last().unwrap().finished);
-        engine.shutdown();
+        assert_ne!(first_id, second_id);
+        for outputs in [&first_outputs, &second_outputs] {
+            assert_eq!(
+                outputs
+                    .iter()
+                    .filter_map(|event| match event {
+                        CommittedEvent::Delta { token_ids, .. } => Some(token_ids.len()),
+                        _ => None,
+                    })
+                    .sum::<usize>(),
+                2
+            );
+            assert!(outputs.iter().any(|event| matches!(
+                event,
+                CommittedEvent::Usage {
+                    committed_completion: 2,
+                    ..
+                }
+            )));
+            assert!(outputs
+                .iter()
+                .any(|event| matches!(event, CommittedEvent::Finish { .. })));
+            // Adjacent deltas may be coalesced, but Done is always last.
+            assert!(matches!(outputs.last(), Some(CommittedEvent::Done)));
+        }
+        engine.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -971,10 +1332,10 @@ mod tests {
         let (engine, calls) = engine(1, 1, 0);
         calls.lock().unwrap().prepare_delay_ms = 50;
         let engine = crate::AsyncCpuBatchEngine::new(engine);
-        let (_, stream) = engine.generate("hello".into(), params(2)).await.unwrap();
-        drop(stream);
+        let request = engine.generate("hello".into(), params(2)).await.unwrap();
+        drop(request);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(calls.lock().unwrap().commits, 0);
-        engine.shutdown();
+        engine.shutdown().await.unwrap();
     }
 }
