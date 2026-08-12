@@ -43,6 +43,9 @@
   OpenCL/Level Zero source corpus, passing online-build/binary-cache and SPIR-V
   kernel probes, host baseline, workstream split, and decision gates for a
   possible Iris Xe backend.
+- [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md): current source and
+  tool inventory plus the proposed one-sweep X0-X7 research charter, stop
+  conditions, deliverables, and implementation-planning exit gate.
 - [`LEVEL_ZERO_AND_ONEAPI_RS.md`](LEVEL_ZERO_AND_ONEAPI_RS.md): Intel Level Zero
   and oneAPI-rs architecture, dependency boundary, Rust design lessons, and
   possible future integrated-GPU experiment.

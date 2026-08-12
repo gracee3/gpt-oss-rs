@@ -40,6 +40,25 @@ were never relaxed. Existing new kernels remain forced or experimental where
 documented, and automatic dispatch stays on the validated baseline until later
 evidence supports a separately reviewed promotion.
 
+## Iris Xe research sprint
+
+Status: pre-research inventory complete; one-sweep X0-X7 research goal
+proposed.
+
+The T14 OpenCL and Level Zero feasibility paths pass on the post-upgrade
+Compute Runtime 26.05/Level Zero 1.28.2 stack. A clean rebuilt `ze_info`
+capture reports Level Zero API 1.14 and SPIR-V 1.5. The next Xe milestone is
+the bounded research sweep in
+[`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md): close exact
+current-generation source pins and evidence manifests, map both host APIs,
+complete failure/compiler/cache/memory evidence, prove one exact K=32 MXFP4
+fixture, measure one bounded prefill shape, and publish either a
+decision-complete forced-backend pre-plan or a no-backend result.
+
+This milestone does not authorize production implementation, automatic
+dispatch, decode offload, or model-scale serving integration. CPU remains the
+default and the numerical oracle throughout the Xe research sweep.
+
 ## Completed foundation
 
 - once-detected CPU capabilities and precise per-operation requirements;

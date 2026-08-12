@@ -8,6 +8,7 @@
 - External source corpus: `/home/emmy/src/xe-research`
 - Active API comparison: OpenCL and Level Zero
 - Explicit exclusion: Vulkan is not part of this research phase
+- Current sprint intake: [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md)
 
 This document separates two concurrent project lanes:
 
@@ -72,7 +73,7 @@ no `/etc/OpenCL/vendors`, and no Intel OpenCL/Level Zero package set.
 
 At approximately 18:03 local time, while the source corpus was being cloned,
 the user installed the Intel OpenCL and Level Zero packages through Ubuntu
-`apt`. The current host has:
+`apt`. The initial working package set was:
 
 | Package | Version |
 | --- | --- |
