@@ -55,7 +55,7 @@ libraries and hashes, artifacts, exit status, and detailed result.
 The X0–X7 table above remains an immutable index into the original evidence
 root. X8's independent claim and hash table is in the X8 report; its full raw
 artifact index has SHA-256
-`71ca42ae91d77c3b93a2fec22958e19582cf6ff38b75463601cf323d6aeeb000`.
+`ac1f5a016ddb4fad2312123de44854cebbe82a82ed81787851d68bdf07e3f1a1`.
 
 Supplemental X6 subgroup/work-group manifest hashes are listed in the X6
 report. The final AC/display/frequency/thermal capture is

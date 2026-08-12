@@ -145,15 +145,15 @@ rates at workgroup 32 were:
 
 | Size/path | Effective rate |
 | --- | ---: |
-| Exact coalesced | 14.09 GB/s |
-| Exact canonical-strided | 5.47 GB/s |
-| Exact v2-repacked/coalesced | 14.49 GB/s |
-| 256 MiB coalesced | 11.19 GB/s |
-| 256 MiB canonical-strided | 0.39 GB/s |
-| 256 MiB repacked/coalesced | 11.22 GB/s |
+| Exact coalesced | 14.07 GB/s |
+| Exact canonical-strided | 5.39 GB/s |
+| Exact v2-repacked/coalesced | 14.34 GB/s |
+| 256 MiB coalesced | 11.25 GB/s |
+| 256 MiB canonical-strided | 0.41 GB/s |
+| 256 MiB repacked/coalesced | 11.16 GB/s |
 
-CPU copy medians were 13.92 GB/s exact and 9.62 GB/s at 256 MiB. Concurrent
-CPU/GPU traffic reduced the CPU side to 6.86 GB/s and 2.32 GB/s respectively.
+CPU copy medians were 14.41 GB/s exact and 9.98 GB/s at 256 MiB. Concurrent
+CPU/GPU traffic reduced the CPU side to 6.83 GB/s and 2.32 GB/s respectively.
 This is contention evidence; it is not an overlap-throughput guarantee.
 
 Noninteractive sudo authentication was unavailable. The PMU status is
@@ -198,8 +198,8 @@ Paths are relative to the X8 raw evidence root.
 | Split-K retained non-winner | `benchmarks/splitk-v2-wg64/x6-opencl.manifest.json` | `79e45c632fafb8d55c53e09864717b8ab745780d08c6bf12248bdde587bb6135` |
 | Selection summary | `selection-summary.json` | `ff2fdd40244a7e2dae18ca5e7e3c500425b0e8701b9df3affa0023de85254428` |
 | Code-generation summary | `codegen-summary.tsv` | `0c39230d616fb1e4336a60214ff8ce9ac725ca5330c276c6e0739eb5a1863443` |
-| Diagnostics, clocks, bandwidth, PMU helper | `diagnose-tile32-m1-v2/x8-diagnose-opencl.manifest.json` | `b3cbf67cfd43e546c42b974bf5e98a8a8c016467274db748696342bca0fbb667` |
-| Full new-artifact index | `ARTIFACT_SHA256SUMS.txt` | `71ca42ae91d77c3b93a2fec22958e19582cf6ff38b75463601cf323d6aeeb000` |
+| Diagnostics, clocks, bandwidth, PMU helper | `diagnose-tile32-m1-v2/x8-diagnose-opencl.manifest.json` | `f306b936b8c0fe3de766980ce16065fb896e561ba98026afa24e31defc8b7f32` |
+| Full new-artifact index | `ARTIFACT_SHA256SUMS.txt` | `ac1f5a016ddb4fad2312123de44854cebbe82a82ed81787851d68bdf07e3f1a1` |
 
 The earlier X0–X7 manifests and documented hashes were not modified. X7's
 `fail` remains the honest result of its original promotion gate, not a claim
