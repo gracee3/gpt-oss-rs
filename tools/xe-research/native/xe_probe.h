@@ -63,6 +63,8 @@ struct xe_session_info {
 struct xe_run_timing {
     int32_t status;
     uint64_t host_ns;
+    uint64_t submit_ns;
+    uint64_t wait_ns;
     uint64_t device_ns;
     char error[XE_TEXT];
 };
@@ -104,6 +106,12 @@ int32_t xe_session_native_binary(
     size_t error_len);
 
 void xe_bytes_free(uint8_t *bytes);
+
+int32_t xe_session_select_kernel(
+    void *session,
+    const char *entry_point,
+    char *error,
+    size_t error_len);
 
 void *xe_buffer_create(
     void *session,

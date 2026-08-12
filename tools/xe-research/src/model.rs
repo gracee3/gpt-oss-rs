@@ -18,6 +18,9 @@ pub const K: usize = 2_880;
 pub const BLOCKS: usize = K / 32;
 pub const EXPERT: usize = 0;
 pub const EXPERTS: usize = 32;
+pub const XE_TILE: usize = 32;
+pub const XE_WEIGHT_PLANES: usize = 17;
+pub const XE_ACTIVATION_RECORD_BYTES: usize = 72;
 
 const BLOCKS_NAME: &str = "model.layers.0.mlp.experts.gate_up_proj_blocks";
 const SCALES_NAME: &str = "model.layers.0.mlp.experts.gate_up_proj_scales";
@@ -46,6 +49,7 @@ pub struct ProjectionDescriptor {
     pub bias: TensorDescriptor,
     pub canonical_compact_bytes: usize,
     pub cpu_x8_bytes: usize,
+    pub xe_v2_bytes: usize,
 }
 
 pub struct ProjectionBundle {
@@ -54,6 +58,7 @@ pub struct ProjectionBundle {
     pub bias: Vec<f32>,
     pub canonical_records: Vec<u8>,
     pub cpu_x8_records: Vec<u8>,
+    pub xe_v2_records: Vec<u8>,
     pub descriptor: ProjectionDescriptor,
 }
 
@@ -118,6 +123,7 @@ impl ProjectionBundle {
 
         let canonical_records = canonical_records(&packed, &scales);
         let cpu_x8_records = x8_records(&packed, &scales);
+        let xe_v2_records = xe_v2_records(&packed, &scales);
         let descriptor = ProjectionDescriptor {
             layer: 0,
             expert: EXPERT,
@@ -130,6 +136,7 @@ impl ProjectionBundle {
             bias: tensor_descriptor(BIAS_NAME, &bias_tensor, bias_expert_bytes, &shard),
             canonical_compact_bytes: packed.len() + scales.len() + bias_values.len() * 4,
             cpu_x8_bytes: cpu_x8_records.len() + bias_values.len() * 4,
+            xe_v2_bytes: xe_v2_records.len() + bias_values.len() * 4,
         };
         Ok(Self {
             packed,
@@ -137,6 +144,7 @@ impl ProjectionBundle {
             bias: bias_values,
             canonical_records,
             cpu_x8_records,
+            xe_v2_records,
             descriptor,
         })
     }
@@ -225,6 +233,31 @@ pub fn split_residual_activations(
         residual_scales.push(block.residual.scale);
     }
     (primary, residual, primary_scales, residual_scales)
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy)]
+pub struct XeActivationRecordV2 {
+    pub primary: [i8; 32],
+    pub residual: [i8; 32],
+    pub primary_scale: f32,
+    pub residual_scale: f32,
+}
+
+pub fn pack_activation_records(blocks: &[ResidualQ8Block]) -> Vec<XeActivationRecordV2> {
+    assert_eq!(
+        std::mem::size_of::<XeActivationRecordV2>(),
+        XE_ACTIVATION_RECORD_BYTES
+    );
+    blocks
+        .iter()
+        .map(|block| XeActivationRecordV2 {
+            primary: block.primary.values,
+            residual: block.residual.values,
+            primary_scale: block.primary.scale,
+            residual_scale: block.residual.scale,
+        })
+        .collect()
 }
 
 fn locate_layer_zero_shard(snapshot: &Path) -> Result<PathBuf> {
@@ -342,6 +375,28 @@ fn x8_records(packed: &[u8], scales: &[u8]) -> Vec<u8> {
     output
 }
 
+/// Repack canonical `[output][K-block][scale + 16 packed bytes]` records into
+/// the immutable Xe ABI v2 layout `[output-tile][K-block][17 planes][32 lanes]`.
+pub fn xe_v2_records(packed: &[u8], scales: &[u8]) -> Vec<u8> {
+    assert_eq!(packed.len(), N * BLOCKS * 16);
+    assert_eq!(scales.len(), N * BLOCKS);
+    assert_eq!(N % XE_TILE, 0);
+    let mut output = vec![0_u8; scales.len() * XE_WEIGHT_PLANES];
+    for tile in 0..N / XE_TILE {
+        for block in 0..BLOCKS {
+            let destination = (tile * BLOCKS + block) * XE_WEIGHT_PLANES * XE_TILE;
+            for lane in 0..XE_TILE {
+                let source = (tile * XE_TILE + lane) * BLOCKS + block;
+                output[destination + lane] = scales[source];
+                for byte in 0..16 {
+                    output[destination + (byte + 1) * XE_TILE + lane] = packed[source * 16 + byte];
+                }
+            }
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +437,45 @@ mod tests {
         assert_eq!(blocks.len(), 2 * BLOCKS);
         assert!(blocks.iter().all(|block| block.primary.scale.is_finite()));
         let _type_contract: &Q8Block = &blocks[0].primary;
+        let records = pack_activation_records(&blocks);
+        assert_eq!(records.len(), 2 * BLOCKS);
+        assert_eq!(std::mem::size_of_val(records.as_slice()), 2 * BLOCKS * 72);
+        assert_eq!(records[0].primary, blocks[0].primary.values);
+        assert_eq!(records[0].residual, blocks[0].residual.values);
+        assert_eq!(
+            records[0].primary_scale.to_bits(),
+            blocks[0].primary.scale.to_bits()
+        );
+        assert_eq!(
+            records[0].residual_scale.to_bits(),
+            blocks[0].residual.scale.to_bits()
+        );
+    }
+
+    #[test]
+    fn xe_v2_layout_round_trips_every_plane() {
+        let mut packed = vec![0_u8; N * BLOCKS * 16];
+        let mut scales = vec![0_u8; N * BLOCKS];
+        for (index, byte) in packed.iter_mut().enumerate() {
+            *byte = index.wrapping_mul(29) as u8;
+        }
+        for (index, scale) in scales.iter_mut().enumerate() {
+            *scale = index.wrapping_mul(11) as u8;
+        }
+        let records = xe_v2_records(&packed, &scales);
+        assert_eq!(records.len(), packed.len() + scales.len());
+        for &(row, block) in &[(0, 0), (31, 89), (32, 2), (5759, 42)] {
+            let tile = row / XE_TILE;
+            let lane = row % XE_TILE;
+            let base = (tile * BLOCKS + block) * XE_WEIGHT_PLANES * XE_TILE;
+            let source = row * BLOCKS + block;
+            assert_eq!(records[base + lane], scales[source]);
+            for byte in 0..16 {
+                assert_eq!(
+                    records[base + (byte + 1) * XE_TILE + lane],
+                    packed[source * 16 + byte]
+                );
+            }
+        }
     }
 }

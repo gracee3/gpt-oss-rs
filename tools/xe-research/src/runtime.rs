@@ -156,6 +156,8 @@ impl SessionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timing {
     pub host_ns: u64,
+    pub submit_ns: u64,
+    pub wait_ns: u64,
     pub device_ns: Option<u64>,
 }
 
@@ -329,6 +331,24 @@ impl Session {
         Ok(())
     }
 
+    pub fn select_kernel(&self, entry_point: &str) -> Result<()> {
+        let entry = CString::new(entry_point).context("entry point contains NUL")?;
+        let mut error = [0 as c_char; ffi::XE_TEXT];
+        // SAFETY: the session is live and both C strings remain valid for the call.
+        let status = unsafe {
+            ffi::xe_session_select_kernel(
+                self.pointer.as_ptr(),
+                entry.as_ptr(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        if status != 0 {
+            bail!("select kernel {entry_point} failed: {}", c_array(&error));
+        }
+        Ok(())
+    }
+
     pub fn run(&self, global: [usize; 3], local: [usize; 3], timeout_ns: u64) -> Result<Timing> {
         let mut timing = ffi::XeRunTiming::default();
         // SAFETY: the live session owns a fully configured kernel.
@@ -350,6 +370,8 @@ impl Session {
         }
         Ok(Timing {
             host_ns: timing.host_ns,
+            submit_ns: timing.submit_ns,
+            wait_ns: timing.wait_ns,
             device_ns: (timing.device_ns != 0).then_some(timing.device_ns),
         })
     }
@@ -460,6 +482,8 @@ impl Buffer<'_> {
         }
         Ok(Timing {
             host_ns: timing.host_ns,
+            submit_ns: timing.submit_ns,
+            wait_ns: timing.wait_ns,
             device_ns: None,
         })
     }
@@ -485,6 +509,8 @@ impl Buffer<'_> {
         }
         Ok(Timing {
             host_ns: timing.host_ns,
+            submit_ns: timing.submit_ns,
+            wait_ns: timing.wait_ns,
             device_ns: None,
         })
     }

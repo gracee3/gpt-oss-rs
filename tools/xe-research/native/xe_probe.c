@@ -1085,6 +1085,54 @@ void xe_bytes_free(uint8_t *bytes) {
     free(bytes);
 }
 
+int32_t xe_session_select_kernel(
+    void *opaque,
+    const char *entry_point,
+    char *error,
+    size_t error_len) {
+    struct xe_session *session = opaque;
+    if (session == NULL || entry_point == NULL || entry_point[0] == '\0') {
+        text_copy(error, error_len, "invalid kernel selection arguments");
+        return -1;
+    }
+    if (session->backend == XE_BACKEND_OPENCL) {
+        cl_int result = CL_SUCCESS;
+        cl_kernel next = session->u.cl.api.clCreateKernel(
+            session->u.cl.program, entry_point, &result);
+        if (next == NULL || result != CL_SUCCESS) {
+            error_code(error, error_len, "clCreateKernel(select)", result);
+            return result != CL_SUCCESS ? result : -1;
+        }
+        if (session->u.cl.kernel != NULL) {
+            session->u.cl.api.clReleaseKernel(session->u.cl.kernel);
+        }
+        session->u.cl.kernel = next;
+        return CL_SUCCESS;
+    }
+    if (session->backend == XE_BACKEND_LEVEL_ZERO) {
+        ze_kernel_desc_t description = {
+            .stype = ZE_STRUCTURE_TYPE_KERNEL_DESC,
+            .pNext = NULL,
+            .flags = 0,
+            .pKernelName = entry_point,
+        };
+        ze_kernel_handle_t next = NULL;
+        ze_result_t result = session->u.ze.api.zeKernelCreate(
+            session->u.ze.module, &description, &next);
+        if (result != ZE_RESULT_SUCCESS) {
+            error_code(error, error_len, "zeKernelCreate(select)", result);
+            return result;
+        }
+        if (session->u.ze.kernel != NULL) {
+            session->u.ze.api.zeKernelDestroy(session->u.ze.kernel);
+        }
+        session->u.ze.kernel = next;
+        return ZE_RESULT_SUCCESS;
+    }
+    text_copy(error, error_len, "unknown backend selecting kernel");
+    return -1;
+}
+
 void *xe_buffer_create(
     void *opaque,
     uint32_t kind,
@@ -1400,6 +1448,7 @@ int32_t xe_kernel_run(
         size_t local[] = {local_x, local_y, local_z};
         cl_uint dimensions = global_z > 1 ? 3 : (global_y > 1 ? 2 : 1);
         cl_event event = NULL;
+        uint64_t submit_start = monotonic_ns();
         cl_int result = session->u.cl.api.clEnqueueNDRangeKernel(
             session->u.cl.queue,
             session->u.cl.kernel,
@@ -1410,8 +1459,11 @@ int32_t xe_kernel_run(
             0,
             NULL,
             &event);
+        timing->submit_ns = monotonic_ns() - submit_start;
         if (result == CL_SUCCESS) {
+            uint64_t wait_start = monotonic_ns();
             result = session->u.cl.api.clFinish(session->u.cl.queue);
+            timing->wait_ns = monotonic_ns() - wait_start;
         }
         timing->host_ns = monotonic_ns() - start;
         if (result == CL_SUCCESS && event != NULL) {
@@ -1454,8 +1506,11 @@ int32_t xe_kernel_run(
     };
     ze_result_t result = api->zeCommandListAppendLaunchKernel(
         session->u.ze.list, session->u.ze.kernel, &groups, session->u.ze.event, 0, NULL);
+    timing->submit_ns = monotonic_ns() - start;
     if (result == ZE_RESULT_SUCCESS) {
+        uint64_t wait_start = monotonic_ns();
         result = ze_submit_list(session, timeout_ns);
+        timing->wait_ns = monotonic_ns() - wait_start;
     }
     timing->host_ns = monotonic_ns() - start;
     if (result == ZE_RESULT_SUCCESS && session->u.ze.event != NULL) {

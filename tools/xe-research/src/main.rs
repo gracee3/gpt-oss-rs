@@ -25,8 +25,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    deterministic_activations, quantize_residual_rows, split_residual_activations,
-    ProjectionBundle, BLOCKS, N,
+    deterministic_activations, pack_activation_records, quantize_residual_rows,
+    split_residual_activations, ProjectionBundle, XeActivationRecordV2, BLOCKS, N,
 };
 use crate::runtime::{
     ArtifactKind, Backend, Buffer, MemoryKind, Session, SessionInfo, EXPECTED_VENDOR,
@@ -86,6 +86,53 @@ struct Common {
     flags: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum VariantKind {
+    CanonicalXe,
+    LegacyEntry,
+    Tile32M1V2,
+    Tile32M2V2,
+    Tile32M4V2,
+    SplitkV2,
+}
+
+#[derive(Debug, Clone)]
+struct VariantSpec {
+    name: String,
+    entry: String,
+    kind: VariantKind,
+}
+
+impl VariantSpec {
+    fn is_v2(&self) -> bool {
+        matches!(
+            self.kind,
+            VariantKind::Tile32M1V2
+                | VariantKind::Tile32M2V2
+                | VariantKind::Tile32M4V2
+                | VariantKind::SplitkV2
+        )
+    }
+
+    fn applicable(&self, rows: usize) -> bool {
+        match self.kind {
+            VariantKind::Tile32M2V2 => rows >= 2 && rows.is_multiple_of(2),
+            VariantKind::Tile32M4V2 => rows >= 4 && rows.is_multiple_of(4),
+            VariantKind::SplitkV2 => rows <= 2,
+            _ => true,
+        }
+    }
+
+    fn rows_per_dispatch(&self) -> usize {
+        match self.kind {
+            VariantKind::Tile32M2V2 => 2,
+            VariantKind::Tile32M4V2 => 4,
+            _ => 1,
+        }
+    }
+}
+
 struct ManifestEvidence {
     evidence_id: &'static str,
     status: EvidenceStatus,
@@ -129,6 +176,7 @@ fn run() -> Result<()> {
         "memory" => command_memory(&arguments, &common),
         "mxfp4" => command_mxfp4(&arguments, &common),
         "benchmark" => command_benchmark(&arguments, &common),
+        "diagnose" => command_diagnose(&arguments, &common),
         "closeout" => command_closeout(&arguments, &common),
         _ => {
             usage();
@@ -139,7 +187,7 @@ fn run() -> Result<()> {
 
 fn usage() {
     eprintln!(
-        "usage: gpt-oss-xe-research <environment|capabilities|artifact|memory|mxfp4|benchmark|closeout> \\\n+  --backend <opencl|level-zero> --device 8086:9a49 --results <directory> [--immediate]"
+        "usage: gpt-oss-xe-research <environment|capabilities|artifact|memory|mxfp4|benchmark|diagnose|closeout> \\\n  --backend <opencl|level-zero> --device 8086:9a49 --results <directory> [--immediate]"
     );
 }
 
@@ -156,10 +204,13 @@ fn parse_common(arguments: &[String]) -> Result<Common> {
         if !arguments[index].starts_with("--") || index + 1 >= arguments.len() {
             bail!("invalid argument sequence at '{}'", arguments[index]);
         }
-        flags.insert(
-            arguments[index].trim_start_matches("--").to_string(),
-            arguments[index + 1].clone(),
-        );
+        let name = arguments[index].trim_start_matches("--").to_string();
+        if flags
+            .insert(name.clone(), arguments[index + 1].clone())
+            .is_some()
+        {
+            bail!("duplicate --{name} is ambiguous");
+        }
         index += 2;
     }
     let backend = Backend::parse(
@@ -181,6 +232,62 @@ fn parse_common(arguments: &[String]) -> Result<Common> {
         immediate,
         flags,
     })
+}
+
+fn benchmark_variant(common: &Common) -> Result<VariantSpec> {
+    if common.flags.contains_key("variant") && common.flags.contains_key("entry") {
+        bail!("--variant and legacy --entry are mutually exclusive");
+    }
+    let spec = match common.flags.get("variant").map(String::as_str) {
+        Some("canonical-xe") => VariantSpec {
+            name: "canonical-xe".into(),
+            entry: "mxfp4_project_scalar".into(),
+            kind: VariantKind::CanonicalXe,
+        },
+        Some("tile32-m1-v2") => VariantSpec {
+            name: "tile32-m1-v2".into(),
+            entry: "mxfp4_tile32_m1_v2".into(),
+            kind: VariantKind::Tile32M1V2,
+        },
+        Some("tile32-m2-v2") => VariantSpec {
+            name: "tile32-m2-v2".into(),
+            entry: "mxfp4_tile32_m2_v2".into(),
+            kind: VariantKind::Tile32M2V2,
+        },
+        Some("tile32-m4-v2") => VariantSpec {
+            name: "tile32-m4-v2".into(),
+            entry: "mxfp4_tile32_m4_v2".into(),
+            kind: VariantKind::Tile32M4V2,
+        },
+        Some("splitk-v2") => VariantSpec {
+            name: "splitk-v2".into(),
+            entry: "mxfp4_splitk_terms_v2".into(),
+            kind: VariantKind::SplitkV2,
+        },
+        Some(other) => bail!(
+            "unknown --variant '{other}'; expected canonical-xe, tile32-m1-v2, tile32-m2-v2, tile32-m4-v2, or splitk-v2"
+        ),
+        None => {
+            let entry = common
+                .flags
+                .get("entry")
+                .cloned()
+                .unwrap_or_else(|| "mxfp4_project_scalar".into());
+            VariantSpec {
+                name: format!("legacy-entry:{entry}"),
+                kind: if entry == "mxfp4_project_scalar" {
+                    VariantKind::CanonicalXe
+                } else {
+                    VariantKind::LegacyEntry
+                },
+                entry,
+            }
+        }
+    };
+    if spec.is_v2() && common.backend != Backend::Opencl {
+        bail!("Xe ABI v2 variants require --backend opencl");
+    }
+    Ok(spec)
 }
 
 fn command_environment(arguments: &[String], common: &Common) -> Result<()> {
@@ -798,16 +905,13 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
             .map(String::as_str)
             .unwrap_or(SNAPSHOT),
     );
-    let entry = common
-        .flags
-        .get("entry")
-        .map(String::as_str)
-        .unwrap_or("mxfp4_project_scalar");
+    let variant = benchmark_variant(common)?;
+    let entry = variant.entry.as_str();
     let bundle = ProjectionBundle::open(&snapshot)?;
     let kernel_path = manifest_dir().join("kernels/mxfp4.cl");
     let (kind, artifact, options) = match common.backend {
         Backend::Opencl => {
-            let options = if entry.contains("dp4a") {
+            let options = if entry.contains("dp4a") || variant.is_v2() {
                 "-cl-std=CL3.0 -DXE_ENABLE_DP4A=1"
             } else {
                 "-cl-std=CL3.0"
@@ -819,7 +923,7 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
             )
         }
         Backend::LevelZero => {
-            if entry != "mxfp4_project_scalar" {
+            if variant.kind != VariantKind::CanonicalXe {
                 bail!("Level Zero canonical SPIR-V contains only mxfp4_project_scalar");
             }
             (
@@ -837,9 +941,11 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         entry,
         common.immediate,
     )?;
-    let native_path = common
-        .results
-        .join(format!("benchmark-{}-{entry}.native", common.backend));
+    let native_path = common.results.join(format!(
+        "benchmark-{}-{}.native",
+        common.backend,
+        variant.name.replace(':', "-")
+    ));
     std::fs::write(&native_path, session.native_binary()?)?;
     let shapes = common
         .flags
@@ -864,13 +970,24 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
         .map(|value| value.parse::<usize>().context("parse --local-size"))
         .transpose()?
         .unwrap_or(64);
-    if ![32, 64, 128, 256].contains(&local_size)
+    let valid_local_sizes: &[usize] = if variant.is_v2() {
+        &[32, 64, 128]
+    } else {
+        &[32, 64, 128, 256]
+    };
+    if !valid_local_sizes.contains(&local_size)
         || local_size > session.info().max_group_size as usize
     {
-        bail!("--local-size must be 32,64,128,or 256 and within the queried device limit");
+        bail!("--local-size is not valid for the selected variant or queried device limit");
+    }
+    if shapes.iter().any(|&rows| !variant.applicable(rows)) {
+        bail!(
+            "one or more --shapes are not applicable to variant {}",
+            variant.name
+        );
     }
     let environment_before = benchmark_environment();
-    let benchmark = benchmark_projection(&session, &bundle, entry, &shapes, local_size)?;
+    let benchmark = benchmark_projection(&session, &bundle, &variant, &shapes, local_size)?;
     let environment_after = benchmark_environment();
     let evidence_status = if benchmark
         .get("any_useful_win")
@@ -892,15 +1009,27 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
             "duplicate_weight_requirement": "no model-scale duplicate weights"
         },
         "tensor": bundle.descriptor,
+        "variant": variant.name,
+        "variant_kind": variant.kind,
         "entry_point": entry,
+        "kernel_abi": if variant.is_v2() { "gpt-oss-rs.xe-kernel-abi/v2" } else { "gpt-oss-rs.xe-kernel-abi/v1" },
         "local_size": local_size,
         "benchmark": benchmark,
         "environment_before": environment_before,
         "environment_after": environment_after,
         "module_creation_ns": session.info().creation_ns,
         "native_binary": artifact_record(&native_path)?,
-        "residency_bytes": bundle.descriptor.canonical_compact_bytes,
-        "scratch_policy": "one reusable activation/output allocation sized to the current M; weights remain one persistent compact expert slice"
+        "residency_bytes": if variant.is_v2() { bundle.descriptor.xe_v2_bytes } else { bundle.descriptor.canonical_compact_bytes },
+        "scratch_policy": if variant.kind == VariantKind::SplitkV2 {
+            "one reusable 72-byte activation-record buffer, output buffer, and bounded two-term split-K buffer; M=2 scratch is exactly 8294400 bytes"
+        } else {
+            "one reusable activation/output allocation sized to the current M; weights remain one persistent compact expert slice"
+        },
+        "device_weight_residency": if variant.is_v2() {
+            "one Xe ABI v2 compact representation; canonical packed/scales buffers are not allocated"
+        } else {
+            "one canonical packed/scales representation"
+        }
     });
     std::fs::write(&raw_path, serde_json::to_vec_pretty(&details)?)?;
     write_manifest(
@@ -912,10 +1041,332 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
             started_at,
             session: Some(session.info().clone()),
             loaded_paths: session.loaded_library_paths()?,
-            artifact_paths: vec![kernel_path, native_path, raw_path],
+            artifact_paths: vec![
+                kernel_path,
+                manifest_dir().join(if variant.is_v2() {
+                    "fixtures/kernel-abi-v2.json"
+                } else {
+                    "fixtures/kernel-abi-v1.json"
+                }),
+                native_path,
+                raw_path,
+            ],
             details,
         },
     )
+}
+
+fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
+    if common.backend != Backend::Opencl {
+        bail!("diagnose is a forced OpenCL-only path; use --backend opencl");
+    }
+    if !common.flags.contains_key("variant") {
+        bail!("diagnose requires an explicit --variant");
+    }
+    let started_at = timestamp();
+    let variant = benchmark_variant(common)?;
+    let snapshot = PathBuf::from(
+        common
+            .flags
+            .get("snapshot")
+            .map(String::as_str)
+            .unwrap_or(SNAPSHOT),
+    );
+    let bundle = ProjectionBundle::open(&snapshot)?;
+    let kernel_path = manifest_dir().join("kernels/mxfp4.cl");
+    let source = std::fs::read(&kernel_path)?;
+    let session = Session::create(
+        Backend::Opencl,
+        ArtifactKind::OpenclSource,
+        &source,
+        "-cl-std=CL3.0 -DXE_ENABLE_DP4A=1",
+        "xe_bandwidth_coalesced",
+        common.immediate,
+    )?;
+
+    let exact_bytes = bundle.canonical_records.len();
+    let available = available_memory_bytes()?;
+    let large_bytes = (256_usize << 20).min(usize::try_from(available / 20)?);
+    let mut large = vec![0_u8; large_bytes];
+    for (index, byte) in large.iter_mut().enumerate() {
+        *byte = index.wrapping_mul(131).wrapping_add(17) as u8;
+    }
+    let mut bandwidth = Vec::new();
+    for &local_size in &[32_usize, 64, 128] {
+        bandwidth.push(bandwidth_case(
+            &session,
+            &bundle.canonical_records,
+            "exact-canonical-coalesced",
+            "xe_bandwidth_coalesced",
+            local_size,
+            4,
+        )?);
+        bandwidth.push(bandwidth_case(
+            &session,
+            &bundle.canonical_records,
+            "exact-canonical-strided",
+            "xe_bandwidth_strided",
+            local_size,
+            4,
+        )?);
+        bandwidth.push(bandwidth_case(
+            &session,
+            &bundle.xe_v2_records,
+            "exact-v2-repacked-coalesced",
+            "xe_bandwidth_coalesced",
+            local_size,
+            4,
+        )?);
+    }
+    bandwidth.push(bandwidth_case(
+        &session,
+        &large,
+        "large-coalesced",
+        "xe_bandwidth_coalesced",
+        32,
+        1,
+    )?);
+    bandwidth.push(bandwidth_case(
+        &session,
+        &large,
+        "large-canonical-strided",
+        "xe_bandwidth_strided",
+        32,
+        1,
+    )?);
+    bandwidth.push(bandwidth_case(
+        &session,
+        &large,
+        "large-repacked-coalesced",
+        "xe_bandwidth_coalesced",
+        32,
+        1,
+    )?);
+
+    let load_rows = match variant.kind {
+        VariantKind::Tile32M2V2 => 2,
+        VariantKind::Tile32M4V2 => 4,
+        VariantKind::SplitkV2 => 2,
+        _ => 4,
+    };
+    let executable = std::env::current_exe()?;
+    let load_results = common.results.join("under-load-benchmark");
+    std::fs::create_dir_all(&load_results)?;
+    let mut child = Command::new(&executable);
+    child
+        .arg("benchmark")
+        .arg("--backend")
+        .arg("opencl")
+        .arg("--device")
+        .arg(DEVICE_SELECTOR)
+        .arg("--results")
+        .arg(&load_results)
+        .arg("--variant")
+        .arg(&variant.name)
+        .arg("--shapes")
+        .arg(load_rows.to_string())
+        .arg("--local-size")
+        .arg("32")
+        .env("OCL_ICD_VENDORS", "/etc/OpenCL/vendors/intel.icd")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(snapshot) = common.flags.get("snapshot") {
+        child.arg("--snapshot").arg(snapshot);
+    }
+    let mut child = child.spawn().context("start under-load benchmark")?;
+    let mut clock_samples = Vec::new();
+    loop {
+        clock_samples.push(json!({
+            "monotonic_ns": monotonic_now_ns(),
+            "frequencies_mhz": gt_frequency_snapshot(),
+        }));
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let child_output = child.wait_with_output()?;
+    if !child_output.status.success() {
+        bail!(
+            "under-load benchmark failed: {}{}",
+            String::from_utf8_lossy(&child_output.stdout),
+            String::from_utf8_lossy(&child_output.stderr)
+        );
+    }
+
+    let pmu_capture = common.flags.get("pmu-capture").map(PathBuf::from);
+    let pmu_status = match &pmu_capture {
+        Some(path) if path.is_file() => json!({
+            "status": "pass",
+            "capture": artifact_record(path)?,
+            "claim_boundary": "i915 engine-busy/frequency PMU measures engine utilization and frequency; it is not proof that every one of 80 EUs was active"
+        }),
+        Some(path) => json!({
+            "status": "insufficient_evidence",
+            "reason": format!("supplied PMU capture does not exist: {}", path.display()),
+            "claim_boundary": "no EU occupancy claim"
+        }),
+        None => json!({
+            "status": "insufficient_evidence",
+            "reason": "noninteractive sudo authentication is unavailable and no --pmu-capture was supplied",
+            "claim_boundary": "no EU occupancy claim"
+        }),
+    };
+    let pmu_results = common.results.join("pmu-benchmark");
+    let pmu_command = format!(
+        "sudo perf stat -x, -e i915/rcs0-busy/,i915/actual-frequency/ -o {} -- env OCL_ICD_VENDORS=/etc/OpenCL/vendors/intel.icd {} benchmark --backend opencl --device {} --results {} --variant {} --shapes {} --local-size 32",
+        common.results.join("i915-pmu.csv").display(),
+        executable.display(),
+        DEVICE_SELECTOR,
+        pmu_results.display(),
+        variant.name,
+        load_rows,
+    );
+    let raw_path = common.results.join("diagnose-opencl.json");
+    let details = json!({
+        "variant": variant.name,
+        "gt_frequency_discovery": {
+            "path_policy": "/sys/bus/pci/devices/0000:00:02.0/drm/card*/gt/gt0/{rps_act_freq_mhz,rps_cur_freq_mhz,punit_req_freq_mhz}",
+            "idle_snapshot": gt_frequency_snapshot(),
+            "under_load_samples": clock_samples,
+            "sampling_period_ms": 10,
+            "load_command_status": child_output.status.code(),
+            "load_stdout": String::from_utf8_lossy(&child_output.stdout),
+            "load_stderr": String::from_utf8_lossy(&child_output.stderr),
+        },
+        "pmu": pmu_status,
+        "pmu_user_command": pmu_command,
+        "pmu_interpretation": "rcs0-busy is render/compute engine utilization evidence; neither it nor actual-frequency proves simultaneous activity of all 80 execution units",
+        "bandwidth": {
+            "exact_weight_bytes": exact_bytes,
+            "exact_expert_resident_bytes_with_fp32_bias": bundle.descriptor.xe_v2_bytes,
+            "large_bytes": large_bytes,
+            "large_policy": "min(256 MiB, 5% MemAvailable)",
+            "gpu_cases": bandwidth,
+            "cpu_copy_exact": cpu_bandwidth(exact_bytes, 30),
+            "cpu_copy_large": cpu_bandwidth(large_bytes, 30),
+            "concurrent_exact": concurrent_bandwidth(Backend::Opencl, common.immediate, exact_bytes, 30),
+            "concurrent_large": concurrent_bandwidth(Backend::Opencl, common.immediate, large_bytes, 30),
+        },
+        "workgroup_widths": [32, 64, 128],
+        "system_mutations": []
+    });
+    std::fs::write(&raw_path, serde_json::to_vec_pretty(&details)?)?;
+    let native_path = common.results.join("diagnose-opencl.native");
+    std::fs::write(&native_path, session.native_binary()?)?;
+    let mut paths = vec![
+        kernel_path,
+        manifest_dir().join("fixtures/kernel-abi-v2.json"),
+        raw_path,
+        native_path,
+    ];
+    if let Some(path) = pmu_capture.filter(|path| path.is_file()) {
+        paths.push(path);
+    }
+    write_manifest(
+        arguments,
+        common,
+        ManifestEvidence {
+            evidence_id: "X8-diagnose",
+            status: EvidenceStatus::Pass,
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths: session.loaded_library_paths()?,
+            artifact_paths: paths,
+            details,
+        },
+    )
+}
+
+fn bandwidth_case(
+    session: &Session,
+    input: &[u8],
+    name: &str,
+    entry: &str,
+    local_size: usize,
+    passes: u32,
+) -> Result<Value> {
+    const WORKERS: usize = 4096;
+    session.select_kernel(entry)?;
+    let input_buffer = session.buffer(MemoryKind::Device, input.len())?;
+    let checksum_buffer = session.buffer(MemoryKind::Device, WORKERS * 4)?;
+    input_buffer.write(input)?;
+    session.set_buffer(0, &input_buffer)?;
+    session.set_buffer(1, &checksum_buffer)?;
+    let bytes = u32::try_from(input.len()).context("bandwidth input exceeds u32")?;
+    session.set_scalar(2, &bytes)?;
+    session.set_scalar(3, &passes)?;
+    session.set_group_size(u32::try_from(local_size)?, 1, 1)?;
+    for _ in 0..10 {
+        session.run([WORKERS, 1, 1], [local_size, 1, 1], TIMEOUT_NS)?;
+    }
+    let mut host = Vec::with_capacity(30);
+    let mut device = Vec::with_capacity(30);
+    for _ in 0..30 {
+        let timing = session.run([WORKERS, 1, 1], [local_size, 1, 1], TIMEOUT_NS)?;
+        host.push(timing.host_ns);
+        if let Some(value) = timing.device_ns {
+            device.push(value);
+        }
+    }
+    let mut checksums = vec![0_u32; WORKERS];
+    checksum_buffer.read(&mut checksums)?;
+    let actual = checksums.iter().map(|&value| u64::from(value)).sum::<u64>();
+    let expected = input.iter().map(|&value| u64::from(value)).sum::<u64>() * u64::from(passes);
+    if actual != expected {
+        bail!("bandwidth kernel {name} checksum mismatch: {actual} != {expected}");
+    }
+    Ok(json!({
+        "name": name,
+        "entry_point": entry,
+        "bytes": input.len(),
+        "passes": passes,
+        "workgroup_width": local_size,
+        "host": Distribution::from_samples(&host, 0x5d00 + local_size as u64),
+        "device": (!device.is_empty()).then(|| Distribution::from_samples(&device, 0x5e00 + local_size as u64)),
+        "checksum": actual,
+    }))
+}
+
+fn gt_frequency_snapshot() -> Value {
+    let drm = Path::new("/sys/bus/pci/devices/0000:00:02.0/drm");
+    let mut values = serde_json::Map::new();
+    let mut cards = std::fs::read_dir(drm)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("card") && !name.contains('-'))
+        })
+        .collect::<Vec<_>>();
+    cards.sort();
+    for card in cards {
+        let gt = card.join("gt/gt0");
+        for name in [
+            "rps_act_freq_mhz",
+            "rps_cur_freq_mhz",
+            "punit_req_freq_mhz",
+            "rps_min_freq_mhz",
+            "rps_max_freq_mhz",
+        ] {
+            let path = gt.join(name);
+            if let Ok(value) = std::fs::read_to_string(&path) {
+                values.insert(
+                    path.display().to_string(),
+                    Value::String(value.trim().to_string()),
+                );
+            }
+        }
+    }
+    Value::Object(values)
+}
+
+fn monotonic_now_ns() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
 fn command_closeout(arguments: &[String], common: &Common) -> Result<()> {
@@ -1798,7 +2249,7 @@ fn benchmark_environment() -> Value {
         ("ac_online", "bash", vec!["-lc", "for f in /sys/class/power_supply/*/online; do printf '%s=' \"$f\"; cat \"$f\"; done"]),
         ("display", "loginctl", vec!["show-session", "auto", "-p", "Type", "-p", "Remote", "-p", "State"]),
         ("cpu_frequency", "bash", vec!["-lc", "cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq 2>/dev/null"]),
-        ("gpu_frequency", "bash", vec!["-lc", "find /sys/class/drm/card*/device -maxdepth 1 -type f -name 'gt_*freq_mhz' -print -exec cat {} \\; 2>/dev/null"]),
+        ("gpu_frequency", "bash", vec!["-lc", "find -L /sys/bus/pci/devices/0000:00:02.0/drm/card*/gt/gt0 -maxdepth 1 -type f \\( -name 'rps_*freq_mhz' -o -name 'punit_req_freq_mhz' \\) -print -exec cat {} \\; 2>/dev/null"]),
         ("thermals", "bash", vec!["-lc", "for f in /sys/class/thermal/thermal_zone*/temp; do printf '%s ' \"$f\"; cat \"$f\"; done 2>/dev/null"]),
     ];
     let mut values = serde_json::Map::new();
@@ -1876,6 +2327,9 @@ struct TrialReport {
     scalar_oracle: Distribution,
     avx2: Distribution,
     xe: Distribution,
+    scalar_oracle_phases: PhaseDistributions,
+    avx2_phases: PhaseDistributions,
+    xe_phases: PhaseDistributions,
 }
 
 #[derive(Debug, Serialize)]
@@ -1886,24 +2340,141 @@ struct ShapeReport {
     combined_scalar_oracle: Option<Distribution>,
     combined_avx2: Option<Distribution>,
     combined_xe: Option<Distribution>,
+    combined_scalar_oracle_phases: Option<PhaseDistributions>,
+    combined_avx2_phases: Option<PhaseDistributions>,
+    combined_xe_phases: Option<PhaseDistributions>,
     avx2_over_xe_speedup: Option<f64>,
     conservative_speedup_ci95: Option<[f64; 2]>,
     useful_win: bool,
     estimated_residency_break_even_requests: Option<f64>,
 }
 
-struct GpuBuffers<'a> {
-    primary: Buffer<'a>,
-    residual: Buffer<'a>,
-    primary_scales: Buffer<'a>,
-    residual_scales: Buffer<'a>,
-    output: Buffer<'a>,
+#[derive(Debug, Clone, Default, Serialize)]
+struct PhaseTiming {
+    total_request_ns: u64,
+    quantization_ns: u64,
+    activation_packing_ns: u64,
+    upload_ns: u64,
+    argument_setup_ns: u64,
+    host_submission_ns: u64,
+    host_wait_ns: u64,
+    device_kernel_ns: Option<u64>,
+    readback_ns: u64,
+    bf16_conversion_ns: u64,
+}
+
+#[derive(Debug, Default)]
+struct PhaseSamples {
+    total_request_ns: Vec<u64>,
+    quantization_ns: Vec<u64>,
+    activation_packing_ns: Vec<u64>,
+    upload_ns: Vec<u64>,
+    argument_setup_ns: Vec<u64>,
+    host_submission_ns: Vec<u64>,
+    host_wait_ns: Vec<u64>,
+    device_kernel_ns: Vec<u64>,
+    readback_ns: Vec<u64>,
+    bf16_conversion_ns: Vec<u64>,
+}
+
+impl PhaseSamples {
+    fn push(&mut self, timing: PhaseTiming) {
+        self.total_request_ns.push(timing.total_request_ns);
+        self.quantization_ns.push(timing.quantization_ns);
+        self.activation_packing_ns
+            .push(timing.activation_packing_ns);
+        self.upload_ns.push(timing.upload_ns);
+        self.argument_setup_ns.push(timing.argument_setup_ns);
+        self.host_submission_ns.push(timing.host_submission_ns);
+        self.host_wait_ns.push(timing.host_wait_ns);
+        if let Some(device) = timing.device_kernel_ns {
+            self.device_kernel_ns.push(device);
+        }
+        self.readback_ns.push(timing.readback_ns);
+        self.bf16_conversion_ns.push(timing.bf16_conversion_ns);
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.total_request_ns
+            .extend_from_slice(&other.total_request_ns);
+        self.quantization_ns
+            .extend_from_slice(&other.quantization_ns);
+        self.activation_packing_ns
+            .extend_from_slice(&other.activation_packing_ns);
+        self.upload_ns.extend_from_slice(&other.upload_ns);
+        self.argument_setup_ns
+            .extend_from_slice(&other.argument_setup_ns);
+        self.host_submission_ns
+            .extend_from_slice(&other.host_submission_ns);
+        self.host_wait_ns.extend_from_slice(&other.host_wait_ns);
+        self.device_kernel_ns
+            .extend_from_slice(&other.device_kernel_ns);
+        self.readback_ns.extend_from_slice(&other.readback_ns);
+        self.bf16_conversion_ns
+            .extend_from_slice(&other.bf16_conversion_ns);
+    }
+
+    fn distributions(&self, seed: u64) -> PhaseDistributions {
+        let distribution = |samples: &[u64], offset| {
+            (!samples.is_empty()).then(|| Distribution::from_samples(samples, seed + offset))
+        };
+        PhaseDistributions {
+            total_request_ns: distribution(&self.total_request_ns, 0),
+            quantization_ns: distribution(&self.quantization_ns, 1),
+            activation_packing_ns: distribution(&self.activation_packing_ns, 2),
+            upload_ns: distribution(&self.upload_ns, 3),
+            argument_setup_ns: distribution(&self.argument_setup_ns, 4),
+            host_submission_ns: distribution(&self.host_submission_ns, 5),
+            host_wait_ns: distribution(&self.host_wait_ns, 6),
+            device_kernel_ns: distribution(&self.device_kernel_ns, 7),
+            readback_ns: distribution(&self.readback_ns, 8),
+            bf16_conversion_ns: distribution(&self.bf16_conversion_ns, 9),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PhaseDistributions {
+    total_request_ns: Option<Distribution>,
+    quantization_ns: Option<Distribution>,
+    activation_packing_ns: Option<Distribution>,
+    upload_ns: Option<Distribution>,
+    argument_setup_ns: Option<Distribution>,
+    host_submission_ns: Option<Distribution>,
+    host_wait_ns: Option<Distribution>,
+    device_kernel_ns: Option<Distribution>,
+    readback_ns: Option<Distribution>,
+    bf16_conversion_ns: Option<Distribution>,
+}
+
+enum GpuBuffers<'a> {
+    V1 {
+        primary: Buffer<'a>,
+        residual: Buffer<'a>,
+        primary_scales: Buffer<'a>,
+        residual_scales: Buffer<'a>,
+        output: Buffer<'a>,
+    },
+    V2 {
+        activations: Buffer<'a>,
+        output: Buffer<'a>,
+        splitk_terms: Option<Buffer<'a>>,
+    },
+}
+
+struct GpuRequestContext<'request, 'session> {
+    session: &'request Session,
+    gpu: &'request GpuBuffers<'session>,
+    v2_weights: Option<&'request Buffer<'session>>,
+    bias: &'request Buffer<'session>,
+    variant: &'request VariantSpec,
+    local_size: usize,
 }
 
 fn benchmark_projection(
     session: &Session,
     bundle: &ProjectionBundle,
-    _entry: &str,
+    variant: &VariantSpec,
     shapes: &[usize],
     local_size: usize,
 ) -> Result<Value> {
@@ -1911,41 +2482,109 @@ fn benchmark_projection(
         .iter()
         .max()
         .context("benchmark needs at least one shape")?;
-    let packed_buffer = session.buffer(MemoryKind::Device, bundle.packed.len())?;
-    let scales_buffer = session.buffer(MemoryKind::Device, bundle.scales.len())?;
+    let residency_start = Instant::now();
+    let legacy_packed = (!variant.is_v2())
+        .then(|| session.buffer(MemoryKind::Device, bundle.packed.len()))
+        .transpose()?;
+    let legacy_scales = (!variant.is_v2())
+        .then(|| session.buffer(MemoryKind::Device, bundle.scales.len()))
+        .transpose()?;
+    let v2_weights = variant
+        .is_v2()
+        .then(|| session.buffer(MemoryKind::Device, bundle.xe_v2_records.len()))
+        .transpose()?;
     let bias_buffer = session.buffer(
         MemoryKind::Device,
         std::mem::size_of_val(bundle.bias.as_slice()),
     )?;
-    let residency_start = Instant::now();
-    let packed_write = packed_buffer.write(&bundle.packed)?;
-    let scales_write = scales_buffer.write(&bundle.scales)?;
-    let bias_write = bias_buffer.write(&bundle.bias)?;
+    let mut weight_write_ns = 0_u64;
+    if let Some(buffer) = &legacy_packed {
+        weight_write_ns += buffer.write(&bundle.packed)?.host_ns;
+    }
+    if let Some(buffer) = &legacy_scales {
+        weight_write_ns += buffer.write(&bundle.scales)?.host_ns;
+    }
+    if let Some(buffer) = &v2_weights {
+        weight_write_ns += buffer.write(&bundle.xe_v2_records)?.host_ns;
+    }
+    weight_write_ns += bias_buffer.write(&bundle.bias)?.host_ns;
     let residency_ns = residency_start.elapsed().as_nanos() as u64;
 
-    let gpu = GpuBuffers {
-        primary: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 32)?,
-        residual: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 32)?,
-        primary_scales: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 4)?,
-        residual_scales: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 4)?,
-        output: session.buffer(MemoryKind::Device, max_rows * N * 4)?,
+    let gpu = if variant.is_v2() {
+        let splitk_bytes = max_rows
+            .checked_mul(N)
+            .and_then(|value| value.checked_mul(BLOCKS))
+            .and_then(|value| value.checked_mul(2 * std::mem::size_of::<f32>()))
+            .context("split-K scratch extent overflow")?;
+        if variant.kind == VariantKind::SplitkV2 && splitk_bytes > 8_294_400 {
+            bail!("split-K scratch exceeds the immutable 8294400-byte bound");
+        }
+        GpuBuffers::V2 {
+            activations: session.buffer(
+                MemoryKind::Device,
+                max_rows * BLOCKS * std::mem::size_of::<XeActivationRecordV2>(),
+            )?,
+            output: session.buffer(MemoryKind::Device, max_rows * N * 4)?,
+            splitk_terms: (variant.kind == VariantKind::SplitkV2)
+                .then(|| session.buffer(MemoryKind::Device, splitk_bytes))
+                .transpose()?,
+        }
+    } else {
+        GpuBuffers::V1 {
+            primary: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 32)?,
+            residual: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 32)?,
+            primary_scales: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 4)?,
+            residual_scales: session.buffer(MemoryKind::Device, max_rows * BLOCKS * 4)?,
+            output: session.buffer(MemoryKind::Device, max_rows * N * 4)?,
+        }
     };
-    for (index, buffer) in [
-        &packed_buffer,
-        &scales_buffer,
-        &gpu.primary,
-        &gpu.residual,
-        &gpu.primary_scales,
-        &gpu.residual_scales,
-        &bias_buffer,
-        &gpu.output,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        session.set_buffer(index as u32, buffer)?;
+    match &gpu {
+        GpuBuffers::V1 {
+            primary,
+            residual,
+            primary_scales,
+            residual_scales,
+            output,
+        } => {
+            let buffers = [
+                legacy_packed
+                    .as_ref()
+                    .context("missing canonical packed buffer")?,
+                legacy_scales
+                    .as_ref()
+                    .context("missing canonical scales buffer")?,
+                primary,
+                residual,
+                primary_scales,
+                residual_scales,
+                &bias_buffer,
+                output,
+            ];
+            for (index, buffer) in buffers.into_iter().enumerate() {
+                session.set_buffer(index as u32, buffer)?;
+            }
+        }
+        GpuBuffers::V2 {
+            activations,
+            output,
+            ..
+        } if variant.kind != VariantKind::SplitkV2 => {
+            session.set_buffer(0, v2_weights.as_ref().context("missing v2 weights")?)?;
+            session.set_buffer(1, activations)?;
+            session.set_buffer(2, &bias_buffer)?;
+            session.set_buffer(3, output)?;
+        }
+        GpuBuffers::V2 { .. } => {}
     }
     session.set_group_size(u32::try_from(local_size)?, 1, 1)?;
+    let gpu_context = GpuRequestContext {
+        session,
+        gpu: &gpu,
+        v2_weights: v2_weights.as_ref(),
+        bias: &bias_buffer,
+        variant,
+        local_size,
+    };
 
     let mut scratch_storage = vec![0_u8; (1 << 20) + 4096];
     let scratch_offset = scratch_storage.as_ptr().align_offset(4096);
@@ -1957,6 +2596,7 @@ fn benchmark_projection(
         let prepared = quantize_residual_rows(&inputs)?;
         let mut scalar_output = vec![0.0_f32; rows * N];
         let mut avx2_output = vec![0.0_f32; rows * N];
+        let mut xe_output = vec![0.0_f32; rows * N];
         bundle.cpu_projection_into(
             Mxfp4MatmulBackend::Scalar,
             &prepared,
@@ -1971,7 +2611,7 @@ fn benchmark_projection(
             &mut avx2_output,
             scratch,
         )?;
-        let (_, xe_output) = gpu_request(session, &gpu, &inputs, rows, local_size)?;
+        gpu_request(&gpu_context, &inputs, rows, &mut xe_output)?;
         let scalar_vs_avx2 = compare_projection(&scalar_output, &avx2_output);
         let scalar_vs_xe = compare_projection(&scalar_output, &xe_output);
         let pass = comparison_passes(&scalar_vs_avx2) && comparison_passes(&scalar_vs_xe);
@@ -1990,6 +2630,9 @@ fn benchmark_projection(
                 combined_scalar_oracle: None,
                 combined_avx2: None,
                 combined_xe: None,
+                combined_scalar_oracle_phases: None,
+                combined_avx2_phases: None,
+                combined_xe_phases: None,
                 avx2_over_xe_speedup: None,
                 conservative_speedup_ci95: None,
                 useful_win: false,
@@ -2004,13 +2647,13 @@ fn benchmark_projection(
             ["xe", "scalar-oracle", "avx2"],
         ];
         let mut trials = Vec::new();
-        let mut all_scalar = Vec::with_capacity(90);
-        let mut all_avx2 = Vec::with_capacity(90);
-        let mut all_xe = Vec::with_capacity(90);
+        let mut all_scalar = PhaseSamples::default();
+        let mut all_avx2 = PhaseSamples::default();
+        let mut all_xe = PhaseSamples::default();
         for (trial, order) in orders.into_iter().enumerate() {
-            let mut scalar = Vec::with_capacity(30);
-            let mut avx2 = Vec::with_capacity(30);
-            let mut xe = Vec::with_capacity(30);
+            let mut scalar = PhaseSamples::default();
+            let mut avx2 = PhaseSamples::default();
+            let mut xe = PhaseSamples::default();
             for method in order {
                 for _ in 0..10 {
                     match method {
@@ -2035,13 +2678,13 @@ fn benchmark_projection(
                             )?;
                         }
                         "xe" => {
-                            gpu_request(session, &gpu, &inputs, rows, local_size)?;
+                            gpu_request(&gpu_context, &inputs, rows, &mut xe_output)?;
                         }
                         _ => unreachable!(),
                     }
                 }
                 for _ in 0..30 {
-                    let elapsed = match method {
+                    let timing = match method {
                         "scalar-oracle" => cpu_request(
                             bundle,
                             Mxfp4MatmulBackend::Scalar,
@@ -2058,31 +2701,40 @@ fn benchmark_projection(
                             &mut avx2_output,
                             scratch,
                         )?,
-                        "xe" => gpu_request(session, &gpu, &inputs, rows, local_size)?.0,
+                        "xe" => gpu_request(&gpu_context, &inputs, rows, &mut xe_output)?,
                         _ => unreachable!(),
                     };
                     match method {
-                        "scalar-oracle" => scalar.push(elapsed),
-                        "avx2" => avx2.push(elapsed),
-                        "xe" => xe.push(elapsed),
+                        "scalar-oracle" => scalar.push(timing),
+                        "avx2" => avx2.push(timing),
+                        "xe" => xe.push(timing),
                         _ => unreachable!(),
                     }
                 }
             }
-            all_scalar.extend_from_slice(&scalar);
-            all_avx2.extend_from_slice(&avx2);
-            all_xe.extend_from_slice(&xe);
+            all_scalar.extend(&scalar);
+            all_avx2.extend(&avx2);
+            all_xe.extend(&xe);
             trials.push(TrialReport {
                 trial,
                 method_order: order.to_vec(),
-                scalar_oracle: Distribution::from_samples(&scalar, 0x5800 + trial as u64),
-                avx2: Distribution::from_samples(&avx2, 0x5810 + trial as u64),
-                xe: Distribution::from_samples(&xe, 0x5820 + trial as u64),
+                scalar_oracle: Distribution::from_samples(
+                    &scalar.total_request_ns,
+                    0x5800 + trial as u64,
+                ),
+                avx2: Distribution::from_samples(&avx2.total_request_ns, 0x5810 + trial as u64),
+                xe: Distribution::from_samples(&xe.total_request_ns, 0x5820 + trial as u64),
+                scalar_oracle_phases: scalar.distributions(0x5860 + trial as u64 * 16),
+                avx2_phases: avx2.distributions(0x58a0 + trial as u64 * 16),
+                xe_phases: xe.distributions(0x58e0 + trial as u64 * 16),
             });
         }
-        let scalar_distribution = Distribution::from_samples(&all_scalar, 0x5830 + rows as u64);
-        let avx2_distribution = Distribution::from_samples(&all_avx2, 0x5840 + rows as u64);
-        let xe_distribution = Distribution::from_samples(&all_xe, 0x5850 + rows as u64);
+        let scalar_distribution =
+            Distribution::from_samples(&all_scalar.total_request_ns, 0x5830 + rows as u64);
+        let avx2_distribution =
+            Distribution::from_samples(&all_avx2.total_request_ns, 0x5840 + rows as u64);
+        let xe_distribution =
+            Distribution::from_samples(&all_xe.total_request_ns, 0x5850 + rows as u64);
         let speedup = avx2_distribution.median_ns as f64 / xe_distribution.median_ns as f64;
         let confidence = [
             avx2_distribution.bootstrap_median_ci95_ns[0] as f64
@@ -2105,6 +2757,11 @@ fn benchmark_projection(
             combined_scalar_oracle: Some(scalar_distribution),
             combined_avx2: Some(avx2_distribution),
             combined_xe: Some(xe_distribution),
+            combined_scalar_oracle_phases: Some(
+                all_scalar.distributions(0x5a00 + rows as u64 * 16),
+            ),
+            combined_avx2_phases: Some(all_avx2.distributions(0x5b00 + rows as u64 * 16)),
+            combined_xe_phases: Some(all_xe.distributions(0x5c00 + rows as u64 * 16)),
             avx2_over_xe_speedup: Some(speedup),
             conservative_speedup_ci95: Some(confidence),
             useful_win,
@@ -2112,22 +2769,34 @@ fn benchmark_projection(
         });
     }
     let any_useful_win = reports.iter().any(|report| report.useful_win);
+    let weight_allocation_ns = legacy_packed.as_ref().map_or(0, Buffer::allocation_ns)
+        + legacy_scales.as_ref().map_or(0, Buffer::allocation_ns)
+        + v2_weights.as_ref().map_or(0, Buffer::allocation_ns)
+        + bias_buffer.allocation_ns();
     Ok(json!({
         "status": if correctness_stopped { "fail" } else if any_useful_win { "pass" } else { "fail" },
         "correctness_stopped_performance": correctness_stopped,
         "any_useful_win": any_useful_win,
+        "variant": variant.name,
         "shapes": reports,
         "trial_count": 3,
         "warmups_per_method_per_trial": 10,
         "samples_per_method_per_trial": 30,
         "total_samples_per_method_per_shape": 90,
         "weight_residency": {
-            "allocation_ns": packed_buffer.allocation_ns() + scales_buffer.allocation_ns() + bias_buffer.allocation_ns(),
+            "allocation_ns": weight_allocation_ns,
             "staging_ns": residency_ns,
-            "reported_write_ns": packed_write.host_ns + scales_write.host_ns + bias_write.host_ns,
-            "bytes": bundle.descriptor.canonical_compact_bytes
+            "reported_write_ns": weight_write_ns,
+            "bytes": if variant.is_v2() { bundle.descriptor.xe_v2_bytes } else { bundle.descriptor.canonical_compact_bytes },
+            "canonical_and_v2_co_resident": false,
         },
-        "request_path": "activation residual-Q8 quantization, host packing, staging, submission, synchronization, readback, and BF16 output conversion",
+        "request_path": "activation residual-Q8 quantization, activation packing, one or four uploads according to ABI, argument setup, submission, wait, device kernel, readback, and BF16 output conversion",
+        "phase_semantics": {
+            "host_submission_ns": "CPU projection execution for CPU methods; queue/list enqueue time for Xe",
+            "host_wait_ns": "zero for CPU; completion wait for Xe",
+            "device_kernel_ns": "driver event timestamp; absent for CPU",
+            "total_request_ns": "legacy end-to-end request measurement retained unchanged in scope"
+        },
         "one_time_excluded": ["module creation", "persistent compact weight allocation and staging", "reusable scratch allocation"],
     }))
 }
@@ -2139,49 +2808,216 @@ fn cpu_request(
     rows: usize,
     output: &mut [f32],
     scratch: &mut [u8],
-) -> Result<u64> {
+) -> Result<PhaseTiming> {
     let started = Instant::now();
+    let phase = Instant::now();
     let prepared = quantize_residual_rows(inputs)?;
+    let quantization_ns = phase.elapsed().as_nanos() as u64;
+    let phase = Instant::now();
     bundle.cpu_projection_into(backend, &prepared, rows, output, scratch)?;
+    let projection_ns = phase.elapsed().as_nanos() as u64;
+    let phase = Instant::now();
     let boundary = output
         .iter()
         .map(|value| bf16::from_f32(*value).to_bits())
         .collect::<Vec<_>>();
     black_box(boundary);
-    Ok(started.elapsed().as_nanos() as u64)
+    let bf16_conversion_ns = phase.elapsed().as_nanos() as u64;
+    Ok(PhaseTiming {
+        total_request_ns: started.elapsed().as_nanos() as u64,
+        quantization_ns,
+        host_submission_ns: projection_ns,
+        bf16_conversion_ns,
+        ..PhaseTiming::default()
+    })
 }
 
 fn gpu_request(
-    session: &Session,
-    gpu: &GpuBuffers<'_>,
+    context: &GpuRequestContext<'_, '_>,
     inputs: &[f32],
     rows: usize,
-    local_size: usize,
-) -> Result<(u64, Vec<f32>)> {
+    output: &mut [f32],
+) -> Result<PhaseTiming> {
+    let GpuRequestContext {
+        session,
+        gpu,
+        v2_weights,
+        bias,
+        variant,
+        local_size,
+    } = context;
     let started = Instant::now();
+    let phase = Instant::now();
     let prepared = quantize_residual_rows(inputs)?;
-    let (primary, residual, primary_scales, residual_scales) =
-        split_residual_activations(&prepared);
-    gpu.primary.write(&primary)?;
-    gpu.residual.write(&residual)?;
-    gpu.primary_scales.write(&primary_scales)?;
-    gpu.residual_scales.write(&residual_scales)?;
+    let quantization_ns = phase.elapsed().as_nanos() as u64;
+    let phase = Instant::now();
+    let mut v1_packed = None;
+    let mut v2_packed = None;
+    match gpu {
+        GpuBuffers::V1 { .. } => {
+            v1_packed = Some(split_residual_activations(&prepared));
+        }
+        GpuBuffers::V2 { .. } => {
+            v2_packed = Some(pack_activation_records(&prepared));
+        }
+    }
+    let activation_packing_ns = phase.elapsed().as_nanos() as u64;
+    let phase = Instant::now();
+    match (gpu, v1_packed.as_ref(), v2_packed.as_ref()) {
+        (
+            GpuBuffers::V1 {
+                primary,
+                residual,
+                primary_scales,
+                residual_scales,
+                ..
+            },
+            Some((primary_values, residual_values, primary_scale_values, residual_scale_values)),
+            None,
+        ) => {
+            primary.write(primary_values)?;
+            residual.write(residual_values)?;
+            primary_scales.write(primary_scale_values)?;
+            residual_scales.write(residual_scale_values)?;
+        }
+        (GpuBuffers::V2 { activations, .. }, None, Some(records)) => {
+            activations.write(records)?;
+        }
+        _ => bail!("activation packing did not match the selected GPU ABI"),
+    }
+    let upload_ns = phase.elapsed().as_nanos() as u64;
     let rows_u32 = u32::try_from(rows)?;
     let columns_u32 = N as u32;
     let blocks_u32 = BLOCKS as u32;
-    session.set_scalar(8, &rows_u32)?;
-    session.set_scalar(9, &columns_u32)?;
-    session.set_scalar(10, &blocks_u32)?;
-    let global = round_up(rows * N, local_size);
-    session.run([global, 1, 1], [local_size, 1, 1], TIMEOUT_NS)?;
-    let mut output = vec![0.0_f32; rows * N];
-    gpu.output.read(&mut output)?;
+    let mut argument_setup_ns = 0_u64;
+    let mut host_submission_ns = 0_u64;
+    let mut host_wait_ns = 0_u64;
+    let mut device_kernel_ns = 0_u64;
+    match gpu {
+        GpuBuffers::V1 {
+            output: gpu_output, ..
+        } => {
+            let phase = Instant::now();
+            session.set_scalar(8, &rows_u32)?;
+            session.set_scalar(9, &columns_u32)?;
+            session.set_scalar(10, &blocks_u32)?;
+            argument_setup_ns = phase.elapsed().as_nanos() as u64;
+            let global = round_up(rows * N, *local_size);
+            let timing = session.run([global, 1, 1], [*local_size, 1, 1], TIMEOUT_NS)?;
+            host_submission_ns = timing.submit_ns;
+            host_wait_ns = timing.wait_ns;
+            device_kernel_ns = timing.device_ns.unwrap_or(0);
+            let phase = Instant::now();
+            gpu_output.read(output)?;
+            let readback_ns = phase.elapsed().as_nanos() as u64;
+            let phase = Instant::now();
+            let boundary = output
+                .iter()
+                .map(|value| bf16::from_f32(*value).to_bits())
+                .collect::<Vec<_>>();
+            black_box(boundary);
+            return Ok(PhaseTiming {
+                total_request_ns: started.elapsed().as_nanos() as u64,
+                quantization_ns,
+                activation_packing_ns,
+                upload_ns,
+                argument_setup_ns,
+                host_submission_ns,
+                host_wait_ns,
+                device_kernel_ns: (device_kernel_ns != 0).then_some(device_kernel_ns),
+                readback_ns,
+                bf16_conversion_ns: phase.elapsed().as_nanos() as u64,
+            });
+        }
+        GpuBuffers::V2 {
+            activations,
+            output: gpu_output,
+            splitk_terms,
+        } if variant.kind == VariantKind::SplitkV2 => {
+            let weights = v2_weights.context("split-K requires v2 weights")?;
+            let terms = splitk_terms
+                .as_ref()
+                .context("split-K terms buffer is absent")?;
+            let phase = Instant::now();
+            session.select_kernel("mxfp4_splitk_terms_v2")?;
+            session.set_buffer(0, weights)?;
+            session.set_buffer(1, activations)?;
+            session.set_buffer(2, terms)?;
+            session.set_scalar(3, &rows_u32)?;
+            session.set_scalar(4, &columns_u32)?;
+            session.set_scalar(5, &blocks_u32)?;
+            argument_setup_ns += phase.elapsed().as_nanos() as u64;
+            let timing = session.run(
+                [round_up(N, *local_size), BLOCKS, rows],
+                [*local_size, 1, 1],
+                TIMEOUT_NS,
+            )?;
+            host_submission_ns += timing.submit_ns;
+            host_wait_ns += timing.wait_ns;
+            device_kernel_ns += timing.device_ns.unwrap_or(0);
+
+            let phase = Instant::now();
+            session.select_kernel("mxfp4_splitk_reduce_v2")?;
+            session.set_buffer(0, terms)?;
+            session.set_buffer(1, bias)?;
+            session.set_buffer(2, gpu_output)?;
+            session.set_scalar(3, &rows_u32)?;
+            session.set_scalar(4, &columns_u32)?;
+            session.set_scalar(5, &blocks_u32)?;
+            argument_setup_ns += phase.elapsed().as_nanos() as u64;
+            let timing = session.run(
+                [round_up(N, *local_size), rows, 1],
+                [*local_size, 1, 1],
+                TIMEOUT_NS,
+            )?;
+            host_submission_ns += timing.submit_ns;
+            host_wait_ns += timing.wait_ns;
+            device_kernel_ns += timing.device_ns.unwrap_or(0);
+        }
+        GpuBuffers::V2 {
+            output: gpu_output, ..
+        } => {
+            let phase = Instant::now();
+            session.set_scalar(4, &rows_u32)?;
+            session.set_scalar(5, &columns_u32)?;
+            session.set_scalar(6, &blocks_u32)?;
+            argument_setup_ns = phase.elapsed().as_nanos() as u64;
+            let dispatch_rows = rows / variant.rows_per_dispatch();
+            let timing = session.run(
+                [round_up(N, *local_size), dispatch_rows, 1],
+                [*local_size, 1, 1],
+                TIMEOUT_NS,
+            )?;
+            host_submission_ns = timing.submit_ns;
+            host_wait_ns = timing.wait_ns;
+            device_kernel_ns = timing.device_ns.unwrap_or(0);
+            let _ = gpu_output;
+        }
+    }
+    let gpu_output = match gpu {
+        GpuBuffers::V1 { output, .. } | GpuBuffers::V2 { output, .. } => output,
+    };
+    let phase = Instant::now();
+    gpu_output.read(output)?;
+    let readback_ns = phase.elapsed().as_nanos() as u64;
+    let phase = Instant::now();
     let boundary = output
         .iter()
         .map(|value| bf16::from_f32(*value).to_bits())
         .collect::<Vec<_>>();
     black_box(boundary);
-    Ok((started.elapsed().as_nanos() as u64, output))
+    Ok(PhaseTiming {
+        total_request_ns: started.elapsed().as_nanos() as u64,
+        quantization_ns,
+        activation_packing_ns,
+        upload_ns,
+        argument_setup_ns,
+        host_submission_ns,
+        host_wait_ns,
+        device_kernel_ns: (device_kernel_ns != 0).then_some(device_kernel_ns),
+        readback_ns,
+        bf16_conversion_ns: phase.elapsed().as_nanos() as u64,
+    })
 }
 
 fn compare_projection(expected: &[f32], actual: &[f32]) -> Comparison {

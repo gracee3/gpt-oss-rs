@@ -63,6 +63,8 @@ impl Default for XeSessionInfo {
 pub struct XeRunTiming {
     pub status: i32,
     pub host_ns: u64,
+    pub submit_ns: u64,
+    pub wait_ns: u64,
     pub device_ns: u64,
     pub error: [c_char; XE_TEXT],
 }
@@ -121,6 +123,12 @@ unsafe extern "C" {
         error_len: usize,
     ) -> i32;
     pub fn xe_bytes_free(bytes: *mut u8);
+    pub fn xe_session_select_kernel(
+        session: *mut c_void,
+        entry_point: *const c_char,
+        error: *mut c_char,
+        error_len: usize,
+    ) -> i32;
     pub fn xe_buffer_create(
         session: *mut c_void,
         kind: u32,
