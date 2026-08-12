@@ -15,6 +15,15 @@
     "abi_schema"
   ],
   "argument_sets": {
+    "mxfp4_exact_blocks_v2": [
+      {"index": 0, "name": "weights", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "round_up(count, 32) * 17"},
+      {"index": 1, "name": "activations", "type": "activation_record_v2", "size": "pointer", "address_space": "global", "alignment": 8, "mutability": "const", "extent": "count * 72"},
+      {"index": 2, "name": "primary_integer", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 3, "name": "residual_integer", "type": "i32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 4, "name": "q8_output", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 5, "name": "residual_q8_output", "type": "f32", "size": "pointer", "address_space": "global", "alignment": 4, "mutability": "write", "extent": "count * 4"},
+      {"index": 6, "name": "count", "type": "u32", "size": 4, "address_space": "value", "alignment": 4, "mutability": "const", "extent": "one value"}
+    ],
     "mxfp4_project_v2": [
       {"index": 0, "name": "weights", "type": "u8", "size": "pointer", "address_space": "global", "alignment": 1, "mutability": "const", "extent": "columns * blocks * 17"},
       {"index": 1, "name": "activations", "type": "activation_record_v2", "size": "pointer", "address_space": "global", "alignment": 8, "mutability": "const", "extent": "rows * blocks * 72"},
@@ -42,6 +51,7 @@
     ]
   },
   "entry_points": {
+    "mxfp4_exact_blocks_v2": {"argument_set": "mxfp4_exact_blocks_v2", "global_size": ["round_up(count, 32)", 1, 1], "local_size": [32, 1, 1], "subgroup": 32, "k": 32},
     "mxfp4_tile32_m1_v2": {"argument_set": "mxfp4_project_v2", "global_size": ["round_up(columns, local_x)", "rows", 1], "local_size": ["32|64|128", 1, 1], "subgroup": 32, "rows_per_weight_decode": 1},
     "mxfp4_tile32_m2_v2": {"argument_set": "mxfp4_project_v2", "global_size": ["round_up(columns, local_x)", "rows / 2", 1], "local_size": ["32|64|128", 1, 1], "subgroup": 32, "rows_per_weight_decode": 2},
     "mxfp4_tile32_m4_v2": {"argument_set": "mxfp4_project_v2", "global_size": ["round_up(columns, local_x)", "rows / 4", 1], "local_size": ["32|64|128", 1, 1], "subgroup": 32, "rows_per_weight_decode": 4},

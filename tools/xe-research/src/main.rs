@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 
 use crate::model::{
     deterministic_activations, pack_activation_records, quantize_residual_rows,
-    split_residual_activations, ProjectionBundle, XeActivationRecordV2, BLOCKS, N,
+    split_residual_activations, xe_v2_records_for_dimensions, ProjectionBundle,
+    XeActivationRecordV2, BLOCKS, N,
 };
 use crate::runtime::{
     ArtifactKind, Backend, Buffer, MemoryKind, Session, SessionInfo, EXPECTED_VENDOR,
@@ -288,6 +289,56 @@ fn benchmark_variant(common: &Common) -> Result<VariantSpec> {
         bail!("Xe ABI v2 variants require --backend opencl");
     }
     Ok(spec)
+}
+
+fn validate_variant_shape(
+    variant: &VariantSpec,
+    rows: usize,
+    columns: usize,
+    k: usize,
+) -> Result<()> {
+    if rows == 0 || columns == 0 || k == 0 {
+        bail!("rows, columns, and K must all be nonzero");
+    }
+    if !k.is_multiple_of(32) {
+        bail!("K tail rejected: K must be divisible by 32");
+    }
+    if variant.is_v2() && !columns.is_multiple_of(32) {
+        bail!("Xe ABI v2 requires columns divisible by the 32-lane output tile");
+    }
+    if !variant.applicable(rows) {
+        bail!("rows={rows} is not applicable to variant {}", variant.name);
+    }
+    Ok(())
+}
+
+fn validate_v2_abi(bytes: &[u8]) -> Result<()> {
+    let abi: Value = serde_json::from_slice(bytes).context("parse Xe ABI v2 JSON")?;
+    if abi.get("schema").and_then(Value::as_str) != Some("gpt-oss-rs.xe-kernel-abi/v2") {
+        bail!("Xe ABI v2 schema mismatch");
+    }
+    let layout = abi
+        .pointer("/rules/weight_layout")
+        .and_then(Value::as_str)
+        .context("Xe ABI v2 is missing its weight layout")?;
+    if layout
+        != "[output-tile][K-block][17 planes][32 lanes]; plane 0 is E8M0 scale and planes 1-16 are canonical low-nibble-first packed bytes"
+    {
+        bail!("Xe ABI v2 weight layout is corrupt or stale");
+    }
+    for entry in [
+        "mxfp4_exact_blocks_v2",
+        "mxfp4_tile32_m1_v2",
+        "mxfp4_tile32_m2_v2",
+        "mxfp4_tile32_m4_v2",
+        "mxfp4_splitk_terms_v2",
+        "mxfp4_splitk_reduce_v2",
+    ] {
+        if abi.pointer(&format!("/entry_points/{entry}")).is_none() {
+            bail!("Xe ABI v2 is missing entry point {entry}");
+        }
+    }
+    Ok(())
 }
 
 fn command_environment(arguments: &[String], common: &Common) -> Result<()> {
@@ -812,7 +863,7 @@ fn command_mxfp4(arguments: &[String], common: &Common) -> Result<()> {
         Backend::Opencl => (
             ArtifactKind::OpenclSource,
             std::fs::read(&kernel_path)?,
-            "-cl-std=CL3.0".to_string(),
+            "-cl-std=CL3.0 -DXE_ENABLE_DP4A=1".to_string(),
         ),
         Backend::LevelZero => (
             ArtifactKind::Spirv,
@@ -829,6 +880,15 @@ fn command_mxfp4(arguments: &[String], common: &Common) -> Result<()> {
         common.immediate,
     )?;
     let validation = run_mxfp4_cases(&session, &cases)?;
+    let v2_validation = if common.backend == Backend::Opencl {
+        session.select_kernel("mxfp4_exact_blocks_v2")?;
+        run_mxfp4_cases_v2(&session, &cases)?
+    } else {
+        json!({
+            "status": "unsupported",
+            "reason": "Xe ABI v2 candidates are intentionally OpenCL-only"
+        })
+    };
     let native = session.native_binary()?;
     let native_path = common
         .results
@@ -869,6 +929,7 @@ fn command_mxfp4(arguments: &[String], common: &Common) -> Result<()> {
         .join(format!("mxfp4-{}.json", common.backend));
     let details = json!({
         "validation": validation,
+        "v2_validation": v2_validation,
         "exhaustive_e2m1_e8m0_cases": 16 * 256,
         "fixed_seed_random_q8_blocks": 10_000,
         "fixed_seed_random_residual_q8_blocks": 10_000,
@@ -906,6 +967,11 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
             .unwrap_or(SNAPSHOT),
     );
     let variant = benchmark_variant(common)?;
+    if variant.is_v2() {
+        validate_v2_abi(&std::fs::read(
+            manifest_dir().join("fixtures/kernel-abi-v2.json"),
+        )?)?;
+    }
     let entry = variant.entry.as_str();
     let bundle = ProjectionBundle::open(&snapshot)?;
     let kernel_path = manifest_dir().join("kernels/mxfp4.cl");
@@ -980,11 +1046,8 @@ fn command_benchmark(arguments: &[String], common: &Common) -> Result<()> {
     {
         bail!("--local-size is not valid for the selected variant or queried device limit");
     }
-    if shapes.iter().any(|&rows| !variant.applicable(rows)) {
-        bail!(
-            "one or more --shapes are not applicable to variant {}",
-            variant.name
-        );
+    for &rows in &shapes {
+        validate_variant_shape(&variant, rows, N, BLOCKS * 32)?;
     }
     let environment_before = benchmark_environment();
     let benchmark = benchmark_projection(&session, &bundle, &variant, &shapes, local_size)?;
@@ -1065,6 +1128,11 @@ fn command_diagnose(arguments: &[String], common: &Common) -> Result<()> {
     }
     let started_at = timestamp();
     let variant = benchmark_variant(common)?;
+    if variant.is_v2() {
+        validate_v2_abi(&std::fs::read(
+            manifest_dir().join("fixtures/kernel-abi-v2.json"),
+        )?)?;
+    }
     let snapshot = PathBuf::from(
         common
             .flags
@@ -1822,6 +1890,120 @@ fn run_mxfp4_cases(session: &Session, cases: &[Mxfp4Case]) -> Result<Value> {
         "device_ns": timing.device_ns,
         "e8m0_zero_bits": format!("0x{:08x}", e8m0_scale(0).to_bits()),
         "e8m0_ff_is_nan": e8m0_scale(0xff).is_nan()
+    }))
+}
+
+fn run_mxfp4_cases_v2(session: &Session, cases: &[Mxfp4Case]) -> Result<Value> {
+    let count = u32::try_from(cases.len())?;
+    let padded = round_up(cases.len(), 32);
+    let kernels = Kernels::new(KernelPath::Scalar)?;
+    let mut canonical_packed = vec![0_u8; padded * 16];
+    let mut canonical_scales = vec![0_u8; padded];
+    let mut activation_blocks = Vec::with_capacity(cases.len());
+    let mut expected_primary_integer = Vec::with_capacity(cases.len());
+    let mut expected_residual_integer = Vec::with_capacity(cases.len());
+    let mut expected_q8 = Vec::with_capacity(cases.len());
+    let mut expected_residual = Vec::with_capacity(cases.len());
+    for (index, case) in cases.iter().enumerate() {
+        canonical_packed[index * 16..index * 16 + 16].copy_from_slice(&case.weight.packed);
+        canonical_scales[index] = case.weight.scale;
+        activation_blocks.push(case.activation.clone());
+        let dots = kernels.mxfp4_residual_q8_block_dot_i32(&case.weight, &case.activation);
+        expected_primary_integer.push(dots[0]);
+        expected_residual_integer.push(dots[1]);
+        expected_q8.push(kernels.mxfp4_q8_dot(
+            std::slice::from_ref(&case.weight),
+            std::slice::from_ref(&case.activation.primary),
+        )?);
+        expected_residual.push(kernels.mxfp4_residual_q8_dot(
+            std::slice::from_ref(&case.weight),
+            std::slice::from_ref(&case.activation),
+        )?);
+    }
+    let weights = xe_v2_records_for_dimensions(&canonical_packed, &canonical_scales, padded, 1);
+    let activations = pack_activation_records(&activation_blocks);
+    let weight_buffer = session.buffer(MemoryKind::Device, weights.len())?;
+    let activation_buffer = session.buffer(
+        MemoryKind::Device,
+        std::mem::size_of_val(activations.as_slice()),
+    )?;
+    let primary_integer_buffer = session.buffer(MemoryKind::Device, cases.len() * 4)?;
+    let residual_integer_buffer = session.buffer(MemoryKind::Device, cases.len() * 4)?;
+    let q8_buffer = session.buffer(MemoryKind::Device, cases.len() * 4)?;
+    let residual_q8_buffer = session.buffer(MemoryKind::Device, cases.len() * 4)?;
+    weight_buffer.write(&weights)?;
+    activation_buffer.write(&activations)?;
+    for (index, buffer) in [
+        &weight_buffer,
+        &activation_buffer,
+        &primary_integer_buffer,
+        &residual_integer_buffer,
+        &q8_buffer,
+        &residual_q8_buffer,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        session.set_buffer(index as u32, buffer)?;
+    }
+    session.set_scalar(6, &count)?;
+    session.set_group_size(32, 1, 1)?;
+    let timing = session.run([padded, 1, 1], [32, 1, 1], TIMEOUT_NS)?;
+    let mut actual_primary_integer = vec![0_i32; cases.len()];
+    let mut actual_residual_integer = vec![0_i32; cases.len()];
+    let mut actual_q8 = vec![0_f32; cases.len()];
+    let mut actual_residual = vec![0_f32; cases.len()];
+    primary_integer_buffer.read(&mut actual_primary_integer)?;
+    residual_integer_buffer.read(&mut actual_residual_integer)?;
+    q8_buffer.read(&mut actual_q8)?;
+    residual_q8_buffer.read(&mut actual_residual)?;
+    if actual_primary_integer != expected_primary_integer
+        || actual_residual_integer != expected_residual_integer
+    {
+        bail!("Xe ABI v2 exact integer intermediates differ from scalar oracle");
+    }
+    let mut finite_bit_mismatches = 0_usize;
+    let mut bf16_mismatches = 0_usize;
+    let mut nan_mismatches = 0_usize;
+    for ((expected, actual), (expected_residual, actual_residual)) in expected_q8
+        .iter()
+        .zip(&actual_q8)
+        .zip(expected_residual.iter().zip(&actual_residual))
+    {
+        if expected.is_nan() {
+            nan_mismatches += usize::from(!actual.is_nan());
+        } else {
+            finite_bit_mismatches += usize::from(expected.to_bits() != actual.to_bits());
+            bf16_mismatches += usize::from(
+                bf16::from_f32(*expected).to_bits() != bf16::from_f32(*actual).to_bits(),
+            );
+        }
+        if expected_residual.is_nan() {
+            nan_mismatches += usize::from(!actual_residual.is_nan());
+        } else {
+            finite_bit_mismatches +=
+                usize::from(expected_residual.to_bits() != actual_residual.to_bits());
+            bf16_mismatches += usize::from(
+                bf16::from_f32(*expected_residual).to_bits()
+                    != bf16::from_f32(*actual_residual).to_bits(),
+            );
+        }
+    }
+    if finite_bit_mismatches != 0 || bf16_mismatches != 0 || nan_mismatches != 0 {
+        bail!(
+            "Xe ABI v2 one-block mismatch: finite_bits={finite_bit_mismatches}, bf16={bf16_mismatches}, nan={nan_mismatches}"
+        );
+    }
+    Ok(json!({
+        "status": "pass",
+        "cases": cases.len(),
+        "padded_columns": padded,
+        "integer_mismatches": 0,
+        "finite_bit_mismatches": 0,
+        "bf16_boundary_mismatches": 0,
+        "nan_behavior_mismatches": 0,
+        "host_ns": timing.host_ns,
+        "device_ns": timing.device_ns,
     }))
 }
 
@@ -3061,4 +3243,60 @@ fn ulp_distance(left: f32, right: f32) -> u32 {
         }
     }
     ordered(left).abs_diff(ordered(right))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn common_with(flags: &[(&str, &str)]) -> Common {
+        Common {
+            backend: Backend::Opencl,
+            results: PathBuf::from("unused"),
+            immediate: false,
+            flags: flags
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn forced_variant_rejects_legacy_entry_ambiguity() {
+        let common = common_with(&[
+            ("variant", "tile32-m1-v2"),
+            ("entry", "mxfp4_project_scalar"),
+        ]);
+        assert!(benchmark_variant(&common)
+            .unwrap_err()
+            .to_string()
+            .contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn v2_shape_contract_rejects_tails_and_inapplicable_rows() {
+        for (name, rows) in [("tile32-m2-v2", 1), ("tile32-m4-v2", 2), ("splitk-v2", 4)] {
+            let variant = benchmark_variant(&common_with(&[("variant", name)])).unwrap();
+            assert!(validate_variant_shape(&variant, rows, N, BLOCKS * 32).is_err());
+        }
+        let variant = benchmark_variant(&common_with(&[("variant", "tile32-m1-v2")])).unwrap();
+        assert!(validate_variant_shape(&variant, 1, N - 1, BLOCKS * 32).is_err());
+        assert!(validate_variant_shape(&variant, 1, N, BLOCKS * 32 - 1).is_err());
+        assert!(validate_variant_shape(&variant, 1, N, BLOCKS * 32).is_ok());
+    }
+
+    #[test]
+    fn v2_abi_corruption_is_rejected() {
+        let valid = include_bytes!("../fixtures/kernel-abi-v2.json");
+        validate_v2_abi(valid).unwrap();
+        let mut corrupt: Value = serde_json::from_slice(valid).unwrap();
+        corrupt["schema"] = Value::String("gpt-oss-rs.xe-kernel-abi/corrupt".into());
+        assert!(validate_v2_abi(&serde_json::to_vec(&corrupt).unwrap()).is_err());
+        let mut stale: Value = serde_json::from_slice(valid).unwrap();
+        stale["entry_points"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mxfp4_splitk_reduce_v2");
+        assert!(validate_v2_abi(&serde_json::to_vec(&stale).unwrap()).is_err());
+    }
 }

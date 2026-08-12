@@ -378,15 +378,24 @@ fn x8_records(packed: &[u8], scales: &[u8]) -> Vec<u8> {
 /// Repack canonical `[output][K-block][scale + 16 packed bytes]` records into
 /// the immutable Xe ABI v2 layout `[output-tile][K-block][17 planes][32 lanes]`.
 pub fn xe_v2_records(packed: &[u8], scales: &[u8]) -> Vec<u8> {
-    assert_eq!(packed.len(), N * BLOCKS * 16);
-    assert_eq!(scales.len(), N * BLOCKS);
-    assert_eq!(N % XE_TILE, 0);
+    xe_v2_records_for_dimensions(packed, scales, N, BLOCKS)
+}
+
+pub fn xe_v2_records_for_dimensions(
+    packed: &[u8],
+    scales: &[u8],
+    columns: usize,
+    blocks: usize,
+) -> Vec<u8> {
+    assert_eq!(packed.len(), columns * blocks * 16);
+    assert_eq!(scales.len(), columns * blocks);
+    assert_eq!(columns % XE_TILE, 0);
     let mut output = vec![0_u8; scales.len() * XE_WEIGHT_PLANES];
-    for tile in 0..N / XE_TILE {
-        for block in 0..BLOCKS {
-            let destination = (tile * BLOCKS + block) * XE_WEIGHT_PLANES * XE_TILE;
+    for tile in 0..columns / XE_TILE {
+        for block in 0..blocks {
+            let destination = (tile * blocks + block) * XE_WEIGHT_PLANES * XE_TILE;
             for lane in 0..XE_TILE {
-                let source = (tile * XE_TILE + lane) * BLOCKS + block;
+                let source = (tile * XE_TILE + lane) * blocks + block;
                 output[destination + lane] = scales[source];
                 for byte in 0..16 {
                     output[destination + (byte + 1) * XE_TILE + lane] = packed[source * 16 + byte];
@@ -464,17 +473,19 @@ mod tests {
         }
         let records = xe_v2_records(&packed, &scales);
         assert_eq!(records.len(), packed.len() + scales.len());
-        for &(row, block) in &[(0, 0), (31, 89), (32, 2), (5759, 42)] {
-            let tile = row / XE_TILE;
-            let lane = row % XE_TILE;
-            let base = (tile * BLOCKS + block) * XE_WEIGHT_PLANES * XE_TILE;
-            let source = row * BLOCKS + block;
-            assert_eq!(records[base + lane], scales[source]);
-            for byte in 0..16 {
-                assert_eq!(
-                    records[base + (byte + 1) * XE_TILE + lane],
-                    packed[source * 16 + byte]
-                );
+        for row in 0..N {
+            for block in 0..BLOCKS {
+                let tile = row / XE_TILE;
+                let lane = row % XE_TILE;
+                let base = (tile * BLOCKS + block) * XE_WEIGHT_PLANES * XE_TILE;
+                let source = row * BLOCKS + block;
+                assert_eq!(records[base + lane], scales[source]);
+                for byte in 0..16 {
+                    assert_eq!(
+                        records[base + (byte + 1) * XE_TILE + lane],
+                        packed[source * 16 + byte]
+                    );
+                }
             }
         }
     }

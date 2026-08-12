@@ -259,6 +259,34 @@ inline float2 xe_v2_activation_scales(__global const uchar *activation) {
 }
 
 __attribute__((intel_reqd_sub_group_size(32)))
+__kernel void mxfp4_exact_blocks_v2(
+    __global const uchar *weights,
+    __global const uchar *activations,
+    __global int *primary_integer,
+    __global int *residual_integer,
+    __global float *q8_output,
+    __global float *residual_q8_output,
+    const uint count) {
+    const uint index = (uint)get_global_id(0);
+    if (index >= count) return;
+    const uint tile = index >> 5;
+    const uint lane = index & 31u;
+    const size_t weight_base =
+        (size_t)tile * XE_V2_PLANES * XE_V2_TILE;
+    __global const uchar *activation =
+        activations + (size_t)index * XE_V2_ACTIVATION_BYTES;
+    const int2 dots = xe_v2_block_dots(weights, weight_base, lane, activation);
+    primary_integer[index] = dots.x;
+    residual_integer[index] = dots.y;
+    const float2 scales = xe_v2_activation_scales(activation);
+    const float weight_scale = 0.5f * xe_e8m0(weights[weight_base + lane]);
+    const float primary_value = (float)dots.x * weight_scale * scales.x;
+    q8_output[index] = primary_value;
+    residual_q8_output[index] =
+        primary_value + (float)dots.y * weight_scale * scales.y;
+}
+
+__attribute__((intel_reqd_sub_group_size(32)))
 __kernel void mxfp4_tile32_m1_v2(
     __global const uchar *weights,
     __global const uchar *activations,
