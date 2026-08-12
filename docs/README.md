@@ -46,9 +46,11 @@
 - [`XE_SPRINT_PRE_RESEARCH.md`](XE_SPRINT_PRE_RESEARCH.md): current source and
   tool inventory plus the authoritative expanded one-sweep X0-X7 research
   charter, preserved with its original performance-gated closeout.
-- [`xe-research/`](xe-research/README.md): completed X0-X8 reports, immutable
-  X0-X7 claim/hash index, X8 ABI/layout/codegen/diagnostic evidence, and
-  selected forced-only decode/prefill variants with no production dispatch.
+- [`xe-research/`](xe-research/README.md): completed X0-X9 reports, immutable
+  research evidence, the explicit CPU+Xe production integration, and the
+  evidence-gated decision to leave automatic dispatch on CPU.
+- [`xe-research/09-production-integration-and-auto-promotion.md`](xe-research/09-production-integration-and-auto-promotion.md):
+  runtime-loaded explicit hybrid serving and its full-model promotion gate.
 - [`XE_SPRINT_PRE_RESEARCH_EXPANSION_HANDOFF.md`](XE_SPRINT_PRE_RESEARCH_EXPANSION_HANDOFF.md):
   owner-supplied documentation handoff that expanded the charter from bounded
   kernel feasibility to real runtime attachment research.

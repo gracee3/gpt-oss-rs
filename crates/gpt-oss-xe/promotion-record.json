@@ -1,7 +1,7 @@
 {
   "schema": "gpt-oss-rs.xe-auto-promotion/v1",
   "automatic_enabled": false,
-  "reason": "X8 validates bounded projection kernels only; full-model correctness, lifecycle, memory, and paired performance gates remain unrun",
+  "reason": "X9 full-model paired performance did not establish an Xe win above CPU parity; explicit cpu_xe remains available but automatic dispatch stays on CPU",
   "pci_vendor_id": "8086",
   "pci_device_id": "9a49",
   "driver_version": "26.05.037020",
@@ -16,6 +16,8 @@
   "workgroup_size": 32,
   "evidence": {
     "x8_selection_summary_sha256": "ff2fdd40244a7e2dae18ca5e7e3c500425b0e8701b9df3affa0023de85254428",
-    "production_gate": "not_run"
+    "paired_performance_summary_sha256": "d4705c9857ac83caec2f31cd4f591bd6bc35a977ffb4ba41483d27a3c4d7170e",
+    "production_gate": "fail_performance",
+    "explicit_integration": "pending_final_validation"
   }
 }

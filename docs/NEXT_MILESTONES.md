@@ -43,9 +43,10 @@ were never relaxed. Existing new kernels remain forced or experimental where
 documented, and automatic dispatch stays on the validated baseline until later
 evidence supports a separately reviewed promotion.
 
-## Iris Xe research sprint
+## Iris Xe research and production integration
 
-Status: X0-X7 promotion gate preserved; X8 forced-only optimization complete.
+Status: X0-X8 research preserved; X9 explicit CPU+Xe production path complete;
+automatic promotion failed and remains disabled.
 
 The T14 OpenCL and Level Zero paths pass provenance, exact artifact, memory,
 real-checkpoint, MXFP4 correctness, and current-native DP4A code-generation
@@ -56,10 +57,21 @@ layout and multi-row OpenCL kernels now beat canonical Xe conservatively and
 beat AVX2 at the selected decode/prefill shapes. The evidence and decisions are
 published in [`xe-research/`](xe-research/README.md).
 
-This milestone does not authorize production implementation, automatic
-dispatch, decode offload, or model-scale serving integration. CPU remains the
-default and the numerical oracle. Further Xe work requires an explicit new
-goal and must begin from the forced-only X8 boundary.
+The separately authorized X9 milestone integrated the exact X8 OpenCL source
+behind runtime loading and explicit `--device xe`. CPU remains the numerical
+oracle and owns all model state; only bounded M>=4 prefill expert projections
+are offloaded. Full-model correctness passed, but paired `harmony_122`
+performance did not establish a lower confidence bound above CPU parity and
+its p95 inter-token upper bound narrowly exceeded the 2% limit. Accordingly,
+`--device auto` remains CPU and the production record cannot enable itself.
+See
+[`xe-research/09-production-integration-and-auto-promotion.md`](xe-research/09-production-integration-and-auto-promotion.md).
+
+Decode expert caching, background migration, CPU/GPU overlap, split-K serving,
+Level Zero, model-scale Xe residency, and full-GPU inference remain outside
+this milestone. Any later automatic-promotion attempt requires a fresh exact
+stack record and must rerun the full correctness, lifecycle, memory, soak, and
+paired-performance gates rather than changing the current result in place.
 
 ## Completed foundation
 

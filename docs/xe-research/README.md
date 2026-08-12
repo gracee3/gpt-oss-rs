@@ -1,10 +1,12 @@
-# Iris Xe X0–X8 Research
+# Iris Xe X0–X9 Research and Production Integration
 
-- Status: X0–X7 complete; X8 forced-only optimization complete
+- Status: X0–X8 complete; X9 explicit production integration complete; auto
+  promotion failed and remains disabled
 - Host: Lenovo T14, Tiger Lake-LP Iris Xe `8086:9a49`
 - Validated stack: Compute Runtime 26.05.37020.3, Level Zero 1.28.2
 - X0–X7 raw evidence: `/home/emmy/src/xe-research/results/20260811-xe-one-sweep/`
 - X8 raw evidence: `/home/emmy/src/xe-research/results/20260812-xe-optimization-sprint/`
+- X9 raw evidence: `/home/emmy/src/xe-research/results/20260812-xe-production-integration/`
 - X7 manifest SHA-256: `1378bd9ab319254d19ae95c91fc601e888ec56b34c301f2ffc2dbfe564a81430`
 
 X7's `fail` is its predeclared promotion-gate result, not an overall research
@@ -13,7 +15,9 @@ passed. X8 preserves that checkpoint and adds correct, faster forced OpenCL
 research variants. It selects separate M=1, M=2, and M>=4 winners with
 conservative intervals above canonical Xe parity. No production backend,
 automatic dispatch, serving integration, dependency, or public runtime API was
-added.
+added by X8. X9 subsequently integrated those exact source/ABI bytes behind an
+explicit, runtime-loaded `cpu_xe` path. Its automatic full-model performance
+gate failed, so automatic dispatch is still disabled.
 
 ## Reports
 
@@ -28,6 +32,7 @@ added.
 | X6 | [Real-tensor prefill vertical slice](06-real-tensor-prefill-vertical-slice.md) | useful-win fail |
 | X7 | [Decision and forced implementation pre-plan](07-decision-and-forced-implementation-preplan.md) | negative closeout |
 | X8 | [Performance diagnosis and forced-only optimization](08-performance-diagnosis-and-optimization.md) | selected forced decode/prefill winners |
+| X9 | [Production integration and automatic-promotion gate](09-production-integration-and-auto-promotion.md) | explicit `cpu_xe` pass; automatic performance gate fail |
 
 ## Claim-to-evidence index
 

@@ -885,6 +885,8 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
                 ))
             })?;
         gpt_oss_engine::telemetry::metrics::register_descriptions();
+        #[cfg(feature = "xe")]
+        gpt_oss_xe::register_metric_descriptions();
         Some(handle)
     } else {
         None

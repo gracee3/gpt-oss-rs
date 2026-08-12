@@ -112,6 +112,7 @@ struct ParityCapture<'a> {
     fixture_manifest: &'a Path,
     model_path: &'a Path,
     repack_cache: &'a Path,
+    executable_sha256: String,
     kernel: String,
     cpu_matmul_backend: String,
     expert_projection: CpuExpertProjection,
@@ -124,6 +125,10 @@ struct ParityCapture<'a> {
     startup_seconds: f64,
     prompt_seconds: f64,
     generation_seconds: f64,
+    time_to_first_token_seconds: f64,
+    full_request_seconds: f64,
+    token_arrival_seconds: Vec<f64>,
+    inter_token_seconds: Vec<f64>,
     trace: Option<CpuPrefillTrace>,
     pinned_model: &'a serde_json::Value,
     pinned_official_oracle: &'a serde_json::Value,
@@ -186,10 +191,13 @@ fn main() -> Result<()> {
     let prompt_seconds = prompt_start.elapsed().as_secs_f64();
 
     let generation_start = Instant::now();
+    let request_start = prompt_start;
     let mut generated_token_ids = Vec::with_capacity(cli.max_new_tokens);
+    let mut token_arrival_seconds = Vec::with_capacity(cli.max_new_tokens);
     for step in 0..cli.max_new_tokens {
         let token_id = greedy_token(&logits)? as u32;
         generated_token_ids.push(token_id);
+        token_arrival_seconds.push(request_start.elapsed().as_secs_f64());
         if matches!(token_id, HARMONY_RETURN_TOKEN_ID | HARMONY_CALL_TOKEN_ID) {
             break;
         }
@@ -206,6 +214,15 @@ fn main() -> Result<()> {
         bail!("generation stopped before the requested --trace-step");
     }
     let generation_seconds = generation_start.elapsed().as_secs_f64();
+    let time_to_first_token_seconds = token_arrival_seconds
+        .first()
+        .copied()
+        .unwrap_or(prompt_seconds);
+    let full_request_seconds = request_start.elapsed().as_secs_f64();
+    let inter_token_seconds = token_arrival_seconds
+        .windows(2)
+        .map(|window| window[1] - window[0])
+        .collect();
     if let Some(expected) = &scenario.official_greedy_tokens {
         if cli.max_new_tokens >= expected.len() && &generated_token_ids != expected {
             bail!(
@@ -223,6 +240,12 @@ fn main() -> Result<()> {
         fixture_manifest: &cli.fixtures,
         model_path: &cli.model,
         repack_cache: &cli.repack_cache,
+        executable_sha256: std::env::current_exe()
+            .context("could not resolve parity runner executable")
+            .and_then(|path| {
+                std::fs::read(path).context("could not read parity runner executable for hashing")
+            })
+            .map(|bytes| sha256(&bytes))?,
         kernel: cli.kernel.to_string(),
         cpu_matmul_backend: runner.matmul_backend().to_string(),
         expert_projection: runner.expert_projection(),
@@ -235,6 +258,10 @@ fn main() -> Result<()> {
         startup_seconds,
         prompt_seconds,
         generation_seconds,
+        time_to_first_token_seconds,
+        full_request_seconds,
+        token_arrival_seconds,
+        inter_token_seconds,
         trace,
         pinned_model: &manifest.model,
         pinned_official_oracle: &manifest.official_oracle,
@@ -348,7 +375,11 @@ fn local_source_provenance() -> SourceProvenance {
         cargo_lock_sha256,
         toolchain,
         profile: "release".into(),
-        features: Vec::new(),
+        features: if cfg!(feature = "xe") {
+            vec!["xe".into()]
+        } else {
+            Vec::new()
+        },
     }
 }
 

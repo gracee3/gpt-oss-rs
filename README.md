@@ -16,7 +16,12 @@ framework, or accelerator. See
 ## Current status
 
 - Native CPU serving is the default. `--device auto` resolves to CPU for
-  GPT-OSS even when CUDA is present.
+  GPT-OSS even when CUDA or OpenCL is present because the Xe performance
+  promotion record is not passing.
+- The default server binary includes a runtime-loaded, Linux-only Iris Xe
+  projection backend. `--device xe` explicitly attaches it only on exact Intel
+  `8086:9a49`; hosts without OpenCL retain the CPU path and no OpenCL link-time
+  dependency.
 - CUDA serving requires the explicit combination `--device cuda
   --runtime-mode experimental`.
 - CPU serving supports official GPT-OSS SafeTensors, a batch-one default with
@@ -46,8 +51,11 @@ See
 ## Build
 
 ```bash
-# Native CPU build
+# Native CPU build with portable runtime-loaded Xe support
 cargo build --release -p gpt-oss-server
+
+# CPU-only binary without the optional Xe integration
+cargo build --release -p gpt-oss-server --no-default-features
 
 # CUDA-enabled build
 cargo build --release --features cuda -p gpt-oss-server
@@ -63,8 +71,9 @@ The server binary is `target/release/gpt-oss-rs`.
 ```
 
 `--device auto` selects the native CPU backend for GPT-OSS without probing or
-initializing CUDA. Select CPU explicitly and control its cache and worker count
-with:
+initializing CUDA. It probes Xe only when a checked-in full-model promotion
+record is enabled; the current record is disabled. Select CPU explicitly and
+control its cache and worker count with:
 
 ```bash
 GPT_OSS_RS_CACHE=/path/to/gpt-oss-rs-cache \
@@ -82,6 +91,24 @@ capabilities once and builds an immutable per-operation dispatch plan. The
 plan also reports the exact MXFP4 GEMV kernel and packed layout.
 Forced `avx512-vnni` uses the experimental eight-output ZMM/VNNI MXFP4 path;
 automatic MXFP4 dispatch remains on the promoted AVX2 x8 baseline.
+
+The explicit hybrid path keeps routing, attention, KV state, sampling, commit,
+and fallback on CPU while offloading prefill expert buckets with four or more
+rows:
+
+```bash
+./target/release/gpt-oss-rs serve \
+  --model openai/gpt-oss-20b \
+  --device xe \
+  --xe-max-resident-mib 128 \
+  --runtime-mode experimental
+```
+
+Decode and M=1–3 expert buckets remain on the configured CPU kernels. A runtime
+OpenCL fault drains and discards uncommitted Xe output, recomputes once on CPU,
+and opens a process-wide Xe breaker until restart. Explicit attachment fails
+startup on an unavailable or invalid device; automatic attachment failures
+fall back to CPU. Trusted mode remains blocked.
 
 `--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8`.
 `auto` keeps M=1 expert work on the established GEMV path and uses the scalar
@@ -165,6 +192,8 @@ engine:
   primitives, and Criterion microbenchmarks;
 - `gpt-oss-model-runner`: SafeTensors mapping, MXFP4 repack ownership,
   transactional layer-major transformer execution, and parity tracing;
+- `gpt-oss-xe`: internal runtime-loaded OpenCL ownership, native program cache,
+  bounded streaming slab, startup numerical test, and circuit breaker;
 - `gpt-oss-engine`: canonical CPU sequence scheduling, transactional batched
   execution, logical reservations, managed delivery/lifecycle, and the
   batch-one compatibility worker;
@@ -187,6 +216,7 @@ cargo check --workspace --locked
 cargo test --workspace --locked
 python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'
 cargo clippy -p gpt-oss-cpu-kernels --all-targets --locked -- -D warnings
+cargo clippy -p gpt-oss-xe --all-targets --locked -- -D warnings
 cargo bench -p gpt-oss-cpu-kernels --bench kernels
 ```
 
@@ -224,6 +254,9 @@ Current documentation:
   full-checkpoint CPU regression procedure;
 - [`docs/AMX_INT8.md`](docs/AMX_INT8.md): feature, capability, permission,
   panel, fallback, and portable-validation contract for the forced AMX backend;
+- [`docs/xe-research/09-production-integration-and-auto-promotion.md`](docs/xe-research/09-production-integration-and-auto-promotion.md):
+  hybrid integration, full-model evidence, and the gated automatic-dispatch
+  decision;
 - [`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md): audited upstream
   concepts and pinned revisions;
 - [`docs/cpu-runtime-research/`](docs/cpu-runtime-research/README.md): completed

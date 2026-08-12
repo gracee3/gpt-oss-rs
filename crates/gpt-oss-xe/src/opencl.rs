@@ -349,18 +349,7 @@ impl OpenClRuntime {
             && libraries.loader_sha256 == record.opencl_loader_sha256
             && libraries.driver_sha256 == record.opencl_driver_sha256
             && libraries.igc_sha256 == record.igc_sha256;
-        if config.mode == AttachmentMode::Automatic && !exact_validated_stack {
-            return Err(XeError::Capability(
-                "automatic Xe selection requires the exact checked-in X8 driver/library identity"
-                    .into(),
-            ));
-        }
-        let validation_class = match (config.mode, exact_validated_stack) {
-            (AttachmentMode::Automatic, true) => ValidationClass::ValidatedAutomatic,
-            (AttachmentMode::Explicit, true) => ValidationClass::ValidatedExplicit,
-            (AttachmentMode::Explicit, false) => ValidationClass::UnvalidatedExplicit,
-            (AttachmentMode::Automatic, false) => unreachable!("rejected above"),
-        };
+        let validation_class = validation_class(config.mode, exact_validated_stack)?;
 
         let context = create_context(&api, facts.device)?;
         let queue = match create_queue(&api, context, facts.device) {
@@ -880,6 +869,21 @@ impl OpenClRuntime {
     }
 }
 
+fn validation_class(
+    mode: AttachmentMode,
+    exact_validated_stack: bool,
+) -> Result<ValidationClass, XeError> {
+    match (mode, exact_validated_stack) {
+        (AttachmentMode::Automatic, true) => Ok(ValidationClass::ValidatedAutomatic),
+        (AttachmentMode::Explicit, true) => Ok(ValidationClass::ValidatedExplicit),
+        (AttachmentMode::Explicit, false) => Ok(ValidationClass::UnvalidatedExplicit),
+        (AttachmentMode::Automatic, false) => Err(XeError::Capability(
+            "automatic Xe selection requires the exact checked-in X8 driver/library identity"
+                .into(),
+        )),
+    }
+}
+
 impl ProjectionRuntime for OpenClRuntime {
     fn descriptor(&self) -> &XeDescriptor {
         &self.descriptor
@@ -1008,20 +1012,11 @@ fn select_device(api: &OpenClApi) -> Result<DeviceFacts, XeError> {
         })?;
         all_devices.extend(devices.into_iter().map(|device| (platform, device)));
     }
-    if all_devices.len() != 1 {
-        return Err(XeError::Capability(format!(
-            "production Xe attachment requires exactly one OpenCL GPU device, found {}",
-            all_devices.len()
-        )));
-    }
+    validate_device_selection(all_devices.len(), None)?;
     let (platform, device) = all_devices[0];
     let vendor: u32 = device_scalar(api, device, CL_DEVICE_VENDOR_ID)?;
     let device_id: u32 = device_scalar(api, device, CL_DEVICE_ID_INTEL)?;
-    if vendor != EXPECTED_VENDOR_ID || device_id != EXPECTED_DEVICE_ID {
-        return Err(XeError::Capability(format!(
-            "OpenCL GPU is {vendor:04x}:{device_id:04x}; expected 8086:9a49"
-        )));
-    }
+    validate_device_selection(all_devices.len(), Some((vendor, device_id)))?;
     let subgroup_sizes = device_vec::<usize>(api, device, CL_DEVICE_SUB_GROUP_SIZES_INTEL)?;
     let _platform_name = platform_string(api, platform, CL_PLATFORM_NAME)?;
     let _device_name = device_string(api, device, CL_DEVICE_NAME)?;
@@ -1039,6 +1034,22 @@ fn select_device(api: &OpenClApi) -> Result<DeviceFacts, XeError> {
         max_allocation_bytes: device_scalar(api, device, CL_DEVICE_MAX_MEM_ALLOC_SIZE)?,
         local_memory_bytes: device_scalar(api, device, CL_DEVICE_LOCAL_MEM_SIZE)?,
     })
+}
+
+fn validate_device_selection(count: usize, identity: Option<(u32, u32)>) -> Result<(), XeError> {
+    if count != 1 {
+        return Err(XeError::Capability(format!(
+            "production Xe attachment requires exactly one OpenCL GPU device, found {count}"
+        )));
+    }
+    if let Some((vendor, device)) = identity {
+        if vendor != EXPECTED_VENDOR_ID || device != EXPECTED_DEVICE_ID {
+            return Err(XeError::Capability(format!(
+                "OpenCL GPU is {vendor:04x}:{device:04x}; expected 8086:9a49"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_capabilities(facts: &DeviceFacts) -> Result<(), XeError> {
@@ -1784,6 +1795,48 @@ mod tests {
         assert!(matches!(
             validate_capabilities(&facts),
             Err(XeError::Capability(_))
+        ));
+    }
+
+    #[test]
+    fn wrong_identity_and_multiple_devices_are_rejected() {
+        assert!(matches!(
+            validate_device_selection(2, None),
+            Err(XeError::Capability(message)) if message.contains("exactly one")
+        ));
+        assert!(matches!(
+            validate_device_selection(1, Some((0x8086, 0x9a40))),
+            Err(XeError::Capability(message)) if message.contains("8086:9a49")
+        ));
+        validate_device_selection(1, Some((EXPECTED_VENDOR_ID, EXPECTED_DEVICE_ID))).unwrap();
+    }
+
+    #[test]
+    fn changed_stack_is_explicit_only_and_labeled_unvalidated() {
+        assert_eq!(
+            validation_class(AttachmentMode::Explicit, false).unwrap(),
+            ValidationClass::UnvalidatedExplicit
+        );
+        assert!(matches!(
+            validation_class(AttachmentMode::Automatic, false),
+            Err(XeError::Capability(message)) if message.contains("exact checked-in")
+        ));
+    }
+
+    #[test]
+    fn mixed_library_generations_are_rejected() {
+        let mapped = [
+            PathBuf::from("/usr/lib/x86_64-linux-gnu/libigc.so.2"),
+            PathBuf::from("/opt/other/libigc.so.2"),
+        ];
+        assert!(matches!(
+            select_library_path(
+                "IGC",
+                &mapped,
+                |name| name.starts_with("libigc.so"),
+                None,
+            ),
+            Err(XeError::Capability(message)) if message.contains("found 2")
         ));
     }
 

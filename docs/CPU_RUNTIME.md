@@ -128,6 +128,47 @@ residual-Q8 across x8/tail and real projection shapes. A short `harmony_122`
 AVX-512 x8. This is targeted feature evidence, not the deferred exhaustive
 certification or a basis for changing automatic selection.
 
+## CPU+Xe projection attachment
+
+The default server build includes the private `gpt-oss-xe` crate. It resolves
+the audited OpenCL 3.0 ABI at runtime with `libloading`; there is no OpenCL
+link-time dependency, and non-Linux or loader-absent hosts retain ordinary CPU
+serving. Attachment accepts exactly one OpenCL GPU and exactly PCI
+`8086:9a49`. It also requires subgroup 32, integer dot-product support,
+integrated memory, checked allocation/workgroup limits, one coherent system
+loader/driver/IGC generation, and either a compiler or a valid native cache.
+Unsafe code is confined to the OpenCL ownership module.
+
+The hybrid engine owns one non-cloneable context, one serialized in-order
+queue, one terminal event at a time, and an idempotent reverse-order shutdown.
+Its native-program cache is atomic and keyed by immutable source/ABI/build
+options, PCI identity, driver version, and hashes of the loader, driver, and
+IGC. A stale, corrupt, or numerically invalid cache is discarded and rebuilt
+from the byte-identical embedded source when the compiler is available.
+
+CPU retains model mapping, routing, attention, KV state, sampling, commit, and
+the authoritative fallback repacks. Xe receives only selected prefill expert
+projections. M=1–3 and all decode projections remain on CPU. Gate/up and down
+have separate checked thresholds; the initial explicit policy selects
+`tile32-m4-v2` at M>=4 with workgroup 32, pads row tails to four with zero
+activation records, and discards padded outputs. Each expert operation repacks
+only that expert to `[tile][K-block][17 planes][32 lanes]`, uploads it once,
+and reuses it across checked row chunks.
+
+The default `--xe-max-resident-mib 128` slab contains one largest-expert
+weight/bias pair plus reusable activation/output buffers. The runtime snapshot
+reports its actual device bytes, the independent worst-case host staging bound,
+maximum rows per chunk, exact PCI/driver/library identity, ABI/source hashes,
+thresholds, native-cache result, and fault policy. CPU request admission adds
+the host-staging class without mislabeling mapped model bytes as device memory.
+
+An OpenCL runtime fault is terminal for Xe in that process: the queue is
+drained, uncommitted output is discarded, that projection is recomputed once
+through the configured CPU path, and a process-wide breaker stays open until
+restart. The staged model step may commit only after that recomputation
+succeeds. Cancellation and shutdown also drain in-flight resources before
+discard; they never free a live event or replay a result after commit.
+
 ## Serving policy
 
 The server owns `AsyncCpuBatchEngine`, which wraps one `CpuBatchEngine`, one
@@ -166,13 +207,22 @@ stored entries, 256 KiB serialized stream events, 1 MiB queued delivery per
 request (including 16 KiB terminal control), `max_num_seqs` MiB global queued
 delivery, and a 64 MiB/64-entry terminal Responses store with FIFO eviction.
 The logical CPU request budget defaults to a checked worst-case estimate per
-sequence; `--cpu-request-budget-mib` overrides it. Response storage and
-delivery are separately budgeted. Batch source remains in the tree, but batch
-routes are not mounted by this service foundation.
+sequence; `--cpu-request-budget-mib` overrides it. A hybrid attachment adds its
+bounded host-staging class separately from the Xe device slab. Response storage
+and delivery are separately budgeted. Batch source remains in the tree, but
+batch routes are not mounted by this service foundation.
 
-`--device auto` selects CPU for GPT-OSS regardless of CUDA availability and
-does not probe or initialize CUDA. `--device cpu` is explicit. CUDA requires
-`--device cuda --runtime-mode experimental`; trusted CUDA is rejected.
+`--device auto` never probes or initializes CUDA. It probes Xe before CPU only
+when the checked-in exact-stack production-promotion record is enabled. The
+2026-08-12 production integration record is disabled because the paired
+full-model performance intervals did not clear parity, so current automatic
+GPT-OSS serving selects CPU without probing OpenCL. `--device cpu` is explicit.
+`--device xe` requires successful attachment and startup numerical validation;
+its effective backend is `cpu_xe`, it retains the prefill-first CPU profile,
+and trusted mode is rejected. A same-PCI but changed driver may be used only
+explicitly after capability and startup numerical tests, and is labeled
+`unvalidated_explicit`. CUDA requires `--device cuda --runtime-mode
+experimental`; trusted CUDA is rejected.
 Automatic selection rejects non-GPT-OSS models, while `--device mock` remains
 an explicit test-only choice. CPU rejects tensor parallelism, pipeline
 parallelism, CUDA graphs, best-of, beam search, and trusted mode. Automatic

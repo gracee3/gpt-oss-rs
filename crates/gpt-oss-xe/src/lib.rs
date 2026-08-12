@@ -172,12 +172,29 @@ fn validate_embedded_artifacts(record: &PromotionRecord) -> Result<(), XeError> 
     }
     let abi: serde_json::Value = serde_json::from_slice(KERNEL_ABI_V2)
         .map_err(|error| XeError::Artifact(format!("invalid ABI v2 JSON: {error}")))?;
-    if abi.get("schema").and_then(serde_json::Value::as_str) != Some("gpt-oss-rs.xe-kernel-abi/v2")
+    if record.schema != "gpt-oss-rs.xe-auto-promotion/v1"
+        || record.pci_vendor_id != format!("{EXPECTED_VENDOR_ID:04x}")
+        || record.pci_device_id != format!("{EXPECTED_DEVICE_ID:04x}")
+        || abi.get("schema").and_then(serde_json::Value::as_str)
+            != Some("gpt-oss-rs.xe-kernel-abi/v2")
         || record.build_options != BUILD_OPTIONS
+        || record.gate_up_min_rows != AUTO_MIN_ROWS
+        || record.down_min_rows != AUTO_MIN_ROWS
         || record.workgroup_size != WORKGROUP_SIZE
     {
         return Err(XeError::Artifact(
-            "promotion record and immutable ABI/build policy disagree".into(),
+            "promotion record and immutable device/ABI/dispatch policy disagree".into(),
+        ));
+    }
+    if record.automatic_enabled
+        && record
+            .evidence
+            .get("production_gate")
+            .and_then(serde_json::Value::as_str)
+            != Some("pass")
+    {
+        return Err(XeError::Artifact(
+            "automatic Xe selection requires a passing production gate".into(),
         ));
     }
     for entry in [
@@ -672,6 +689,8 @@ mod tests {
     struct FailingRuntime {
         descriptor: XeDescriptor,
         counts: Arc<FakeCounts>,
+        failure: &'static str,
+        shutdown_error: bool,
         shutdown: bool,
     }
 
@@ -687,7 +706,10 @@ mod tests {
             _output: &mut [f32],
         ) -> Result<PhaseTiming, XeError> {
             self.counts.projects.fetch_add(1, AtomicOrdering::SeqCst);
-            Err(XeError::Runtime("injected readback failure".into()))
+            Err(XeError::Runtime(format!(
+                "injected {} failure",
+                self.failure
+            )))
         }
 
         fn drain(&mut self) -> Result<(), XeError> {
@@ -699,6 +721,9 @@ mod tests {
             if !self.shutdown {
                 self.shutdown = true;
                 self.counts.shutdowns.fetch_add(1, AtomicOrdering::SeqCst);
+                if self.shutdown_error {
+                    return Err(XeError::Shutdown("injected teardown failure".into()));
+                }
             }
             Ok(())
         }
@@ -837,6 +862,17 @@ mod tests {
     }
 
     #[test]
+    fn automatic_record_requires_a_passing_production_gate() {
+        let mut record: PromotionRecord = serde_json::from_slice(PROMOTION_RECORD_BYTES).unwrap();
+        record.automatic_enabled = true;
+        assert!(matches!(
+            validate_embedded_artifacts(&record),
+            Err(XeError::Artifact(message))
+                if message.contains("passing production gate")
+        ));
+    }
+
+    #[test]
     fn v2_layout_round_trips_every_plane_and_lane() {
         let records = repack_v2(64, 3, |row, block| {
             Ok(((row * 7 + block) as u8, [row as u8 + block as u8; 16]))
@@ -902,21 +938,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_fault_drains_once_trips_process_circuit_and_never_releases_early() {
+    fn injected_runtime_stages_drain_trip_once_and_never_release_early() {
         let _guard = TEST_PROCESS_CIRCUIT_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
-        let counts = Arc::new(FakeCounts::default());
-        let engine = XeProjectionEngine {
-            runtime: Mutex::new(Box::new(FailingRuntime {
-                descriptor: fake_descriptor(),
-                counts: counts.clone(),
-                shutdown: false,
-            })),
-            gate_up_min_rows: AUTO_MIN_ROWS,
-            down_min_rows: AUTO_MIN_ROWS,
-        };
         let weights = vec![0_u8; 32 * 17];
         let activations = vec![ActivationRecordV2::zeroed(); 4];
         let bias = vec![0.0_f32; 32];
@@ -929,16 +954,42 @@ mod tests {
             activations_v2: &activations,
             bias: &bias,
         };
-        assert!(matches!(
-            engine.project(request()),
-            Err(XeError::Runtime(_))
-        ));
-        assert!(engine.circuit_is_open());
-        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
-        assert_eq!(counts.drains.load(AtomicOrdering::SeqCst), 1);
-        assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 0);
-        assert_eq!(engine.project(request()), Err(XeError::CircuitOpen));
-        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+        for failure in [
+            "build",
+            "allocation",
+            "upload",
+            "argument setup",
+            "submit",
+            "wait",
+            "readback",
+        ] {
+            PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+            let counts = Arc::new(FakeCounts::default());
+            let engine = XeProjectionEngine {
+                runtime: Mutex::new(Box::new(FailingRuntime {
+                    descriptor: fake_descriptor(),
+                    counts: counts.clone(),
+                    failure,
+                    shutdown_error: false,
+                    shutdown: false,
+                })),
+                gate_up_min_rows: AUTO_MIN_ROWS,
+                down_min_rows: AUTO_MIN_ROWS,
+            };
+            assert!(matches!(
+                engine.project(request()),
+                Err(XeError::Runtime(message)) if message.contains(failure)
+            ));
+            assert!(engine.circuit_is_open());
+            assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(counts.drains.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 0);
+            assert_eq!(engine.project(request()), Err(XeError::CircuitOpen));
+            assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+            engine.shutdown().unwrap();
+            engine.shutdown().unwrap();
+            assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 1);
+        }
         assert!(matches!(
             XeProjectionEngine::attach(AttachConfig::new(
                 AttachmentMode::Explicit,
@@ -949,11 +1000,27 @@ mod tests {
             )),
             Err(XeError::CircuitOpen)
         ));
-        engine.shutdown().unwrap();
-        engine.shutdown().unwrap();
-        assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 1);
         PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
         metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
+    }
+
+    #[test]
+    fn injected_teardown_failure_is_reported_once_and_shutdown_remains_idempotent() {
+        let counts = Arc::new(FakeCounts::default());
+        let engine = XeProjectionEngine {
+            runtime: Mutex::new(Box::new(FailingRuntime {
+                descriptor: fake_descriptor(),
+                counts: counts.clone(),
+                failure: "unused",
+                shutdown_error: true,
+                shutdown: false,
+            })),
+            gate_up_min_rows: AUTO_MIN_ROWS,
+            down_min_rows: AUTO_MIN_ROWS,
+        };
+        assert!(matches!(engine.shutdown(), Err(XeError::Shutdown(_))));
+        engine.shutdown().unwrap();
+        assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[test]
@@ -1012,6 +1079,12 @@ mod tests {
             1,
         ))
         .unwrap();
+        for rows in 1..AUTO_MIN_ROWS {
+            assert!(!engine.should_accelerate(ProjectionRole::GateUp, rows));
+            assert!(!engine.should_accelerate(ProjectionRole::Down, rows));
+        }
+        assert!(engine.should_accelerate(ProjectionRole::GateUp, AUTO_MIN_ROWS));
+        assert!(engine.should_accelerate(ProjectionRole::Down, AUTO_MIN_ROWS));
         let (weights, canonical) = test_weights(32, 1);
         let bias = (0..32)
             .map(|column| column as f32 / 1024.0)
@@ -1061,8 +1134,10 @@ mod tests {
             90,
         ))
         .unwrap();
-        for (role, columns) in [(ProjectionRole::GateUp, 5760), (ProjectionRole::Down, 2880)] {
-            let blocks = 90;
+        for (role, columns, blocks) in [
+            (ProjectionRole::GateUp, 5760, 90),
+            (ProjectionRole::Down, 2880, 90),
+        ] {
             let rows = 4;
             let (weights, canonical) = test_weights(columns, blocks);
             let activations = test_activations(rows, blocks);

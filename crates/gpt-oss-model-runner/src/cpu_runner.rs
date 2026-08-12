@@ -562,6 +562,7 @@ enum ExpertProjectionRole {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "xe"), allow(dead_code))]
 struct ExpertProjectionPolicy {
     role: ExpertProjectionRole,
     xe_prefill_allowed: bool,

@@ -16,21 +16,31 @@ gpt-oss-tokenizer.workspace = true
 gpt-oss-model-runner.workspace = true
 gpt-oss-cpu-kernels.workspace = true
 gpt-oss-evidence.workspace = true
+gpt-oss-xe = { workspace = true, optional = true }
 sha2.workspace = true
 tokio.workspace = true
 metrics-exporter-prometheus.workspace = true
+half = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
+safetensors = { workspace = true, optional = true }
 
 [features]
 default = []
-xe = ["gpt-oss-model-runner/xe"]
+xe = [
+    "gpt-oss-model-runner/xe",
+    "dep:gpt-oss-xe",
+    "dep:half",
+    "dep:rand",
+    "dep:rand_chacha",
+    "dep:safetensors",
+]
 cuda = ["gpt-oss-engine/cuda"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 
 [dev-dependencies]
 criterion.workspace = true
 rayon.workspace = true
-rand.workspace = true
-rand_chacha.workspace = true
 
 [[bench]]
 name = "sampling_bench"
@@ -54,3 +64,8 @@ required-features = ["cuda"]
 [[bin]]
 name = "cpu_parity"
 path = "src/bin/cpu_parity.rs"
+
+[[bin]]
+name = "xe_projection_gate"
+path = "src/bin/xe_projection_gate.rs"
+required-features = ["xe"]
