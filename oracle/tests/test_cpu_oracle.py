@@ -140,6 +140,7 @@ class CpuOracleValidationTests(unittest.TestCase):
     def test_daemon_failure_and_wrong_architecture_are_rejected(self):
         lock = {
             "image_reference": f"{cpu_oracle.IMAGE_NAME}@sha256:{'a' * 64}",
+            "image_manifest_digest": "a" * 64,
             "image_config_digest": "b" * 64,
             "image_input_revision": "c" * 40,
         }
@@ -163,6 +164,47 @@ class CpuOracleValidationTests(unittest.TestCase):
             cpu_oracle.subprocess, "run", return_value=completed
         ):
             with self.assertRaisesRegex(cpu_oracle.ValidationError, "platform"):
+                cpu_oracle.docker_inspect(lock)
+
+    def test_containerd_index_identity_requires_the_locked_descriptor(self):
+        lock = {
+            "image_reference": f"{cpu_oracle.IMAGE_NAME}@sha256:{'a' * 64}",
+            "image_manifest_digest": "a" * 64,
+            "image_config_digest": "b" * 64,
+            "image_input_revision": "c" * 40,
+        }
+        labels = {
+            "org.opencontainers.image.revision": "c" * 40,
+            "io.gpt-oss-rs.oracle.platform": cpu_oracle.PLATFORM,
+            "io.gpt-oss-rs.oracle.official-source-revision": cpu_oracle.OFFICIAL_REVISION,
+            "io.gpt-oss-rs.oracle.official-source-sha256": cpu_oracle.OFFICIAL_ARCHIVE_SHA256,
+            "io.gpt-oss-rs.oracle.model-revision": cpu_oracle.MODEL_REVISION,
+        }
+        image = [
+            {
+                "Id": f"sha256:{'a' * 64}",
+                "Os": "linux",
+                "Architecture": "amd64",
+                "RepoDigests": [lock["image_reference"]],
+                "Descriptor": {
+                    "digest": f"sha256:{'a' * 64}",
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                },
+                "Config": {"Labels": labels},
+            }
+        ]
+        completed = mock.Mock(stdout=json.dumps(image))
+        with mock.patch.object(
+            cpu_oracle, "docker_group_active", return_value=True
+        ), mock.patch.object(cpu_oracle.subprocess, "run", return_value=completed):
+            result = cpu_oracle.docker_inspect(lock)
+        self.assertEqual(result["storage_identity"], "containerd-index")
+        image[0]["Descriptor"]["digest"] = f"sha256:{'d' * 64}"
+        completed = mock.Mock(stdout=json.dumps(image))
+        with mock.patch.object(
+            cpu_oracle, "docker_group_active", return_value=True
+        ), mock.patch.object(cpu_oracle.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(cpu_oracle.ValidationError, "digest"):
                 cpu_oracle.docker_inspect(lock)
 
     def test_cuda_visibility_and_incomplete_probe_are_rejected(self):

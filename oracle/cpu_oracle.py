@@ -322,8 +322,26 @@ def docker_inspect(lock: dict) -> dict:
         raise ValidationError("docker image inspect returned an unexpected document")
     image = values[0]
     expected_config = f"sha256:{lock['image_config_digest']}"
-    if image.get("Id") != expected_config:
-        raise ValidationError("local image config digest does not match oracle lock")
+    expected_manifest = f"sha256:{lock['image_manifest_digest']}"
+    descriptor = image.get("Descriptor") or {}
+    image_id = image.get("Id")
+    if image_id == expected_config:
+        storage_identity = "classic-config"
+    elif (
+        image_id == expected_manifest
+        and descriptor.get("digest") == expected_manifest
+        and descriptor.get("mediaType")
+        in (
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        )
+    ):
+        # Docker's containerd image store identifies a pulled multi-platform
+        # image by its index descriptor. The platform config digest is still
+        # proven by the required, fully hashed OCI archive and image labels.
+        storage_identity = "containerd-index"
+    else:
+        raise ValidationError("local image digest does not match oracle lock")
     if (image.get("Os"), image.get("Architecture")) != ("linux", "amd64"):
         raise ValidationError("oracle image platform is not linux/amd64")
     if lock["image_reference"] not in image.get("RepoDigests", []):
@@ -345,6 +363,8 @@ def docker_inspect(lock: dict) -> dict:
         "os": image["Os"],
         "architecture": image["Architecture"],
         "labels": expected_labels,
+        "storage_identity": storage_identity,
+        "descriptor": descriptor,
     }
 
 

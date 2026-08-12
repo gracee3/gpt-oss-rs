@@ -430,6 +430,12 @@ fn write_preflight_terminal(
                 .push(ArtifactRef::from_path("oracle-preflight", file)?);
         }
     }
+    let probe_directory = root.join("private/oracle-probes");
+    if probe_directory.is_dir() {
+        manifest
+            .artifacts
+            .extend(artifacts_from_tree("oracle-probe", &probe_directory, &[])?);
+    }
     manifest.limitations.extend(limitations);
     if status == EvidenceStatus::Pass {
         manifest.oracle_identity = oracle_identity(root, "native")?;
@@ -518,6 +524,16 @@ fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
         ArtifactRef::from_path("stdout", directory.join("stdout.raw"))?,
         ArtifactRef::from_path("stderr", directory.join("stderr.raw"))?,
     ]);
+    manifest.artifacts.extend(artifacts_from_tree(
+        "worker-output",
+        &directory,
+        &[
+            Path::new("stdout.raw"),
+            Path::new("stderr.raw"),
+            Path::new("private.manifest.json"),
+            Path::new("publish.manifest.json"),
+        ],
+    )?);
     if status == EvidenceStatus::InsufficientEvidence {
         manifest
             .limitations
@@ -734,6 +750,56 @@ fn write_manifest_pair(directory: &Path, manifest: &RunManifestV1) -> Result<()>
             .collect::<Vec<_>>()
     );
     redacted.write_atomic_new(directory.join("publish.manifest.json"))?;
+    Ok(())
+}
+
+fn artifacts_from_tree(
+    role_prefix: &str,
+    root: &Path,
+    excluded: &[&Path],
+) -> Result<Vec<ArtifactRef>> {
+    let mut files = Vec::new();
+    collect_regular_files(root, root, &mut files)?;
+    files.sort();
+    files
+        .into_iter()
+        .filter(|path| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| !excluded.contains(&relative))
+        })
+        .map(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .expect("collected artifact belongs to its root");
+            ArtifactRef::from_path(format!("{role_prefix}:{}", relative.display()), path)
+                .map_err(anyhow::Error::from)
+        })
+        .collect()
+}
+
+fn collect_regular_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "artifact tree {} contains a symbolic link: {}",
+                root.display(),
+                path.display()
+            );
+        }
+        if metadata.is_dir() {
+            collect_regular_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            files.push(path);
+        } else {
+            bail!(
+                "artifact tree {} contains a non-regular entry: {}",
+                root.display(),
+                path.display()
+            );
+        }
+    }
     Ok(())
 }
 

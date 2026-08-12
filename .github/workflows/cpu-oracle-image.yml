@@ -2,11 +2,6 @@ name: CPU oracle image
 
 on:
   workflow_dispatch:
-  # Bootstrap only: remove this branch/path trigger in candidate A. GitHub
-  # cannot dispatch a new workflow until the file exists on the default branch.
-  push:
-    branches: ["agent/cpu-validation-fresh-oracle"]
-    paths: [".github/workflows/cpu-oracle-image.yml"]
 
 permissions:
   contents: read

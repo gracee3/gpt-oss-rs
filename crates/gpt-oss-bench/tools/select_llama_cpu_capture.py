@@ -45,7 +45,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--combined", type=Path, required=True)
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     campaign = Path(os.environ["GPT_OSS_CAMPAIGN_ROOT"]).resolve()
     attempt = Path(os.environ["GPT_OSS_ATTEMPT_DIR"]).resolve()
@@ -53,7 +53,12 @@ def main() -> int:
         args.combined.resolve().relative_to(campaign)
     except ValueError as error:
         raise ValueError("combined llama capture must belong to the fresh campaign") from error
-    if args.output.resolve().parent != attempt:
+    output = (
+        args.output.resolve()
+        if args.output is not None
+        else attempt / f"llama-{args.scenario}.json"
+    )
+    if output.parent != attempt:
         raise ValueError("selected llama output must stay in its campaign attempt")
     combined = json.loads(args.combined.read_text())
     identity = json.loads(os.environ["GPT_OSS_ORACLE_IDENTITY_JSON"])
@@ -83,7 +88,7 @@ def main() -> int:
         "oracle_identity": identity,
         "capture": selected,
     }
-    write_new_atomic(args.output, result)
+    write_new_atomic(output, result)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
