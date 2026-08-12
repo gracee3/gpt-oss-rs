@@ -13,6 +13,7 @@ categories = ["science", "hardware-support"]
 
 [features]
 default = []
+xe = ["dep:gpt-oss-xe"]
 cuda = ["gpt-oss-gpu/cuda", "dep:cudarc"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt"]
 amx-int8 = ["gpt-oss-cpu-kernels/amx-int8"]
@@ -23,6 +24,7 @@ gpt-oss-semantics.workspace = true
 gpt-oss-gpu.workspace = true
 gpt-oss-moe-semantics.workspace = true
 gpt-oss-cpu-kernels.workspace = true
+gpt-oss-xe = { workspace = true, optional = true }
 thiserror.workspace = true
 half.workspace = true
 tracing.workspace = true

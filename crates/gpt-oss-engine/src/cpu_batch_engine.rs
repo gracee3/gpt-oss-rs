@@ -8,7 +8,8 @@ use gpt_oss_core::prelude::{
 };
 use gpt_oss_model_runner::sampling::Sampler;
 use gpt_oss_model_runner::{
-    CpuExecutionContext, CpuModel, CpuSequenceModelState, CpuStepBatch, CpuStepRow, PreparedCpuStep,
+    CpuExecutionContext, CpuModel, CpuSequenceModelState, CpuStepBatch, CpuStepPhase, CpuStepRow,
+    PreparedCpuStep,
 };
 use gpt_oss_tokenizer::Tokenizer;
 
@@ -237,6 +238,7 @@ pub struct CpuBatchEngine {
     reservations: Option<ReservationLedger>,
     request_grants: HashMap<RequestId, GrantId>,
     kv_geometry: Option<CpuKvGeometry>,
+    accelerator_staging_bytes: u128,
     shutdown: bool,
 }
 
@@ -256,6 +258,9 @@ impl CpuBatchEngine {
         request_budget_bytes: Option<u128>,
     ) -> Result<Self> {
         let model_config = model.config();
+        let accelerator_staging_bytes = model
+            .memory_descriptor(config.scheduler.max_num_batched_tokens)?
+            .xe_host_staging_bound_bytes;
         let decoded_token_byte_bound = tokenizer.max_decoded_token_bytes()?;
         let kv_geometry = CpuKvGeometry {
             scalar_bytes: 2,
@@ -280,6 +285,7 @@ impl CpuBatchEngine {
             config.model.max_model_len,
             20,
             decoded_token_byte_bound,
+            accelerator_staging_bytes,
         )?;
         let worst_total = worst.total().map_err(grant_error)?;
         let global_budget = match request_budget_bytes {
@@ -302,6 +308,7 @@ impl CpuBatchEngine {
             decoded_token_byte_bound,
         )?;
         engine.kv_geometry = Some(kv_geometry);
+        engine.accelerator_staging_bytes = accelerator_staging_bytes;
         engine.reservations = Some(ledger);
         Ok(engine)
     }
@@ -343,6 +350,7 @@ impl CpuBatchEngine {
             reservations: None,
             request_grants: HashMap::new(),
             kv_geometry: None,
+            accelerator_staging_bytes: 0,
             shutdown: false,
         })
     }
@@ -403,6 +411,7 @@ impl CpuBatchEngine {
                     reachable_context,
                     sampling_params.logprobs.unwrap_or(0),
                     self.decoded_token_byte_bound,
+                    self.accelerator_staging_bytes,
                 )
             })
             .transpose()?;
@@ -524,11 +533,15 @@ impl CpuBatchEngine {
                 .rows()
                 .iter()
                 .map(|row| {
-                    CpuStepRow::new(
+                    CpuStepRow::new_with_phase(
                         row.sequence_id,
                         row.token_id,
                         row.absolute_position,
                         row.logits_required,
+                        match row.phase {
+                            CpuScheduledPhase::Prefill => CpuStepPhase::Prefill,
+                            CpuScheduledPhase::Decode => CpuStepPhase::Decode,
+                        },
                     )
                 })
                 .collect(),
@@ -895,6 +908,7 @@ fn estimate_cpu_request(
     reachable_context: usize,
     logprobs: usize,
     decoded_token_byte_bound: usize,
+    accelerator_staging_bytes: u128,
 ) -> Result<MemoryEstimate> {
     let context = reachable_context as u128;
     let mut estimate = MemoryEstimate::new();
@@ -906,6 +920,9 @@ fn estimate_cpu_request(
             MemoryClass::KvCache,
             geometry.logical_bytes(context).map_err(grant_error)?,
         )
+        .map_err(grant_error)?;
+    estimate
+        .checked_add(MemoryClass::AcceleratorStaging, accelerator_staging_bytes)
         .map_err(grant_error)?;
     estimate
         .checked_add(

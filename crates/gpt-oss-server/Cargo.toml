@@ -16,7 +16,8 @@ name = "gpt-oss-rs"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["xe"]
+xe = ["dep:gpt-oss-xe", "gpt-oss-engine/xe"]
 cuda = ["gpt-oss-gpu/cuda", "gpt-oss-engine/cuda"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt", "gpt-oss-engine/cublaslt"]
 amx-int8 = ["gpt-oss-cpu-kernels/amx-int8", "gpt-oss-engine/amx-int8"]
@@ -28,6 +29,7 @@ gpt-oss-engine.workspace = true
 gpt-oss-cpu-kernels.workspace = true
 gpt-oss-tokenizer.workspace = true
 gpt-oss-evidence.workspace = true
+gpt-oss-xe = { workspace = true, optional = true }
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true

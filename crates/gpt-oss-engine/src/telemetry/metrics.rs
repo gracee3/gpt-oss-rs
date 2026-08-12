@@ -78,7 +78,12 @@ bounded_label_enum!(Phase {
     Delivery => "delivery",
     Terminal => "terminal",
 });
-bounded_label_enum!(BackendClass { Cpu => "cpu", Cuda => "cuda", Mock => "mock" });
+bounded_label_enum!(BackendClass {
+    Cpu => "cpu",
+    CpuXe => "cpu_xe",
+    Cuda => "cuda",
+    Mock => "mock"
+});
 bounded_label_enum!(TokenClass { Prompt => "prompt", Committed => "committed", Delivered => "delivered", Abandoned => "abandoned" });
 bounded_label_enum!(ReservationEvent { Grant => "grant", Expand => "expand", Refund => "refund", Transfer => "transfer", Release => "release", Reject => "reject" });
 bounded_label_enum!(DispatchResult { Selected => "selected", Fallback => "fallback", Rejected => "rejected" });

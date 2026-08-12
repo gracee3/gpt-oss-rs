@@ -120,6 +120,7 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
     if let Some(cpu_repack_cache) = &args.cpu_repack_cache {
         config.device.cpu_repack_cache = cpu_repack_cache.clone();
     }
+    config.device.xe_max_resident_mib = args.xe_max_resident_mib;
 
     // Telemetry
     config.telemetry.enabled = !args.disable_telemetry;
@@ -160,6 +161,7 @@ mod tests {
             cpu_matmul_backend: "avx2".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
+            xe_max_resident_mib: 128,
             disable_telemetry: false,
             prometheus_port: Some(9090),
             otlp_endpoint: None,
@@ -238,6 +240,7 @@ log_level = "warn"
             cpu_matmul_backend: "auto".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
+            xe_max_resident_mib: 128,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,
@@ -280,6 +283,7 @@ log_level = "warn"
             cpu_matmul_backend: "auto".into(),
             cpu_threads: None,
             cpu_repack_cache: None,
+            xe_max_resident_mib: 128,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,

@@ -46,6 +46,10 @@ pub const PHASE_DURATION_SECONDS: &str = "gpt_oss_xe_phase_duration_seconds";
 pub const TRANSFER_BYTES_TOTAL: &str = "gpt_oss_xe_transfer_bytes_total";
 pub const CIRCUIT_BREAKER: &str = "gpt_oss_xe_circuit_breaker";
 
+// A runtime OpenCL fault disables every current and future attachment in this
+// process. Restart is the only production reset boundary.
+static PROCESS_XE_CIRCUIT_OPEN: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum XeError {
     #[error("Xe is unsupported on this platform: {0}")]
@@ -311,20 +315,27 @@ trait ProjectionRuntime: Send {
 /// by a mutex and every operation is synchronous through a terminal event.
 pub struct XeProjectionEngine {
     runtime: Mutex<Box<dyn ProjectionRuntime>>,
-    circuit_open: AtomicBool,
+    gate_up_min_rows: usize,
+    down_min_rows: usize,
 }
 
 impl std::fmt::Debug for XeProjectionEngine {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("XeProjectionEngine")
-            .field("circuit_open", &self.circuit_open.load(Ordering::Acquire))
+            .field(
+                "circuit_open",
+                &PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire),
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl XeProjectionEngine {
     pub fn attach(config: AttachConfig) -> Result<Self, XeError> {
+        if PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire) {
+            return Err(XeError::CircuitOpen);
+        }
         let record = promotion_record()?;
         if config.mode == AttachmentMode::Automatic && !record.automatic_enabled {
             return Err(XeError::Unsupported(format!(
@@ -342,7 +353,8 @@ impl XeProjectionEngine {
         )));
         let engine = Self {
             runtime: Mutex::new(Box::new(runtime)),
-            circuit_open: AtomicBool::new(false),
+            gate_up_min_rows: record.gate_up_min_rows,
+            down_min_rows: record.down_min_rows,
         };
         metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
         Ok(engine)
@@ -356,17 +368,15 @@ impl XeProjectionEngine {
     }
 
     pub fn should_accelerate(&self, role: ProjectionRole, rows: usize) -> bool {
-        !self.circuit_open.load(Ordering::Acquire)
+        !PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire)
             && rows
                 >= match role {
-                    ProjectionRole::GateUp | ProjectionRole::Down => AUTO_MIN_ROWS,
+                    ProjectionRole::GateUp => self.gate_up_min_rows,
+                    ProjectionRole::Down => self.down_min_rows,
                 }
     }
 
     pub fn project(&self, request: ProjectionRequest<'_>) -> Result<Vec<f32>, XeError> {
-        if self.circuit_open.load(Ordering::Acquire) {
-            return Err(XeError::CircuitOpen);
-        }
         validate_request(&request)?;
         if request.rows < AUTO_MIN_ROWS {
             return Err(XeError::Dimensions(format!(
@@ -375,6 +385,45 @@ impl XeProjectionEngine {
             )));
         }
         let variant = KernelVariant::Tile32M4;
+        self.execute_projection(request, variant)
+    }
+
+    /// Explicit benchmark/test control for all three validated tile kernels.
+    pub fn project_with_variant(
+        &self,
+        request: ProjectionRequest<'_>,
+        variant: KernelVariant,
+    ) -> Result<Vec<f32>, XeError> {
+        validate_request(&request)?;
+        let divisor = variant.rows_per_dispatch();
+        if !request.rows.is_multiple_of(divisor) {
+            return Err(XeError::Dimensions(format!(
+                "{} requires rows divisible by {divisor}",
+                variant.entry_point()
+            )));
+        }
+        self.execute_projection(request, variant)
+    }
+
+    pub fn circuit_is_open(&self) -> bool {
+        PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire)
+    }
+
+    pub fn shutdown(&self) -> Result<(), XeError> {
+        self.runtime
+            .lock()
+            .map_err(|_| XeError::Shutdown("Xe queue mutex is poisoned".into()))?
+            .shutdown()
+    }
+
+    fn execute_projection(
+        &self,
+        request: ProjectionRequest<'_>,
+        variant: KernelVariant,
+    ) -> Result<Vec<f32>, XeError> {
+        if PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire) {
+            return Err(XeError::CircuitOpen);
+        }
         let output_len = request
             .rows
             .checked_mul(request.columns)
@@ -394,7 +443,7 @@ impl XeProjectionEngine {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     let _ = runtime.drain();
                 }
-                self.circuit_open.store(true, Ordering::Release);
+                PROCESS_XE_CIRCUIT_OPEN.store(true, Ordering::Release);
                 metrics::gauge!(CIRCUIT_BREAKER).set(1.0);
                 metrics::counter!(
                     PROJECTION_TOTAL,
@@ -406,44 +455,6 @@ impl XeProjectionEngine {
                 Err(error)
             }
         }
-    }
-
-    /// Explicit benchmark/test control for all three validated tile kernels.
-    pub fn project_with_variant(
-        &self,
-        request: ProjectionRequest<'_>,
-        variant: KernelVariant,
-    ) -> Result<Vec<f32>, XeError> {
-        if self.circuit_open.load(Ordering::Acquire) {
-            return Err(XeError::CircuitOpen);
-        }
-        validate_request(&request)?;
-        let divisor = variant.rows_per_dispatch();
-        if !request.rows.is_multiple_of(divisor) {
-            return Err(XeError::Dimensions(format!(
-                "{} requires rows divisible by {divisor}",
-                variant.entry_point()
-            )));
-        }
-        let mut output = vec![0.0; request.rows * request.columns];
-        let timing = self
-            .runtime
-            .lock()
-            .map_err(|_| XeError::Runtime("Xe queue mutex is poisoned".into()))?
-            .project(&request, variant, &mut output)?;
-        record_projection_metrics(&request, "xe", "ok", timing);
-        Ok(output)
-    }
-
-    pub fn circuit_is_open(&self) -> bool {
-        self.circuit_open.load(Ordering::Acquire)
-    }
-
-    pub fn shutdown(&self) -> Result<(), XeError> {
-        self.runtime
-            .lock()
-            .map_err(|_| XeError::Shutdown("Xe queue mutex is poisoned".into()))?
-            .shutdown()
     }
 }
 
@@ -494,6 +505,16 @@ fn record_projection_metrics(
         )
         .increment(bytes as u64);
     }
+}
+
+pub fn record_cpu_fallback(role: ProjectionRole) {
+    metrics::counter!(
+        PROJECTION_TOTAL,
+        "role" => role.as_str(),
+        "backend" => "cpu",
+        "result" => "fallback"
+    )
+    .increment(1);
 }
 
 fn validate_shape_capacity(config: &AttachConfig) -> Result<(), XeError> {
@@ -636,6 +657,177 @@ pub fn probe_automatic(cache_root: &Path) -> Result<XeDescriptor, XeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+
+    static TEST_PROCESS_CIRCUIT_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Default)]
+    struct FakeCounts {
+        projects: AtomicUsize,
+        drains: AtomicUsize,
+        shutdowns: AtomicUsize,
+    }
+
+    struct FailingRuntime {
+        descriptor: XeDescriptor,
+        counts: Arc<FakeCounts>,
+        shutdown: bool,
+    }
+
+    impl ProjectionRuntime for FailingRuntime {
+        fn descriptor(&self) -> &XeDescriptor {
+            &self.descriptor
+        }
+
+        fn project(
+            &mut self,
+            _request: &ProjectionRequest<'_>,
+            _variant: KernelVariant,
+            _output: &mut [f32],
+        ) -> Result<PhaseTiming, XeError> {
+            self.counts.projects.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(XeError::Runtime("injected readback failure".into()))
+        }
+
+        fn drain(&mut self) -> Result<(), XeError> {
+            self.counts.drains.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<(), XeError> {
+            if !self.shutdown {
+                self.shutdown = true;
+                self.counts.shutdowns.fetch_add(1, AtomicOrdering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    fn fake_descriptor() -> XeDescriptor {
+        XeDescriptor {
+            effective_backend: "cpu_xe".into(),
+            validation_class: ValidationClass::UnvalidatedExplicit,
+            identity: XeIdentity {
+                pci_vendor_id: "8086".into(),
+                pci_device_id: "9a49".into(),
+                driver_version: "test".into(),
+                device_version: "test".into(),
+                opencl_loader_sha256: "0".repeat(64),
+                opencl_driver_sha256: "0".repeat(64),
+                igc_sha256: "0".repeat(64),
+            },
+            source_sha256: KERNEL_SOURCE_SHA256.into(),
+            abi_sha256: KERNEL_ABI_SHA256.into(),
+            build_options: BUILD_OPTIONS.into(),
+            native_cache_key: "test".into(),
+            native_cache_hit: false,
+            gate_up_min_rows: 4,
+            down_min_rows: 4,
+            workgroup_size: WORKGROUP_SIZE,
+            memory: XeMemoryDescriptor {
+                max_resident_bytes: 1 << 20,
+                device_resident_bytes: 1 << 20,
+                host_staging_bound_bytes: 1 << 20,
+                weight_capacity_bytes: 544,
+                bias_capacity_bytes: 128,
+                activation_capacity_bytes: 288,
+                output_capacity_bytes: 512,
+                max_rows_per_chunk: 4,
+            },
+            runtime_fault_policy: "test".into(),
+        }
+    }
+
+    fn test_weights(columns: usize, blocks: usize) -> (Vec<u8>, Vec<[u8; 16]>) {
+        let mut canonical = vec![[0_u8; 16]; columns * blocks];
+        let packed = repack_v2(columns, blocks, |column, block| {
+            let mut bytes = [0_u8; 16];
+            for (index, value) in bytes.iter_mut().enumerate() {
+                let low = ((column + block + index) % 15) as u8;
+                let high = ((column * 3 + block + index + 1) % 15) as u8;
+                *value = low | (high << 4);
+            }
+            canonical[column * blocks + block] = bytes;
+            Ok((127, bytes))
+        })
+        .unwrap();
+        (packed, canonical)
+    }
+
+    fn test_activations(rows: usize, blocks: usize) -> Vec<ActivationRecordV2> {
+        let mut activations = vec![ActivationRecordV2::zeroed(); rows * blocks];
+        for row in 0..rows {
+            for block in 0..blocks {
+                let record = &mut activations[row * blocks + block];
+                for lane in 0..32 {
+                    record.primary[lane] = ((row + block + lane) % 29) as i8 - 14;
+                    record.residual[lane] = ((row * 3 + block + lane) % 11) as i8 - 5;
+                }
+                record.primary_scale = 0.03125 * ((block % 3) + 1) as f32;
+                record.residual_scale = 0.0078125 * ((row % 3) + 1) as f32;
+            }
+        }
+        activations
+    }
+
+    fn e2m1_x2(nibble: u8) -> i8 {
+        const VALUES: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
+        VALUES[(nibble & 0x0f) as usize]
+    }
+
+    fn scalar_projection(
+        rows: usize,
+        columns: usize,
+        blocks: usize,
+        canonical: &[[u8; 16]],
+        activations: &[ActivationRecordV2],
+        bias: &[f32],
+    ) -> Vec<f32> {
+        let mut output = vec![0.0_f32; rows * columns];
+        for row in 0..rows {
+            for column in 0..columns {
+                let mut value = bias[column];
+                for block in 0..blocks {
+                    let record = &activations[row * blocks + block];
+                    let bytes = canonical[column * blocks + block];
+                    let mut primary = 0_i32;
+                    let mut residual = 0_i32;
+                    for (index, packed) in bytes.into_iter().enumerate() {
+                        let low = e2m1_x2(packed) as i32;
+                        let high = e2m1_x2(packed >> 4) as i32;
+                        primary += low * record.primary[index * 2] as i32
+                            + high * record.primary[index * 2 + 1] as i32;
+                        residual += low * record.residual[index * 2] as i32
+                            + high * record.residual[index * 2 + 1] as i32;
+                    }
+                    value += primary as f32 * 0.5 * record.primary_scale
+                        + residual as f32 * 0.5 * record.residual_scale;
+                }
+                output[row * columns + column] = value;
+            }
+        }
+        output
+    }
+
+    fn assert_projection_matches(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(actual.is_finite(), "non-finite output at {index}");
+            let actual_ordered = actual.to_bits() as i32;
+            let expected_ordered = expected.to_bits() as i32;
+            let ulp = actual_ordered.abs_diff(expected_ordered);
+            assert!(
+                (actual - expected).abs() <= 1e-6 || ulp <= 4,
+                "projection mismatch at {index}: {actual} != {expected} ({ulp} ULP)"
+            );
+            assert_eq!(
+                half::bf16::from_f32(actual).to_bits(),
+                half::bf16::from_f32(expected).to_bits(),
+                "BF16 boundary mismatch at {index}"
+            );
+        }
+    }
 
     #[test]
     fn embedded_hashes_and_abi_are_immutable() {
@@ -710,23 +902,188 @@ mod tests {
     }
 
     #[test]
+    fn runtime_fault_drains_once_trips_process_circuit_and_never_releases_early() {
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        let counts = Arc::new(FakeCounts::default());
+        let engine = XeProjectionEngine {
+            runtime: Mutex::new(Box::new(FailingRuntime {
+                descriptor: fake_descriptor(),
+                counts: counts.clone(),
+                shutdown: false,
+            })),
+            gate_up_min_rows: AUTO_MIN_ROWS,
+            down_min_rows: AUTO_MIN_ROWS,
+        };
+        let weights = vec![0_u8; 32 * 17];
+        let activations = vec![ActivationRecordV2::zeroed(); 4];
+        let bias = vec![0.0_f32; 32];
+        let request = || ProjectionRequest {
+            role: ProjectionRole::GateUp,
+            rows: 4,
+            columns: 32,
+            blocks: 1,
+            weights_v2: &weights,
+            activations_v2: &activations,
+            bias: &bias,
+        };
+        assert!(matches!(
+            engine.project(request()),
+            Err(XeError::Runtime(_))
+        ));
+        assert!(engine.circuit_is_open());
+        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.drains.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(engine.project(request()), Err(XeError::CircuitOpen));
+        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+        assert!(matches!(
+            XeProjectionEngine::attach(AttachConfig::new(
+                AttachmentMode::Explicit,
+                ".",
+                1 << 20,
+                32,
+                1,
+            )),
+            Err(XeError::CircuitOpen)
+        ));
+        engine.shutdown().unwrap();
+        engine.shutdown().unwrap();
+        assert_eq!(counts.shutdowns.load(AtomicOrdering::SeqCst), 1);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
+    }
+
+    #[test]
     fn opt_in_live_attachment_runs_startup_numerical_test_and_shutdown() {
         if std::env::var_os("GPT_OSS_XE_LIVE_TEST").is_none() {
             return;
         }
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        let cache = tempfile::tempdir().unwrap();
+        let config =
+            || AttachConfig::new(AttachmentMode::Explicit, cache.path(), 1024 * 1024, 32, 1);
+        let first = XeProjectionEngine::attach(config()).unwrap();
+        let descriptor = first.descriptor().unwrap();
+        assert_eq!(descriptor.identity.pci_vendor_id, "8086");
+        assert_eq!(descriptor.identity.pci_device_id, "9a49");
+        assert!(!descriptor.native_cache_hit);
+        first.shutdown().unwrap();
+        first.shutdown().unwrap();
+        drop(first);
+
+        let second = XeProjectionEngine::attach(config()).unwrap();
+        let descriptor = second.descriptor().unwrap();
+        assert!(descriptor.native_cache_hit);
+        second.shutdown().unwrap();
+        drop(second);
+
+        let program = cache
+            .path()
+            .join("xe/native")
+            .join(&descriptor.native_cache_key)
+            .join("program.bin");
+        std::fs::write(program, b"corrupt native cache").unwrap();
+        let recovered = XeProjectionEngine::attach(config()).unwrap();
+        assert!(!recovered.descriptor().unwrap().native_cache_hit);
+        recovered.shutdown().unwrap();
+    }
+
+    #[test]
+    fn opt_in_live_projection_matrix_covers_policy_padding_chunks_and_real_shapes() {
+        if std::env::var_os("GPT_OSS_XE_LIVE_TEST").is_none() {
+            return;
+        }
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
         let cache = tempfile::tempdir().unwrap();
         let engine = XeProjectionEngine::attach(AttachConfig::new(
             AttachmentMode::Explicit,
             cache.path(),
-            1024 * 1024,
+            4096,
             32,
             1,
         ))
         .unwrap();
-        let descriptor = engine.descriptor().unwrap();
-        assert_eq!(descriptor.identity.pci_vendor_id, "8086");
-        assert_eq!(descriptor.identity.pci_device_id, "9a49");
+        let (weights, canonical) = test_weights(32, 1);
+        let bias = (0..32)
+            .map(|column| column as f32 / 1024.0)
+            .collect::<Vec<_>>();
+        for rows in [4, 5, 7, 8, 16, 32, 64, 128, 256, 512, 1024, 2048] {
+            let activations = test_activations(rows, 1);
+            let expected = scalar_projection(rows, 32, 1, &canonical, &activations, &bias);
+            let actual = engine
+                .project(ProjectionRequest {
+                    role: ProjectionRole::GateUp,
+                    rows,
+                    columns: 32,
+                    blocks: 1,
+                    weights_v2: &weights,
+                    activations_v2: &activations,
+                    bias: &bias,
+                })
+                .unwrap();
+            assert_projection_matches(&actual, &expected);
+        }
+        for (variant, rows) in [(KernelVariant::Tile32M1, 1), (KernelVariant::Tile32M2, 2)] {
+            let activations = test_activations(rows, 1);
+            let expected = scalar_projection(rows, 32, 1, &canonical, &activations, &bias);
+            let actual = engine
+                .project_with_variant(
+                    ProjectionRequest {
+                        role: ProjectionRole::Down,
+                        rows,
+                        columns: 32,
+                        blocks: 1,
+                        weights_v2: &weights,
+                        activations_v2: &activations,
+                        bias: &bias,
+                    },
+                    variant,
+                )
+                .unwrap();
+            assert_projection_matches(&actual, &expected);
+        }
         engine.shutdown().unwrap();
-        engine.shutdown().unwrap();
+
+        let real_engine = XeProjectionEngine::attach(AttachConfig::new(
+            AttachmentMode::Explicit,
+            cache.path(),
+            128 * 1024 * 1024,
+            5760,
+            90,
+        ))
+        .unwrap();
+        for (role, columns) in [(ProjectionRole::GateUp, 5760), (ProjectionRole::Down, 2880)] {
+            let blocks = 90;
+            let rows = 4;
+            let (weights, canonical) = test_weights(columns, blocks);
+            let activations = test_activations(rows, blocks);
+            let bias = (0..columns)
+                .map(|column| column as f32 / 65536.0)
+                .collect::<Vec<_>>();
+            let expected =
+                scalar_projection(rows, columns, blocks, &canonical, &activations, &bias);
+            let actual = real_engine
+                .project(ProjectionRequest {
+                    role,
+                    rows,
+                    columns,
+                    blocks,
+                    weights_v2: &weights,
+                    activations_v2: &activations,
+                    bias: &bias,
+                })
+                .unwrap();
+            assert_projection_matches(&actual, &expected);
+        }
+        real_engine.shutdown().unwrap();
     }
 }

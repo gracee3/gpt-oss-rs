@@ -76,7 +76,7 @@ pub async fn create_chat_completion(
         model = %req.model,
         stream = req.stream,
         messages = req.messages.len(),
-        runtime = %state.runtime_decision.summary(),
+        runtime = %state.runtime_decision().summary(),
         "chat completion request"
     );
 

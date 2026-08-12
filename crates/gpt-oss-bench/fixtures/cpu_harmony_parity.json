@@ -23,7 +23,8 @@
       "content": "Reply with exactly one short greeting.",
       "expected_prompt_tokens": 63,
       "prompt_text_sha256": "7aa26a600a0b5fe5172ba2ad9396d6cda381654f7d7c57342a589540b05450b4",
-      "prompt_token_ids_sha256": "ff9e5194630553a210511cf07197796dc07f8756b095b042580282261820cab3"
+      "prompt_token_ids_sha256": "ff9e5194630553a210511cf07197796dc07f8756b095b042580282261820cab3",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 5003, 25, 392]
     },
     {
       "id": "harmony_122",
@@ -41,7 +42,8 @@
       "segments": 5,
       "expected_prompt_tokens": 136,
       "prompt_text_sha256": "1c066d4845e702f545d9d7ab4b9ebec5974e8cb03b09cce1ef8e71ed0af2a41b",
-      "prompt_token_ids_sha256": "6c5f7a90ea1389ebef150b3616a1406087ec2b0b0cac68b423cfbaba0cf064c0"
+      "prompt_token_ids_sha256": "6c5f7a90ea1389ebef150b3616a1406087ec2b0b0cac68b423cfbaba0cf064c0",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 8967, 33749, 220]
     },
     {
       "id": "harmony_262",
@@ -58,7 +60,8 @@
       "segments": 20,
       "expected_prompt_tokens": 346,
       "prompt_text_sha256": "c4a7867b9291a0aacd1fc96baf3d769743c7b1138fb751fae3cc7b5dc8f86b17",
-      "prompt_token_ids_sha256": "3a6273d7af6e437aff7e0f75aeb3105112a52ca51beb269dbf11ca1eba43815a"
+      "prompt_token_ids_sha256": "3a6273d7af6e437aff7e0f75aeb3105112a52ca51beb269dbf11ca1eba43815a",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 5181, 261, 1562]
     },
     {
       "id": "harmony_444",
@@ -66,14 +69,16 @@
       "segments": 27,
       "expected_prompt_tokens": 444,
       "prompt_text_sha256": "3a6e5fdd3d3bdd9c3797371ab76748b64b1df03415756423801b04d43bd60740",
-      "prompt_token_ids_sha256": "49af11243d0269009ce2eb6870d4317e39570084224566800824cc82489aa087"
+      "prompt_token_ids_sha256": "49af11243d0269009ce2eb6870d4317e39570084224566800824cc82489aa087",
+      "official_greedy_tokens": [200005, 35644, 200008, 976, 1825, 5181, 261, 1562]
     },
     {
       "id": "tool_history_180",
       "kind": "tool_history",
       "expected_prompt_tokens": 180,
       "prompt_text_sha256": "780b310c1b2d9a5363f14ebeda9f4bbd3739cf8997349fc7f1c82921c783c34c",
-      "prompt_token_ids_sha256": "b07e49f0a2ca47550bdc74b111ede664075e4daf14819834cdffad7e2aa6fb31"
+      "prompt_token_ids_sha256": "b07e49f0a2ca47550bdc74b111ede664075e4daf14819834cdffad7e2aa6fb31",
+      "official_greedy_tokens": [200005, 35644, 200008, 2167, 1309, 316, 6052, 51088]
     }
   ]
 }

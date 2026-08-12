@@ -26,8 +26,8 @@ use gpt_oss_engine::config::EngineConfig;
 use gpt_oss_engine::AsyncLLMEngine;
 use gpt_oss_engine::{
     AsyncCpuBatchEngine, CommittedEvent, CpuBatchEngine, CpuExpertProjection, CpuModel,
-    CpuTopology, ExecutorAdapter, ExecutorConfig, FailurePhase, ManagedRequest, ServiceLifecycle,
-    ServiceState, StableFailure, StableFailureCode,
+    CpuTopology, CpuXeAttachmentMode, CpuXeConfig, ExecutorAdapter, ExecutorConfig, FailurePhase,
+    ManagedRequest, ServiceLifecycle, ServiceState, StableFailure, StableFailureCode,
 };
 use gpt_oss_evidence::{
     DiagnosticConfig, DiagnosticMode, DiagnosticRecord, DiagnosticSink, EffectiveRuntimeSnapshot,
@@ -35,7 +35,9 @@ use gpt_oss_evidence::{
 use gpt_oss_tokenizer::Tokenizer;
 
 use crate::routes;
-use crate::runtime_policy::{validate_gpt_oss_runtime, RuntimeBackendPath, RuntimeDecision};
+use crate::runtime_policy::{
+    validate_gpt_oss_runtime_with_xe, RuntimeBackendPath, RuntimeDecision,
+};
 
 // ------------------------------------------------------------------
 // Engine trait object for unified API
@@ -465,7 +467,7 @@ fn stable_engine_error(error: gpt_oss_core::prelude::LLMError) -> StableFailure 
 pub struct AppState {
     engine: Arc<RwLock<Option<Arc<dyn InferenceEngine>>>>,
     pub model_name: String,
-    pub runtime_decision: RuntimeDecision,
+    runtime_decision: std::sync::RwLock<RuntimeDecision>,
     pub tokenizer: Arc<RwLock<Option<Tokenizer>>>,
     /// Batch job store (None if batch API is not enabled).
     pub batch_store: Option<crate::routes::batch::SharedBatchStore>,
@@ -512,7 +514,7 @@ impl AppState {
         Self {
             engine: Arc::new(RwLock::new(Some(engine))),
             model_name,
-            runtime_decision,
+            runtime_decision: std::sync::RwLock::new(runtime_decision),
             tokenizer: Arc::new(RwLock::new(Some(tokenizer))),
             batch_store: None,
             response_store: Arc::new(RwLock::new(
@@ -533,6 +535,20 @@ impl AppState {
         RequestId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
+    pub fn runtime_decision(&self) -> RuntimeDecision {
+        self.runtime_decision
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_runtime_decision(&self, decision: RuntimeDecision) {
+        *self
+            .runtime_decision
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = decision;
+    }
+
     fn starting(
         model_name: String,
         runtime_decision: RuntimeDecision,
@@ -543,7 +559,7 @@ impl AppState {
         Self {
             engine: Arc::new(RwLock::new(None)),
             model_name,
-            runtime_decision,
+            runtime_decision: std::sync::RwLock::new(runtime_decision),
             tokenizer: Arc::new(RwLock::new(None)),
             batch_store: None,
             response_store: Arc::new(RwLock::new(
@@ -820,11 +836,36 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false);
 
-    let runtime_decision = validate_gpt_oss_runtime(
+    #[cfg(feature = "xe")]
+    let xe_auto_available =
+        if config.device.device == "auto" && gpt_oss_xe::automatic_promotion_enabled() {
+            match gpt_oss_xe::probe_automatic(&config.device.cpu_repack_cache) {
+                Ok(descriptor) => {
+                    info!(
+                        pci_vendor = %descriptor.identity.pci_vendor_id,
+                        pci_device = %descriptor.identity.pci_device_id,
+                        driver_version = %descriptor.identity.driver_version,
+                        "automatic Xe promotion record and startup probe passed"
+                    );
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(reason = %error, "automatic Xe probe failed; selecting CPU");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+    #[cfg(not(feature = "xe"))]
+    let xe_auto_available = false;
+
+    let mut runtime_decision = validate_gpt_oss_runtime_with_xe(
         &config.model.model_path,
         config.runtime_mode,
         &config.device.device,
         cuda_runtime.available,
+        xe_auto_available,
         config.model.max_model_len,
         config.parallel.tensor_parallel_size,
         config.parallel.pipeline_parallel_size,
@@ -850,6 +891,7 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
     };
     let backend_class = match runtime_decision.backend_path {
         RuntimeBackendPath::Cpu => gpt_oss_engine::telemetry::metrics::BackendClass::Cpu,
+        RuntimeBackendPath::CpuXe => gpt_oss_engine::telemetry::metrics::BackendClass::CpuXe,
         RuntimeBackendPath::Cuda => gpt_oss_engine::telemetry::metrics::BackendClass::Cuda,
         RuntimeBackendPath::Mock => gpt_oss_engine::telemetry::metrics::BackendClass::Mock,
     };
@@ -883,31 +925,55 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
             .await
     });
 
-    let initialized: gpt_oss_core::prelude::Result<(Arc<dyn InferenceEngine>, Tokenizer)> =
-        match runtime_decision.backend_path {
-            RuntimeBackendPath::Cuda => {
-                info!("GPU-backed runtime selected, creating AsyncGpuLLMEngine");
-                match Tokenizer::from_pretrained(&tokenizer_path) {
-                    Ok(tokenizer) => create_gpu_engine(config.clone())
-                        .await
-                        .map(|engine| (engine, tokenizer)),
-                    Err(error) => Err(error),
+    let initialized: gpt_oss_core::prelude::Result<(
+        Arc<dyn InferenceEngine>,
+        Tokenizer,
+        Option<serde_json::Value>,
+    )> = match runtime_decision.backend_path {
+        RuntimeBackendPath::Cuda => {
+            info!("GPU-backed runtime selected, creating AsyncGpuLLMEngine");
+            match Tokenizer::from_pretrained(&tokenizer_path) {
+                Ok(tokenizer) => create_gpu_engine(config.clone())
+                    .await
+                    .map(|engine| (engine, tokenizer, None)),
+                Err(error) => Err(error),
+            }
+        }
+        RuntimeBackendPath::Cpu => {
+            info!("native CPU runtime selected, creating batched CPU engine");
+            create_cpu_engine(config.clone(), lifecycle.clone(), limits, None).await
+        }
+        RuntimeBackendPath::CpuXe => {
+            info!("native CPU+Xe runtime selected, creating batched hybrid engine");
+            create_cpu_engine(
+                config.clone(),
+                lifecycle.clone(),
+                limits,
+                Some(if config.device.device == "xe" {
+                    CpuXeAttachmentMode::Explicit
+                } else {
+                    CpuXeAttachmentMode::Automatic
+                }),
+            )
+            .await
+        }
+        RuntimeBackendPath::Mock => {
+            info!("explicit mock runtime selected, creating AsyncLLMEngine");
+            match Tokenizer::from_pretrained(&tokenizer_path) {
+                Ok(tokenizer) => {
+                    create_mock_engine(config.clone(), &tokenizer_path).map(|engine| {
+                        (
+                            Arc::new(engine) as Arc<dyn InferenceEngine>,
+                            tokenizer,
+                            None,
+                        )
+                    })
                 }
+                Err(error) => Err(error),
             }
-            RuntimeBackendPath::Cpu => {
-                info!("native CPU runtime selected, creating batched CPU engine");
-                create_cpu_engine(config.clone(), lifecycle.clone(), limits).await
-            }
-            RuntimeBackendPath::Mock => {
-                info!("explicit mock runtime selected, creating AsyncLLMEngine");
-                match Tokenizer::from_pretrained(&tokenizer_path) {
-                    Ok(tokenizer) => create_mock_engine(config.clone(), &tokenizer_path)
-                        .map(|engine| (Arc::new(engine) as Arc<dyn InferenceEngine>, tokenizer)),
-                    Err(error) => Err(error),
-                }
-            }
-        };
-    let (engine, tokenizer) = match initialized {
+        }
+    };
+    let (engine, tokenizer, xe_descriptor) = match initialized {
         Ok(runtime) => runtime,
         Err(error) => {
             let failure = StableFailure::new(
@@ -922,6 +988,20 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
             return Err(error);
         }
     };
+    if runtime_decision.backend_path == RuntimeBackendPath::CpuXe && xe_descriptor.is_none() {
+        runtime_decision = RuntimeDecision {
+            runtime_mode: runtime_decision.runtime_mode,
+            backend_path: RuntimeBackendPath::Cpu,
+            reason: "automatic Xe attachment failed; native GPT-OSS CPU fallback selected".into(),
+        };
+        state.set_runtime_decision(runtime_decision.clone());
+        gpt_oss_engine::telemetry::metrics::record_dispatch(
+            gpt_oss_engine::telemetry::metrics::BackendClass::CpuXe,
+            gpt_oss_engine::telemetry::metrics::DispatchResult::Fallback,
+            gpt_oss_engine::telemetry::metrics::ReasonCode::None,
+        );
+        tracing::warn!("automatic Xe attachment did not survive model startup; using CPU");
+    }
     let finalize_startup = async {
         state
             .install_runtime(engine, tokenizer)
@@ -944,6 +1024,9 @@ pub async fn serve(server_config: ServerConfig) -> gpt_oss_core::prelude::Result
             "backend".into(),
             serde_json::json!(runtime_decision.backend_path.as_str()),
         );
+        if let Some(descriptor) = &xe_descriptor {
+            snapshot.effective.insert("xe".into(), descriptor.clone());
+        }
         snapshot.effective.insert(
             "context".into(),
             serde_json::json!(config.model.max_model_len),
@@ -1130,7 +1213,12 @@ async fn create_cpu_engine(
     mut config: EngineConfig,
     lifecycle: ServiceLifecycle,
     limits: ServiceLimits,
-) -> gpt_oss_core::prelude::Result<(Arc<dyn InferenceEngine>, Tokenizer)> {
+    xe_mode: Option<CpuXeAttachmentMode>,
+) -> gpt_oss_core::prelude::Result<(
+    Arc<dyn InferenceEngine>,
+    Tokenizer,
+    Option<serde_json::Value>,
+)> {
     if !matches!(
         config.model.dtype,
         gpt_oss_core::types::Dtype::Auto | gpt_oss_core::types::Dtype::BFloat16
@@ -1155,6 +1243,15 @@ async fn create_cpu_engine(
         .map_err(|error| gpt_oss_core::prelude::LLMError::ConfigError(error.to_string()))?;
     let threads = config.device.cpu_threads;
     let context_cap = config.model.max_model_len;
+    let xe_max_resident_bytes = config
+        .device
+        .xe_max_resident_mib
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| {
+            gpt_oss_core::prelude::LLMError::ConfigError(
+                "xe_max_resident_mib overflows bytes".into(),
+            )
+        })?;
     let topology = CpuTopology::observe(threads);
     info!(
         topology = %topology,
@@ -1177,13 +1274,17 @@ async fn create_cpu_engine(
             )?
             .snapshot_dir
         };
-        let cpu_model = CpuModel::load_with_matmul_backend(
+        let cpu_model = CpuModel::load_with_backends(
             &snapshot,
             &repack_cache,
             kernel_path,
             threads,
             CpuExpertProjection::default(),
             matmul_backend,
+            xe_mode.map(|mode| CpuXeConfig {
+                mode,
+                max_resident_bytes: xe_max_resident_bytes,
+            }),
         )?;
         Ok::<_, gpt_oss_core::prelude::LLMError>((cpu_model, snapshot))
     })
@@ -1208,6 +1309,14 @@ async fn create_cpu_engine(
     let engine_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
     let app_tokenizer = Tokenizer::from_pretrained(&tokenizer_source)?;
     let dispatch = cpu_model.kernel_dispatch_plan();
+    let xe_descriptor = cpu_model
+        .xe_descriptor()
+        .map(|descriptor| {
+            serde_json::to_value(descriptor).map_err(|error| {
+                gpt_oss_core::prelude::LLMError::SerializationError(error.to_string())
+            })
+        })
+        .transpose()?;
     info!(
         kernel = %cpu_model.kernel_path(),
         dispatch = %dispatch,
@@ -1218,7 +1327,11 @@ async fn create_cpu_engine(
         context_cap,
         "loaded native CPU model"
     );
-    config.device.device = "cpu".into();
+    config.device.device = if xe_descriptor.is_some() {
+        "cpu_xe".into()
+    } else {
+        "cpu".into()
+    };
     let engine = CpuBatchEngine::new_with_request_budget(
         config,
         cpu_model,
@@ -1232,7 +1345,7 @@ async fn create_cpu_engine(
         limits.drain_deadline,
     )
     .map_err(|failure| gpt_oss_core::prelude::LLMError::ConfigError(failure.to_string()))?;
-    Ok((Arc::new(managed), app_tokenizer))
+    Ok((Arc::new(managed), app_tokenizer, xe_descriptor))
 }
 
 pub fn resolve_served_model_id(
@@ -1496,7 +1609,9 @@ mod tests {
         config.model.dtype = gpt_oss_core::types::Dtype::Float16;
         let lifecycle = ServiceLifecycle::starting("test-model");
         let error =
-            match create_cpu_engine(config, lifecycle, ServiceLimits::for_max_num_seqs(1)).await {
+            match create_cpu_engine(config, lifecycle, ServiceLimits::for_max_num_seqs(1), None)
+                .await
+            {
                 Ok(_) => panic!("float16 CPU request unexpectedly succeeded"),
                 Err(error) => error,
             };

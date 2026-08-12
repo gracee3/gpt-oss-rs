@@ -373,21 +373,26 @@ impl OpenClRuntime {
         };
         let key = native_cache_key(&facts, &libraries);
         let native_cache = read_native_cache(&config.cache_root, &key, &facts, &libraries);
+        let compile_source = || {
+            create_program_source(&api, context, facts.device)
+                .map(|program| (program, false))
+                .inspect_err(|_| {
+                    release_queue_context(&api, queue, context);
+                })
+        };
         let (program, cache_hit) = match native_cache {
             Ok(Some(binary)) => match create_program_binary(&api, context, facts.device, &binary) {
                 Ok(program) => (program, true),
                 Err(error) if facts.compiler_available => {
                     tracing::warn!(reason = %error, "Xe native cache rejected; recompiling source");
-                    (create_program_source(&api, context, facts.device)?, false)
+                    compile_source()?
                 }
                 Err(error) => {
                     release_queue_context(&api, queue, context);
                     return Err(error);
                 }
             },
-            Ok(None) | Err(_) if facts.compiler_available => {
-                (create_program_source(&api, context, facts.device)?, false)
-            }
+            Ok(None) | Err(_) if facts.compiler_available => compile_source()?,
             Ok(None) => {
                 release_queue_context(&api, queue, context);
                 return Err(XeError::Capability(

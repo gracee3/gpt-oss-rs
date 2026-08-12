@@ -93,7 +93,7 @@ pub struct CliArgs {
     pub pipeline_parallel_size: usize,
 
     // -- Device --
-    /// Target device: "auto", "cpu", "cuda", or explicit test-only "mock".
+    /// Target device: "auto", "cpu", "xe", "cuda", or explicit test-only "mock".
     #[arg(long, default_value = "auto")]
     pub device: String,
 
@@ -112,6 +112,10 @@ pub struct CliArgs {
     /// Root for versioned MXFP4 repack files.
     #[arg(long)]
     pub cpu_repack_cache: Option<std::path::PathBuf>,
+
+    /// Maximum device-resident Xe projection slab in MiB.
+    #[arg(long, default_value_t = 128)]
+    pub xe_max_resident_mib: usize,
 
     // -- Telemetry --
     /// Disable telemetry.

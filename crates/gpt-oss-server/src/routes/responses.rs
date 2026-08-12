@@ -334,7 +334,7 @@ pub async fn create_response(
         store = req.store,
         tools = req.tools_enabled(),
         previous_response = req.previous_response_id.as_deref().unwrap_or("none"),
-        runtime = %state.runtime_decision.summary(),
+        runtime = %state.runtime_decision().summary(),
         "responses request"
     );
 

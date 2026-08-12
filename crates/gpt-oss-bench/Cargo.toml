@@ -22,6 +22,7 @@ metrics-exporter-prometheus.workspace = true
 
 [features]
 default = []
+xe = ["gpt-oss-model-runner/xe"]
 cuda = ["gpt-oss-engine/cuda"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 

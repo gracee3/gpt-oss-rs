@@ -10,6 +10,7 @@ use gpt_oss_evidence::{
 };
 use gpt_oss_model_runner::{
     CpuExpertProjection, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
+    CpuXeAttachmentMode, CpuXeConfig,
 };
 use gpt_oss_tokenizer::{
     FunctionDefinition, HarmonyProtocol, ProtocolMessage, ToolDefinition, ToolParameterProperty,
@@ -62,6 +63,13 @@ struct Cli {
     #[arg(long, default_value_t = 8)]
     top_k: usize,
 
+    /// Attach the explicit CPU+Xe projection backend. Requires `--features xe`.
+    #[arg(long, default_value_t = false)]
+    xe: bool,
+
+    #[arg(long, default_value_t = 128)]
+    xe_max_resident_mib: usize,
+
     #[arg(long)]
     output: PathBuf,
 }
@@ -107,6 +115,7 @@ struct ParityCapture<'a> {
     kernel: String,
     cpu_matmul_backend: String,
     expert_projection: CpuExpertProjection,
+    xe: Option<serde_json::Value>,
     prompt_text: String,
     prompt_token_ids: Vec<u32>,
     generated_token_ids: Vec<u32>,
@@ -139,6 +148,10 @@ fn main() -> Result<()> {
         .checked_add(cli.max_new_tokens)
         .context("context length overflow")?;
     let startup_start = Instant::now();
+    let xe_max_resident_bytes = cli
+        .xe_max_resident_mib
+        .checked_mul(1024 * 1024)
+        .context("--xe-max-resident-mib overflows bytes")?;
     let mut runner = CpuModelRunner::load_with_options(
         &cli.model,
         &cli.repack_cache,
@@ -148,9 +161,18 @@ fn main() -> Result<()> {
             threads: cli.threads,
             context_cap,
             expert_projection: cli.expert_projection,
+            xe: cli.xe.then_some(CpuXeConfig {
+                mode: CpuXeAttachmentMode::Explicit,
+                max_resident_bytes: xe_max_resident_bytes,
+            }),
         },
     )?;
     let startup_seconds = startup_start.elapsed().as_secs_f64();
+    let xe_descriptor = runner
+        .model()
+        .xe_descriptor()
+        .map(serde_json::to_value)
+        .transpose()?;
 
     let prompt_start = Instant::now();
     let target_trace_step = (!cli.trace_layers.is_empty()).then_some(cli.trace_step.unwrap_or(0));
@@ -204,6 +226,7 @@ fn main() -> Result<()> {
         kernel: cli.kernel.to_string(),
         cpu_matmul_backend: runner.matmul_backend().to_string(),
         expert_projection: runner.expert_projection(),
+        xe: xe_descriptor,
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,
         generated_token_ids,

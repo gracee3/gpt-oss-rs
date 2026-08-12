@@ -55,6 +55,8 @@ enum Commands {
         cpu_threads: Option<usize>,
         #[arg(long)]
         cpu_repack_cache: Option<PathBuf>,
+        #[arg(long, default_value_t = 128)]
+        xe_max_resident_mib: usize,
         #[arg(long, value_enum, default_value_t = RuntimeMode::Experimental)]
         runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
@@ -137,6 +139,7 @@ enum ServeProfile {
 enum DeviceChoice {
     Auto,
     Cpu,
+    Xe,
     Cuda,
     Mock,
 }
@@ -146,6 +149,7 @@ impl DeviceChoice {
         match self {
             Self::Auto => "auto",
             Self::Cpu => "cpu",
+            Self::Xe => "xe",
             Self::Cuda => "cuda",
             Self::Mock => "mock",
         }
@@ -329,6 +333,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cpu_matmul_backend,
             cpu_threads,
             cpu_repack_cache,
+            xe_max_resident_mib,
             runtime_mode,
             profile,
             tokenizer,
@@ -355,8 +360,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             init_tracing(&log_level);
             info!("gpt-oss-rs v0.1.0");
 
-            let cpu_selected = matches!(device, DeviceChoice::Auto | DeviceChoice::Cpu)
-                && is_gpt_oss_model(&model);
+            let cpu_selected = matches!(
+                device,
+                DeviceChoice::Auto | DeviceChoice::Cpu | DeviceChoice::Xe
+            ) && is_gpt_oss_model(&model);
             let resolved_profile = resolve_serve_profile(
                 &model,
                 profile,
@@ -420,6 +427,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .cpu_matmul_backend(cpu_matmul_backend.as_str())
                             .cpu_threads(cpu_threads)
                             .cpu_repack_cache(cpu_repack_cache.clone())
+                            .xe_max_resident_mib(xe_max_resident_mib)
                             .build(),
                     )
                     .telemetry(
@@ -449,6 +457,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 cpu_matmul_backend = cpu_matmul_backend.as_str(),
                 cpu_threads,
                 cpu_repack_cache = %cpu_repack_cache.display(),
+                xe_max_resident_mib,
                 "starting server"
             );
 
@@ -647,6 +656,7 @@ mod tests {
     #[test]
     fn device_and_kernel_cli_values_are_stable() {
         assert_eq!(DeviceChoice::Auto.as_str(), "auto");
+        assert_eq!(DeviceChoice::Xe.as_str(), "xe");
         assert_eq!(DeviceChoice::Mock.as_str(), "mock");
         assert_eq!(CpuKernelChoice::Avx512Vnni.as_str(), "avx512-vnni");
     }

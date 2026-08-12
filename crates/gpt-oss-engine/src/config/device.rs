@@ -33,10 +33,14 @@ fn default_cpu_repack_cache() -> PathBuf {
     PathBuf::from(".cache/gpt-oss-rs")
 }
 
+const fn default_xe_max_resident_mib() -> usize {
+    128
+}
+
 /// Which device family to target.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceConfig {
-    /// Device string: "auto", "cpu", "cuda", or explicit test-only "mock".
+    /// Device string: "auto", "cpu", "xe", "cuda", or explicit test-only "mock".
     #[serde(default = "default_device")]
     pub device: String,
     /// Native CPU kernel dispatch path.
@@ -51,6 +55,9 @@ pub struct DeviceConfig {
     /// Root for versioned, memory-mapped MXFP4 repacks.
     #[serde(default = "default_cpu_repack_cache")]
     pub cpu_repack_cache: PathBuf,
+    /// Hard bound for the Xe device slab, excluding CPU fallback resources.
+    #[serde(default = "default_xe_max_resident_mib")]
+    pub xe_max_resident_mib: usize,
 }
 
 impl Default for DeviceConfig {
@@ -61,6 +68,7 @@ impl Default for DeviceConfig {
             cpu_matmul_backend: default_cpu_matmul_backend(),
             cpu_threads: default_cpu_threads(),
             cpu_repack_cache: default_cpu_repack_cache(),
+            xe_max_resident_mib: default_xe_max_resident_mib(),
         }
     }
 }
@@ -109,6 +117,12 @@ impl DeviceConfigBuilder {
     /// Set the MXFP4 repack cache root.
     pub fn cpu_repack_cache(mut self, v: impl Into<PathBuf>) -> Self {
         self.0.cpu_repack_cache = v.into();
+        self
+    }
+
+    /// Set the bounded Xe device slab size in MiB.
+    pub fn xe_max_resident_mib(mut self, v: usize) -> Self {
+        self.0.xe_max_resident_mib = v;
         self
     }
 

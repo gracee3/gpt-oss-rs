@@ -66,7 +66,9 @@ pub use engine::LLMEngine;
 pub use engine::{Executor, ExecutorAdapter, Scheduler};
 pub use engine::{ExecutorInput, SamplerOutput, SchedulerOutputs};
 pub use executor::{ExecutorConfig, ExecutorFactory};
-pub use gpt_oss_model_runner::{CpuExpertProjection, CpuModel};
+pub use gpt_oss_model_runner::{
+    CpuExpertProjection, CpuModel, CpuStepPhase, CpuXeAttachmentMode, CpuXeConfig,
+};
 pub use memory::{
     CpuKvGeometry, GrantFailure, GrantId, GrantPhase, MemoryClass, MemoryEstimate, MemoryGrant,
     ReservationLedger, ReservationLimits, SmapsRollup,

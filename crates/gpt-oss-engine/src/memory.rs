@@ -16,18 +16,20 @@ pub enum MemoryClass {
     StagedKv,
     TokenVectors,
     GenerationState,
+    AcceleratorStaging,
     Delivery,
     ResponseStore,
     Diagnostics,
 }
 
 impl MemoryClass {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Request,
         Self::KvCache,
         Self::StagedKv,
         Self::TokenVectors,
         Self::GenerationState,
+        Self::AcceleratorStaging,
         Self::Delivery,
         Self::ResponseStore,
         Self::Diagnostics,
@@ -40,6 +42,7 @@ impl MemoryClass {
             Self::StagedKv => "staged_kv",
             Self::TokenVectors => "token_vectors",
             Self::GenerationState => "generation_state",
+            Self::AcceleratorStaging => "accelerator_staging",
             Self::Delivery => "delivery",
             Self::ResponseStore => "response_store",
             Self::Diagnostics => "diagnostics",

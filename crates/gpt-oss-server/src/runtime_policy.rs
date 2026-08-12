@@ -16,6 +16,8 @@ pub enum RuntimeBackendPath {
     Cuda,
     /// Native batched GPT-OSS CPU execution.
     Cpu,
+    /// Native CPU execution with bounded Xe expert projections.
+    CpuXe,
     /// Explicit test-only mock execution.
     Mock,
 }
@@ -25,6 +27,7 @@ impl RuntimeBackendPath {
         match self {
             Self::Cuda => "cuda",
             Self::Cpu => "cpu",
+            Self::CpuXe => "cpu_xe",
             Self::Mock => "mock",
         }
     }
@@ -119,8 +122,38 @@ pub fn validate_gpt_oss_runtime(
     primary_gpu_total_memory: Option<usize>,
     allow_long_context_override: bool,
 ) -> Result<RuntimeDecision, String> {
+    validate_gpt_oss_runtime_with_xe(
+        model_name,
+        runtime_mode,
+        requested_device,
+        gpu_available,
+        false,
+        max_model_len,
+        tensor_parallel_size,
+        pipeline_parallel_size,
+        max_num_seqs,
+        primary_gpu_total_memory,
+        allow_long_context_override,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn validate_gpt_oss_runtime_with_xe(
+    model_name: &str,
+    runtime_mode: RuntimeMode,
+    requested_device: &str,
+    gpu_available: bool,
+    xe_auto_available: bool,
+    max_model_len: usize,
+    tensor_parallel_size: usize,
+    pipeline_parallel_size: usize,
+    max_num_seqs: usize,
+    primary_gpu_total_memory: Option<usize>,
+    allow_long_context_override: bool,
+) -> Result<RuntimeDecision, String> {
     let is_gpt_oss = is_gpt_oss_model(model_name);
     let backend_path = match requested_device {
+        "auto" if is_gpt_oss && xe_auto_available => RuntimeBackendPath::CpuXe,
         "auto" if is_gpt_oss => RuntimeBackendPath::Cpu,
         "auto" => {
             return Err("automatic serving only supports GPT-OSS models; select an explicit experimental backend for other model families".into())
@@ -132,10 +165,15 @@ pub fn validate_gpt_oss_runtime(
         "cuda" => return Err("CUDA was requested but no usable CUDA device was detected".into()),
         "cpu" if is_gpt_oss => RuntimeBackendPath::Cpu,
         "cpu" => return Err("native CPU serving only supports GPT-OSS models".into()),
+        "xe" if !cfg!(feature = "xe") => {
+            return Err("Xe was requested but this server was built without the 'xe' feature".into())
+        }
+        "xe" if is_gpt_oss => RuntimeBackendPath::CpuXe,
+        "xe" => return Err("CPU+Xe serving only supports GPT-OSS models".into()),
         "mock" => RuntimeBackendPath::Mock,
         other => {
             return Err(format!(
-                "unknown device '{other}': expected auto, cpu, cuda, or mock"
+                "unknown device '{other}': expected auto, cpu, xe, cuda, or mock"
             ))
         }
     };
@@ -156,7 +194,7 @@ pub fn validate_gpt_oss_runtime(
                 reason: "explicit experimental CUDA execution selected".into(),
             })
         }
-        RuntimeBackendPath::Cpu => {
+        RuntimeBackendPath::Cpu | RuntimeBackendPath::CpuXe => {
             if runtime_mode == RuntimeMode::Trusted {
                 return Err(
                     "trusted GPT-OSS CPU serving is blocked until the final i7 conformance gate"
@@ -171,7 +209,11 @@ pub fn validate_gpt_oss_runtime(
             Ok(RuntimeDecision {
                 runtime_mode,
                 backend_path,
-                reason: if max_num_seqs > 1 {
+                reason: if backend_path == RuntimeBackendPath::CpuXe && requested_device == "auto" {
+                    "auto selected the promoted GPT-OSS CPU+Xe hybrid backend".into()
+                } else if backend_path == RuntimeBackendPath::CpuXe {
+                    "explicit GPT-OSS CPU+Xe hybrid execution selected".into()
+                } else if max_num_seqs > 1 {
                     format!(
                         "experimental native GPT-OSS CPU batching selected with max_num_seqs={max_num_seqs}"
                     )
@@ -343,6 +385,85 @@ mod tests {
             assert_eq!(decision.backend_path, RuntimeBackendPath::Cpu);
             assert!(decision.reason.contains("native GPT-OSS CPU backend"));
         }
+    }
+
+    #[test]
+    fn promoted_auto_selects_cpu_xe_without_considering_cuda() {
+        for gpu_available in [false, true] {
+            let decision = validate_gpt_oss_runtime_with_xe(
+                "openai/gpt-oss-20b",
+                RuntimeMode::Experimental,
+                "auto",
+                gpu_available,
+                true,
+                GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+                1,
+                1,
+                4,
+                Some(GPT_OSS_CONSUMER_MAX_VRAM_BYTES),
+                false,
+            )
+            .unwrap();
+            assert_eq!(decision.backend_path, RuntimeBackendPath::CpuXe);
+            assert_eq!(decision.backend_label(), "cpu_xe");
+        }
+    }
+
+    #[cfg(feature = "xe")]
+    #[test]
+    fn explicit_xe_is_experimental_only_and_requires_cpu_topology() {
+        let decision = validate_gpt_oss_runtime_with_xe(
+            "openai/gpt-oss-20b",
+            RuntimeMode::Experimental,
+            "xe",
+            false,
+            false,
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
+            4,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(decision.backend_path, RuntimeBackendPath::CpuXe);
+        assert!(decision.reason.contains("explicit GPT-OSS CPU+Xe"));
+
+        let trusted = validate_gpt_oss_runtime_with_xe(
+            "openai/gpt-oss-20b",
+            RuntimeMode::Trusted,
+            "xe",
+            false,
+            false,
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
+            4,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(trusted.contains("final i7 conformance gate"));
+    }
+
+    #[cfg(not(feature = "xe"))]
+    #[test]
+    fn featureless_build_rejects_explicit_xe() {
+        let error = validate_gpt_oss_runtime_with_xe(
+            "openai/gpt-oss-20b",
+            RuntimeMode::Experimental,
+            "xe",
+            false,
+            false,
+            GPT_OSS_CONSUMER_MAX_MODEL_LEN,
+            1,
+            1,
+            4,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("without the 'xe' feature"));
     }
 
     #[test]

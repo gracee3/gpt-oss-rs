@@ -28,6 +28,12 @@ use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
 use crate::cpu_tensor_store::{CpuTensor, CpuTensorStore};
 use crate::model_loader::dtype::DType;
 
+#[cfg(feature = "xe")]
+use gpt_oss_xe::{
+    ActivationRecordV2, AttachConfig as XeAttachConfig, AttachmentMode, ProjectionRequest,
+    ProjectionRole, XeDescriptor, XeError, XeProjectionEngine,
+};
+
 const DEFAULT_SWIGLU_ALPHA: f32 = 1.702;
 const DEFAULT_SWIGLU_LIMIT: f32 = 7.0;
 
@@ -82,6 +88,25 @@ pub struct CpuModelRunnerOptions {
     pub threads: usize,
     pub context_cap: usize,
     pub expert_projection: CpuExpertProjection,
+    pub xe: Option<CpuXeConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuXeAttachmentMode {
+    Automatic,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuXeConfig {
+    pub mode: CpuXeAttachmentMode,
+    pub max_resident_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuStepPhase {
+    Prefill,
+    Decode,
 }
 
 /// Monotonic version of committed CPU sequence-model state.
@@ -111,6 +136,7 @@ pub struct CpuStepRow {
     pub token_id: TokenId,
     pub absolute_position: usize,
     pub logits_required: bool,
+    pub phase: CpuStepPhase,
 }
 
 impl CpuStepRow {
@@ -125,6 +151,23 @@ impl CpuStepRow {
             token_id,
             absolute_position,
             logits_required,
+            phase: CpuStepPhase::Prefill,
+        }
+    }
+
+    pub const fn new_with_phase(
+        sequence_id: SequenceId,
+        token_id: TokenId,
+        absolute_position: usize,
+        logits_required: bool,
+        phase: CpuStepPhase,
+    ) -> Self {
+        Self {
+            sequence_id,
+            token_id,
+            absolute_position,
+            logits_required,
+            phase,
         }
     }
 }
@@ -350,6 +393,8 @@ pub struct CpuModel {
     matmul_backend: Mxfp4MatmulBackend,
     mxfp4_weight_layout: Mxfp4WeightLayout,
     amx_runtime_status: Option<AmxRuntimeStatus>,
+    #[cfg(feature = "xe")]
+    xe: Option<XeProjectionEngine>,
 }
 
 /// One immutable file currently mapped by the native CPU model.
@@ -376,6 +421,9 @@ pub struct CpuMemoryDescriptor {
     pub staged_kv_high_water_bytes: u128,
     pub model_owned_metadata_bytes: u128,
     pub operator_scratch_bound_bytes: u128,
+    pub xe_device_resident_bytes: u128,
+    pub xe_host_staging_bound_bytes: u128,
+    pub xe_max_resident_bytes: u128,
     pub allocator_omissions: Vec<String>,
 }
 
@@ -505,6 +553,28 @@ enum PreparedExpertInput {
     Q8(Vec<Q8Block>),
     ResidualQ8(Vec<ResidualQ8Block>),
     ExactBf16(Vec<bf16>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpertProjectionRole {
+    GateUp,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpertProjectionPolicy {
+    role: ExpertProjectionRole,
+    xe_prefill_allowed: bool,
+}
+
+#[cfg(feature = "xe")]
+impl ExpertProjectionRole {
+    const fn xe(self) -> ProjectionRole {
+        match self {
+            Self::GateUp => ProjectionRole::GateUp,
+            Self::Down => ProjectionRole::Down,
+        }
+    }
 }
 
 struct CpuLayer {
@@ -924,6 +994,27 @@ impl CpuModel {
         expert_projection: CpuExpertProjection,
         matmul_backend: Mxfp4MatmulBackend,
     ) -> Result<Arc<Self>> {
+        Self::load_with_backends(
+            snapshot,
+            repack_root,
+            kernel_path,
+            threads,
+            expert_projection,
+            matmul_backend,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_with_backends(
+        snapshot: impl AsRef<Path>,
+        repack_root: impl AsRef<Path>,
+        kernel_path: KernelPath,
+        threads: usize,
+        expert_projection: CpuExpertProjection,
+        matmul_backend: Mxfp4MatmulBackend,
+        xe_config: Option<CpuXeConfig>,
+    ) -> Result<Arc<Self>> {
         if threads == 0 {
             return Err(LLMError::ConfigError(
                 "CPU thread count must be non-zero".into(),
@@ -939,10 +1030,11 @@ impl CpuModel {
             None
         };
         let snapshot = snapshot.as_ref();
+        let repack_root = repack_root.as_ref();
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
         let store = CpuTensorStore::open(snapshot)?;
         let identity = SourceIdentity::from_store(&store)?;
-        let repack = CpuRepackCache::new(repack_root.as_ref(), identity);
+        let repack = CpuRepackCache::new(repack_root, identity);
         let mut kernels =
             Kernels::new(kernel_path).map_err(|error| LLMError::ConfigError(error.to_string()))?;
         if expert_projection == CpuExpertProjection::ExactBf16 {
@@ -966,6 +1058,55 @@ impl CpuModel {
         for index in 0..config.num_hidden_layers {
             layers.push(load_layer(&store, &repack, &config, index, weight_layout)?);
         }
+        #[cfg(feature = "xe")]
+        let xe = if let Some(xe_config) = xe_config {
+            let mode = match xe_config.mode {
+                CpuXeAttachmentMode::Automatic => AttachmentMode::Automatic,
+                CpuXeAttachmentMode::Explicit => AttachmentMode::Explicit,
+            };
+            let max_columns =
+                config
+                    .hidden_size
+                    .max(config.intermediate_size.checked_mul(2).ok_or_else(|| {
+                        LLMError::ConfigError("Xe maximum projection columns overflow".into())
+                    })?);
+            let max_blocks = config
+                .hidden_size
+                .max(config.intermediate_size)
+                .checked_div(QUANT_BLOCK_SIZE)
+                .ok_or_else(|| LLMError::ConfigError("Xe block geometry is invalid".into()))?;
+            match XeProjectionEngine::attach(XeAttachConfig::new(
+                mode,
+                repack_root,
+                xe_config.max_resident_bytes,
+                max_columns,
+                max_blocks,
+            )) {
+                Ok(engine) => Some(engine),
+                Err(error) if xe_config.mode == CpuXeAttachmentMode::Automatic => {
+                    tracing::warn!(
+                        reason = xe_error_class(&error),
+                        "automatic Xe attachment failed; selecting CPU"
+                    );
+                    None
+                }
+                Err(error) => {
+                    return Err(LLMError::ConfigError(format!(
+                        "explicit Xe attachment failed: {error}"
+                    )))
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(not(feature = "xe"))]
+        if let Some(xe_config) = xe_config {
+            if xe_config.mode == CpuXeAttachmentMode::Explicit {
+                return Err(LLMError::ConfigError(
+                    "explicit Xe was requested but this build has no 'xe' feature".into(),
+                ));
+            }
+        }
         let final_norm = load_vector_len(&store.tensor("model.norm.weight")?, config.hidden_size)?;
         validate_shape(
             &store.tensor("model.embed_tokens.weight")?,
@@ -988,6 +1129,8 @@ impl CpuModel {
             matmul_backend,
             mxfp4_weight_layout: weight_layout,
             amx_runtime_status,
+            #[cfg(feature = "xe")]
+            xe,
         }))
     }
 
@@ -1017,6 +1160,16 @@ impl CpuModel {
 
     pub const fn amx_runtime_status(&self) -> Option<AmxRuntimeStatus> {
         self.amx_runtime_status
+    }
+
+    #[cfg(feature = "xe")]
+    pub fn xe_descriptor(&self) -> Option<XeDescriptor> {
+        self.xe.as_ref().and_then(|engine| engine.descriptor().ok())
+    }
+
+    #[cfg(not(feature = "xe"))]
+    pub fn xe_descriptor(&self) -> Option<()> {
+        None
     }
 
     /// Report exact mapped files and checked structural bounds for a configured
@@ -1118,6 +1271,31 @@ impl CpuModel {
             f32_values,
             std::mem::size_of::<f32>() as u128,
         ])?;
+        #[cfg(feature = "xe")]
+        let xe_memory = self.xe_descriptor().map(|descriptor| descriptor.memory);
+        #[cfg(feature = "xe")]
+        let xe_host_staging_bound_bytes = if let Some(memory) = &xe_memory {
+            let chunk_rows = memory.max_rows_per_chunk as u128;
+            let activation_per_row = (memory.activation_capacity_bytes as u128)
+                .checked_div(chunk_rows)
+                .ok_or_else(|| {
+                    LLMError::MemoryError("Xe activation row bound is invalid".into())
+                })?;
+            let output_per_row = (memory.output_capacity_bytes as u128)
+                .checked_div(chunk_rows)
+                .ok_or_else(|| LLMError::MemoryError("Xe output row bound is invalid".into()))?;
+            (memory.weight_capacity_bytes as u128)
+                .checked_add(memory.bias_capacity_bytes as u128)
+                .and_then(|fixed| {
+                    activation_per_row
+                        .checked_add(output_per_row)?
+                        .checked_mul(max_staged_rows.max(1) as u128)?
+                        .checked_add(fixed)
+                })
+                .ok_or_else(|| LLMError::MemoryError("Xe host staging bound overflows".into()))?
+        } else {
+            0
+        };
 
         Ok(CpuMemoryDescriptor {
             mapped_weight_files,
@@ -1133,6 +1311,22 @@ impl CpuModel {
             staged_kv_high_water_bytes,
             model_owned_metadata_bytes,
             operator_scratch_bound_bytes,
+            #[cfg(feature = "xe")]
+            xe_device_resident_bytes: xe_memory
+                .as_ref()
+                .map_or(0, |memory| memory.device_resident_bytes as u128),
+            #[cfg(not(feature = "xe"))]
+            xe_device_resident_bytes: 0,
+            #[cfg(feature = "xe")]
+            xe_host_staging_bound_bytes,
+            #[cfg(not(feature = "xe"))]
+            xe_host_staging_bound_bytes: 0,
+            #[cfg(feature = "xe")]
+            xe_max_resident_bytes: xe_memory
+                .as_ref()
+                .map_or(0, |memory| memory.max_resident_bytes as u128),
+            #[cfg(not(feature = "xe"))]
+            xe_max_resident_bytes: 0,
             allocator_omissions: vec![
                 "allocator_active_unavailable".into(),
                 "allocator_retained_unavailable".into(),
@@ -1213,6 +1407,7 @@ impl CpuModelRunner {
                 threads,
                 context_cap,
                 expert_projection: CpuExpertProjection::default(),
+                xe: None,
             },
         )
     }
@@ -1227,13 +1422,14 @@ impl CpuModelRunner {
                 "CPU context cap must be non-zero".into(),
             ));
         }
-        let model = CpuModel::load_with_matmul_backend(
+        let model = CpuModel::load_with_backends(
             snapshot,
             repack_root,
             options.kernel_path,
             options.threads,
             options.expert_projection,
             options.matmul_backend,
+            options.xe,
         )?;
         Self::from_model(model, options.context_cap)
     }
@@ -1779,7 +1975,16 @@ impl CpuModel {
             .iter()
             .map(|row| self.norm_boundary(row, &layer.post_attention_norm))
             .collect::<Result<Vec<_>>>()?;
-        let moe = self.moe_batch(layer, &post_attention_normalized, capture, execution)?;
+        let prefill_only = work
+            .iter()
+            .all(|row| row.descriptor.phase == CpuStepPhase::Prefill);
+        let moe = self.moe_batch(
+            layer,
+            &post_attention_normalized,
+            capture,
+            prefill_only,
+            execution,
+        )?;
 
         let mut output = Vec::with_capacity(work.len());
         let mut traces = Vec::with_capacity(work.len());
@@ -2017,6 +2222,7 @@ impl CpuModel {
         layer: &CpuLayer,
         inputs: &[Vec<bf16>],
         capture: &[bool],
+        xe_prefill_allowed: bool,
         execution: &mut CpuExecutionContext,
     ) -> Result<Vec<CpuMoeStep>> {
         if inputs.len() != capture.len() {
@@ -2084,6 +2290,10 @@ impl CpuModel {
                 expert,
                 &expert_inputs,
                 &layer.gate_up_bias,
+                ExpertProjectionPolicy {
+                    role: ExpertProjectionRole::GateUp,
+                    xe_prefill_allowed,
+                },
                 execution,
             )?;
             let mut activated = Vec::with_capacity(bucket.len());
@@ -2108,6 +2318,10 @@ impl CpuModel {
                 expert,
                 &activated_bf16,
                 &layer.down_bias,
+                ExpertProjectionPolicy {
+                    role: ExpertProjectionRole::Down,
+                    xe_prefill_allowed,
+                },
                 execution,
             )?;
             for values in &mut expert_output {
@@ -2270,6 +2484,7 @@ impl CpuModel {
         expert: usize,
         inputs: &[Vec<bf16>],
         bias: &[f32],
+        policy: ExpertProjectionPolicy,
         execution: &mut CpuExecutionContext,
     ) -> Result<Vec<Vec<f32>>> {
         if inputs.is_empty() {
@@ -2339,6 +2554,56 @@ impl CpuModel {
                             .map_err(kernel_error)?,
                     );
                 }
+                #[cfg(feature = "xe")]
+                if policy.xe_prefill_allowed {
+                    if let Some(engine) = &self.xe {
+                        if engine.should_accelerate(policy.role.xe(), inputs.len()) {
+                            let weights_v2 = gpt_oss_xe::repack_v2(rows, blocks, |row, block| {
+                                view.block(row, block)
+                                    .map(|value| (value.scale, value.packed))
+                                    .map_err(|error| XeError::Dimensions(error.to_string()))
+                            })
+                            .map_err(|error| {
+                                LLMError::ModelError(format!("Xe weight repack failed: {error}"))
+                            })?;
+                            let activations_v2 = quantized
+                                .iter()
+                                .map(|block| ActivationRecordV2 {
+                                    primary: block.primary.values,
+                                    residual: block.residual.values,
+                                    primary_scale: block.primary.scale,
+                                    residual_scale: block.residual.scale,
+                                })
+                                .collect::<Vec<_>>();
+                            match engine.project(ProjectionRequest {
+                                role: policy.role.xe(),
+                                rows: inputs.len(),
+                                columns: rows,
+                                blocks,
+                                weights_v2: &weights_v2,
+                                activations_v2: &activations_v2,
+                                bias: expert_bias,
+                            }) {
+                                Ok(xe_output) => {
+                                    return Ok(xe_output
+                                        .chunks_exact(rows)
+                                        .map(<[f32]>::to_vec)
+                                        .collect())
+                                }
+                                Err(error) => {
+                                    gpt_oss_xe::record_cpu_fallback(policy.role.xe());
+                                    tracing::warn!(
+                                        projection = policy.role.xe().as_str(),
+                                        reason = xe_error_class(&error),
+                                        "Xe projection failed; recomputing once on CPU and opening the Xe circuit breaker"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(feature = "xe"))]
+                let _ = policy;
                 let activations =
                     ResidualQ8MatrixView::new(&quantized, inputs.len(), blocks, blocks)
                         .map_err(kernel_error)?;
@@ -2944,6 +3209,20 @@ fn kernel_error(error: gpt_oss_cpu_kernels::KernelError) -> LLMError {
     LLMError::ModelError(error.to_string())
 }
 
+#[cfg(feature = "xe")]
+const fn xe_error_class(error: &XeError) -> &'static str {
+    match error {
+        XeError::Unsupported(_) => "unsupported",
+        XeError::Capability(_) => "capability",
+        XeError::Artifact(_) => "artifact",
+        XeError::Dimensions(_) => "dimensions",
+        XeError::ResidentLimit(_) => "resident_limit",
+        XeError::Runtime(_) => "runtime",
+        XeError::CircuitOpen => "circuit_open",
+        XeError::Shutdown(_) => "shutdown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -3454,6 +3733,7 @@ mod tests {
                     threads: 2,
                     context_cap: 16,
                     expert_projection,
+                    xe: None,
                 },
             )
             .unwrap();
@@ -3468,6 +3748,7 @@ mod tests {
                     threads: 2,
                     context_cap: 16,
                     expert_projection,
+                    xe: None,
                 },
             )
             .unwrap();

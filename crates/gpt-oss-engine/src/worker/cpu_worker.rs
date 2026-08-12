@@ -7,8 +7,8 @@ use gpt_oss_core::prelude::{LLMError, RequestId, Result, SequenceId, TokenId};
 use gpt_oss_cpu_kernels::{KernelPath, Mxfp4MatmulBackend};
 use gpt_oss_model_runner::sampling::Sampler;
 use gpt_oss_model_runner::{
-    CpuExecutionContext, CpuModel, CpuModelRunner, CpuSequenceModelState, CpuStepBatch, CpuStepRow,
-    PreparedCpuStep,
+    CpuExecutionContext, CpuModel, CpuModelRunner, CpuSequenceModelState, CpuStepBatch,
+    CpuStepPhase, CpuStepRow, PreparedCpuStep,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -92,11 +92,12 @@ impl CpuForward for NativeCpuForward {
             .iter()
             .enumerate()
             .map(|(offset, &token_id)| {
-                CpuStepRow::new(
+                CpuStepRow::new_with_phase(
                     sequence_id,
                     token_id,
                     self.state.position() + offset,
                     offset + 1 == token_ids.len(),
+                    CpuStepPhase::Prefill,
                 )
             })
             .collect();
@@ -113,11 +114,12 @@ impl CpuForward for NativeCpuForward {
                 "CPU forward already has a prepared step".into(),
             ));
         }
-        let batch = CpuStepBatch::single(CpuStepRow::new(
+        let batch = CpuStepBatch::single(CpuStepRow::new_with_phase(
             sequence_id,
             token_id,
             self.state.position(),
             true,
+            CpuStepPhase::Decode,
         ));
         let prepared =
             self.model
@@ -243,6 +245,7 @@ impl CpuWorker {
                 threads,
                 context_cap,
                 expert_projection: Default::default(),
+                xe: None,
             },
         )?;
         tracing::info!(

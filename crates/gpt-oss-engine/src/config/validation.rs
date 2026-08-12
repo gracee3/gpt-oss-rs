@@ -54,16 +54,20 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
 
     if !matches!(
         config.device.device.as_str(),
-        "auto" | "cpu" | "cuda" | "mock"
+        "auto" | "cpu" | "xe" | "cuda" | "mock"
     ) {
         return Err(format!(
-            "unknown device '{}': expected auto, cpu, cuda, or mock",
+            "unknown device '{}': expected auto, cpu, xe, cuda, or mock",
             config.device.device
         ));
     }
 
     if config.device.cpu_threads == 0 {
         return Err("cpu_threads must be > 0".into());
+    }
+
+    if config.device.xe_max_resident_mib == 0 {
+        return Err("xe_max_resident_mib must be > 0".into());
     }
 
     if config
@@ -90,7 +94,7 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
         ));
     }
 
-    if config.device.device == "cpu"
+    if matches!(config.device.device.as_str(), "cpu" | "xe")
         && (config.parallel.tensor_parallel_size > 1 || config.parallel.pipeline_parallel_size > 1)
     {
         return Err(format!(
