@@ -144,6 +144,38 @@ model performance. Current upstream and installed-runtime source generations
 must not be mixed casually. Full artifact hashes and offline-cache provenance
 are retained in `/home/emmy/src/xe-research/PROBE_RESULTS_2026-08-11.md`.
 
+### Post-distribution-upgrade revalidation
+
+After an Ubuntu distribution upgrade later on 2026-08-11, the installed stack
+changed from Compute Runtime 23.43 and Level Zero loader 1.16.1 to Compute
+Runtime 26.05 and system loader 1.28.2; the kernel changed from 7.0.0-28 to
+7.0.0-29. The core feasibility results still pass:
+
+- OpenCL discovery, online compilation, execution, fresh program-binary
+  retrieval, binary reload, and result validation pass;
+- shared-allocation copy and validation pass;
+- the previously generated Clang and `ocloc` SPIR-V modules both load, execute,
+  synchronize, and validate through the upgraded system loader;
+- the upgraded driver reports Level Zero API 1.14 and OpenCL SPIR-V support
+  through 1.5, while the main device and memory limits used by this research
+  remain unchanged.
+
+The system 1.28.2 loader works with both the matched probe and the probe built
+from the current Level Zero source headers. The separately built current
+Level Zero 1.32 loader still returns `ZE_RESULT_ERROR_UNSUPPORTED_VERSION`, so
+"current upstream" remains an invalid substitute for the distribution-matched
+loader. The old compute-samples `ze_info` capture is no longer reusable: it
+returns `ZE_RESULT_ERROR_UNSUPPORTED_VERSION` with the system loader and aborts
+inside the upgraded Compute Runtime when forced through the old 1.16.1 loader.
+This auxiliary-tool regression does not invalidate the passing Level Zero
+execution probes, but a new version-matched capability capture is required.
+
+The newly retrieved OpenCL program binary changed from 3,648 to 4,184 bytes,
+as expected across a compiler/runtime upgrade. This reinforces the requirement
+that cached device programs include the runtime/compiler/device generation in
+their cache key. Detailed commands and results are retained in
+`/home/emmy/src/xe-research/POST_UPGRADE_VALIDATION_2026-08-11.md`.
+
 ## External research corpus
 
 The T14 source corpus is external to Git at `/home/emmy/src/xe-research`.
