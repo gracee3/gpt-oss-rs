@@ -2,6 +2,8 @@
 
 - [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
 - [Bounded CPU execution profiling](CPU_EXECUTION_PROFILING.md)
+- [Tiger Lake MXFP4 matrix candidate](TIGER_LAKE_MXFP4_MATRIX.md)
+- [Tiger Lake forced Xe expert residency](TIGER_LAKE_XE_RESIDENCY.md)
 
 ## Runtime and backend
 

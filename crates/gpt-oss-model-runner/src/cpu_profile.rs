@@ -392,6 +392,10 @@ impl CpuExecutionProfiler {
         atomic_write(path, &bytes)
     }
 
+    pub(crate) const fn records_written(&self) -> usize {
+        self.len
+    }
+
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize, u64) {
         (self.records.len(), self.len, self.dropped)

@@ -45,6 +45,8 @@ pub const PROJECTION_TOTAL: &str = "gpt_oss_xe_projection_total";
 pub const PHASE_DURATION_SECONDS: &str = "gpt_oss_xe_phase_duration_seconds";
 pub const TRANSFER_BYTES_TOTAL: &str = "gpt_oss_xe_transfer_bytes_total";
 pub const CIRCUIT_BREAKER: &str = "gpt_oss_xe_circuit_breaker";
+pub const EXPERT_CACHE_TOTAL: &str = "gpt_oss_xe_expert_cache_total";
+pub const EXPERT_CACHE_RESIDENT_BYTES: &str = "gpt_oss_xe_expert_cache_resident_bytes";
 
 // A runtime OpenCL fault disables every current and future attachment in this
 // process. Restart is the only production reset boundary.
@@ -70,14 +72,14 @@ pub enum XeError {
     Shutdown(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentMode {
     Automatic,
     Explicit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValidationClass {
     ValidatedAutomatic,
@@ -85,7 +87,7 @@ pub enum ValidationClass {
     UnvalidatedExplicit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionRole {
     GateUp,
@@ -235,6 +237,7 @@ pub struct AttachConfig {
     pub mode: AttachmentMode,
     pub cache_root: PathBuf,
     pub max_resident_bytes: usize,
+    pub expert_cache_bytes: usize,
     pub max_columns: usize,
     pub max_blocks: usize,
 }
@@ -251,9 +254,15 @@ impl AttachConfig {
             mode,
             cache_root: cache_root.into(),
             max_resident_bytes,
+            expert_cache_bytes: 0,
             max_columns,
             max_blocks,
         }
+    }
+
+    pub fn with_expert_cache_bytes(mut self, bytes: usize) -> Self {
+        self.expert_cache_bytes = bytes;
+        self
     }
 }
 
@@ -278,6 +287,7 @@ pub struct XeMemoryDescriptor {
     pub activation_capacity_bytes: usize,
     pub output_capacity_bytes: usize,
     pub max_rows_per_chunk: usize,
+    pub expert_cache_capacity_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,12 +318,185 @@ pub struct ProjectionRequest<'a> {
     pub bias: &'a [f32],
 }
 
+/// Stable model/tensor coordinates for one immutable expert projection.
+/// Runtime, kernel, ABI, build, PCI, and driver identity are added internally.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ExpertCacheIdentity {
+    pub model_source_key: String,
+    pub tensor_source_key: String,
+    pub layer: u16,
+    pub expert: u16,
+    pub role: ProjectionRole,
+    pub columns: usize,
+    pub blocks: usize,
+    pub weight_layout_version: u32,
+}
+
+#[derive(Debug)]
+pub struct ResidentProjectionRequest<'a> {
+    pub identity: ExpertCacheIdentity,
+    pub role: ProjectionRole,
+    pub rows: usize,
+    pub columns: usize,
+    pub blocks: usize,
+    pub activations_v2: &'a [ActivationRecordV2],
+    pub bias: &'a [f32],
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum XeResidencyState {
+    Hit,
+    Miss,
+    Bypass,
+    Fault,
+    #[default]
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XeResidencyStats {
+    pub capacity_bytes: usize,
+    pub resident_bytes: usize,
+    pub resident_high_water_bytes: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub bypasses: u64,
+    pub evictions: u64,
+    pub repacks_avoided: u64,
+    pub upload_bytes_avoided: u64,
+    pub uploaded_bytes: u64,
+    pub faults: u64,
+}
+
+#[derive(Debug)]
+pub struct ProjectionResult {
+    pub output: Vec<f32>,
+    pub residency: XeResidencyState,
+    pub residency_stats: XeResidencyStats,
+}
+
+#[derive(Debug)]
+struct LruEntry<K, V> {
+    key: K,
+    value: V,
+    bytes: usize,
+    last_used: u64,
+}
+
+/// Small deterministic LRU ledger. Device objects stay runtime-owned and are
+/// returned to the caller exactly once on eviction or shutdown.
+#[derive(Debug)]
+pub(crate) struct BoundedLru<K, V> {
+    entries: Vec<LruEntry<K, V>>,
+    tick: u64,
+    stats: XeResidencyStats,
+}
+
+impl<K: Eq, V: Copy> BoundedLru<K, V> {
+    pub(crate) fn new(capacity_bytes: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            tick: 0,
+            stats: XeResidencyStats {
+                capacity_bytes,
+                ..XeResidencyStats::default()
+            },
+        }
+    }
+
+    pub(crate) fn lookup(&mut self, key: &K, expected_bytes: usize) -> Option<V> {
+        self.tick = self.tick.saturating_add(1);
+        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key) {
+            entry.last_used = self.tick;
+            self.stats.hits = self.stats.hits.saturating_add(1);
+            self.stats.repacks_avoided = self.stats.repacks_avoided.saturating_add(1);
+            self.stats.upload_bytes_avoided = self
+                .stats
+                .upload_bytes_avoided
+                .saturating_add(expected_bytes as u64);
+            Some(entry.value)
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            None
+        }
+    }
+
+    pub(crate) fn can_reside(&self, bytes: usize) -> bool {
+        bytes <= self.stats.capacity_bytes && bytes != 0
+    }
+
+    pub(crate) fn record_bypass(&mut self) {
+        self.stats.bypasses = self.stats.bypasses.saturating_add(1);
+    }
+
+    pub(crate) fn record_fault(&mut self) {
+        self.stats.faults = self.stats.faults.saturating_add(1);
+    }
+
+    pub(crate) fn record_upload(&mut self, bytes: usize) {
+        self.stats.uploaded_bytes = self.stats.uploaded_bytes.saturating_add(bytes as u64);
+    }
+
+    /// Reserve logical capacity before a device allocation is attempted. This
+    /// prevents a miss from transiently exceeding the configured bound.
+    pub(crate) fn evict_for(&mut self, bytes: usize) -> Vec<V> {
+        debug_assert!(self.can_reside(bytes));
+        let mut evicted = Vec::new();
+        while self.stats.resident_bytes.saturating_add(bytes) > self.stats.capacity_bytes {
+            let index = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(index, entry)| (entry.last_used, *index))
+                .map(|(index, _)| index)
+                .expect("an entry must exist when resident bytes exceed capacity");
+            let entry = self.entries.remove(index);
+            self.stats.resident_bytes -= entry.bytes;
+            self.stats.evictions = self.stats.evictions.saturating_add(1);
+            evicted.push(entry.value);
+        }
+        evicted
+    }
+
+    pub(crate) fn insert_reserved(&mut self, key: K, value: V, bytes: usize) {
+        debug_assert!(self.can_reside(bytes));
+        debug_assert!(self.stats.resident_bytes.saturating_add(bytes) <= self.stats.capacity_bytes);
+        self.tick = self.tick.saturating_add(1);
+        self.stats.resident_bytes += bytes;
+        self.stats.resident_high_water_bytes = self
+            .stats
+            .resident_high_water_bytes
+            .max(self.stats.resident_bytes);
+        self.record_upload(bytes);
+        self.entries.push(LruEntry {
+            key,
+            value,
+            bytes,
+            last_used: self.tick,
+        });
+    }
+
+    pub(crate) const fn stats(&self) -> XeResidencyStats {
+        self.stats
+    }
+
+    pub(crate) fn clear(&mut self) -> Vec<V> {
+        self.stats.resident_bytes = 0;
+        self.entries.drain(..).map(|entry| entry.value).collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct PhaseTiming {
     weight: Duration,
+    repack: Duration,
+    upload: Duration,
     activation: Duration,
     submit_wait: Duration,
     readback: Duration,
+    residency: XeResidencyState,
+    uploaded_weight_bias_bytes: usize,
 }
 
 trait ProjectionRuntime: Send {
@@ -324,6 +507,32 @@ trait ProjectionRuntime: Send {
         variant: KernelVariant,
         output: &mut [f32],
     ) -> Result<PhaseTiming, XeError>;
+    fn project_resident(
+        &mut self,
+        request: &ResidentProjectionRequest<'_>,
+        variant: KernelVariant,
+        output: &mut [f32],
+        repack: &mut dyn FnMut() -> Result<Vec<u8>, XeError>,
+    ) -> Result<PhaseTiming, XeError> {
+        let weights = repack()?;
+        self.project(
+            &ProjectionRequest {
+                role: request.role,
+                rows: request.rows,
+                columns: request.columns,
+                blocks: request.blocks,
+                weights_v2: &weights,
+                activations_v2: request.activations_v2,
+                bias: request.bias,
+            },
+            variant,
+            output,
+        )
+    }
+    fn residency_stats(&self) -> XeResidencyStats {
+        XeResidencyStats::default()
+    }
+    fn record_residency_fault(&mut self) {}
     fn drain(&mut self) -> Result<(), XeError>;
     fn shutdown(&mut self) -> Result<(), XeError>;
 }
@@ -403,6 +612,24 @@ impl XeProjectionEngine {
         }
         let variant = KernelVariant::Tile32M4;
         self.execute_projection(request, variant)
+            .map(|result| result.output)
+    }
+
+    /// Forced-only resident projection. The repack closure is invoked exactly
+    /// once on a miss or bypass and is never invoked on a cache hit.
+    pub fn project_resident(
+        &self,
+        request: ResidentProjectionRequest<'_>,
+        mut repack: impl FnMut() -> Result<Vec<u8>, XeError>,
+    ) -> Result<ProjectionResult, XeError> {
+        validate_resident_request(&request)?;
+        if request.rows < AUTO_MIN_ROWS {
+            return Err(XeError::Dimensions(format!(
+                "explicit hybrid policy keeps M={} on CPU",
+                request.rows
+            )));
+        }
+        self.execute_resident_projection(request, KernelVariant::Tile32M4, &mut repack)
     }
 
     /// Explicit benchmark/test control for all three validated tile kernels.
@@ -420,6 +647,7 @@ impl XeProjectionEngine {
             )));
         }
         self.execute_projection(request, variant)
+            .map(|result| result.output)
     }
 
     pub fn circuit_is_open(&self) -> bool {
@@ -433,11 +661,18 @@ impl XeProjectionEngine {
             .shutdown()
     }
 
+    pub fn residency_stats(&self) -> Result<XeResidencyStats, XeError> {
+        self.runtime
+            .lock()
+            .map_err(|_| XeError::Runtime("Xe queue mutex is poisoned".into()))
+            .map(|runtime| runtime.residency_stats())
+    }
+
     fn execute_projection(
         &self,
         request: ProjectionRequest<'_>,
         variant: KernelVariant,
-    ) -> Result<Vec<f32>, XeError> {
+    ) -> Result<ProjectionResult, XeError> {
         if PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire) {
             return Err(XeError::CircuitOpen);
         }
@@ -454,10 +689,65 @@ impl XeProjectionEngine {
         match result {
             Ok(timing) => {
                 record_projection_metrics(&request, "xe", "ok", timing);
-                Ok(output)
+                let stats = self.residency_stats()?;
+                Ok(ProjectionResult {
+                    output,
+                    residency: timing.residency,
+                    residency_stats: stats,
+                })
             }
             Err(error) => {
                 if let Ok(mut runtime) = self.runtime.lock() {
+                    let _ = runtime.drain();
+                }
+                PROCESS_XE_CIRCUIT_OPEN.store(true, Ordering::Release);
+                metrics::gauge!(CIRCUIT_BREAKER).set(1.0);
+                metrics::counter!(
+                    PROJECTION_TOTAL,
+                    "role" => request.role.as_str(),
+                    "backend" => "xe",
+                    "result" => "fault"
+                )
+                .increment(1);
+                Err(error)
+            }
+        }
+    }
+
+    fn execute_resident_projection(
+        &self,
+        request: ResidentProjectionRequest<'_>,
+        variant: KernelVariant,
+        repack: &mut dyn FnMut() -> Result<Vec<u8>, XeError>,
+    ) -> Result<ProjectionResult, XeError> {
+        if PROCESS_XE_CIRCUIT_OPEN.load(Ordering::Acquire) {
+            return Err(XeError::CircuitOpen);
+        }
+        let output_len = request
+            .rows
+            .checked_mul(request.columns)
+            .ok_or_else(|| XeError::Dimensions("output extent overflows".into()))?;
+        let mut output = vec![0.0; output_len];
+        let result = self
+            .runtime
+            .lock()
+            .map_err(|_| XeError::Runtime("Xe queue mutex is poisoned".into()))
+            .and_then(|mut runtime| {
+                runtime.project_resident(&request, variant, &mut output, repack)
+            });
+        match result {
+            Ok(timing) => {
+                record_resident_projection_metrics(&request, "xe", "ok", timing);
+                let stats = self.residency_stats()?;
+                Ok(ProjectionResult {
+                    output,
+                    residency: timing.residency,
+                    residency_stats: stats,
+                })
+            }
+            Err(error) => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.record_residency_fault();
                     let _ = runtime.drain();
                 }
                 PROCESS_XE_CIRCUIT_OPEN.store(true, Ordering::Release);
@@ -498,6 +788,8 @@ fn record_projection_metrics(
     .increment(1);
     for (phase, duration) in [
         ("weight", timing.weight),
+        ("repack", timing.repack),
+        ("upload", timing.upload),
         ("activation", timing.activation),
         ("submit_wait", timing.submit_wait),
         ("readback", timing.readback),
@@ -510,9 +802,8 @@ fn record_projection_metrics(
         .record(duration.as_secs_f64());
     }
     for (direction, bytes) in [
-        ("weights", request.weights_v2.len()),
+        ("weights_bias_uploaded", timing.uploaded_weight_bias_bytes),
         ("activations", std::mem::size_of_val(request.activations_v2)),
-        ("bias", std::mem::size_of_val(request.bias)),
         ("output", request.rows * request.columns * 4),
     ] {
         metrics::counter!(
@@ -522,6 +813,66 @@ fn record_projection_metrics(
         )
         .increment(bytes as u64);
     }
+    record_residency_metrics(request.role, timing.residency);
+}
+
+fn record_resident_projection_metrics(
+    request: &ResidentProjectionRequest<'_>,
+    backend: &'static str,
+    result: &'static str,
+    timing: PhaseTiming,
+) {
+    metrics::counter!(
+        PROJECTION_TOTAL,
+        "role" => request.role.as_str(),
+        "backend" => backend,
+        "result" => result
+    )
+    .increment(1);
+    for (phase, duration) in [
+        ("weight", timing.weight),
+        ("repack", timing.repack),
+        ("upload", timing.upload),
+        ("activation", timing.activation),
+        ("submit_wait", timing.submit_wait),
+        ("readback", timing.readback),
+    ] {
+        metrics::histogram!(
+            PHASE_DURATION_SECONDS,
+            "role" => request.role.as_str(),
+            "phase" => phase
+        )
+        .record(duration.as_secs_f64());
+    }
+    for (direction, bytes) in [
+        ("weights_bias_uploaded", timing.uploaded_weight_bias_bytes),
+        ("activations", std::mem::size_of_val(request.activations_v2)),
+        ("output", request.rows * request.columns * 4),
+    ] {
+        metrics::counter!(
+            TRANSFER_BYTES_TOTAL,
+            "role" => request.role.as_str(),
+            "direction" => direction
+        )
+        .increment(bytes as u64);
+    }
+    record_residency_metrics(request.role, timing.residency);
+}
+
+fn record_residency_metrics(role: ProjectionRole, state: XeResidencyState) {
+    let state = match state {
+        XeResidencyState::Hit => "hit",
+        XeResidencyState::Miss => "miss",
+        XeResidencyState::Bypass => "bypass",
+        XeResidencyState::Fault => "fault",
+        XeResidencyState::Disabled => "disabled",
+    };
+    metrics::counter!(
+        EXPERT_CACHE_TOTAL,
+        "role" => role.as_str(),
+        "result" => state
+    )
+    .increment(1);
 }
 
 pub fn record_cpu_fallback(role: ProjectionRole) {
@@ -535,6 +886,11 @@ pub fn record_cpu_fallback(role: ProjectionRole) {
 }
 
 fn validate_shape_capacity(config: &AttachConfig) -> Result<(), XeError> {
+    if config.expert_cache_bytes != 0 && config.mode != AttachmentMode::Explicit {
+        return Err(XeError::Dimensions(
+            "Xe expert residency is legal only for explicit attachment".into(),
+        ));
+    }
     if config.max_columns == 0
         || config.max_blocks == 0
         || !config.max_columns.is_multiple_of(XE_TILE)
@@ -572,6 +928,10 @@ fn validate_shape_capacity(config: &AttachConfig) -> Result<(), XeError> {
             config.max_resident_bytes
         )));
     }
+    config
+        .max_resident_bytes
+        .checked_add(config.expert_cache_bytes)
+        .ok_or_else(|| XeError::Dimensions("combined Xe resident capacity overflows".into()))?;
     Ok(())
 }
 
@@ -605,6 +965,32 @@ fn validate_request(request: &ProjectionRequest<'_>) -> Result<(), XeError> {
             request.bias.len(),
             request.columns
         )));
+    }
+    Ok(())
+}
+
+fn validate_resident_request(request: &ResidentProjectionRequest<'_>) -> Result<(), XeError> {
+    if request.identity.role != request.role
+        || request.identity.columns != request.columns
+        || request.identity.blocks != request.blocks
+        || request.rows == 0
+        || request.columns == 0
+        || request.blocks == 0
+        || !request.columns.is_multiple_of(XE_TILE)
+    {
+        return Err(XeError::Dimensions(
+            "resident request identity and dimensions disagree".into(),
+        ));
+    }
+    let expected_activations = request
+        .rows
+        .checked_mul(request.blocks)
+        .ok_or_else(|| XeError::Dimensions("activation extent overflows".into()))?;
+    if request.activations_v2.len() != expected_activations || request.bias.len() != request.columns
+    {
+        return Err(XeError::Dimensions(
+            "resident activation or bias extent mismatch".into(),
+        ));
     }
     Ok(())
 }
@@ -651,6 +1037,12 @@ pub fn register_metric_descriptions() {
         "Xe projection transfer bytes"
     );
     metrics::describe_gauge!(CIRCUIT_BREAKER, "Process-wide Xe circuit breaker state");
+    metrics::describe_counter!(EXPERT_CACHE_TOTAL, "Bounded Xe expert residency outcomes");
+    metrics::describe_gauge!(
+        EXPERT_CACHE_RESIDENT_BYTES,
+        metrics::Unit::Bytes,
+        "Current Xe expert-cache resident bytes"
+    );
 }
 
 /// Lightweight exact-stack probe used only if the checked-in promotion record
@@ -684,6 +1076,7 @@ mod tests {
         projects: AtomicUsize,
         drains: AtomicUsize,
         shutdowns: AtomicUsize,
+        residency_faults: AtomicUsize,
     }
 
     struct FailingRuntime {
@@ -715,6 +1108,12 @@ mod tests {
         fn drain(&mut self) -> Result<(), XeError> {
             self.counts.drains.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
+        }
+
+        fn record_residency_fault(&mut self) {
+            self.counts
+                .residency_faults
+                .fetch_add(1, AtomicOrdering::SeqCst);
         }
 
         fn shutdown(&mut self) -> Result<(), XeError> {
@@ -759,6 +1158,7 @@ mod tests {
                 activation_capacity_bytes: 288,
                 output_capacity_bytes: 512,
                 max_rows_per_chunk: 4,
+                expert_cache_capacity_bytes: 0,
             },
             runtime_fault_policy: "test".into(),
         }
@@ -918,6 +1318,77 @@ mod tests {
             validate_shape_capacity(&small),
             Err(XeError::ResidentLimit(_))
         ));
+        let automatic_cache = AttachConfig::new(AttachmentMode::Automatic, ".", 1 << 20, 32, 1)
+            .with_expert_cache_bytes(1024);
+        assert!(matches!(
+            validate_shape_capacity(&automatic_cache),
+            Err(XeError::Dimensions(message)) if message.contains("explicit")
+        ));
+    }
+
+    #[test]
+    fn bounded_lru_is_exact_deterministic_and_identity_scoped() {
+        let mut cache = BoundedLru::new(100);
+        assert!(cache.lookup(&"a", 40).is_none());
+        assert!(cache.evict_for(40).is_empty());
+        cache.insert_reserved("a", 1_u8, 40);
+        assert!(cache.evict_for(40).is_empty());
+        cache.insert_reserved("b", 2_u8, 40);
+        assert_eq!(cache.lookup(&"a", 40), Some(1));
+
+        // a was just touched, so b is the deterministic eviction victim.
+        assert_eq!(cache.evict_for(40), vec![2]);
+        cache.insert_reserved("c", 3_u8, 40);
+        assert_eq!(cache.lookup(&"b", 40), None);
+        assert_eq!(cache.lookup(&"a", 40), Some(1));
+        assert_eq!(cache.lookup(&"c", 40), Some(3));
+        assert_eq!(cache.lookup(&"identity-drift", 40), None);
+        let stats = cache.stats();
+        assert_eq!(stats.capacity_bytes, 100);
+        assert_eq!(stats.resident_bytes, 80);
+        assert_eq!(stats.resident_high_water_bytes, 80);
+        assert_eq!(stats.evictions, 1);
+        assert_eq!(stats.hits, 3);
+        assert_eq!(stats.misses, 3);
+        assert_eq!(stats.repacks_avoided, 3);
+        assert_eq!(stats.upload_bytes_avoided, 120);
+        assert_eq!(stats.uploaded_bytes, 120);
+        assert_eq!(cache.clear().len(), 2);
+        assert_eq!(cache.stats().resident_bytes, 0);
+    }
+
+    #[test]
+    fn zero_or_too_small_cache_bypasses_without_residency() {
+        let mut disabled = BoundedLru::<u8, u8>::new(0);
+        assert!(!disabled.can_reside(1));
+        disabled.record_bypass();
+        assert_eq!(disabled.stats().bypasses, 1);
+        assert_eq!(disabled.stats().resident_bytes, 0);
+
+        let bounded = BoundedLru::<u8, u8>::new(16);
+        assert!(!bounded.can_reside(17));
+        assert!(bounded.can_reside(16));
+    }
+
+    #[test]
+    fn cache_identity_separates_projection_roles_and_tensor_sources() {
+        let identity = ExpertCacheIdentity {
+            model_source_key: "model".into(),
+            tensor_source_key: "gate".into(),
+            layer: 1,
+            expert: 2,
+            role: ProjectionRole::GateUp,
+            columns: 32,
+            blocks: 1,
+            weight_layout_version: 2,
+        };
+        let mut cache = BoundedLru::new(2048);
+        cache.insert_reserved(identity.clone(), 7_u8, 672);
+        let mut down = identity.clone();
+        down.role = ProjectionRole::Down;
+        down.tensor_source_key = "down".into();
+        assert_eq!(cache.lookup(&down, 672), None);
+        assert_eq!(cache.lookup(&identity, 672), Some(7));
     }
 
     #[test]
@@ -1000,6 +1471,62 @@ mod tests {
             )),
             Err(XeError::CircuitOpen)
         ));
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
+    }
+
+    #[test]
+    fn resident_fault_drains_opens_breaker_and_never_retries_repack() {
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        let counts = Arc::new(FakeCounts::default());
+        let engine = XeProjectionEngine {
+            runtime: Mutex::new(Box::new(FailingRuntime {
+                descriptor: fake_descriptor(),
+                counts: counts.clone(),
+                failure: "resident submit",
+                shutdown_error: false,
+                shutdown: false,
+            })),
+            gate_up_min_rows: AUTO_MIN_ROWS,
+            down_min_rows: AUTO_MIN_ROWS,
+        };
+        let activations = vec![ActivationRecordV2::zeroed(); 4];
+        let bias = vec![0.0_f32; 32];
+        let request = ResidentProjectionRequest {
+            identity: ExpertCacheIdentity {
+                model_source_key: "model".into(),
+                tensor_source_key: "tensor".into(),
+                layer: 0,
+                expert: 0,
+                role: ProjectionRole::GateUp,
+                columns: 32,
+                blocks: 1,
+                weight_layout_version: 2,
+            },
+            role: ProjectionRole::GateUp,
+            rows: 4,
+            columns: 32,
+            blocks: 1,
+            activations_v2: &activations,
+            bias: &bias,
+        };
+        let repacks = AtomicUsize::new(0);
+        assert!(matches!(
+            engine.project_resident(request, || {
+                repacks.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(vec![0_u8; 32 * XE_WEIGHT_PLANES])
+            }),
+            Err(XeError::Runtime(message)) if message.contains("resident submit")
+        ));
+        assert!(engine.circuit_is_open());
+        assert_eq!(repacks.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.drains.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.residency_faults.load(AtomicOrdering::SeqCst), 1);
+        engine.shutdown().unwrap();
         PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
         metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
     }
@@ -1124,6 +1651,7 @@ mod tests {
                 .unwrap();
             assert_projection_matches(&actual, &expected);
         }
+        assert_eq!(engine.residency_stats().unwrap().uploaded_bytes, 14 * 672);
         engine.shutdown().unwrap();
 
         let real_engine = XeProjectionEngine::attach(AttachConfig::new(
@@ -1160,5 +1688,98 @@ mod tests {
             assert_projection_matches(&actual, &expected);
         }
         real_engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn opt_in_live_residency_covers_hits_identity_eviction_and_shutdown() {
+        if std::env::var_os("GPT_OSS_XE_LIVE_TEST").is_none() {
+            return;
+        }
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        let cache_root = tempfile::tempdir().unwrap();
+        let engine = XeProjectionEngine::attach(
+            AttachConfig::new(
+                AttachmentMode::Explicit,
+                cache_root.path(),
+                1024 * 1024,
+                32,
+                1,
+            )
+            .with_expert_cache_bytes(1344),
+        )
+        .unwrap();
+        let (weights, canonical) = test_weights(32, 1);
+        let activations = test_activations(4, 1);
+        let bias = (0..32)
+            .map(|column| column as f32 / 1024.0)
+            .collect::<Vec<_>>();
+        let expected = scalar_projection(4, 32, 1, &canonical, &activations, &bias);
+        let identity = |expert| ExpertCacheIdentity {
+            model_source_key: "model-a".into(),
+            tensor_source_key: format!("tensor-{expert}"),
+            layer: 0,
+            expert,
+            role: ProjectionRole::GateUp,
+            columns: 32,
+            blocks: 1,
+            weight_layout_version: 2,
+        };
+        let request = |identity| ResidentProjectionRequest {
+            identity,
+            role: ProjectionRole::GateUp,
+            rows: 4,
+            columns: 32,
+            blocks: 1,
+            activations_v2: &activations,
+            bias: &bias,
+        };
+        let repacks = AtomicUsize::new(0);
+        let mut repack = || {
+            repacks.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(weights.clone())
+        };
+
+        let cold = engine
+            .project_resident(request(identity(0)), &mut repack)
+            .unwrap();
+        assert_eq!(cold.residency, XeResidencyState::Miss);
+        assert_projection_matches(&cold.output, &expected);
+        let warm = engine
+            .project_resident(request(identity(0)), &mut repack)
+            .unwrap();
+        assert_eq!(warm.residency, XeResidencyState::Hit);
+        assert_projection_matches(&warm.output, &expected);
+        assert_eq!(repacks.load(AtomicOrdering::SeqCst), 1);
+
+        // Two exact 672-byte entries fit; the third deterministically evicts.
+        assert_eq!(
+            engine
+                .project_resident(request(identity(1)), &mut repack)
+                .unwrap()
+                .residency,
+            XeResidencyState::Miss
+        );
+        assert_eq!(
+            engine
+                .project_resident(request(identity(2)), &mut repack)
+                .unwrap()
+                .residency,
+            XeResidencyState::Miss
+        );
+        let stats = engine.residency_stats().unwrap();
+        assert_eq!(stats.resident_bytes, 1344);
+        assert_eq!(stats.resident_high_water_bytes, 1344);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 3);
+        assert_eq!(stats.evictions, 1);
+        assert_eq!(stats.repacks_avoided, 1);
+        assert_eq!(stats.upload_bytes_avoided, 672);
+        assert_eq!(stats.uploaded_bytes, 2016);
+        engine.shutdown().unwrap();
+        engine.shutdown().unwrap();
+        assert_eq!(engine.residency_stats().unwrap().resident_bytes, 0);
     }
 }

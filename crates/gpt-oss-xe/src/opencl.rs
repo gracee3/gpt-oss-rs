@@ -15,11 +15,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    sha256_bytes, ActivationRecordV2, AttachConfig, AttachmentMode, KernelVariant, PhaseTiming,
-    ProjectionRequest, ProjectionRuntime, PromotionRecord, ValidationClass, XeDescriptor, XeError,
-    XeIdentity, XeMemoryDescriptor, BUILD_OPTIONS, EXPECTED_DEVICE_ID, EXPECTED_VENDOR_ID,
-    KERNEL_ABI_SHA256, KERNEL_SOURCE, KERNEL_SOURCE_SHA256, WORKGROUP_SIZE,
-    XE_ACTIVATION_RECORD_BYTES, XE_WEIGHT_PLANES,
+    sha256_bytes, ActivationRecordV2, AttachConfig, AttachmentMode, BoundedLru,
+    ExpertCacheIdentity, KernelVariant, PhaseTiming, ProjectionRequest, ProjectionRuntime,
+    PromotionRecord, ResidentProjectionRequest, ValidationClass, XeDescriptor, XeError, XeIdentity,
+    XeMemoryDescriptor, XeResidencyState, XeResidencyStats, BUILD_OPTIONS, EXPECTED_DEVICE_ID,
+    EXPECTED_VENDOR_ID, EXPERT_CACHE_RESIDENT_BYTES, KERNEL_ABI_SHA256, KERNEL_SOURCE,
+    KERNEL_SOURCE_SHA256, WORKGROUP_SIZE, XE_ACTIVATION_RECORD_BYTES, XE_WEIGHT_PLANES,
 };
 
 type ClInt = i32;
@@ -317,6 +318,26 @@ struct CacheManifest {
     native_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpertCacheKey {
+    source: ExpertCacheIdentity,
+    runtime_key: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResidentBuffers {
+    weight: ClMem,
+    bias: ClMem,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectionCore<'a> {
+    rows: usize,
+    columns: usize,
+    blocks: usize,
+    activations_v2: &'a [ActivationRecordV2],
+}
+
 pub(crate) struct OpenClRuntime {
     api: OpenClApi,
     device: ClDeviceId,
@@ -328,6 +349,7 @@ pub(crate) struct OpenClRuntime {
     bias: Option<ClMem>,
     activation: Option<ClMem>,
     output: Option<ClMem>,
+    expert_cache: BoundedLru<ExpertCacheKey, ResidentBuffers>,
     descriptor: XeDescriptor,
     max_columns: usize,
     max_blocks: usize,
@@ -403,7 +425,11 @@ impl OpenClRuntime {
             }
         };
         let memory = memory_descriptor(config)?;
-        if memory.device_resident_bytes as u64 > facts.global_memory_bytes
+        let total_capacity = memory
+            .device_resident_bytes
+            .checked_add(memory.expert_cache_capacity_bytes)
+            .ok_or_else(|| XeError::ResidentLimit("combined Xe capacity overflows".into()))?;
+        if total_capacity as u64 > facts.global_memory_bytes
             || memory.weight_capacity_bytes as u64 > facts.max_allocation_bytes
             || memory.activation_capacity_bytes as u64 > facts.max_allocation_bytes
             || memory.output_capacity_bytes as u64 > facts.max_allocation_bytes
@@ -457,6 +483,7 @@ impl OpenClRuntime {
             bias: Some(buffers.1),
             activation: Some(buffers.2),
             output: Some(buffers.3),
+            expert_cache: BoundedLru::new(config.expert_cache_bytes),
             descriptor,
             max_columns: config.max_columns,
             max_blocks: config.max_blocks,
@@ -562,32 +589,183 @@ impl OpenClRuntime {
         variant: KernelVariant,
         output: &mut [f32],
     ) -> Result<PhaseTiming, XeError> {
-        if request.columns > self.max_columns || request.blocks > self.max_blocks {
-            return Err(XeError::ResidentLimit(format!(
-                "projection {}x{} exceeds configured slab {}x{}",
-                request.columns, request.blocks, self.max_columns, self.max_blocks
-            )));
-        }
-        if output.len() != request.rows * request.columns {
-            return Err(XeError::Dimensions("output extent mismatch".into()));
-        }
+        let core = ProjectionCore {
+            rows: request.rows,
+            columns: request.columns,
+            blocks: request.blocks,
+            activations_v2: request.activations_v2,
+        };
+        self.validate_projection_core(core, output)?;
         let queue = self.queue()?;
         let weight = self.weight()?;
         let bias = self.bias()?;
-        let activation = self.activation()?;
-        let device_output = self.output()?;
-        let mut timing = PhaseTiming::default();
+        let mut timing = PhaseTiming {
+            residency: XeResidencyState::Disabled,
+            uploaded_weight_bias_bytes: request.weights_v2.len()
+                + std::mem::size_of_val(request.bias),
+            ..PhaseTiming::default()
+        };
         let started = Instant::now();
         self.write_buffer(queue, weight, request.weights_v2)?;
         self.write_buffer(queue, bias, bytemuck::cast_slice(request.bias))?;
         timing.weight = started.elapsed();
+        timing.upload = timing.weight;
+        self.expert_cache
+            .record_upload(timing.uploaded_weight_bias_bytes);
+        self.project_with_buffers(core, variant, output, weight, bias, timing)
+    }
+
+    fn project_resident_impl(
+        &mut self,
+        request: &ResidentProjectionRequest<'_>,
+        variant: KernelVariant,
+        output: &mut [f32],
+        repack: &mut dyn FnMut() -> Result<Vec<u8>, XeError>,
+    ) -> Result<PhaseTiming, XeError> {
+        let core = ProjectionCore {
+            rows: request.rows,
+            columns: request.columns,
+            blocks: request.blocks,
+            activations_v2: request.activations_v2,
+        };
+        self.validate_projection_core(core, output)?;
+        let weight_bytes = request
+            .columns
+            .checked_mul(request.blocks)
+            .and_then(|value| value.checked_mul(XE_WEIGHT_PLANES))
+            .ok_or_else(|| XeError::Dimensions("resident weight extent overflows".into()))?;
+        let bias_bytes = std::mem::size_of_val(request.bias);
+        let entry_bytes = weight_bytes
+            .checked_add(bias_bytes)
+            .ok_or_else(|| XeError::Dimensions("resident entry extent overflows".into()))?;
+        let key = ExpertCacheKey {
+            source: request.identity.clone(),
+            runtime_key: self.descriptor.native_cache_key.clone(),
+        };
+        if let Some(buffers) = self.expert_cache.lookup(&key, entry_bytes) {
+            self.record_cache_resident_gauge();
+            return self.project_with_buffers(
+                core,
+                variant,
+                output,
+                buffers.weight,
+                buffers.bias,
+                PhaseTiming {
+                    residency: XeResidencyState::Hit,
+                    ..PhaseTiming::default()
+                },
+            );
+        }
+
+        if !self.expert_cache.can_reside(entry_bytes) {
+            self.expert_cache.record_bypass();
+            let repack_started = Instant::now();
+            let weights = repack()?;
+            let repack_elapsed = repack_started.elapsed();
+            if weights.len() != weight_bytes {
+                return Err(XeError::Dimensions(
+                    "resident repack returned an invalid byte extent".into(),
+                ));
+            }
+            let streaming = ProjectionRequest {
+                role: request.role,
+                rows: request.rows,
+                columns: request.columns,
+                blocks: request.blocks,
+                weights_v2: &weights,
+                activations_v2: request.activations_v2,
+                bias: request.bias,
+            };
+            let mut timing = self.project_impl(&streaming, variant, output)?;
+            timing.residency = XeResidencyState::Bypass;
+            timing.repack = repack_elapsed;
+            timing.weight += repack_elapsed;
+            self.record_cache_resident_gauge();
+            return Ok(timing);
+        }
+
+        let repack_started = Instant::now();
+        let weights = repack()?;
+        let repack_elapsed = repack_started.elapsed();
+        if weights.len() != weight_bytes {
+            return Err(XeError::Dimensions(
+                "resident repack returned an invalid byte extent".into(),
+            ));
+        }
+        self.drain()?;
+        for evicted in self.expert_cache.evict_for(entry_bytes) {
+            self.release_resident_buffers(evicted)?;
+        }
+        self.record_cache_resident_gauge();
+        let buffers = self.allocate_resident_buffers(weight_bytes, bias_bytes)?;
+        let queue = self.queue()?;
+        let upload_started = Instant::now();
+        let upload = self
+            .write_buffer(queue, buffers.weight, &weights)
+            .and_then(|_| {
+                self.write_buffer(queue, buffers.bias, bytemuck::cast_slice(request.bias))
+            });
+        if let Err(error) = upload {
+            let _ = self.release_resident_buffers(buffers);
+            return Err(error);
+        }
+        let upload_elapsed = upload_started.elapsed();
+        self.expert_cache.insert_reserved(key, buffers, entry_bytes);
+        self.record_cache_resident_gauge();
+        self.project_with_buffers(
+            core,
+            variant,
+            output,
+            buffers.weight,
+            buffers.bias,
+            PhaseTiming {
+                weight: repack_elapsed + upload_elapsed,
+                repack: repack_elapsed,
+                upload: upload_elapsed,
+                residency: XeResidencyState::Miss,
+                uploaded_weight_bias_bytes: entry_bytes,
+                ..PhaseTiming::default()
+            },
+        )
+    }
+
+    fn validate_projection_core(
+        &self,
+        core: ProjectionCore<'_>,
+        output: &[f32],
+    ) -> Result<(), XeError> {
+        if core.columns > self.max_columns || core.blocks > self.max_blocks {
+            return Err(XeError::ResidentLimit(format!(
+                "projection {}x{} exceeds configured slab {}x{}",
+                core.columns, core.blocks, self.max_columns, self.max_blocks
+            )));
+        }
+        if output.len() != core.rows * core.columns {
+            return Err(XeError::Dimensions("output extent mismatch".into()));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn project_with_buffers(
+        &mut self,
+        core: ProjectionCore<'_>,
+        variant: KernelVariant,
+        output: &mut [f32],
+        weight: ClMem,
+        bias: ClMem,
+        mut timing: PhaseTiming,
+    ) -> Result<PhaseTiming, XeError> {
+        let queue = self.queue()?;
+        let activation = self.activation()?;
+        let device_output = self.output()?;
 
         let divisor = variant.rows_per_dispatch();
         let max_rows = self.descriptor.memory.max_rows_per_chunk;
         let kernel = self.kernel(variant)?;
         let mut source_row = 0;
-        while source_row < request.rows {
-            let real_rows = (request.rows - source_row).min(max_rows);
+        while source_row < core.rows {
+            let real_rows = (core.rows - source_row).min(max_rows);
             let dispatch_rows = round_up(real_rows, divisor);
             if dispatch_rows > max_rows {
                 return Err(XeError::ResidentLimit(
@@ -595,22 +773,22 @@ impl OpenClRuntime {
                 ));
             }
             let activation_count = dispatch_rows
-                .checked_mul(request.blocks)
+                .checked_mul(core.blocks)
                 .ok_or_else(|| XeError::Dimensions("chunk activation extent overflows".into()))?;
             let mut staged = vec![ActivationRecordV2::zeroed(); activation_count];
-            let source_start = source_row * request.blocks;
-            let source_end = source_start + real_rows * request.blocks;
-            staged[..real_rows * request.blocks]
-                .copy_from_slice(&request.activations_v2[source_start..source_end]);
+            let source_start = source_row * core.blocks;
+            let source_end = source_start + real_rows * core.blocks;
+            staged[..real_rows * core.blocks]
+                .copy_from_slice(&core.activations_v2[source_start..source_end]);
             let phase = Instant::now();
             self.write_buffer(queue, activation, bytemuck::cast_slice(&staged))?;
             timing.activation += phase.elapsed();
 
             let rows_u32 = u32::try_from(dispatch_rows)
                 .map_err(|_| XeError::Dimensions("rows exceed u32".into()))?;
-            let columns_u32 = u32::try_from(request.columns)
+            let columns_u32 = u32::try_from(core.columns)
                 .map_err(|_| XeError::Dimensions("columns exceed u32".into()))?;
-            let blocks_u32 = u32::try_from(request.blocks)
+            let blocks_u32 = u32::try_from(core.blocks)
                 .map_err(|_| XeError::Dimensions("blocks exceed u32".into()))?;
             self.set_mem_arg(kernel, 0, weight)?;
             self.set_mem_arg(kernel, 1, activation)?;
@@ -624,12 +802,12 @@ impl OpenClRuntime {
                 queue,
                 kernel,
                 [
-                    round_up(request.columns, WORKGROUP_SIZE),
+                    round_up(core.columns, WORKGROUP_SIZE),
                     dispatch_rows / divisor,
                 ],
             )?;
             timing.submit_wait += phase.elapsed();
-            let mut staged_output = vec![0.0_f32; dispatch_rows * request.columns];
+            let mut staged_output = vec![0.0_f32; dispatch_rows * core.columns];
             let phase = Instant::now();
             self.read_buffer(
                 queue,
@@ -637,12 +815,57 @@ impl OpenClRuntime {
                 bytemuck::cast_slice_mut(&mut staged_output),
             )?;
             timing.readback += phase.elapsed();
-            let destination = &mut output
-                [source_row * request.columns..(source_row + real_rows) * request.columns];
-            destination.copy_from_slice(&staged_output[..real_rows * request.columns]);
+            let destination =
+                &mut output[source_row * core.columns..(source_row + real_rows) * core.columns];
+            destination.copy_from_slice(&staged_output[..real_rows * core.columns]);
             source_row += real_rows;
         }
         Ok(timing)
+    }
+
+    fn allocate_resident_buffers(
+        &self,
+        weight_bytes: usize,
+        bias_bytes: usize,
+    ) -> Result<ResidentBuffers, XeError> {
+        let context = self.context()?;
+        let weight = allocate_buffer(&self.api, context, weight_bytes)?;
+        match allocate_buffer(&self.api, context, bias_bytes) {
+            Ok(bias) => Ok(ResidentBuffers { weight, bias }),
+            Err(error) => {
+                // SAFETY: weight was created above and has not escaped.
+                unsafe { (self.api.release_mem_object)(weight) };
+                Err(error)
+            }
+        }
+    }
+
+    fn release_resident_buffers(&self, buffers: ResidentBuffers) -> Result<(), XeError> {
+        // SAFETY: cache entries own both objects and release them exactly once.
+        let (bias_status, weight_status) = unsafe {
+            (
+                (self.api.release_mem_object)(buffers.bias),
+                (self.api.release_mem_object)(buffers.weight),
+            )
+        };
+        if bias_status != CL_SUCCESS {
+            return Err(runtime_status(
+                "clReleaseMemObject(cache bias)",
+                bias_status,
+            ));
+        }
+        if weight_status != CL_SUCCESS {
+            return Err(runtime_status(
+                "clReleaseMemObject(cache weight)",
+                weight_status,
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_cache_resident_gauge(&self) {
+        metrics::gauge!(EXPERT_CACHE_RESIDENT_BYTES)
+            .set(self.expert_cache.stats().resident_bytes as f64);
     }
 
     fn replace_program_from_source(&mut self) -> Result<(), XeError> {
@@ -901,6 +1124,27 @@ impl ProjectionRuntime for OpenClRuntime {
         self.project_impl(request, variant, output)
     }
 
+    fn project_resident(
+        &mut self,
+        request: &ResidentProjectionRequest<'_>,
+        variant: KernelVariant,
+        output: &mut [f32],
+        repack: &mut dyn FnMut() -> Result<Vec<u8>, XeError>,
+    ) -> Result<PhaseTiming, XeError> {
+        if self.shutdown {
+            return Err(XeError::Shutdown("OpenCL runtime is shut down".into()));
+        }
+        self.project_resident_impl(request, variant, output, repack)
+    }
+
+    fn residency_stats(&self) -> XeResidencyStats {
+        self.expert_cache.stats()
+    }
+
+    fn record_residency_fault(&mut self) {
+        self.expert_cache.record_fault();
+    }
+
     fn drain(&mut self) -> Result<(), XeError> {
         if self.shutdown {
             return Ok(());
@@ -913,6 +1157,16 @@ impl ProjectionRuntime for OpenClRuntime {
             return Ok(());
         }
         let mut first_error = self.drain().err();
+        for buffers in self.expert_cache.clear() {
+            for buffer in [buffers.bias, buffers.weight] {
+                // SAFETY: the queue is drained and each cache object is owned.
+                let status = unsafe { (self.api.release_mem_object)(buffer) };
+                if status != CL_SUCCESS && first_error.is_none() {
+                    first_error = Some(runtime_status("clReleaseMemObject(cache)", status));
+                }
+            }
+        }
+        self.record_cache_resident_gauge();
         for buffer in [
             &mut self.output,
             &mut self.activation,
@@ -1252,6 +1506,7 @@ fn memory_descriptor(config: &AttachConfig) -> Result<XeMemoryDescriptor, XeErro
         activation_capacity_bytes,
         output_capacity_bytes,
         max_rows_per_chunk,
+        expert_cache_capacity_bytes: config.expert_cache_bytes,
     })
 }
 
@@ -1291,6 +1546,28 @@ fn allocate_buffers(
         buffers[index] = buffer;
     }
     Ok((buffers[0], buffers[1], buffers[2], buffers[3]))
+}
+
+fn allocate_buffer(api: &OpenClApi, context: ClContext, size: usize) -> Result<ClMem, XeError> {
+    if size == 0 {
+        return Err(XeError::Dimensions("zero-byte OpenCL allocation".into()));
+    }
+    let mut status = CL_SUCCESS;
+    // SAFETY: context is live, status writable, and no host pointer supplied.
+    let buffer = unsafe {
+        (api.create_buffer)(
+            context,
+            CL_MEM_READ_WRITE,
+            size,
+            ptr::null_mut(),
+            &mut status,
+        )
+    };
+    if buffer.is_null() || status != CL_SUCCESS {
+        Err(runtime_status("clCreateBuffer", status))
+    } else {
+        Ok(buffer)
+    }
 }
 
 fn release_queue_context(api: &OpenClApi, queue: ClCommandQueue, context: ClContext) {

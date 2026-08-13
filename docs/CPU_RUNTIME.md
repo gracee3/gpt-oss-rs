@@ -162,6 +162,15 @@ maximum rows per chunk, exact PCI/driver/library identity, ABI/source hashes,
 thresholds, native-cache result, and fault policy. CPU request admission adds
 the host-staging class without mislabeling mapped model bytes as device memory.
 
+The forced-only `--xe-expert-cache-mib` experiment defaults to zero and is
+legal only with explicit `--device xe`. A nonzero value adds a separately
+accounted deterministic LRU of immutable expert weight/bias device buffers.
+Cache hits avoid both expert repacking and weight/bias upload; oversize entries
+bypass to the streaming path. Identity includes model/tensor, layer/expert,
+role/shape/layout, kernel/ABI/build, PCI, and runtime library facts. Automatic
+device selection and decode behavior are unaffected. See
+[`TIGER_LAKE_XE_RESIDENCY.md`](TIGER_LAKE_XE_RESIDENCY.md).
+
 An OpenCL runtime fault is terminal for Xe in that process: the queue is
 drained, uncommitted output is discarded, that projection is recomputed once
 through the configured CPU path, and a process-wide breaker stays open until

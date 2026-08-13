@@ -57,6 +57,8 @@ enum Commands {
         cpu_repack_cache: Option<PathBuf>,
         #[arg(long, default_value_t = 128)]
         xe_max_resident_mib: usize,
+        #[arg(long, default_value_t = 0)]
+        xe_expert_cache_mib: usize,
         #[arg(long)]
         cpu_profile_output: Option<PathBuf>,
         #[arg(long, requires = "cpu_profile_output")]
@@ -354,6 +356,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cpu_threads,
             cpu_repack_cache,
             xe_max_resident_mib,
+            xe_expert_cache_mib,
             cpu_profile_output,
             cpu_profile_cap_mib,
             runtime_mode,
@@ -450,6 +453,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .cpu_threads(cpu_threads)
                             .cpu_repack_cache(cpu_repack_cache.clone())
                             .xe_max_resident_mib(xe_max_resident_mib)
+                            .xe_expert_cache_mib(xe_expert_cache_mib)
                             .cpu_profile_output(cpu_profile_output)
                             .cpu_profile_cap_mib(cpu_profile_cap_mib)
                             .build(),
@@ -482,6 +486,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 cpu_threads,
                 cpu_repack_cache = %cpu_repack_cache.display(),
                 xe_max_resident_mib,
+                xe_expert_cache_mib,
                 "starting server"
             );
 
@@ -571,7 +576,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 "identity": {
                     "vendor": identity.vendor, "family": identity.family,
                     "model": identity.model, "stepping": identity.stepping,
-                    "logical_cpus": identity.logical_cpus, "osxsave": identity.osxsave,
+                    "physical_cores": identity.physical_cores,
+                    "logical_cpus": identity.logical_cpus,
+                    "microcode": identity.microcode.map(|value| format!("0x{value:x}")),
+                    "osxsave": identity.osxsave,
                     "xcr0": identity.xcr0, "hardware_profile_key": identity.profile_key()
                 },
                 "legal_capabilities": {
@@ -599,6 +607,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         identity.vendor, identity.family, identity.model, identity.stepping
                     );
                     println!("hardware profile: {}", identity.profile_key());
+                    println!(
+                        "topology: {} physical cores / {} logical CPUs; microcode={}",
+                        identity.physical_cores,
+                        identity.logical_cpus,
+                        identity
+                            .microcode
+                            .map_or_else(|| "unknown".into(), |value| format!("0x{value:x}"))
+                    );
                     println!("XCR0: 0x{:x} (OSXSAVE={})", identity.xcr0, identity.osxsave);
                     println!(
                         "requested: kernel={}, matrix={}",

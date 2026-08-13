@@ -130,7 +130,7 @@ def write_artifact_index(root: Path) -> str:
 
 
 def command_for(args: argparse.Namespace, scenario: str, profile: Path, output: Path) -> list[str]:
-    return [
+    command = [
         "taskset", "-c", args.cpus,
         str(args.binary),
         "--model", str(args.model),
@@ -147,6 +147,15 @@ def command_for(args: argparse.Namespace, scenario: str, profile: Path, output: 
         "--cpu-profile-cap-mib", str(args.profile_cap_mib),
         "--output", str(output),
     ]
+    if args.xe:
+        command.extend([
+            "--xe",
+            "--xe-max-resident-mib", str(args.xe_max_resident_mib),
+            "--xe-expert-cache-mib", str(args.xe_expert_cache_mib),
+        ])
+        if args.xe_warmup_prefills:
+            command.extend(["--xe-warmup-prefills", str(args.xe_warmup_prefills)])
+    return command
 
 
 def capture(args: argparse.Namespace) -> str:
@@ -185,6 +194,10 @@ def capture(args: argparse.Namespace) -> str:
         "threads": args.threads,
         "kernel": args.kernel,
         "cpu_matmul_backend": args.cpu_matmul_backend,
+        "xe": args.xe,
+        "xe_max_resident_mib": args.xe_max_resident_mib,
+        "xe_expert_cache_mib": args.xe_expert_cache_mib,
+        "xe_warmup_prefills": args.xe_warmup_prefills,
         "max_new_tokens": args.max_new_tokens,
         "profile_cap_mib": args.profile_cap_mib,
         "cooldown_seconds": args.cooldown_seconds,
@@ -276,6 +289,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--kernel", default="auto")
     parser.add_argument("--cpu-matmul-backend", default="auto")
+    parser.add_argument("--xe", action="store_true")
+    parser.add_argument("--xe-max-resident-mib", type=int, default=128)
+    parser.add_argument("--xe-expert-cache-mib", type=int, default=0)
+    parser.add_argument("--xe-warmup-prefills", type=int, default=0)
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args()
     if (
@@ -286,6 +303,14 @@ def parse_args() -> argparse.Namespace:
         or args.max_cooldown_wait_seconds <= 0
     ):
         parser.error("repetitions, threads, capacity, and thermal controls are invalid")
+    if (
+        args.xe_max_resident_mib < 1
+        or args.xe_expert_cache_mib < 0
+        or args.xe_warmup_prefills < 0
+    ):
+        parser.error("Xe resident capacity must be positive and expert cache must be non-negative")
+    if (args.xe_expert_cache_mib or args.xe_warmup_prefills) and not args.xe:
+        parser.error("Xe expert-cache and warmup controls require --xe")
     return args
 
 

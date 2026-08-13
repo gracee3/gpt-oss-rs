@@ -101,14 +101,17 @@ Run only fresh outputs in this order:
 
 1. native plus generic image/host qualification;
 2. paired C3-X-001 capture and prefix localization;
-3. 28 native/official comparisons and seven new llama.cpp scenario captures;
+3. 42 native/official comparisons and seven new llama.cpp scenario captures;
 4. the complete model-free lifecycle/HTTP suite and one bounded 20B service
    session;
 5. performance only after every correctness and service gate passes.
 
 The driver locks the performance phase until the exact `c3-x-001` cell, all
-seven scenarios crossed with `automatic`, `scalar`, `avx2`, and
-`avx512-vnni`, seven exact `llama-cpp`/`ubatch-1` advisory cells, and both
+seven scenarios crossed with these six non-redundant requested tuples:
+`automatic/auto`, `scalar/auto`, `avx2/auto`, `avx512-vnni/auto`,
+`automatic/avx2`, and `automatic/avx512-vnni`. The final two cells force the
+multi-row matrix implementations while retaining automatic operation-kernel
+selection. It also requires seven exact `llama-cpp`/`ubatch-1` advisory cells and both
 `model-free-lifecycle-http` and `bounded-20b` service cells exist. The
 `run_cpu_comparison.py`, `run_c3_x001.py`, `run_llama_cpu_batch.py`,
 `select_llama_cpu_capture.py`, `run_model_free_service_suite.py`, and

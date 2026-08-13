@@ -36,8 +36,9 @@ use crate::model_loader::dtype::DType;
 
 #[cfg(feature = "xe")]
 use gpt_oss_xe::{
-    ActivationRecordV2, AttachConfig as XeAttachConfig, AttachmentMode, ProjectionRequest,
-    ProjectionRole, XeDescriptor, XeError, XeProjectionEngine,
+    ActivationRecordV2, AttachConfig as XeAttachConfig, AttachmentMode, ExpertCacheIdentity,
+    ProjectionRequest, ProjectionRole, ResidentProjectionRequest, XeDescriptor, XeError,
+    XeProjectionEngine, XeResidencyState, XeResidencyStats,
 };
 
 const DEFAULT_SWIGLU_ALPHA: f32 = 1.702;
@@ -108,6 +109,7 @@ pub enum CpuXeAttachmentMode {
 pub struct CpuXeConfig {
     pub mode: CpuXeAttachmentMode,
     pub max_resident_bytes: usize,
+    pub expert_cache_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +407,10 @@ pub struct CpuModel {
     amx_runtime_status: Option<AmxRuntimeStatus>,
     #[cfg(feature = "xe")]
     xe: Option<XeProjectionEngine>,
+    #[cfg(feature = "xe")]
+    source_identity_key: String,
+    #[cfg(feature = "xe")]
+    xe_expert_cache_enabled: bool,
 }
 
 /// One immutable file currently mapped by the native CPU model.
@@ -434,6 +440,7 @@ pub struct CpuMemoryDescriptor {
     pub xe_device_resident_bytes: u128,
     pub xe_host_staging_bound_bytes: u128,
     pub xe_max_resident_bytes: u128,
+    pub xe_expert_cache_capacity_bytes: u128,
     pub allocator_omissions: Vec<String>,
 }
 
@@ -826,6 +833,12 @@ impl CpuExecutionContext {
         profiler.document(model.profile_metadata(workload_id))
     }
 
+    pub fn profile_records_written(&self) -> Option<usize> {
+        self.profiler
+            .as_ref()
+            .map(CpuExecutionProfiler::records_written)
+    }
+
     #[inline]
     fn profile_start(&self) -> Option<crate::cpu_profile::CpuProfileClock> {
         self.profiler.as_ref().map(CpuExecutionProfiler::start)
@@ -1208,13 +1221,15 @@ impl CpuModel {
                 .max(config.intermediate_size)
                 .checked_div(QUANT_BLOCK_SIZE)
                 .ok_or_else(|| LLMError::ConfigError("Xe block geometry is invalid".into()))?;
-            match XeProjectionEngine::attach(XeAttachConfig::new(
+            let attach = XeAttachConfig::new(
                 mode,
                 repack_root,
                 xe_config.max_resident_bytes,
                 max_columns,
                 max_blocks,
-            )) {
+            )
+            .with_expert_cache_bytes(xe_config.expert_cache_bytes);
+            match XeProjectionEngine::attach(attach) {
                 Ok(engine) => Some(engine),
                 Err(error) if xe_config.mode == CpuXeAttachmentMode::Automatic => {
                     tracing::warn!(
@@ -1232,6 +1247,8 @@ impl CpuModel {
         } else {
             None
         };
+        #[cfg(feature = "xe")]
+        let xe_expert_cache_enabled = xe_config.is_some_and(|config| config.expert_cache_bytes > 0);
         #[cfg(not(feature = "xe"))]
         if let Some(xe_config) = xe_config {
             if xe_config.mode == CpuXeAttachmentMode::Explicit {
@@ -1249,6 +1266,8 @@ impl CpuModel {
             &store.tensor("lm_head.weight")?,
             &[config.vocab_size, config.hidden_size],
         )?;
+        #[cfg(feature = "xe")]
+        let source_identity_key = identity.stable_key();
 
         Ok(Arc::new(Self {
             config,
@@ -1267,6 +1286,10 @@ impl CpuModel {
             amx_runtime_status,
             #[cfg(feature = "xe")]
             xe,
+            #[cfg(feature = "xe")]
+            source_identity_key,
+            #[cfg(feature = "xe")]
+            xe_expert_cache_enabled,
         }))
     }
 
@@ -1317,6 +1340,8 @@ impl CpuModel {
             cpu_identity: serde_json::json!({
                 "vendor": identity.vendor, "family": identity.family, "model": identity.model,
                 "stepping": identity.stepping, "logical_cpus": identity.logical_cpus,
+                "physical_cores": identity.physical_cores,
+                "microcode": identity.microcode.map(|value| format!("0x{value:x}")),
                 "osxsave": identity.osxsave, "xcr0": identity.xcr0,
                 "features": { "avx2": features.avx2, "fma": features.fma,
                     "avx512_f": features.avx512_f, "avx512_bw": features.avx512_bw,
@@ -1341,8 +1366,20 @@ impl CpuModel {
         self.xe.as_ref().and_then(|engine| engine.descriptor().ok())
     }
 
+    #[cfg(feature = "xe")]
+    pub fn xe_residency_stats(&self) -> Option<XeResidencyStats> {
+        self.xe
+            .as_ref()
+            .and_then(|engine| engine.residency_stats().ok())
+    }
+
     #[cfg(not(feature = "xe"))]
     pub fn xe_descriptor(&self) -> Option<()> {
+        None
+    }
+
+    #[cfg(not(feature = "xe"))]
+    pub fn xe_residency_stats(&self) -> Option<()> {
         None
     }
 
@@ -1501,6 +1538,12 @@ impl CpuModel {
                 .map_or(0, |memory| memory.max_resident_bytes as u128),
             #[cfg(not(feature = "xe"))]
             xe_max_resident_bytes: 0,
+            #[cfg(feature = "xe")]
+            xe_expert_cache_capacity_bytes: xe_memory
+                .as_ref()
+                .map_or(0, |memory| memory.expert_cache_capacity_bytes as u128),
+            #[cfg(not(feature = "xe"))]
+            xe_expert_cache_capacity_bytes: 0,
             allocator_omissions: vec![
                 "allocator_active_unavailable".into(),
                 "allocator_retained_unavailable".into(),
@@ -1649,6 +1692,10 @@ impl CpuModelRunner {
         workload_id: Option<String>,
     ) -> Result<CpuExecutionProfileDocument> {
         self.execution.profile_document(&self.model, workload_id)
+    }
+
+    pub fn execution_profile_records_written(&self) -> Option<usize> {
+        self.execution.profile_records_written()
     }
 
     pub fn config(&self) -> &CpuGptOssConfig {
@@ -3162,14 +3209,6 @@ impl CpuModel {
                 if policy.xe_prefill_allowed {
                     if let Some(engine) = &self.xe {
                         if engine.should_accelerate(policy.role.xe(), inputs.len()) {
-                            let weights_v2 = gpt_oss_xe::repack_v2(rows, blocks, |row, block| {
-                                view.block(row, block)
-                                    .map(|value| (value.scale, value.packed))
-                                    .map_err(|error| XeError::Dimensions(error.to_string()))
-                            })
-                            .map_err(|error| {
-                                LLMError::ModelError(format!("Xe weight repack failed: {error}"))
-                            })?;
                             let activations_v2 = quantized
                                 .iter()
                                 .map(|block| ActivationRecordV2 {
@@ -3179,16 +3218,82 @@ impl CpuModel {
                                     residual_scale: block.residual.scale,
                                 })
                                 .collect::<Vec<_>>();
-                            match engine.project(ProjectionRequest {
-                                role: policy.role.xe(),
-                                rows: inputs.len(),
-                                columns: rows,
-                                blocks,
-                                weights_v2: &weights_v2,
-                                activations_v2: &activations_v2,
-                                bias: expert_bias,
-                            }) {
-                                Ok(xe_output) => {
+                            let project = if self.xe_expert_cache_enabled {
+                                let identity = ExpertCacheIdentity {
+                                    model_source_key: self.source_identity_key.clone(),
+                                    tensor_source_key: weights.source_key(),
+                                    layer: layer_index.try_into().map_err(|_| {
+                                        LLMError::ModelError("Xe layer identity overflows".into())
+                                    })?,
+                                    expert: expert.try_into().map_err(|_| {
+                                        LLMError::ModelError("Xe expert identity overflows".into())
+                                    })?,
+                                    role: policy.role.xe(),
+                                    columns: rows,
+                                    blocks,
+                                    weight_layout_version: view.layout().identifier(),
+                                };
+                                engine
+                                    .project_resident(
+                                        ResidentProjectionRequest {
+                                            identity,
+                                            role: policy.role.xe(),
+                                            rows: inputs.len(),
+                                            columns: rows,
+                                            blocks,
+                                            activations_v2: &activations_v2,
+                                            bias: expert_bias,
+                                        },
+                                        || {
+                                            gpt_oss_xe::repack_v2(rows, blocks, |row, block| {
+                                                view.block(row, block)
+                                                    .map(|value| (value.scale, value.packed))
+                                                    .map_err(|error| {
+                                                        XeError::Dimensions(error.to_string())
+                                                    })
+                                            })
+                                        },
+                                    )
+                                    .map(|result| {
+                                        (
+                                            result.output,
+                                            result.residency,
+                                            result.residency_stats.resident_bytes,
+                                        )
+                                    })
+                            } else {
+                                gpt_oss_xe::repack_v2(rows, blocks, |row, block| {
+                                    view.block(row, block)
+                                        .map(|value| (value.scale, value.packed))
+                                        .map_err(|error| XeError::Dimensions(error.to_string()))
+                                })
+                                .and_then(|weights_v2| {
+                                    engine
+                                        .project(ProjectionRequest {
+                                            role: policy.role.xe(),
+                                            rows: inputs.len(),
+                                            columns: rows,
+                                            blocks,
+                                            weights_v2: &weights_v2,
+                                            activations_v2: &activations_v2,
+                                            bias: expert_bias,
+                                        })
+                                        .map(|output| (output, XeResidencyState::Disabled, 0))
+                                })
+                            };
+                            match project {
+                                Ok((xe_output, residency, resident_bytes)) => {
+                                    let residency_state = match residency {
+                                        XeResidencyState::Hit => CpuProfileResidencyState::Hit,
+                                        XeResidencyState::Miss => CpuProfileResidencyState::Miss,
+                                        XeResidencyState::Bypass => {
+                                            CpuProfileResidencyState::Bypass
+                                        }
+                                        XeResidencyState::Fault => CpuProfileResidencyState::Fault,
+                                        XeResidencyState::Disabled => {
+                                            CpuProfileResidencyState::Disabled
+                                        }
+                                    };
                                     execution.profile_record(
                                         projection_start,
                                         CpuProfileRecordSpec {
@@ -3199,8 +3304,17 @@ impl CpuModel {
                                             k: blocks * QUANT_BLOCK_SIZE,
                                             expert_bucket_m: inputs.len(),
                                             projection_role: role,
-                                            preparation_state: CpuProfilePreparationState::Prepared,
-                                            residency_state: CpuProfileResidencyState::Miss,
+                                            preparation_state: match residency {
+                                                XeResidencyState::Hit => {
+                                                    CpuProfilePreparationState::Warm
+                                                }
+                                                XeResidencyState::Miss => {
+                                                    CpuProfilePreparationState::Cold
+                                                }
+                                                _ => CpuProfilePreparationState::Prepared,
+                                            },
+                                            residency_state,
+                                            resident_bytes,
                                             ..CpuProfileRecordSpec::default()
                                         },
                                     );
