@@ -48,3 +48,7 @@ high-water, and repeated shutdown on the real OpenCL stack.
 Live 0/128/256/512 MiB corpus measurements and the final disposition are
 recorded in the candidate-specific Tiger Lake closure. Regardless of their
 performance result, this sprint does not authorize automatic Xe promotion.
+The representative-corpus driver accepts `--xe`, `--xe-max-resident-mib`, and
+`--xe-expert-cache-mib`, so resident and zero-cache controls use the same
+scenario order, profiling schema, repetition policy, and artifact indexing as
+the CPU corpus.
