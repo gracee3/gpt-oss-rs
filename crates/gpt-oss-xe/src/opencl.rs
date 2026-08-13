@@ -500,6 +500,9 @@ impl OpenClRuntime {
                 return Err(cache_error);
             }
         }
+        // Startup qualification is attachment evidence, not workload traffic.
+        // Begin residency/upload telemetry at the first caller projection.
+        runtime.expert_cache.reset_measurements();
         if !runtime.descriptor.native_cache_hit {
             let binary = runtime.native_binary()?;
             write_native_cache(&config.cache_root, &key, &facts, &libraries, &binary)?;

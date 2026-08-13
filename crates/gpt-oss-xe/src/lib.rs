@@ -481,6 +481,15 @@ impl<K: Eq, V: Copy> BoundedLru<K, V> {
         self.stats
     }
 
+    pub(crate) fn reset_measurements(&mut self) {
+        self.stats = XeResidencyStats {
+            capacity_bytes: self.stats.capacity_bytes,
+            resident_bytes: self.stats.resident_bytes,
+            resident_high_water_bytes: self.stats.resident_bytes,
+            ..XeResidencyStats::default()
+        };
+    }
+
     pub(crate) fn clear(&mut self) -> Vec<V> {
         self.stats.resident_bytes = 0;
         self.entries.drain(..).map(|entry| entry.value).collect()
