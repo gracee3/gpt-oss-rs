@@ -657,6 +657,11 @@ mod tests {
             trials: 7,
             samples_per_trial: 5,
             thread_policy: 4,
+            thermal_start_gate_c: 65.0,
+            thermal_end_ceiling_c: 95.0,
+            thermal_poll_ms: 250,
+            thermal_max_wait_seconds: 900,
+            reject_throttled: true,
             bias: true,
             output: PathBuf::from("unused"),
         }
