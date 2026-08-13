@@ -69,6 +69,9 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
     if config.device.xe_max_resident_mib == 0 {
         return Err("xe_max_resident_mib must be > 0".into());
     }
+    if config.device.xe_expert_cache_mib != 0 && config.device.device != "xe" {
+        return Err("xe_expert_cache_mib is legal only with explicit device xe".into());
+    }
     if config.device.cpu_profile_output.is_some() && config.device.cpu_profile_cap_mib == Some(0) {
         return Err("cpu_profile_cap_mib must be > 0 when cpu_profile_output is set".into());
     }
@@ -163,6 +166,16 @@ mod tests {
         assert!(validate(&cfg).is_ok());
         cfg.device.cpu_profile_cap_mib = Some(0);
         assert!(validate(&cfg).unwrap_err().contains("must be > 0"));
+    }
+
+    #[test]
+    fn xe_expert_cache_requires_explicit_xe_and_zero_is_compatible() {
+        let mut cfg = valid_config();
+        assert!(validate(&cfg).is_ok());
+        cfg.device.xe_expert_cache_mib = 128;
+        assert!(validate(&cfg).unwrap_err().contains("explicit device xe"));
+        cfg.device.device = "xe".into();
+        assert!(validate(&cfg).is_ok());
     }
 
     #[test]

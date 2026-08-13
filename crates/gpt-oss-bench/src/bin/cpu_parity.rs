@@ -76,6 +76,10 @@ struct Cli {
     #[arg(long, default_value_t = 128)]
     xe_max_resident_mib: usize,
 
+    /// Forced-only immutable expert cache; legal only with --xe.
+    #[arg(long, default_value_t = 0)]
+    xe_expert_cache_mib: usize,
+
     #[arg(long)]
     cpu_profile_output: Option<PathBuf>,
 
@@ -133,9 +137,14 @@ struct ParityCapture<'a> {
     executable_sha256: String,
     kernel: String,
     cpu_matmul_backend: String,
+    effective_cpu_kernel: String,
+    effective_dispatch_plan: String,
+    effective_m1_matrix_backend: String,
+    effective_multirow_matrix_backend: String,
     layer_major_prefill: bool,
     expert_projection: CpuExpertProjection,
     xe: Option<serde_json::Value>,
+    xe_residency: Option<serde_json::Value>,
     prompt_text: String,
     prompt_token_ids: Vec<u32>,
     generated_token_ids: Vec<u32>,
@@ -190,6 +199,9 @@ fn main() -> Result<()> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    if cli.xe_expert_cache_mib != 0 && !cli.xe {
+        bail!("--xe-expert-cache-mib requires --xe");
+    }
     let oracle_identity = oracle_identity_from_environment()?;
     validate_trace_step(cli.trace_step, cli.max_new_tokens)?;
     let manifest = load_manifest(&cli.fixtures)?;
@@ -211,6 +223,10 @@ fn run(cli: &Cli) -> Result<()> {
         .xe_max_resident_mib
         .checked_mul(1024 * 1024)
         .context("--xe-max-resident-mib overflows bytes")?;
+    let xe_expert_cache_bytes = cli
+        .xe_expert_cache_mib
+        .checked_mul(1024 * 1024)
+        .context("--xe-expert-cache-mib overflows bytes")?;
     let profile_capacity_bytes = cli
         .cpu_profile_output
         .as_ref()
@@ -233,6 +249,7 @@ fn run(cli: &Cli) -> Result<()> {
             xe: cli.xe.then_some(CpuXeConfig {
                 mode: CpuXeAttachmentMode::Explicit,
                 max_resident_bytes: xe_max_resident_bytes,
+                expert_cache_bytes: xe_expert_cache_bytes,
             }),
             profile_capacity_bytes,
         },
@@ -327,6 +344,11 @@ fn run(cli: &Cli) -> Result<()> {
             );
         }
     }
+    let xe_residency = runner
+        .model()
+        .xe_residency_stats()
+        .map(serde_json::to_value)
+        .transpose()?;
 
     let capture = ParityCapture {
         schema_version: manifest.schema_version,
@@ -342,9 +364,14 @@ fn run(cli: &Cli) -> Result<()> {
             .map(|bytes| sha256(&bytes))?,
         kernel: cli.kernel.to_string(),
         cpu_matmul_backend: runner.matmul_backend().to_string(),
+        effective_cpu_kernel: runner.kernel_path().to_string(),
+        effective_dispatch_plan: runner.kernel_dispatch_plan().to_string(),
+        effective_m1_matrix_backend: runner.matmul_backend().resolved_for_rows(1).to_string(),
+        effective_multirow_matrix_backend: runner.matmul_backend().resolved_for_rows(2).to_string(),
         layer_major_prefill: cli.layer_major_prefill,
         expert_projection: runner.expert_projection(),
         xe: xe_descriptor,
+        xe_residency,
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,
         generated_token_ids,

@@ -101,6 +101,7 @@ rows:
   --model openai/gpt-oss-20b \
   --device xe \
   --xe-max-resident-mib 128 \
+  --xe-expert-cache-mib 0 \
   --runtime-mode experimental
 ```
 
@@ -110,7 +111,8 @@ and opens a process-wide Xe breaker until restart. Explicit attachment fails
 startup on an unavailable or invalid device; automatic attachment failures
 fall back to CPU. Trusted mode remains blocked.
 
-`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8`.
+`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, `avx512-vnni`, and
+`amx-int8`.
 `auto` keeps M=1 expert work on the established GEMV path and uses the scalar
 matrix reference for M>1. Select `avx2` explicitly to exercise the experimental
 4-input-row by 8-output-row packed path. `amx-int8` requires the optional build

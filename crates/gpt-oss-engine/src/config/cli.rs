@@ -117,6 +117,10 @@ pub struct CliArgs {
     #[arg(long, default_value_t = 128)]
     pub xe_max_resident_mib: usize,
 
+    /// Forced-only immutable Xe expert cache in MiB (requires --device xe).
+    #[arg(long, default_value_t = 0)]
+    pub xe_expert_cache_mib: usize,
+
     /// Atomic output path for bounded CPU execution-profile JSON.
     #[arg(long)]
     pub cpu_profile_output: Option<std::path::PathBuf>,

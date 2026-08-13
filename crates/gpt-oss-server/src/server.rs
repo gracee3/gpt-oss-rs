@@ -1254,6 +1254,15 @@ async fn create_cpu_engine(
                 "xe_max_resident_mib overflows bytes".into(),
             )
         })?;
+    let xe_expert_cache_bytes = config
+        .device
+        .xe_expert_cache_mib
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| {
+            gpt_oss_core::prelude::LLMError::ConfigError(
+                "xe_expert_cache_mib overflows bytes".into(),
+            )
+        })?;
     let topology = CpuTopology::observe(threads);
     info!(
         topology = %topology,
@@ -1286,6 +1295,7 @@ async fn create_cpu_engine(
             xe_mode.map(|mode| CpuXeConfig {
                 mode,
                 max_resident_bytes: xe_max_resident_bytes,
+                expert_cache_bytes: xe_expert_cache_bytes,
             }),
         )?;
         Ok::<_, gpt_oss_core::prelude::LLMError>((cpu_model, snapshot))
