@@ -59,3 +59,9 @@ The capture driver enforces a 120-second inter-run cooldown and a 65 C maximum
 core-temperature start gate by default. Both the actual wait and sensor values
 are recorded. A sensor that cannot cool within the bounded wait fails the
 attempt rather than silently mixing a thermally biased run into evidence.
+
+The matrix benchmark applies the same principle per kernel: it records
+core-temperature endpoints and package/core throttle-time deltas. By default
+the first throttle event aborts the attempt; retained diagnostic runs may
+record throttled samples, but the promotion analyzer deterministically marks
+the affected shape ineligible.

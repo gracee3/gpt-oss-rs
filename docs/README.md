@@ -15,6 +15,10 @@
   CPU regression and comparison procedure.
 - [`TIGER_LAKE_CPU_CORPUS.md`](TIGER_LAKE_CPU_CORPUS.md): hashed seven-scenario
   operation, timing, and expert-bucket evidence used for matrix promotion.
+- [`TIGER_LAKE_MXFP4_MATRIX.md`](TIGER_LAKE_MXFP4_MATRIX.md): genuine 8x8
+  AVX-512/VNNI candidate and the narrow evidence-backed Tiger Lake Auto rule.
+- [`TIGER_LAKE_XE_RESIDENCY.md`](TIGER_LAKE_XE_RESIDENCY.md): forced-only
+  OpenCL LRU design, live isolated win, and negative full-model capacity result.
 - [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md): immutable
   v0.0.9 CPU-oracle image publication, lock, fresh-lineage campaign order, and
   closure rules.
