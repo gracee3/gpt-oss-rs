@@ -1,5 +1,7 @@
 # Documentation
 
+- [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
+
 ## Runtime and backend
 
 - [`CPU_RUNTIME.md`](CPU_RUNTIME.md): native CPU storage, numerical, serving,
