@@ -117,6 +117,8 @@ struct SampleRecord {
     duration_ns: u64,
     start_temperature_c: f64,
     end_temperature_c: f64,
+    package_throttle_time_delta_ms: u64,
+    core_throttle_time_delta_ms: u64,
     scratch_bytes: usize,
     scratch_alignment: usize,
     output_sha256: String,
@@ -264,6 +266,7 @@ fn main() -> Result<()> {
                     let index = (start + order) % method_state.len();
                     let (method, output, scratch) = &mut method_state[index];
                     let start_temperature_c = wait_for_thermal_gate(&cli)?;
+                    let throttle_before = throttle_time_ms()?;
                     let timer = Instant::now();
                     execute(
                         kernels,
@@ -275,12 +278,24 @@ fn main() -> Result<()> {
                         black_box(scratch.bytes()),
                     )?;
                     let duration_ns = timer.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+                    let throttle_after = throttle_time_ms()?;
                     let end_temperature_c = core_temperature_c()?;
+                    let package_throttle_time_delta_ms =
+                        throttle_after.0.saturating_sub(throttle_before.0);
+                    let core_throttle_time_delta_ms =
+                        throttle_after.1.saturating_sub(throttle_before.1);
                     if end_temperature_c > cli.thermal_end_ceiling_c {
                         bail!(
                             "thermal ceiling exceeded after M={m} method={method}: \
                              {end_temperature_c:.1} C > {:.1} C",
                             cli.thermal_end_ceiling_c
+                        )
+                    }
+                    if package_throttle_time_delta_ms != 0 || core_throttle_time_delta_ms != 0 {
+                        bail!(
+                            "thermal throttling during M={m} method={method}: package delta \
+                             {package_throttle_time_delta_ms} ms, core delta \
+                             {core_throttle_time_delta_ms} ms"
                         )
                     }
                     samples.push(SampleRecord {
@@ -296,6 +311,8 @@ fn main() -> Result<()> {
                         duration_ns,
                         start_temperature_c,
                         end_temperature_c,
+                        package_throttle_time_delta_ms,
+                        core_throttle_time_delta_ms,
                         scratch_bytes: scratch.requirement.size,
                         scratch_alignment: scratch.requirement.alignment,
                         output_sha256: bytes_sha256(&output_bits(output)),
@@ -430,6 +447,30 @@ fn wait_for_thermal_gate(cli: &Cli) -> Result<f64> {
         }
         thread::sleep(Duration::from_millis(cli.thermal_poll_ms));
     }
+}
+
+fn throttle_time_ms() -> Result<(u64, u64)> {
+    let package = fs::read_to_string(
+        "/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms",
+    )
+    .context("read package throttle time")?
+    .trim()
+    .parse::<u64>()
+    .context("parse package throttle time")?;
+    let mut core = 0_u64;
+    for cpu in 0..4 {
+        let path = format!(
+            "/sys/devices/system/cpu/cpu{cpu}/thermal_throttle/core_throttle_total_time_ms"
+        );
+        core = core.saturating_add(
+            fs::read_to_string(&path)
+                .with_context(|| format!("read {path}"))?
+                .trim()
+                .parse::<u64>()
+                .with_context(|| format!("parse {path}"))?,
+        );
+    }
+    Ok((package, core))
 }
 
 fn requirement(
