@@ -5,6 +5,12 @@
 > container-oracle campaign. The current authoritative procedure is
 > [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md).
 
+The current Tiger Lake implementation candidate and its fresh six-cell by
+seven-scenario certification are closed in
+[`TIGER_LAKE_CLOSURE.md`](TIGER_LAKE_CLOSURE.md). That record supersedes the
+historical 28-cell counts below for current-branch status; this file remains
+the general repeatable full-checkpoint regression procedure.
+
 This procedure produced the evidence used to merge the experimental CPU
 serving baseline. Re-run it after numerical changes, kernel-plan changes,
 packed-layout changes, or cache-format changes. The initial i5 checks cover

@@ -10,7 +10,9 @@
 > candidate, and forced-only OpenCL LRU are implemented. The narrow M=3 AVX2
 > Auto experiment failed its full-request gate and is disabled. The LRU is
 > also a negative full-model performance result and remains disabled by
-> default. Only the fresh candidate closure can certify that work.
+> default. Fresh Candidate C certification is complete and recorded in
+> [`TIGER_LAKE_CLOSURE.md`](TIGER_LAKE_CLOSURE.md); this pre-planning record
+> remains historical input rather than a current status authority.
 
 - Status: pre-planning and research charter only
 - Recorded: 2026-08-12

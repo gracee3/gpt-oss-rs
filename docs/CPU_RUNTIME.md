@@ -105,19 +105,16 @@ the complete contract.
   deterministic FP32 reduction lanes; it is diagnostic-only and selects the
   compact canonical cache rather than expanding weights.
 
-The runtime is an experimental mainline backend. Its preceding baseline passed
-the maintained seven-scenario suite across scalar, AVX2, AVX-512/VNNI, and
-automatic dispatch. The AVX2 x8 promotion uses a narrower full-model gate:
-`harmony_122` on cold automatic and warm forced-AVX2 paths, and `harmony_262`
-on automatic, forced-AVX2, and scalar paths. A repeat of the exhaustive 28-run
-matrix, Criterion suite, llama.cpp captures, and complete API permutation
-matrix is intentionally deferred until the planned AVX-512, GEMM/prefill, AMX,
-and CPU scheduling features are developed. During that feature-development
-phase, each new path still requires focused scalar equivalence, targeted
-full-model parity, cache-integrity checks, and relevant API smoke coverage;
-semantic, memory-safety, cache, and API failures remain blocking. Performance
-thresholds and broad certification are not promotion gates until the later
-tuning phase. A stricter end-to-end trace still shows a rare BF16
+The runtime is an experimental mainline backend. Tiger Lake candidate
+`24577826d9a5bf186656a0d419e5e93237c66a4c` passed the maintained seven
+scenarios across six non-redundant controls: automatic, forced scalar, forced
+AVX2, forced AVX-512/VNNI, forced AVX2 matrix, and forced AVX-512/VNNI matrix.
+All 42 fresh official comparisons produced exact generated tokens. The
+candidate also passed seven fresh llama.cpp advisory captures, the complete
+model-free lifecycle/HTTP suite, and a bounded 20B service request. New paths
+still require focused scalar equivalence, full-model parity, cache-integrity,
+and relevant API coverage; semantic, memory-safety, cache, and API failures
+remain blocking. A stricter end-to-end trace still shows a rare BF16
 reduction-order difference before the expert projection; it is retained as
 diagnostic evidence rather than hidden or compensated later. Trusted mode
 continues to reject CPU serving pending a separate certification review.
@@ -268,11 +265,11 @@ against an already-running server without issuing inference.
 delivery fixture and the real Prometheus recorder, then emits a pass/fail E1
 sidecar for the 1% median-throughput and 2% median-p99-latency gates.
 
-`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, and `amx-int8` and is
-serialized as `device.cpu_matmul_backend`; the default is `auto`. During this
-experimental milestone, automatic M=1 expert projection uses the established
-dispatched GEMV path and automatic M>1 uses the scalar matrix reference.
-Optimized matrix execution therefore requires explicit `avx2`. `amx-int8`
+`--cpu-matmul-backend` accepts `auto`, `scalar`, `avx2`, `avx512-vnni`, and
+`amx-int8` and is serialized as `device.cpu_matmul_backend`; the default is
+`auto`. Automatic M=1 expert projection uses the established dispatched GEMV
+path and automatic M>1 uses the scalar matrix reference. Optimized matrix
+execution therefore requires explicit `avx2` or `avx512-vnni`. `amx-int8`
 requires the optional feature, Linux x86-64 CPUID support, Linux XSTATE kernel
 support, and process tile-data permission. It is never selected automatically.
 The prototype consumes transient M<=16, N=16, K=32 panels, stores INT32 after
@@ -301,10 +298,13 @@ a capability policy, not a CPU-model policy; startup logs and captures include
 the exact GEMV kernel and packed-layout identifiers in the immutable plan.
 
 Matrix backend selection is deliberately separate from that compatibility
-kernel plan. Explicit AVX2 matrix execution selects the x8 layout and validates
-host support when invoked. Automatic matrix execution does not promote the new
-4x8 path: it preserves GEMV for M=1 and uses the scalar reference for M>1.
-There is no shape threshold, tuning table, or second persistent weight format.
+kernel plan. Explicit AVX2 4x8 and AVX-512/VNNI 8x8 matrix execution reuse the
+x8-v2 layout and validate host/OS support before execution. The Tiger Lake
+promotion record contains no winning end-to-end region: automatic matrix
+execution preserves GEMV for M=1 and uses the scalar reference for every M>1.
+The negative record is keyed to structured CPUID/topology/microcode/XCR0,
+four threads, exact model shapes, benchmark revision, and evidence hashes; it
+does not use the processor brand string or introduce a second weight format.
 
 The current plan is a baseline, not the final abstraction. Future dispatch
 must describe precise ISA requirements and include operation type, matrix

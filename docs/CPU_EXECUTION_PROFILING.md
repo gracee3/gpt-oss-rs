@@ -65,3 +65,21 @@ core-temperature endpoints and package/core throttle-time deltas. By default
 the first throttle event aborts the attempt; retained diagnostic runs may
 record throttled samples, but the promotion analyzer deterministically marks
 the affected shape ineligible.
+
+## Tiger Lake overhead evidence
+
+Five cool-start, order-rotated `harmony_63` trials compared exact pre-profiler
+commit `364f940`, profiling-disabled Candidate B, and profiling-enabled
+Candidate B. Disabled versus pre-profiler changed mean full-request time by
++0.130% and median by +0.140%; the paired bootstrap mean 95% interval was
+-0.340% to +0.657%, so no disabled-path regression was demonstrated. Enabled
+versus disabled changed mean by -0.182% and median by -0.109%; its interval
+was -0.516% to +0.055%, so the sample did not detect enabled latency cost.
+Profiling remains opt-in.
+
+Each enabled capture used 104-byte records, capacity 161,319, wrote 51,262
+records, and had zero drops or truncation. Enabled median RSS was 10,621,556
+KiB versus 10,561,732 KiB disabled. The immutable external evidence is under
+`/home/emmy/gpt-oss-rs-artifacts/tiger-lake-optimization/91f5c93d03f9d1e3d6b4a775cd6ef45328f0dd59/profiler-overhead-v2/`;
+its `SHA256SUMS` hashes to
+`57925e2a04960ca7e847f4a095e2e1cb47af74dc9578e2cb2f13cd224ec340a9`.

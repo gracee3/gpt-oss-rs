@@ -34,8 +34,14 @@
   reused isolated projection, but 128/256/512 MiB produced no full-model warm
   hit before eviction. The default remains zero and automatic Xe remains
   disabled.
-- Phase 5 final candidate freeze and fresh certification are in progress. No
-  historical closure is treated as certification for this candidate.
+- Phase 5 is complete. Candidate
+  `24577826d9a5bf186656a0d419e5e93237c66a4c` passed a fresh 42/42 official
+  matrix, seven fresh llama.cpp advisory cells, C3, both service gates, and
+  final performance capture. Its complete E1 artifact-set SHA-256 is
+  `cf833a1ccc5dffcf14575890d9eeca02c447a2471f30150da03d340f29092a0c`.
+  The candidate-specific result is recorded in
+  [`TIGER_LAKE_CLOSURE.md`](TIGER_LAKE_CLOSURE.md); no historical closure is
+  counted toward it.
 
 Correctness gates every performance decision. Unknown hardware, uncertain
 measurements, unsupported ISA state, and unobserved shapes retain scalar
