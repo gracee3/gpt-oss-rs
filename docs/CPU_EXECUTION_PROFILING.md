@@ -6,6 +6,12 @@ record slab defaults to 16 MiB and may be changed with
 `--cpu-profile-cap-mib N`. A cap without an output path is rejected. The
 `cpu_parity` capture tool exposes the same controls.
 
+For representative prefill capture, `cpu_parity --layer-major-prefill` submits
+the complete prompt as one transactional batch. This is an offline-only
+compatibility mode: it preserves token-major logits, KV state, and subsequent
+decode behavior while exposing the real multi-row routed-expert buckets used
+by the serving batch engine. It conflicts with intermediate trace capture.
+
 With no output path, `CpuExecutionContext` stores `None`: operation sites take
 one option branch and perform no clock read, allocation, formatting, lock, or
 I/O. Enabling profiling allocates one fixed record slab before execution.
@@ -38,5 +44,13 @@ python3 crates/gpt-oss-bench/tools/summarize_cpu_profile.py \
 
 The deterministic summary validates record hashes, rejects truncation, keeps
 failed work out of committed-operation timing totals, and reports operation
-shares, shapes, backend codes, expert-bucket distributions, and memory
+shares, shapes, backend codes, exact and grouped expert-bucket distributions,
+cumulative bucket coverage, a matrix-benchmark candidate table, and memory
 high-water values.
+
+`capture_tiger_lake_corpus.py` runs the seven pinned scenarios on an explicit
+CPU set, captures one warmup plus three warm repetitions by default, snapshots
+frequency/governor/thermal/power facts around every run, produces all/warm
+summaries, and writes a SHA-256 index. The destination must not already exist,
+and a dirty source tree is rejected by default. Raw corpus outputs belong in
+the external Tiger Lake artifact root, not in Git.

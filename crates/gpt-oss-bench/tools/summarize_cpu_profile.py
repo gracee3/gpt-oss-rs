@@ -11,6 +11,14 @@ from pathlib import Path
 
 SCHEMA = "gpt-oss-rs.execution-profile/v1"
 SUMMARY_SCHEMA = "gpt-oss-rs.execution-profile-summary/v1"
+BUCKET_GROUPS = (
+    ("m1", lambda value: value == 1),
+    ("m2", lambda value: value == 2),
+    ("m3", lambda value: value == 3),
+    ("m4_7", lambda value: 4 <= value <= 7),
+    ("m8_15", lambda value: 8 <= value <= 15),
+    ("m16_plus", lambda value: value >= 16),
+)
 
 
 def canonical(value: object) -> bytes:
@@ -58,7 +66,16 @@ def summarize(paths: list[Path]) -> dict:
             operation_count[operation] += 1
             total_ns += duration
             phase_count[record["phase"]] += 1
-            shapes[(operation, record["m"], record["n"], record["k"], record["effective_matrix_backend"])] += 1
+            shapes[(
+                operation,
+                record["m"],
+                record["n"],
+                record["k"],
+                record["requested_matrix_backend"],
+                record["effective_matrix_backend"],
+                record["thread_count"],
+                record["preparation_state"],
+            )] += 1
             if record["projection_role"] in ("gate_up", "down"):
                 buckets[record["projection_role"]][int(record["expert_bucket_m"])] += 1
             scratch_high_water = max(scratch_high_water, int(record["scratch_high_water_bytes"]))
@@ -73,13 +90,48 @@ def summarize(paths: list[Path]) -> dict:
         for operation in sorted(operation_ns)
     ]
     shape_rows = [
-        {"operation": key[0], "m": key[1], "n": key[2], "k": key[3], "effective_matrix_backend_code": key[4], "count": count}
+        {
+            "operation": key[0],
+            "m": key[1],
+            "n": key[2],
+            "k": key[3],
+            "requested_matrix_backend_code": key[4],
+            "effective_matrix_backend_code": key[5],
+            "thread_count": key[6],
+            "preparation_state": key[7],
+            "count": count,
+        }
         for key, count in sorted(shapes.items())
     ]
-    bucket_rows = {
-        role: [{"m": m, "count": count} for m, count in sorted(counts.items())]
-        for role, counts in sorted(buckets.items())
-    }
+    bucket_rows = {}
+    bucket_groups = {}
+    for role, counts in sorted(buckets.items()):
+        total = sum(counts.values())
+        cumulative = 0
+        rows = []
+        for m, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            cumulative += count
+            rows.append({
+                "m": m,
+                "count": count,
+                "frequency": count / total if total else 0.0,
+                "cumulative_coverage": cumulative / total if total else 0.0,
+            })
+        bucket_rows[role] = rows
+        bucket_groups[role] = [
+            {
+                "group": name,
+                "count": group_count,
+                "frequency": group_count / total if total else 0.0,
+            }
+            for name, predicate in BUCKET_GROUPS
+            for group_count in [sum(count for m, count in counts.items() if predicate(m))]
+        ]
+    benchmark_candidates = [
+        row
+        for row in shape_rows
+        if row["operation"] in ("gate_up_projection", "down_projection")
+    ]
     summary = {
         "schema": SUMMARY_SCHEMA,
         "inputs": [
@@ -95,6 +147,8 @@ def summarize(paths: list[Path]) -> dict:
         "operations": operations,
         "shapes": shape_rows,
         "expert_buckets": bucket_rows,
+        "expert_bucket_groups": bucket_groups,
+        "benchmark_candidate_matrix": benchmark_candidates,
     }
     summary["summary_sha256"] = hashlib.sha256(canonical(summary)).hexdigest()
     return summary
@@ -111,7 +165,20 @@ def report(summary: dict) -> str:
     for item in sorted(summary["operations"], key=lambda item: (-item["time_share"], item["operation"])):
         lines.append(f"  {item['operation']}: {item['time_share']:.3%} ({item['records']} records)")
     for role, values in summary["expert_buckets"].items():
-        lines.append(f"{role} expert buckets: " + ", ".join(f"M={item['m']}:{item['count']}" for item in values))
+        lines.append(
+            f"{role} expert buckets: "
+            + ", ".join(
+                f"M={item['m']}:{item['count']} ({item['frequency']:.1%}, cumulative {item['cumulative_coverage']:.1%})"
+                for item in values
+            )
+        )
+        lines.append(
+            f"{role} grouped: "
+            + ", ".join(
+                f"{item['group']}={item['count']} ({item['frequency']:.1%})"
+                for item in summary["expert_bucket_groups"][role]
+            )
+        )
     return "\n".join(lines) + "\n"
 
 

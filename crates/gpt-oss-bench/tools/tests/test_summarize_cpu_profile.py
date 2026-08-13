@@ -27,7 +27,9 @@ class SummarizeCpuProfileTests(unittest.TestCase):
     def record(self, operation="gate_up_projection", state="prepared", m=4):
         return {
             "phase": "prefill", "operation": operation, "m": m, "n": 8, "k": 32,
-            "effective_matrix_backend": 2, "projection_role": "gate_up",
+            "requested_matrix_backend": 0, "effective_matrix_backend": 2,
+            "thread_count": 4, "preparation_state": "prepared",
+            "projection_role": "gate_up",
             "expert_bucket_m": m, "duration_ns": 100,
             "scratch_high_water_bytes": 64, "resident_high_water_bytes": 0,
             "transaction_state": state,
@@ -42,6 +44,11 @@ class SummarizeCpuProfileTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first["failed_transaction_records"], 1)
             self.assertEqual(first["operations"][0]["duration_ns"], 100)
+            self.assertEqual(first["expert_buckets"]["gate_up"][0]["m"], 4)
+            self.assertEqual(first["expert_buckets"]["gate_up"][0]["cumulative_coverage"], 1.0)
+            groups = {row["group"]: row["count"] for row in first["expert_bucket_groups"]["gate_up"]}
+            self.assertEqual(groups["m4_7"], 1)
+            self.assertEqual(first["benchmark_candidate_matrix"][0]["thread_count"], 4)
 
     def test_truncated_and_hash_mismatched_profiles_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

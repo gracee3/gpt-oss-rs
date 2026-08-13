@@ -52,6 +52,11 @@ struct Cli {
     #[arg(long, default_value_t = 8)]
     max_new_tokens: usize,
 
+    /// Run the prompt in one transactional layer-major batch. This exposes
+    /// real multi-row expert buckets for offline profiling.
+    #[arg(long, default_value_t = false, conflicts_with = "trace_layers")]
+    layer_major_prefill: bool,
+
     #[arg(long, value_delimiter = ',')]
     trace_layers: Vec<usize>,
 
@@ -128,6 +133,7 @@ struct ParityCapture<'a> {
     executable_sha256: String,
     kernel: String,
     cpu_matmul_backend: String,
+    layer_major_prefill: bool,
     expert_projection: CpuExpertProjection,
     xe: Option<serde_json::Value>,
     prompt_text: String,
@@ -244,6 +250,8 @@ fn run(cli: &Cli) -> Result<()> {
         let (logits, trace) =
             runner.prefill_trace(&rendered.token_ids, &cli.trace_layers, cli.top_k)?;
         (logits, Some(trace))
+    } else if cli.layer_major_prefill {
+        (runner.prefill_layer_major(&rendered.token_ids)?, None)
     } else {
         (runner.prefill(&rendered.token_ids)?, None)
     };
@@ -334,6 +342,7 @@ fn run(cli: &Cli) -> Result<()> {
             .map(|bytes| sha256(&bytes))?,
         kernel: cli.kernel.to_string(),
         cpu_matmul_backend: runner.matmul_backend().to_string(),
+        layer_major_prefill: cli.layer_major_prefill,
         expert_projection: runner.expert_projection(),
         xe: xe_descriptor,
         prompt_text: rendered.text,

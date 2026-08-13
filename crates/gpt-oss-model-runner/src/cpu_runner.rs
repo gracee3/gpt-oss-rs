@@ -1730,6 +1730,39 @@ impl CpuModelRunner {
         Ok(logits)
     }
 
+    /// Execute one prompt as a single layer-major transactional batch.
+    ///
+    /// This is the model-free compatibility entry point used by offline
+    /// operation profiling. It exercises the same multi-row expert buckets as
+    /// the serving batch engine while preserving the ordinary prefill result
+    /// and committed sequence state.
+    pub fn prefill_layer_major(&mut self, token_ids: &[u32]) -> Result<Vec<f32>> {
+        if token_ids.is_empty() {
+            return Err(LLMError::ModelError("CPU prefill is empty".into()));
+        }
+        self.reset();
+        let sequence_id = SequenceId(0);
+        let last = token_ids.len() - 1;
+        let rows = token_ids
+            .iter()
+            .enumerate()
+            .map(|(position, &token_id)| {
+                CpuStepRow::new(sequence_id, token_id, position, position == last)
+            })
+            .collect();
+        let batch = CpuStepBatch::new(rows)?;
+        let prepared =
+            self.model
+                .prepare_step(&mut self.execution, &batch, &[(sequence_id, &self.state)])?;
+        let rows = prepared.commit(&mut [(sequence_id, &mut self.state)])?;
+        rows.last()
+            .and_then(PreparedCpuRow::logits)
+            .map(<[f32]>::to_vec)
+            .ok_or_else(|| {
+                LLMError::ModelError("CPU layer-major prefill returned no final logits".into())
+            })
+    }
+
     /// Run a normal prefill while capturing selected layer intermediates for
     /// the final prompt token. Generated trace data is never retained by the
     /// serving path.
@@ -4285,6 +4318,42 @@ mod tests {
         let expected = full.prefill(&[1, 2, 3]).unwrap();
         assert_eq!(decoded, expected);
         assert!(decoded.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn layer_major_prefill_matches_token_major_state_logits_and_decode() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut token_major =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        let mut layer_major =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+
+        let expected = token_major.prefill(&[1, 2, 3, 4]).unwrap();
+        let actual = layer_major.prefill_layer_major(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(layer_major.position(), token_major.position());
+        assert_eq!(
+            layer_major.state.token_history,
+            token_major.state.token_history
+        );
+        assert_eq!(layer_major.caches(), token_major.caches());
+        assert_eq!(
+            layer_major.decode(5).unwrap(),
+            token_major.decode(5).unwrap()
+        );
+    }
+
+    #[test]
+    fn layer_major_prefill_rejects_empty_input_without_state_change() {
+        let snapshot = synthetic_snapshot();
+        let cache = snapshot.path().join("repack");
+        let mut runner =
+            CpuModelRunner::load(snapshot.path(), &cache, KernelPath::Scalar, 2, 16).unwrap();
+        runner.prefill(&[1, 2]).unwrap();
+        let before = runner.state.clone();
+        assert!(runner.prefill_layer_major(&[]).is_err());
+        assert_eq!(runner.state, before);
     }
 
     #[test]
