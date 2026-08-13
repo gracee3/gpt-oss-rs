@@ -101,7 +101,7 @@ pub struct CliArgs {
     #[arg(long, default_value = "auto")]
     pub cpu_kernel: String,
 
-    /// MXFP4 matrix backend: auto, scalar, avx2, or amx-int8.
+    /// MXFP4 matrix backend: auto, scalar, avx2, avx512-vnni, or amx-int8.
     #[arg(long, default_value = "auto")]
     pub cpu_matmul_backend: String,
 

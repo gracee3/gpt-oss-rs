@@ -10,6 +10,17 @@ COMPARATOR = Path(__file__).resolve().parents[1] / "compare_cpu_parity.py"
 
 
 class CompareCpuParityTests(unittest.TestCase):
+    ORACLE_IDENTITY = {
+        "image_manifest_digest": "1" * 64,
+        "image_config_digest": "2" * 64,
+        "software_lock_sha256": "3" * 64,
+        "official_source_revision": "4" * 40,
+        "execution_mode": "native",
+        "host_fingerprint": "5" * 64,
+        "container_policy_sha256": "6" * 64,
+        "probe_artifact_sha256": "7" * 64,
+    }
+
     def run_comparator(
         self,
         native_tokens,
@@ -29,6 +40,7 @@ class CompareCpuParityTests(unittest.TestCase):
                         "scenario": "test_scenario",
                         "generated_token_ids": native_tokens,
                         "trace": native_trace,
+                        "oracle_identity": self.ORACLE_IDENTITY,
                     }
                 )
             )
@@ -37,6 +49,7 @@ class CompareCpuParityTests(unittest.TestCase):
                     {
                         "generated_token_ids": official_tokens,
                         "trace": official_trace,
+                        "oracle_identity": self.ORACLE_IDENTITY,
                     }
                 )
             )
@@ -90,6 +103,7 @@ class CompareCpuParityTests(unittest.TestCase):
         self.assertTrue(result["blocking"])
         self.assertFalse(result["native_matches_official"])
         self.assertEqual(result["native_official_first_divergence"], 1)
+        self.assertEqual(result["status"], "fail")
 
     def test_llama_match_cannot_waive_official_divergence(self):
         completed, result = self.run_comparator(
@@ -150,6 +164,91 @@ class CompareCpuParityTests(unittest.TestCase):
         self.assertFalse(result["blocking"])
         self.assertTrue(result["native_matches_official"])
         self.assertNotIn("llama_cpp", result)
+        self.assertEqual(result["status"], "pass")
+
+    def test_negative_input_status_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native.json"
+            official = root / "official.json"
+            output = root / "comparison.json"
+            native.write_text(
+                json.dumps(
+                    {
+                        "scenario": "test_scenario",
+                        "status": "incomplete",
+                        "generated_token_ids": [],
+                        "oracle_identity": self.ORACLE_IDENTITY,
+                    }
+                )
+            )
+            official.write_text(
+                json.dumps(
+                    {
+                        "generated_token_ids": [],
+                        "oracle_identity": self.ORACLE_IDENTITY,
+                    }
+                )
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARATOR),
+                    "--native",
+                    str(native),
+                    "--official",
+                    str(official),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            result = json.loads(output.read_text())
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(result["status"], "incomplete")
+
+    def test_mismatched_prompt_provenance_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native.json"
+            official = root / "official.json"
+            output = root / "comparison.json"
+            native.write_text(
+                json.dumps(
+                    {
+                        "scenario": "test_scenario",
+                        "prompt_token_ids": [1],
+                        "generated_token_ids": [2],
+                        "oracle_identity": self.ORACLE_IDENTITY,
+                    }
+                )
+            )
+            official.write_text(
+                json.dumps(
+                    {
+                        "prompt_token_ids": [9],
+                        "generated_token_ids": [2],
+                        "oracle_identity": self.ORACLE_IDENTITY,
+                    }
+                )
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARATOR),
+                    "--native",
+                    str(native),
+                    "--official",
+                    str(official),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(json.loads(output.read_text())["status"], "invalid")
 
     def test_decode_step_expert_trace_comparison_preserves_context_and_order(self):
         def trace(gate_up):
@@ -202,6 +301,50 @@ class CompareCpuParityTests(unittest.TestCase):
                 "max_abs_diff": 0.25,
             },
         )
+
+    def test_cross_mode_comparator_mixing_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native.json"
+            official = root / "official.json"
+            output = root / "comparison.json"
+            native.write_text(
+                json.dumps(
+                    {
+                        "scenario": "test_scenario",
+                        "generated_token_ids": [1],
+                        "oracle_identity": self.ORACLE_IDENTITY,
+                    }
+                )
+            )
+            generic = dict(self.ORACLE_IDENTITY, execution_mode="generic")
+            official.write_text(
+                json.dumps(
+                    {
+                        "generated_token_ids": [1],
+                        "oracle_identity": generic,
+                    }
+                )
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARATOR),
+                    "--native",
+                    str(native),
+                    "--official",
+                    str(official),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                json.loads(output.read_text())["reason"],
+                "cross-mode comparator mixing is forbidden",
+            )
 
 
 if __name__ == "__main__":

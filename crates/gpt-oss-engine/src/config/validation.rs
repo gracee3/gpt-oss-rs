@@ -89,7 +89,7 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
         .is_err()
     {
         return Err(format!(
-            "unknown cpu_matmul_backend '{}': expected auto, scalar, avx2, or amx-int8",
+            "unknown cpu_matmul_backend '{}': expected auto, scalar, avx2, avx512-vnni, or amx-int8",
             config.device.cpu_matmul_backend
         ));
     }

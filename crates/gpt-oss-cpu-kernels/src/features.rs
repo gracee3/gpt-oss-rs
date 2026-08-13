@@ -7,6 +7,80 @@
 use std::fmt;
 use std::sync::OnceLock;
 
+/// Stable, model-free x86 identity and OS-managed vector state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuHardwareIdentity {
+    pub vendor: String,
+    pub family: u8,
+    pub model: u8,
+    pub stepping: u8,
+    pub xcr0: u64,
+    pub osxsave: bool,
+    pub logical_cpus: usize,
+}
+
+impl CpuHardwareIdentity {
+    pub fn detect() -> Self {
+        detect_identity()
+    }
+
+    pub fn profile_key(&self) -> String {
+        format!(
+            "{}-family{}-model{}-stepping{}-logical{}-xcr0{:x}",
+            self.vendor, self.family, self.model, self.stepping, self.logical_cpus, self.xcr0
+        )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_identity() -> CpuHardwareIdentity {
+    use std::arch::x86_64::{__cpuid, _xgetbv};
+    let leaf0 = __cpuid(0);
+    let leaf1 = __cpuid(1);
+    let mut vendor = Vec::with_capacity(12);
+    vendor.extend_from_slice(&leaf0.ebx.to_le_bytes());
+    vendor.extend_from_slice(&leaf0.edx.to_le_bytes());
+    vendor.extend_from_slice(&leaf0.ecx.to_le_bytes());
+    let base_family = ((leaf1.eax >> 8) & 0xf) as u8;
+    let base_model = ((leaf1.eax >> 4) & 0xf) as u8;
+    let ext_family = ((leaf1.eax >> 20) & 0xff) as u8;
+    let ext_model = ((leaf1.eax >> 16) & 0xf) as u8;
+    let family = if base_family == 0xf {
+        base_family + ext_family
+    } else {
+        base_family
+    };
+    let model = if matches!(base_family, 0x6 | 0xf) {
+        base_model | (ext_model << 4)
+    } else {
+        base_model
+    };
+    let osxsave = leaf1.ecx & (1 << 27) != 0;
+    let xcr0 = if osxsave { unsafe { _xgetbv(0) } } else { 0 };
+    CpuHardwareIdentity {
+        vendor: String::from_utf8_lossy(&vendor).into_owned(),
+        family,
+        model,
+        stepping: (leaf1.eax & 0xf) as u8,
+        xcr0,
+        osxsave,
+        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn detect_identity() -> CpuHardwareIdentity {
+    CpuHardwareIdentity {
+        vendor: std::env::consts::ARCH.into(),
+        family: 0,
+        model: 0,
+        stepping: 0,
+        xcr0: 0,
+        osxsave: false,
+        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CpuFeatures {
     pub avx2: bool,

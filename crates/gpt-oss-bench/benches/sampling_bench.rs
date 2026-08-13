@@ -163,17 +163,16 @@ fn top_logprobs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
 
 fn dequantize_q4_0(data: &[u8], scales: &[f32], total: usize) -> Vec<f32> {
     let group_size = 32usize;
-    let num_groups = (total + group_size - 1) / group_size;
+    let num_groups = total.div_ceil(group_size);
     let mut output = Vec::with_capacity(total);
-    for g in 0..num_groups {
-        let scale = scales[g];
+    for (g, scale) in scales[..num_groups].iter().copied().enumerate() {
         let start = g * group_size;
         let end = (start + group_size).min(total);
         let byte_offset = g * (group_size / 2);
         for i in start..end {
             let local = i - start;
             let byte_idx = byte_offset + local / 2;
-            let nibble = if local % 2 == 0 {
+            let nibble = if local.is_multiple_of(2) {
                 (data[byte_idx] & 0x0F) as i8
             } else {
                 ((data[byte_idx] >> 4) & 0x0F) as i8

@@ -30,6 +30,7 @@ pub enum Mxfp4MatmulBackend {
     Auto,
     Scalar,
     Avx2,
+    Avx512Vnni,
     AmxInt8,
 }
 
@@ -39,6 +40,7 @@ impl Mxfp4MatmulBackend {
             Self::Auto => "auto",
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2",
+            Self::Avx512Vnni => "avx512-vnni",
             Self::AmxInt8 => "amx-int8",
         }
     }
@@ -58,7 +60,7 @@ impl Mxfp4MatmulBackend {
     ) -> Result<Mxfp4ScratchRequirement, KernelError> {
         match self.resolve(problem.m()) {
             Self::Auto | Self::Scalar => Ok(Mxfp4ScratchRequirement::NONE),
-            Self::Avx2 => {
+            Self::Avx2 | Self::Avx512Vnni => {
                 let passes = match problem.activations {
                     Mxfp4ActivationMatrix::Q8(_) => 1,
                     Mxfp4ActivationMatrix::ResidualQ8(_) => 2,
@@ -97,6 +99,7 @@ impl FromStr for Mxfp4MatmulBackend {
             "auto" => Ok(Self::Auto),
             "scalar" => Ok(Self::Scalar),
             "avx2" => Ok(Self::Avx2),
+            "avx512-vnni" | "avx512_vnni" => Ok(Self::Avx512Vnni),
             "amx-int8" | "amx_int8" => Ok(Self::AmxInt8),
             _ => Err(KernelError::InvalidMatmulBackend(value.to_string())),
         }
@@ -396,6 +399,17 @@ impl Kernels {
             Mxfp4MatmulBackend::Auto if problem.m() == 1 => self.gemv_matmul(&mut problem),
             Mxfp4MatmulBackend::Scalar => scalar_matmul(&mut problem),
             Mxfp4MatmulBackend::Avx2 => avx2_matmul(&mut problem, scratch),
+            Mxfp4MatmulBackend::Avx512Vnni => {
+                if !CpuFeatures::detect().supports(KernelRequirements::AVX512_VNNI_PATH) {
+                    return Err(KernelError::UnavailableMatmulBackend {
+                        backend,
+                        reason: "AVX-512F/BW/VL/VNNI and OS vector state are required",
+                    });
+                }
+                // Forced research candidate: retain the exact x8-v2 arithmetic
+                // contract while the wider microkernel is evaluated.
+                avx2_matmul(&mut problem, scratch)
+            }
             Mxfp4MatmulBackend::AmxInt8 => amx_matmul(&mut problem, scratch),
             Mxfp4MatmulBackend::Auto => unreachable!("multi-row auto resolves to scalar"),
         }

@@ -1,0 +1,34 @@
+{
+  "base_reference": "python:3.12.12-slim-bookworm@sha256:2986c55feb36e6cae00fa1fefb454283e4b33f35e75ff8bdd123b134130be301",
+  "container_policy_sha256": "cb1762bdc25f0f25fae20ddff7d2969fa4af8829da25a1250b6c59db41af4060",
+  "image_config_digest": "c910ee98a0bf28b61ffe89ac0b3cf78e36291cce5f6c57c4c95d7912c36b010e",
+  "image_input_revision": "f1937a3f53f6704e8672fa8cecb6b95be8f53e82",
+  "image_inputs": {
+    "crates/gpt-oss-bench/tools/official_cpu_oracle.py": "c1496c8b03a03cebdd813540bf55b80254a38ae43b4774b5b43d84a5a37ed432",
+    "oracle/Dockerfile.cpu": "312fdf2df4fefa3d837eb14d0d1910385b1f5f8e00f6d887d6938b537aaa1f6d",
+    "oracle/environment_probe.py": "713b8d0c4561ff667e0b2b6b0998eaa62ec15102194475f0fd72d9237df46581",
+    "oracle/requirements.cpu.lock": "ea4bc4b7a650da14c094ee10028ac44fb39e4875d312ce04fa79be144913db12"
+  },
+  "image_manifest_digest": "ed7082ac67e76fe9cd8a2d4648c304ee3e1520b688972ad02fa295a396db861c",
+  "image_name": "ghcr.io/gracee3/gpt-oss-rs-cpu-oracle",
+  "image_reference": "ghcr.io/gracee3/gpt-oss-rs-cpu-oracle@sha256:ed7082ac67e76fe9cd8a2d4648c304ee3e1520b688972ad02fa295a396db861c",
+  "llama_cpp_revision": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",
+  "model_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "oci_archive_filename": "cpu-oracle-f1937a3f53f6704e8672fa8cecb6b95be8f53e82.oci.tar",
+  "oci_archive_sha256": "9ff1055bc3c353e7d219a8614ea7b66350e1d7eb7fdeb7f7bdc9b115dffccd06",
+  "official_release": "v0.0.9",
+  "official_source_archive_sha256": "7306d68ae017f461f2ebb82d04628f8dcba7cc7b431ef28e8786c947510c6f6b",
+  "official_source_revision": "599476783c6f88508dab8577808b5ead5cbee8d2",
+  "platform": "linux/amd64",
+  "probe_script_sha256": "713b8d0c4561ff667e0b2b6b0998eaa62ec15102194475f0fd72d9237df46581",
+  "provenance_filename": "cpu-oracle.provenance.json",
+  "provenance_sha256": "47ebd2f4a4357d0e684235a29b06b198b2f996884bc25bc464f6102e48316bca",
+  "sbom_filename": "cpu-oracle.spdx.json",
+  "sbom_sha256": "b94018b177a552be6181efc6b581bb342e79e0e2dff821151036adf8bbe7475e",
+  "schema": "gpt-oss-rs.cpu-oracle-lock/v1",
+  "software_lock_sha256": "ea4bc4b7a650da14c094ee10028ac44fb39e4875d312ce04fa79be144913db12",
+  "wheel_sha256": {
+    "safetensors": "fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774",
+    "torch": "ae4bb28409f5370852bd71af221066236c38d647f780d9b0a7240c330a9c12df"
+  }
+}

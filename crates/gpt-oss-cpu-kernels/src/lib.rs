@@ -17,7 +17,7 @@ mod matmul;
 mod x86;
 
 pub use amx::{initialize_amx_int8, AmxRuntimeError, AmxRuntimeStatus};
-pub use features::{CpuFeatures, KernelRequirements};
+pub use features::{CpuFeatures, CpuHardwareIdentity, KernelRequirements};
 pub use matmul::{
     Mxfp4ActivationMatrix, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement,
     Q8MatrixView, ResidualQ8MatrixView,
