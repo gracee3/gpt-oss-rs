@@ -1176,6 +1176,7 @@ impl CpuModel {
         };
         let tiger_lake_auto_matrix_profile = kernel_path == KernelPath::Auto
             && matmul_backend == Mxfp4MatmulBackend::Auto
+            && !gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_REGIONS.is_empty()
             && tiger_lake_profile_matches(
                 &gpt_oss_cpu_kernels::CpuHardwareIdentity::detect(),
                 gpt_oss_cpu_kernels::CpuFeatures::detect(),

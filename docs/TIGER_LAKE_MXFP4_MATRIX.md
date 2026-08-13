@@ -46,12 +46,22 @@ For the exact residual-Q8 GPT-OSS shapes, M=3 was thermally clean across all
 29.186 ms scalar and 2.599 ms AVX-512/VNNI. The paired bootstrap 95% interval
 established AVX2 below both comparators for both shapes.
 
-Auto promotion is therefore limited to family 6/model 140/stepping 1, 4C/8T,
-microcode `0xbe`, XCR0 `0x2e7`, legal AVX2/FMA, exactly four threads,
-residual-Q8, M=3, K=2880, and N=2880 or 5760. It does not use processor brand
-text. M=1 retains the existing AVX2 x8 GEMV. Every other M>1 case—including
-Q8, mismatched dimensions, thread policy, microcode, topology, capability, or
-unknown hardware—resolves to scalar.
+That microbenchmark result did not survive the mandatory full-request gate.
+Three cool-start, order-alternating `harmony_63` pairs compared Candidate B
+(`91f5c93d03f9d1e3d6b4a775cd6ef45328f0dd59`) with the exact pre-promotion
+commit. Candidate B regressed by 0.522%, 0.653%, and 0.345%; the mean was
+0.507% and the paired bootstrap 95% interval was 0.345%-0.653%. The raw A/B
+evidence is under
+`/home/emmy/gpt-oss-rs-artifacts/tiger-lake-optimization/91f5c93d03f9d1e3d6b4a775cd6ef45328f0dd59/promotion-ab-v1/`;
+its `SHA256SUMS` file hashes to
+`532f0b9ec2151043e5af829446b008ccfc7938d4c3f2087bb050df7d31d2a7eb`.
+
+The immutable promotion result is therefore negative: the checked-in region
+table is empty and every M>1 Auto problem resolves to scalar, including the
+otherwise qualifying M=3 shapes. M=1 retains the existing AVX2 x8 GEMV. The
+normalized Tiger Lake profile matcher and positive isolated benchmark hashes
+remain recorded for provenance; neither enables a region. No processor brand
+string participates in dispatch.
 
 The benchmark attempted representative higher buckets through M=32. The
 stock laptop reaches its package thermal limit during the much slower scalar

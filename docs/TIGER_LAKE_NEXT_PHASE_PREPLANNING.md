@@ -7,9 +7,10 @@
 > Current decisions and evidence are tracked by
 > [`TIGER_LAKE_IMPLEMENTATION_PLAN.md`](TIGER_LAKE_IMPLEMENTATION_PLAN.md).
 > As of 2026-08-13 the profiler, representative corpus, genuine AVX-512/VNNI
-> candidate, narrow M=3 AVX2 Auto promotion, and forced-only OpenCL LRU are
-> implemented. The LRU is a negative full-model performance result and remains
-> disabled by default. Only the fresh candidate closure can certify that work.
+> candidate, and forced-only OpenCL LRU are implemented. The narrow M=3 AVX2
+> Auto experiment failed its full-request gate and is disabled. The LRU is
+> also a negative full-model performance result and remains disabled by
+> default. Only the fresh candidate closure can certify that work.
 
 - Status: pre-planning and research charter only
 - Recorded: 2026-08-12

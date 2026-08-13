@@ -2,8 +2,10 @@ use crate::{CpuFeatures, CpuHardwareIdentity, Mxfp4MatmulBackend};
 
 /// Immutable, candidate-scoped Tiger Lake matrix promotion record.
 ///
-/// The two records cover the exact GPT-OSS residual-Q8 gate/up and down
-/// projection shapes. Everything outside these records resolves to scalar.
+/// The final full-request gate rejected the otherwise qualifying M=3
+/// microkernel regions, so the promoted-region table is intentionally empty.
+/// Forced backends remain available and every M>1 Auto problem resolves to
+/// scalar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mxfp4PromotionRegion {
     pub activation: &'static str,
@@ -19,6 +21,9 @@ pub const TIGER_LAKE_PROFILE_KEY: &str =
 pub const TIGER_LAKE_THREAD_POLICY: usize = 4;
 pub const TIGER_LAKE_MXFP4_PROMOTION_BENCHMARK_COMMIT: &str =
     "ea72bb19cc3dd3b6ebb4c810110553d167a61a4f";
+pub const TIGER_LAKE_MXFP4_PROMOTION_RESULT: &str = "negative-full-request";
+pub const TIGER_LAKE_MXFP4_FULL_REQUEST_EVIDENCE_SHA256: &str =
+    "532f0b9ec2151043e5af829446b008ccfc7938d4c3f2087bb050df7d31d2a7eb";
 pub const TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256: [&str; 5] = [
     "bdd877e5342e56eeed44cf156c9c775a6247acb38e0c3d78051f06ce072235eb",
     "bfe14062c2e08784304cec0926911ba3c4b974da8ed19fa5098861ae221ee2c6",
@@ -26,24 +31,7 @@ pub const TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256: [&str; 5] = [
     "e7b2293f73cc05f67c1feb13ec126ee748386098426b2fdad9a215907bd309ef",
     "f682dfd772900e76e7cce7118732e24cbd006f2f233ec00b2e747288cf0d6885",
 ];
-pub const TIGER_LAKE_MXFP4_PROMOTION_REGIONS: [Mxfp4PromotionRegion; 2] = [
-    Mxfp4PromotionRegion {
-        activation: "residual-q8",
-        m_start: 3,
-        m_end: 3,
-        n: 5_760,
-        k: 2_880,
-        backend: Mxfp4MatmulBackend::Avx2,
-    },
-    Mxfp4PromotionRegion {
-        activation: "residual-q8",
-        m_start: 3,
-        m_end: 3,
-        n: 2_880,
-        k: 2_880,
-        backend: Mxfp4MatmulBackend::Avx2,
-    },
-];
+pub const TIGER_LAKE_MXFP4_PROMOTION_REGIONS: [Mxfp4PromotionRegion; 0] = [];
 
 pub fn tiger_lake_profile_matches(
     identity: &CpuHardwareIdentity,
@@ -109,11 +97,11 @@ mod tests {
     }
 
     #[test]
-    fn promotion_is_narrow_and_scalar_everywhere_else() {
+    fn negative_promotion_record_keeps_multirow_auto_scalar() {
         for n in [2_880, 5_760] {
             assert_eq!(
                 tiger_lake_auto_matmul_backend(true, true, 3, n, 2_880),
-                Mxfp4MatmulBackend::Avx2
+                Mxfp4MatmulBackend::Scalar
             );
         }
         assert_eq!(

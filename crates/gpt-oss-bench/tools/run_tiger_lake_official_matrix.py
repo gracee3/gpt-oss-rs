@@ -20,7 +20,7 @@ SCENARIOS = (
 
 # (requested kernel, requested matrix, effective operation kernel, effective matrix)
 CELLS = (
-    ("automatic", "auto", "hybrid", "profiled-tiger-lake"),
+    ("automatic", "auto", "hybrid", "scalar"),
     ("scalar", "auto", "scalar", "scalar"),
     ("avx2", "auto", "avx2", "scalar"),
     ("avx512-vnni", "auto", "avx512-vnni", "scalar"),

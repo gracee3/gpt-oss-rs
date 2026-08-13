@@ -617,7 +617,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     "cpu_kernel": kernels.path().to_string(), "bf16_matvec": plan.bf16_matvec().to_string(),
                     "quantize_q8": plan.quantize_q8().to_string(), "mxfp4_q8_dot": plan.mxfp4_q8_dot().to_string(),
                     "mxfp4_gemv": plan.mxfp4_gemv().to_string(), "mxfp4_weight_layout": plan.mxfp4_weight_layout().to_string(),
-                    "mxfp4_matrix": if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto && tiger_lake_profile { "profiled-tiger-lake".to_string() } else if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto { "scalar-multi-row".to_string() } else { requested_matmul.to_string() },
+                    "mxfp4_matrix": if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto && !matrix_regions.is_empty() { "profiled-tiger-lake".to_string() } else if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto { "scalar-multi-row".to_string() } else { requested_matmul.to_string() },
                     "rms_norm": plan.rms_norm().to_string()
                 },
                 "matrix_crossover_regions": matrix_regions,
@@ -626,6 +626,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     "required_threads": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
                     "benchmark_commit": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_BENCHMARK_COMMIT,
                     "evidence_sha256": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256,
+                    "full_request_evidence_sha256": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_FULL_REQUEST_EVIDENCE_SHA256,
+                    "result": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_RESULT,
                     "fallback": "scalar for M>1 outside exact regions or on any profile/thread/capability mismatch"
                 }
             });

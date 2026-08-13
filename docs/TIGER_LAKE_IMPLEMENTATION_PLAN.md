@@ -23,10 +23,12 @@
 - Phases 0-2 are complete and pushed. The immutable oracle reconciliation,
   structured diagnostics, bounded profiler, and representative 28-capture
   corpus are recorded in their linked ledgers and evidence documents.
-- Phase 3 is implemented. The forced AVX-512/VNNI candidate is a genuine 8x8
-  ZMM/VNNI matrix kernel. Paired benchmark evidence promotes only residual-Q8
-  `M=3`, `K=2880`, `N=2880|5760` to AVX2 on the exact four-thread Tiger Lake
-  profile. Every other multi-row Auto shape remains scalar.
+- Phase 3 is implemented and closed as a negative Auto result. The forced
+  AVX-512/VNNI candidate is a genuine 8x8 ZMM/VNNI matrix kernel. AVX2 won
+  the isolated residual-Q8 `M=3`, `K=2880`, `N=2880|5760` microbenchmarks,
+  but Candidate B regressed the paired full request by 0.507% (95% interval
+  0.345%-0.653%). The final promotion table is empty and every multi-row Auto
+  shape remains scalar; both explicit matrix controls remain available.
 - Phase 4 is implemented and closed as a negative full-model performance
   result. The explicit OpenCL LRU is correct and beneficial for a repeatedly
   reused isolated projection, but 128/256/512 MiB produced no full-model warm
