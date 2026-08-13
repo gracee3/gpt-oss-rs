@@ -28,7 +28,8 @@ the cache bypasses residency and follows the existing streaming path.
 On a hit, neither the CPU x8-v2 repack traversal nor the weight/bias upload is
 performed. On a miss, repack is invoked lazily exactly once. The runtime
 records hits, misses, bypasses, evictions, current/high-water resident bytes,
-repacks and upload bytes avoided, uploaded bytes, and faults. Profiling records
+repacks and upload bytes avoided, all streamed or cache-insert upload bytes,
+and faults. Profiling records
 the per-projection residency state and current resident bytes.
 
 Any allocation, upload, submit, wait, readback, or release failure drains the
@@ -52,3 +53,11 @@ The representative-corpus driver accepts `--xe`, `--xe-max-resident-mib`, and
 `--xe-expert-cache-mib`, so resident and zero-cache controls use the same
 scenario order, profiling schema, repetition policy, and artifact indexing as
 the CPU corpus.
+
+`xe_projection_gate` also compares `xe_streaming` and `xe_resident` against
+scalar, CPU Auto, and AVX2 on real layer-0 gate/up and down checkpoint tensors.
+Its resident repack closure is lazy, so warm samples include activation
+preparation, submission, wait, and readback but genuinely exclude weight
+repacking and weight/bias upload. The output records the exact runtime
+descriptor, cache statistics, source/binary identity, per-method samples, and
+BF16-boundary correctness result.

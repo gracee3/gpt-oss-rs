@@ -40,7 +40,7 @@ class SummarizeXeResidencyTests(unittest.TestCase):
             value = summarize_xe_residency.summarize([capture])
             row = value["capacities"][0]
             self.assertEqual(row["hit_rate"], 0.5)
-            self.assertEqual(row["estimated_total_uploaded_bytes"], 672)
+            self.assertEqual(row["uploaded_bytes"], 544)
             self.assertEqual(row["projection_median_ns"], 7)
 
     def test_truncated_profile_is_rejected(self):

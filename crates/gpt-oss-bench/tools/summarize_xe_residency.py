@@ -23,10 +23,6 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def projection_upload_bytes(record: dict) -> int:
-    return int(record["n"]) * (int(record["k"]) // 32) * 17 + int(record["n"]) * 4
-
-
 def load_capture(path: Path) -> tuple[dict, dict, Path]:
     capture = json.loads(path.read_text())
     profile_path = path.with_name("execution-profile.json")
@@ -56,7 +52,6 @@ def summarize(paths: list[Path]) -> dict:
         projection_ns = []
         full_request_seconds = []
         scenarios = []
-        estimated_upload_bytes = 0
         for path, capture, profile, profile_path in rows:
             inputs.extend([
                 {"path": str(path), "sha256": sha256(path)},
@@ -71,8 +66,6 @@ def summarize(paths: list[Path]) -> dict:
                 if record["operation"] not in PROJECTION_OPERATIONS:
                     continue
                 projection_ns.append(int(record["duration_ns"]))
-                if record["residency_state"] != "hit":
-                    estimated_upload_bytes += projection_upload_bytes(record)
         lookups = counters["hits"] + counters["misses"]
         capacities.append({
             "capacity_bytes": capacity,
@@ -90,8 +83,7 @@ def summarize(paths: list[Path]) -> dict:
             ),
             "repacks_avoided": counters["repacks_avoided"],
             "upload_bytes_avoided": counters["upload_bytes_avoided"],
-            "cache_insert_uploaded_bytes": counters["uploaded_bytes"],
-            "estimated_total_uploaded_bytes": estimated_upload_bytes,
+            "uploaded_bytes": counters["uploaded_bytes"],
             "projection_median_ns": statistics.median(projection_ns),
             "full_request_median_seconds": statistics.median(full_request_seconds),
         })

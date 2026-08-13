@@ -434,6 +434,10 @@ impl<K: Eq, V: Copy> BoundedLru<K, V> {
         self.stats.faults = self.stats.faults.saturating_add(1);
     }
 
+    pub(crate) fn record_upload(&mut self, bytes: usize) {
+        self.stats.uploaded_bytes = self.stats.uploaded_bytes.saturating_add(bytes as u64);
+    }
+
     /// Reserve logical capacity before a device allocation is attempted. This
     /// prevents a miss from transiently exceeding the configured bound.
     pub(crate) fn evict_for(&mut self, bytes: usize) -> Vec<V> {
@@ -464,7 +468,7 @@ impl<K: Eq, V: Copy> BoundedLru<K, V> {
             .stats
             .resident_high_water_bytes
             .max(self.stats.resident_bytes);
-        self.stats.uploaded_bytes = self.stats.uploaded_bytes.saturating_add(bytes as u64);
+        self.record_upload(bytes);
         self.entries.push(LruEntry {
             key,
             value,
@@ -1348,6 +1352,7 @@ mod tests {
         assert_eq!(stats.misses, 3);
         assert_eq!(stats.repacks_avoided, 3);
         assert_eq!(stats.upload_bytes_avoided, 120);
+        assert_eq!(stats.uploaded_bytes, 120);
         assert_eq!(cache.clear().len(), 2);
         assert_eq!(cache.stats().resident_bytes, 0);
     }
@@ -1646,6 +1651,7 @@ mod tests {
                 .unwrap();
             assert_projection_matches(&actual, &expected);
         }
+        assert_eq!(engine.residency_stats().unwrap().uploaded_bytes, 14 * 672);
         engine.shutdown().unwrap();
 
         let real_engine = XeProjectionEngine::attach(AttachConfig::new(

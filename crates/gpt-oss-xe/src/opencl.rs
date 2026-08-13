@@ -610,6 +610,8 @@ impl OpenClRuntime {
         self.write_buffer(queue, bias, bytemuck::cast_slice(request.bias))?;
         timing.weight = started.elapsed();
         timing.upload = timing.weight;
+        self.expert_cache
+            .record_upload(timing.uploaded_weight_bias_bytes);
         self.project_with_buffers(core, variant, output, weight, bias, timing)
     }
 
