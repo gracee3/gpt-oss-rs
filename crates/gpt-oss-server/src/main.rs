@@ -570,6 +570,29 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let identity = gpt_oss_cpu_kernels::CpuHardwareIdentity::detect();
             let features = gpt_oss_cpu_kernels::CpuFeatures::detect();
             let plan = kernels.dispatch_plan();
+            let tiger_lake_profile = gpt_oss_cpu_kernels::tiger_lake_profile_matches(
+                &identity,
+                features,
+                gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+            );
+            let matrix_regions = if requested_matmul
+                == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto
+                && tiger_lake_profile
+            {
+                gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_REGIONS
+                    .iter()
+                    .map(|region| {
+                        serde_json::json!({
+                            "activation": region.activation, "m_start": region.m_start,
+                            "m_end": region.m_end, "n": region.n, "k": region.k,
+                            "backend": region.backend.to_string(),
+                            "thread_policy": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let report = serde_json::json!({
                 "schema": "gpt-oss-rs.cpu-info/v1",
                 "platform": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
@@ -594,10 +617,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     "cpu_kernel": kernels.path().to_string(), "bf16_matvec": plan.bf16_matvec().to_string(),
                     "quantize_q8": plan.quantize_q8().to_string(), "mxfp4_q8_dot": plan.mxfp4_q8_dot().to_string(),
                     "mxfp4_gemv": plan.mxfp4_gemv().to_string(), "mxfp4_weight_layout": plan.mxfp4_weight_layout().to_string(),
-                    "mxfp4_matrix": if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto { "scalar-multi-row".to_string() } else { requested_matmul.to_string() },
+                    "mxfp4_matrix": if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto && tiger_lake_profile { "profiled-tiger-lake".to_string() } else if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto { "scalar-multi-row".to_string() } else { requested_matmul.to_string() },
                     "rms_norm": plan.rms_norm().to_string()
                 },
-                "matrix_crossover_regions": []
+                "matrix_crossover_regions": matrix_regions,
+                "matrix_promotion": {
+                    "profile_matches": tiger_lake_profile,
+                    "required_threads": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+                    "benchmark_commit": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_BENCHMARK_COMMIT,
+                    "evidence_sha256": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256,
+                    "fallback": "scalar for M>1 outside exact regions or on any profile/thread/capability mismatch"
+                }
             });
             match format {
                 InfoFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
@@ -627,7 +657,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .as_str()
                             .unwrap_or("unknown")
                     );
-                    println!("matrix crossover regions: none (Auto is scalar for M>1)");
+                    if report["matrix_crossover_regions"]
+                        .as_array()
+                        .is_some_and(|regions| !regions.is_empty())
+                    {
+                        println!(
+                            "matrix crossover regions: residual-q8 M=3 N=2880|5760 K=2880 -> avx2 (4 threads); all other M>1 -> scalar"
+                        );
+                    } else {
+                        println!("matrix crossover regions: none (Auto is scalar for M>1)");
+                    }
                 }
             }
         }

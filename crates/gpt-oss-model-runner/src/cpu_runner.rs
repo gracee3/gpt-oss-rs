@@ -18,10 +18,11 @@ use serde::{Deserialize, Serialize};
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_core::types::{SequenceId, TokenId};
 use gpt_oss_cpu_kernels::{
-    accumulate_mxfp4_bf16_block, initialize_amx_int8, AmxRuntimeStatus, DispatchPlan, KernelPath,
-    Kernels, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement, Mxfp4WeightLayout,
-    Q8ActivationView, Q8Block, Q8MatrixView, ResidualQ8ActivationView, ResidualQ8Block,
-    ResidualQ8MatrixView, QUANT_BLOCK_SIZE,
+    accumulate_mxfp4_bf16_block, initialize_amx_int8, tiger_lake_auto_matmul_backend,
+    tiger_lake_profile_matches, AmxRuntimeStatus, DispatchPlan, KernelPath, Kernels,
+    Mxfp4ActivationMatrix, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement,
+    Mxfp4WeightLayout, Q8ActivationView, Q8Block, Q8MatrixView, ResidualQ8ActivationView,
+    ResidualQ8Block, ResidualQ8MatrixView, QUANT_BLOCK_SIZE,
 };
 
 use crate::cpu_profile::{
@@ -404,6 +405,7 @@ pub struct CpuModel {
     source_identity: SourceIdentity,
     requested_kernel_path: KernelPath,
     thread_count: usize,
+    tiger_lake_auto_matrix_profile: bool,
     amx_runtime_status: Option<AmxRuntimeStatus>,
     #[cfg(feature = "xe")]
     xe: Option<XeProjectionEngine>,
@@ -1172,6 +1174,12 @@ impl CpuModel {
         } else {
             None
         };
+        let tiger_lake_auto_matrix_profile = matmul_backend == Mxfp4MatmulBackend::Auto
+            && tiger_lake_profile_matches(
+                &gpt_oss_cpu_kernels::CpuHardwareIdentity::detect(),
+                gpt_oss_cpu_kernels::CpuFeatures::detect(),
+                threads,
+            );
         let snapshot = snapshot.as_ref();
         let repack_root = repack_root.as_ref();
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
@@ -1283,6 +1291,7 @@ impl CpuModel {
             source_identity: identity,
             requested_kernel_path: kernel_path,
             thread_count: threads,
+            tiger_lake_auto_matrix_profile,
             amx_runtime_status,
             #[cfg(feature = "xe")]
             xe,
@@ -1323,6 +1332,19 @@ impl CpuModel {
 
     pub const fn mxfp4_weight_layout(&self) -> Mxfp4WeightLayout {
         self.mxfp4_weight_layout
+    }
+
+    fn effective_matmul_backend(&self, problem: &Mxfp4MatmulProblem<'_>) -> Mxfp4MatmulBackend {
+        if self.matmul_backend != Mxfp4MatmulBackend::Auto {
+            return self.matmul_backend;
+        }
+        tiger_lake_auto_matmul_backend(
+            self.tiger_lake_auto_matrix_profile,
+            matches!(problem.activations(), Mxfp4ActivationMatrix::ResidualQ8(_)),
+            problem.m(),
+            problem.n(),
+            problem.k(),
+        )
     }
 
     pub const fn amx_runtime_status(&self) -> Option<AmxRuntimeStatus> {
@@ -3148,14 +3170,14 @@ impl CpuModel {
                     rows,
                 )
                 .map_err(kernel_error)?;
-                let requirement = self
-                    .matmul_backend
+                let effective_backend = self.effective_matmul_backend(&problem);
+                let requirement = effective_backend
                     .scratch_requirement(&problem)
                     .map_err(kernel_error)?;
                 let result = self
                     .kernels
                     .mxfp4_matmul(
-                        self.matmul_backend,
+                        effective_backend,
                         problem,
                         execution.matrix_scratch(requirement)?,
                     )
@@ -3173,9 +3195,7 @@ impl CpuModel {
                         preparation_state: CpuProfilePreparationState::Prepared,
                         fallback_reason: profile_failure(&result),
                         scratch_bytes: requirement.size,
-                        effective_matrix_backend: Some(
-                            self.matmul_backend.resolved_for_rows(inputs.len()),
-                        ),
+                        effective_matrix_backend: Some(effective_backend),
                         ..CpuProfileRecordSpec::default()
                     },
                 );
@@ -3363,14 +3383,14 @@ impl CpuModel {
                     rows,
                 )
                 .map_err(kernel_error)?;
-                let requirement = self
-                    .matmul_backend
+                let effective_backend = self.effective_matmul_backend(&problem);
+                let requirement = effective_backend
                     .scratch_requirement(&problem)
                     .map_err(kernel_error)?;
                 let result = self
                     .kernels
                     .mxfp4_matmul(
-                        self.matmul_backend,
+                        effective_backend,
                         problem,
                         execution.matrix_scratch(requirement)?,
                     )
@@ -3389,9 +3409,7 @@ impl CpuModel {
                         residency_state: CpuProfileResidencyState::Disabled,
                         fallback_reason: profile_failure(&result),
                         scratch_bytes: requirement.size,
-                        effective_matrix_backend: Some(
-                            self.matmul_backend.resolved_for_rows(inputs.len()),
-                        ),
+                        effective_matrix_backend: Some(effective_backend),
                         ..CpuProfileRecordSpec::default()
                     },
                 );
