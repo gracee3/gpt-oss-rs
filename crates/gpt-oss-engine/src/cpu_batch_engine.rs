@@ -50,19 +50,41 @@ trait CpuBatchForward: Send {
         batch: &CpuStepBatch,
         table: &SequenceTable,
     ) -> Result<Box<dyn CpuPreparedModel>>;
+    fn flush_profile(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 struct NativeCpuBatchForward {
     model: Arc<CpuModel>,
     execution: CpuExecutionContext,
+    profile_output: Option<std::path::PathBuf>,
 }
 
 impl NativeCpuBatchForward {
-    fn new(model: Arc<CpuModel>) -> Self {
-        Self {
+    fn new(model: Arc<CpuModel>, config: &EngineConfig) -> Result<Self> {
+        let execution = if config.device.cpu_profile_output.is_some() {
+            let capacity = config
+                .device
+                .cpu_profile_cap_mib
+                .unwrap_or(16)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| LLMError::ConfigError("CPU profile cap overflows bytes".into()))?;
+            CpuExecutionContext::profiled(
+                capacity,
+                model.requested_kernel_path(),
+                model.kernel_path(),
+                model.matmul_backend(),
+                model.thread_count(),
+            )?
+        } else {
+            CpuExecutionContext::new()
+        };
+        Ok(Self {
             model,
-            execution: CpuExecutionContext::new(),
-        }
+            execution,
+            profile_output: config.device.cpu_profile_output.clone(),
+        })
     }
 }
 
@@ -175,6 +197,14 @@ impl CpuBatchForward for NativeCpuBatchForward {
             })
             .collect();
         Ok(Box::new(NativePreparedModel { prepared, rows }))
+    }
+
+    fn flush_profile(&mut self) -> Result<()> {
+        if let Some(path) = &self.profile_output {
+            self.execution
+                .write_profile(&self.model, path, Some("cpu-service".into()))?;
+        }
+        Ok(())
     }
 }
 
@@ -301,9 +331,10 @@ impl CpuBatchEngine {
             ReservationLimits::bounded(config.scheduler.max_num_seqs, worst_total, global_budget)
                 .with_class_limit(MemoryClass::Delivery, delivery_limit);
         let ledger = ReservationLedger::new(limits).map_err(grant_error)?;
+        let forward = Box::new(NativeCpuBatchForward::new(model, &config)?);
         let mut engine = Self::from_forward_with_decoded_bound(
             config,
-            Box::new(NativeCpuBatchForward::new(model)),
+            forward,
             tokenizer,
             decoded_token_byte_bound,
         )?;
@@ -866,7 +897,7 @@ impl CpuBatchEngine {
             ledger.release_all().map_err(grant_error)?;
         }
         self.request_grants.clear();
-        Ok(())
+        self.forward.flush_profile()
     }
 
     pub fn reservation_ledger(&self) -> Option<&ReservationLedger> {

@@ -1,6 +1,7 @@
 # Documentation
 
 - [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
+- [Bounded CPU execution profiling](CPU_EXECUTION_PROFILING.md)
 
 ## Runtime and backend
 

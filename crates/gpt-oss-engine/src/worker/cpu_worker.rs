@@ -246,6 +246,7 @@ impl CpuWorker {
                 context_cap,
                 expert_projection: Default::default(),
                 xe: None,
+                profile_capacity_bytes: None,
             },
         )?;
         tracing::info!(

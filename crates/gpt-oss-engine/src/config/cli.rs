@@ -117,6 +117,14 @@ pub struct CliArgs {
     #[arg(long, default_value_t = 128)]
     pub xe_max_resident_mib: usize,
 
+    /// Atomic output path for bounded CPU execution-profile JSON.
+    #[arg(long)]
+    pub cpu_profile_output: Option<std::path::PathBuf>,
+
+    /// Profile record-slab cap in MiB; valid only with --cpu-profile-output.
+    #[arg(long, requires = "cpu_profile_output")]
+    pub cpu_profile_cap_mib: Option<usize>,
+
     // -- Telemetry --
     /// Disable telemetry.
     #[arg(long, default_value_t = false)]

@@ -24,6 +24,12 @@ use gpt_oss_cpu_kernels::{
     ResidualQ8MatrixView, QUANT_BLOCK_SIZE,
 };
 
+use crate::cpu_profile::{
+    CpuExecutionProfileDocument, CpuExecutionProfileMetadata, CpuExecutionProfiler,
+    CpuProfileAttentionClass, CpuProfileFallbackReason, CpuProfileOperation, CpuProfilePhase,
+    CpuProfilePreparationState, CpuProfileProjectionRole, CpuProfileRecordSpec,
+    CpuProfileResidencyState,
+};
 use crate::cpu_repack::{CpuRepackCache, RepackedMxfp4, SourceIdentity};
 use crate::cpu_tensor_store::{CpuTensor, CpuTensorStore};
 use crate::model_loader::dtype::DType;
@@ -89,6 +95,7 @@ pub struct CpuModelRunnerOptions {
     pub context_cap: usize,
     pub expert_projection: CpuExpertProjection,
     pub xe: Option<CpuXeConfig>,
+    pub profile_capacity_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +399,9 @@ pub struct CpuModel {
     expert_projection: CpuExpertProjection,
     matmul_backend: Mxfp4MatmulBackend,
     mxfp4_weight_layout: Mxfp4WeightLayout,
+    source_identity: SourceIdentity,
+    requested_kernel_path: KernelPath,
+    thread_count: usize,
     amx_runtime_status: Option<AmxRuntimeStatus>,
     #[cfg(feature = "xe")]
     xe: Option<XeProjectionEngine>,
@@ -452,6 +462,7 @@ pub struct CpuExecutionContext {
     prepared_rows: usize,
     matrix_scratch: Vec<u8>,
     failure: Option<CpuExecutionFailurePoint>,
+    profiler: Option<CpuExecutionProfiler>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -767,6 +778,70 @@ impl CpuExecutionContext {
         Self::default()
     }
 
+    pub fn profiled(
+        capacity_bytes: usize,
+        requested_kernel: KernelPath,
+        effective_kernel: KernelPath,
+        requested_matrix: Mxfp4MatmulBackend,
+        threads: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            profiler: Some(CpuExecutionProfiler::new(
+                capacity_bytes,
+                requested_kernel,
+                effective_kernel,
+                requested_matrix,
+                threads,
+            )?),
+            ..Self::default()
+        })
+    }
+
+    pub const fn profiling_enabled(&self) -> bool {
+        self.profiler.is_some()
+    }
+
+    pub fn write_profile(
+        &self,
+        model: &CpuModel,
+        path: impl AsRef<Path>,
+        workload_id: Option<String>,
+    ) -> Result<()> {
+        let profiler = self
+            .profiler
+            .as_ref()
+            .ok_or_else(|| LLMError::ConfigError("CPU execution profiling is disabled".into()))?;
+        profiler.write(path.as_ref(), model.profile_metadata(workload_id))
+    }
+
+    pub fn profile_document(
+        &self,
+        model: &CpuModel,
+        workload_id: Option<String>,
+    ) -> Result<CpuExecutionProfileDocument> {
+        let profiler = self
+            .profiler
+            .as_ref()
+            .ok_or_else(|| LLMError::ConfigError("CPU execution profiling is disabled".into()))?;
+        profiler.document(model.profile_metadata(workload_id))
+    }
+
+    #[inline]
+    fn profile_start(&self) -> Option<crate::cpu_profile::CpuProfileClock> {
+        self.profiler.as_ref().map(CpuExecutionProfiler::start)
+    }
+
+    #[inline]
+    fn profile_record(
+        &mut self,
+        start: Option<crate::cpu_profile::CpuProfileClock>,
+        spec: CpuProfileRecordSpec,
+    ) {
+        if let (Some(profiler), Some(start)) = (&mut self.profiler, start) {
+            profiler.append(start, spec);
+        }
+    }
+
     pub const fn prepared_rows(&self) -> usize {
         self.prepared_rows
     }
@@ -775,7 +850,7 @@ impl CpuExecutionContext {
         self.matrix_scratch.capacity()
     }
 
-    fn begin(&mut self) -> Result<()> {
+    fn begin(&mut self, batch: &CpuStepBatch) -> Result<()> {
         if self.active {
             return Err(LLMError::ModelError(
                 "CPU execution context is already active".into(),
@@ -783,12 +858,36 @@ impl CpuExecutionContext {
         }
         self.active = true;
         self.prepared_rows = 0;
+        if let Some(profiler) = &mut self.profiler {
+            let prefill_rows = batch
+                .rows()
+                .iter()
+                .filter(|row| row.phase == CpuStepPhase::Prefill)
+                .count();
+            let decode_rows = batch.len() - prefill_rows;
+            let phase = match (prefill_rows != 0, decode_rows != 0) {
+                (true, false) => CpuProfilePhase::Prefill,
+                (false, true) => CpuProfilePhase::Decode,
+                (true, true) => CpuProfilePhase::Mixed,
+                (false, false) => CpuProfilePhase::Unknown,
+            };
+            let context_length = batch
+                .rows()
+                .iter()
+                .map(|row| row.absolute_position.saturating_add(1))
+                .max()
+                .unwrap_or(0);
+            profiler.begin_batch(phase, prefill_rows, decode_rows, context_length);
+        }
         Ok(())
     }
 
     fn finish(&mut self, prepared_rows: usize) {
         self.prepared_rows = prepared_rows;
         self.active = false;
+        if let Some(profiler) = &mut self.profiler {
+            profiler.finish_batch(prepared_rows != 0);
+        }
     }
 
     fn matrix_scratch(&mut self, requirement: Mxfp4ScratchRequirement) -> Result<&mut [u8]> {
@@ -1065,7 +1164,7 @@ impl CpuModel {
         let config = CpuGptOssConfig::from_snapshot(snapshot)?;
         let store = CpuTensorStore::open(snapshot)?;
         let identity = SourceIdentity::from_store(&store)?;
-        let repack = CpuRepackCache::new(repack_root, identity);
+        let repack = CpuRepackCache::new(repack_root, identity.clone());
         let mut kernels =
             Kernels::new(kernel_path).map_err(|error| LLMError::ConfigError(error.to_string()))?;
         if expert_projection == CpuExpertProjection::ExactBf16 {
@@ -1162,6 +1261,9 @@ impl CpuModel {
             expert_projection,
             matmul_backend,
             mxfp4_weight_layout: weight_layout,
+            source_identity: identity,
+            requested_kernel_path: kernel_path,
+            thread_count: threads,
             amx_runtime_status,
             #[cfg(feature = "xe")]
             xe,
@@ -1174,6 +1276,14 @@ impl CpuModel {
 
     pub const fn kernel_path(&self) -> KernelPath {
         self.kernels.path()
+    }
+
+    pub const fn requested_kernel_path(&self) -> KernelPath {
+        self.requested_kernel_path
+    }
+
+    pub const fn thread_count(&self) -> usize {
+        self.thread_count
     }
 
     pub const fn kernel_dispatch_plan(&self) -> DispatchPlan {
@@ -1194,6 +1304,36 @@ impl CpuModel {
 
     pub const fn amx_runtime_status(&self) -> Option<AmxRuntimeStatus> {
         self.amx_runtime_status
+    }
+
+    fn profile_metadata(&self, workload_id: Option<String>) -> CpuExecutionProfileMetadata {
+        let identity = gpt_oss_cpu_kernels::CpuHardwareIdentity::detect();
+        let features = gpt_oss_cpu_kernels::CpuFeatures::detect();
+        CpuExecutionProfileMetadata {
+            model_revision: self.source_identity.model_revision.clone(),
+            model_source_hashes: self.source_identity.source_hashes.clone(),
+            workload_id,
+            hardware_profile_key: identity.profile_key(),
+            cpu_identity: serde_json::json!({
+                "vendor": identity.vendor, "family": identity.family, "model": identity.model,
+                "stepping": identity.stepping, "logical_cpus": identity.logical_cpus,
+                "osxsave": identity.osxsave, "xcr0": identity.xcr0,
+                "features": { "avx2": features.avx2, "fma": features.fma,
+                    "avx512_f": features.avx512_f, "avx512_bw": features.avx512_bw,
+                    "avx512_vl": features.avx512_vl, "avx512_vnni": features.avx512_vnni }
+            }),
+            dispatch: serde_json::json!({
+                "requested_cpu_kernel": self.requested_kernel_path.to_string(),
+                "effective_cpu_kernel": self.kernel_path().to_string(),
+                "dispatch_plan": self.kernel_dispatch_plan().to_string(),
+                "requested_matrix_backend": self.matmul_backend.to_string(),
+                "weight_layout": self.mxfp4_weight_layout.to_string(),
+                "threads": self.thread_count,
+            }),
+            xe_runtime: self
+                .xe_descriptor()
+                .and_then(|value| serde_json::to_value(value).ok()),
+        }
     }
 
     #[cfg(feature = "xe")]
@@ -1442,6 +1582,7 @@ impl CpuModelRunner {
                 context_cap,
                 expert_projection: CpuExpertProjection::default(),
                 xe: None,
+                profile_capacity_bytes: None,
             },
         )
     }
@@ -1465,7 +1606,17 @@ impl CpuModelRunner {
             options.matmul_backend,
             options.xe,
         )?;
-        Self::from_model(model, options.context_cap)
+        let mut runner = Self::from_model(model, options.context_cap)?;
+        if let Some(capacity) = options.profile_capacity_bytes {
+            runner.execution = CpuExecutionContext::profiled(
+                capacity,
+                options.kernel_path,
+                runner.model.kernel_path(),
+                options.matmul_backend,
+                options.threads,
+            )?;
+        }
+        Ok(runner)
     }
 
     pub fn from_model(model: Arc<CpuModel>, context_cap: usize) -> Result<Self> {
@@ -1483,6 +1634,21 @@ impl CpuModelRunner {
 
     pub fn into_parts(self) -> (Arc<CpuModel>, CpuSequenceModelState, CpuExecutionContext) {
         (self.model, self.state, self.execution)
+    }
+
+    pub fn write_execution_profile(
+        &self,
+        path: impl AsRef<Path>,
+        workload_id: Option<String>,
+    ) -> Result<()> {
+        self.execution.write_profile(&self.model, path, workload_id)
+    }
+
+    pub fn execution_profile(
+        &self,
+        workload_id: Option<String>,
+    ) -> Result<CpuExecutionProfileDocument> {
+        self.execution.profile_document(&self.model, workload_id)
     }
 
     pub fn config(&self) -> &CpuGptOssConfig {
@@ -1806,7 +1972,7 @@ impl CpuModel {
         sequences: &[(SequenceId, &CpuSequenceModelState)],
         trace_request: Option<(usize, &[usize])>,
     ) -> Result<PreparedCpuStep> {
-        execution.begin()?;
+        execution.begin(batch)?;
         let failure = execution.failure.take();
         let result = self.prepare_step_inner(execution, batch, sequences, trace_request, failure);
         execution.finish(result.as_ref().map_or(0, |prepared| prepared.rows.len()));
@@ -1961,6 +2127,7 @@ impl CpuModel {
                 "injected CPU failure before logits".into(),
             ));
         }
+        let final_norm_profile_start = execution.profile_start();
         let mut normalized = vec![None; work.len()];
         for &row_index in &normalization_rows {
             let value = self.norm_boundary(&work[row_index].hidden, &self.final_norm)?;
@@ -1971,6 +2138,17 @@ impl CpuModel {
             }
             normalized[row_index] = Some(value);
         }
+        execution.profile_record(
+            final_norm_profile_start,
+            CpuProfileRecordSpec {
+                operation: CpuProfileOperation::FinalNormalization,
+                m: normalization_rows.len(),
+                n: self.config.hidden_size,
+                k: self.config.hidden_size,
+                preparation_state: CpuProfilePreparationState::Prepared,
+                ..CpuProfileRecordSpec::default()
+            },
+        );
         let logits_rows = work
             .iter()
             .enumerate()
@@ -1984,7 +2162,21 @@ impl CpuModel {
                     .expect("logits rows were normalized")
             })
             .collect::<Vec<_>>();
-        let mut logits = self.project_bf16_batch("lm_head.weight", &logits_inputs, None)?;
+        let lm_head_profile_start = execution.profile_start();
+        let logits_result = self.project_bf16_batch("lm_head.weight", &logits_inputs, None);
+        execution.profile_record(
+            lm_head_profile_start,
+            profile_spec(
+                CpuProfileOperation::LmHeadProjection,
+                self.layers.len(),
+                logits_inputs.len(),
+                self.config.vocab_size,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::LmHead,
+                profile_failure(&logits_result),
+            ),
+        );
+        let mut logits = logits_result?;
         for values in &mut logits {
             fp32_to_bf16_roundtrip(values);
             if values.iter().any(|value| !value.is_finite()) {
@@ -2034,14 +2226,71 @@ impl CpuModel {
             ));
         }
         let layer = &self.layers[index];
-        let normalized = hidden
+        let profile_start = execution.profile_start();
+        let normalized_result = hidden
             .iter()
             .map(|row| self.norm_boundary(row, &layer.input_norm))
-            .collect::<Result<Vec<_>>>()?;
-        let mut q = self.project_bf16_batch(&layer.q_weight, &normalized, Some(&layer.q_bias))?;
-        let mut k = self.project_bf16_batch(&layer.k_weight, &normalized, Some(&layer.k_bias))?;
-        let v = self.project_bf16_batch(&layer.v_weight, &normalized, Some(&layer.v_bias))?;
+            .collect::<Result<Vec<_>>>();
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::InputNormalization,
+                index,
+                hidden.len(),
+                self.config.hidden_size,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::None,
+                profile_failure(&normalized_result),
+            ),
+        );
+        let normalized = normalized_result?;
+        let profile_start = execution.profile_start();
+        let q_result = self.project_bf16_batch(&layer.q_weight, &normalized, Some(&layer.q_bias));
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::QueryProjection,
+                index,
+                hidden.len(),
+                self.config.num_attention_heads * self.config.head_dim,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::Query,
+                profile_failure(&q_result),
+            ),
+        );
+        let mut q = q_result?;
+        let profile_start = execution.profile_start();
+        let k_result = self.project_bf16_batch(&layer.k_weight, &normalized, Some(&layer.k_bias));
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::KeyProjection,
+                index,
+                hidden.len(),
+                self.config.num_key_value_heads * self.config.head_dim,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::Key,
+                profile_failure(&k_result),
+            ),
+        );
+        let mut k = k_result?;
+        let profile_start = execution.profile_start();
+        let v_result = self.project_bf16_batch(&layer.v_weight, &normalized, Some(&layer.v_bias));
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::ValueProjection,
+                index,
+                hidden.len(),
+                self.config.num_key_value_heads * self.config.head_dim,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::Value,
+                profile_failure(&v_result),
+            ),
+        );
+        let v = v_result?;
 
+        let attention_profile_start = execution.profile_start();
         let mut attention_contexts = Vec::with_capacity(work.len());
         let mut value_projections = Vec::with_capacity(work.len());
         let mut dense_boundaries = Vec::with_capacity(work.len());
@@ -2104,27 +2353,73 @@ impl CpuModel {
                 self.config.head_dim,
             )?);
         }
+        execution.profile_record(
+            attention_profile_start,
+            CpuProfileRecordSpec {
+                operation: CpuProfileOperation::Attention,
+                layer: index,
+                m: work.len(),
+                n: self.config.hidden_size,
+                k: self.config.head_dim,
+                attention_class: if layer.sliding {
+                    CpuProfileAttentionClass::Sliding
+                } else {
+                    CpuProfileAttentionClass::Full
+                },
+                preparation_state: CpuProfilePreparationState::Prepared,
+                ..CpuProfileRecordSpec::default()
+            },
+        );
 
         let attention = attention_contexts
             .iter()
             .map(|row| row.iter().copied().map(bf16::from_f32).collect::<Vec<_>>())
             .collect::<Vec<_>>();
-        let mut projected =
-            self.project_bf16_batch(&layer.o_weight, &attention, Some(&layer.o_bias))?;
+        let profile_start = execution.profile_start();
+        let projected_result =
+            self.project_bf16_batch(&layer.o_weight, &attention, Some(&layer.o_bias));
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::AttentionOutputProjection,
+                index,
+                hidden.len(),
+                self.config.hidden_size,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::AttentionOutput,
+                profile_failure(&projected_result),
+            ),
+        );
+        let mut projected = projected_result?;
         let mut after_attention = Vec::with_capacity(work.len());
         for row_index in 0..work.len() {
             fp32_to_bf16_roundtrip(&mut projected[row_index]);
             after_attention.push(add_residual(&hidden[row_index], &projected[row_index]));
         }
-        let post_attention_normalized = after_attention
+        let profile_start = execution.profile_start();
+        let post_attention_result = after_attention
             .iter()
             .map(|row| self.norm_boundary(row, &layer.post_attention_norm))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>();
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::PostAttentionNormalization,
+                index,
+                hidden.len(),
+                self.config.hidden_size,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::None,
+                profile_failure(&post_attention_result),
+            ),
+        );
+        let post_attention_normalized = post_attention_result?;
         let prefill_only = work
             .iter()
             .all(|row| row.descriptor.phase == CpuStepPhase::Prefill);
         let moe = self.moe_batch(
             layer,
+            index,
             &post_attention_normalized,
             capture,
             prefill_only,
@@ -2378,6 +2673,7 @@ impl CpuModel {
     fn moe_batch(
         &self,
         layer: &CpuLayer,
+        layer_index: usize,
         inputs: &[Vec<bf16>],
         capture: &[bool],
         xe_prefill_allowed: bool,
@@ -2388,8 +2684,23 @@ impl CpuModel {
                 "invalid CPU MoE batch metadata".into(),
             ));
         }
-        let mut routers =
-            self.project_bf16_batch(&layer.router_weight, inputs, Some(&layer.router_bias))?;
+        let profile_start = execution.profile_start();
+        let router_result =
+            self.project_bf16_batch(&layer.router_weight, inputs, Some(&layer.router_bias));
+        execution.profile_record(
+            profile_start,
+            profile_spec(
+                CpuProfileOperation::RouterProjection,
+                layer_index,
+                inputs.len(),
+                self.config.num_local_experts,
+                self.config.hidden_size,
+                CpuProfileProjectionRole::Router,
+                profile_failure(&router_result),
+            ),
+        );
+        let mut routers = router_result?;
+        let routing_profile_start = execution.profile_start();
         let mut selected = Vec::with_capacity(inputs.len());
         let mut route_weights = Vec::with_capacity(inputs.len());
         let mut routes = Vec::with_capacity(inputs.len() * self.config.num_experts_per_tok);
@@ -2423,6 +2734,18 @@ impl CpuModel {
         // Stable sorting preserves source-row and top-k order within each
         // expert bucket, independently of expert execution order.
         stable_group_routes(&mut routes);
+        execution.profile_record(
+            routing_profile_start,
+            CpuProfileRecordSpec {
+                operation: CpuProfileOperation::Routing,
+                layer: layer_index,
+                m: inputs.len(),
+                n: self.config.num_local_experts,
+                k: self.config.num_experts_per_tok,
+                preparation_state: CpuProfilePreparationState::Prepared,
+                ..CpuProfileRecordSpec::default()
+            },
+        );
 
         let mut routed_outputs = (0..inputs.len())
             .map(|_| {
@@ -2445,6 +2768,7 @@ impl CpuModel {
                 .collect::<Vec<_>>();
             let mut gate_up = self.project_mxfp4_batch(
                 &layer.gate_up,
+                layer_index,
                 expert,
                 &expert_inputs,
                 &layer.gate_up_bias,
@@ -2454,6 +2778,7 @@ impl CpuModel {
                 },
                 execution,
             )?;
+            let swiglu_profile_start = execution.profile_start();
             let mut activated = Vec::with_capacity(bucket.len());
             let mut activated_bf16 = Vec::with_capacity(bucket.len());
             for values in &mut gate_up {
@@ -2471,8 +2796,22 @@ impl CpuModel {
                 activated_bf16.push(values.iter().copied().map(bf16::from_f32).collect());
                 activated.push(values);
             }
+            execution.profile_record(
+                swiglu_profile_start,
+                CpuProfileRecordSpec {
+                    operation: CpuProfileOperation::SwiGlu,
+                    layer: layer_index,
+                    m: bucket.len(),
+                    n: self.config.intermediate_size,
+                    k: self.config.intermediate_size * 2,
+                    expert_bucket_m: bucket.len(),
+                    preparation_state: CpuProfilePreparationState::Prepared,
+                    ..CpuProfileRecordSpec::default()
+                },
+            );
             let mut expert_output = self.project_mxfp4_batch(
                 &layer.down,
+                layer_index,
                 expert,
                 &activated_bf16,
                 &layer.down_bias,
@@ -2496,6 +2835,7 @@ impl CpuModel {
             route_start = route_end;
         }
 
+        let weighting_profile_start = execution.profile_start();
         let mut steps = Vec::with_capacity(inputs.len());
         for source_row in 0..inputs.len() {
             let mut output = vec![0.0_f32; self.config.hidden_size];
@@ -2536,6 +2876,18 @@ impl CpuModel {
                 output,
             });
         }
+        execution.profile_record(
+            weighting_profile_start,
+            CpuProfileRecordSpec {
+                operation: CpuProfileOperation::ExpertWeightingAccumulation,
+                layer: layer_index,
+                m: inputs.len(),
+                n: self.config.hidden_size,
+                k: self.config.num_experts_per_tok,
+                preparation_state: CpuProfilePreparationState::Prepared,
+                ..CpuProfileRecordSpec::default()
+            },
+        );
         Ok(steps)
     }
 
@@ -2639,6 +2991,7 @@ impl CpuModel {
     fn project_mxfp4_batch(
         &self,
         weights: &RepackedMxfp4,
+        layer_index: usize,
         expert: usize,
         inputs: &[Vec<bf16>],
         bias: &[f32],
@@ -2671,6 +3024,15 @@ impl CpuModel {
         let view = weights.expert_view(expert)?;
         let expert_bias = &bias[expert * rows..(expert + 1) * rows];
         let mut output = vec![0.0_f32; inputs.len() * rows];
+        let operation = match policy.role {
+            ExpertProjectionRole::GateUp => CpuProfileOperation::GateUpProjection,
+            ExpertProjectionRole::Down => CpuProfileOperation::DownProjection,
+        };
+        let role = match policy.role {
+            ExpertProjectionRole::GateUp => CpuProfileProjectionRole::GateUp,
+            ExpertProjectionRole::Down => CpuProfileProjectionRole::Down,
+        };
+        let preparation_start = execution.profile_start();
         match self.expert_projection {
             CpuExpertProjection::Q8 => {
                 let mut quantized = Vec::with_capacity(inputs.len() * blocks);
@@ -2681,6 +3043,21 @@ impl CpuModel {
                             .map_err(kernel_error)?,
                     );
                 }
+                execution.profile_record(
+                    preparation_start,
+                    CpuProfileRecordSpec {
+                        operation: CpuProfileOperation::Q8Preparation,
+                        layer: layer_index,
+                        m: inputs.len(),
+                        n: blocks,
+                        k: QUANT_BLOCK_SIZE,
+                        expert_bucket_m: inputs.len(),
+                        projection_role: role,
+                        preparation_state: CpuProfilePreparationState::Prepared,
+                        ..CpuProfileRecordSpec::default()
+                    },
+                );
+                let projection_start = execution.profile_start();
                 let activations = Q8MatrixView::new(&quantized, inputs.len(), blocks, blocks)
                     .map_err(kernel_error)?;
                 let problem = Mxfp4MatmulProblem::new_q8(
@@ -2695,13 +3072,34 @@ impl CpuModel {
                     .matmul_backend
                     .scratch_requirement(&problem)
                     .map_err(kernel_error)?;
-                self.kernels
+                let result = self
+                    .kernels
                     .mxfp4_matmul(
                         self.matmul_backend,
                         problem,
                         execution.matrix_scratch(requirement)?,
                     )
-                    .map_err(kernel_error)?;
+                    .map_err(kernel_error);
+                execution.profile_record(
+                    projection_start,
+                    CpuProfileRecordSpec {
+                        operation,
+                        layer: layer_index,
+                        m: inputs.len(),
+                        n: rows,
+                        k: blocks * QUANT_BLOCK_SIZE,
+                        expert_bucket_m: inputs.len(),
+                        projection_role: role,
+                        preparation_state: CpuProfilePreparationState::Prepared,
+                        fallback_reason: profile_failure(&result),
+                        scratch_bytes: requirement.size,
+                        effective_matrix_backend: Some(
+                            self.matmul_backend.resolved_for_rows(inputs.len()),
+                        ),
+                        ..CpuProfileRecordSpec::default()
+                    },
+                );
+                result?;
             }
             CpuExpertProjection::ResidualQ8 => {
                 let mut quantized = Vec::with_capacity(inputs.len() * blocks);
@@ -2712,6 +3110,21 @@ impl CpuModel {
                             .map_err(kernel_error)?,
                     );
                 }
+                execution.profile_record(
+                    preparation_start,
+                    CpuProfileRecordSpec {
+                        operation: CpuProfileOperation::ResidualQ8Preparation,
+                        layer: layer_index,
+                        m: inputs.len(),
+                        n: blocks,
+                        k: QUANT_BLOCK_SIZE,
+                        expert_bucket_m: inputs.len(),
+                        projection_role: role,
+                        preparation_state: CpuProfilePreparationState::Prepared,
+                        ..CpuProfileRecordSpec::default()
+                    },
+                );
+                let projection_start = execution.profile_start();
                 #[cfg(feature = "xe")]
                 if policy.xe_prefill_allowed {
                     if let Some(engine) = &self.xe {
@@ -2743,12 +3156,42 @@ impl CpuModel {
                                 bias: expert_bias,
                             }) {
                                 Ok(xe_output) => {
+                                    execution.profile_record(
+                                        projection_start,
+                                        CpuProfileRecordSpec {
+                                            operation,
+                                            layer: layer_index,
+                                            m: inputs.len(),
+                                            n: rows,
+                                            k: blocks * QUANT_BLOCK_SIZE,
+                                            expert_bucket_m: inputs.len(),
+                                            projection_role: role,
+                                            preparation_state: CpuProfilePreparationState::Prepared,
+                                            residency_state: CpuProfileResidencyState::Miss,
+                                            ..CpuProfileRecordSpec::default()
+                                        },
+                                    );
                                     return Ok(xe_output
                                         .chunks_exact(rows)
                                         .map(<[f32]>::to_vec)
-                                        .collect())
+                                        .collect());
                                 }
                                 Err(error) => {
+                                    execution.profile_record(
+                                        execution.profile_start(),
+                                        CpuProfileRecordSpec {
+                                            operation: CpuProfileOperation::Fallback,
+                                            layer: layer_index,
+                                            m: inputs.len(),
+                                            n: rows,
+                                            k: blocks * QUANT_BLOCK_SIZE,
+                                            expert_bucket_m: inputs.len(),
+                                            projection_role: role,
+                                            residency_state: CpuProfileResidencyState::Fault,
+                                            fallback_reason: CpuProfileFallbackReason::XeFault,
+                                            ..CpuProfileRecordSpec::default()
+                                        },
+                                    );
                                     gpt_oss_xe::record_cpu_fallback(policy.role.xe());
                                     tracing::warn!(
                                         projection = policy.role.xe().as_str(),
@@ -2777,13 +3220,35 @@ impl CpuModel {
                     .matmul_backend
                     .scratch_requirement(&problem)
                     .map_err(kernel_error)?;
-                self.kernels
+                let result = self
+                    .kernels
                     .mxfp4_matmul(
                         self.matmul_backend,
                         problem,
                         execution.matrix_scratch(requirement)?,
                     )
-                    .map_err(kernel_error)?;
+                    .map_err(kernel_error);
+                execution.profile_record(
+                    projection_start,
+                    CpuProfileRecordSpec {
+                        operation,
+                        layer: layer_index,
+                        m: inputs.len(),
+                        n: rows,
+                        k: blocks * QUANT_BLOCK_SIZE,
+                        expert_bucket_m: inputs.len(),
+                        projection_role: role,
+                        preparation_state: CpuProfilePreparationState::Prepared,
+                        residency_state: CpuProfileResidencyState::Disabled,
+                        fallback_reason: profile_failure(&result),
+                        scratch_bytes: requirement.size,
+                        effective_matrix_backend: Some(
+                            self.matmul_backend.resolved_for_rows(inputs.len()),
+                        ),
+                        ..CpuProfileRecordSpec::default()
+                    },
+                );
+                result?;
             }
             CpuExpertProjection::ExactBf16 => unreachable!("handled above"),
         }
@@ -3367,6 +3832,36 @@ fn kernel_error(error: gpt_oss_cpu_kernels::KernelError) -> LLMError {
     LLMError::ModelError(error.to_string())
 }
 
+fn profile_failure<T>(result: &Result<T>) -> CpuProfileFallbackReason {
+    if result.is_ok() {
+        CpuProfileFallbackReason::None
+    } else {
+        CpuProfileFallbackReason::ExecutionFailure
+    }
+}
+
+fn profile_spec(
+    operation: CpuProfileOperation,
+    layer: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+    projection_role: CpuProfileProjectionRole,
+    fallback_reason: CpuProfileFallbackReason,
+) -> CpuProfileRecordSpec {
+    CpuProfileRecordSpec {
+        operation,
+        layer,
+        m,
+        n,
+        k,
+        projection_role,
+        preparation_state: CpuProfilePreparationState::Prepared,
+        fallback_reason,
+        ..CpuProfileRecordSpec::default()
+    }
+}
+
 #[cfg(feature = "xe")]
 const fn xe_error_class(error: &XeError) -> &'static str {
     match error {
@@ -3918,6 +4413,7 @@ mod tests {
                     context_cap: 16,
                     expert_projection,
                     xe: None,
+                    profile_capacity_bytes: None,
                 },
             )
             .unwrap();
@@ -3933,6 +4429,7 @@ mod tests {
                     context_cap: 16,
                     expert_projection,
                     xe: None,
+                    profile_capacity_bytes: None,
                 },
             )
             .unwrap();
@@ -4347,6 +4844,73 @@ mod tests {
             .unwrap()
             .discard();
         assert_eq!(state.position(), 0);
+    }
+
+    #[test]
+    fn bounded_execution_profile_preserves_results_and_separates_failed_work() {
+        let snapshot = synthetic_snapshot();
+        let model = CpuModel::load_with_matmul_backend(
+            snapshot.path(),
+            snapshot.path().join("repack-profile"),
+            KernelPath::Scalar,
+            2,
+            CpuExpertProjection::ResidualQ8,
+            Mxfp4MatmulBackend::Scalar,
+        )
+        .unwrap();
+        let state = model.new_sequence_state(16).unwrap();
+        let batch = CpuStepBatch::new(vec![
+            CpuStepRow::new(SequenceId(1), 1, 0, false),
+            CpuStepRow::new(SequenceId(1), 2, 1, true),
+        ])
+        .unwrap();
+        let mut plain = CpuExecutionContext::new();
+        assert!(!plain.profiling_enabled());
+        assert_eq!(plain.matrix_scratch_capacity(), 0);
+        let plain_rows = model
+            .prepare_step(&mut plain, &batch, &[(SequenceId(1), &state)])
+            .unwrap()
+            .rows()
+            .iter()
+            .map(|row| row.logits.clone())
+            .collect::<Vec<_>>();
+
+        let mut profiled = CpuExecutionContext::profiled(
+            1024 * 1024,
+            KernelPath::Scalar,
+            KernelPath::Scalar,
+            Mxfp4MatmulBackend::Scalar,
+            2,
+        )
+        .unwrap();
+        let profiled_rows = model
+            .prepare_step(&mut profiled, &batch, &[(SequenceId(1), &state)])
+            .unwrap()
+            .rows()
+            .iter()
+            .map(|row| row.logits.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(plain_rows, profiled_rows);
+        let first = profiled
+            .profile_document(&model, Some("test".into()))
+            .unwrap();
+        assert!(!first.truncated);
+        assert!(first.records.iter().any(|record| {
+            record.m == 2
+                && record.transaction_state
+                    == crate::cpu_profile::CpuProfileTransactionState::Prepared
+        }));
+
+        profiled.inject_failure(CpuExecutionFailurePoint::AfterLayer(0));
+        assert!(model
+            .prepare_step(&mut profiled, &batch, &[(SequenceId(1), &state)])
+            .is_err());
+        let second = profiled
+            .profile_document(&model, Some("test".into()))
+            .unwrap();
+        assert!(second.records.iter().any(|record| {
+            record.transaction_state == crate::cpu_profile::CpuProfileTransactionState::Failed
+        }));
     }
 
     #[test]

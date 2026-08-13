@@ -11,6 +11,7 @@ extern crate self as gpt_oss_model_runner;
 pub mod architectures;
 pub mod attention;
 pub mod bridge;
+pub mod cpu_profile;
 pub mod cpu_repack;
 pub mod cpu_runner;
 pub mod cpu_tensor_store;
@@ -44,6 +45,12 @@ pub use attention::{
     AttentionMetadata, FlashAttention2, FlashAttention2Config, FlashAttentionPaged, GpuBuffer,
     MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
     SplitKvAttention,
+};
+pub use cpu_profile::{
+    CpuExecutionProfileDocument, CpuExecutionProfileRecord, CpuProfileAttentionClass,
+    CpuProfileFallbackReason, CpuProfileOperation, CpuProfilePhase, CpuProfilePreparationState,
+    CpuProfileProjectionRole, CpuProfileResidencyState, CpuProfileTransactionState,
+    EXECUTION_PROFILE_SCHEMA,
 };
 pub use cpu_runner::{
     CpuDenseBoundaryProbe, CpuDenseBoundaryTrace, CpuDensePrefixAccumulator, CpuExecutionContext,

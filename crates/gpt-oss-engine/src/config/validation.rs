@@ -69,6 +69,12 @@ pub fn validate(config: &EngineConfig) -> Result<(), String> {
     if config.device.xe_max_resident_mib == 0 {
         return Err("xe_max_resident_mib must be > 0".into());
     }
+    if config.device.cpu_profile_output.is_some() && config.device.cpu_profile_cap_mib == Some(0) {
+        return Err("cpu_profile_cap_mib must be > 0 when cpu_profile_output is set".into());
+    }
+    if config.device.cpu_profile_output.is_none() && config.device.cpu_profile_cap_mib.is_some() {
+        return Err("cpu_profile_cap_mib requires cpu_profile_output".into());
+    }
 
     if config
         .device
@@ -144,6 +150,19 @@ mod tests {
         let mut cfg = valid_config();
         cfg.device.cpu_matmul_backend = "neon".into();
         assert!(validate(&cfg).unwrap_err().contains("cpu_matmul_backend"));
+    }
+
+    #[test]
+    fn cpu_profile_cap_requires_output_and_enabled_cap_is_bounded() {
+        let mut cfg = valid_config();
+        cfg.device.cpu_profile_cap_mib = Some(8);
+        assert!(validate(&cfg)
+            .unwrap_err()
+            .contains("requires cpu_profile_output"));
+        cfg.device.cpu_profile_output = Some("profile.json".into());
+        assert!(validate(&cfg).is_ok());
+        cfg.device.cpu_profile_cap_mib = Some(0);
+        assert!(validate(&cfg).unwrap_err().contains("must be > 0"));
     }
 
     #[test]

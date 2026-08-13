@@ -70,6 +70,12 @@ struct Cli {
 
     #[arg(long, default_value_t = 128)]
     xe_max_resident_mib: usize,
+
+    #[arg(long)]
+    cpu_profile_output: Option<PathBuf>,
+
+    #[arg(long, requires = "cpu_profile_output")]
+    cpu_profile_cap_mib: Option<usize>,
     /// Offline-only layer-0 dense boundary projection (`k` or `v`).
     #[arg(long, requires = "dense_boundary_output")]
     dense_boundary_projection: Option<String>,
@@ -199,6 +205,16 @@ fn run(cli: &Cli) -> Result<()> {
         .xe_max_resident_mib
         .checked_mul(1024 * 1024)
         .context("--xe-max-resident-mib overflows bytes")?;
+    let profile_capacity_bytes = cli
+        .cpu_profile_output
+        .as_ref()
+        .map(|_| {
+            cli.cpu_profile_cap_mib
+                .unwrap_or(16)
+                .checked_mul(1024 * 1024)
+                .context("--cpu-profile-cap-mib overflows bytes")
+        })
+        .transpose()?;
     let mut runner = CpuModelRunner::load_with_options(
         &cli.model,
         &cli.repack_cache,
@@ -212,6 +228,7 @@ fn run(cli: &Cli) -> Result<()> {
                 mode: CpuXeAttachmentMode::Explicit,
                 max_resident_bytes: xe_max_resident_bytes,
             }),
+            profile_capacity_bytes,
         },
     )?;
     let startup_seconds = startup_start.elapsed().as_secs_f64();
@@ -346,6 +363,9 @@ fn run(cli: &Cli) -> Result<()> {
     let encoded = serde_json::to_vec_pretty(&capture)?;
     gpt_oss_evidence::atomic_write_new(&cli.output, &encoded)?;
     write_evidence_sidecar(cli, &manifest, scenario, &encoded, oracle_identity)?;
+    if let Some(path) = &cli.cpu_profile_output {
+        runner.write_execution_profile(path, Some(scenario.id.clone()))?;
+    }
     println!("{}", String::from_utf8(encoded)?);
     Ok(())
 }

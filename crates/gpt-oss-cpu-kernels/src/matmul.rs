@@ -45,7 +45,7 @@ impl Mxfp4MatmulBackend {
         }
     }
 
-    const fn resolve(self, rows: usize) -> Self {
+    pub const fn resolved_for_rows(self, rows: usize) -> Self {
         match self {
             Self::Auto if rows == 1 => Self::Auto,
             Self::Auto => Self::Scalar,
@@ -58,7 +58,7 @@ impl Mxfp4MatmulBackend {
         self,
         problem: &Mxfp4MatmulProblem<'_>,
     ) -> Result<Mxfp4ScratchRequirement, KernelError> {
-        match self.resolve(problem.m()) {
+        match self.resolved_for_rows(problem.m()) {
             Self::Auto | Self::Scalar => Ok(Mxfp4ScratchRequirement::NONE),
             Self::Avx2 | Self::Avx512Vnni => {
                 let passes = match problem.activations {
@@ -395,7 +395,7 @@ impl Kernels {
     ) -> Result<(), KernelError> {
         let requirement = backend.scratch_requirement(&problem)?;
         validate_scratch(requirement, scratch)?;
-        match backend.resolve(problem.m()) {
+        match backend.resolved_for_rows(problem.m()) {
             Mxfp4MatmulBackend::Auto if problem.m() == 1 => self.gemv_matmul(&mut problem),
             Mxfp4MatmulBackend::Scalar => scalar_matmul(&mut problem),
             Mxfp4MatmulBackend::Avx2 => avx2_matmul(&mut problem, scratch),

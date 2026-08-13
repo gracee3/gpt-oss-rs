@@ -57,6 +57,10 @@ enum Commands {
         cpu_repack_cache: Option<PathBuf>,
         #[arg(long, default_value_t = 128)]
         xe_max_resident_mib: usize,
+        #[arg(long)]
+        cpu_profile_output: Option<PathBuf>,
+        #[arg(long, requires = "cpu_profile_output")]
+        cpu_profile_cap_mib: Option<usize>,
         #[arg(long, value_enum, default_value_t = RuntimeMode::Experimental)]
         runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
@@ -350,6 +354,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cpu_threads,
             cpu_repack_cache,
             xe_max_resident_mib,
+            cpu_profile_output,
+            cpu_profile_cap_mib,
             runtime_mode,
             profile,
             tokenizer,
@@ -444,6 +450,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .cpu_threads(cpu_threads)
                             .cpu_repack_cache(cpu_repack_cache.clone())
                             .xe_max_resident_mib(xe_max_resident_mib)
+                            .cpu_profile_output(cpu_profile_output)
+                            .cpu_profile_cap_mib(cpu_profile_cap_mib)
                             .build(),
                     )
                     .telemetry(
