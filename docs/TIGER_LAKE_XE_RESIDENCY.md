@@ -56,6 +56,8 @@ the CPU corpus.
 
 `xe_projection_gate` also compares `xe_streaming` and `xe_resident` against
 scalar, CPU Auto, and AVX2 on real layer-0 gate/up and down checkpoint tensors.
+Its `--rows` control accepts every production-legal M>=4 bucket, including
+non-multiples of four that exercise the OpenCL dispatch-padding contract.
 Its resident repack closure is lazy, so warm samples include activation
 preparation, submission, wait, and readback but genuinely exclude weight
 repacking and weight/bias upload. The output records the exact runtime

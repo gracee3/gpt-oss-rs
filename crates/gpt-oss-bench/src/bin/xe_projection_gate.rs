@@ -135,8 +135,8 @@ struct ProjectionOutput {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.rows.is_empty() || cli.rows.iter().any(|rows| *rows < 4 || rows % 4 != 0) {
-        bail!("--rows must contain positive multiples of four at or above four");
+    if cli.rows.is_empty() || cli.rows.iter().any(|rows| *rows < 4) {
+        bail!("--rows must contain values at or above the explicit Xe threshold of four");
     }
     let projections = [
         Projection::open(&cli.model, Role::GateUp)?,
