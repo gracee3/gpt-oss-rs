@@ -61,6 +61,9 @@ struct Cli {
     thermal_poll_ms: u64,
     #[arg(long, default_value_t = 900)]
     thermal_max_wait_seconds: u64,
+    /// Abort at the first measured thermal-throttle event.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    reject_throttled: bool,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     bias: bool,
     #[arg(long)]
@@ -84,6 +87,7 @@ struct BenchmarkDocument {
     thermal_end_ceiling_c: f64,
     thermal_poll_ms: u64,
     thermal_max_wait_seconds: u64,
+    reject_throttled: bool,
     n: usize,
     k: usize,
     activation: ActivationKind,
@@ -291,7 +295,9 @@ fn main() -> Result<()> {
                             cli.thermal_end_ceiling_c
                         )
                     }
-                    if package_throttle_time_delta_ms != 0 || core_throttle_time_delta_ms != 0 {
+                    if cli.reject_throttled
+                        && (package_throttle_time_delta_ms != 0 || core_throttle_time_delta_ms != 0)
+                    {
                         bail!(
                             "thermal throttling during M={m} method={method}: package delta \
                              {package_throttle_time_delta_ms} ms, core delta \
@@ -349,6 +355,7 @@ fn main() -> Result<()> {
         thermal_end_ceiling_c: cli.thermal_end_ceiling_c,
         thermal_poll_ms: cli.thermal_poll_ms,
         thermal_max_wait_seconds: cli.thermal_max_wait_seconds,
+        reject_throttled: cli.reject_throttled,
         n: cli.n,
         k: cli.k,
         activation: cli.activation,

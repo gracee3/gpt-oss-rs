@@ -68,6 +68,18 @@ class AnalyzeMxfp4MatrixBenchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "seven"):
                 analyze_mxfp4_matrix_bench.analyze([path], iterations=50)
 
+    def test_throttled_samples_cannot_promote_auto(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bench.json"
+            value = benchmark()
+            for sample in value["samples"]:
+                sample["package_throttle_time_delta_ms"] = 1
+            path.write_text(json.dumps(value))
+            result = analyze_mxfp4_matrix_bench.analyze([path], iterations=100)
+            self.assertEqual(result["promotion_status"], "negative")
+            self.assertFalse(result["candidate_regions"])
+            self.assertTrue(any(not row["thermally_clean"] for row in result["comparisons"]))
+
 
 if __name__ == "__main__":
     unittest.main()

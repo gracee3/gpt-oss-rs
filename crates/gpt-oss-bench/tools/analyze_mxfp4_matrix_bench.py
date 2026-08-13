@@ -37,6 +37,10 @@ def load(path: Path) -> dict:
             raise ValueError(f"{path}: sample lacks exact scalar certification")
         if row["output_sha256"] != sample["output_sha256"]:
             raise ValueError(f"{path}: output identity drift")
+        sample["thermal_throttled"] = bool(
+            sample.get("package_throttle_time_delta_ms", 0)
+            or sample.get("core_throttle_time_delta_ms", 0)
+        )
     return value
 
 
@@ -101,6 +105,13 @@ def analyze(paths: list[Path], iterations: int = 10_000) -> dict:
             if candidate not in methods:
                 continue
             outcomes = []
+            thermally_clean = not any(
+                sample.get("thermal_throttled", False)
+                for value in documents
+                for sample in value["samples"]
+                if (value["activation"], sample["n"], sample["k"], sample["m"]) == key
+                and sample["method"] in (candidate, *EXPLICIT_METHODS)
+            )
             for comparator in EXPLICIT_METHODS:
                 if comparator == candidate or comparator not in methods:
                     continue
@@ -113,7 +124,11 @@ def analyze(paths: list[Path], iterations: int = 10_000) -> dict:
                     int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big"),
                 )
                 outcomes.append({"comparator": comparator, **interval})
-            proven = bool(outcomes) and all(item["proven_lower_latency"] for item in outcomes)
+            proven = (
+                thermally_clean
+                and bool(outcomes)
+                and all(item["proven_lower_latency"] for item in outcomes)
+            )
             comparisons.append({
                 "activation": activation,
                 "m": m,
@@ -121,6 +136,7 @@ def analyze(paths: list[Path], iterations: int = 10_000) -> dict:
                 "k": k,
                 "candidate": candidate,
                 "comparisons": outcomes,
+                "thermally_clean": thermally_clean,
                 "qualifies": proven,
             })
             if proven:
@@ -177,6 +193,8 @@ def report(value: dict) -> str:
         lines.append("proven candidate regions: none; Auto remains scalar for M>1")
     uncertain = sum(not row["qualifies"] for row in value["comparisons"])
     lines.append(f"non-qualifying candidate/shape rows: {uncertain}")
+    thermal = sum(not row["thermally_clean"] for row in value["comparisons"])
+    lines.append(f"thermally disqualified candidate/shape rows: {thermal}")
     return "\n".join(lines) + "\n"
 
 
