@@ -295,7 +295,10 @@ fn run(cli: &Cli) -> Result<()> {
         .map(serde_json::to_value)
         .transpose()?;
     for _ in 0..cli.xe_warmup_prefills {
-        let _ = runner.prefill_layer_major(&rendered.token_ids)?;
+        // Prime model-owned Xe residency through a disposable sequence. The
+        // measured sequence must remain at position zero for parity.
+        let mut warmup = CpuModelRunner::from_model(runner.model().clone(), context_cap)?;
+        let _ = warmup.prefill_layer_major(&rendered.token_ids)?;
     }
     let profile_measured_sequence_start = runner.execution_profile_records_written();
     let xe_residency_before_request = runner
