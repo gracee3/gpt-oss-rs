@@ -85,6 +85,10 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     xe_expert_cache_mib: usize,
 
+    /// Prime the explicit Xe cache with layer-major prefills in this process.
+    #[arg(long, default_value_t = 0, requires = "xe")]
+    xe_warmup_prefills: usize,
+
     #[arg(long)]
     cpu_profile_output: Option<PathBuf>,
 
@@ -152,6 +156,9 @@ struct ParityCapture<'a> {
     expert_projection: CpuExpertProjection,
     xe: Option<serde_json::Value>,
     xe_residency: Option<serde_json::Value>,
+    xe_warmup_prefills: usize,
+    profile_measured_sequence_start: Option<usize>,
+    xe_residency_before_request: Option<serde_json::Value>,
     prompt_text: String,
     prompt_token_ids: Vec<u32>,
     generated_token_ids: Vec<u32>,
@@ -208,6 +215,9 @@ fn main() -> Result<()> {
 fn run(cli: &Cli) -> Result<()> {
     if cli.xe_expert_cache_mib != 0 && !cli.xe {
         bail!("--xe-expert-cache-mib requires --xe");
+    }
+    if cli.xe_warmup_prefills != 0 && !cli.layer_major_prefill {
+        bail!("--xe-warmup-prefills requires --layer-major-prefill");
     }
     let oracle_identity = oracle_identity_from_environment()?;
     validate_trace_step(cli.trace_step, cli.max_new_tokens)?;
@@ -281,6 +291,15 @@ fn run(cli: &Cli) -> Result<()> {
     let xe_descriptor = runner
         .model()
         .xe_descriptor()
+        .map(serde_json::to_value)
+        .transpose()?;
+    for _ in 0..cli.xe_warmup_prefills {
+        let _ = runner.prefill_layer_major(&rendered.token_ids)?;
+    }
+    let profile_measured_sequence_start = runner.execution_profile_records_written();
+    let xe_residency_before_request = runner
+        .model()
+        .xe_residency_stats()
         .map(serde_json::to_value)
         .transpose()?;
 
@@ -407,6 +426,9 @@ fn run(cli: &Cli) -> Result<()> {
         expert_projection: runner.expert_projection(),
         xe: xe_descriptor,
         xe_residency,
+        xe_warmup_prefills: cli.xe_warmup_prefills,
+        profile_measured_sequence_start,
+        xe_residency_before_request,
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,
         generated_token_ids,

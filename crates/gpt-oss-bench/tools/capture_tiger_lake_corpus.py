@@ -118,6 +118,8 @@ def command_for(args: argparse.Namespace, scenario: str, profile: Path, output: 
             "--xe-max-resident-mib", str(args.xe_max_resident_mib),
             "--xe-expert-cache-mib", str(args.xe_expert_cache_mib),
         ])
+        if args.xe_warmup_prefills:
+            command.extend(["--xe-warmup-prefills", str(args.xe_warmup_prefills)])
     return command
 
 
@@ -160,6 +162,7 @@ def capture(args: argparse.Namespace) -> str:
         "xe": args.xe,
         "xe_max_resident_mib": args.xe_max_resident_mib,
         "xe_expert_cache_mib": args.xe_expert_cache_mib,
+        "xe_warmup_prefills": args.xe_warmup_prefills,
         "max_new_tokens": args.max_new_tokens,
         "profile_cap_mib": args.profile_cap_mib,
         "platform": platform.platform(),
@@ -244,14 +247,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xe", action="store_true")
     parser.add_argument("--xe-max-resident-mib", type=int, default=128)
     parser.add_argument("--xe-expert-cache-mib", type=int, default=0)
+    parser.add_argument("--xe-warmup-prefills", type=int, default=0)
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args()
     if args.repetitions < 1 or args.threads < 1 or args.profile_cap_mib < 1:
         parser.error("repetitions, threads, and profile capacity must be positive")
-    if args.xe_max_resident_mib < 1 or args.xe_expert_cache_mib < 0:
+    if (
+        args.xe_max_resident_mib < 1
+        or args.xe_expert_cache_mib < 0
+        or args.xe_warmup_prefills < 0
+    ):
         parser.error("Xe resident capacity must be positive and expert cache must be non-negative")
-    if args.xe_expert_cache_mib and not args.xe:
-        parser.error("--xe-expert-cache-mib requires --xe")
+    if (args.xe_expert_cache_mib or args.xe_warmup_prefills) and not args.xe:
+        parser.error("Xe expert-cache and warmup controls require --xe")
     return args
 
 

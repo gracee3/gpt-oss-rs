@@ -19,6 +19,7 @@ class CaptureTigerLakeCorpusTests(unittest.TestCase):
             kernel="auto", cpu_matmul_backend="auto", threads=4,
             max_new_tokens=8, profile_cap_mib=16,
             xe=False, xe_max_resident_mib=128, xe_expert_cache_mib=0,
+            xe_warmup_prefills=0,
         )
         command = capture_tiger_lake_corpus.command_for(
             args, "harmony_63", Path("profile.json"), Path("output.json")
@@ -34,12 +35,14 @@ class CaptureTigerLakeCorpusTests(unittest.TestCase):
             kernel="auto", cpu_matmul_backend="auto", threads=4,
             max_new_tokens=8, profile_cap_mib=16,
             xe=True, xe_max_resident_mib=128, xe_expert_cache_mib=256,
+            xe_warmup_prefills=1,
         )
         command = capture_tiger_lake_corpus.command_for(
             args, "harmony_63", Path("profile.json"), Path("output.json")
         )
         self.assertEqual(command[command.index("--xe-max-resident-mib") + 1], "128")
         self.assertEqual(command[command.index("--xe-expert-cache-mib") + 1], "256")
+        self.assertEqual(command[command.index("--xe-warmup-prefills") + 1], "1")
         self.assertEqual(command.count("--xe"), 1)
 
     def test_artifact_index_is_sorted_and_does_not_hash_itself(self):

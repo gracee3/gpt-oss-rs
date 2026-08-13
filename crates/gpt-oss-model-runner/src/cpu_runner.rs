@@ -833,6 +833,12 @@ impl CpuExecutionContext {
         profiler.document(model.profile_metadata(workload_id))
     }
 
+    pub fn profile_records_written(&self) -> Option<usize> {
+        self.profiler
+            .as_ref()
+            .map(CpuExecutionProfiler::records_written)
+    }
+
     #[inline]
     fn profile_start(&self) -> Option<crate::cpu_profile::CpuProfileClock> {
         self.profiler.as_ref().map(CpuExecutionProfiler::start)
@@ -1686,6 +1692,10 @@ impl CpuModelRunner {
         workload_id: Option<String>,
     ) -> Result<CpuExecutionProfileDocument> {
         self.execution.profile_document(&self.model, workload_id)
+    }
+
+    pub fn execution_profile_records_written(&self) -> Option<usize> {
+        self.execution.profile_records_written()
     }
 
     pub fn config(&self) -> &CpuGptOssConfig {

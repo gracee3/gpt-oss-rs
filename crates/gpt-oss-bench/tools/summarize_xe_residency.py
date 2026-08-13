@@ -13,6 +13,10 @@ from pathlib import Path
 
 SCHEMA = "gpt-oss-rs.xe-residency-summary/v1"
 PROJECTION_OPERATIONS = {"gate_up_projection", "down_projection"}
+CUMULATIVE_COUNTERS = {
+    "hits", "misses", "bypasses", "evictions", "repacks_avoided",
+    "upload_bytes_avoided", "uploaded_bytes", "faults",
+}
 
 
 def canonical(value: object) -> bytes:
@@ -59,11 +63,19 @@ def summarize(paths: list[Path]) -> dict:
             ])
             scenarios.append(capture["scenario"])
             full_request_seconds.append(float(capture["full_request_seconds"]))
-            for key, value in capture["xe_residency"].items():
-                if key != "capacity_bytes":
-                    counters[key] += int(value)
+            before = capture.get("xe_residency_before_request") or {}
+            for key in CUMULATIVE_COUNTERS:
+                after_value = int(capture["xe_residency"].get(key, 0))
+                before_value = int(before.get(key, 0))
+                if after_value < before_value:
+                    raise ValueError(f"{path}: Xe residency counter regressed")
+                counters[key] += after_value - before_value
+            measured_sequence_start = int(capture.get("profile_measured_sequence_start") or 0)
             for record in profile["records"]:
-                if record["operation"] not in PROJECTION_OPERATIONS:
+                if (
+                    int(record["sequence"]) < measured_sequence_start
+                    or record["operation"] not in PROJECTION_OPERATIONS
+                ):
                     continue
                 projection_ns.append(int(record["duration_ns"]))
         lookups = counters["hits"] + counters["misses"]
