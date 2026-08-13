@@ -176,6 +176,7 @@ fn run() -> Result<()> {
         "artifact" => command_artifact(&arguments, &common),
         "memory" => command_memory(&arguments, &common),
         "mxfp4" => command_mxfp4(&arguments, &common),
+        "fused-semantics" => command_fused_semantics(&arguments, &common),
         "benchmark" => command_benchmark(&arguments, &common),
         "diagnose" => command_diagnose(&arguments, &common),
         "closeout" => command_closeout(&arguments, &common),
@@ -187,6 +188,7 @@ fn run() -> Result<()> {
 }
 
 fn usage() {
+    eprintln!("additional research subcommand: fused-semantics [--rows M] [--intermediate N]");
     eprintln!(
         "usage: gpt-oss-xe-research <environment|capabilities|artifact|memory|mxfp4|benchmark|diagnose|closeout> \\\n  --backend <opencl|level-zero> --device 8086:9a49 --results <directory> [--immediate]"
     );
@@ -952,6 +954,259 @@ fn command_mxfp4(arguments: &[String], common: &Common) -> Result<()> {
             session: Some(session.info().clone()),
             loaded_paths: session.loaded_library_paths()?,
             artifact_paths: paths,
+            details,
+        },
+    )
+}
+
+fn command_fused_semantics(arguments: &[String], common: &Common) -> Result<()> {
+    if common.backend != Backend::Opencl {
+        bail!("the research-only fused semantic probe is OpenCL-only");
+    }
+    let started_at = timestamp();
+    let rows = common
+        .flags
+        .get("rows")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("parse --rows")?
+        .unwrap_or(34);
+    let intermediate = common
+        .flags
+        .get("intermediate")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("parse --intermediate")?
+        .unwrap_or(2880);
+    if rows == 0 || intermediate == 0 || !intermediate.is_multiple_of(32) {
+        bail!("fused semantic dimensions require rows > 0 and intermediate divisible by 32");
+    }
+    let count = rows
+        .checked_mul(intermediate)
+        .context("fused semantic element count overflow")?;
+    let pair_count = count.checked_mul(2).context("gate/up extent overflow")?;
+    let block_count = count / 32;
+    let kernel_path = manifest_dir().join("kernels/fused_semantics.cl");
+    let source = std::fs::read(&kernel_path)?;
+    let session = Session::create(
+        common.backend,
+        ArtifactKind::OpenclSource,
+        &source,
+        "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt",
+        "xe_sigmoid_native_bf16",
+        common.immediate,
+    )?;
+
+    let sigmoid_lut = (0_u32..=u16::MAX as u32)
+        .map(|bits| {
+            let scaled_gate = bf16::from_bits(bits as u16).to_f32();
+            bf16::from_f32(1.0 / (1.0 + (-scaled_gate).exp())).to_bits()
+        })
+        .collect::<Vec<_>>();
+    let native_sigmoid_buffer = session.buffer(MemoryKind::Device, sigmoid_lut.len() * 2)?;
+    session.set_buffer(0, &native_sigmoid_buffer)?;
+    session.set_group_size(64, 1, 1)?;
+    let sigmoid_timing = session.run([65536, 1, 1], [64, 1, 1], TIMEOUT_NS)?;
+    let mut native_sigmoid = vec![0_u16; sigmoid_lut.len()];
+    native_sigmoid_buffer.read(&mut native_sigmoid)?;
+    let mut native_sigmoid_mismatches = 0_usize;
+    let mut finite_sigmoid_cases = 0_usize;
+    let mut first_native_sigmoid_mismatch = None;
+    for (bits, (&expected, &actual)) in sigmoid_lut.iter().zip(&native_sigmoid).enumerate() {
+        if bf16::from_bits(bits as u16).to_f32().is_finite() {
+            finite_sigmoid_cases += 1;
+            if expected != actual {
+                native_sigmoid_mismatches += 1;
+                first_native_sigmoid_mismatch.get_or_insert(json!({
+                    "input_bf16_bits": format!("0x{bits:04x}"),
+                    "input": bf16::from_bits(bits as u16).to_f32(),
+                    "cpu_bf16_bits": format!("0x{expected:04x}"),
+                    "xe_native_bf16_bits": format!("0x{actual:04x}")
+                }));
+            }
+        }
+    }
+
+    let mut random = ChaCha8Rng::seed_from_u64(0x4655_5345_4458_4531);
+    let anchors = [
+        0.0_f32,
+        -0.0,
+        1.0,
+        -1.0,
+        7.0,
+        -7.0,
+        7.03125,
+        -7.03125,
+        f32::from_bits(0x3f80_8000),
+        f32::from_bits(0xbf80_8000),
+    ];
+    let mut gate_up = Vec::with_capacity(pair_count);
+    for index in 0..pair_count {
+        let value = if index < 64 {
+            0.0
+        } else if index - 64 < anchors.len() {
+            anchors[index - 64]
+        } else {
+            let structured = ((index % 257) as f32 - 128.0) / 13.0;
+            structured + random.gen_range(-0.125_f32..=0.125_f32)
+        };
+        gate_up.push(value);
+    }
+    let mut expected_gate_up = Vec::with_capacity(pair_count);
+    let mut expected_swiglu = Vec::with_capacity(count);
+    for pair in gate_up.chunks_exact(2) {
+        let gate_bits = bf16::from_f32(pair[0]).to_bits();
+        let up_bits = bf16::from_f32(pair[1]).to_bits();
+        expected_gate_up.extend([gate_bits, up_bits]);
+        let gate = bf16::from_bits(gate_bits).to_f32().min(7.0);
+        let up = bf16::from_bits(up_bits).to_f32().clamp(-7.0, 7.0);
+        let scaled_gate = bf16::from_f32(gate * 1.702).to_f32();
+        let sigmoid = bf16::from_f32(1.0 / (1.0 + (-scaled_gate).exp())).to_f32();
+        let glu = bf16::from_f32(gate * sigmoid).to_f32();
+        let linear = bf16::from_f32(up + 1.0).to_f32();
+        expected_swiglu.push(bf16::from_f32(glu * linear).to_bits());
+    }
+    let activated = expected_swiglu
+        .iter()
+        .map(|bits| bf16::from_bits(*bits).to_f32())
+        .collect::<Vec<_>>();
+    let kernels =
+        Kernels::new(KernelPath::Auto).context("construct CPU Auto semantic authority")?;
+    let expected_q8 = kernels
+        .quantize_residual_q8(&activated)
+        .context("CPU-authoritative residual-Q8 preparation")?;
+
+    session.select_kernel("xe_fused_prepare_semantics")?;
+    let input_buffer = session.buffer(MemoryKind::Device, pair_count * 4)?;
+    let lut_buffer = session.buffer(MemoryKind::Device, sigmoid_lut.len() * 2)?;
+    let gate_buffer = session.buffer(MemoryKind::Device, pair_count * 2)?;
+    let native_swiglu_buffer = session.buffer(MemoryKind::Device, count * 2)?;
+    let exact_swiglu_buffer = session.buffer(MemoryKind::Device, count * 2)?;
+    let primary_buffer = session.buffer(MemoryKind::Device, count)?;
+    let residual_buffer = session.buffer(MemoryKind::Device, count)?;
+    let primary_scale_buffer = session.buffer(MemoryKind::Device, block_count * 4)?;
+    let residual_scale_buffer = session.buffer(MemoryKind::Device, block_count * 4)?;
+    input_buffer.write(&gate_up)?;
+    lut_buffer.write(&sigmoid_lut)?;
+    for (index, buffer) in [
+        &input_buffer,
+        &lut_buffer,
+        &gate_buffer,
+        &native_swiglu_buffer,
+        &exact_swiglu_buffer,
+        &primary_buffer,
+        &residual_buffer,
+        &primary_scale_buffer,
+        &residual_scale_buffer,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        session.set_buffer(index as u32, buffer)?;
+    }
+    session.set_scalar(9, &u32::try_from(intermediate)?)?;
+    session.set_scalar(10, &u32::try_from(count)?)?;
+    session.set_group_size(1, 1, 1)?;
+    let fused_timing = session.run([block_count, 1, 1], [1, 1, 1], TIMEOUT_NS)?;
+
+    let mut actual_gate_up = vec![0_u16; pair_count];
+    let mut native_swiglu = vec![0_u16; count];
+    let mut exact_swiglu = vec![0_u16; count];
+    let mut primary = vec![0_i8; count];
+    let mut residual = vec![0_i8; count];
+    let mut primary_scales = vec![0_f32; block_count];
+    let mut residual_scales = vec![0_f32; block_count];
+    gate_buffer.read(&mut actual_gate_up)?;
+    native_swiglu_buffer.read(&mut native_swiglu)?;
+    exact_swiglu_buffer.read(&mut exact_swiglu)?;
+    primary_buffer.read(&mut primary)?;
+    residual_buffer.read(&mut residual)?;
+    primary_scale_buffer.read(&mut primary_scales)?;
+    residual_scale_buffer.read(&mut residual_scales)?;
+
+    let mismatch_count = |expected: &[u16], actual: &[u16]| {
+        expected
+            .iter()
+            .zip(actual)
+            .filter(|(left, right)| left != right)
+            .count()
+    };
+    let gate_up_mismatches = mismatch_count(&expected_gate_up, &actual_gate_up);
+    let native_swiglu_mismatches = mismatch_count(&expected_swiglu, &native_swiglu);
+    let exact_swiglu_mismatches = mismatch_count(&expected_swiglu, &exact_swiglu);
+    let mut primary_value_mismatches = 0_usize;
+    let mut residual_value_mismatches = 0_usize;
+    let mut primary_scale_mismatches = 0_usize;
+    let mut residual_scale_mismatches = 0_usize;
+    for (block, expected) in expected_q8.iter().enumerate() {
+        let offset = block * 32;
+        primary_value_mismatches += expected
+            .primary
+            .values
+            .iter()
+            .zip(&primary[offset..offset + 32])
+            .filter(|(left, right)| left != right)
+            .count();
+        residual_value_mismatches += expected
+            .residual
+            .values
+            .iter()
+            .zip(&residual[offset..offset + 32])
+            .filter(|(left, right)| left != right)
+            .count();
+        primary_scale_mismatches +=
+            usize::from(expected.primary.scale.to_bits() != primary_scales[block].to_bits());
+        residual_scale_mismatches +=
+            usize::from(expected.residual.scale.to_bits() != residual_scales[block].to_bits());
+    }
+    let exact_path_pass = gate_up_mismatches == 0
+        && exact_swiglu_mismatches == 0
+        && primary_value_mismatches == 0
+        && residual_value_mismatches == 0
+        && primary_scale_mismatches == 0
+        && residual_scale_mismatches == 0;
+    let details = json!({
+        "scope": "research-only semantic probe; no production dispatch or kernel artifact changed",
+        "dimensions": {"rows": rows, "intermediate": intermediate, "gate_up_values": pair_count, "activation_values": count, "q8_blocks": block_count},
+        "seed": "0x4655534544584531",
+        "cpu_authority": "current Rust half::bf16 operations and Kernels::Auto residual-Q8 preparation",
+        "opencl_build_options": "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt",
+        "bf16_conversion": {"mismatches": gate_up_mismatches, "cases": pair_count},
+        "sigmoid_native_exp": {
+            "finite_bf16_domain_cases": finite_sigmoid_cases,
+            "mismatches": native_sigmoid_mismatches,
+            "first_mismatch": first_native_sigmoid_mismatch,
+            "device_timing_ns": sigmoid_timing.device_ns
+        },
+        "swiglu_native_exp": {"mismatches": native_swiglu_mismatches, "cases": count},
+        "swiglu_cpu_lut": {"mismatches": exact_swiglu_mismatches, "cases": count},
+        "residual_q8": {
+            "primary_value_mismatches": primary_value_mismatches,
+            "residual_value_mismatches": residual_value_mismatches,
+            "primary_scale_bit_mismatches": primary_scale_mismatches,
+            "residual_scale_bit_mismatches": residual_scale_mismatches,
+            "blocks": block_count
+        },
+        "exact_path_pass": exact_path_pass,
+        "fused_prepare_device_timing_ns": fused_timing.device_ns,
+        "interpretation": "Native OpenCL exp is diagnostic only. The exact candidate uses an immutable 65536-entry CPU-authoritative BF16 sigmoid table (128 KiB) plus explicit BF16 bit conversion."
+    });
+    let raw_path = common.results.join("fused-semantics-opencl.json");
+    std::fs::write(&raw_path, serde_json::to_vec_pretty(&details)?)?;
+    write_manifest(
+        arguments,
+        common,
+        ManifestEvidence {
+            evidence_id: "F1-fused-semantics",
+            status: if exact_path_pass {
+                EvidenceStatus::Pass
+            } else {
+                EvidenceStatus::Fail
+            },
+            started_at,
+            session: Some(session.info().clone()),
+            loaded_paths: session.loaded_library_paths()?,
+            artifact_paths: vec![kernel_path, raw_path],
             details,
         },
     )
