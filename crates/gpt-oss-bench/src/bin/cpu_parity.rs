@@ -152,6 +152,7 @@ struct ParityCapture<'a> {
     effective_dispatch_plan: String,
     effective_m1_matrix_backend: String,
     effective_multirow_matrix_backend: String,
+    matrix_crossover_regions: Vec<serde_json::Value>,
     layer_major_prefill: bool,
     expert_projection: CpuExpertProjection,
     xe: Option<serde_json::Value>,
@@ -421,7 +422,26 @@ fn run(cli: &Cli) -> Result<()> {
         effective_cpu_kernel: runner.kernel_path().to_string(),
         effective_dispatch_plan: runner.kernel_dispatch_plan().to_string(),
         effective_m1_matrix_backend: runner.matmul_backend().resolved_for_rows(1).to_string(),
-        effective_multirow_matrix_backend: runner.matmul_backend().resolved_for_rows(2).to_string(),
+        effective_multirow_matrix_backend: if runner.model().tiger_lake_auto_matrix_profile() {
+            "profiled-tiger-lake".into()
+        } else {
+            runner.matmul_backend().resolved_for_rows(2).to_string()
+        },
+        matrix_crossover_regions: if runner.model().tiger_lake_auto_matrix_profile() {
+            gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_REGIONS
+                .iter()
+                .map(|region| {
+                    serde_json::json!({
+                        "activation": region.activation, "m_start": region.m_start,
+                        "m_end": region.m_end, "n": region.n, "k": region.k,
+                        "backend": region.backend.to_string(),
+                        "thread_policy": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         layer_major_prefill: cli.layer_major_prefill,
         expert_projection: runner.expert_projection(),
         xe: xe_descriptor,

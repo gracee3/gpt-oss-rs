@@ -1174,7 +1174,8 @@ impl CpuModel {
         } else {
             None
         };
-        let tiger_lake_auto_matrix_profile = matmul_backend == Mxfp4MatmulBackend::Auto
+        let tiger_lake_auto_matrix_profile = kernel_path == KernelPath::Auto
+            && matmul_backend == Mxfp4MatmulBackend::Auto
             && tiger_lake_profile_matches(
                 &gpt_oss_cpu_kernels::CpuHardwareIdentity::detect(),
                 gpt_oss_cpu_kernels::CpuFeatures::detect(),
@@ -1345,6 +1346,23 @@ impl CpuModel {
             problem.n(),
             problem.k(),
         )
+    }
+
+    pub const fn tiger_lake_auto_matrix_profile(&self) -> bool {
+        self.tiger_lake_auto_matrix_profile
+    }
+
+    pub fn effective_matmul_backend_for_shape(
+        &self,
+        residual_q8: bool,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Mxfp4MatmulBackend {
+        if self.matmul_backend != Mxfp4MatmulBackend::Auto {
+            return self.matmul_backend;
+        }
+        tiger_lake_auto_matmul_backend(self.tiger_lake_auto_matrix_profile, residual_q8, m, n, k)
     }
 
     pub const fn amx_runtime_status(&self) -> Option<AmxRuntimeStatus> {
