@@ -13,6 +13,8 @@
   CPU architecture, research questions, benchmarks, and staged kernel plan.
 - [`CPU_I7_CONFORMANCE.md`](CPU_I7_CONFORMANCE.md): repeatable full-checkpoint
   CPU regression and comparison procedure.
+- [`TIGER_LAKE_CPU_CORPUS.md`](TIGER_LAKE_CPU_CORPUS.md): hashed seven-scenario
+  operation, timing, and expert-bucket evidence used for matrix promotion.
 - [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md): immutable
   v0.0.9 CPU-oracle image publication, lock, fresh-lineage campaign order, and
   closure rules.
