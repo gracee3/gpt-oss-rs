@@ -69,9 +69,44 @@ def host_snapshot() -> dict:
     return {
         "unix_ns": time.time_ns(),
         "thermal": thermal,
+        "core_temperatures_c": core_temperatures_c(),
         "cpufreq": cpufreq,
         "power": power,
     }
+
+
+def core_temperatures_c() -> list[float]:
+    values = []
+    for root in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        if read_text(root / "name") != "coretemp":
+            continue
+        for path in sorted(root.glob("temp*_input")):
+            raw = read_text(path)
+            if raw is not None:
+                values.append(int(raw) / 1000.0)
+    return values
+
+
+def wait_for_thermal_gate(args: argparse.Namespace, cooldown: bool) -> dict:
+    started = time.monotonic()
+    if cooldown and args.cooldown_seconds:
+        time.sleep(args.cooldown_seconds)
+    while True:
+        temperatures = core_temperatures_c()
+        maximum = max(temperatures, default=None)
+        if maximum is None or maximum <= args.max_start_temp_c:
+            return {
+                "wait_seconds": time.monotonic() - started,
+                "temperatures_c": temperatures,
+                "maximum_c": maximum,
+                "limit_c": args.max_start_temp_c,
+            }
+        if time.monotonic() - started >= args.max_cooldown_wait_seconds:
+            raise RuntimeError(
+                f"thermal gate remained at {maximum:.1f} C above "
+                f"{args.max_start_temp_c:.1f} C"
+            )
+        time.sleep(min(5, args.max_cooldown_wait_seconds))
 
 
 def git(args: list[str], repository: Path) -> str:
@@ -152,6 +187,9 @@ def capture(args: argparse.Namespace) -> str:
         "cpu_matmul_backend": args.cpu_matmul_backend,
         "max_new_tokens": args.max_new_tokens,
         "profile_cap_mib": args.profile_cap_mib,
+        "cooldown_seconds": args.cooldown_seconds,
+        "max_start_temp_c": args.max_start_temp_c,
+        "max_cooldown_wait_seconds": args.max_cooldown_wait_seconds,
         "platform": platform.platform(),
         "start_unix_ns": time.time_ns(),
         "host_start": host_snapshot(),
@@ -161,6 +199,7 @@ def capture(args: argparse.Namespace) -> str:
 
     warm_profiles = []
     all_profiles = []
+    previous_run = False
     for scenario in SCENARIOS:
         for repetition in range(args.repetitions + 1):
             state = "warmup" if repetition == 0 else "warm"
@@ -171,6 +210,7 @@ def capture(args: argparse.Namespace) -> str:
             output = run_root / "cpu-parity.json"
             command = command_for(args, scenario, profile, output)
             timed_command = ["/usr/bin/time", "-v", "-o", str(run_root / "time.txt"), *command]
+            thermal_gate = wait_for_thermal_gate(args, previous_run)
             before = host_snapshot()
             start_ns = time.monotonic_ns()
             with (run_root / "stdout.log").open("wb") as stdout, (run_root / "stderr.log").open("wb") as stderr:
@@ -184,6 +224,7 @@ def capture(args: argparse.Namespace) -> str:
                 "command": command,
                 "returncode": result.returncode,
                 "wall_duration_ns": duration_ns,
+                "thermal_gate": thermal_gate,
                 "host_before": before,
                 "host_after": after,
                 "profile": str(profile.relative_to(root)),
@@ -196,6 +237,7 @@ def capture(args: argparse.Namespace) -> str:
                 write_artifact_index(root)
                 raise RuntimeError(f"capture failed for {name}; see {run_root / 'stderr.log'}")
             all_profiles.append(profile)
+            previous_run = True
             if state == "warm":
                 warm_profiles.append(profile)
 
@@ -227,14 +269,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--profile-cap-mib", type=int, default=16)
+    parser.add_argument("--cooldown-seconds", type=float, default=120)
+    parser.add_argument("--max-start-temp-c", type=float, default=65)
+    parser.add_argument("--max-cooldown-wait-seconds", type=float, default=900)
     parser.add_argument("--cpus", default="0-3")
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--kernel", default="auto")
     parser.add_argument("--cpu-matmul-backend", default="auto")
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args()
-    if args.repetitions < 1 or args.threads < 1 or args.profile_cap_mib < 1:
-        parser.error("repetitions, threads, and profile capacity must be positive")
+    if (
+        args.repetitions < 1
+        or args.threads < 1
+        or args.profile_cap_mib < 1
+        or args.cooldown_seconds < 0
+        or args.max_cooldown_wait_seconds <= 0
+    ):
+        parser.error("repetitions, threads, capacity, and thermal controls are invalid")
     return args
 
 

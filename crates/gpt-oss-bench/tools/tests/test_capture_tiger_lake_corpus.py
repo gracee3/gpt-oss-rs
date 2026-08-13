@@ -36,6 +36,16 @@ class CaptureTigerLakeCorpusTests(unittest.TestCase):
             self.assertEqual([line.split("  ", 1)[1] for line in lines], ["a", "z"])
             self.assertEqual(digest, capture_tiger_lake_corpus.sha256(root / "SHA256SUMS"))
 
+    def test_thermal_gate_records_sensor_values_without_sleep_when_cool(self):
+        args = Namespace(
+            cooldown_seconds=0,
+            max_start_temp_c=1000,
+            max_cooldown_wait_seconds=1,
+        )
+        gate = capture_tiger_lake_corpus.wait_for_thermal_gate(args, cooldown=False)
+        self.assertLess(gate["wait_seconds"], 1)
+        self.assertEqual(gate["limit_c"], 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

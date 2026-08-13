@@ -54,3 +54,8 @@ frequency/governor/thermal/power facts around every run, produces all/warm
 summaries, and writes a SHA-256 index. The destination must not already exist,
 and a dirty source tree is rejected by default. Raw corpus outputs belong in
 the external Tiger Lake artifact root, not in Git.
+
+The capture driver enforces a 120-second inter-run cooldown and a 65 C maximum
+core-temperature start gate by default. Both the actual wait and sensor values
+are recorded. A sensor that cannot cool within the bounded wait fails the
+attempt rather than silently mixing a thermally biased run into evidence.
