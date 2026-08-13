@@ -1,4 +1,4 @@
-# Iris Xe X0–X9 Research and Production Integration
+# Iris Xe X0–X10 Research and Production Integration
 
 - Status: X0–X8 complete; X9 explicit production integration complete; auto
   promotion failed and remains disabled
@@ -7,6 +7,7 @@
 - X0–X7 raw evidence: `/home/emmy/src/xe-research/results/20260811-xe-one-sweep/`
 - X8 raw evidence: `/home/emmy/src/xe-research/results/20260812-xe-optimization-sprint/`
 - X9 raw evidence: `/home/emmy/src/xe-research/results/20260812-xe-production-integration/`
+- X10 raw evidence: `/home/emmy/gpt-oss-rs-artifacts/xe-fused-expert-research/`
 - X7 manifest SHA-256: `1378bd9ab319254d19ae95c91fc601e888ec56b34c301f2ffc2dbfe564a81430`
 
 X7's `fail` is its predeclared promotion-gate result, not an overall research
@@ -18,6 +19,12 @@ automatic dispatch, serving integration, dependency, or public runtime API was
 added by X8. X9 subsequently integrated those exact source/ABI bytes behind an
 explicit, runtime-loaded `cpu_xe` path. Its automatic full-model performance
 gate failed, so automatic dispatch is still disabled.
+
+X10 reconstructs the exact complete-expert ownership and numerical boundaries,
+proves an exact device-side BF16/SwiGLU/residual-Q8 preparation route, and
+recommends a forced-first three-kernel OpenCL pipeline. It does not change
+production dispatch or automatic Xe behavior. Level Zero is classified L0-A
+and deferred.
 
 ## Reports
 
@@ -33,6 +40,7 @@ gate failed, so automatic dispatch is still disabled.
 | X7 | [Decision and forced implementation pre-plan](07-decision-and-forced-implementation-preplan.md) | negative closeout |
 | X8 | [Performance diagnosis and forced-only optimization](08-performance-diagnosis-and-optimization.md) | selected forced decode/prefill winners |
 | X9 | [Production integration and automatic-promotion gate](09-production-integration-and-auto-promotion.md) | explicit `cpu_xe` pass; automatic performance gate fail |
+| X10 | [Fused expert pipeline research](10-fused-expert-pipeline-research.md) | three-kernel OpenCL plan; exact semantic prototype pass; Level Zero L0-A |
 
 ## Claim-to-evidence index
 
