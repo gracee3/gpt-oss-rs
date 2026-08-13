@@ -57,6 +57,11 @@ struct Cli {
     #[arg(long, default_value_t = false, conflicts_with = "trace_layers")]
     layer_major_prefill: bool,
 
+    /// Profiling-only deterministic repeated-segment prompt. The pinned
+    /// fixture remains the source template and official parity is disabled.
+    #[arg(long, requires = "cpu_profile_output")]
+    profile_repeated_segments: Option<usize>,
+
     #[arg(long, value_delimiter = ',')]
     trace_layers: Vec<usize>,
 
@@ -131,6 +136,8 @@ enum ScenarioInput {
 struct ParityCapture<'a> {
     schema_version: u32,
     scenario: &'a str,
+    fixture_scenario: &'a str,
+    profile_repeated_segments: Option<usize>,
     fixture_manifest: &'a Path,
     model_path: &'a Path,
     repack_cache: &'a Path,
@@ -210,8 +217,24 @@ fn run(cli: &Cli) -> Result<()> {
         .iter()
         .find(|scenario| scenario.id == cli.scenario)
         .with_context(|| format!("unknown fixture scenario '{}'", cli.scenario))?;
-    let rendered = render_scenario(scenario)?;
-    verify_rendered_fixture(scenario, &rendered.text, &rendered.token_ids)?;
+    if cli.profile_repeated_segments == Some(0) {
+        bail!("--profile-repeated-segments must be positive");
+    }
+    if cli.profile_repeated_segments.is_some() && !cli.layer_major_prefill {
+        bail!("--profile-repeated-segments requires --layer-major-prefill");
+    }
+    let rendered = if let Some(segments) = cli.profile_repeated_segments {
+        render_repeated_segments(segments)?
+    } else {
+        let rendered = render_scenario(scenario)?;
+        verify_rendered_fixture(scenario, &rendered.text, &rendered.token_ids)?;
+        rendered
+    };
+    let workload_id = cli.profile_repeated_segments.map_or_else(
+        || scenario.id.clone(),
+        |segments| format!("{}_segments_{segments}", scenario.id),
+    );
+    let actual_prompt_sha256 = sha256(rendered.text.as_bytes());
 
     let context_cap = rendered
         .token_ids
@@ -334,16 +357,26 @@ fn run(cli: &Cli) -> Result<()> {
     };
     let dense_boundary_probe_repetitions = dense_boundary_probe.as_ref().map(|_| 5);
     let dense_boundary_probe_repeat_identical = dense_boundary_probe.as_ref().map(|_| true);
-    if let Some(expected) = &scenario.official_greedy_tokens {
-        if cli.max_new_tokens >= expected.len() && &generated_token_ids != expected {
-            bail!(
-                "scenario {} generated {:?}, expected official tokens {:?}",
-                scenario.id,
-                generated_token_ids,
-                expected
-            );
+    if cli.profile_repeated_segments.is_none() {
+        if let Some(expected) = &scenario.official_greedy_tokens {
+            if cli.max_new_tokens >= expected.len() && &generated_token_ids != expected {
+                bail!(
+                    "scenario {} generated {:?}, expected official tokens {:?}",
+                    scenario.id,
+                    generated_token_ids,
+                    expected
+                );
+            }
         }
     }
+    let (expected_official, expected_llama) = if cli.profile_repeated_segments.is_none() {
+        (
+            scenario.official_greedy_tokens.as_deref(),
+            scenario.llama_ubatch_1_greedy_tokens.as_deref(),
+        )
+    } else {
+        (None, None)
+    };
     let xe_residency = runner
         .model()
         .xe_residency_stats()
@@ -352,7 +385,9 @@ fn run(cli: &Cli) -> Result<()> {
 
     let capture = ParityCapture {
         schema_version: manifest.schema_version,
-        scenario: &scenario.id,
+        scenario: &workload_id,
+        fixture_scenario: &scenario.id,
+        profile_repeated_segments: cli.profile_repeated_segments,
         fixture_manifest: &cli.fixtures,
         model_path: &cli.model,
         repack_cache: &cli.repack_cache,
@@ -375,8 +410,8 @@ fn run(cli: &Cli) -> Result<()> {
         prompt_text: rendered.text,
         prompt_token_ids: rendered.token_ids,
         generated_token_ids,
-        expected_official_greedy_tokens: scenario.official_greedy_tokens.as_deref(),
-        pinned_llama_ubatch_1_greedy_tokens: scenario.llama_ubatch_1_greedy_tokens.as_deref(),
+        expected_official_greedy_tokens: expected_official,
+        pinned_llama_ubatch_1_greedy_tokens: expected_llama,
         startup_seconds,
         prompt_seconds,
         generation_seconds,
@@ -398,9 +433,16 @@ fn run(cli: &Cli) -> Result<()> {
     }
     let encoded = serde_json::to_vec_pretty(&capture)?;
     gpt_oss_evidence::atomic_write_new(&cli.output, &encoded)?;
-    write_evidence_sidecar(cli, &manifest, scenario, &encoded, oracle_identity)?;
+    write_evidence_sidecar(
+        cli,
+        &manifest,
+        &workload_id,
+        &actual_prompt_sha256,
+        &encoded,
+        oracle_identity,
+    )?;
     if let Some(path) = &cli.cpu_profile_output {
-        runner.write_execution_profile(path, Some(scenario.id.clone()))?;
+        runner.write_execution_profile(path, Some(workload_id))?;
     }
     println!("{}", String::from_utf8(encoded)?);
     Ok(())
@@ -409,7 +451,8 @@ fn run(cli: &Cli) -> Result<()> {
 fn write_evidence_sidecar(
     cli: &Cli,
     fixture: &FixtureManifest,
-    scenario: &Scenario,
+    workload_id: &str,
+    prompt_sha256: &str,
     raw_bytes: &[u8],
     oracle_identity: Option<OracleIdentityEvidence>,
 ) -> Result<()> {
@@ -418,7 +461,7 @@ fn write_evidence_sidecar(
         bail!("written parity output does not match its in-memory capture");
     }
     let mut evidence = RunManifestV1::new(
-        format!("cpu-parity-{}", scenario.id),
+        format!("cpu-parity-{workload_id}"),
         "correctness",
         EvidenceStatus::InsufficientEvidence,
     );
@@ -451,8 +494,8 @@ fn write_evidence_sidecar(
         })
         .collect();
     evidence.workload = WorkloadEvidence {
-        id: scenario.id.clone(),
-        prompt_sha256: Some(scenario.prompt_text_sha256.clone()),
+        id: workload_id.into(),
+        prompt_sha256: Some(prompt_sha256.into()),
         seed: 0,
         repetitions: 1,
     };
@@ -576,6 +619,16 @@ fn repeated_content(segments: usize) -> String {
         + " Summarize the repeated pattern in one sentence."
 }
 
+fn render_repeated_segments(segments: usize) -> Result<gpt_oss_tokenizer::RenderedPrompt> {
+    HarmonyProtocol::gpt_oss()?
+        .render_prompt(
+            &[ProtocolMessage::new("user", repeated_content(segments))],
+            None,
+            &[],
+        )
+        .map_err(Into::into)
+}
+
 fn tool_history() -> (Vec<ProtocolMessage>, Vec<ToolDefinition>) {
     let messages = vec![
         ProtocolMessage::new("user", "What is the weather in Boston?"),
@@ -684,5 +737,11 @@ mod tests {
         validate_trace_step(Some(6), 8).unwrap();
         assert!(validate_trace_step(Some(8), 8).is_err());
         assert!(validate_trace_step(Some(0), 0).is_err());
+    }
+
+    #[test]
+    fn extended_repeated_workload_reaches_the_2048_token_neighborhood() {
+        let rendered = render_repeated_segments(142).unwrap();
+        assert!(rendered.token_ids.len().abs_diff(2048) <= 64);
     }
 }
