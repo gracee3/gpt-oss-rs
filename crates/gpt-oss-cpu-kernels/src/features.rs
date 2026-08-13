@@ -4,6 +4,7 @@
 //! names instruction-set capabilities rather than processor generations so
 //! dispatch remains valid on future and non-Intel implementations.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -16,7 +17,9 @@ pub struct CpuHardwareIdentity {
     pub stepping: u8,
     pub xcr0: u64,
     pub osxsave: bool,
+    pub physical_cores: usize,
     pub logical_cpus: usize,
+    pub microcode: Option<u64>,
 }
 
 impl CpuHardwareIdentity {
@@ -26,10 +29,67 @@ impl CpuHardwareIdentity {
 
     pub fn profile_key(&self) -> String {
         format!(
-            "{}-family{}-model{}-stepping{}-logical{}-xcr0{:x}",
-            self.vendor, self.family, self.model, self.stepping, self.logical_cpus, self.xcr0
+            "{}-family{}-model{}-stepping{}-cores{}-logical{}-microcode{}-xcr0{:x}",
+            self.vendor,
+            self.family,
+            self.model,
+            self.stepping,
+            self.physical_cores,
+            self.logical_cpus,
+            self.microcode
+                .map_or_else(|| "unknown".into(), |value| format!("{value:x}")),
+            self.xcr0
         )
     }
+}
+
+fn parse_cpu_set(value: &str) -> usize {
+    value
+        .trim()
+        .split(',')
+        .filter_map(|part| {
+            let mut bounds = part.splitn(2, '-');
+            let first = bounds.next()?.parse::<usize>().ok()?;
+            let last = bounds
+                .next()
+                .map_or(Some(first), |last| last.parse::<usize>().ok())?;
+            last.checked_sub(first)?.checked_add(1)
+        })
+        .sum()
+}
+
+fn linux_topology() -> (usize, usize, Option<u64>) {
+    let logical = std::fs::read_to_string("/sys/devices/system/cpu/present")
+        .ok()
+        .map_or(0, |value| parse_cpu_set(&value));
+    let mut cores = BTreeSet::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.strip_prefix("cpu").is_some_and(|index| {
+                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            }) {
+                continue;
+            }
+            let topology = entry.path().join("topology");
+            let package = std::fs::read_to_string(topology.join("physical_package_id"));
+            let core = std::fs::read_to_string(topology.join("core_id"));
+            if let (Ok(package), Ok(core)) = (package, core) {
+                cores.insert((package.trim().to_owned(), core.trim().to_owned()));
+            }
+        }
+    }
+    let microcode = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/microcode/version")
+        .ok()
+        .and_then(|value| {
+            let value = value.trim();
+            value.strip_prefix("0x").map_or_else(
+                || value.parse::<u64>().ok(),
+                |hex| u64::from_str_radix(hex, 16).ok(),
+            )
+        });
+    (cores.len(), logical, microcode)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -57,6 +117,7 @@ fn detect_identity() -> CpuHardwareIdentity {
     };
     let osxsave = leaf1.ecx & (1 << 27) != 0;
     let xcr0 = if osxsave { unsafe { _xgetbv(0) } } else { 0 };
+    let (physical_cores, logical_cpus, microcode) = linux_topology();
     CpuHardwareIdentity {
         vendor: String::from_utf8_lossy(&vendor).into_owned(),
         family,
@@ -64,7 +125,9 @@ fn detect_identity() -> CpuHardwareIdentity {
         stepping: (leaf1.eax & 0xf) as u8,
         xcr0,
         osxsave,
-        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        physical_cores,
+        logical_cpus: logical_cpus.max(1),
+        microcode,
     }
 }
 
@@ -77,7 +140,9 @@ fn detect_identity() -> CpuHardwareIdentity {
         stepping: 0,
         xcr0: 0,
         osxsave: false,
+        physical_cores: std::thread::available_parallelism().map_or(1, usize::from),
         logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        microcode: None,
     }
 }
 
@@ -351,4 +416,35 @@ fn detect_features() -> CpuFeatures {
 #[cfg(not(target_arch = "x86_64"))]
 fn detect_features() -> CpuFeatures {
     CpuFeatures::NONE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_set_parser_handles_ranges_and_gaps() {
+        assert_eq!(parse_cpu_set("0-3,8,10-11\n"), 7);
+        assert_eq!(parse_cpu_set("0"), 1);
+        assert_eq!(parse_cpu_set(""), 0);
+    }
+
+    #[test]
+    fn hardware_profile_key_uses_normalized_identity_not_brand_text() {
+        let identity = CpuHardwareIdentity {
+            vendor: "GenuineIntel".into(),
+            family: 6,
+            model: 140,
+            stepping: 1,
+            xcr0: 0x602e7,
+            osxsave: true,
+            physical_cores: 4,
+            logical_cpus: 8,
+            microcode: Some(0xbe),
+        };
+        assert_eq!(
+            identity.profile_key(),
+            "GenuineIntel-family6-model140-stepping1-cores4-logical8-microcodebe-xcr0602e7"
+        );
+    }
 }
