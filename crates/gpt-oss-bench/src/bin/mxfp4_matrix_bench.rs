@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::fs;
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
@@ -49,6 +51,16 @@ struct Cli {
     samples_per_trial: usize,
     #[arg(long, default_value_t = 4)]
     thread_policy: usize,
+    /// Maximum core temperature permitted immediately before each kernel.
+    #[arg(long, default_value_t = 65.0)]
+    thermal_start_gate_c: f64,
+    /// Reject the attempt if a measured kernel ends above this temperature.
+    #[arg(long, default_value_t = 95.0)]
+    thermal_end_ceiling_c: f64,
+    #[arg(long, default_value_t = 250)]
+    thermal_poll_ms: u64,
+    #[arg(long, default_value_t = 900)]
+    thermal_max_wait_seconds: u64,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     bias: bool,
     #[arg(long)]
@@ -68,6 +80,10 @@ struct BenchmarkDocument {
     trials: usize,
     samples_per_trial: usize,
     thread_policy: usize,
+    thermal_start_gate_c: f64,
+    thermal_end_ceiling_c: f64,
+    thermal_poll_ms: u64,
+    thermal_max_wait_seconds: u64,
     n: usize,
     k: usize,
     activation: ActivationKind,
@@ -99,6 +115,8 @@ struct SampleRecord {
     sample: usize,
     order: usize,
     duration_ns: u64,
+    start_temperature_c: f64,
+    end_temperature_c: f64,
     scratch_bytes: usize,
     scratch_alignment: usize,
     output_sha256: String,
@@ -226,6 +244,7 @@ fn main() -> Result<()> {
             for offset in 0..method_state.len() {
                 let index = (start + offset) % method_state.len();
                 let (method, output, scratch) = &mut method_state[index];
+                wait_for_thermal_gate(&cli)?;
                 execute(
                     kernels,
                     *method,
@@ -244,6 +263,7 @@ fn main() -> Result<()> {
                 for order in 0..method_state.len() {
                     let index = (start + order) % method_state.len();
                     let (method, output, scratch) = &mut method_state[index];
+                    let start_temperature_c = wait_for_thermal_gate(&cli)?;
                     let timer = Instant::now();
                     execute(
                         kernels,
@@ -255,6 +275,14 @@ fn main() -> Result<()> {
                         black_box(scratch.bytes()),
                     )?;
                     let duration_ns = timer.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+                    let end_temperature_c = core_temperature_c()?;
+                    if end_temperature_c > cli.thermal_end_ceiling_c {
+                        bail!(
+                            "thermal ceiling exceeded after M={m} method={method}: \
+                             {end_temperature_c:.1} C > {:.1} C",
+                            cli.thermal_end_ceiling_c
+                        )
+                    }
                     samples.push(SampleRecord {
                         m,
                         n: cli.n,
@@ -266,6 +294,8 @@ fn main() -> Result<()> {
                         sample,
                         order,
                         duration_ns,
+                        start_temperature_c,
+                        end_temperature_c,
                         scratch_bytes: scratch.requirement.size,
                         scratch_alignment: scratch.requirement.alignment,
                         output_sha256: bytes_sha256(&output_bits(output)),
@@ -298,6 +328,10 @@ fn main() -> Result<()> {
         trials: cli.trials,
         samples_per_trial: cli.samples_per_trial,
         thread_policy: cli.thread_policy,
+        thermal_start_gate_c: cli.thermal_start_gate_c,
+        thermal_end_ceiling_c: cli.thermal_end_ceiling_c,
+        thermal_poll_ms: cli.thermal_poll_ms,
+        thermal_max_wait_seconds: cli.thermal_max_wait_seconds,
         n: cli.n,
         k: cli.k,
         activation: cli.activation,
@@ -323,6 +357,12 @@ fn validate_cli(cli: &Cli) -> Result<()> {
         || cli.trials < 7
         || cli.trials * cli.samples_per_trial < 30
         || cli.thread_policy == 0
+        || !cli.thermal_start_gate_c.is_finite()
+        || !cli.thermal_end_ceiling_c.is_finite()
+        || cli.thermal_start_gate_c <= 0.0
+        || cli.thermal_start_gate_c >= cli.thermal_end_ceiling_c
+        || cli.thermal_poll_ms == 0
+        || cli.thermal_max_wait_seconds == 0
     {
         bail!("invalid shape or protocol; require K%32=0, >=7 trials, and >=30 samples")
     }
@@ -340,6 +380,56 @@ fn validate_cli(cli: &Cli) -> Result<()> {
         bail!("methods must contain scalar, avx2, avx512-vnni, and auto exactly once")
     }
     Ok(())
+}
+
+fn core_temperature_c() -> Result<f64> {
+    for entry in fs::read_dir("/sys/class/hwmon").context("read hwmon directory")? {
+        let path = entry?.path();
+        let Ok(name) = fs::read_to_string(path.join("name")) else {
+            continue;
+        };
+        if name.trim() != "coretemp" {
+            continue;
+        }
+        let mut temperatures = Vec::new();
+        for sensor in fs::read_dir(&path).context("read coretemp sensors")? {
+            let sensor = sensor?.path();
+            let Some(file_name) = sensor.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("temp") || !file_name.ends_with("_input") {
+                continue;
+            }
+            if let Ok(value) = fs::read_to_string(sensor) {
+                if let Ok(value) = value.trim().parse::<f64>() {
+                    temperatures.push(value / 1_000.0);
+                }
+            }
+        }
+        return temperatures
+            .into_iter()
+            .reduce(f64::max)
+            .context("coretemp exposes no readable temperature sensors");
+    }
+    bail!("coretemp hwmon device is unavailable")
+}
+
+fn wait_for_thermal_gate(cli: &Cli) -> Result<f64> {
+    let started = Instant::now();
+    loop {
+        let temperature = core_temperature_c()?;
+        if temperature <= cli.thermal_start_gate_c {
+            return Ok(temperature);
+        }
+        if started.elapsed() >= Duration::from_secs(cli.thermal_max_wait_seconds) {
+            bail!(
+                "thermal gate remained at {temperature:.1} C above {:.1} C for {} seconds",
+                cli.thermal_start_gate_c,
+                cli.thermal_max_wait_seconds
+            )
+        }
+        thread::sleep(Duration::from_millis(cli.thermal_poll_ms));
+    }
 }
 
 fn requirement(
