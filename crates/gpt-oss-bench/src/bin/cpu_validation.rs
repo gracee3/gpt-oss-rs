@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const REQUIRED_ANCESTOR: &str = "f86674d6acf17484899f5d17e286dcb2c6d1f850";
-const REQUIRED_BRANCH: &str = "agent/cpu-validation-fresh-oracle";
+const REQUIRED_BRANCH: &str = "agent/tiger-lake-optimization-foundation";
 const OFFICIAL_REVISION: &str = "599476783c6f88508dab8577808b5ead5cbee8d2";
 const LLAMA_REVISION: &str = "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a";
 const LLAMA_GGUF_SHA256: &str = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901";
@@ -30,7 +30,15 @@ const SCENARIOS: [&str; 7] = [
     "harmony_444",
     "tool_history_180",
 ];
-const KERNELS: [&str; 4] = ["automatic", "scalar", "avx2", "avx512-vnni"];
+const COMPARISON_CELLS: [(&str, &str); 6] = [
+    ("automatic", "auto"),
+    ("scalar", "auto"),
+    ("avx2", "auto"),
+    ("avx512-vnni", "auto"),
+    ("automatic", "avx2"),
+    ("automatic", "avx512-vnni"),
+];
+const EXPECTED_OFFICIAL_COMPARISONS: usize = SCENARIOS.len() * COMPARISON_CELLS.len();
 
 #[derive(Debug, Parser)]
 #[command(about = "Resumable, hash-verified CPU validation campaign driver")]
@@ -170,6 +178,7 @@ struct FinalSummary {
     complete: bool,
     accepted_c3: usize,
     official_comparisons: usize,
+    official_comparison_matrix: Vec<String>,
     llama_captures: usize,
     service_cells: usize,
     performance_cells: usize,
@@ -403,6 +412,7 @@ fn write_preflight_terminal(
         "preflight",
         "identity",
         "none",
+        "none",
         attempt_number,
     );
     let directory = root.join("attempts").join(&attempt_id);
@@ -475,6 +485,7 @@ fn run_attempt(root: &Path, args: &RunArgs) -> Result<()> {
         &args.phase,
         &args.scenario,
         &args.kernel,
+        &args.backend,
         attempt_number,
     );
     let directory = root.join("attempts").join(&attempt_id);
@@ -650,7 +661,7 @@ fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
         &[EvidenceStatus::Pass, EvidenceStatus::InsufficientEvidence],
     );
     let complete = accepted_c3 == 1
-        && official_comparisons == 28
+        && official_comparisons == EXPECTED_OFFICIAL_COMPARISONS
         && llama_captures == 7
         && service_cells == 2
         && performance_cells >= 1;
@@ -659,12 +670,16 @@ fn finalize(root: &Path, allow_incomplete: bool) -> Result<()> {
         limitations.push("campaign acceptance matrix is incomplete".into());
     }
     let summary = FinalSummary {
-        schema: "gpt-oss-rs.cpu-validation-final/v1",
+        schema: "gpt-oss-rs.cpu-validation-final/v2",
         campaign_id: index.campaign_id.clone(),
         candidate_sha: index.candidate_sha.clone(),
         complete,
         accepted_c3,
         official_comparisons,
+        official_comparison_matrix: COMPARISON_CELLS
+            .iter()
+            .map(|(kernel, backend)| format!("{kernel}/{backend}"))
+            .collect(),
         llama_captures,
         service_cells,
         performance_cells,
@@ -871,13 +886,13 @@ fn cell_accepted(
 fn expected_comparison_cells(attempts: &[&CampaignAttemptV1]) -> Result<usize> {
     let mut count = 0;
     for scenario in SCENARIOS {
-        for kernel in KERNELS {
+        for (kernel, backend) in COMPARISON_CELLS {
             count += usize::from(cell_accepted(
                 attempts,
                 "compare",
                 scenario,
                 kernel,
-                "auto",
+                backend,
                 &[EvidenceStatus::Pass],
                 true,
             )?);
@@ -977,9 +992,9 @@ fn require_correctness_and_service_gates(index: &CampaignIndexV1) -> Result<()> 
     let comparisons = expected_comparison_cells(&terminal)?;
     let llama = expected_llama_cells(&terminal)?;
     let service = expected_service_cells(&terminal)?;
-    if !c3 || comparisons != 28 || llama != 7 || service != 2 {
+    if !c3 || comparisons != EXPECTED_OFFICIAL_COMPARISONS || llama != 7 || service != 2 {
         bail!(
-            "performance is locked until C3, 28 official comparisons, seven llama captures, and service gates pass"
+            "performance is locked until C3, 42 official comparisons, seven llama captures, and service gates pass"
         );
     }
     Ok(())
@@ -1061,10 +1076,11 @@ fn attempt_id(
     phase: &str,
     scenario: &str,
     kernel: &str,
+    backend: &str,
     number: u32,
 ) -> String {
     format!(
-        "{campaign}--{}--{phase}--{scenario}--{kernel}--{number}",
+        "{campaign}--{}--{phase}--{scenario}--{kernel}--{backend}--{number}",
         &candidate[..12]
     )
 }
@@ -1305,11 +1321,23 @@ mod tests {
             "official",
             "harmony_262",
             "avx2",
+            "auto",
             3,
         );
         assert_eq!(
             id,
-            "cpu-validation-1--aaaaaaaaaaaa--official--harmony_262--avx2--3"
+            "cpu-validation-1--aaaaaaaaaaaa--official--harmony_262--avx2--auto--3"
         );
+    }
+
+    #[test]
+    fn tiger_lake_matrix_has_six_unique_effective_controls() {
+        assert_eq!(EXPECTED_OFFICIAL_COMPARISONS, 42);
+        assert_eq!(
+            COMPARISON_CELLS.into_iter().collect::<BTreeSet<_>>().len(),
+            6
+        );
+        assert!(COMPARISON_CELLS.contains(&("automatic", "avx2")));
+        assert!(COMPARISON_CELLS.contains(&("automatic", "avx512-vnni")));
     }
 }
