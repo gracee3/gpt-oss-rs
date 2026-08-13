@@ -19,7 +19,7 @@ const REQUIRED_BRANCH: &str = "agent/tiger-lake-optimization-foundation";
 const OFFICIAL_REVISION: &str = "599476783c6f88508dab8577808b5ead5cbee8d2";
 const LLAMA_REVISION: &str = "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a";
 const LLAMA_GGUF_SHA256: &str = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901";
-const FIXTURE_SHA256: &str = "9d8397acf8fe20268e5a5d96fd43b3a6cc2138830585971a0accaf7ef90878ee";
+const FIXTURE_SHA256: &str = "c79236fdcdd210a203139f32d4321322c106f7062680e31921c0709423d56f56";
 const INDEX_FILE: &str = "campaign-index.json";
 const SCENARIOS: [&str; 7] = [
     "harmony_63",
