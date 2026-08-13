@@ -981,43 +981,28 @@ fn pack_activation_panel(
     let required = blocks * passes * pass_bytes;
     let panel = &mut scratch[..required];
     panel.fill(0);
+    let geometry = PanelGeometry {
+        passes,
+        panel_rows,
+        pass_bytes,
+    };
     for block in 0..blocks {
         for row in 0..input_rows {
             match activations {
                 Mxfp4ActivationMatrix::Q8(view) => {
                     pack_q8_panel_block(
                         panel,
-                        passes,
+                        geometry,
                         block,
                         0,
                         row,
-                        panel_rows,
-                        pass_bytes,
                         &view.row(input_start + row)?[block],
                     );
                 }
                 Mxfp4ActivationMatrix::ResidualQ8(view) => {
                     let activation = &view.row(input_start + row)?[block];
-                    pack_q8_panel_block(
-                        panel,
-                        passes,
-                        block,
-                        0,
-                        row,
-                        panel_rows,
-                        pass_bytes,
-                        &activation.primary,
-                    );
-                    pack_q8_panel_block(
-                        panel,
-                        passes,
-                        block,
-                        1,
-                        row,
-                        panel_rows,
-                        pass_bytes,
-                        &activation.residual,
-                    );
+                    pack_q8_panel_block(panel, geometry, block, 0, row, &activation.primary);
+                    pack_q8_panel_block(panel, geometry, block, 1, row, &activation.residual);
                 }
             }
         }
@@ -1025,20 +1010,26 @@ fn pack_activation_panel(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct PanelGeometry {
+    passes: usize,
+    panel_rows: usize,
+    pass_bytes: usize,
+}
+
 fn pack_q8_panel_block(
     panel: &mut [u8],
-    passes: usize,
+    geometry: PanelGeometry,
     block: usize,
     pass: usize,
     row: usize,
-    panel_rows: usize,
-    pass_bytes: usize,
     activation: &Q8Block,
 ) {
-    let base = (block * passes + pass) * pass_bytes;
+    let base = (block * geometry.passes + pass) * geometry.pass_bytes;
     let scale_start = base + row * std::mem::size_of::<f32>();
     panel[scale_start..scale_start + 4].copy_from_slice(&activation.scale.to_ne_bytes());
-    let values_start = base + panel_rows * std::mem::size_of::<f32>() + row * QUANT_BLOCK_SIZE;
+    let values_start =
+        base + geometry.panel_rows * std::mem::size_of::<f32>() + row * QUANT_BLOCK_SIZE;
     // SAFETY: i8 and u8 have identical layout and both fixed extents contain
     // exactly one quantization block.
     let values = unsafe {

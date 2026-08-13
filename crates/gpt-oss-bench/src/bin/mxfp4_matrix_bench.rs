@@ -314,7 +314,7 @@ fn main() -> Result<()> {
 }
 
 fn validate_cli(cli: &Cli) -> Result<()> {
-    if cli.m_values.iter().any(|&value| value == 0)
+    if cli.m_values.contains(&0)
         || cli.n == 0
         || cli.k == 0
         || !cli.k.is_multiple_of(QUANT_BLOCK_SIZE)
