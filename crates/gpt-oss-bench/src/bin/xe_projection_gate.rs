@@ -13,8 +13,8 @@ use gpt_oss_cpu_kernels::{
     Mxfp4MatrixView, Mxfp4WeightLayout, ResidualQ8MatrixView,
 };
 use gpt_oss_xe::{
-    ActivationRecordV2, AttachConfig, AttachmentMode, ProjectionRequest, ProjectionRole,
-    XeProjectionEngine,
+    ActivationRecordV2, AttachConfig, AttachmentMode, ExpertCacheIdentity, ProjectionRequest,
+    ProjectionRole, ResidentProjectionRequest, XeProjectionEngine,
 };
 use half::{bf16, f16};
 use rand::{Rng, SeedableRng};
@@ -42,6 +42,8 @@ struct Cli {
     rows: Vec<usize>,
     #[arg(long, default_value_t = 128)]
     xe_max_resident_mib: usize,
+    #[arg(long, default_value_t = 0)]
+    xe_expert_cache_mib: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -50,7 +52,8 @@ enum Method {
     Scalar,
     CpuAuto,
     Avx2,
-    Xe,
+    XeStreaming,
+    XeResident,
 }
 
 impl Method {
@@ -59,7 +62,8 @@ impl Method {
             Self::Scalar => "scalar",
             Self::CpuAuto => "cpu_auto",
             Self::Avx2 => "avx2",
-            Self::Xe => "xe",
+            Self::XeStreaming => "xe_streaming",
+            Self::XeResident => "xe_resident",
         }
     }
 }
@@ -106,6 +110,7 @@ struct Projection {
     bias: Vec<f32>,
     canonical: Vec<u8>,
     x8: Vec<u8>,
+    tensor_source_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,8 +135,8 @@ struct ProjectionOutput {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.rows.is_empty() || cli.rows.iter().any(|rows| *rows < 4 || rows % 4 != 0) {
-        bail!("--rows must contain positive multiples of four at or above four");
+    if cli.rows.is_empty() || cli.rows.iter().any(|rows| *rows < 4) {
+        bail!("--rows must contain values at or above the explicit Xe threshold of four");
     }
     let projections = [
         Projection::open(&cli.model, Role::GateUp)?,
@@ -139,20 +144,46 @@ fn main() -> Result<()> {
     ];
     let max_columns = projections.iter().map(|value| value.columns).max().unwrap();
     let max_blocks = projections.iter().map(|value| value.blocks).max().unwrap();
-    let xe = XeProjectionEngine::attach(AttachConfig::new(
-        AttachmentMode::Explicit,
-        &cli.repack_cache,
-        cli.xe_max_resident_mib
-            .checked_mul(1024 * 1024)
-            .context("Xe resident cap overflows bytes")?,
-        max_columns,
-        max_blocks,
-    ))?;
+    let model_source_key = model_source_key(&cli.model)?;
+    let xe = XeProjectionEngine::attach(
+        AttachConfig::new(
+            AttachmentMode::Explicit,
+            &cli.repack_cache,
+            cli.xe_max_resident_mib
+                .checked_mul(1024 * 1024)
+                .context("Xe resident cap overflows bytes")?,
+            max_columns,
+            max_blocks,
+        )
+        .with_expert_cache_bytes(
+            cli.xe_expert_cache_mib
+                .checked_mul(1024 * 1024)
+                .context("Xe expert-cache cap overflows bytes")?,
+        ),
+    )?;
     let xe_descriptor = xe.descriptor()?;
     let orders = [
-        [Method::Scalar, Method::CpuAuto, Method::Avx2, Method::Xe],
-        [Method::CpuAuto, Method::Avx2, Method::Xe, Method::Scalar],
-        [Method::Xe, Method::Scalar, Method::CpuAuto, Method::Avx2],
+        [
+            Method::Scalar,
+            Method::CpuAuto,
+            Method::Avx2,
+            Method::XeStreaming,
+            Method::XeResident,
+        ],
+        [
+            Method::CpuAuto,
+            Method::XeResident,
+            Method::Avx2,
+            Method::Scalar,
+            Method::XeStreaming,
+        ],
+        [
+            Method::XeStreaming,
+            Method::Avx2,
+            Method::XeResident,
+            Method::CpuAuto,
+            Method::Scalar,
+        ],
     ];
     let mut cpu_scratch = vec![0_u8; (1 << 20) + 4096];
     let mut reports = Vec::new();
@@ -165,12 +196,26 @@ fn main() -> Result<()> {
                 &inputs,
                 Method::Scalar,
                 &xe,
+                &model_source_key,
                 &mut cpu_scratch,
             )?
             .0;
-            for method in [Method::CpuAuto, Method::Avx2, Method::Xe] {
-                let actual =
-                    run_projection(projection, rows, &inputs, method, &xe, &mut cpu_scratch)?.0;
+            for method in [
+                Method::CpuAuto,
+                Method::Avx2,
+                Method::XeStreaming,
+                Method::XeResident,
+            ] {
+                let actual = run_projection(
+                    projection,
+                    rows,
+                    &inputs,
+                    method,
+                    &xe,
+                    &model_source_key,
+                    &mut cpu_scratch,
+                )?
+                .0;
                 compare_outputs(&expected, &actual).with_context(|| {
                     format!(
                         "{} M={rows} {} correctness",
@@ -190,6 +235,7 @@ fn main() -> Result<()> {
                                 &inputs,
                                 method,
                                 &xe,
+                                &model_source_key,
                                 &mut cpu_scratch,
                             )?
                             .0,
@@ -202,6 +248,7 @@ fn main() -> Result<()> {
                             &inputs,
                             method,
                             &xe,
+                            &model_source_key,
                             &mut cpu_scratch,
                         )?;
                         samples.push(Sample {
@@ -226,6 +273,7 @@ fn main() -> Result<()> {
             }));
         }
     }
+    let xe_residency = xe.residency_stats()?;
     xe.shutdown()?;
     let result = json!({
         "schema": "gpt-oss-rs.xe-transfer-inclusive-projection/v1",
@@ -238,7 +286,9 @@ fn main() -> Result<()> {
         "trial_count": TRIALS,
         "warmups_per_method_per_trial": WARMUPS,
         "samples_per_method_per_trial": SAMPLES,
-        "methods": ["scalar", "cpu_auto", "avx2", "xe"],
+        "methods": ["scalar", "cpu_auto", "avx2", "xe_streaming", "xe_resident"],
+        "xe_expert_cache_mib": cli.xe_expert_cache_mib,
+        "xe_residency": xe_residency,
         "timed_scope": {
             "all": ["residual-Q8 activation preparation", "projection", "BF16 conversion"],
             "xe_additional": ["weight repack", "weight and bias staging", "activation record packing and staging", "argument setup", "submission", "terminal wait", "readback"],
@@ -298,6 +348,7 @@ fn run_projection(
     inputs: &[f32],
     method: Method,
     xe: &XeProjectionEngine,
+    model_source_key: &str,
     cpu_scratch: &mut [u8],
 ) -> Result<(ProjectionOutput, u64)> {
     let started = Instant::now();
@@ -324,7 +375,7 @@ fn run_projection(
                     Mxfp4WeightLayout::InterleavedSplitX8V2,
                     Mxfp4MatmulBackend::Avx2,
                 ),
-                Method::Xe => unreachable!(),
+                Method::XeStreaming | Method::XeResident => unreachable!(),
             };
             let weights =
                 Mxfp4MatrixView::new(records, projection.columns, projection.blocks, layout)?;
@@ -354,17 +405,7 @@ fn run_projection(
             )?;
             output
         }
-        Method::Xe => {
-            let weights_v2 =
-                gpt_oss_xe::repack_v2(projection.columns, projection.blocks, |column, block| {
-                    let source = column * projection.blocks + block;
-                    Ok((
-                        projection.scales[source],
-                        projection.packed[source * 16..source * 16 + 16]
-                            .try_into()
-                            .expect("validated MXFP4 record"),
-                    ))
-                })?;
+        Method::XeStreaming | Method::XeResident => {
             let activation_records = activations
                 .iter()
                 .map(|block| ActivationRecordV2 {
@@ -374,15 +415,45 @@ fn run_projection(
                     residual_scale: block.residual.scale,
                 })
                 .collect::<Vec<_>>();
-            xe.project(ProjectionRequest {
-                role: projection.role.xe(),
-                rows,
-                columns: projection.columns,
-                blocks: projection.blocks,
-                weights_v2: &weights_v2,
-                activations_v2: &activation_records,
-                bias: &projection.bias,
-            })?
+            match method {
+                Method::XeStreaming => {
+                    let weights_v2 = repack_projection(projection)?;
+                    xe.project(ProjectionRequest {
+                        role: projection.role.xe(),
+                        rows,
+                        columns: projection.columns,
+                        blocks: projection.blocks,
+                        weights_v2: &weights_v2,
+                        activations_v2: &activation_records,
+                        bias: &projection.bias,
+                    })?
+                }
+                Method::XeResident => {
+                    xe.project_resident(
+                        ResidentProjectionRequest {
+                            identity: ExpertCacheIdentity {
+                                model_source_key: model_source_key.to_owned(),
+                                tensor_source_key: projection.tensor_source_key.clone(),
+                                layer: 0,
+                                expert: EXPERT as u16,
+                                role: projection.role.xe(),
+                                columns: projection.columns,
+                                blocks: projection.blocks,
+                                weight_layout_version: 2,
+                            },
+                            role: projection.role.xe(),
+                            rows,
+                            columns: projection.columns,
+                            blocks: projection.blocks,
+                            activations_v2: &activation_records,
+                            bias: &projection.bias,
+                        },
+                        || repack_projection(projection),
+                    )?
+                    .output
+                }
+                _ => unreachable!(),
+            }
         }
     };
     let bf16_boundary = output
@@ -396,6 +467,18 @@ fn run_projection(
         },
         started.elapsed().as_nanos() as u64,
     ))
+}
+
+fn repack_projection(projection: &Projection) -> Result<Vec<u8>, gpt_oss_xe::XeError> {
+    gpt_oss_xe::repack_v2(projection.columns, projection.blocks, |column, block| {
+        let source = column * projection.blocks + block;
+        Ok((
+            projection.scales[source],
+            projection.packed[source * 16..source * 16 + 16]
+                .try_into()
+                .expect("validated MXFP4 record"),
+        ))
+    })
 }
 
 fn compare_outputs(expected: &ProjectionOutput, actual: &ProjectionOutput) -> Result<()> {
@@ -497,6 +580,13 @@ impl Projection {
                 read_expert_tensor(&mut file, file_len, data_start, &scales_tensor, scale_bytes)?;
             let bias_bytes =
                 read_expert_tensor(&mut file, file_len, data_start, &bias_tensor, bias_bytes)?;
+            let mut tensor_identity = Sha256::new();
+            tensor_identity.update(b"gpt-oss-rs-xe-projection-tensor-v1");
+            tensor_identity.update(blocks_name.as_bytes());
+            tensor_identity.update(&packed);
+            tensor_identity.update(&scales);
+            tensor_identity.update(&bias_bytes);
+            let tensor_source_key = format!("{:x}", tensor_identity.finalize());
             let bias = decode_floats(bias_tensor.dtype, &bias_bytes)?;
             let canonical = canonical_records(&packed, &scales);
             let x8 = x8_records(&packed, &scales, columns, blocks);
@@ -509,6 +599,7 @@ impl Projection {
                 bias,
                 canonical,
                 x8,
+                tensor_source_key,
             });
         }
         bail!(
@@ -516,6 +607,21 @@ impl Projection {
             snapshot.display()
         )
     }
+}
+
+fn model_source_key(snapshot: &Path) -> Result<String> {
+    let canonical = snapshot.canonicalize()?;
+    let mut identity = Sha256::new();
+    identity.update(b"gpt-oss-rs-xe-gate-model-v1");
+    identity.update(canonical.as_os_str().as_encoded_bytes());
+    for name in ["config.json", "model.safetensors.index.json"] {
+        let path = canonical.join(name);
+        if path.is_file() {
+            identity.update(name.as_bytes());
+            identity.update(std::fs::read(path)?);
+        }
+    }
+    Ok(format!("{:x}", identity.finalize()))
 }
 
 fn read_expert_tensor(

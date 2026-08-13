@@ -105,6 +105,16 @@ impl SourceIdentity {
         }
         format!("{:x}", digest.finalize())
     }
+
+    pub fn stable_key(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"gpt-oss-rs-model-source-v1");
+        digest.update(self.model_revision.as_bytes());
+        for hash in &self.source_hashes {
+            digest.update(hash.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +288,15 @@ impl RepackedMxfp4 {
 
     pub const fn layout(&self) -> Mxfp4WeightLayout {
         self.layout
+    }
+
+    pub fn source_key(&self) -> String {
+        self.path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown-repack")
+            .to_owned()
     }
 
     pub fn expert_view(&self, expert: usize) -> Result<Mxfp4MatrixView<'_>> {

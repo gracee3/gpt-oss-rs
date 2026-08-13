@@ -440,7 +440,7 @@ fn packed_panel_scale(panel: &[u8], base: usize, row: usize) -> f32 {
 ///
 /// Each x8 weight chunk is decoded once and reused for every input row and for
 /// both residual passes before the next K block is loaded.
-pub(super) struct Avx2MatmulDestination<'a> {
+pub(super) struct MatmulDestination<'a> {
     pub(super) bias: Option<&'a [f32]>,
     pub(super) output: &'a mut [f32],
     pub(super) output_stride: usize,
@@ -452,7 +452,7 @@ pub(super) unsafe fn mxfp4_matmul_x8_avx2(
     input_start: usize,
     input_rows: usize,
     activations: Mxfp4ActivationMatrix<'_>,
-    destination: Avx2MatmulDestination<'_>,
+    destination: MatmulDestination<'_>,
     panel: &[u8],
 ) {
     let (blocks, passes) = match activations {
@@ -609,6 +609,126 @@ unsafe fn mxfp4_x8_block_dots_avx512_vnni(
         }
     }
     (primary, residual)
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn mxfp4_x8_panel_block_dots_avx512_vnni(
+    packed: &[u8; 136],
+    primary: *const i8,
+    residual: Option<*const i8>,
+    input_rows: usize,
+) -> ([[i32; 8]; 8], [[i32; 8]; 8]) {
+    let mut primary_dots = [[0_i32; 8]; 8];
+    let mut residual_dots = [[0_i32; 8]; 8];
+    for chunk in 0..2 {
+        // Decode each eight-output x8-v2 weight chunk once, then reuse both
+        // ZMM vectors across all eight input rows and the residual pass.
+        // SAFETY: the fixed x8 record contains both complete 64-byte chunks.
+        let (low_weights, high_weights) =
+            unsafe { decode_mxfp4_x8_chunk_avx512(packed.as_ptr().add(8 + chunk * 64)) };
+        for input_row in 0..input_rows {
+            // SAFETY: the caller supplies eight complete 32-byte panel rows.
+            let row = unsafe { primary.add(input_row * QUANT_BLOCK_SIZE) };
+            let low = unsafe { dot_eight_rows_eight_avx512_vnni(low_weights, row.add(chunk * 8)) };
+            let high =
+                unsafe { dot_eight_rows_eight_avx512_vnni(high_weights, row.add(16 + chunk * 8)) };
+            for output in 0..8 {
+                primary_dots[input_row][output] += low[output] + high[output];
+            }
+
+            if let Some(residual) = residual {
+                // SAFETY: residual panel rows have the same fixed extent.
+                let row = unsafe { residual.add(input_row * QUANT_BLOCK_SIZE) };
+                let low =
+                    unsafe { dot_eight_rows_eight_avx512_vnni(low_weights, row.add(chunk * 8)) };
+                let high = unsafe {
+                    dot_eight_rows_eight_avx512_vnni(high_weights, row.add(16 + chunk * 8))
+                };
+                for output in 0..8 {
+                    residual_dots[input_row][output] += low[output] + high[output];
+                }
+            }
+        }
+    }
+    (primary_dots, residual_dots)
+}
+
+/// Eight-input-row by eight-output-row AVX-512/VNNI MXFP4 matrix kernel.
+///
+/// The persistent x8-v2 layout is unchanged. Each decoded ZMM weight pair is
+/// reused across the full input microtile and both residual-Q8 passes.
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub(super) unsafe fn mxfp4_matmul_x8_avx512_vnni(
+    weights: Mxfp4MatrixView<'_>,
+    input_start: usize,
+    input_rows: usize,
+    activations: Mxfp4ActivationMatrix<'_>,
+    destination: MatmulDestination<'_>,
+    panel: &[u8],
+) {
+    let (blocks, passes) = match activations {
+        Mxfp4ActivationMatrix::Q8(view) => (view.blocks_per_row(), 1),
+        Mxfp4ActivationMatrix::ResidualQ8(view) => (view.blocks_per_row(), 2),
+    };
+    let pass_bytes = crate::matmul::avx512_panel_pass_bytes();
+    for group in 0..weights.complete_x8_groups() {
+        let output_start = group * 8;
+        let initial = if let Some(bias) = destination.bias {
+            // SAFETY: every group spans eight validated outputs.
+            unsafe { _mm256_loadu_ps(bias.as_ptr().add(output_start)) }
+        } else {
+            _mm256_setzero_ps()
+        };
+        let mut accumulators = [initial; 8];
+        for block in 0..blocks {
+            let packed = weights.x8_block(group, block);
+            let primary_base = (block * passes) * pass_bytes;
+            let residual_base = (block * passes + 1) * pass_bytes;
+            // SAFETY: the AVX-512 panel stores eight 32-byte rows after its
+            // eight FP32 scales in every pass.
+            let primary = unsafe { panel.as_ptr().add(primary_base + 32).cast::<i8>() };
+            let residual = (passes == 2)
+                .then(|| unsafe { panel.as_ptr().add(residual_base + 32).cast::<i8>() });
+            let (primary_dots, residual_dots) = unsafe {
+                mxfp4_x8_panel_block_dots_avx512_vnni(packed, primary, residual, input_rows)
+            };
+            let weight_scales = x8_weight_scales(packed);
+            for input_row in 0..input_rows {
+                // SAFETY: each fixed row contains eight INT32 dots.
+                let dots = unsafe {
+                    _mm256_loadu_si256(primary_dots[input_row].as_ptr().cast::<__m256i>())
+                };
+                let mut contribution = _mm256_cvtepi32_ps(dots);
+                contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+                contribution = _mm256_mul_ps(contribution, weight_scales);
+                contribution = _mm256_mul_ps(
+                    contribution,
+                    _mm256_set1_ps(packed_panel_scale(panel, primary_base, input_row)),
+                );
+                accumulators[input_row] = _mm256_add_ps(accumulators[input_row], contribution);
+
+                if passes == 2 {
+                    // SAFETY: each fixed row contains eight INT32 dots.
+                    let dots = unsafe {
+                        _mm256_loadu_si256(residual_dots[input_row].as_ptr().cast::<__m256i>())
+                    };
+                    let mut contribution = _mm256_cvtepi32_ps(dots);
+                    contribution = _mm256_mul_ps(contribution, _mm256_set1_ps(0.5));
+                    contribution = _mm256_mul_ps(contribution, weight_scales);
+                    contribution = _mm256_mul_ps(
+                        contribution,
+                        _mm256_set1_ps(packed_panel_scale(panel, residual_base, input_row)),
+                    );
+                    accumulators[input_row] = _mm256_add_ps(accumulators[input_row], contribution);
+                }
+            }
+        }
+        for (input_row, accumulator) in accumulators.iter().enumerate().take(input_rows) {
+            let offset = (input_start + input_row) * destination.output_stride + output_start;
+            // SAFETY: the validated problem reserves eight output elements.
+            unsafe { _mm256_storeu_ps(destination.output.as_mut_ptr().add(offset), *accumulator) };
+        }
+    }
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]

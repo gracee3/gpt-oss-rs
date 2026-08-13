@@ -11,6 +11,7 @@ extern crate self as gpt_oss_model_runner;
 pub mod architectures;
 pub mod attention;
 pub mod bridge;
+pub mod cpu_profile;
 pub mod cpu_repack;
 pub mod cpu_runner;
 pub mod cpu_tensor_store;
@@ -45,12 +46,18 @@ pub use attention::{
     MockAttentionBackend, PagedAttentionV2, SlidingWindowAttention, SlidingWindowConfig,
     SplitKvAttention,
 };
+pub use cpu_profile::{
+    CpuExecutionProfileDocument, CpuExecutionProfileRecord, CpuProfileAttentionClass,
+    CpuProfileFallbackReason, CpuProfileOperation, CpuProfilePhase, CpuProfilePreparationState,
+    CpuProfileProjectionRole, CpuProfileResidencyState, CpuProfileTransactionState,
+    EXECUTION_PROFILE_SCHEMA,
+};
 pub use cpu_runner::{
-    CpuExecutionContext, CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache,
-    CpuLayerTrace, CpuMappedFile, CpuMemoryDescriptor, CpuModel, CpuModelRunner,
-    CpuModelRunnerOptions, CpuPrefillTrace, CpuSequenceModelState, CpuStateRevision, CpuStepBatch,
-    CpuStepPhase, CpuStepRow, CpuTopLogit, CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow,
-    PreparedCpuStep,
+    CpuDenseBoundaryProbe, CpuDenseBoundaryTrace, CpuDensePrefixAccumulator, CpuExecutionContext,
+    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuMappedFile,
+    CpuMemoryDescriptor, CpuModel, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
+    CpuSequenceModelState, CpuStateRevision, CpuStepBatch, CpuStepPhase, CpuStepRow, CpuTopLogit,
+    CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow, PreparedCpuStep,
 };
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;

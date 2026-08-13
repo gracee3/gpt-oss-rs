@@ -50,19 +50,41 @@ trait CpuBatchForward: Send {
         batch: &CpuStepBatch,
         table: &SequenceTable,
     ) -> Result<Box<dyn CpuPreparedModel>>;
+    fn flush_profile(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 struct NativeCpuBatchForward {
     model: Arc<CpuModel>,
     execution: CpuExecutionContext,
+    profile_output: Option<std::path::PathBuf>,
 }
 
 impl NativeCpuBatchForward {
-    fn new(model: Arc<CpuModel>) -> Self {
-        Self {
+    fn new(model: Arc<CpuModel>, config: &EngineConfig) -> Result<Self> {
+        let execution = if config.device.cpu_profile_output.is_some() {
+            let capacity = config
+                .device
+                .cpu_profile_cap_mib
+                .unwrap_or(16)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| LLMError::ConfigError("CPU profile cap overflows bytes".into()))?;
+            CpuExecutionContext::profiled(
+                capacity,
+                model.requested_kernel_path(),
+                model.kernel_path(),
+                model.matmul_backend(),
+                model.thread_count(),
+            )?
+        } else {
+            CpuExecutionContext::new()
+        };
+        Ok(Self {
             model,
-            execution: CpuExecutionContext::new(),
-        }
+            execution,
+            profile_output: config.device.cpu_profile_output.clone(),
+        })
     }
 }
 
@@ -175,6 +197,14 @@ impl CpuBatchForward for NativeCpuBatchForward {
             })
             .collect();
         Ok(Box::new(NativePreparedModel { prepared, rows }))
+    }
+
+    fn flush_profile(&mut self) -> Result<()> {
+        if let Some(path) = &self.profile_output {
+            self.execution
+                .write_profile(&self.model, path, Some("cpu-service".into()))?;
+        }
+        Ok(())
     }
 }
 
@@ -301,9 +331,10 @@ impl CpuBatchEngine {
             ReservationLimits::bounded(config.scheduler.max_num_seqs, worst_total, global_budget)
                 .with_class_limit(MemoryClass::Delivery, delivery_limit);
         let ledger = ReservationLedger::new(limits).map_err(grant_error)?;
+        let forward = Box::new(NativeCpuBatchForward::new(model, &config)?);
         let mut engine = Self::from_forward_with_decoded_bound(
             config,
-            Box::new(NativeCpuBatchForward::new(model)),
+            forward,
             tokenizer,
             decoded_token_byte_bound,
         )?;
@@ -866,7 +897,7 @@ impl CpuBatchEngine {
             ledger.release_all().map_err(grant_error)?;
         }
         self.request_grants.clear();
-        Ok(())
+        self.forward.flush_profile()
     }
 
     pub fn reservation_ledger(&self) -> Option<&ReservationLedger> {
@@ -969,6 +1000,7 @@ fn grant_error(error: crate::memory::GrantFailure) -> LLMError {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::service::{ServiceState, StableFailureCode};
     use tokenizers::models::bpe::BPE;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
     use tokenizers::Tokenizer as HfTokenizer;
@@ -1354,5 +1386,83 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(calls.lock().unwrap().commits, 0);
         engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn owner_progresses_without_client_reads_and_releases_delivery_ownership() {
+        let (engine, calls) = engine(1, 1, 0);
+        let engine = crate::AsyncCpuBatchEngine::new(engine);
+        let mut request = engine.generate("hello".into(), params(2)).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if calls.lock().unwrap().commits >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = request.events.recv().await {
+            events.push(event);
+        }
+        assert!(matches!(events.last(), Some(CommittedEvent::Done)));
+        assert_eq!(engine.queued_delivery_bytes(), 0);
+        engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_after_first_commit_allows_recovery_request_and_clean_shutdown() {
+        let (engine, calls) = engine(1, 1, 0);
+        let engine = crate::AsyncCpuBatchEngine::new(engine);
+        let mut first = engine.generate("hello".into(), params(3)).await.unwrap();
+        assert!(matches!(
+            first.events.recv().await,
+            Some(CommittedEvent::Delta { .. })
+        ));
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if engine.available_request_slots() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut recovery = engine.generate("world".into(), params(1)).await.unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = recovery.events.recv().await {
+            events.push(event);
+        }
+        assert!(matches!(events.last(), Some(CommittedEvent::Done)));
+        assert!(calls.lock().unwrap().commits >= 2);
+        assert_eq!(engine.queued_delivery_bytes(), 0);
+        engine.shutdown().await.unwrap();
+        assert_eq!(engine.lifecycle().status().state, ServiceState::Stopped);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn draining_closes_admission_finishes_active_work_and_joins_owner() {
+        let (engine, _) = engine(1, 1, 0);
+        let engine = crate::AsyncCpuBatchEngine::new(engine);
+        let mut active = engine.generate("hello".into(), params(2)).await.unwrap();
+        engine.begin_shutdown().unwrap();
+        let rejected = engine
+            .generate("world".into(), params(1))
+            .await
+            .unwrap_err();
+        assert_eq!(rejected.code, StableFailureCode::Draining);
+        let mut events = Vec::new();
+        while let Some(event) = active.events.recv().await {
+            events.push(event);
+        }
+        assert!(matches!(events.last(), Some(CommittedEvent::Done)));
+        engine.shutdown().await.unwrap();
+        assert_eq!(engine.lifecycle().status().state, ServiceState::Stopped);
+        assert_eq!(engine.queued_delivery_bytes(), 0);
     }
 }

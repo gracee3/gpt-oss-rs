@@ -1,5 +1,16 @@
 # GPT-OSS CPU Full-Checkpoint Regression Procedure
 
+> The captures and counts produced by earlier revisions of this procedure are
+> retired historical records. They must not be reused or counted by the fresh
+> container-oracle campaign. The current authoritative procedure is
+> [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md).
+
+The current Tiger Lake implementation candidate and its fresh six-cell by
+seven-scenario certification are closed in
+[`TIGER_LAKE_CLOSURE.md`](TIGER_LAKE_CLOSURE.md). That record supersedes the
+historical 28-cell counts below for current-branch status; this file remains
+the general repeatable full-checkpoint regression procedure.
+
 This procedure produced the evidence used to merge the experimental CPU
 serving baseline. Re-run it after numerical changes, kernel-plan changes,
 packed-layout changes, or cache-format changes. The initial i5 checks cover
@@ -75,8 +86,8 @@ IDs for the 63-, 122-, 136-, 262-, 346-, and 444-token prompts plus the tool
 history prompt. Generated captures, model files, traces, and benchmark output
 must remain outside Git. Set `MODEL_ROOT` to the resolved SafeTensors snapshot,
 `PINNED_GPT_OSS_SOURCE` to a clean checkout at the manifest's official source
-revision, and `ORACLE_PYTHON` to a Python environment containing CPU PyTorch
-and SafeTensors.
+revision. For new evidence, never select a host Python environment: use the
+digest-locked container interface in the fresh campaign procedure.
 
 ```bash
 cargo run --release --locked -p gpt-oss-bench --bin cpu_parity -- \

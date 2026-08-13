@@ -101,7 +101,7 @@ pub struct CliArgs {
     #[arg(long, default_value = "auto")]
     pub cpu_kernel: String,
 
-    /// MXFP4 matrix backend: auto, scalar, avx2, or amx-int8.
+    /// MXFP4 matrix backend: auto, scalar, avx2, avx512-vnni, or amx-int8.
     #[arg(long, default_value = "auto")]
     pub cpu_matmul_backend: String,
 
@@ -116,6 +116,18 @@ pub struct CliArgs {
     /// Maximum device-resident Xe projection slab in MiB.
     #[arg(long, default_value_t = 128)]
     pub xe_max_resident_mib: usize,
+
+    /// Forced-only immutable Xe expert cache in MiB (requires --device xe).
+    #[arg(long, default_value_t = 0)]
+    pub xe_expert_cache_mib: usize,
+
+    /// Atomic output path for bounded CPU execution-profile JSON.
+    #[arg(long)]
+    pub cpu_profile_output: Option<std::path::PathBuf>,
+
+    /// Profile record-slab cap in MiB; valid only with --cpu-profile-output.
+    #[arg(long, requires = "cpu_profile_output")]
+    pub cpu_profile_cap_mib: Option<usize>,
 
     // -- Telemetry --
     /// Disable telemetry.

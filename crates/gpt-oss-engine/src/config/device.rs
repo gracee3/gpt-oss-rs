@@ -58,6 +58,16 @@ pub struct DeviceConfig {
     /// Hard bound for the Xe device slab, excluding CPU fallback resources.
     #[serde(default = "default_xe_max_resident_mib")]
     pub xe_max_resident_mib: usize,
+    /// Forced-only immutable Xe expert weight/bias cache capacity in MiB.
+    /// Zero disables residency and preserves the streaming path.
+    #[serde(default)]
+    pub xe_expert_cache_mib: usize,
+    /// Optional atomic execution-profile output. `None` is fully disabled.
+    #[serde(default)]
+    pub cpu_profile_output: Option<PathBuf>,
+    /// Bounded record slab capacity when profiling is enabled.
+    #[serde(default)]
+    pub cpu_profile_cap_mib: Option<usize>,
 }
 
 impl Default for DeviceConfig {
@@ -69,6 +79,9 @@ impl Default for DeviceConfig {
             cpu_threads: default_cpu_threads(),
             cpu_repack_cache: default_cpu_repack_cache(),
             xe_max_resident_mib: default_xe_max_resident_mib(),
+            xe_expert_cache_mib: 0,
+            cpu_profile_output: None,
+            cpu_profile_cap_mib: None,
         }
     }
 }
@@ -123,6 +136,21 @@ impl DeviceConfigBuilder {
     /// Set the bounded Xe device slab size in MiB.
     pub fn xe_max_resident_mib(mut self, v: usize) -> Self {
         self.0.xe_max_resident_mib = v;
+        self
+    }
+
+    pub fn xe_expert_cache_mib(mut self, v: usize) -> Self {
+        self.0.xe_expert_cache_mib = v;
+        self
+    }
+
+    pub fn cpu_profile_output(mut self, v: Option<PathBuf>) -> Self {
+        self.0.cpu_profile_output = v;
+        self
+    }
+
+    pub fn cpu_profile_cap_mib(mut self, v: Option<usize>) -> Self {
+        self.0.cpu_profile_cap_mib = v;
         self
     }
 

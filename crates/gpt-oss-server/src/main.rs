@@ -57,6 +57,12 @@ enum Commands {
         cpu_repack_cache: Option<PathBuf>,
         #[arg(long, default_value_t = 128)]
         xe_max_resident_mib: usize,
+        #[arg(long, default_value_t = 0)]
+        xe_expert_cache_mib: usize,
+        #[arg(long)]
+        cpu_profile_output: Option<PathBuf>,
+        #[arg(long, requires = "cpu_profile_output")]
+        cpu_profile_cap_mib: Option<usize>,
         #[arg(long, value_enum, default_value_t = RuntimeMode::Experimental)]
         runtime_mode: RuntimeMode,
         #[arg(long, value_enum, default_value_t = ServeProfile::Auto)]
@@ -104,7 +110,14 @@ enum Commands {
         diagnostic_acknowledge: bool,
     },
     /// Show system info (GPU, memory, etc.)
-    Info,
+    Info {
+        #[arg(long, value_enum, default_value_t = InfoFormat::Text)]
+        format: InfoFormat,
+        #[arg(long, value_enum, default_value_t = CpuKernelChoice::Auto)]
+        cpu_kernel: CpuKernelChoice,
+        #[arg(long, value_enum, default_value_t = CpuMatmulBackendChoice::Auto)]
+        cpu_matmul_backend: CpuMatmulBackendChoice,
+    },
     /// Run benchmarks
     Benchmark {
         #[arg(long)]
@@ -180,7 +193,14 @@ enum CpuMatmulBackendChoice {
     Auto,
     Scalar,
     Avx2,
+    Avx512Vnni,
     AmxInt8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum InfoFormat {
+    Text,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -208,6 +228,7 @@ impl CpuMatmulBackendChoice {
             Self::Auto => "auto",
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2",
+            Self::Avx512Vnni => "avx512-vnni",
             Self::AmxInt8 => "amx-int8",
         }
     }
@@ -232,6 +253,7 @@ fn init_tracing(log_level: &str) {
         .init();
 }
 
+#[allow(dead_code)]
 fn detect_gpu_and_log() -> bool {
     let devices = gpt_oss_gpu::prelude::list_devices();
     if devices.is_empty() {
@@ -334,6 +356,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cpu_threads,
             cpu_repack_cache,
             xe_max_resident_mib,
+            xe_expert_cache_mib,
+            cpu_profile_output,
+            cpu_profile_cap_mib,
             runtime_mode,
             profile,
             tokenizer,
@@ -428,6 +453,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .cpu_threads(cpu_threads)
                             .cpu_repack_cache(cpu_repack_cache.clone())
                             .xe_max_resident_mib(xe_max_resident_mib)
+                            .xe_expert_cache_mib(xe_expert_cache_mib)
+                            .cpu_profile_output(cpu_profile_output)
+                            .cpu_profile_cap_mib(cpu_profile_cap_mib)
                             .build(),
                     )
                     .telemetry(
@@ -458,6 +486,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 cpu_threads,
                 cpu_repack_cache = %cpu_repack_cache.display(),
                 xe_max_resident_mib,
+                xe_expert_cache_mib,
                 "starting server"
             );
 
@@ -529,13 +558,119 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             })
             .await?;
         }
-        Commands::Info => {
-            init_tracing("info");
-            info!("gpt-oss-rs system info");
-
-            detect_gpu_and_log();
-
-            info!(platform = %std::env::consts::OS, arch = %std::env::consts::ARCH, "system");
+        Commands::Info {
+            format,
+            cpu_kernel,
+            cpu_matmul_backend,
+        } => {
+            let requested_kernel: gpt_oss_cpu_kernels::KernelPath = cpu_kernel.as_str().parse()?;
+            let requested_matmul: gpt_oss_cpu_kernels::Mxfp4MatmulBackend =
+                cpu_matmul_backend.as_str().parse()?;
+            let kernels = gpt_oss_cpu_kernels::Kernels::new(requested_kernel)?;
+            let identity = gpt_oss_cpu_kernels::CpuHardwareIdentity::detect();
+            let features = gpt_oss_cpu_kernels::CpuFeatures::detect();
+            let plan = kernels.dispatch_plan();
+            let tiger_lake_profile = gpt_oss_cpu_kernels::tiger_lake_profile_matches(
+                &identity,
+                features,
+                gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+            );
+            let matrix_regions = if requested_matmul
+                == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto
+                && tiger_lake_profile
+            {
+                gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_REGIONS
+                    .iter()
+                    .map(|region| {
+                        serde_json::json!({
+                            "activation": region.activation, "m_start": region.m_start,
+                            "m_end": region.m_end, "n": region.n, "k": region.k,
+                            "backend": region.backend.to_string(),
+                            "thread_policy": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let report = serde_json::json!({
+                "schema": "gpt-oss-rs.cpu-info/v1",
+                "platform": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
+                "identity": {
+                    "vendor": identity.vendor, "family": identity.family,
+                    "model": identity.model, "stepping": identity.stepping,
+                    "physical_cores": identity.physical_cores,
+                    "logical_cpus": identity.logical_cpus,
+                    "microcode": identity.microcode.map(|value| format!("0x{value:x}")),
+                    "osxsave": identity.osxsave,
+                    "xcr0": identity.xcr0, "hardware_profile_key": identity.profile_key()
+                },
+                "legal_capabilities": {
+                    "avx2": features.avx2, "fma": features.fma,
+                    "avx_vnni": features.avx_vnni, "avx512_f": features.avx512_f,
+                    "avx512_bw": features.avx512_bw, "avx512_vl": features.avx512_vl,
+                    "avx512_vnni": features.avx512_vnni, "avx512_bf16": features.avx512_bf16,
+                    "amx_tile": features.amx_tile, "amx_int8": features.amx_int8
+                },
+                "requested": { "cpu_kernel": requested_kernel.to_string(), "cpu_matmul_backend": requested_matmul.to_string() },
+                "resolved": {
+                    "cpu_kernel": kernels.path().to_string(), "bf16_matvec": plan.bf16_matvec().to_string(),
+                    "quantize_q8": plan.quantize_q8().to_string(), "mxfp4_q8_dot": plan.mxfp4_q8_dot().to_string(),
+                    "mxfp4_gemv": plan.mxfp4_gemv().to_string(), "mxfp4_weight_layout": plan.mxfp4_weight_layout().to_string(),
+                    "mxfp4_matrix": if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto && !matrix_regions.is_empty() { "profiled-tiger-lake".to_string() } else if requested_matmul == gpt_oss_cpu_kernels::Mxfp4MatmulBackend::Auto { "scalar-multi-row".to_string() } else { requested_matmul.to_string() },
+                    "rms_norm": plan.rms_norm().to_string()
+                },
+                "matrix_crossover_regions": matrix_regions,
+                "matrix_promotion": {
+                    "profile_matches": tiger_lake_profile,
+                    "required_threads": gpt_oss_cpu_kernels::TIGER_LAKE_THREAD_POLICY,
+                    "benchmark_commit": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_BENCHMARK_COMMIT,
+                    "evidence_sha256": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256,
+                    "full_request_evidence_sha256": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_FULL_REQUEST_EVIDENCE_SHA256,
+                    "result": gpt_oss_cpu_kernels::TIGER_LAKE_MXFP4_PROMOTION_RESULT,
+                    "fallback": "scalar for M>1 outside exact regions or on any profile/thread/capability mismatch"
+                }
+            });
+            match format {
+                InfoFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+                InfoFormat::Text => {
+                    println!(
+                        "CPU: {} family {} model {} stepping {}",
+                        identity.vendor, identity.family, identity.model, identity.stepping
+                    );
+                    println!("hardware profile: {}", identity.profile_key());
+                    println!(
+                        "topology: {} physical cores / {} logical CPUs; microcode={}",
+                        identity.physical_cores,
+                        identity.logical_cpus,
+                        identity
+                            .microcode
+                            .map_or_else(|| "unknown".into(), |value| format!("0x{value:x}"))
+                    );
+                    println!("XCR0: 0x{:x} (OSXSAVE={})", identity.xcr0, identity.osxsave);
+                    println!(
+                        "requested: kernel={}, matrix={}",
+                        requested_kernel, requested_matmul
+                    );
+                    println!(
+                        "resolved: {} matrix={}",
+                        plan,
+                        report["resolved"]["mxfp4_matrix"]
+                            .as_str()
+                            .unwrap_or("unknown")
+                    );
+                    if report["matrix_crossover_regions"]
+                        .as_array()
+                        .is_some_and(|regions| !regions.is_empty())
+                    {
+                        println!(
+                            "matrix crossover regions: residual-q8 M=3 N=2880|5760 K=2880 -> avx2 (4 threads); all other M>1 -> scalar"
+                        );
+                    } else {
+                        println!("matrix crossover regions: none (Auto is scalar for M>1)");
+                    }
+                }
+            }
         }
         Commands::Benchmark {
             model,

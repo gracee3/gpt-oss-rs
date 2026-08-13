@@ -1,5 +1,11 @@
 # Documentation
 
+- [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
+- [Bounded CPU execution profiling](CPU_EXECUTION_PROFILING.md)
+- [Tiger Lake MXFP4 matrix candidate](TIGER_LAKE_MXFP4_MATRIX.md)
+- [Tiger Lake forced Xe expert residency](TIGER_LAKE_XE_RESIDENCY.md)
+- [Tiger Lake candidate-specific closure](TIGER_LAKE_CLOSURE.md)
+
 ## Runtime and backend
 
 - [`CPU_RUNTIME.md`](CPU_RUNTIME.md): native CPU storage, numerical, serving,
@@ -8,6 +14,21 @@
   CPU architecture, research questions, benchmarks, and staged kernel plan.
 - [`CPU_I7_CONFORMANCE.md`](CPU_I7_CONFORMANCE.md): repeatable full-checkpoint
   CPU regression and comparison procedure.
+- [`TIGER_LAKE_CPU_CORPUS.md`](TIGER_LAKE_CPU_CORPUS.md): hashed seven-scenario
+  operation, timing, and expert-bucket evidence used for matrix promotion.
+- [`TIGER_LAKE_MXFP4_MATRIX.md`](TIGER_LAKE_MXFP4_MATRIX.md): genuine 8x8
+  AVX-512/VNNI candidate and the evidence-backed negative Tiger Lake Auto
+  decision.
+- [`TIGER_LAKE_XE_RESIDENCY.md`](TIGER_LAKE_XE_RESIDENCY.md): forced-only
+  OpenCL LRU design, live isolated win, and negative full-model capacity result.
+- [`CPU_FRESH_ORACLE_CAMPAIGN.md`](CPU_FRESH_ORACLE_CAMPAIGN.md): immutable
+  v0.0.9 CPU-oracle image publication, lock, fresh-lineage campaign order, and
+  closure rules.
+- [`CPU_FRESH_ORACLE_CLOSURE.md`](CPU_FRESH_ORACLE_CLOSURE.md): candidate-A
+  historical closure keyed to `af6c0a2` and its own E1 artifact set.
+- [`TIGER_LAKE_CLOSURE.md`](TIGER_LAKE_CLOSURE.md): current implementation
+  candidate, profiler/corpus evidence, CPU and Xe negative promotion results,
+  fresh 42-cell certification, service outcomes, and E1 identity.
 - [`UPSTREAM_PROVENANCE.md`](UPSTREAM_PROVENANCE.md): pinned upstream audits and
   attribution map.
 - [`CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md`](CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md):

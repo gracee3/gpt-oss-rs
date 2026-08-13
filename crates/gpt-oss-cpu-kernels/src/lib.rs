@@ -13,14 +13,21 @@ use thiserror::Error;
 mod amx;
 mod features;
 mod matmul;
+mod tiger_lake;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
 pub use amx::{initialize_amx_int8, AmxRuntimeError, AmxRuntimeStatus};
-pub use features::{CpuFeatures, KernelRequirements};
+pub use features::{CpuFeatures, CpuHardwareIdentity, KernelRequirements};
 pub use matmul::{
     Mxfp4ActivationMatrix, Mxfp4MatmulBackend, Mxfp4MatmulProblem, Mxfp4ScratchRequirement,
     Q8MatrixView, ResidualQ8MatrixView,
+};
+pub use tiger_lake::{
+    tiger_lake_auto_matmul_backend, tiger_lake_profile_matches, Mxfp4PromotionRegion,
+    TIGER_LAKE_MXFP4_FULL_REQUEST_EVIDENCE_SHA256, TIGER_LAKE_MXFP4_PROMOTION_BENCHMARK_COMMIT,
+    TIGER_LAKE_MXFP4_PROMOTION_EVIDENCE_SHA256, TIGER_LAKE_MXFP4_PROMOTION_REGIONS,
+    TIGER_LAKE_MXFP4_PROMOTION_RESULT, TIGER_LAKE_PROFILE_KEY, TIGER_LAKE_THREAD_POLICY,
 };
 
 pub const QUANT_BLOCK_SIZE: usize = 32;

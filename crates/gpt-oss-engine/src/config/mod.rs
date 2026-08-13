@@ -121,6 +121,9 @@ fn apply_cli_overrides(config: &mut EngineConfig, args: &CliArgs) {
         config.device.cpu_repack_cache = cpu_repack_cache.clone();
     }
     config.device.xe_max_resident_mib = args.xe_max_resident_mib;
+    config.device.xe_expert_cache_mib = args.xe_expert_cache_mib;
+    config.device.cpu_profile_output = args.cpu_profile_output.clone();
+    config.device.cpu_profile_cap_mib = args.cpu_profile_cap_mib;
 
     // Telemetry
     config.telemetry.enabled = !args.disable_telemetry;
@@ -162,6 +165,9 @@ mod tests {
             cpu_threads: None,
             cpu_repack_cache: None,
             xe_max_resident_mib: 128,
+            xe_expert_cache_mib: 0,
+            cpu_profile_output: None,
+            cpu_profile_cap_mib: None,
             disable_telemetry: false,
             prometheus_port: Some(9090),
             otlp_endpoint: None,
@@ -241,6 +247,9 @@ log_level = "warn"
             cpu_threads: None,
             cpu_repack_cache: None,
             xe_max_resident_mib: 128,
+            xe_expert_cache_mib: 0,
+            cpu_profile_output: None,
+            cpu_profile_cap_mib: None,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,
@@ -284,6 +293,9 @@ log_level = "warn"
             cpu_threads: None,
             cpu_repack_cache: None,
             xe_max_resident_mib: 128,
+            xe_expert_cache_mib: 0,
+            cpu_profile_output: None,
+            cpu_profile_cap_mib: None,
             disable_telemetry: false,
             prometheus_port: None,
             otlp_endpoint: None,

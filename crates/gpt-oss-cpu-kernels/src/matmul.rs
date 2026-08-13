@@ -10,6 +10,9 @@ use crate::{
 const AVX2_PANEL_ROWS: usize = 4;
 const AVX2_PANEL_PASS_BYTES: usize =
     4 * std::mem::size_of::<f32>() + AVX2_PANEL_ROWS * QUANT_BLOCK_SIZE;
+const AVX512_PANEL_ROWS: usize = 8;
+const AVX512_PANEL_PASS_BYTES: usize =
+    AVX512_PANEL_ROWS * std::mem::size_of::<f32>() + AVX512_PANEL_ROWS * QUANT_BLOCK_SIZE;
 #[cfg(feature = "amx-int8")]
 const AMX_TILE_ROWS: usize = 16;
 #[cfg(feature = "amx-int8")]
@@ -30,6 +33,7 @@ pub enum Mxfp4MatmulBackend {
     Auto,
     Scalar,
     Avx2,
+    Avx512Vnni,
     AmxInt8,
 }
 
@@ -39,11 +43,12 @@ impl Mxfp4MatmulBackend {
             Self::Auto => "auto",
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2",
+            Self::Avx512Vnni => "avx512-vnni",
             Self::AmxInt8 => "amx-int8",
         }
     }
 
-    const fn resolve(self, rows: usize) -> Self {
+    pub const fn resolved_for_rows(self, rows: usize) -> Self {
         match self {
             Self::Auto if rows == 1 => Self::Auto,
             Self::Auto => Self::Scalar,
@@ -56,26 +61,31 @@ impl Mxfp4MatmulBackend {
         self,
         problem: &Mxfp4MatmulProblem<'_>,
     ) -> Result<Mxfp4ScratchRequirement, KernelError> {
-        match self.resolve(problem.m()) {
+        match self.resolved_for_rows(problem.m()) {
             Self::Auto | Self::Scalar => Ok(Mxfp4ScratchRequirement::NONE),
-            Self::Avx2 => {
+            Self::Avx2 | Self::Avx512Vnni => {
                 let passes = match problem.activations {
                     Mxfp4ActivationMatrix::Q8(_) => 1,
                     Mxfp4ActivationMatrix::ResidualQ8(_) => 2,
+                };
+                let (pass_bytes, alignment, label) = match self {
+                    Self::Avx2 => (AVX2_PANEL_PASS_BYTES, 32, "AVX2"),
+                    Self::Avx512Vnni => (AVX512_PANEL_PASS_BYTES, 64, "AVX-512/VNNI"),
+                    _ => unreachable!(),
                 };
                 let bytes = problem
                     .weights
                     .blocks()
                     .checked_mul(passes)
-                    .and_then(|value| value.checked_mul(AVX2_PANEL_PASS_BYTES))
+                    .and_then(|value| value.checked_mul(pass_bytes))
                     .ok_or_else(|| {
-                        KernelError::InvalidDimensions(
-                            "AVX2 MXFP4 activation-panel size overflows".into(),
-                        )
+                        KernelError::InvalidDimensions(format!(
+                            "{label} MXFP4 activation-panel size overflows"
+                        ))
                     })?;
                 Ok(Mxfp4ScratchRequirement {
                     size: bytes,
-                    alignment: 32,
+                    alignment,
                 })
             }
             Self::AmxInt8 => amx_scratch_requirement(problem),
@@ -97,6 +107,7 @@ impl FromStr for Mxfp4MatmulBackend {
             "auto" => Ok(Self::Auto),
             "scalar" => Ok(Self::Scalar),
             "avx2" => Ok(Self::Avx2),
+            "avx512-vnni" | "avx512_vnni" => Ok(Self::Avx512Vnni),
             "amx-int8" | "amx_int8" => Ok(Self::AmxInt8),
             _ => Err(KernelError::InvalidMatmulBackend(value.to_string())),
         }
@@ -392,10 +403,11 @@ impl Kernels {
     ) -> Result<(), KernelError> {
         let requirement = backend.scratch_requirement(&problem)?;
         validate_scratch(requirement, scratch)?;
-        match backend.resolve(problem.m()) {
+        match backend.resolved_for_rows(problem.m()) {
             Mxfp4MatmulBackend::Auto if problem.m() == 1 => self.gemv_matmul(&mut problem),
             Mxfp4MatmulBackend::Scalar => scalar_matmul(&mut problem),
             Mxfp4MatmulBackend::Avx2 => avx2_matmul(&mut problem, scratch),
+            Mxfp4MatmulBackend::Avx512Vnni => avx512_vnni_matmul(&mut problem, scratch),
             Mxfp4MatmulBackend::AmxInt8 => amx_matmul(&mut problem, scratch),
             Mxfp4MatmulBackend::Auto => unreachable!("multi-row auto resolves to scalar"),
         }
@@ -833,7 +845,14 @@ fn avx2_matmul(
     let complete_outputs = problem.n() / 8 * 8;
     for input_start in (0..problem.m()).step_by(AVX2_PANEL_ROWS) {
         let input_rows = (problem.m() - input_start).min(AVX2_PANEL_ROWS);
-        pack_avx2_panel(problem.activations, input_start, input_rows, scratch)?;
+        pack_activation_panel(
+            problem.activations,
+            input_start,
+            input_rows,
+            AVX2_PANEL_ROWS,
+            AVX2_PANEL_PASS_BYTES,
+            scratch,
+        )?;
         if complete_outputs != 0 {
             #[cfg(target_arch = "x86_64")]
             // SAFETY: feature and layout checks above plus the validated
@@ -844,7 +863,7 @@ fn avx2_matmul(
                     input_start,
                     input_rows,
                     problem.activations,
-                    crate::x86::Avx2MatmulDestination {
+                    crate::x86::MatmulDestination {
                         bias: problem.bias,
                         output: problem.output,
                         output_stride: problem.output_stride,
@@ -871,10 +890,82 @@ fn avx2_matmul(
     Ok(())
 }
 
-fn pack_avx2_panel(
+fn avx512_vnni_matmul(
+    problem: &mut Mxfp4MatmulProblem<'_>,
+    scratch: &mut [u8],
+) -> Result<(), KernelError> {
+    ensure_avx512_vnni_available(CpuFeatures::detect())?;
+    if problem.weights.layout() != Mxfp4WeightLayout::InterleavedSplitX8V2 {
+        return Err(KernelError::InvalidDimensions(
+            "AVX-512/VNNI MXFP4 matmul requires InterleavedSplitX8V2 weights".into(),
+        ));
+    }
+
+    let complete_outputs = problem.n() / 8 * 8;
+    for input_start in (0..problem.m()).step_by(AVX512_PANEL_ROWS) {
+        let input_rows = (problem.m() - input_start).min(AVX512_PANEL_ROWS);
+        pack_activation_panel(
+            problem.activations,
+            input_start,
+            input_rows,
+            AVX512_PANEL_ROWS,
+            AVX512_PANEL_PASS_BYTES,
+            scratch,
+        )?;
+        if complete_outputs != 0 {
+            #[cfg(target_arch = "x86_64")]
+            // SAFETY: the required x86 feature set and x8-v2 layout were
+            // checked above. The problem and scratch views establish all
+            // matrix, activation-panel, and output bounds.
+            unsafe {
+                crate::x86::mxfp4_matmul_x8_avx512_vnni(
+                    problem.weights,
+                    input_start,
+                    input_rows,
+                    problem.activations,
+                    crate::x86::MatmulDestination {
+                        bias: problem.bias,
+                        output: problem.output,
+                        output_stride: problem.output_stride,
+                    },
+                    scratch,
+                );
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            return Err(KernelError::UnavailableMatmulBackend {
+                backend: Mxfp4MatmulBackend::Avx512Vnni,
+                reason: "the AVX-512/VNNI matrix kernel requires x86-64",
+            });
+        }
+        if complete_outputs != problem.n() {
+            scalar_matmul_range(
+                problem,
+                input_start,
+                input_rows,
+                complete_outputs,
+                problem.n() - complete_outputs,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_avx512_vnni_available(features: CpuFeatures) -> Result<(), KernelError> {
+    if !features.supports(KernelRequirements::AVX512_VNNI_PATH) {
+        return Err(KernelError::UnavailableMatmulBackend {
+            backend: Mxfp4MatmulBackend::Avx512Vnni,
+            reason: "AVX-512F/BW/VL/VNNI and OS vector state are required",
+        });
+    }
+    Ok(())
+}
+
+fn pack_activation_panel(
     activations: Mxfp4ActivationMatrix<'_>,
     input_start: usize,
     input_rows: usize,
+    panel_rows: usize,
+    pass_bytes: usize,
     scratch: &mut [u8],
 ) -> Result<(), KernelError> {
     let passes = match activations {
@@ -882,16 +973,26 @@ fn pack_avx2_panel(
         Mxfp4ActivationMatrix::ResidualQ8(_) => 2,
     };
     let blocks = activations.blocks_per_row();
-    let required = blocks * passes * AVX2_PANEL_PASS_BYTES;
+    if input_rows == 0 || input_rows > panel_rows {
+        return Err(KernelError::InvalidDimensions(
+            "invalid MXFP4 activation-panel row count".into(),
+        ));
+    }
+    let required = blocks * passes * pass_bytes;
     let panel = &mut scratch[..required];
     panel.fill(0);
+    let geometry = PanelGeometry {
+        passes,
+        panel_rows,
+        pass_bytes,
+    };
     for block in 0..blocks {
         for row in 0..input_rows {
             match activations {
                 Mxfp4ActivationMatrix::Q8(view) => {
                     pack_q8_panel_block(
                         panel,
-                        passes,
+                        geometry,
                         block,
                         0,
                         row,
@@ -900,8 +1001,8 @@ fn pack_avx2_panel(
                 }
                 Mxfp4ActivationMatrix::ResidualQ8(view) => {
                     let activation = &view.row(input_start + row)?[block];
-                    pack_q8_panel_block(panel, passes, block, 0, row, &activation.primary);
-                    pack_q8_panel_block(panel, passes, block, 1, row, &activation.residual);
+                    pack_q8_panel_block(panel, geometry, block, 0, row, &activation.primary);
+                    pack_q8_panel_block(panel, geometry, block, 1, row, &activation.residual);
                 }
             }
         }
@@ -909,18 +1010,26 @@ fn pack_avx2_panel(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct PanelGeometry {
+    passes: usize,
+    panel_rows: usize,
+    pass_bytes: usize,
+}
+
 fn pack_q8_panel_block(
     panel: &mut [u8],
-    passes: usize,
+    geometry: PanelGeometry,
     block: usize,
     pass: usize,
     row: usize,
     activation: &Q8Block,
 ) {
-    let base = (block * passes + pass) * AVX2_PANEL_PASS_BYTES;
+    let base = (block * geometry.passes + pass) * geometry.pass_bytes;
     let scale_start = base + row * std::mem::size_of::<f32>();
     panel[scale_start..scale_start + 4].copy_from_slice(&activation.scale.to_ne_bytes());
-    let values_start = base + 16 + row * QUANT_BLOCK_SIZE;
+    let values_start =
+        base + geometry.panel_rows * std::mem::size_of::<f32>() + row * QUANT_BLOCK_SIZE;
     // SAFETY: i8 and u8 have identical layout and both fixed extents contain
     // exactly one quantization block.
     let values = unsafe {
@@ -931,6 +1040,10 @@ fn pack_q8_panel_block(
 
 pub(super) const fn avx2_panel_pass_bytes() -> usize {
     AVX2_PANEL_PASS_BYTES
+}
+
+pub(super) const fn avx512_panel_pass_bytes() -> usize {
+    AVX512_PANEL_PASS_BYTES
 }
 
 #[cfg(test)]
@@ -981,7 +1094,7 @@ mod tests {
                 }),
             })
             .collect();
-        let activations = (0..16 * blocks)
+        let activations = (0..64 * blocks)
             .map(|index| Q8Block {
                 scale: 0.01 + index as f32 * 0.001,
                 values: std::array::from_fn(|lane| ((index * 31 + lane) % 255) as i16 as i8),
@@ -996,6 +1109,7 @@ mod tests {
             ("auto", Mxfp4MatmulBackend::Auto),
             ("scalar", Mxfp4MatmulBackend::Scalar),
             ("avx2", Mxfp4MatmulBackend::Avx2),
+            ("avx512-vnni", Mxfp4MatmulBackend::Avx512Vnni),
             ("amx-int8", Mxfp4MatmulBackend::AmxInt8),
         ] {
             assert_eq!(text.parse::<Mxfp4MatmulBackend>().unwrap(), backend);
@@ -1273,6 +1387,278 @@ mod tests {
                 &mut storage[offset + 1..offset + 1 + requirement.size],
             )
             .is_err());
+    }
+
+    #[test]
+    fn avx512_vnni_matrix_matches_scalar_and_avx2_for_corpus_rows_and_tails() {
+        if !CpuFeatures::detect().supports(KernelRequirements::AVX512_VNNI_PATH) {
+            return;
+        }
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        for blocks in [1, 3] {
+            for m in [1, 2, 3, 4, 5, 8, 16, 17, 31, 61] {
+                for n in [1, 7, 8, 13, 16, 17] {
+                    let (canonical, q8) = fixtures(n, blocks);
+                    let data = pack_x8(&canonical, n, blocks);
+                    let weights = Mxfp4MatrixView::new(
+                        &data,
+                        n,
+                        blocks,
+                        Mxfp4WeightLayout::InterleavedSplitX8V2,
+                    )
+                    .unwrap();
+                    let activations = Q8MatrixView::new(&q8, m, blocks, blocks).unwrap();
+                    let bias_values = (0..n)
+                        .map(|index| index as f32 * 0.03125 - 0.25)
+                        .collect::<Vec<_>>();
+                    let bias = (m + n + blocks)
+                        .is_multiple_of(2)
+                        .then_some(bias_values.as_slice());
+                    let stride = n + 3;
+                    let mut expected = vec![9876.0; m * stride + 2];
+                    let scalar = Mxfp4MatmulProblem::new_q8(
+                        weights,
+                        activations,
+                        bias,
+                        &mut expected,
+                        stride,
+                    )
+                    .unwrap();
+                    kernels
+                        .mxfp4_matmul(Mxfp4MatmulBackend::Scalar, scalar, &mut [])
+                        .unwrap();
+
+                    let mut avx2 = vec![9876.0; m * stride + 2];
+                    let problem =
+                        Mxfp4MatmulProblem::new_q8(weights, activations, bias, &mut avx2, stride)
+                            .unwrap();
+                    let requirement = Mxfp4MatmulBackend::Avx2
+                        .scratch_requirement(&problem)
+                        .unwrap();
+                    let mut storage = vec![0xa5; requirement.size + 2 * requirement.alignment];
+                    let offset = aligned_offset(&storage, requirement.alignment);
+                    kernels
+                        .mxfp4_matmul(
+                            Mxfp4MatmulBackend::Avx2,
+                            problem,
+                            &mut storage[offset..offset + requirement.size],
+                        )
+                        .unwrap();
+                    assert_eq!(avx2, expected, "AVX2 M={m}, N={n}, blocks={blocks}");
+
+                    let mut actual = vec![9876.0; m * stride + 2];
+                    let problem =
+                        Mxfp4MatmulProblem::new_q8(weights, activations, bias, &mut actual, stride)
+                            .unwrap();
+                    let requirement = Mxfp4MatmulBackend::Avx512Vnni
+                        .scratch_requirement(&problem)
+                        .unwrap();
+                    assert_eq!(requirement.size, blocks * AVX512_PANEL_PASS_BYTES);
+                    assert_eq!(requirement.alignment, 64);
+                    let mut storage = vec![0xa5; requirement.size + 2 * requirement.alignment];
+                    let offset = aligned_offset(&storage, requirement.alignment);
+                    kernels
+                        .mxfp4_matmul(
+                            Mxfp4MatmulBackend::Avx512Vnni,
+                            problem,
+                            &mut storage[offset..offset + requirement.size],
+                        )
+                        .unwrap();
+                    assert_eq!(actual, expected, "AVX-512 M={m}, N={n}, blocks={blocks}");
+                    assert!(storage[..offset].iter().all(|byte| *byte == 0xa5));
+                    assert!(storage[offset + requirement.size..]
+                        .iter()
+                        .all(|byte| *byte == 0xa5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn avx512_vnni_residual_matrix_preserves_exact_primary_then_residual_order() {
+        if !CpuFeatures::detect().supports(KernelRequirements::AVX512_VNNI_PATH) {
+            return;
+        }
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        for blocks in [1, 3] {
+            for m in [1, 2, 3, 4, 5, 8, 16, 17] {
+                for n in [7, 8, 15, 16, 19] {
+                    let (canonical, q8) = fixtures(n, blocks);
+                    let data = pack_x8(&canonical, n, blocks);
+                    let weights = Mxfp4MatrixView::new(
+                        &data,
+                        n,
+                        blocks,
+                        Mxfp4WeightLayout::InterleavedSplitX8V2,
+                    )
+                    .unwrap();
+                    let residual = q8
+                        .into_iter()
+                        .map(|primary| ResidualQ8Block {
+                            residual: Q8Block {
+                                scale: primary.scale / 97.0,
+                                values: primary.values.map(|value| value.wrapping_mul(3)),
+                            },
+                            primary,
+                        })
+                        .collect::<Vec<_>>();
+                    let activations =
+                        ResidualQ8MatrixView::new(&residual, m, blocks, blocks).unwrap();
+                    let bias = (0..n).map(|index| index as f32 / 32.0).collect::<Vec<_>>();
+                    let stride = n + 2;
+                    let mut expected = vec![1234.0; m * stride + 1];
+                    let scalar = Mxfp4MatmulProblem::new_residual_q8(
+                        weights,
+                        activations,
+                        Some(&bias),
+                        &mut expected,
+                        stride,
+                    )
+                    .unwrap();
+                    kernels
+                        .mxfp4_matmul(Mxfp4MatmulBackend::Scalar, scalar, &mut [])
+                        .unwrap();
+
+                    let mut actual = vec![1234.0; m * stride + 1];
+                    let problem = Mxfp4MatmulProblem::new_residual_q8(
+                        weights,
+                        activations,
+                        Some(&bias),
+                        &mut actual,
+                        stride,
+                    )
+                    .unwrap();
+                    let requirement = Mxfp4MatmulBackend::Avx512Vnni
+                        .scratch_requirement(&problem)
+                        .unwrap();
+                    assert_eq!(requirement.size, blocks * 2 * AVX512_PANEL_PASS_BYTES);
+                    let mut storage = vec![0; requirement.size + requirement.alignment];
+                    let offset = aligned_offset(&storage, requirement.alignment);
+                    kernels
+                        .mxfp4_matmul(
+                            Mxfp4MatmulBackend::Avx512Vnni,
+                            problem,
+                            &mut storage[offset..offset + requirement.size],
+                        )
+                        .unwrap();
+                    assert_eq!(actual, expected, "M={m}, N={n}, blocks={blocks}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn avx512_vnni_rejects_capability_layout_and_scratch_without_output_changes() {
+        assert!(matches!(
+            ensure_avx512_vnni_available(CpuFeatures::default()),
+            Err(KernelError::UnavailableMatmulBackend {
+                backend: Mxfp4MatmulBackend::Avx512Vnni,
+                ..
+            })
+        ));
+        if !CpuFeatures::detect().supports(KernelRequirements::AVX512_VNNI_PATH) {
+            return;
+        }
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let (canonical, q8) = fixtures(8, 2);
+        let data = pack_x8(&canonical, 8, 2);
+        let weights =
+            Mxfp4MatrixView::new(&data, 8, 2, Mxfp4WeightLayout::InterleavedSplitX8V2).unwrap();
+        let activations = Q8MatrixView::new(&q8, 2, 2, 2).unwrap();
+        let mut output = vec![4321.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, None, &mut output, 8).unwrap();
+        let requirement = Mxfp4MatmulBackend::Avx512Vnni
+            .scratch_requirement(&problem)
+            .unwrap();
+        let mut storage = vec![0; requirement.size + requirement.alignment + 1];
+        let offset = aligned_offset(&storage, requirement.alignment);
+        assert!(kernels
+            .mxfp4_matmul(
+                Mxfp4MatmulBackend::Avx512Vnni,
+                problem,
+                &mut storage[offset..offset + requirement.size - 1],
+            )
+            .is_err());
+        assert_eq!(output, vec![4321.0; 16]);
+
+        let mut output = vec![4321.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, None, &mut output, 8).unwrap();
+        assert!(kernels
+            .mxfp4_matmul(
+                Mxfp4MatmulBackend::Avx512Vnni,
+                problem,
+                &mut storage[offset + 1..offset + 1 + requirement.size],
+            )
+            .is_err());
+        assert_eq!(output, vec![4321.0; 16]);
+
+        let mut adjacent = Vec::with_capacity(canonical.len() * 17);
+        for block in canonical {
+            adjacent.push(block.scale);
+            adjacent.extend_from_slice(&block.packed);
+        }
+        let weights =
+            Mxfp4MatrixView::new(&adjacent, 8, 2, Mxfp4WeightLayout::CanonicalAdjacentV1).unwrap();
+        let mut output = vec![4321.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, None, &mut output, 8).unwrap();
+        assert!(kernels
+            .mxfp4_matmul(
+                Mxfp4MatmulBackend::Avx512Vnni,
+                problem,
+                &mut storage[offset..offset + requirement.size],
+            )
+            .is_err());
+        assert_eq!(output, vec![4321.0; 16]);
+    }
+
+    #[test]
+    fn avx512_vnni_preserves_non_finite_and_signed_zero_boundary_bits() {
+        if !CpuFeatures::detect().supports(KernelRequirements::AVX512_VNNI_PATH) {
+            return;
+        }
+        let kernels = Kernels::new(KernelPath::Scalar).unwrap();
+        let (canonical, mut q8) = fixtures(8, 1);
+        q8[0].scale = f32::NAN;
+        let data = pack_x8(&canonical, 8, 1);
+        let weights =
+            Mxfp4MatrixView::new(&data, 8, 1, Mxfp4WeightLayout::InterleavedSplitX8V2).unwrap();
+        let activations = Q8MatrixView::new(&q8, 2, 1, 1).unwrap();
+        let bias = [-0.0; 8];
+        let mut expected = vec![0.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, Some(&bias), &mut expected, 8)
+                .unwrap();
+        kernels
+            .mxfp4_matmul(Mxfp4MatmulBackend::Scalar, problem, &mut [])
+            .unwrap();
+        let mut actual = vec![0.0; 16];
+        let problem =
+            Mxfp4MatmulProblem::new_q8(weights, activations, Some(&bias), &mut actual, 8).unwrap();
+        let requirement = Mxfp4MatmulBackend::Avx512Vnni
+            .scratch_requirement(&problem)
+            .unwrap();
+        let mut storage = vec![0; requirement.size + requirement.alignment];
+        let offset = aligned_offset(&storage, requirement.alignment);
+        kernels
+            .mxfp4_matmul(
+                Mxfp4MatmulBackend::Avx512Vnni,
+                problem,
+                &mut storage[offset..offset + requirement.size],
+            )
+            .unwrap();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[cfg(feature = "amx-int8")]

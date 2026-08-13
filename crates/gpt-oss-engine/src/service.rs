@@ -16,7 +16,6 @@ pub enum ServiceState {
     Failed,
     Stopped,
 }
-
 impl ServiceState {
     pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
@@ -839,7 +838,7 @@ mod tests {
             max_event_bytes: 128,
         };
         let global = GlobalDeliveryBudget::new(128);
-        let (publisher, _receiver) = delivery_session(limits, global, lease).unwrap();
+        let (publisher, _receiver) = delivery_session(limits, global.clone(), lease).unwrap();
         let result = publisher.try_publish(CommittedEvent::Delta {
             choice: 0,
             text: "x".repeat(80),
@@ -848,5 +847,6 @@ mod tests {
         });
         assert_eq!(result.unwrap_err().code, StableFailureCode::SlowConsumer);
         assert_eq!(cancel_rx.recv().await, Some(RequestId(9)));
+        assert_eq!(global.queued_bytes(), 0);
     }
 }

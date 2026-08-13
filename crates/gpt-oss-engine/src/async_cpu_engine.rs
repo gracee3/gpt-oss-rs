@@ -33,7 +33,6 @@ enum CpuEngineCommand {
         response_tx: oneshot::Sender<std::result::Result<(), StableFailure>>,
     },
 }
-
 struct ActiveDelivery {
     publisher: DeliveryPublisher,
     _permit: OwnedSemaphorePermit,
@@ -139,6 +138,16 @@ impl AsyncCpuBatchEngine {
 
     pub fn lifecycle(&self) -> &ServiceLifecycle {
         &self.lifecycle
+    }
+
+    /// Current byte ownership of committed events waiting for clients.
+    pub fn queued_delivery_bytes(&self) -> usize {
+        self.global_delivery.queued_bytes()
+    }
+
+    /// Admission capacity currently not owned by active requests.
+    pub fn available_request_slots(&self) -> usize {
+        self.admission.available_permits()
     }
 
     pub async fn generate(

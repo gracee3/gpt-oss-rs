@@ -1,0 +1,103 @@
+# syntax=docker/dockerfile:1.7
+FROM --platform=linux/amd64 python:3.12.12-slim-bookworm@sha256:2986c55feb36e6cae00fa1fefb454283e4b33f35e75ff8bdd123b134130be301
+
+ARG BUILD_INPUT_REVISION=uncommitted
+ARG OFFICIAL_SOURCE_URL=https://github.com/openai/gpt-oss/archive/refs/tags/v0.0.9.tar.gz
+ARG OFFICIAL_SOURCE_SHA256=7306d68ae017f461f2ebb82d04628f8dcba7cc7b431ef28e8786c947510c6f6b
+
+LABEL org.opencontainers.image.title="gpt-oss-rs CPU oracle" \
+      org.opencontainers.image.source="https://github.com/gracee3/gpt-oss-rs" \
+      org.opencontainers.image.revision="${BUILD_INPUT_REVISION}" \
+      org.opencontainers.image.version="gpt-oss-v0.0.9-pytorch-2.12.1-cpu" \
+      io.gpt-oss-rs.oracle.platform="linux/amd64" \
+      io.gpt-oss-rs.oracle.official-source-revision="599476783c6f88508dab8577808b5ead5cbee8d2" \
+      io.gpt-oss-rs.oracle.official-source-sha256="${OFFICIAL_SOURCE_SHA256}" \
+      io.gpt-oss-rs.oracle.model-revision="6cee5e81ee83917806bbde320786a8fb61efebee"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=0 \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    CUDA_VISIBLE_DEVICES="" \
+    NVIDIA_VISIBLE_DEVICES=void \
+    PYTHONPATH=/opt/gpt-oss
+
+WORKDIR /opt/oracle
+COPY oracle/requirements.cpu.lock /opt/oracle/requirements.cpu.lock
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --disable-pip-version-check --root-user-action=ignore --only-binary=:all: \
+        --require-hashes --requirement /opt/oracle/requirements.cpu.lock && \
+    python - <<'PY'
+import importlib.metadata as metadata
+
+expected = {
+    "torch": "2.12.1+cpu",
+    "safetensors": "0.8.0",
+    "filelock": "3.32.2",
+    "typing-extensions": "4.16.0",
+    "setuptools": "81.0.0",
+    "sympy": "1.14.0",
+    "networkx": "3.6.1",
+    "jinja2": "3.1.6",
+    "fsspec": "2026.7.0",
+    "mpmath": "1.3.0",
+    "markupsafe": "3.0.3",
+}
+installed = {
+    distribution.metadata["Name"].lower().replace("_", "-"): distribution.version
+    for distribution in metadata.distributions()
+}
+for name, version in expected.items():
+    assert installed.get(name) == version, (name, installed.get(name), version)
+for banned in ("gpt-oss", "triton", "torchvision", "torchaudio", "transformers"):
+    assert banned not in installed, (banned, installed[banned])
+PY
+
+RUN OFFICIAL_SOURCE_URL="${OFFICIAL_SOURCE_URL}" \
+    OFFICIAL_SOURCE_SHA256="${OFFICIAL_SOURCE_SHA256}" \
+    python - <<'PY'
+import hashlib
+import os
+import pathlib
+import tarfile
+import urllib.request
+
+archive = pathlib.Path("/tmp/gpt-oss-v0.0.9.tar.gz")
+with urllib.request.urlopen(os.environ["OFFICIAL_SOURCE_URL"]) as response, archive.open("wb") as output:
+    while chunk := response.read(1024 * 1024):
+        output.write(chunk)
+observed = hashlib.sha256(archive.read_bytes()).hexdigest()
+assert observed == os.environ["OFFICIAL_SOURCE_SHA256"], (observed, os.environ["OFFICIAL_SOURCE_SHA256"])
+with tarfile.open(archive, "r:gz") as source:
+    members = source.getmembers()
+    root = pathlib.PurePosixPath(members[0].name).parts[0]
+    for member in members:
+        parts = pathlib.PurePosixPath(member.name).parts
+        if not parts or parts[0] != root or ".." in parts:
+            raise RuntimeError(f"unsafe official source member: {member.name}")
+    source.extractall("/opt", filter="data")
+pathlib.Path("/opt/gpt-oss-0.0.9").rename("/opt/gpt-oss")
+pathlib.Path("/opt/gpt-oss/.official-source.json").write_text(
+    '{"archive_sha256":"7306d68ae017f461f2ebb82d04628f8dcba7cc7b431ef28e8786c947510c6f6b",'
+    '"release":"v0.0.9","revision":"599476783c6f88508dab8577808b5ead5cbee8d2"}\n'
+)
+archive.unlink()
+PY
+
+COPY oracle/environment_probe.py /opt/oracle/environment_probe.py
+COPY crates/gpt-oss-bench/tools/official_cpu_oracle.py /opt/oracle/official_cpu_oracle.py
+
+RUN python - <<'PY'
+import pathlib
+
+for path in pathlib.Path("/opt").rglob("*"):
+    if path.is_file():
+        path.chmod(0o444)
+    elif path.is_dir():
+        path.chmod(0o555)
+PY
+
+ENTRYPOINT ["python", "/opt/oracle/environment_probe.py"]
+CMD ["--mode", "native", "--repetitions", "5"]

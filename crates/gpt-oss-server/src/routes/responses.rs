@@ -187,6 +187,19 @@ impl BoundedResponseStore {
         self.entries.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        let grants = self
+            .entries
+            .drain()
+            .map(|(_, (_, _, grant_id))| grant_id)
+            .collect::<Vec<_>>();
+        for grant_id in grants {
+            self.release_store_grant(grant_id);
+        }
+        self.order.clear();
+        self.bytes = 0;
+    }
+
     fn release_store_grant(&mut self, grant_id: gpt_oss_engine::GrantId) {
         let _ = self.reservations.release(grant_id);
         gpt_oss_engine::telemetry::metrics::record_reservation(
@@ -201,7 +214,7 @@ impl BoundedResponseStore {
 
 impl Drop for BoundedResponseStore {
     fn drop(&mut self) {
-        let _ = self.reservations.release_all();
+        self.clear();
     }
 }
 
@@ -1943,6 +1956,12 @@ mod tests {
         assert_eq!(store.len(), 2);
         assert_eq!(store.reservations.active_grants(), 2);
         assert_eq!(store.reservations.total_reserved(), store.bytes() as u128);
+        assert!(store.reservations.invariants_hold());
+        store.clear();
+        assert!(store.is_empty());
+        assert_eq!(store.bytes(), 0);
+        assert_eq!(store.reservations.active_grants(), 0);
+        assert_eq!(store.reservations.total_reserved(), 0);
         assert!(store.reservations.invariants_hold());
     }
 
