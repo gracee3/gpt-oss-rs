@@ -1072,6 +1072,7 @@ mod tests {
         projects: AtomicUsize,
         drains: AtomicUsize,
         shutdowns: AtomicUsize,
+        residency_faults: AtomicUsize,
     }
 
     struct FailingRuntime {
@@ -1103,6 +1104,12 @@ mod tests {
         fn drain(&mut self) -> Result<(), XeError> {
             self.counts.drains.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
+        }
+
+        fn record_residency_fault(&mut self) {
+            self.counts
+                .residency_faults
+                .fetch_add(1, AtomicOrdering::SeqCst);
         }
 
         fn shutdown(&mut self) -> Result<(), XeError> {
@@ -1359,6 +1366,27 @@ mod tests {
     }
 
     #[test]
+    fn cache_identity_separates_projection_roles_and_tensor_sources() {
+        let identity = ExpertCacheIdentity {
+            model_source_key: "model".into(),
+            tensor_source_key: "gate".into(),
+            layer: 1,
+            expert: 2,
+            role: ProjectionRole::GateUp,
+            columns: 32,
+            blocks: 1,
+            weight_layout_version: 2,
+        };
+        let mut cache = BoundedLru::new(2048);
+        cache.insert_reserved(identity.clone(), 7_u8, 672);
+        let mut down = identity.clone();
+        down.role = ProjectionRole::Down;
+        down.tensor_source_key = "down".into();
+        assert_eq!(cache.lookup(&down, 672), None);
+        assert_eq!(cache.lookup(&identity, 672), Some(7));
+    }
+
+    #[test]
     fn malformed_requests_are_rejected_before_runtime() {
         let request = ProjectionRequest {
             role: ProjectionRole::GateUp,
@@ -1438,6 +1466,62 @@ mod tests {
             )),
             Err(XeError::CircuitOpen)
         ));
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
+    }
+
+    #[test]
+    fn resident_fault_drains_opens_breaker_and_never_retries_repack() {
+        let _guard = TEST_PROCESS_CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
+        let counts = Arc::new(FakeCounts::default());
+        let engine = XeProjectionEngine {
+            runtime: Mutex::new(Box::new(FailingRuntime {
+                descriptor: fake_descriptor(),
+                counts: counts.clone(),
+                failure: "resident submit",
+                shutdown_error: false,
+                shutdown: false,
+            })),
+            gate_up_min_rows: AUTO_MIN_ROWS,
+            down_min_rows: AUTO_MIN_ROWS,
+        };
+        let activations = vec![ActivationRecordV2::zeroed(); 4];
+        let bias = vec![0.0_f32; 32];
+        let request = ResidentProjectionRequest {
+            identity: ExpertCacheIdentity {
+                model_source_key: "model".into(),
+                tensor_source_key: "tensor".into(),
+                layer: 0,
+                expert: 0,
+                role: ProjectionRole::GateUp,
+                columns: 32,
+                blocks: 1,
+                weight_layout_version: 2,
+            },
+            role: ProjectionRole::GateUp,
+            rows: 4,
+            columns: 32,
+            blocks: 1,
+            activations_v2: &activations,
+            bias: &bias,
+        };
+        let repacks = AtomicUsize::new(0);
+        assert!(matches!(
+            engine.project_resident(request, || {
+                repacks.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(vec![0_u8; 32 * XE_WEIGHT_PLANES])
+            }),
+            Err(XeError::Runtime(message)) if message.contains("resident submit")
+        ));
+        assert!(engine.circuit_is_open());
+        assert_eq!(repacks.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.projects.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.drains.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(counts.residency_faults.load(AtomicOrdering::SeqCst), 1);
+        engine.shutdown().unwrap();
         PROCESS_XE_CIRCUIT_OPEN.store(false, Ordering::Release);
         metrics::gauge!(CIRCUIT_BREAKER).set(0.0);
     }
