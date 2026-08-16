@@ -80,6 +80,113 @@ pub struct ExactRouterWeightsView<'a> {
     pub bias_bf16_bits: &'a [u16],
 }
 
+/// Owned, already-resident BF16 router surfaces for the narrow H3 handoff.
+///
+/// The byte allocations deliberately match `LayerOwnerDenseTensor`'s
+/// storage representation without coupling this primitive to the production
+/// owner-selective model. Construction validates the durable device identity,
+/// exact CUDA context, expert count, and byte lengths before any handoff work
+/// is enqueued. The future production adapter must transfer ownership of the
+/// two dense allocations into this value; borrowing them would make an
+/// unproven CUDA drain impossible to quarantine safely.
+pub struct ResidentExactRouterWeights {
+    stable_device: StableCudaDeviceId,
+    experts: usize,
+    weight_bf16_bytes: CudaSlice<u8>,
+    bias_bf16_bytes: CudaSlice<u8>,
+    #[cfg(feature = "heterogeneous-test-faults")]
+    injected_fault: Option<ResidentRouterHandoffInjectedFault>,
+    #[cfg(feature = "heterogeneous-test-faults")]
+    drop_probe: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl ResidentExactRouterWeights {
+    pub fn new(
+        stable_device: StableCudaDeviceId,
+        experts: usize,
+        weight_bf16_bytes: CudaSlice<u8>,
+        bias_bf16_bytes: CudaSlice<u8>,
+    ) -> Result<Self> {
+        let source = Self {
+            stable_device,
+            experts,
+            weight_bf16_bytes,
+            bias_bf16_bytes,
+            #[cfg(feature = "heterogeneous-test-faults")]
+            injected_fault: None,
+            #[cfg(feature = "heterogeneous-test-faults")]
+            drop_probe: None,
+        };
+        source.validate()?;
+        Ok(source)
+    }
+
+    fn validate(&self) -> Result<()> {
+        let (weight_bytes, bias_bytes) = exact_router_weight_surface_bytes(self.experts)?;
+        if self.weight_bf16_bytes.len() != weight_bytes || self.bias_bf16_bytes.len() != bias_bytes
+        {
+            return Err(LLMError::GpuError(format!(
+                "resident router BF16 byte shape mismatch: weights={} expected={} bias={} expected={}",
+                self.weight_bf16_bytes.len(),
+                weight_bytes,
+                self.bias_bf16_bytes.len(),
+                bias_bytes
+            )));
+        }
+        if self.weight_bf16_bytes.context().cu_ctx() != self.bias_bf16_bytes.context().cu_ctx() {
+            return Err(LLMError::GpuError(
+                "resident router weight and bias allocations do not share one CUDA context".into(),
+            ));
+        }
+        let resolved =
+            resolve_stable_device(&self.stable_device, &list_devices()).map_err(|error| {
+                LLMError::GpuError(format!("resident router stable device: {error}"))
+            })?;
+        if self.weight_bf16_bytes.context().ordinal() != resolved.transient_ordinal
+            || self.bias_bf16_bytes.context().ordinal() != resolved.transient_ordinal
+        {
+            return Err(LLMError::GpuError(
+                "resident router allocation ordinal does not match stable device identity".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub fn inject_handoff_failure(
+        &mut self,
+        fault: ResidentRouterHandoffInjectedFault,
+    ) -> Result<()> {
+        if self.injected_fault.replace(fault).is_some() {
+            return Err(LLMError::GpuError(
+                "resident router handoff already has an armed test fault".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub fn set_drop_probe_for_test(&mut self, probe: Arc<std::sync::atomic::AtomicBool>) {
+        self.drop_probe = Some(probe);
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+impl Drop for ResidentExactRouterWeights {
+    fn drop(&mut self) {
+        if let Some(probe) = self.drop_probe.as_ref() {
+            probe.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidentRouterHandoffInjectedFault {
+    AfterWeightCopyEnqueue,
+    AfterWeightCopyEnqueueAndFallbackDrainFailure,
+}
+
 impl ExactRouterWeightsView<'_> {
     fn validate(&self) -> Result<()> {
         if !matches!(self.experts, 32 | 128) {
@@ -242,6 +349,61 @@ pub struct CudaExactRouter {
     last_fault_drained: bool,
 }
 
+struct ResidentRouterHandoffState {
+    source: ManuallyDrop<ResidentExactRouterWeights>,
+    compute_stream: ManuallyDrop<Arc<CudaStream>>,
+    relay_stream: ManuallyDrop<Arc<CudaStream>>,
+    loader: ManuallyDrop<KernelLoader>,
+    input: ManuallyDrop<CudaSlice<u16>>,
+    weights: ManuallyDrop<CudaSlice<u16>>,
+    bias: ManuallyDrop<CudaSlice<u16>>,
+    logits: ManuallyDrop<CudaSlice<u16>>,
+    route_records: ManuallyDrop<CudaSlice<u8>>,
+    status: ManuallyDrop<CudaSlice<u32>>,
+    quarantined: bool,
+    disarmed: bool,
+}
+
+impl ResidentRouterHandoffState {
+    fn quarantine(&mut self) {
+        self.quarantined = true;
+        #[cfg(feature = "heterogeneous-test-faults")]
+        RESIDENT_ROUTER_HANDOFF_QUARANTINES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+impl Drop for ResidentRouterHandoffState {
+    fn drop(&mut self) {
+        if self.quarantined || self.disarmed {
+            return;
+        }
+        // SAFETY: either no source-referencing copy was submitted, or the
+        // handoff stream reached a proven terminal point before this state is
+        // released. The quarantined path intentionally retains every field.
+        unsafe {
+            ManuallyDrop::drop(&mut self.status);
+            ManuallyDrop::drop(&mut self.route_records);
+            ManuallyDrop::drop(&mut self.logits);
+            ManuallyDrop::drop(&mut self.bias);
+            ManuallyDrop::drop(&mut self.weights);
+            ManuallyDrop::drop(&mut self.input);
+            ManuallyDrop::drop(&mut self.loader);
+            ManuallyDrop::drop(&mut self.relay_stream);
+            ManuallyDrop::drop(&mut self.compute_stream);
+            ManuallyDrop::drop(&mut self.source);
+        }
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+static RESIDENT_ROUTER_HANDOFF_QUARANTINES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "heterogeneous-test-faults")]
+pub fn resident_router_handoff_quarantines_for_test() -> usize {
+    RESIDENT_ROUTER_HANDOFF_QUARANTINES.load(std::sync::atomic::Ordering::Acquire)
+}
+
 #[derive(Clone, Copy)]
 enum RouterInput<'a> {
     Host(&'a [u16]),
@@ -320,6 +482,200 @@ impl CudaExactRouter {
             #[cfg(feature = "heterogeneous-test-faults")]
             last_fault_drained: false,
         })
+    }
+
+    /// Build an exact router by copying an owned pair of already-resident
+    /// layer-owner BF16 byte allocations into router-owned storage.
+    ///
+    /// This is an isolated H3 handoff primitive. It is intentionally not wired
+    /// into `OwnerSelectiveModel` or `HeterogeneousControlRuntime`. The source
+    /// is consumed so an unproven post-enqueue drain can quarantine both the
+    /// source and destination storage for process life.
+    pub fn from_resident_weights(
+        max_rows: usize,
+        source: ResidentExactRouterWeights,
+    ) -> Result<Self> {
+        source.validate()?;
+        validate_router_max_rows(max_rows)?;
+        let stable_device = source.stable_device.clone();
+        let experts = source.experts;
+        let context = Arc::clone(source.weight_bf16_bytes.context());
+        if context.cu_ctx() != source.bias_bf16_bytes.context().cu_ctx() {
+            return Err(LLMError::GpuError(
+                "resident router source context changed before handoff".into(),
+            ));
+        }
+        let compute_stream = context
+            .new_stream()
+            .map_err(cuda_error("resident router compute stream"))?;
+        let relay_stream = context
+            .new_stream()
+            .map_err(cuda_error("resident router relay stream"))?;
+        let loader = KernelLoader::new(
+            Arc::clone(&context),
+            Arc::clone(&compute_stream),
+            compiled_ptx_dir(),
+        )?;
+        if !loader.has_func(MODULE, PROJECTION) || !loader.has_func(MODULE, TOP4) {
+            return Err(LLMError::GpuError(
+                "exact-router PTX functions are unavailable".into(),
+            ));
+        }
+
+        let input_values = max_rows
+            .checked_mul(GPT_OSS_HIDDEN_SIZE)
+            .ok_or_else(|| LLMError::GpuError("resident router input shape overflows".into()))?;
+        let logit_values = max_rows
+            .checked_mul(experts)
+            .ok_or_else(|| LLMError::GpuError("resident router logit shape overflows".into()))?;
+        let route_bytes = max_rows
+            .checked_mul(GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW)
+            .ok_or_else(|| LLMError::GpuError("resident router route arena overflows".into()))?;
+        let (weight_bytes, bias_bytes) = exact_router_weight_surface_bytes(experts)?;
+        let weight_values = weight_bytes
+            .checked_div(size_of::<u16>())
+            .ok_or_else(|| LLMError::GpuError("resident router weight values overflow".into()))?;
+        let bias_values = bias_bytes
+            .checked_div(size_of::<u16>())
+            .ok_or_else(|| LLMError::GpuError("resident router bias values overflow".into()))?;
+
+        let input = allocate_terminal::<u16>(
+            &compute_stream,
+            input_values,
+            "resident router input allocation",
+        )?;
+        let device_weights = allocate_terminal::<u16>(
+            &compute_stream,
+            weight_values,
+            "resident router weight allocation",
+        )?;
+        let device_bias = allocate_terminal::<u16>(
+            &compute_stream,
+            bias_values,
+            "resident router bias allocation",
+        )?;
+        let logits = allocate_terminal::<u16>(
+            &compute_stream,
+            logit_values,
+            "resident router logit allocation",
+        )?;
+        let route_records = allocate_terminal::<u8>(
+            &compute_stream,
+            route_bytes,
+            "resident router route allocation",
+        )?;
+        let status = allocate_terminal::<u32>(
+            &compute_stream,
+            max_rows,
+            "resident router status allocation",
+        )?;
+
+        let mut state = ResidentRouterHandoffState {
+            source: ManuallyDrop::new(source),
+            compute_stream: ManuallyDrop::new(compute_stream),
+            relay_stream: ManuallyDrop::new(relay_stream),
+            loader: ManuallyDrop::new(loader),
+            input: ManuallyDrop::new(input),
+            weights: ManuallyDrop::new(device_weights),
+            bias: ManuallyDrop::new(device_bias),
+            logits: ManuallyDrop::new(logits),
+            route_records: ManuallyDrop::new(route_records),
+            status: ManuallyDrop::new(status),
+            quarantined: false,
+            disarmed: false,
+        };
+
+        #[cfg(feature = "heterogeneous-test-faults")]
+        let injected_fault = state.source.injected_fault;
+        // SAFETY: both sources are whole CUDA allocations (not offset views),
+        // CUDA allocation alignment exceeds u16 alignment, exact even byte
+        // lengths were validated above, and every u16 bit pattern is valid.
+        // The borrowed typed views cannot outlive the owned source in `state`.
+        let source_weights = unsafe {
+            state
+                .source
+                .weight_bf16_bytes
+                .transmute::<u16>(weight_values)
+        }
+        .ok_or_else(|| LLMError::GpuError("resident router weight view cast failed".into()))?;
+        // SAFETY: identical argument to the weight view, for the bias surface.
+        let source_bias = unsafe { state.source.bias_bf16_bytes.transmute::<u16>(bias_values) }
+            .ok_or_else(|| LLMError::GpuError("resident router bias view cast failed".into()))?;
+        let result = state
+            .compute_stream
+            .memcpy_dtod(&source_weights, &mut *state.weights)
+            .map_err(cuda_error("resident router weight D2D"));
+        if result.is_ok() {
+            #[cfg(feature = "heterogeneous-test-faults")]
+            if matches!(
+                injected_fault,
+                Some(
+                    ResidentRouterHandoffInjectedFault::AfterWeightCopyEnqueue
+                        | ResidentRouterHandoffInjectedFault::AfterWeightCopyEnqueueAndFallbackDrainFailure
+                )
+            ) {
+                return resident_handoff_submit_failure(
+                    state,
+                    LLMError::GpuError(
+                        "injected resident-router post-weight-enqueue failure".into(),
+                    ),
+                    injected_fault
+                        == Some(ResidentRouterHandoffInjectedFault::AfterWeightCopyEnqueueAndFallbackDrainFailure),
+                );
+            }
+        }
+        let submitted = result.and_then(|()| {
+            state
+                .compute_stream
+                .memcpy_dtod(&source_bias, &mut *state.bias)
+                .map_err(cuda_error("resident router bias D2D"))
+        });
+        if let Err(primary) = submitted {
+            return resident_handoff_submit_failure(state, primary, false);
+        }
+        if let Err(error) = state.compute_stream.synchronize() {
+            return resident_handoff_submit_failure(
+                state,
+                cuda_error("resident router terminal drain")(error),
+                false,
+            );
+        }
+
+        // SAFETY: the terminal stream drain proves both copies complete. Every field
+        // is moved exactly once and `disarmed` suppresses the state destructor.
+        let router = unsafe {
+            ManuallyDrop::drop(&mut state.source);
+            let compute_stream = ManuallyDrop::take(&mut state.compute_stream);
+            let relay_stream = ManuallyDrop::take(&mut state.relay_stream);
+            let loader = ManuallyDrop::take(&mut state.loader);
+            let input = ManuallyDrop::take(&mut state.input);
+            let weights = ManuallyDrop::take(&mut state.weights);
+            let bias = ManuallyDrop::take(&mut state.bias);
+            let logits = ManuallyDrop::take(&mut state.logits);
+            let route_records = ManuallyDrop::take(&mut state.route_records);
+            let status = ManuallyDrop::take(&mut state.status);
+            state.disarmed = true;
+            Self {
+                stable_device,
+                compute_stream: ManuallyDrop::new(compute_stream),
+                relay_stream: ManuallyDrop::new(relay_stream),
+                loader: ManuallyDrop::new(loader),
+                experts,
+                max_rows,
+                input: ManuallyDrop::new(input),
+                weights: ManuallyDrop::new(weights),
+                bias: ManuallyDrop::new(bias),
+                logits: ManuallyDrop::new(logits),
+                route_records: ManuallyDrop::new(route_records),
+                status: ManuallyDrop::new(status),
+                poisoned: false,
+                #[cfg(feature = "heterogeneous-test-faults")]
+                injected_fault: None,
+                #[cfg(feature = "heterogeneous-test-faults")]
+                last_fault_drained: false,
+            }
+        };
+        Ok(router)
     }
 
     pub fn stable_device(&self) -> &StableCudaDeviceId {
@@ -724,6 +1080,73 @@ impl Drop for CudaExactRouter {
     }
 }
 
+fn validate_router_max_rows(max_rows: usize) -> Result<()> {
+    if max_rows == 0 || max_rows > GPT_OSS_ROUTER_MAX_ROWS {
+        return Err(LLMError::GpuError(format!(
+            "exact router max rows {max_rows} outside 1..={GPT_OSS_ROUTER_MAX_ROWS}"
+        )));
+    }
+    Ok(())
+}
+
+fn exact_router_weight_surface_bytes(experts: usize) -> Result<(usize, usize)> {
+    if !matches!(experts, 32 | 128) {
+        return Err(LLMError::GpuError(format!(
+            "resident exact router supports E=32 or E=128, observed {experts}"
+        )));
+    }
+    let weight_values = experts
+        .checked_mul(GPT_OSS_HIDDEN_SIZE)
+        .ok_or_else(|| LLMError::GpuError("resident router weight shape overflows".into()))?;
+    let weight_bytes = weight_values
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| LLMError::GpuError("resident router weight bytes overflow".into()))?;
+    let bias_bytes = experts
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| LLMError::GpuError("resident router bias bytes overflow".into()))?;
+    Ok((weight_bytes, bias_bytes))
+}
+
+fn allocate_terminal<T: cudarc::driver::DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    len: usize,
+    label: &'static str,
+) -> Result<CudaSlice<T>> {
+    // SAFETY: every allocation is filled before the router can execute. The
+    // allocation itself is synchronized here so a later construction error
+    // cannot strand an untracked cudaMallocAsync operation.
+    let allocation = unsafe { stream.alloc::<T>(len) }.map_err(cuda_error(label))?;
+    if let Err(error) = stream.synchronize() {
+        // The allocation may still be referenced by an unproven stream. Its
+        // slice retains the stream and context for process life.
+        std::mem::forget(allocation);
+        return Err(cuda_error("resident router allocation drain")(error));
+    }
+    Ok(allocation)
+}
+
+fn resident_handoff_submit_failure(
+    mut state: ResidentRouterHandoffState,
+    primary: LLMError,
+    inject_unproven_drain: bool,
+) -> Result<CudaExactRouter> {
+    if inject_unproven_drain {
+        state.quarantine();
+        return Err(LLMError::GpuError(format!(
+            "resident router handoff failed ({primary}); injected mandatory fallback drain failure; source, destination, stream, and context are quarantined"
+        )));
+    }
+    match state.compute_stream.synchronize() {
+        Ok(()) => Err(primary),
+        Err(drain) => {
+            state.quarantine();
+            Err(LLMError::GpuError(format!(
+                "resident router handoff failed ({primary}); mandatory fallback drain failed ({drain}); source, destination, stream, and context are quarantined"
+            )))
+        }
+    }
+}
+
 fn validate_router_input(rows: usize, activation_bf16_bits: &[u16]) -> Result<()> {
     if rows == 0 || rows > GPT_OSS_ROUTER_MAX_ROWS {
         return Err(LLMError::ModelError(format!(
@@ -884,5 +1307,23 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn resident_handoff_dimensions_are_exact_and_checked() {
+        assert_eq!(
+            exact_router_weight_surface_bytes(32).unwrap(),
+            (368_640, 64)
+        );
+        assert_eq!(
+            exact_router_weight_surface_bytes(128).unwrap(),
+            (737_280, 256)
+        );
+        assert!(exact_router_weight_surface_bytes(0).is_err());
+        assert!(exact_router_weight_surface_bytes(64).is_err());
+        assert!(validate_router_max_rows(0).is_err());
+        assert!(validate_router_max_rows(GPT_OSS_ROUTER_MAX_ROWS + 1).is_err());
+        assert!(validate_router_max_rows(1).is_ok());
+        assert!(validate_router_max_rows(GPT_OSS_ROUTER_MAX_ROWS).is_ok());
     }
 }
