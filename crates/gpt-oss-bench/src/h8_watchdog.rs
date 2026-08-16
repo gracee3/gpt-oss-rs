@@ -680,7 +680,11 @@ fn command_requests_exact_h8(command: &[u8]) -> bool {
 fn executable_is_construct(executable: &Path, process_name: &str) -> bool {
     let exact_executable =
         executable.file_name().and_then(|name| name.to_str()) == Some("heterogeneous_construct");
-    let conservative_name_match = process_name.starts_with("heterogeneous_");
+    // Linux truncates `comm` to 15 bytes, so an fd-executed constructor is
+    // reported as `heterogeneous_co`. Do not accept the broader
+    // `heterogeneous_` prefix: the watchdog itself is `heterogeneous_h8` and
+    // its argv contains the guarded child's trailing `--mode h8` arguments.
+    let conservative_name_match = process_name == "heterogeneous_co";
     exact_executable || conservative_name_match
 }
 
@@ -1039,6 +1043,24 @@ mod tests {
         // would. The ordinary process must not make the scan incomplete because
         // its command line is not an exact H8 candidate.
         fs::write(ordinary.join("exe"), b"not a symlink").unwrap();
+
+        let scan = read_h8_process_scan_from(&paths, None).unwrap();
+        assert!(scan.proc_scan_complete);
+        assert!(!scan.active_h8_process_found);
+
+        let watchdog = paths.proc_root.join("103");
+        fs::create_dir_all(&watchdog).unwrap();
+        fs::write(
+            watchdog.join("status"),
+            process_status("heterogeneous_h8", 1),
+        )
+        .unwrap();
+        fs::write(
+            watchdog.join("cmdline"),
+            b"/tmp/heterogeneous_h8_watchdog\0run\0--\0/tmp/heterogeneous_construct\0--mode\0h8\0",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/tmp/heterogeneous_h8_watchdog", watchdog.join("exe")).unwrap();
 
         let scan = read_h8_process_scan_from(&paths, None).unwrap();
         assert!(scan.proc_scan_complete);
