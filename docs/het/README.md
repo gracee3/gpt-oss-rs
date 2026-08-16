@@ -99,6 +99,10 @@ Evidence labels have the same meaning in every document:
     the bounded catalog and deterministic consumer plan through exact action
     slices, capacity-one mapping, terminal proof, and irreversible quarantine;
     not integrated into construction.
+34. [H3 runtime checkpoint retirement](35-h3-runtime-checkpoint-retirement.md) —
+    removes checkpoint payload ownership from the published model, extracts
+    exact resident router pairs during dense upload, and single-consumes them
+    in the production control runtime; source/synthetic validated only.
 
 ## Current headline
 
@@ -195,3 +199,12 @@ an external handoff must supply terminal proof or the mapping is retained for
 process life and that catalog instance is permanently quarantined. This is a
 source/synthetic lifetime prerequisite only: no CUDA upload, CPU publication,
 or owner-selective constructor path uses it yet.
+
+**Runtime-checkpoint-retirement follow-up:** the production owner-selective
+model now publishes only payload-free native config/identity metadata plus its
+resident owner allocations. Exact router weight/bias allocations are paired
+once during the existing dense upload and single-consumed by the control
+runtime through same-context D2D; the former host checkpoint reread is gone.
+The constructor still holds the complete checkpoint view until publication,
+so no peak-memory relief or real-model gate is claimed. Per-shard GPU expert
+assembly and atomic incremental CPU x8 publication remain next.

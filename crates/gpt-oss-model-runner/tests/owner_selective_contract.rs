@@ -14,6 +14,11 @@ use gpt_oss_model_runner::heterogeneous::{
     GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES, GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES,
 };
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssNativeConfig;
+#[cfg(feature = "heterogeneous-test-faults")]
+use gpt_oss_model_runner::model_loader::owner_selective::{
+    validate_native_metadata_fixture_for_test, validate_router_publication_fixture_for_test,
+    validate_router_publication_order_for_test,
+};
 use gpt_oss_model_runner::model_loader::owner_selective::{
     ExecutionReserveDisposition, ExecutionReservePlan, OWNER_SELECTIVE_GPU_RESERVE_BYTES,
     OWNER_SELECTIVE_PROOF_CONTEXT_CAP, OWNER_SELECTIVE_TEMPORARY_CAP_BYTES,
@@ -40,6 +45,92 @@ fn config(layers: usize, experts: usize) -> GptOssNativeConfig {
         num_attention_heads: 64,
         num_key_value_heads: 8,
     }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[test]
+fn router_publication_classifier_pairs_every_layer_once_in_numeric_order() {
+    let entries = vec![
+        ("model.layers.2.mlp.router.bias".into(), 22),
+        ("model.layers.1.mlp.router.weight".into(), 11),
+        ("model.layers.0.mlp.router.bias".into(), 20),
+        ("model.layers.2.mlp.router.weight".into(), 12),
+        ("model.layers.0.mlp.router.weight".into(), 10),
+        ("model.layers.1.mlp.router.bias".into(), 21),
+    ];
+    assert_eq!(
+        validate_router_publication_fixture_for_test(3, &entries).unwrap(),
+        vec![(0, 10, 20), (1, 11, 21), (2, 12, 22)]
+    );
+
+    for invalid in [
+        vec![
+            ("model.layers.0.mlp.router.weight".into(), 1),
+            ("model.layers.0.mlp.router.weight".into(), 2),
+        ],
+        vec![("model.layers.0.mlp.router.weight".into(), 1)],
+        vec![
+            ("model.layers.0.mlp.router.weight".into(), 1),
+            ("model.layers.1.mlp.router.bias".into(), 2),
+        ],
+        vec![("model.layers.3.mlp.router.weight".into(), 1)],
+        vec![("model.layers.00.mlp.router.weight".into(), 1)],
+        vec![("model.layers.0.mlp.router.scale".into(), 1)],
+        vec![("model.layers.0.self_attn.q_proj.weight".into(), 1)],
+    ] {
+        assert!(validate_router_publication_fixture_for_test(3, &invalid).is_err());
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[test]
+fn router_publication_order_rejects_missing_duplicate_and_reordered_layers() {
+    validate_router_publication_order_for_test(3, &[0, 1, 2]).unwrap();
+    for invalid in [&[1, 0, 2][..], &[0, 1][..], &[0, 1, 1][..], &[0, 1, 3][..]] {
+        assert!(validate_router_publication_order_for_test(3, invalid).is_err());
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[test]
+fn payload_free_native_metadata_rejects_config_and_identity_mismatch() {
+    let valid = || {
+        validate_native_metadata_fixture_for_test(
+            config(24, 32),
+            "synthetic-revision".into(),
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+        )
+    };
+    valid().unwrap();
+
+    let mut wrong_config = config(24, 32);
+    wrong_config.hidden_size = 42;
+    assert!(validate_native_metadata_fixture_for_test(
+        wrong_config,
+        "synthetic-revision".into(),
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+    )
+    .is_err());
+    assert!(validate_native_metadata_fixture_for_test(
+        config(24, 32),
+        String::new(),
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+    )
+    .is_err());
+    assert!(validate_native_metadata_fixture_for_test(
+        config(24, 32),
+        "synthetic-revision".into(),
+        "not-a-sha".into(),
+        "b".repeat(64),
+        "c".repeat(64),
+    )
+    .is_err());
 }
 
 #[test]

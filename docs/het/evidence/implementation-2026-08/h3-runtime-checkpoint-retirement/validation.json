@@ -1,0 +1,192 @@
+{
+  "schema": "gpt-oss-rs.h3-runtime-checkpoint-retirement-validation/v1",
+  "captured_at_utc": "2026-08-16T23:18:13Z",
+  "base_head": "5a80d18a1b8d4a37922c6dce4637569edd8489a7",
+  "branch": "agent/h3-runtime-checkpoint-retirement",
+  "status": "production_ownership_integrated_source_and_synthetic_validated_for_review",
+  "model_gate_status": "not_run_not_authorized",
+  "source": {
+    "code_and_test_diff_sha256": "98df332e0fec2dea77b8df10ac1a7d83e750a050d362be981106a136d5543cd5",
+    "code_and_test_diff_command": "git diff -- crates/gpt-oss-bench/src/bin/heterogeneous_construct.rs crates/gpt-oss-bench/src/bin/heterogeneous_layer_oracle.rs crates/gpt-oss-model-runner/src/heterogeneous/control.rs crates/gpt-oss-model-runner/src/heterogeneous/layer.rs crates/gpt-oss-model-runner/src/heterogeneous/router.rs crates/gpt-oss-model-runner/src/model_loader/owner_selective.rs crates/gpt-oss-model-runner/tests/heterogeneous_router_cuda.rs crates/gpt-oss-model-runner/tests/owner_selective_contract.rs | sha256sum",
+    "files": {
+      "crates/gpt-oss-bench/src/bin/heterogeneous_construct.rs": "4d2dd87ae9f8578c9f224222cbc000b624bd7d66af82d4fd887da031e7d1d8a8",
+      "crates/gpt-oss-bench/src/bin/heterogeneous_layer_oracle.rs": "a782d01e5e32ef65d51fb189a31b26e7b2fe1d46dd3d1932a0871891297d9b3a",
+      "crates/gpt-oss-model-runner/src/heterogeneous/control.rs": "a027855f898b99b8be729802833f54e333d68084f2d95f8352439c51e8c07c53",
+      "crates/gpt-oss-model-runner/src/heterogeneous/layer.rs": "40a1ae832f3a36e4271055965c13ae065b20e4320d9923156bc65c44f55a0904",
+      "crates/gpt-oss-model-runner/src/heterogeneous/router.rs": "93678921e336cc3cc517a8f6aa5ebe7f09e39db0f4644724154354c73d0c0e41",
+      "crates/gpt-oss-model-runner/src/model_loader/owner_selective.rs": "043a24d2b226a84112e86cb38b2cdb68722b6dc43830b48dc6aff15c35701907",
+      "crates/gpt-oss-model-runner/tests/heterogeneous_router_cuda.rs": "5fde26e7ea99466bc726e9b868934418fd494e744f6a6835278b92fddd382767",
+      "crates/gpt-oss-model-runner/tests/owner_selective_contract.rs": "8336d91a5dc66945c1c28e47dd2f3ffc8e2f6020b81b4a7a85684fc1cdc62f4c"
+    }
+  },
+  "focused_executables": {
+    "heterogeneous_router_cuda_cuda_sha256": "d6f86bbcb8c1d5351a13e299c7b2fd298f68a7d04da7f724b0c769313ba8d974",
+    "heterogeneous_router_cuda_fault_sha256": "1b4c0b38d97b020b740e9bc1d911e0b5e5cf53e32a996124449948f56da42e44",
+    "owner_selective_contract_fault_sha256": "200e448cec1a769e152f5a90ca54ee0901760c5b373a0de9c430245c539adc7a"
+  },
+  "contract": {
+    "published_model_owns_checkpoint_view": false,
+    "published_metadata_payload_free": true,
+    "published_metadata_fields": [
+      "validated_native_config",
+      "revision",
+      "config_sha256",
+      "metadata_sha256",
+      "mapping_sha256"
+    ],
+    "router_sources_per_layer": 2,
+    "router_source_order": "ascending_numeric_layer",
+    "router_source_consumer_count": 1,
+    "router_device_copy": "same_context_d2d",
+    "router_bytes_remain_in_dense_ledger": true,
+    "full_checkpoint_mapped_until_publication": true,
+    "construction_peak_relief_claimed": false,
+    "remaining_before_real_20b_gate": [
+      "per_shard_gpu_expert_assembly",
+      "atomic_incremental_cpu_x8_publication"
+    ]
+  },
+  "focused_tests": {
+    "owner_selective_contract": {
+      "passed": 10,
+      "failed": 0,
+      "model_metadata_opt_in_unset_and_skipped": true,
+      "router_classifier_pair_order_metadata_tests_passed": true
+    },
+    "router_cuda_normal": {
+      "passed": 6,
+      "failed": 0,
+      "synthetic_e32_e128_both_gpu_equivalence": true,
+      "resident_source_single_consumer": true,
+      "real_model_gate_unset_and_skipped": true
+    },
+    "router_cuda_fault": {
+      "passed": 4,
+      "failed": 0,
+      "filtered_out": 5,
+      "terminal_source_release": true,
+      "recoverable_retry": true,
+      "unproven_drain_quarantine": true
+    }
+  },
+  "source_audit": {
+    "model_checkpoint_accessor_references": 0,
+    "checkpoint_bf16_bits_references": 0,
+    "heterogeneous_runtime_checkpoint_view_fields": 0,
+    "constructor_checkpoint_drop_is_explicit": true,
+    "oracle_post_construction_payload_borrow": false
+  },
+  "broader_gates": {
+    "cargo_check_workspace_locked": "passed",
+    "cargo_test_workspace_locked": "passed",
+    "normal_cuda_changed_hunk_warning_gate": "passed",
+    "fault_cuda_changed_hunk_warning_gate": "passed",
+    "normal_cuda_bench_touched_path_warning_gate": "passed",
+    "fault_cuda_bench_touched_path_warning_gate": "passed",
+    "configured_evidence_bench_strict_clippy": "passed",
+    "oracle_python_tests": {
+      "passed": 10,
+      "failed": 0
+    },
+    "bench_tool_python_tests": {
+      "passed": 35,
+      "failed": 0
+    },
+    "cargo_fmt": "passed",
+    "markdown_links": "passed",
+    "json_and_checksums": "passed",
+    "git_diff_check": "passed"
+  },
+  "lint_policy": {
+    "new_warnings_in_changed_hunks": 0,
+    "normal_cuda_baseline_warning_files": 46,
+    "fault_cuda_baseline_warning_files": 46,
+    "bench_cuda_baseline_warning_files": 10,
+    "bench_fault_baseline_warning_files": 10,
+    "note": "An initial whole-file filter selected known pre-existing warnings in unchanged control/layer/test lines. The final JSON audits compared primary warning spans with the exact changed hunks and found no new touched-hunk warning; no allow was added."
+  },
+  "checks": [
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --locked -p gpt-oss-model-runner --features heterogeneous-test-faults --test owner_selective_contract -- --nocapture",
+      "result": "passed-10-failed-0; model-metadata-opt-in-unset-and-skipped"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --locked -p gpt-oss-model-runner --features cuda --test heterogeneous_router_cuda -- --nocapture",
+      "result": "passed-6-failed-0; synthetic-resident-router-cases-ran-on-both-local-GPUs; real-model-gate-unset-and-skipped"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --locked -p gpt-oss-model-runner --features heterogeneous-test-faults --test heterogeneous_router_cuda resident_router -- --nocapture",
+      "result": "passed-4-failed-0-filtered-5; terminal-release-recoverable-retry-and-unproven-drain-quarantine-passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo check --workspace --locked",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --workspace --locked",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo clippy --locked -p gpt-oss-model-runner --lib --test owner_selective_contract --test heterogeneous_router_cuda --features cuda --no-deps --message-format=json",
+      "result": "passed-compile; changed-hunk-primary-warning-audit-passed-zero-new; 46-pre-existing-baseline-warning-files-retained"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo clippy --locked -p gpt-oss-model-runner --lib --test owner_selective_contract --test heterogeneous_router_cuda --features heterogeneous-test-faults --no-deps --message-format=json",
+      "result": "passed-compile; changed-hunk-primary-warning-audit-passed-zero-new; 46-pre-existing-baseline-warning-files-retained"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo clippy --locked -p gpt-oss-bench --bin heterogeneous_construct --bin heterogeneous_layer_oracle --features cuda --no-deps --message-format=json",
+      "result": "passed-zero-primary-warnings-in-touched-bench-paths; 10-pre-existing-baseline-warning-files-retained"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo clippy --locked -p gpt-oss-bench --bin heterogeneous_construct --bin heterogeneous_layer_oracle --features heterogeneous-test-faults --no-deps --message-format=json",
+      "result": "passed-zero-primary-warnings-in-touched-bench-paths; 10-pre-existing-baseline-warning-files-retained"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo clippy --locked -p gpt-oss-evidence -p gpt-oss-bench --all-targets --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST python3 -m unittest discover -s oracle/tests -p 'test_*.py'",
+      "result": "passed-10-failed-0"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'",
+      "result": "passed-35-failed-0"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "rg -n 'model\\.checkpoint\\(\\)|checkpoint_bf16_bits|checkpoint:\\s*GptOssCheckpointView' --glob '*.rs' .",
+      "result": "no-published-model-accessor-or-host-router-helper; only-owner-selective-constructor-parameters-remain"
+    },
+    {
+      "command": "python3 tools/check_markdown_links.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "jq -e . docs/het/evidence/implementation-2026-08/h3-runtime-checkpoint-retirement/validation.json >/dev/null && (cd docs/het/evidence/implementation-2026-08/h3-runtime-checkpoint-retirement && sha256sum -c SHA256SUMS)",
+      "result": "passed-valid-json; README.md-OK; validation.json-OK"
+    }
+  ],
+  "environment": {
+    "unset_model_paths": [
+      "GPT_OSS_MODEL_PATH",
+      "GPT_OSS_MODEL_20B_PATH",
+      "GPT_OSS_MODEL_120B_PATH"
+    ],
+    "model_or_execution_opt_in_gates_unset": true,
+    "real_checkpoint_accessed": false,
+    "h8_started": false,
+    "h9_started": false,
+    "h10_started": false,
+    "committed": false,
+    "pushed": false
+  }
+}

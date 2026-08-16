@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -458,6 +459,18 @@ fn main() -> Result<()> {
         "model.layers.0.mlp.router.bias",
         config.num_local_experts,
     )?;
+    let authority_router_input = bits(&authority.router_input);
+    let exact_authority_traces = authority
+        .selected_experts
+        .iter()
+        .map(|&expert| {
+            let expert = u16::try_from(expert)?;
+            Ok((
+                expert,
+                exact_expert_trace(&checkpoint, 0, expert, &authority_router_input)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let constructor = OwnerSelectiveConstructor::new(&cli.owner_cache);
     let mut model = constructor.construct(checkpoint, &manifest, |_| Ok(()))?;
     let placement_sha256 = model.placement().manifest_hash().to_owned();
@@ -643,12 +656,9 @@ fn main() -> Result<()> {
             .first()
             .and_then(|owner| owner.routes.first())
             .context("H6a fault probe has no GPU0-local route")?;
-        let expected_trace = exact_expert_trace(
-            model.checkpoint(),
-            0,
-            local_route.descriptor.route.expert_id,
-            &routed.batch.activation_bf16_bits,
-        )?;
+        let expected_trace = exact_authority_traces
+            .get(&local_route.descriptor.route.expert_id)
+            .context("H6a local route has no precomputed exact authority")?;
         let fault_timeline = gpt_oss_gpu::event::CorrelatedTimeline::new();
         let probe = exercise_owned_device_input_fault_and_retry(
             &mut model,
@@ -660,7 +670,7 @@ fn main() -> Result<()> {
         )?;
         exact_trace(
             "owned_device_input_fault_retry",
-            &expected_trace,
+            expected_trace,
             &probe.retry_trace,
         )?;
         if probe.retry_input_d2d_bytes != config.hidden_size * size_of::<u16>()
@@ -683,12 +693,10 @@ fn main() -> Result<()> {
     let authority_outputs = descriptors
         .iter()
         .map(|descriptor| {
-            exact_expert_output(
-                model.checkpoint(),
-                0,
-                descriptor.expert_id,
-                &routed.batch.activation_bf16_bits,
-            )
+            exact_authority_traces
+                .get(&descriptor.expert_id)
+                .map(|trace| trace.down_bf16_bits.clone())
+                .context("H6a route has no precomputed exact authority")
         })
         .collect::<Result<Vec<_>>>()?;
     let contributions = descriptors
@@ -782,6 +790,7 @@ fn main() -> Result<()> {
             token_id,
             &control.prompt_token_ids,
             authority,
+            &exact_authority_traces,
             &expected,
             placement_sha256.clone(),
             layer_owner_pci_bus_id.clone(),
@@ -868,6 +877,7 @@ fn run_h6b_campaign(
     token_id: u32,
     prompt_token_ids: &[u32],
     authority: &CpuLayerTrace,
+    exact_authority_traces: &BTreeMap<u16, SelectedExpertFirstDivergenceTrace>,
     expected_prefix: &ExpectedBoundaries,
     placement_sha256: String,
     layer_owner_pci_bus_id: String,
@@ -916,6 +926,7 @@ fn run_h6b_campaign(
             token_id,
             prompt_token_ids,
             authority,
+            exact_authority_traces,
             expected_prefix,
             &admission,
             &admission_plan,
@@ -934,6 +945,7 @@ fn run_h6b_campaign(
             token_id,
             prompt_token_ids,
             authority,
+            exact_authority_traces,
             expected_prefix,
             &admission,
             &admission_plan,
@@ -952,6 +964,7 @@ fn run_h6b_campaign(
             token_id,
             prompt_token_ids,
             authority,
+            exact_authority_traces,
             expected_prefix,
             &admission,
             &admission_plan,
@@ -1067,6 +1080,7 @@ fn run_h6b_case(
     token_id: u32,
     prompt_token_ids: &[u32],
     authority: &CpuLayerTrace,
+    exact_authority_traces: &BTreeMap<u16, SelectedExpertFirstDivergenceTrace>,
     expected_prefix: &ExpectedBoundaries,
     admission: &GptOssRoutedBatchDescriptor,
     admission_plan: &gpt_oss_model_runner::heterogeneous::PackedDispatchPlan,
@@ -1092,12 +1106,10 @@ fn run_h6b_case(
         .routes
         .iter()
         .map(|route| {
-            exact_expert_trace(
-                model.checkpoint(),
-                admission.layer,
-                route.expert_id,
-                &admission.activation_bf16_bits,
-            )
+            exact_authority_traces
+                .get(&route.expert_id)
+                .cloned()
+                .context("H6b route has no precomputed exact authority")
         })
         .collect::<Result<Vec<_>>>()?;
     let mut transaction =
@@ -1724,15 +1736,6 @@ fn exact(label: &str, expected: &[u16], actual: &[u16]) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn exact_expert_output(
-    checkpoint: &GptOssCheckpointView,
-    layer: u16,
-    expert: u16,
-    input_bf16_bits: &[u16],
-) -> Result<Vec<u16>> {
-    Ok(exact_expert_trace(checkpoint, layer, expert, input_bf16_bits)?.down_bf16_bits)
 }
 
 fn exact_expert_trace(

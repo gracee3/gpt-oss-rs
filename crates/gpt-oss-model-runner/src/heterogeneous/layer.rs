@@ -826,7 +826,7 @@ impl Drop for CudaLayerOwnerShell {
 }
 
 fn validate_config(model: &OwnerSelectiveModel, config: &CpuGptOssConfig) -> Result<()> {
-    let native = model.checkpoint().config();
+    let native = model.native_metadata().config();
     if native.num_hidden_layers != config.num_hidden_layers
         || native.num_experts != config.num_local_experts
         || native.vocab_size != config.vocab_size

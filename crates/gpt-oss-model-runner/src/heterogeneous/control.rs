@@ -43,7 +43,7 @@ use super::relay::{
     RelayPinnedReservation,
 };
 use super::router::{CudaExactRouter, ExactRouterExecution};
-use super::{CanonicalRouteContract, ExactRouterWeightsView, ExpertResultDescriptor};
+use super::{CanonicalRouteContract, ExpertResultDescriptor};
 
 const MAX_CONTROL_TOKENS: usize = 96;
 
@@ -1061,25 +1061,17 @@ pub struct HeterogeneousControlRuntime {
 impl HeterogeneousControlRuntime {
     pub fn new(model: &mut OwnerSelectiveModel, config: &CpuGptOssConfig) -> Result<Self> {
         let shell = CudaHeterogeneousControlShell::new(model, config)?;
+        let resident_router_weights = model.take_resident_exact_router_weights()?;
+        if resident_router_weights.len() != config.num_hidden_layers {
+            return Err(LLMError::ModelError(format!(
+                "control received {} resident router layers, expected {}",
+                resident_router_weights.len(),
+                config.num_hidden_layers
+            )));
+        }
         let mut routers = Vec::with_capacity(config.num_hidden_layers);
-        for layer in 0..config.num_hidden_layers {
-            let weight_name = format!("model.layers.{layer}.mlp.router.weight");
-            let bias_name = format!("model.layers.{layer}.mlp.router.bias");
-            let weights = checkpoint_bf16_bits(
-                model,
-                &weight_name,
-                config.num_local_experts * GPT_OSS_HIDDEN_SIZE,
-            )?;
-            let bias = checkpoint_bf16_bits(model, &bias_name, config.num_local_experts)?;
-            routers.push(CudaExactRouter::new(
-                model.placement().layer_owner().stable_id.clone(),
-                1,
-                ExactRouterWeightsView {
-                    experts: config.num_local_experts,
-                    weight_bf16_bits: weights,
-                    bias_bf16_bits: bias,
-                },
-            )?);
+        for weights in resident_router_weights {
+            routers.push(CudaExactRouter::from_resident_weights(1, weights)?);
         }
         let pools = RelayPinnedPools::warm_exact(
             routers
@@ -2418,25 +2410,8 @@ fn take_trace_storage(
         .ok_or_else(|| LLMError::ModelError("control selected-expert trace slot is missing".into()))
 }
 
-fn checkpoint_bf16_bits<'a>(
-    model: &'a OwnerSelectiveModel,
-    name: &str,
-    expected_values: usize,
-) -> Result<&'a [u16]> {
-    let tensor = model.checkpoint().tensor(name)?;
-    let values = bytemuck::try_cast_slice::<u8, u16>(tensor.bytes())
-        .map_err(|error| LLMError::ModelError(format!("control tensor {name}: {error}")))?;
-    if values.len() != expected_values {
-        return Err(LLMError::ModelError(format!(
-            "control tensor {name} has {} BF16 values, expected {expected_values}",
-            values.len()
-        )));
-    }
-    Ok(values)
-}
-
 fn validate_control_config(model: &OwnerSelectiveModel, config: &CpuGptOssConfig) -> Result<()> {
-    let native = model.checkpoint().config();
+    let native = model.native_metadata().config();
     if native.num_hidden_layers != config.num_hidden_layers
         || native.num_experts != config.num_local_experts
         || native.vocab_size != config.vocab_size
