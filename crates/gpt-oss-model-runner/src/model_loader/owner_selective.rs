@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, PinnedHostSlice};
 use gpt_oss_core::error::{LLMError, Result};
@@ -198,15 +199,24 @@ pub struct OwnerSelectiveModel {
     // struct fields in declaration order after `Drop::drop`: CPU records,
     // remote/local experts, dense weights, contexts, then source mappings.
     cpu_layers: BTreeMap<u16, CpuOwnerLayerRecord>,
-    remote_gpu_experts: BTreeMap<GptOssExpertKey, CudaSelectedExpertWeights>,
-    layer_owner_experts: BTreeMap<GptOssExpertKey, CudaSelectedExpertWeights>,
+    remote_gpu_experts: BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
+    layer_owner_experts: BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
     layer_owner_dense: Vec<LayerOwnerDenseTensor>,
-    remote_executor: CudaSelectedExpertExecutor,
-    layer_owner_executor: CudaSelectedExpertExecutor,
+    remote_executor: Option<CudaSelectedExpertExecutor>,
+    layer_owner_executor: Option<CudaSelectedExpertExecutor>,
+    execution_quarantined: bool,
     checkpoint: GptOssCheckpointView,
     placement: ResolvedExpertPlacement,
     envelope: OwnerSelectiveEnvelope,
     ledger: ConstructionLedger,
+}
+
+pub(crate) struct OwnerSelectiveExecutionParts<'a> {
+    pub cpu_layers: &'a BTreeMap<u16, CpuOwnerLayerRecord>,
+    pub remote_gpu_experts: &'a BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
+    pub layer_owner_experts: &'a BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
+    pub remote_executor: &'a mut CudaSelectedExpertExecutor,
+    pub layer_owner_executor: &'a mut CudaSelectedExpertExecutor,
 }
 
 impl OwnerSelectiveModel {
@@ -244,33 +254,137 @@ impl OwnerSelectiveModel {
 
     pub fn device_memory_info(&self) -> Result<[(usize, usize); 2]> {
         Ok([
-            self.layer_owner_executor.memory_info()?,
-            self.remote_executor.memory_info()?,
+            self.layer_owner_executor
+                .as_ref()
+                .ok_or_else(execution_quarantined)?
+                .memory_info()?,
+            self.remote_executor
+                .as_ref()
+                .ok_or_else(execution_quarantined)?
+                .memory_info()?,
         ])
     }
 
+    /// Narrow execution-only split used by the H6 routed-expert coordinator.
+    /// It exposes no construction, checkpoint, or placement mutation and keeps
+    /// every resident expert handle owned by this model.
+    pub(crate) fn execution_parts(&mut self) -> OwnerSelectiveExecutionParts<'_> {
+        OwnerSelectiveExecutionParts {
+            cpu_layers: &self.cpu_layers,
+            remote_gpu_experts: &self.remote_gpu_experts,
+            layer_owner_experts: &self.layer_owner_experts,
+            remote_executor: self
+                .remote_executor
+                .as_mut()
+                .expect("owner-selective execution is not quarantined"),
+            layer_owner_executor: self
+                .layer_owner_executor
+                .as_mut()
+                .expect("owner-selective execution is not quarantined"),
+        }
+    }
+
+    /// Fail closed after an unproven CUDA drain. Resident weights, streams,
+    /// modules, scratch and result targets may still be referenced, so retain
+    /// every GPU execution object for process lifetime and make the model
+    /// permanently unusable.
+    pub(crate) fn quarantine_execution(&mut self) {
+        if self.execution_quarantined {
+            return;
+        }
+        self.execution_quarantined = true;
+        if let Some(executor) = self.layer_owner_executor.take() {
+            std::mem::forget(executor);
+        }
+        if let Some(executor) = self.remote_executor.take() {
+            std::mem::forget(executor);
+        }
+        std::mem::forget(std::mem::take(&mut self.layer_owner_experts));
+        std::mem::forget(std::mem::take(&mut self.remote_gpu_experts));
+        std::mem::forget(std::mem::take(&mut self.layer_owner_dense));
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn execution_quarantined_for_test(&self) -> bool {
+        self.execution_quarantined
+    }
+
     /// Drain both construction streams before reverse-order field teardown.
-    pub fn drain(&self) -> Result<()> {
-        self.layer_owner_executor
+    pub fn drain(&mut self) -> Result<()> {
+        if self
+            .layer_owner_executor
+            .as_ref()
+            .is_some_and(CudaSelectedExpertExecutor::owned_drain_unproven)
+            || self
+                .remote_executor
+                .as_ref()
+                .is_some_and(CudaSelectedExpertExecutor::owned_drain_unproven)
+        {
+            self.quarantine_execution();
+            return Err(LLMError::GpuError(
+                "owner-selective execution has an unproven CUDA drain and requires quarantine"
+                    .into(),
+            ));
+        }
+        let layer_owner_drain = self
+            .layer_owner_executor
+            .as_ref()
+            .ok_or_else(execution_quarantined)?
             .stream()
-            .synchronize()
-            .map_err(cuda_error("layer-owner construction drain"))?;
-        self.remote_executor
+            .synchronize();
+        if let Err(error) = layer_owner_drain {
+            self.quarantine_execution();
+            return Err(cuda_error("layer-owner construction drain")(error));
+        }
+        let remote_drain = self
+            .remote_executor
+            .as_ref()
+            .ok_or_else(execution_quarantined)?
             .stream()
-            .synchronize()
-            .map_err(cuda_error("remote-GPU construction drain"))?;
-        Ok(())
+            .synchronize();
+        match remote_drain {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.quarantine_execution();
+                Err(cuda_error("remote-GPU construction drain")(error))
+            }
+        }
     }
 }
 
 impl Drop for OwnerSelectiveModel {
     fn drop(&mut self) {
+        if self
+            .layer_owner_executor
+            .as_ref()
+            .is_some_and(CudaSelectedExpertExecutor::owned_drain_unproven)
+            || self
+                .remote_executor
+                .as_ref()
+                .is_some_and(CudaSelectedExpertExecutor::owned_drain_unproven)
+        {
+            self.quarantine_execution();
+            return;
+        }
         // CudaSlice and pinned allocations also synchronize on drop. An
         // explicit best-effort drain keeps reverse-order teardown deterministic
         // even when a caller does not invoke `drain` itself.
-        let _ = self.layer_owner_executor.stream().synchronize();
-        let _ = self.remote_executor.stream().synchronize();
+        let layer_owner_drained = self
+            .layer_owner_executor
+            .as_ref()
+            .is_none_or(|executor| executor.stream().synchronize().is_ok());
+        let remote_drained = self
+            .remote_executor
+            .as_ref()
+            .is_none_or(|executor| executor.stream().synchronize().is_ok());
+        if !layer_owner_drained || !remote_drained {
+            self.quarantine_execution();
+        }
     }
+}
+
+fn execution_quarantined() -> LLMError {
+    LLMError::GpuError("owner-selective execution topology is quarantined".into())
 }
 
 pub struct OwnerSelectiveConstructor {
@@ -440,7 +554,7 @@ impl OwnerSelectiveConstructor {
             let source = native_expert_view(&checkpoint, key, &identity)?;
             let weights =
                 layer_owner_executor.upload_expert_staged(owner, source, &mut pinned.allocation)?;
-            if layer_owner_experts.insert(key, weights).is_some() {
+            if layer_owner_experts.insert(key, Arc::new(weights)).is_some() {
                 return Err(LLMError::ModelError("duplicate layer-owner expert".into()));
             }
             ledger.layer_owner_experts += 1;
@@ -465,7 +579,7 @@ impl OwnerSelectiveConstructor {
                 source,
                 &mut remote_pinned.allocation,
             )?;
-            if remote_gpu_experts.insert(key, weights).is_some() {
+            if remote_gpu_experts.insert(key, Arc::new(weights)).is_some() {
                 return Err(LLMError::ModelError("duplicate remote-GPU expert".into()));
             }
             ledger.remote_gpu_experts += 1;
@@ -548,8 +662,9 @@ impl OwnerSelectiveConstructor {
             remote_gpu_experts,
             layer_owner_experts,
             layer_owner_dense,
-            remote_executor,
-            layer_owner_executor,
+            remote_executor: Some(remote_executor),
+            layer_owner_executor: Some(layer_owner_executor),
+            execution_quarantined: false,
             checkpoint,
             placement,
             envelope,
@@ -742,8 +857,8 @@ fn expert_components() -> [(&'static str, usize); 6] {
 
 fn verify_materialized(
     placement: &ResolvedExpertPlacement,
-    layer_owner: &BTreeMap<GptOssExpertKey, CudaSelectedExpertWeights>,
-    remote: &BTreeMap<GptOssExpertKey, CudaSelectedExpertWeights>,
+    layer_owner: &BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
+    remote: &BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
     cpu_layers: &BTreeMap<u16, CpuOwnerLayerRecord>,
 ) -> Result<()> {
     let cpu = cpu_layers

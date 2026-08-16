@@ -70,6 +70,69 @@ struct H5ReductionEvidence<'a> {
 }
 
 #[test]
+fn reducer_unproven_fallback_drain_quarantines_reducer_and_shared_relay_state() {
+    let devices = list_devices();
+    assert_eq!(devices.len(), 2);
+    let manifest: GptOssExpertPlacementManifestV1 =
+        serde_json::from_slice(&std::fs::read(repo_root().join(PLACEMENT)).unwrap()).unwrap();
+    let placement = manifest.validate(&devices).unwrap();
+    let router_weights = vec![bf16::from_f32(0.0).to_bits(); 32 * HIDDEN_SIZE];
+    let mut router_bias = vec![bf16::from_f32(0.0).to_bits(); 32];
+    for (expert, logit) in [(31, 4.0), (21, 3.0), (22, 2.0), (6, 1.0)] {
+        router_bias[expert] = bf16::from_f32(logit).to_bits();
+    }
+    let mut router = CudaExactRouter::new(
+        placement.layer_owner().stable_id.clone(),
+        1,
+        ExactRouterWeightsView {
+            experts: 32,
+            weight_bf16_bits: &router_weights,
+            bias_bf16_bits: &router_bias,
+        },
+    )
+    .unwrap();
+    let pools = RelayPinnedPools::warm_exact(&router, 1).unwrap();
+    let mut reservation = pools.try_reserve_all(902).unwrap();
+    let activation = vec![bf16::from_f32(0.0).to_bits(); HIDDEN_SIZE];
+    let routed = router
+        .execute_and_download(
+            0,
+            GptOssPhase::Decode,
+            placement.placement_epoch(),
+            1,
+            &activation,
+            &mut reservation.source_activation,
+            &mut reservation.route_descriptors,
+            None,
+        )
+        .unwrap();
+    let plan = pack_routes_bounded(&routed.batch, &placement).unwrap();
+    let prepared = PreparedRankOrderedReduction::prepare(&routed.batch, &placement, 902).unwrap();
+    let descriptors = prepared.expected_results().to_vec();
+    let outputs = (0..4)
+        .map(|rank| vec![bf16::from_f32(rank as f32).to_bits(); HIDDEN_SIZE])
+        .collect::<Vec<_>>();
+    let mut relay = CudaResultRelay::new(&router, 1).unwrap();
+    relay.bind_decode_generation(902, &plan).unwrap();
+    relay
+        .upload_cpu_authority_control(902, &descriptors, outputs)
+        .unwrap();
+    let mut reducer = CudaRankOrderedReducer::new(&relay).unwrap();
+    reducer
+        .inject_next_failure(RankReductionInjectedFault::AfterKernelLaunchAndFallbackDrainFailure)
+        .unwrap();
+    let error = reducer.reduce_relay(&mut relay, prepared).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("all CUDA and host D2H state quarantined"));
+    assert!(reducer.device_state_quarantined_for_test());
+    assert!(relay.device_state_quarantined_for_test());
+    drop(reducer);
+    drop(relay);
+    reservation.release_drained().unwrap();
+}
+
+#[test]
 fn real_three_owner_rank_reduction_uses_h4_arena_and_is_generation_bound() {
     if std::env::var_os("GPT_OSS_RUN_H5_REAL").is_none() {
         eprintln!("GPT_OSS_RUN_H5_REAL is unset; skipping real H5 reduction gate");

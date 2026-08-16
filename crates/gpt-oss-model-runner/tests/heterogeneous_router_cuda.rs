@@ -208,6 +208,62 @@ fn router_post_enqueue_faults_drain_before_pinned_reuse() {
     let _ = ResultRelayInjectedFault::AfterFirstResultEnqueue;
 }
 
+#[cfg(feature = "heterogeneous-test-faults")]
+#[test]
+fn router_unproven_fallback_drain_quarantines_cuda_and_pinned_state() {
+    let (activation, weights, bias) = fixture(32, 1);
+    let view = ExactRouterWeightsView {
+        experts: 32,
+        weight_bf16_bits: &weights,
+        bias_bf16_bits: &bias,
+    };
+    let mut router = CudaExactRouter::new(layer_owner(), 1, view).unwrap();
+    let pools = RelayPinnedPools::warm_exact(&router, 1).unwrap();
+    let mut reservation = pools.try_reserve_all(43).unwrap();
+    router
+        .inject_next_failure(
+            ExactRouterInjectedFault::SubmitAfterInputEnqueueAndFallbackDrainFailure,
+        )
+        .unwrap();
+    let error = router
+        .execute_and_download(
+            0,
+            GptOssPhase::Decode,
+            1,
+            1,
+            &activation,
+            &mut reservation.source_activation,
+            &mut reservation.route_descriptors,
+            None,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("caller-owned pinned leases"));
+    assert!(router.device_state_quarantined_for_test());
+    assert!(router.drain().is_err());
+    assert!(router
+        .execute_and_download(
+            0,
+            GptOssPhase::Decode,
+            1,
+            1,
+            &activation,
+            &mut reservation.source_activation,
+            &mut reservation.route_descriptors,
+            None,
+        )
+        .is_err());
+    // The injected unproven drain deliberately retains every lease which the
+    // router's async H2D/D2H may still reference.
+    std::mem::forget(reservation);
+    drop(router);
+    let stats = pools.stats();
+    assert_eq!(stats.source_activation.checked_out, 1);
+    assert_eq!(stats.route_descriptors.checked_out, 1);
+    assert_eq!(stats.remote_gpu_input.checked_out, 1);
+    assert_eq!(stats.remote_gpu_result.checked_out, 1);
+    assert_eq!(stats.cpu_result.checked_out, 1);
+}
+
 const _: () = assert!(GPT_OSS_ROUTER_MAX_ROWS == 64);
 
 #[derive(Serialize)]

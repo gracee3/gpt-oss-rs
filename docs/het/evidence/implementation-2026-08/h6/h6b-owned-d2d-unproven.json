@@ -1,0 +1,14 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-owned-d2d-unproven-fault/v2",
+  "drain_proven": false,
+  "result_slot_returned": false,
+  "input_retained": true,
+  "weights_retained": true,
+  "trace_retained": true,
+  "slot_retained": true,
+  "executor_marked_unproven": true,
+  "model_quarantined": true,
+  "shell_quarantined": true,
+  "retry_permitted": false,
+  "passed": true
+}

@@ -69,6 +69,65 @@ struct TransferLegEvidence {
 }
 
 #[test]
+fn relay_unproven_fallback_drain_quarantines_complete_cuda_state() {
+    let devices = list_devices();
+    assert_eq!(devices.len(), 2);
+    let manifest: GptOssExpertPlacementManifestV1 =
+        serde_json::from_slice(&std::fs::read(repo_root().join(PLACEMENT)).unwrap()).unwrap();
+    let placement = manifest.validate(&devices).unwrap();
+    let router_weights = vec![bf16::from_f32(0.0).to_bits(); 32 * HIDDEN_SIZE];
+    let mut router_bias = vec![bf16::from_f32(0.0).to_bits(); 32];
+    for (expert, logit) in [(31, 4.0), (21, 3.0), (22, 2.0), (6, 1.0)] {
+        router_bias[expert] = bf16::from_f32(logit).to_bits();
+    }
+    let mut router = CudaExactRouter::new(
+        placement.layer_owner().stable_id.clone(),
+        1,
+        ExactRouterWeightsView {
+            experts: 32,
+            weight_bf16_bits: &router_weights,
+            bias_bf16_bits: &router_bias,
+        },
+    )
+    .unwrap();
+    let pools = RelayPinnedPools::warm_exact(&router, 1).unwrap();
+    let mut reservation = pools.try_reserve_all(901).unwrap();
+    let activation = vec![bf16::from_f32(0.0).to_bits(); HIDDEN_SIZE];
+    let routed = router
+        .execute_and_download(
+            0,
+            GptOssPhase::Decode,
+            placement.placement_epoch(),
+            1,
+            &activation,
+            &mut reservation.source_activation,
+            &mut reservation.route_descriptors,
+            None,
+        )
+        .unwrap();
+    let plan = pack_routes_bounded(&routed.batch, &placement).unwrap();
+    let mut relay = CudaResultRelay::new(&router, 1).unwrap();
+    relay
+        .inject_next_failure(
+            ResultRelayInjectedFault::AfterFirstResultEnqueueAndFallbackDrainFailure,
+        )
+        .unwrap();
+    let failure = relay.upload_results(&plan, reservation, None).unwrap_err();
+    assert!(failure.reservation.is_none());
+    assert!(failure
+        .error
+        .to_string()
+        .contains("all CUDA and pinned state quarantined"));
+    assert!(relay.device_state_quarantined_for_test());
+    drop(relay);
+    // The intentionally leaked lease retains the five pool allocations; no
+    // buffer or CUDA arena is returned after the simulated unproven drain.
+    let stats = pools.stats();
+    assert_eq!(stats.source_activation.checked_out, 1);
+    assert_eq!(stats.cpu_result.checked_out, 1);
+}
+
+#[test]
 fn cpu_authority_post_enqueue_fault_drains_without_publication_and_retries() {
     let devices = list_devices();
     assert_eq!(

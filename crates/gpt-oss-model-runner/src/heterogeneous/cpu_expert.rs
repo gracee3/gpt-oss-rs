@@ -11,6 +11,7 @@ use half::bf16;
 use crate::cpu_repack::CpuOwnerExpertView;
 
 use super::contract::{CanonicalRouteContract, ExpertResultDescriptor, PackedRouteDescriptor};
+use super::cuda_expert::SelectedExpertTraceStorage;
 use super::placement::ExpertOwner;
 use super::{HIDDEN_SIZE, INPUT_BLOCKS, INTERMEDIATE_SIZE};
 
@@ -100,6 +101,56 @@ impl CpuX8SelectedExpertWorker {
         output: &mut BoundedPinnedLease<u16>,
         timeline: Option<&CorrelatedTimeline>,
     ) -> Result<CpuX8SelectedExpertDeviceExecution> {
+        self.execute_into_pinned_inner(
+            layer,
+            route,
+            owner_route_slot,
+            expert,
+            input_bf16_bits,
+            output,
+            None,
+            timeline,
+        )
+    }
+
+    /// H6 exact worker path with all first-divergence boundaries written into
+    /// storage that was allocated before dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_into_pinned_with_trace(
+        &mut self,
+        layer: u16,
+        route: &PackedRouteDescriptor,
+        owner_route_slot: u32,
+        expert: CpuOwnerExpertView<'_>,
+        input_bf16_bits: &[u16],
+        output: &mut BoundedPinnedLease<u16>,
+        trace: &mut SelectedExpertTraceStorage,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> Result<CpuX8SelectedExpertDeviceExecution> {
+        self.execute_into_pinned_inner(
+            layer,
+            route,
+            owner_route_slot,
+            expert,
+            input_bf16_bits,
+            output,
+            Some(trace),
+            timeline,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_into_pinned_inner(
+        &mut self,
+        layer: u16,
+        route: &PackedRouteDescriptor,
+        owner_route_slot: u32,
+        expert: CpuOwnerExpertView<'_>,
+        input_bf16_bits: &[u16],
+        output: &mut BoundedPinnedLease<u16>,
+        mut trace: Option<&mut SelectedExpertTraceStorage>,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> Result<CpuX8SelectedExpertDeviceExecution> {
         if !matches!(route.owner, ExpertOwner::Cpu { .. })
             || route.route.expert_id != expert.expert_id
             || route.canonical_result_slot != route.route.canonical_result_slot()
@@ -146,13 +197,25 @@ impl CpuX8SelectedExpertWorker {
             input_bf16_bits,
             &mut self.gate_up_bf16_bits,
         )?;
-        exact_swiglu_into(&self.gate_up_bf16_bits, &mut self.swiglu_bf16_bits);
+        if let Some(trace) = trace.as_deref_mut() {
+            trace
+                .gate_up_bf16_bits
+                .copy_from_slice(&self.gate_up_bf16_bits);
+            exact_swiglu_with_trace(&self.gate_up_bf16_bits, &mut self.swiglu_bf16_bits, trace);
+        } else {
+            exact_swiglu_into(&self.gate_up_bf16_bits, &mut self.swiglu_bf16_bits);
+        }
         exact_x8_gemv_into(
             expert.down,
             expert.down_bias,
             &self.swiglu_bf16_bits,
             &mut output.as_mut_slice()[output_start..output_start + HIDDEN_SIZE],
         )?;
+        if let Some(trace) = trace {
+            trace
+                .down_bf16_bits
+                .copy_from_slice(&output.as_slice()[output_start..output_start + HIDDEN_SIZE]);
+        }
         let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         if let Some(timeline) = timeline {
             timeline.record_host("cpu_expert", "compute_end");
@@ -218,5 +281,33 @@ fn exact_swiglu_into(gate_up: &[u16], output: &mut [u16]) {
         let glu = bf16::from_f32(gate * sigmoid).to_f32();
         let linear = bf16::from_f32(up + 1.0).to_f32();
         *output = bf16::from_f32(glu * linear).to_bits();
+    }
+}
+
+fn exact_swiglu_with_trace(
+    gate_up: &[u16],
+    output: &mut [u16],
+    trace: &mut SelectedExpertTraceStorage,
+) {
+    debug_assert_eq!(gate_up.len(), GATE_UP_ROWS);
+    debug_assert_eq!(output.len(), INTERMEDIATE_SIZE);
+    for (index, output) in output.iter_mut().enumerate() {
+        let gate = bf16::from_bits(gate_up[index * 2])
+            .to_f32()
+            .min(SWIGLU_LIMIT);
+        let up = bf16::from_bits(gate_up[index * 2 + 1])
+            .to_f32()
+            .clamp(-SWIGLU_LIMIT, SWIGLU_LIMIT);
+        let scaled_gate = bf16::from_f32(gate * SWIGLU_ALPHA);
+        let sigmoid = bf16::from_f32(1.0 / (1.0 + (-scaled_gate.to_f32()).exp()));
+        let glu = bf16::from_f32(gate * sigmoid.to_f32());
+        let linear = bf16::from_f32(up + 1.0);
+        let swiglu = bf16::from_f32(glu.to_f32() * linear.to_f32());
+        trace.scaled_gate_bf16_bits[index] = scaled_gate.to_bits();
+        trace.sigmoid_bf16_bits[index] = sigmoid.to_bits();
+        trace.glu_bf16_bits[index] = glu.to_bits();
+        trace.linear_bf16_bits[index] = linear.to_bits();
+        trace.swiglu_bf16_bits[index] = swiglu.to_bits();
+        *output = swiglu.to_bits();
     }
 }

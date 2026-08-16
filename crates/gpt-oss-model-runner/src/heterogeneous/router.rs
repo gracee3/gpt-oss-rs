@@ -1,6 +1,6 @@
 //! Exact GPU-authored GPT-OSS router projection and stable top-4 records.
 
-use std::sync::Arc;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use cudarc::driver::{
     sys::CUevent_flags, CudaContext, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
@@ -163,6 +163,7 @@ pub fn exact_router_reference(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactRouterInjectedFault {
     SubmitAfterInputEnqueue,
+    SubmitAfterInputEnqueueAndFallbackDrainFailure,
     RelayAfterSourceEnqueue,
 }
 
@@ -179,17 +180,18 @@ pub struct ExactRouterExecution {
 /// authored; host output is a checked dispatch/evidence view.
 pub struct CudaExactRouter {
     stable_device: StableCudaDeviceId,
-    compute_stream: Arc<CudaStream>,
-    relay_stream: Arc<CudaStream>,
-    loader: KernelLoader,
+    compute_stream: ManuallyDrop<Arc<CudaStream>>,
+    relay_stream: ManuallyDrop<Arc<CudaStream>>,
+    loader: ManuallyDrop<KernelLoader>,
     experts: usize,
     max_rows: usize,
-    input: CudaSlice<u16>,
-    weights: CudaSlice<u16>,
-    bias: CudaSlice<u16>,
-    logits: CudaSlice<u16>,
-    route_records: CudaSlice<u8>,
-    status: CudaSlice<u32>,
+    input: ManuallyDrop<CudaSlice<u16>>,
+    weights: ManuallyDrop<CudaSlice<u16>>,
+    bias: ManuallyDrop<CudaSlice<u16>>,
+    logits: ManuallyDrop<CudaSlice<u16>>,
+    route_records: ManuallyDrop<CudaSlice<u8>>,
+    status: ManuallyDrop<CudaSlice<u32>>,
+    poisoned: bool,
     #[cfg(feature = "heterogeneous-test-faults")]
     injected_fault: Option<ExactRouterInjectedFault>,
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -257,17 +259,18 @@ impl CudaExactRouter {
             .map_err(cuda_error("exact router construction drain"))?;
         Ok(Self {
             stable_device,
-            compute_stream,
-            relay_stream,
-            loader,
+            compute_stream: ManuallyDrop::new(compute_stream),
+            relay_stream: ManuallyDrop::new(relay_stream),
+            loader: ManuallyDrop::new(loader),
             experts: weights.experts,
             max_rows,
-            input,
-            weights: device_weights,
-            bias,
-            logits,
-            route_records,
-            status,
+            input: ManuallyDrop::new(input),
+            weights: ManuallyDrop::new(device_weights),
+            bias: ManuallyDrop::new(bias),
+            logits: ManuallyDrop::new(logits),
+            route_records: ManuallyDrop::new(route_records),
+            status: ManuallyDrop::new(status),
+            poisoned: false,
             #[cfg(feature = "heterogeneous-test-faults")]
             injected_fault: None,
             #[cfg(feature = "heterogeneous-test-faults")]
@@ -291,17 +294,26 @@ impl CudaExactRouter {
         &self.relay_stream
     }
 
-    pub fn drain(&self) -> Result<()> {
+    pub fn drain(&mut self) -> Result<()> {
+        if self.poisoned {
+            return Err(LLMError::GpuError(
+                "poisoned exact router cannot prove a later drain".into(),
+            ));
+        }
         let compute = self.compute_stream.synchronize();
         let relay = self.relay_stream.synchronize();
-        match (compute, relay) {
+        let result = match (compute, relay) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(cuda_error("exact router compute drain")(error)),
             (Ok(()), Err(error)) => Err(cuda_error("exact router relay drain")(error)),
             (Err(compute), Err(relay)) => Err(LLMError::GpuError(format!(
                 "exact router compute drain failed ({compute}); relay drain failed ({relay})"
             ))),
+        };
+        if result.is_err() {
+            self.poisoned = true;
         }
+        result
     }
 
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -319,6 +331,11 @@ impl CudaExactRouter {
     #[cfg(feature = "heterogeneous-test-faults")]
     pub const fn last_fault_drained(&self) -> bool {
         self.last_fault_drained
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn device_state_quarantined_for_test(&self) -> bool {
+        self.poisoned
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -395,10 +412,10 @@ impl CudaExactRouter {
         route_records: &mut BoundedPinnedLease<u8>,
         timeline: Option<&CorrelatedTimeline>,
     ) -> Result<ExactRouterExecution> {
-        if rows > self.max_rows {
+        if self.poisoned || rows > self.max_rows {
             return Err(LLMError::GpuError(format!(
-                "exact router rows {rows} exceed reserved maximum {}",
-                self.max_rows
+                "exact router is poisoned or rows {rows} exceed reserved maximum {}",
+                self.max_rows,
             )));
         }
         let input_len = rows * GPT_OSS_HIDDEN_SIZE;
@@ -425,7 +442,13 @@ impl CudaExactRouter {
                     .map_err(cuda_error("exact router input D2D"))?,
             }
             #[cfg(feature = "heterogeneous-test-faults")]
-            if injected_fault == Some(ExactRouterInjectedFault::SubmitAfterInputEnqueue) {
+            if matches!(
+                injected_fault,
+                Some(
+                    ExactRouterInjectedFault::SubmitAfterInputEnqueue
+                        | ExactRouterInjectedFault::SubmitAfterInputEnqueueAndFallbackDrainFailure
+                )
+            ) {
                 return Err(LLMError::GpuError(
                     "injected exact-router post-input-enqueue failure".into(),
                 ));
@@ -509,6 +532,17 @@ impl CudaExactRouter {
         let (start, routes_ready, relay_terminal) = match submitted {
             Ok(events) => events,
             Err(primary) => {
+                #[cfg(feature = "heterogeneous-test-faults")]
+                if injected_fault
+                    == Some(
+                        ExactRouterInjectedFault::SubmitAfterInputEnqueueAndFallbackDrainFailure,
+                    )
+                {
+                    self.poisoned = true;
+                    return Err(LLMError::GpuError(format!(
+                        "exact router submit failed ({primary}); injected mandatory fallback drain failure; router CUDA state and caller-owned pinned leases must remain quarantined"
+                    )));
+                }
                 let drained = self.drain();
                 #[cfg(feature = "heterogeneous-test-faults")]
                 if matches!(
@@ -550,9 +584,10 @@ impl CudaExactRouter {
             .compute_stream
             .clone_dtoh(&self.logits.slice(..rows * self.experts))
             .map_err(cuda_error("exact router logits D2H"))?;
-        self.compute_stream
-            .synchronize()
-            .map_err(cuda_error("exact router evidence D2H drain"))?;
+        if let Err(error) = self.compute_stream.synchronize() {
+            self.poisoned = true;
+            return Err(cuda_error("exact router evidence D2H drain")(error));
+        }
         if let Some((row, code)) = status
             .iter()
             .copied()
@@ -609,6 +644,28 @@ impl CudaExactRouter {
             source_d2h_bytes: input_len * size_of::<u16>(),
             descriptor_d2h_bytes: descriptor_bytes,
         })
+    }
+}
+
+impl Drop for CudaExactRouter {
+    fn drop(&mut self) {
+        if self.poisoned {
+            return;
+        }
+        // SAFETY: a healthy router drains before any fallible return that may
+        // follow enqueue. The poisoned path intentionally retains every CUDA
+        // allocation, loader, stream, and their context Arcs for process life.
+        unsafe {
+            ManuallyDrop::drop(&mut self.status);
+            ManuallyDrop::drop(&mut self.route_records);
+            ManuallyDrop::drop(&mut self.logits);
+            ManuallyDrop::drop(&mut self.bias);
+            ManuallyDrop::drop(&mut self.weights);
+            ManuallyDrop::drop(&mut self.input);
+            ManuallyDrop::drop(&mut self.loader);
+            ManuallyDrop::drop(&mut self.relay_stream);
+            ManuallyDrop::drop(&mut self.compute_stream);
+        }
     }
 }
 

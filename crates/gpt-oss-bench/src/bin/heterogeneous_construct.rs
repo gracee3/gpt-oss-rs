@@ -94,6 +94,10 @@ struct EvidenceRecord {
     cache_root: String,
     cache_bytes_before: u64,
     cache_bytes_after: u64,
+    process_before: ProcessMemory,
+    process_after: ProcessMemory,
+    system_before: SystemMemory,
+    system_after: SystemMemory,
     checkpoint_20b: CheckpointRecord,
     checkpoint_120b: CheckpointRecord,
     placement_20b: PlacementRecord,
@@ -182,6 +186,7 @@ struct SystemMemory {
     swap_total_bytes: u64,
     swap_free_bytes: u64,
     swap_used_bytes: u64,
+    swap_cached_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,9 +276,12 @@ fn main() -> Result<()> {
         bail!("protected /dev/nvme1n1 is not read-only and unmounted");
     }
     let system_before = system_memory()?;
-    if system_before.swap_used_bytes != 0 || system_before.mem_available_bytes < MIN_AVAILABLE_BYTES
+    let process_before = process_memory()?;
+    if process_before.vm_swap_bytes != 0 || system_before.mem_available_bytes < MIN_AVAILABLE_BYTES
     {
-        bail!("host preflight memory/swap guard failed: {system_before:?}");
+        bail!(
+            "host preflight memory/swap guard failed: process={process_before:?} system={system_before:?}"
+        );
     }
 
     let devices = ordered_devices()?;
@@ -378,9 +386,22 @@ fn main() -> Result<()> {
     if matches!(cli.mode, Mode::Warm) && cache_bytes_after != cache_bytes_before {
         bail!("warm load changed the immutable persistent cache byte count");
     }
+    let process_after = process_memory()?;
+    let system_after = system_memory()?;
+    if process_after.vm_swap_bytes != 0
+        || system_after
+            .swap_used_bytes
+            .saturating_sub(system_before.swap_used_bytes)
+            != 0
+        || system_after.mem_available_bytes < MIN_AVAILABLE_BYTES
+    {
+        bail!(
+            "host final memory/swap guard failed: process={process_after:?} system_before={system_before:?} system_after={system_after:?}"
+        );
+    }
 
     let record = EvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-construction/v1",
+        schema: "gpt-oss-rs.heterogeneous-construction/v2",
         mode: cli.mode,
         captured_unix_ms: now_unix_ms(),
         repository_head: command_text("git", &["rev-parse", "HEAD"])?,
@@ -398,6 +419,10 @@ fn main() -> Result<()> {
         cache_root: CACHE_ROOT.into(),
         cache_bytes_before,
         cache_bytes_after,
+        process_before,
+        process_after,
+        system_before,
+        system_after,
         checkpoint_20b: checkpoint_record_20b,
         checkpoint_120b: checkpoint_record_120b,
         placement_20b: placement_record_20b,
@@ -426,7 +451,7 @@ fn run_construction(
     let started = Instant::now();
     let mut snapshots = Vec::new();
     let constructor = OwnerSelectiveConstructor::new(cache_root);
-    let model = constructor.construct(checkpoint, manifest, |ledger| {
+    let mut model = constructor.construct(checkpoint, manifest, |ledger| {
         let snapshot = resource_snapshot(started, ledger.clone())
             .map_err(|error| LLMError::ModelError(format!("H3 resource snapshot: {error:#}")))?;
         enforce_resource_guards(&snapshot, swap_baseline)
@@ -540,7 +565,7 @@ fn run_fault_campaign(
             Ok(())
         });
         let injected_error = match result {
-            Ok(model) => {
+            Ok(mut model) => {
                 model.drain()?;
                 drop(model);
                 bail!("constructor unexpectedly succeeded with fault at {stage:?}");
@@ -596,7 +621,8 @@ fn run_fault_campaign(
             }
         }
         let system_after = system_memory()?;
-        if system_after.swap_used_bytes != swap_baseline
+        if process_memory()?.vm_swap_bytes != 0
+            || system_after.swap_used_bytes.saturating_sub(swap_baseline) != 0
             || system_after.mem_available_bytes < MIN_AVAILABLE_BYTES
         {
             bail!("host resource guard failed after fault at {stage:?}");
@@ -911,7 +937,11 @@ fn resource_snapshot(started: Instant, ledger: ConstructionLedger) -> Result<Res
 
 fn enforce_resource_guards(snapshot: &ResourceSnapshot, swap_baseline: u64) -> Result<()> {
     if snapshot.process.vm_swap_bytes != 0
-        || snapshot.system.swap_used_bytes != swap_baseline
+        || snapshot
+            .system
+            .swap_used_bytes
+            .saturating_sub(swap_baseline)
+            != 0
         || snapshot.system.mem_available_bytes < MIN_AVAILABLE_BYTES
         || snapshot.process.vm_rss_bytes > MAX_PROCESS_RSS_BYTES
     {
@@ -944,6 +974,7 @@ fn system_memory() -> Result<SystemMemory> {
         swap_total_bytes: swap_total,
         swap_free_bytes: swap_free,
         swap_used_bytes: swap_total.saturating_sub(swap_free),
+        swap_cached_bytes: value(&info, "SwapCached"),
     })
 }
 

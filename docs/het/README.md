@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** implementation campaign; H0 through H5 passed, H6 is next;
+**Stage:** implementation campaign; H0 through H6 passed, H7 is next;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -127,11 +127,13 @@ selected-work relay, queue/pool exhaustion, and correlated-concurrency gates;
 and H5 passed exact GPU0 canonical-arena rank reduction, explicit active relay
 generation/drained reuse, generation-tagged private K/V metadata, allocation-
 free visibility-last commit, failure/cancellation/quarantine matrices, and clean
-second-run gates. H6a now passes the real layer-0 GPU0 owner shell through the
-native-BF16 router, exact native-MXFP4 CPU-authority contributions, GPU0 rank
-reduction, and final residual with resident device handoffs. H6b must still
-replace the authority uploads with real concurrent CPU/GPU0/GPU1 expert work
-and wire the opt-in transaction before H6 is complete. The H6a shell lifecycle
-is hardened with fixed owned host staging, terminal-drained boundary/output
-D2H, poison-and-retain behavior after an unproven fallback drain, and five
-fault-and-immediate-retry cases in the retained v3 record.
+second-run gates. H6 now passes the real layer-0 GPU0 owner shell and native
+BF16 router, then executes all four real selected experts across GPU0, CPU, and
+GPU1 with resident single-owner weights, strict three-way compute overlap,
+exact per-expert/reduction/residual boundaries, and full packed/completion
+identities. Its generation-tied transaction commits, drains and discards, then
+commits a clean repeat with zero active coordinator/pinned state. Public drains
+and every CUDA component fail closed by retaining complete device/host
+ownership after an unproven synchronization. The owner shell still uses private
+flat K/V oracle storage; H7 owns end-to-end integration and the exact retained-
+continuation gate.

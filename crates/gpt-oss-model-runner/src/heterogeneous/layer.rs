@@ -67,6 +67,11 @@ pub struct LayerOwnerShellExecution {
     pub kernel_elapsed_ms: f32,
 }
 
+pub(crate) struct ResidentExpertInput {
+    pub slice: Arc<CudaSlice<u16>>,
+    pub stable_device: StableCudaDeviceId,
+}
+
 /// Fixed-allocation decode-M=1 GPU0 attention/dense owner shell.
 pub struct CudaLayerOwnerShell {
     stable_device: StableCudaDeviceId,
@@ -95,7 +100,7 @@ struct LayerOwnerCudaState {
     attention: CudaSlice<u16>,
     attention_projection: CudaSlice<u16>,
     post_attention_residual: CudaSlice<u16>,
-    router_input: CudaSlice<u16>,
+    router_input: Arc<CudaSlice<u16>>,
 }
 
 struct LayerOwnerHostStaging {
@@ -210,7 +215,10 @@ impl CudaLayerOwnerShell {
                 GPT_OSS_HIDDEN_SIZE,
                 "layer-owner post-attention allocation",
             )?,
-            router_input: alloc(GPT_OSS_HIDDEN_SIZE, "layer-owner router-input allocation")?,
+            router_input: Arc::new(alloc(
+                GPT_OSS_HIDDEN_SIZE,
+                "layer-owner router-input allocation",
+            )?),
             stream,
             loader,
         };
@@ -247,18 +255,49 @@ impl CudaLayerOwnerShell {
         GPT_OSS_LAYER_OWNER_HOST_STAGING_BYTES
     }
 
-    pub fn drain(&self) -> Result<()> {
+    pub fn drain(&mut self) -> Result<()> {
         if self.poisoned {
             return Err(LLMError::GpuError(
                 "poisoned layer-owner shell cannot prove a later drain".into(),
             ));
         }
-        self.state
+        let drained = self
+            .state
             .as_ref()
             .expect("active layer-owner state")
             .stream
-            .synchronize()
-            .map_err(cuda_error("layer-owner drain"))
+            .synchronize();
+        match drained {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // A public drain is the final lifetime proof for every shell
+                // allocation and for the fixed host arena used by H2D/D2H.
+                // Once that proof fails, a later successful synchronize must
+                // not rehabilitate the object or permit Drop to free storage
+                // CUDA may still address.
+                self.poisoned = true;
+                if let Some(staging) = self.host_staging.take() {
+                    self.quarantined_host_staging = Some(staging);
+                }
+                Err(cuda_error("layer-owner drain")(error))
+            }
+        }
+    }
+
+    /// Borrow the resident post-attention norm for same-context GPU0 expert
+    /// dispatch. The caller must keep this shell borrowed until every selected
+    /// expert terminal drains.
+    pub(crate) fn resident_expert_input(&self) -> Result<ResidentExpertInput> {
+        self.require_reusable()?;
+        let state = self.state.as_ref().expect("active layer-owner state");
+        Ok(ResidentExpertInput {
+            slice: Arc::clone(&state.router_input),
+            stable_device: self.stable_device.clone(),
+        })
+    }
+
+    pub(crate) fn quarantine_external_device_use(&mut self) {
+        self.poisoned = true;
     }
 
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -540,7 +579,11 @@ impl CudaLayerOwnerShell {
                 &state.loader,
                 &state.post_attention_residual,
                 post_norm_weight.allocation(),
-                &mut state.router_input,
+                Arc::get_mut(&mut state.router_input).ok_or_else(|| {
+                    LLMError::GpuError(
+                        "layer-owner router input still has an outstanding device borrower".into(),
+                    )
+                })?,
                 config.rms_norm_eps,
             )?;
             let terminal = state
@@ -628,7 +671,7 @@ impl CudaLayerOwnerShell {
             state
                 .stream
                 .memcpy_dtoh(
-                    &state.router_input,
+                    state.router_input.as_ref(),
                     &mut host_staging.router_input_bf16_bits,
                 )
                 .map_err(cuda_error("layer-owner router-input D2H"))?;
@@ -678,7 +721,8 @@ impl CudaLayerOwnerShell {
                 .state
                 .as_ref()
                 .expect("active layer-owner state")
-                .router_input,
+                .router_input
+                .as_ref(),
             &self.stable_device,
             source_activation,
             route_records,
@@ -721,12 +765,16 @@ impl CudaLayerOwnerShell {
                 &state.loader,
                 &state.post_attention_residual,
                 &state.attention_projection,
-                &mut state.router_input,
+                Arc::get_mut(&mut state.router_input).ok_or_else(|| {
+                    LLMError::GpuError(
+                        "layer-owner final residual cannot reuse a borrowed router input".into(),
+                    )
+                })?,
             )?;
             state
                 .stream
                 .memcpy_dtoh(
-                    &state.router_input,
+                    state.router_input.as_ref(),
                     &mut host_staging.router_input_bf16_bits,
                 )
                 .map_err(cuda_error("layer-owner final output D2H"))?;

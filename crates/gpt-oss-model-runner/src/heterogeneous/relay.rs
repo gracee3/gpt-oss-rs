@@ -3,6 +3,8 @@
 //! H4 owns five prewarmed host buffers. Reservations never allocate and are
 //! all-or-none. A lease can return only after every CPU/CUDA reference drains.
 
+use std::mem::ManuallyDrop;
+
 use cudarc::driver::{sys::CUevent_flags, CudaSlice, CudaStream};
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_gpu::event::CorrelatedTimeline;
@@ -237,6 +239,7 @@ pub fn pack_remote_inputs(
 pub enum ResultRelayInjectedFault {
     AfterFirstResultEnqueue,
     CpuAuthorityAfterFirstEnqueue,
+    AfterFirstResultEnqueueAndFallbackDrainFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +255,12 @@ pub struct CompletedResultRelay {
     pub reservation: RelayPinnedReservation,
 }
 
+pub struct CompletedCanonicalArenaEvidence {
+    pub bytes: usize,
+    pub arena_generation: u64,
+    pub reservation: RelayPinnedReservation,
+}
+
 pub struct ResultRelayFailure {
     pub error: LLMError,
     /// Present only when the stream was proven drained and the caller may
@@ -264,6 +273,17 @@ impl std::fmt::Debug for CompletedResultRelay {
         formatter
             .debug_struct("CompletedResultRelay")
             .field("execution", &self.execution)
+            .field("reservation_generation", &self.reservation.generation())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CompletedCanonicalArenaEvidence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompletedCanonicalArenaEvidence")
+            .field("bytes", &self.bytes)
+            .field("arena_generation", &self.arena_generation)
             .field("reservation_generation", &self.reservation.generation())
             .finish()
     }
@@ -318,8 +338,8 @@ impl std::fmt::Debug for LocalResultRelayFailure {
 /// GPU0 route slots but deliberately performs no weighting or reduction.
 pub struct CudaResultRelay {
     stable_device: gpt_oss_gpu::device::StableCudaDeviceId,
-    stream: std::sync::Arc<CudaStream>,
-    contribution_arena: CudaSlice<u16>,
+    stream: ManuallyDrop<std::sync::Arc<CudaStream>>,
+    contribution_arena: ManuallyDrop<CudaSlice<u16>>,
     max_routes: usize,
     active_bound_generation: Option<u64>,
     last_bound_generation: u64,
@@ -354,8 +374,8 @@ impl CudaResultRelay {
             .map_err(cuda_error("result relay construction drain"))?;
         Ok(Self {
             stable_device: router.stable_device().clone(),
-            stream,
-            contribution_arena,
+            stream: ManuallyDrop::new(stream),
+            contribution_arena: ManuallyDrop::new(contribution_arena),
             max_routes,
             active_bound_generation: None,
             last_bound_generation: 0,
@@ -400,12 +420,40 @@ impl CudaResultRelay {
         self.active_bound_generation.is_some()
     }
 
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn device_state_quarantined_for_test(&self) -> bool {
+        self.poisoned
+    }
+
+    /// A reducer sharing this stream/context observed an unproven drain. The
+    /// canonical arena may still be referenced, so make the relay permanently
+    /// unusable and retain its entire CUDA state in Drop.
+    pub(crate) fn quarantine_unproven_device_work(&mut self) {
+        self.poisoned = true;
+    }
+
     pub fn memory_info(&self) -> Result<(usize, usize)> {
         self.stream
             .context()
             .bind_to_thread()
             .map_err(cuda_error("result relay memory-info bind"))?;
         cudarc::driver::result::mem_get_info().map_err(cuda_error("result relay memory-info query"))
+    }
+
+    /// Prove that the shared relay stream has no outstanding transaction
+    /// references. A failed synchronization poisons the relay so Drop retains
+    /// its full CUDA state.
+    pub fn prove_transaction_drain(&mut self) -> Result<()> {
+        if self.poisoned {
+            return Err(LLMError::GpuError(
+                "poisoned result relay cannot prove transaction drain".into(),
+            ));
+        }
+        if let Err(error) = self.stream.synchronize() {
+            self.poisoned = true;
+            return Err(cuda_error("result relay transaction drain")(error));
+        }
+        Ok(())
     }
 
     pub(crate) fn decode_contribution_arena(&self) -> &CudaSlice<u16> {
@@ -601,7 +649,7 @@ impl CudaResultRelay {
         let injected_fault = self.injected_fault.take();
         let submitted = (|| -> Result<()> {
             self.stream
-                .memset_zeros(&mut self.contribution_arena)
+                .memset_zeros(&mut *self.contribution_arena)
                 .map_err(cuda_error("CPU-authority arena clear"))?;
             for (_index, (descriptor, output)) in
                 descriptors.iter().zip(&outputs_bf16_bits).enumerate()
@@ -667,6 +715,31 @@ impl CudaResultRelay {
         descriptor: &ExpertResultDescriptor,
         result_slot: CudaSelectedExpertResultSlot,
     ) -> std::result::Result<CompletedLocalResultRelay, LocalResultRelayFailure> {
+        self.upload_local_device_result_inner(transaction_generation, descriptor, result_slot, None)
+    }
+
+    pub fn upload_local_device_result_with_timeline(
+        &mut self,
+        transaction_generation: u64,
+        descriptor: &ExpertResultDescriptor,
+        result_slot: CudaSelectedExpertResultSlot,
+        timeline: &CorrelatedTimeline,
+    ) -> std::result::Result<CompletedLocalResultRelay, LocalResultRelayFailure> {
+        self.upload_local_device_result_inner(
+            transaction_generation,
+            descriptor,
+            result_slot,
+            Some(timeline),
+        )
+    }
+
+    fn upload_local_device_result_inner(
+        &mut self,
+        transaction_generation: u64,
+        descriptor: &ExpertResultDescriptor,
+        result_slot: CudaSelectedExpertResultSlot,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> std::result::Result<CompletedLocalResultRelay, LocalResultRelayFailure> {
         let expected = usize::try_from(descriptor.result_slot)
             .ok()
             .filter(|slot| *slot < GPT_OSS_TOP_K)
@@ -706,6 +779,15 @@ impl CudaResultRelay {
         }
         let start = descriptor.result_slot as usize * GPT_OSS_HIDDEN_SIZE;
         let submitted = (|| -> Result<cudarc::driver::CudaEvent> {
+            let actor = match descriptor.route_rank {
+                0 => "gpu0_local_result_rank0",
+                1 => "gpu0_local_result_rank1",
+                2 => "gpu0_local_result_rank2",
+                _ => "gpu0_local_result_rank3",
+            };
+            if let Some(timeline) = timeline {
+                timeline.enqueue_cuda_marker(&self.stream, actor, "result_d2d_begin")?;
+            }
             self.stream
                 .memcpy_dtod(
                     result_slot.buffer(),
@@ -714,6 +796,9 @@ impl CudaResultRelay {
                         .slice_mut(start..start + GPT_OSS_HIDDEN_SIZE),
                 )
                 .map_err(cuda_error("local result relay D2D"))?;
+            if let Some(timeline) = timeline {
+                timeline.enqueue_cuda_marker(&self.stream, actor, "result_d2d_end")?;
+            }
             self.stream
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(cuda_error("local result relay terminal event"))
@@ -763,6 +848,116 @@ impl CudaResultRelay {
             bytes: GPT_OSS_HIDDEN_SIZE * size_of::<u16>(),
             arena_generation: self.arena_generation,
             result_slot,
+        })
+    }
+
+    /// Download the completed four-rank contribution arena into the already
+    /// reserved GPU1-input lease for bounded H6 evidence. This occurs only
+    /// after CPU/GPU1 H2D and every GPU0 local D2D are terminal. Consuming the
+    /// reservation lets an uncertain fallback drain quarantine the exact host
+    /// storage that an asynchronous D2H may still reference.
+    pub fn download_complete_decode_evidence(
+        &mut self,
+        transaction_generation: u64,
+        descriptors: &[ExpertResultDescriptor],
+        mut reservation: RelayPinnedReservation,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> std::result::Result<CompletedCanonicalArenaEvidence, ResultRelayFailure> {
+        if reservation.generation() != transaction_generation
+            || self.active_bound_generation != Some(transaction_generation)
+            || self.arena_generation != transaction_generation
+        {
+            return Err(ResultRelayFailure {
+                error: LLMError::GpuError(
+                    "canonical evidence reservation/generation mismatch".into(),
+                ),
+                reservation: Some(reservation),
+            });
+        }
+        if let Err(error) = self.validate_complete_decode_results(descriptors) {
+            return Err(ResultRelayFailure {
+                error,
+                reservation: Some(reservation),
+            });
+        }
+        let values = GPT_OSS_TOP_K * GPT_OSS_HIDDEN_SIZE;
+        if reservation.remote_gpu_input.as_slice().len() < values {
+            return Err(ResultRelayFailure {
+                error: LLMError::MemoryError(
+                    "canonical evidence pinned lease is undersized".into(),
+                ),
+                reservation: Some(reservation),
+            });
+        }
+        let submitted = (|| -> Result<cudarc::driver::CudaEvent> {
+            if let Some(timeline) = timeline {
+                timeline.enqueue_cuda_marker(
+                    &self.stream,
+                    "gpu0_relay",
+                    "canonical_evidence_d2h_begin",
+                )?;
+            }
+            self.stream
+                .memcpy_dtoh(
+                    &self.contribution_arena.slice(..values),
+                    &mut reservation.remote_gpu_input.as_mut_slice()[..values],
+                )
+                .map_err(cuda_error("canonical evidence D2H"))?;
+            if let Some(timeline) = timeline {
+                timeline.enqueue_cuda_marker(
+                    &self.stream,
+                    "gpu0_relay",
+                    "canonical_evidence_d2h_end",
+                )?;
+            }
+            self.stream
+                .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                .map_err(cuda_error("canonical evidence terminal event"))
+        })();
+        let terminal = match submitted {
+            Ok(terminal) => terminal,
+            Err(primary) => {
+                return match self.stream.synchronize() {
+                    Ok(()) => Err(ResultRelayFailure {
+                        error: primary,
+                        reservation: Some(reservation),
+                    }),
+                    Err(drain) => {
+                        self.poisoned = true;
+                        self.quarantined_reservation = Some(reservation);
+                        Err(ResultRelayFailure {
+                            error: LLMError::GpuError(format!(
+                                "canonical evidence submit failed ({primary}); mandatory drain failed ({drain}); relay poisoned and pinned reservation quarantined"
+                            )),
+                            reservation: None,
+                        })
+                    }
+                };
+            }
+        };
+        if let Err(error) = terminal.synchronize() {
+            let primary = cuda_error("canonical evidence terminal drain")(error);
+            return match self.stream.synchronize() {
+                Ok(()) => Err(ResultRelayFailure {
+                    error: primary,
+                    reservation: Some(reservation),
+                }),
+                Err(drain) => {
+                    self.poisoned = true;
+                    self.quarantined_reservation = Some(reservation);
+                    Err(ResultRelayFailure {
+                        error: LLMError::GpuError(format!(
+                            "canonical evidence terminal failed ({primary}); mandatory drain failed ({drain}); relay poisoned and pinned reservation quarantined"
+                        )),
+                        reservation: None,
+                    })
+                }
+            };
+        }
+        Ok(CompletedCanonicalArenaEvidence {
+            bytes: values * size_of::<u16>(),
+            arena_generation: self.arena_generation,
+            reservation,
         })
     }
 
@@ -870,7 +1065,7 @@ impl CudaResultRelay {
         let injected_fault = self.injected_fault.take();
         let submitted = (|| -> Result<(usize, usize, cudarc::driver::CudaEvent)> {
             self.stream
-                .memset_zeros(&mut self.contribution_arena)
+                .memset_zeros(&mut *self.contribution_arena)
                 .map_err(cuda_error("result relay arena clear"))?;
             if let Some(timeline) = timeline {
                 timeline.enqueue_cuda_marker(&self.stream, "gpu0_relay", "result_h2d_begin")?;
@@ -904,8 +1099,13 @@ impl CudaResultRelay {
                         #[cfg(feature = "heterogeneous-test-faults")]
                         {
                             enqueued += 1;
-                            if injected_fault
-                                == Some(ResultRelayInjectedFault::AfterFirstResultEnqueue)
+                            if matches!(
+                                injected_fault,
+                                Some(ResultRelayInjectedFault::AfterFirstResultEnqueue)
+                                    | Some(
+                                        ResultRelayInjectedFault::AfterFirstResultEnqueueAndFallbackDrainFailure
+                                    )
+                            )
                                 && enqueued == 1
                             {
                                 return Err(LLMError::GpuError(
@@ -937,6 +1137,21 @@ impl CudaResultRelay {
         let (cpu_h2d_bytes, remote_gpu_h2d_bytes, terminal) = match submitted {
             Ok(value) => value,
             Err(primary) => {
+                #[cfg(feature = "heterogeneous-test-faults")]
+                if injected_fault
+                    == Some(
+                        ResultRelayInjectedFault::AfterFirstResultEnqueueAndFallbackDrainFailure,
+                    )
+                {
+                    self.poisoned = true;
+                    self.quarantined_reservation = Some(reservation);
+                    return Err(ResultRelayFailure {
+                        error: LLMError::GpuError(format!(
+                            "result relay submit failed ({primary}); injected mandatory fallback drain failure; all CUDA and pinned state quarantined"
+                        )),
+                        reservation: None,
+                    });
+                }
                 let drained = self.stream.synchronize();
                 #[cfg(feature = "heterogeneous-test-faults")]
                 if injected_fault == Some(ResultRelayInjectedFault::AfterFirstResultEnqueue)
@@ -1013,6 +1228,17 @@ impl Drop for CudaResultRelay {
             if let Some(outputs) = self.quarantined_oracle_outputs.take() {
                 std::mem::forget(outputs);
             }
+            // The failed stream may still name the arena. ManuallyDrop keeps
+            // both allocations (and the stream/context retained by their
+            // Arcs) alive for process lifetime.
+            return;
+        }
+        // SAFETY: these fields are wrapped solely to permit fail-closed leak
+        // on an unproven drain. The healthy path drops each exactly once, with
+        // the arena before its owning stream.
+        unsafe {
+            ManuallyDrop::drop(&mut self.contribution_arena);
+            ManuallyDrop::drop(&mut self.stream);
         }
     }
 }

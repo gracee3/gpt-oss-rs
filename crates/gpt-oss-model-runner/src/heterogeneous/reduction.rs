@@ -1,5 +1,6 @@
 //! Exact GPU0 weighting and reduction in original routing-rank order.
 
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use cudarc::driver::{sys::CUevent_flags, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
@@ -141,6 +142,10 @@ impl PreparedRankOrderedReduction {
         &self.expected
     }
 
+    pub const fn transaction_generation(&self) -> u64 {
+        self.transaction_generation
+    }
+
     fn validate_results(&self, results: &[ExpertResultDescriptor]) -> Result<()> {
         if results.len() != GPT_OSS_TOP_K {
             return Err(LLMError::ModelError(format!(
@@ -179,6 +184,7 @@ pub enum RankReductionInjectedFault {
     AfterWeightEnqueue,
     AfterKernelLaunch,
     AfterEvidenceEnqueue,
+    AfterKernelLaunchAndFallbackDrainFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,12 +250,12 @@ pub fn exact_rank_ordered_reduction_reference(
 /// optional first-divergence traces are owned here.
 pub struct CudaRankOrderedReducer {
     stable_device: StableCudaDeviceId,
-    stream: Arc<CudaStream>,
-    loader: KernelLoader,
-    weights: CudaSlice<u16>,
-    output: CudaSlice<u16>,
-    weighted_trace: CudaSlice<u32>,
-    accumulator_trace: CudaSlice<u32>,
+    stream: ManuallyDrop<Arc<CudaStream>>,
+    loader: ManuallyDrop<KernelLoader>,
+    weights: ManuallyDrop<CudaSlice<u16>>,
+    output: ManuallyDrop<CudaSlice<u16>>,
+    weighted_trace: ManuallyDrop<CudaSlice<u32>>,
+    accumulator_trace: ManuallyDrop<CudaSlice<u32>>,
     poisoned: bool,
     quarantined_host: Option<PreparedRankOrderedReduction>,
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -329,12 +335,12 @@ impl CudaRankOrderedReducer {
             .map_err(cuda_error("rank reduction construction drain"))?;
         Ok(Self {
             stable_device,
-            stream,
-            loader,
-            weights,
-            output,
-            weighted_trace,
-            accumulator_trace,
+            stream: ManuallyDrop::new(stream),
+            loader: ManuallyDrop::new(loader),
+            weights: ManuallyDrop::new(weights),
+            output: ManuallyDrop::new(output),
+            weighted_trace: ManuallyDrop::new(weighted_trace),
+            accumulator_trace: ManuallyDrop::new(accumulator_trace),
             poisoned: false,
             quarantined_host: None,
             #[cfg(feature = "heterogeneous-test-faults")]
@@ -377,6 +383,27 @@ impl CudaRankOrderedReducer {
         self.last_fault_drained
     }
 
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn device_state_quarantined_for_test(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Prove that this reducer has no outstanding transaction work. A failed
+    /// synchronization poisons the object so Drop retains every CUDA-owned
+    /// allocation rather than releasing possibly referenced storage.
+    pub fn prove_transaction_drain(&mut self) -> Result<()> {
+        if self.poisoned {
+            return Err(LLMError::GpuError(
+                "poisoned rank reducer cannot prove transaction drain".into(),
+            ));
+        }
+        if let Err(error) = self.stream.synchronize() {
+            self.poisoned = true;
+            return Err(cuda_error("rank reducer transaction drain")(error));
+        }
+        Ok(())
+    }
+
     pub fn reduce_relay(
         &mut self,
         relay: &mut CudaResultRelay,
@@ -413,7 +440,7 @@ impl CudaRankOrderedReducer {
 
         let submitted = (|| -> Result<_> {
             self.stream
-                .memcpy_htod(&prepared.weights_bf16_bits, &mut self.weights)
+                .memcpy_htod(&prepared.weights_bf16_bits, &mut *self.weights)
                 .map_err(cuda_error("rank reduction weight H2D"))?;
             #[cfg(feature = "heterogeneous-test-faults")]
             if injected_fault == Some(RankReductionInjectedFault::AfterWeightEnqueue) {
@@ -439,17 +466,21 @@ impl CudaRankOrderedReducer {
                 self.stream
                     .launch_builder(&function)
                     .arg(relay.decode_contribution_arena())
-                    .arg(&self.weights)
-                    .arg(&mut self.output)
-                    .arg(&mut self.weighted_trace)
-                    .arg(&mut self.accumulator_trace)
+                    .arg(&*self.weights)
+                    .arg(&mut *self.output)
+                    .arg(&mut *self.weighted_trace)
+                    .arg(&mut *self.accumulator_trace)
                     .arg(&rows)
                     .arg(&hidden)
                     .launch(config)
                     .map_err(cuda_error("rank reduction launch"))?;
             }
             #[cfg(feature = "heterogeneous-test-faults")]
-            if injected_fault == Some(RankReductionInjectedFault::AfterKernelLaunch) {
+            if matches!(
+                injected_fault,
+                Some(RankReductionInjectedFault::AfterKernelLaunch)
+                    | Some(RankReductionInjectedFault::AfterKernelLaunchAndFallbackDrainFailure)
+            ) {
                 return Err(LLMError::GpuError(
                     "injected rank reduction post-launch failure".into(),
                 ));
@@ -459,13 +490,13 @@ impl CudaRankOrderedReducer {
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(cuda_error("rank reduction kernel-end event"))?;
             self.stream
-                .memcpy_dtoh(&self.output, &mut prepared.output_bf16_bits)
+                .memcpy_dtoh(&*self.output, &mut prepared.output_bf16_bits)
                 .map_err(cuda_error("rank reduction output D2H"))?;
             self.stream
-                .memcpy_dtoh(&self.weighted_trace, &mut prepared.weighted_f32_bits)
+                .memcpy_dtoh(&*self.weighted_trace, &mut prepared.weighted_f32_bits)
                 .map_err(cuda_error("rank reduction weighted trace D2H"))?;
             self.stream
-                .memcpy_dtoh(&self.accumulator_trace, &mut prepared.accumulator_f32_bits)
+                .memcpy_dtoh(&*self.accumulator_trace, &mut prepared.accumulator_f32_bits)
                 .map_err(cuda_error("rank reduction accumulator trace D2H"))?;
             #[cfg(feature = "heterogeneous-test-faults")]
             if injected_fault == Some(RankReductionInjectedFault::AfterEvidenceEnqueue) {
@@ -482,10 +513,13 @@ impl CudaRankOrderedReducer {
 
         let (start, kernel_end, terminal) = match submitted {
             Ok(events) => events,
-            Err(primary) => return self.fail_after_enqueue(primary, injected_fault, prepared),
+            Err(primary) => {
+                return self.fail_after_enqueue(relay, primary, injected_fault, prepared)
+            }
         };
         if let Err(error) = terminal.synchronize() {
             return self.fail_after_enqueue(
+                relay,
                 cuda_error("rank reduction terminal drain")(error),
                 injected_fault,
                 prepared,
@@ -507,10 +541,20 @@ impl CudaRankOrderedReducer {
 
     fn fail_after_enqueue(
         &mut self,
+        relay: &mut CudaResultRelay,
         primary: LLMError,
         _fault: Option<RankReductionInjectedFault>,
         prepared: PreparedRankOrderedReduction,
     ) -> Result<RankOrderedReductionExecution> {
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if _fault == Some(RankReductionInjectedFault::AfterKernelLaunchAndFallbackDrainFailure) {
+            self.poisoned = true;
+            self.quarantined_host = Some(prepared);
+            relay.quarantine_unproven_device_work();
+            return Err(LLMError::GpuError(format!(
+                "rank reduction failed ({primary}); injected mandatory fallback drain failure; all CUDA and host D2H state quarantined"
+            )));
+        }
         let drained = self.stream.synchronize();
         #[cfg(feature = "heterogeneous-test-faults")]
         if _fault.is_some() && drained.is_ok() {
@@ -521,6 +565,7 @@ impl CudaRankOrderedReducer {
             Err(drain) => {
                 self.poisoned = true;
                 self.quarantined_host = Some(prepared);
+                relay.quarantine_unproven_device_work();
                 Err(LLMError::GpuError(format!(
                     "rank reduction failed ({primary}); mandatory drain failed ({drain}); stream poisoned and host D2H storage quarantined"
                 )))
@@ -537,6 +582,19 @@ impl Drop for CudaRankOrderedReducer {
                 // asynchronous D2H no longer references these allocations.
                 std::mem::forget(host);
             }
+            return;
+        }
+        // SAFETY: healthy reducers explicitly drop every ManuallyDrop field
+        // exactly once. The poisoned path intentionally retains all CUDA
+        // allocations, module state, stream and context after an unproven
+        // fallback drain.
+        unsafe {
+            ManuallyDrop::drop(&mut self.accumulator_trace);
+            ManuallyDrop::drop(&mut self.weighted_trace);
+            ManuallyDrop::drop(&mut self.output);
+            ManuallyDrop::drop(&mut self.weights);
+            ManuallyDrop::drop(&mut self.loader);
+            ManuallyDrop::drop(&mut self.stream);
         }
     }
 }

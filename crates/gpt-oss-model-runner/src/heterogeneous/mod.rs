@@ -18,6 +18,8 @@ pub mod reduction;
 pub mod relay;
 #[cfg(feature = "cuda")]
 pub mod router;
+#[cfg(feature = "cuda")]
+pub mod three_owner;
 
 #[cfg(feature = "cuda")]
 pub use cpu_expert::{
@@ -59,9 +61,10 @@ pub use reduction::{RankReductionConstructionFault, RankReductionInjectedFault};
 pub use relay::ResultRelayInjectedFault;
 #[cfg(feature = "cuda")]
 pub use relay::{
-    fixed_relay_byte_plan, pack_remote_inputs, CompletedLocalResultRelay, CompletedResultRelay,
-    CudaResultRelay, LocalResultRelayFailure, RelayPinnedPoolStats, RelayPinnedPools,
-    RelayPinnedReservation, ResultRelayExecution, ResultRelayFailure,
+    fixed_relay_byte_plan, pack_remote_inputs, CompletedCanonicalArenaEvidence,
+    CompletedLocalResultRelay, CompletedResultRelay, CudaResultRelay, LocalResultRelayFailure,
+    RelayPinnedPoolStats, RelayPinnedPools, RelayPinnedReservation, ResultRelayExecution,
+    ResultRelayFailure,
 };
 #[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
 pub use router::ExactRouterInjectedFault;
@@ -69,6 +72,16 @@ pub use router::ExactRouterInjectedFault;
 pub use router::{
     exact_router_reference, CudaExactRouter, ExactRouterExecution, ExactRouterReference,
     ExactRouterWeightsView, GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW, GPT_OSS_ROUTER_MAX_ROWS,
+};
+#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
+pub use three_owner::{
+    exercise_owned_device_input_fault_and_retry, exercise_owned_device_input_unproven_fault,
+    OwnedDeviceInputFaultProbe, OwnedDeviceInputUnprovenFaultProbe,
+};
+#[cfg(feature = "cuda")]
+pub use three_owner::{
+    quarantine_three_owner_after_unproven_drain, PreparedThreeOwnerDecode,
+    ThreeOwnerDecodeExecution, ThreeOwnerDecodeFailure, ThreeOwnerTerminal,
 };
 
 #[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
