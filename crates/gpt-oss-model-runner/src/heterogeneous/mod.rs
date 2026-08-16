@@ -77,12 +77,16 @@ pub use relay::{
     RelayPinnedPoolStats, RelayPinnedPools, RelayPinnedReservation, ResultRelayExecution,
     ResultRelayFailure,
 };
-#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
-pub use router::ExactRouterInjectedFault;
 #[cfg(feature = "cuda")]
 pub use router::{
     exact_router_reference, CudaExactRouter, ExactRouterExecution, ExactRouterReference,
-    ExactRouterWeightsView, GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW, GPT_OSS_ROUTER_MAX_ROWS,
+    ExactRouterWeightsView, ResidentExactRouterWeights, GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW,
+    GPT_OSS_ROUTER_MAX_ROWS,
+};
+#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
+pub use router::{
+    resident_router_handoff_quarantines_for_test, ExactRouterInjectedFault,
+    ResidentRouterHandoffInjectedFault,
 };
 #[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
 pub use three_owner::{

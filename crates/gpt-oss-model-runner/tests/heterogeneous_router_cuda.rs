@@ -1,11 +1,12 @@
 #![cfg(feature = "cuda")]
 
+use cudarc::driver::CudaContext;
 use gpt_oss_gpu::device::{list_devices, StableCudaDeviceId};
 use gpt_oss_gpu::event::CorrelatedTimeline;
 use gpt_oss_gpu::kernel_loader::compiled_ptx_dir;
 use gpt_oss_model_runner::heterogeneous::{
     exact_router_reference, CudaExactRouter, ExactRouterWeightsView, GptOssPhase, RelayPinnedPools,
-    GPT_OSS_ROUTER_MAX_ROWS, HIDDEN_SIZE,
+    ResidentExactRouterWeights, GPT_OSS_ROUTER_MAX_ROWS, HIDDEN_SIZE,
 };
 use half::bf16;
 use serde::Serialize;
@@ -13,6 +14,10 @@ use sha2::{Digest, Sha256};
 
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
 
+#[cfg(feature = "heterogeneous-test-faults")]
+use gpt_oss_model_runner::heterogeneous::{
+    resident_router_handoff_quarantines_for_test, ResidentRouterHandoffInjectedFault,
+};
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_model_runner::heterogeneous::{ExactRouterInjectedFault, ResultRelayInjectedFault};
 
@@ -33,6 +38,216 @@ fn layer_owner() -> StableCudaDeviceId {
     let devices = list_devices();
     assert_eq!(devices.len(), 2, "H4 gate requires both local RTX 3090s");
     StableCudaDeviceId::from_device(&devices[0]).unwrap()
+}
+
+fn resident_source(
+    stable_device: StableCudaDeviceId,
+    experts: usize,
+    weights: &[u16],
+    bias: &[u16],
+) -> ResidentExactRouterWeights {
+    let ordinal = list_devices()
+        .into_iter()
+        .find(|device| device.pci_bus_id == Some(stable_device.pci_bus_id))
+        .unwrap()
+        .id;
+    let context = CudaContext::new(ordinal).unwrap();
+    let stream = context.new_stream().unwrap();
+    let weight_bytes: &[u8] = bytemuck::cast_slice(weights);
+    let bias_bytes: &[u8] = bytemuck::cast_slice(bias);
+    let device_weights = stream.clone_htod(weight_bytes).unwrap();
+    let device_bias = stream.clone_htod(bias_bytes).unwrap();
+    stream.synchronize().unwrap();
+    ResidentExactRouterWeights::new(stable_device, experts, device_weights, device_bias).unwrap()
+}
+
+#[test]
+fn resident_router_handoff_matches_host_constructor_on_both_gpus() {
+    let devices = list_devices();
+    assert_eq!(devices.len(), 2, "resident handoff gate requires two GPUs");
+    for (device_index, experts) in [32_usize, 128].into_iter().enumerate() {
+        let stable = StableCudaDeviceId::from_device(&devices[device_index]).unwrap();
+        let (activation, weights, bias) = fixture(experts, 1);
+        let view = ExactRouterWeightsView {
+            experts,
+            weight_bf16_bits: &weights,
+            bias_bf16_bits: &bias,
+        };
+        let mut host_router = CudaExactRouter::new(stable.clone(), 1, view).unwrap();
+        let mut resident_router = CudaExactRouter::from_resident_weights(
+            1,
+            resident_source(stable, experts, &weights, &bias),
+        )
+        .unwrap();
+        let host_pools = RelayPinnedPools::warm_exact(&host_router, 1).unwrap();
+        let resident_pools = RelayPinnedPools::warm_exact(&resident_router, 1).unwrap();
+        let mut host_reservation = host_pools.try_reserve_all(70).unwrap();
+        let mut resident_reservation = resident_pools.try_reserve_all(71).unwrap();
+        let host = host_router
+            .execute_and_download(
+                0,
+                GptOssPhase::Decode,
+                9,
+                1,
+                &activation,
+                &mut host_reservation.source_activation,
+                &mut host_reservation.route_descriptors,
+                None,
+            )
+            .unwrap();
+        let resident = resident_router
+            .execute_and_download(
+                0,
+                GptOssPhase::Decode,
+                9,
+                1,
+                &activation,
+                &mut resident_reservation.source_activation,
+                &mut resident_reservation.route_descriptors,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            resident.router_logits_bf16_bits,
+            host.router_logits_bf16_bits
+        );
+        assert_eq!(resident.batch, host.batch);
+        assert_eq!(resident_router.stable_device(), host_router.stable_device());
+        assert_eq!(
+            resident_router.owned_device_bytes().unwrap(),
+            host_router.owned_device_bytes().unwrap()
+        );
+        host_reservation.release_drained().unwrap();
+        resident_reservation.release_drained().unwrap();
+        host_router.drain().unwrap();
+        resident_router.drain().unwrap();
+    }
+}
+
+#[test]
+fn resident_router_handoff_rejects_wrong_device_context_and_shapes() {
+    let devices = list_devices();
+    assert_eq!(devices.len(), 2, "resident handoff gate requires two GPUs");
+    let stable0 = StableCudaDeviceId::from_device(&devices[0]).unwrap();
+    let stable1 = StableCudaDeviceId::from_device(&devices[1]).unwrap();
+    let (_, weights, bias) = fixture(32, 1);
+
+    let ordinal0 = devices[0].id;
+    let ordinal1 = devices[1].id;
+    let context0 = CudaContext::new(ordinal0).unwrap();
+    let context1 = CudaContext::new(ordinal1).unwrap();
+    let stream0 = context0.new_stream().unwrap();
+    let stream1 = context1.new_stream().unwrap();
+    let weight0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&weights))
+        .unwrap();
+    let bias0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&bias))
+        .unwrap();
+    stream0.synchronize().unwrap();
+    assert!(ResidentExactRouterWeights::new(stable1, 32, weight0, bias0).is_err());
+
+    let weight0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&weights))
+        .unwrap();
+    let bias1 = stream1
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&bias))
+        .unwrap();
+    stream0.synchronize().unwrap();
+    stream1.synchronize().unwrap();
+    assert!(ResidentExactRouterWeights::new(stable0.clone(), 32, weight0, bias1).is_err());
+
+    let short_weights = stream0
+        .clone_htod::<u8, _>(&bytemuck::cast_slice::<u16, u8>(&weights)[..16])
+        .unwrap();
+    let bias0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&bias))
+        .unwrap();
+    stream0.synchronize().unwrap();
+    assert!(ResidentExactRouterWeights::new(stable0.clone(), 32, short_weights, bias0).is_err());
+
+    let weight0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&weights))
+        .unwrap();
+    let short_bias = stream0
+        .clone_htod::<u8, _>(&bytemuck::cast_slice::<u16, u8>(&bias)[..2])
+        .unwrap();
+    stream0.synchronize().unwrap();
+    assert!(ResidentExactRouterWeights::new(stable0.clone(), 32, weight0, short_bias).is_err());
+
+    let weight0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&weights))
+        .unwrap();
+    let bias0 = stream0
+        .clone_htod::<u8, _>(bytemuck::cast_slice(&bias))
+        .unwrap();
+    stream0.synchronize().unwrap();
+    assert!(ResidentExactRouterWeights::new(stable0.clone(), 64, weight0, bias0).is_err());
+
+    assert!(CudaExactRouter::from_resident_weights(
+        0,
+        resident_source(stable0.clone(), 32, &weights, &bias),
+    )
+    .is_err());
+    assert!(CudaExactRouter::from_resident_weights(
+        GPT_OSS_ROUTER_MAX_ROWS + 1,
+        resident_source(stable0, 32, &weights, &bias),
+    )
+    .is_err());
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[test]
+fn resident_router_source_drops_only_after_terminal_and_unproven_state_is_quarantined() {
+    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+
+    let devices = list_devices();
+    let stable = StableCudaDeviceId::from_device(&devices[0]).unwrap();
+    let (_, weights, bias) = fixture(32, 1);
+
+    let success_drop = Arc::new(AtomicBool::new(false));
+    let mut success_source = resident_source(stable.clone(), 32, &weights, &bias);
+    success_source.set_drop_probe_for_test(Arc::clone(&success_drop));
+    let mut router = CudaExactRouter::from_resident_weights(1, success_source).unwrap();
+    assert!(success_drop.load(Ordering::Acquire));
+    router.drain().unwrap();
+
+    let recoverable_drop = Arc::new(AtomicBool::new(false));
+    let mut recoverable_source = resident_source(stable.clone(), 32, &weights, &bias);
+    recoverable_source.set_drop_probe_for_test(Arc::clone(&recoverable_drop));
+    recoverable_source
+        .inject_handoff_failure(ResidentRouterHandoffInjectedFault::AfterWeightCopyEnqueue)
+        .unwrap();
+    assert!(CudaExactRouter::from_resident_weights(1, recoverable_source).is_err());
+    assert!(recoverable_drop.load(Ordering::Acquire));
+    let mut retry = CudaExactRouter::from_resident_weights(
+        1,
+        resident_source(stable.clone(), 32, &weights, &bias),
+    )
+    .unwrap();
+    retry.drain().unwrap();
+
+    let quarantined_before = resident_router_handoff_quarantines_for_test();
+    let failure_drop = Arc::new(AtomicBool::new(false));
+    let mut failure_source = resident_source(stable, 32, &weights, &bias);
+    failure_source.set_drop_probe_for_test(Arc::clone(&failure_drop));
+    failure_source
+        .inject_handoff_failure(
+            ResidentRouterHandoffInjectedFault::AfterWeightCopyEnqueueAndFallbackDrainFailure,
+        )
+        .unwrap();
+    let error = match CudaExactRouter::from_resident_weights(1, failure_source) {
+        Ok(_) => panic!("unproven resident handoff unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("source, destination, stream, and context are quarantined"));
+    assert!(!failure_drop.load(Ordering::Acquire));
+    assert_eq!(
+        resident_router_handoff_quarantines_for_test(),
+        quarantined_before + 1
+    );
 }
 
 #[test]

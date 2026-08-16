@@ -92,6 +92,9 @@ Evidence labels have the same meaning in every document:
 31. [H3 native metadata plan](32-h3-native-metadata-plan.md) — payload-free
     exact native/runtime mapping plus deterministic owner-specific per-shard
     consumption over source-only synthetic fixtures.
+32. [H3 resident-router handoff](33-h3-resident-router-handoff.md) — bounded
+    same-context D2D initialization of the exact router from owned resident
+    dense surfaces, with terminal-drain release and fail-closed quarantine.
 
 ## Current headline
 
@@ -172,3 +175,11 @@ fully covered, placement-bound per-shard consumer plan without payload mmap.
 Synthetic 20B/120B action counts and schema-framed plan identities are pinned.
 The production checkpoint view and owner-selective constructor remain
 unchanged; scoped mapping is still not integrated.
+
+**Resident-router follow-up:** an isolated owned handoff can now initialize the
+exact GPU router from already-resident layer-owner BF16 byte allocations using
+bounded same-context D2D copies. Synthetic E=32/E=128 cases on both local GPUs
+match the host-backed router bit-for-bit, and an unproven post-enqueue drain
+retains every source/destination/stream/context handle. Production model
+ownership and runtime wiring remain unchanged pending a separately reviewed
+real-20B gate.
