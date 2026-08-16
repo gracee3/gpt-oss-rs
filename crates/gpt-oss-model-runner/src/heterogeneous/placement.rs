@@ -103,6 +103,46 @@ pub struct ResolvedExpertPlacement {
     counts: PlacementOwnerCounts,
 }
 
+/// Device-independent, fully validated placement used before CUDA discovery.
+pub struct StaticExpertPlacement {
+    manifest_hash: String,
+    placement_epoch: u64,
+    layer_owner: StableCudaDeviceId,
+    remote_worker: StableCudaDeviceId,
+    assignments: BTreeMap<GptOssExpertKey, ExpertOwner>,
+    counts: PlacementOwnerCounts,
+}
+
+impl StaticExpertPlacement {
+    pub fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
+    }
+
+    pub const fn placement_epoch(&self) -> u64 {
+        self.placement_epoch
+    }
+
+    pub const fn layer_owner(&self) -> &StableCudaDeviceId {
+        &self.layer_owner
+    }
+
+    pub const fn remote_worker(&self) -> &StableCudaDeviceId {
+        &self.remote_worker
+    }
+
+    pub fn owner(&self, key: GptOssExpertKey) -> Option<&ExpertOwner> {
+        self.assignments.get(&key)
+    }
+
+    pub fn assignments(&self) -> impl Iterator<Item = (&GptOssExpertKey, &ExpertOwner)> {
+        self.assignments.iter()
+    }
+
+    pub const fn counts(&self) -> &PlacementOwnerCounts {
+        &self.counts
+    }
+}
+
 impl ResolvedExpertPlacement {
     pub fn manifest_hash(&self) -> &str {
         &self.manifest_hash
@@ -207,6 +247,37 @@ impl GptOssExpertPlacementManifestV1 {
         &self,
         devices: &[GpuDevice],
     ) -> Result<ResolvedExpertPlacement, PlacementError> {
+        self.validate_header()?;
+        let layer_owner = resolve_stable_device(&self.layer_owner, devices)
+            .map_err(|error| PlacementError::StableDevice(error.to_string()))?;
+        let remote_worker = resolve_stable_device(&self.remote_worker, devices)
+            .map_err(|error| PlacementError::StableDevice(error.to_string()))?;
+        let (assignments, counts) = self.validate_assignments()?;
+        Ok(ResolvedExpertPlacement {
+            manifest_hash: self.sha256()?,
+            placement_epoch: self.placement_epoch,
+            layer_owner,
+            remote_worker,
+            assignments,
+            counts,
+        })
+    }
+
+    /// Validate the complete manifest without resolving CUDA ordinals.
+    pub fn validate_static(&self) -> Result<StaticExpertPlacement, PlacementError> {
+        self.validate_header()?;
+        let (assignments, counts) = self.validate_assignments()?;
+        Ok(StaticExpertPlacement {
+            manifest_hash: self.sha256()?,
+            placement_epoch: self.placement_epoch,
+            layer_owner: self.layer_owner.clone(),
+            remote_worker: self.remote_worker.clone(),
+            assignments,
+            counts,
+        })
+    }
+
+    fn validate_header(&self) -> Result<(), PlacementError> {
         if self.schema != HETEROGENEOUS_PLACEMENT_SCHEMA_V1 {
             return Err(PlacementError::Schema(self.schema.clone()));
         }
@@ -240,11 +311,13 @@ impl GptOssExpertPlacementManifestV1 {
         if self.layer_owner.pci_bus_id == self.remote_worker.pci_bus_id {
             return Err(PlacementError::DuplicateDevice);
         }
-        let layer_owner = resolve_stable_device(&self.layer_owner, devices)
-            .map_err(|error| PlacementError::StableDevice(error.to_string()))?;
-        let remote_worker = resolve_stable_device(&self.remote_worker, devices)
-            .map_err(|error| PlacementError::StableDevice(error.to_string()))?;
+        Ok(())
+    }
 
+    fn validate_assignments(
+        &self,
+    ) -> Result<(BTreeMap<GptOssExpertKey, ExpertOwner>, PlacementOwnerCounts), PlacementError>
+    {
         let mut assignments = BTreeMap::new();
         let mut seen = BTreeSet::new();
         let mut counts = PlacementOwnerCounts {
@@ -314,14 +387,7 @@ impl GptOssExpertPlacementManifestV1 {
                 remote: remote_bytes,
             });
         }
-        Ok(ResolvedExpertPlacement {
-            manifest_hash: self.sha256()?,
-            placement_epoch: self.placement_epoch,
-            layer_owner,
-            remote_worker,
-            assignments,
-            counts,
-        })
+        Ok((assignments, counts))
     }
 }
 
@@ -417,8 +483,18 @@ mod tests {
 
     #[test]
     fn validates_complete_20b_and_120b_rectangles() {
-        let twenty = manifest(24, 32).validate(&devices(false)).unwrap();
+        let twenty_manifest = manifest(24, 32);
+        let static_twenty = twenty_manifest.validate_static().unwrap();
+        let twenty = twenty_manifest.validate(&devices(false)).unwrap();
         assert_eq!(twenty.len(), 24 * 32);
+        assert_eq!(static_twenty.assignments().count(), twenty.len());
+        assert_eq!(static_twenty.counts(), twenty.counts());
+        assert_eq!(static_twenty.manifest_hash(), twenty.manifest_hash());
+        assert_eq!(static_twenty.layer_owner(), &twenty_manifest.layer_owner);
+        assert_eq!(
+            static_twenty.remote_worker(),
+            &twenty_manifest.remote_worker
+        );
         let one_twenty = manifest(36, 128).validate(&devices(false)).unwrap();
         assert_eq!(one_twenty.len(), 36 * 128);
     }

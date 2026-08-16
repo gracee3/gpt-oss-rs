@@ -1,0 +1,132 @@
+{
+  "schema": "gpt-oss-rs.h3-native-metadata-plan-validation/v1",
+  "captured_at_utc": "2026-08-16T21:15:23Z",
+  "base_head": "f13dfd42587a55149842ba6977daacc6808c7aa4",
+  "branch": "agent/h3-native-metadata-plan",
+  "status": "source-and-synthetic-fixture-validated-no-model-access",
+  "contracts": {
+    "native_mapping_schema": "gpt-oss-rs.native-checkpoint-map/v1",
+    "consumer_plan_schema": "gpt-oss-rs.shard-consumer-plan/v1",
+    "consumer_plan_hash_schema": "gpt-oss-rs.shard-consumer-plan/v1",
+    "maximum_actions": 100000,
+    "twenty_b": {
+      "native_tensors": 363,
+      "runtime_views": 459,
+      "synthetic_shards": 3,
+      "actions": 4923,
+      "compatibility_metadata_sha256": "6205a6c690ef4168328d61fcc0896998778df81d367ba33357e692718ed2b04d",
+      "mapping_sha256": "bd6b537ca72ade7c71c37a4a9447820d2bcbde66590a03196f709c8e38c0c79c",
+      "plan_sha256": "7ae911f978d42957d0f35740c23c04fcd31b5bfde627b44f996a8fc16b8859a3"
+    },
+    "one_twenty_b": {
+      "native_tensors": 543,
+      "runtime_views": 687,
+      "synthetic_shards": 7,
+      "actions": 28119,
+      "compatibility_metadata_sha256": "ff89ee14ea3c70b1114d86c9a3a38366c73dccdcb9d1e5c58eed772cd377ef00",
+      "mapping_sha256": "7fccaf4f0bb43abd321111f301ce30265d8f4fc2fbb309626b7885aa1b739240",
+      "plan_sha256": "085f20acca3343358c3d5a5105d853e7696f49a3f3f193c4b4998a759c76afc6"
+    }
+  },
+  "source_sha256": [
+    {
+      "path": "crates/gpt-oss-model-runner/src/heterogeneous/placement.rs",
+      "sha256": "35e6395e5c0953abd26dc483c1dd4ff468f2ab0b3b14e013be0b5a19bf5414bd"
+    },
+    {
+      "path": "crates/gpt-oss-model-runner/src/model_loader/gpt_oss_native.rs",
+      "sha256": "1584580dea91455324e5287db2a02f79c685d484b4e3160e127d7f46ce82e420"
+    },
+    {
+      "path": "crates/gpt-oss-model-runner/src/model_loader/mod.rs",
+      "sha256": "1ee67689c7670194cbe9f50c3eee0353ebb396766cbee2923d1087eec6af3be8"
+    },
+    {
+      "path": "crates/gpt-oss-model-runner/src/model_loader/shard_consumer_plan.rs",
+      "sha256": "d9f96da31b218c02764cd34469fb272c4c53c25c8e02409cc0d50701fd4aed39"
+    }
+  ],
+  "review_closure": [
+    "a tiny CpuTensorStore with a non-UTF8 shard name proves the refactored hash equals the verbatim legacy algorithm and preserves its shard fallback",
+    "mapping slice length equals mapping.bytes before expert expansion",
+    "20B and 120B compatibility, mapping, action-count, and framed plan identities are pinned",
+    "the real SafeTensorShardCatalog metadata adapter is exercised with a three-byte fixture",
+    "serialized plans and plan hashes exclude filesystem device/inode guards and host paths",
+    "set, shape, shard, range, arithmetic, identity, and duplicate placement mismatches fail closed"
+  ],
+  "checks": [
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo test --locked -p gpt-oss-model-runner --lib model_loader::shard_consumer_plan::tests -- --nocapture",
+      "result": "passed-6-visible-lib-tests"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo test --locked -p gpt-oss-model-runner --lib model_loader::gpt_oss_native::tests -- --nocapture",
+      "result": "passed-2-including-verbatim-legacy-hash-compatibility"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo test --locked -p gpt-oss-model-runner --lib heterogeneous::placement::tests::validates_complete_20b_and_120b_rectangles -- --exact",
+      "result": "passed-1"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo check --workspace --locked",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --workspace --locked -q",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo check --locked -q -p gpt-oss-model-runner --lib --features cuda",
+      "result": "passed-with-pre-existing-warning-inventory"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo clippy -p gpt-oss-evidence -p gpt-oss-bench --all-targets --no-deps --locked -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo clippy --locked -p gpt-oss-model-runner --lib --tests --no-deps --message-format=json; added-line primary-span audit",
+      "result": "touched-line-gate-passed-zero-of-201-diagnostics"
+    },
+    {
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH cargo clippy --locked -p gpt-oss-model-runner --lib --tests --features cuda --no-deps --message-format=json; added-line primary-span audit",
+      "result": "touched-line-gate-passed-zero-of-216-diagnostics"
+    },
+    {
+      "command": "python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'",
+      "result": "passed-35"
+    },
+    {
+      "command": "python3 -m unittest discover -s oracle/tests -p 'test_*.py'",
+      "result": "passed-10"
+    },
+    {
+      "command": "python3 tools/check_markdown_links.py",
+      "result": "passed-129-markdown-files"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "non_gate_diagnostics": [
+    {
+      "command": "cargo clippy --locked -p gpt-oss-model-runner --lib --no-deps -- -D warnings",
+      "result": "exit-101-pre-existing-crate-wide-diagnostics; zero primary spans in touched paths under warning audit"
+    }
+  ],
+  "prohibited_activity": {
+    "real_20b_tree_accessed": false,
+    "real_120b_tree_accessed": false,
+    "model_constructed_or_executed": false,
+    "scoped_mapping_integrated_into_construction": false,
+    "h8_started": false,
+    "h9_started": false,
+    "h10_started": false,
+    "prior_h8_evidence_modified": false
+  },
+  "acceptance_statement": "This record validates a payload-free source and synthetic-fixture milestone. It does not pass H8 or authorize H9/H10."
+}

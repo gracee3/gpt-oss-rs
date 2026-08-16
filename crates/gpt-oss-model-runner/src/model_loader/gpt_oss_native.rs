@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::cpu_tensor_store::CpuTensorStore;
 
 use super::dtype::DType;
+use super::shard_catalog::SafeTensorShardCatalog;
 
 pub const GPT_OSS_NATIVE_MAPPING_SCHEMA_V1: &str = "gpt-oss-rs.native-checkpoint-map/v1";
 
@@ -68,6 +69,94 @@ impl GptOssNativeConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct NativeTensorMetadata {
+    pub(super) dtype: DType,
+    pub(super) shape: Vec<usize>,
+    pub(super) bytes: usize,
+    pub(super) shard_name: String,
+}
+
+pub(super) trait NativeTensorMetadataSource {
+    fn tensor_names(&self) -> Result<BTreeSet<String>>;
+    fn tensor_metadata(&self, name: &str) -> Result<NativeTensorMetadata>;
+    fn shard_files(&self) -> Result<Vec<(String, u64)>>;
+}
+
+impl NativeTensorMetadataSource for CpuTensorStore {
+    fn tensor_names(&self) -> Result<BTreeSet<String>> {
+        Ok(self.names().map(str::to_owned).collect())
+    }
+
+    fn tensor_metadata(&self, name: &str) -> Result<NativeTensorMetadata> {
+        let tensor = self.tensor(name)?;
+        let shard_name = tensor
+            .shard_path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("shard")
+            .to_owned();
+        Ok(NativeTensorMetadata {
+            dtype: tensor.dtype(),
+            shape: tensor.shape().to_vec(),
+            bytes: tensor.bytes().len(),
+            shard_name,
+        })
+    }
+
+    fn shard_files(&self) -> Result<Vec<(String, u64)>> {
+        self.shard_paths()
+            .iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("shard")
+                    .to_owned();
+                Ok((name, std::fs::metadata(path)?.len()))
+            })
+            .collect()
+    }
+}
+
+impl NativeTensorMetadataSource for SafeTensorShardCatalog {
+    fn tensor_names(&self) -> Result<BTreeSet<String>> {
+        Ok(self.tensors().map(|tensor| tensor.name.clone()).collect())
+    }
+
+    fn tensor_metadata(&self, name: &str) -> Result<NativeTensorMetadata> {
+        let tensor = self.tensor(name)?;
+        let shard = self.shards().get(tensor.shard_index).ok_or_else(|| {
+            LLMError::ModelError(format!(
+                "catalog tensor {name} references missing shard {}",
+                tensor.shard_index
+            ))
+        })?;
+        let dtype = DType::from_safetensors_str(&tensor.dtype).ok_or_else(|| {
+            LLMError::ModelError(format!(
+                "catalog tensor {name} has unsupported dtype {}",
+                tensor.dtype
+            ))
+        })?;
+        Ok(NativeTensorMetadata {
+            dtype,
+            shape: tensor.shape.clone(),
+            bytes: usize::try_from(tensor.byte_len()).map_err(|_| {
+                LLMError::ModelError(format!("catalog tensor {name} bytes exceed usize"))
+            })?,
+            shard_name: shard.identity.file_name.clone(),
+        })
+    }
+
+    fn shard_files(&self) -> Result<Vec<(String, u64)>> {
+        Ok(self
+            .shards()
+            .iter()
+            .map(|shard| (shard.identity.file_name.clone(), shard.identity.file_length))
+            .collect())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GptOssTensorViewSpec {
     pub native: String,
@@ -94,6 +183,102 @@ pub struct GptOssCheckpointView {
     non_expert_payload_bytes: u64,
 }
 
+/// Payload-free native GPT-OSS mapping validated from a shard catalog.
+///
+/// This carries the compatibility metadata and runtime-view identities used by
+/// the existing checkpoint loader without retaining or exposing tensor bytes.
+pub struct GptOssNativeCatalogMap {
+    config: GptOssNativeConfig,
+    mappings: BTreeMap<String, GptOssTensorViewSpec>,
+    revision: String,
+    config_sha256: String,
+    catalog_sha256: String,
+    metadata_sha256: String,
+    mapping_sha256: String,
+}
+
+impl GptOssNativeCatalogMap {
+    pub fn from_config_bytes(
+        config_bytes: &[u8],
+        revision: impl Into<String>,
+        catalog: &SafeTensorShardCatalog,
+    ) -> Result<Self> {
+        Self::from_metadata_source(config_bytes, revision, catalog.metadata_sha256(), catalog)
+    }
+
+    pub(super) fn from_metadata_source(
+        config_bytes: &[u8],
+        revision: impl Into<String>,
+        catalog_sha256: &str,
+        source: &impl NativeTensorMetadataSource,
+    ) -> Result<Self> {
+        let config: GptOssNativeConfig = serde_json::from_slice(config_bytes).map_err(|error| {
+            LLMError::ModelError(format!("invalid native GPT-OSS config metadata: {error}"))
+        })?;
+        let revision = revision.into();
+        if revision.trim().is_empty() {
+            return Err(LLMError::ModelError(
+                "native GPT-OSS catalog revision must not be empty".into(),
+            ));
+        }
+        config.validate()?;
+        validate_expected_names(source, &config)?;
+        let mappings = build_mappings(source, &config)?;
+        if mappings.len() != config.runtime_tensor_count() {
+            return Err(LLMError::ModelError(format!(
+                "native GPT-OSS catalog mapping produced {} runtime views, expected {}",
+                mappings.len(),
+                config.runtime_tensor_count()
+            )));
+        }
+        Ok(Self {
+            config,
+            revision,
+            config_sha256: hash_bytes(config_bytes),
+            metadata_sha256: metadata_hash(source)?,
+            mapping_sha256: mapping_hash(&mappings)?,
+            catalog_sha256: catalog_sha256.to_owned(),
+            mappings,
+        })
+    }
+
+    pub const fn config(&self) -> &GptOssNativeConfig {
+        &self.config
+    }
+
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    pub fn config_sha256(&self) -> &str {
+        &self.config_sha256
+    }
+
+    pub fn mappings(&self) -> impl Iterator<Item = &GptOssTensorViewSpec> {
+        self.mappings.values()
+    }
+
+    pub fn spec(&self, runtime_name: &str) -> Result<&GptOssTensorViewSpec> {
+        self.mappings.get(runtime_name).ok_or_else(|| {
+            LLMError::ModelError(format!(
+                "missing native GPT-OSS catalog view {runtime_name}"
+            ))
+        })
+    }
+
+    pub fn catalog_sha256(&self) -> &str {
+        &self.catalog_sha256
+    }
+
+    pub fn metadata_sha256(&self) -> &str {
+        &self.metadata_sha256
+    }
+
+    pub fn mapping_sha256(&self) -> &str {
+        &self.mapping_sha256
+    }
+}
+
 impl GptOssCheckpointView {
     pub fn open(source_root: impl AsRef<Path>) -> Result<Self> {
         let source_root = source_root.as_ref();
@@ -108,25 +293,7 @@ impl GptOssCheckpointView {
             })?;
         config.validate()?;
         let store = CpuTensorStore::open(source_root)?;
-        let expected_names = expected_native_names(&config);
-        let observed_names = store.names().map(str::to_owned).collect::<BTreeSet<_>>();
-        if observed_names != expected_names {
-            let missing = expected_names
-                .difference(&observed_names)
-                .take(4)
-                .cloned()
-                .collect::<Vec<_>>();
-            let extra = observed_names
-                .difference(&expected_names)
-                .take(4)
-                .cloned()
-                .collect::<Vec<_>>();
-            return Err(LLMError::ModelError(format!(
-                "native GPT-OSS tensor set mismatch: expected={} observed={} missing={missing:?} extra={extra:?}",
-                expected_names.len(),
-                observed_names.len()
-            )));
-        }
+        validate_expected_names(&store, &config)?;
 
         let mappings = build_mappings(&store, &config)?;
         if mappings.len() != config.runtime_tensor_count() {
@@ -296,8 +463,34 @@ fn expected_native_names(config: &GptOssNativeConfig) -> BTreeSet<String> {
     names
 }
 
+fn validate_expected_names(
+    source: &impl NativeTensorMetadataSource,
+    config: &GptOssNativeConfig,
+) -> Result<()> {
+    let expected_names = expected_native_names(config);
+    let observed_names = source.tensor_names()?;
+    if observed_names != expected_names {
+        let missing = expected_names
+            .difference(&observed_names)
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>();
+        let extra = observed_names
+            .difference(&expected_names)
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(LLMError::ModelError(format!(
+            "native GPT-OSS tensor set mismatch: expected={} observed={} missing={missing:?} extra={extra:?}",
+            expected_names.len(),
+            observed_names.len()
+        )));
+    }
+    Ok(())
+}
+
 fn build_mappings(
-    store: &CpuTensorStore,
+    store: &impl NativeTensorMetadataSource,
     config: &GptOssNativeConfig,
 ) -> Result<BTreeMap<String, GptOssTensorViewSpec>> {
     let mut mappings = BTreeMap::new();
@@ -448,7 +641,7 @@ fn build_mappings(
 
 fn insert_alias(
     mappings: &mut BTreeMap<String, GptOssTensorViewSpec>,
-    store: &CpuTensorStore,
+    store: &impl NativeTensorMetadataSource,
     native: &str,
     runtime: &str,
     dtype: DType,
@@ -460,7 +653,7 @@ fn insert_alias(
 #[allow(clippy::too_many_arguments)]
 fn insert_slice(
     mappings: &mut BTreeMap<String, GptOssTensorViewSpec>,
-    store: &CpuTensorStore,
+    store: &impl NativeTensorMetadataSource,
     native_name: &str,
     runtime_name: &str,
     dtype: DType,
@@ -468,12 +661,12 @@ fn insert_slice(
     runtime_shape: &[usize],
     start: usize,
 ) -> Result<()> {
-    let tensor = store.tensor(native_name)?;
-    if tensor.dtype() != dtype || tensor.shape() != native_shape {
+    let tensor = store.tensor_metadata(native_name)?;
+    if tensor.dtype != dtype || tensor.shape != native_shape {
         return Err(LLMError::ModelError(format!(
             "native tensor {native_name} metadata mismatch: dtype={} shape={:?}, expected {dtype} {native_shape:?}",
-            tensor.dtype(),
-            tensor.shape()
+            tensor.dtype,
+            tensor.shape
         )));
     }
     let bytes = runtime_shape
@@ -485,21 +678,16 @@ fn insert_slice(
     let end = start
         .checked_add(bytes)
         .ok_or_else(|| LLMError::ModelError(format!("runtime view {runtime_name} overflows")))?;
-    if end > tensor.bytes().len() {
+    if end > tensor.bytes {
         return Err(LLMError::ModelError(format!(
             "runtime view {runtime_name} range [{start},{end}) exceeds native tensor {} bytes",
-            tensor.bytes().len()
+            tensor.bytes
         )));
     }
     let spec = GptOssTensorViewSpec {
         native: native_name.to_owned(),
         runtime: runtime_name.to_owned(),
-        native_shard: tensor
-            .shard_path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("shard")
-            .to_owned(),
+        native_shard: tensor.shard_name,
         native_slice: [start, end],
         dtype: dtype.to_string(),
         native_shape: native_shape.to_vec(),
@@ -514,36 +702,23 @@ fn insert_slice(
     Ok(())
 }
 
-fn metadata_hash(store: &CpuTensorStore) -> Result<String> {
-    let mut names = store.names().collect::<Vec<_>>();
-    names.sort_unstable();
+fn metadata_hash(store: &impl NativeTensorMetadataSource) -> Result<String> {
+    let names = store.tensor_names()?;
     let mut digest = Sha256::new();
     digest.update(b"gpt-oss-rs-native-metadata-v1");
     for name in names {
-        let tensor = store.tensor(name)?;
+        let tensor = store.tensor_metadata(&name)?;
         digest.update(name.as_bytes());
-        digest.update(tensor.dtype().to_string().as_bytes());
-        for dimension in tensor.shape() {
+        digest.update(tensor.dtype.to_string().as_bytes());
+        for dimension in &tensor.shape {
             digest.update(dimension.to_le_bytes());
         }
-        digest.update(tensor.bytes().len().to_le_bytes());
-        digest.update(
-            tensor
-                .shard_path()
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("shard")
-                .as_bytes(),
-        );
+        digest.update(tensor.bytes.to_le_bytes());
+        digest.update(tensor.shard_name.as_bytes());
     }
-    for path in store.shard_paths() {
-        digest.update(
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("shard")
-                .as_bytes(),
-        );
-        digest.update(std::fs::metadata(path)?.len().to_le_bytes());
+    for (name, length) in store.shard_files()? {
+        digest.update(name.as_bytes());
+        digest.update(length.to_le_bytes());
     }
     Ok(format!("{:x}", digest.finalize()))
 }
@@ -576,7 +751,56 @@ fn read_revision(source_root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::fs::File;
+    use std::io::Write;
+
+    use tempfile::tempdir;
+
     use super::*;
+
+    fn write_tiny_u8_shard(path: &Path) {
+        let header = br#"{"weight":{"dtype":"U8","shape":[1],"data_offsets":[0,1]}}"#;
+        let mut file = File::create(path).unwrap();
+        file.write_all(&u64::try_from(header.len()).unwrap().to_le_bytes())
+            .unwrap();
+        file.write_all(header).unwrap();
+        file.write_all(&[7]).unwrap();
+    }
+
+    fn legacy_metadata_hash(store: &CpuTensorStore) -> Result<String> {
+        let mut names = store.names().collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut digest = Sha256::new();
+        digest.update(b"gpt-oss-rs-native-metadata-v1");
+        for name in names {
+            let tensor = store.tensor(name)?;
+            digest.update(name.as_bytes());
+            digest.update(tensor.dtype().to_string().as_bytes());
+            for dimension in tensor.shape() {
+                digest.update(dimension.to_le_bytes());
+            }
+            digest.update(tensor.bytes().len().to_le_bytes());
+            digest.update(
+                tensor
+                    .shard_path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("shard")
+                    .as_bytes(),
+            );
+        }
+        for path in store.shard_paths() {
+            digest.update(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("shard")
+                    .as_bytes(),
+            );
+            digest.update(std::fs::metadata(path)?.len().to_le_bytes());
+        }
+        Ok(format!("{:x}", digest.finalize()))
+    }
 
     #[test]
     fn expected_name_and_mapping_cardinalities_are_exact() {
@@ -597,5 +821,32 @@ mod tests {
             assert_eq!(config.runtime_tensor_count(), runtime);
             assert_eq!(expected_native_names(&config).len(), native);
         }
+    }
+
+    #[test]
+    fn refactored_cpu_store_metadata_hash_matches_verbatim_legacy_algorithm() {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("config.json"), b"{}").unwrap();
+        #[cfg(unix)]
+        let shard_name = {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(b"native-\xff.safetensors".to_vec())
+        };
+        #[cfg(not(unix))]
+        let shard_name = OsString::from("native.safetensors");
+        write_tiny_u8_shard(&root.path().join(shard_name));
+
+        let store = CpuTensorStore::open(root.path()).unwrap();
+        let refactored_name = NativeTensorMetadataSource::tensor_metadata(&store, "weight")
+            .unwrap()
+            .shard_name;
+        #[cfg(unix)]
+        assert_eq!(refactored_name, "shard");
+        #[cfg(not(unix))]
+        assert_eq!(refactored_name, "native.safetensors");
+        assert_eq!(
+            metadata_hash(&store).unwrap(),
+            legacy_metadata_hash(&store).unwrap()
+        );
     }
 }
