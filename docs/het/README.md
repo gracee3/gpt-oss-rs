@@ -127,5 +127,8 @@ selected-work relay, queue/pool exhaustion, and correlated-concurrency gates;
 and H5 passed exact GPU0 canonical-arena rank reduction, explicit active relay
 generation/drained reuse, generation-tagged private K/V metadata, allocation-
 free visibility-last commit, failure/cancellation/quarantine matrices, and clean
-second-run gates. The default GPU engine remains unchanged until H6 wires the
-opt-in owner shell and transaction together. H6 is the next package.
+second-run gates. H6a now passes the real layer-0 GPU0 owner shell through the
+native-BF16 router, exact native-MXFP4 CPU-authority contributions, GPU0 rank
+reduction, and final residual with resident device handoffs. H6b must still
+replace the authority uploads with real concurrent CPU/GPU0/GPU1 expert work
+and wire the opt-in transaction before H6 is complete.

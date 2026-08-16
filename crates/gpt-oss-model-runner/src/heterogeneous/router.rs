@@ -196,6 +196,12 @@ pub struct CudaExactRouter {
     last_fault_drained: bool,
 }
 
+#[derive(Clone, Copy)]
+enum RouterInput<'a> {
+    Host(&'a [u16]),
+    Device(&'a CudaSlice<u16>),
+}
+
 impl CudaExactRouter {
     pub fn new(
         stable_device: StableCudaDeviceId,
@@ -328,6 +334,67 @@ impl CudaExactRouter {
         timeline: Option<&CorrelatedTimeline>,
     ) -> Result<ExactRouterExecution> {
         validate_router_input(rows, activation_bf16_bits)?;
+        self.execute_inner(
+            layer,
+            phase,
+            placement_epoch,
+            rows,
+            RouterInput::Host(activation_bf16_bits),
+            source_activation,
+            route_records,
+            timeline,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_device_and_download(
+        &mut self,
+        layer: u16,
+        phase: GptOssPhase,
+        placement_epoch: u64,
+        rows: usize,
+        activation: &CudaSlice<u16>,
+        source_device: &StableCudaDeviceId,
+        source_activation: &mut BoundedPinnedLease<u16>,
+        route_records: &mut BoundedPinnedLease<u8>,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> Result<ExactRouterExecution> {
+        let expected = rows.checked_mul(GPT_OSS_HIDDEN_SIZE).ok_or_else(|| {
+            LLMError::ModelError("device router activation shape overflows".into())
+        })?;
+        if rows == 0
+            || rows > GPT_OSS_ROUTER_MAX_ROWS
+            || activation.len() != expected
+            || source_device != &self.stable_device
+        {
+            return Err(LLMError::GpuError(
+                "device-resident router input shape/device mismatch".into(),
+            ));
+        }
+        self.execute_inner(
+            layer,
+            phase,
+            placement_epoch,
+            rows,
+            RouterInput::Device(activation),
+            source_activation,
+            route_records,
+            timeline,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_inner(
+        &mut self,
+        layer: u16,
+        phase: GptOssPhase,
+        placement_epoch: u64,
+        rows: usize,
+        activation: RouterInput<'_>,
+        source_activation: &mut BoundedPinnedLease<u16>,
+        route_records: &mut BoundedPinnedLease<u8>,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> Result<ExactRouterExecution> {
         if rows > self.max_rows {
             return Err(LLMError::GpuError(format!(
                 "exact router rows {rows} exceed reserved maximum {}",
@@ -347,9 +414,16 @@ impl CudaExactRouter {
         let injected_fault = self.injected_fault.take();
 
         let submitted = (|| -> Result<_> {
-            self.compute_stream
-                .memcpy_htod(activation_bf16_bits, &mut self.input.slice_mut(..input_len))
-                .map_err(cuda_error("exact router input H2D"))?;
+            match activation {
+                RouterInput::Host(values) => self
+                    .compute_stream
+                    .memcpy_htod(values, &mut self.input.slice_mut(..input_len))
+                    .map_err(cuda_error("exact router input H2D"))?,
+                RouterInput::Device(values) => self
+                    .compute_stream
+                    .memcpy_dtod(values, &mut self.input.slice_mut(..input_len))
+                    .map_err(cuda_error("exact router input D2D"))?,
+            }
             #[cfg(feature = "heterogeneous-test-faults")]
             if injected_fault == Some(ExactRouterInjectedFault::SubmitAfterInputEnqueue) {
                 return Err(LLMError::GpuError(

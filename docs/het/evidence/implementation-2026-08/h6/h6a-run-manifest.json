@@ -1,0 +1,32 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h6a-run-manifest/v1",
+  "captured_unix_seconds": 1786872557,
+  "package_start_commit": "b8397dedda1f470520e1e544078a71f10be210bf",
+  "source_fingerprint_sha256": "63ea137c1199f18404f4587a262e33f7afb20efbcac8135b00cf9c8bf1850c1f",
+  "cargo_profile": "release",
+  "cuda_arch": "sm_86",
+  "rustc": "1.97.1",
+  "cuda_toolkit": "13.3",
+  "nvidia_driver": "610.43.02",
+  "executable_sha256": "b076ae52095359280e1c77e60db8c261b9cadbfc91ccc0f24c3a88f34ddacff1",
+  "layer_owner_ptx_sha256": "968cd2849bd22929fd48ada6f25a754e3f891232536a5452c270c1b9bc59ba6c",
+  "router_ptx_sha256": "4dbd720e19616db6968bc9fec84b353bca0c8cdbe2a0ed56bb6f5458de3fd26b",
+  "reducer_ptx_sha256": "ce428af9a65a71b7148fbe63dac26a0c2f69b9212994d1ff9ff732c553535896",
+  "cpu_authority_post_enqueue_fault_test": {
+    "result": "passed",
+    "fallback_drain_observed": true,
+    "failed_generation_published": false,
+    "same_generation_retry_passed": true,
+    "higher_generation_cleanup_passed": true,
+    "pinned_pools_returned": 5
+  },
+  "cleanup": {
+    "swap_bytes": 0,
+    "layer_owner_gpu_used_mib": 9,
+    "remote_worker_gpu_used_mib": 1,
+    "model_processes_running": 0,
+    "protected_nvme_read_only": true,
+    "protected_nvme_mounted": false
+  },
+  "gate_result": "passed"
+}

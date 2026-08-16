@@ -56,10 +56,11 @@ pub use cpu_profile::{
 };
 pub use cpu_runner::{
     CpuDenseBoundaryProbe, CpuDenseBoundaryTrace, CpuDensePrefixAccumulator, CpuExecutionContext,
-    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuMappedFile,
-    CpuMemoryDescriptor, CpuModel, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
-    CpuSequenceModelState, CpuStateRevision, CpuStepBatch, CpuStepPhase, CpuStepRow, CpuTopLogit,
-    CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow, PreparedCpuStep,
+    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuKvCacheSnapshot,
+    CpuLayerTrace, CpuMappedFile, CpuMemoryDescriptor, CpuModel, CpuModelRunner,
+    CpuModelRunnerOptions, CpuPrefillTrace, CpuSequenceModelState, CpuStateRevision, CpuStepBatch,
+    CpuStepPhase, CpuStepRow, CpuTopLogit, CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow,
+    PreparedCpuStep,
 };
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;

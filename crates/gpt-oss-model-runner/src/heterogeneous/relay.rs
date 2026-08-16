@@ -236,6 +236,7 @@ pub fn pack_remote_inputs(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultRelayInjectedFault {
     AfterFirstResultEnqueue,
+    CpuAuthorityAfterFirstEnqueue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +330,7 @@ pub struct CudaResultRelay {
     poisoned: bool,
     quarantined_reservation: Option<RelayPinnedReservation>,
     quarantined_local_slots: Vec<CudaSelectedExpertResultSlot>,
+    quarantined_oracle_outputs: Option<Vec<Vec<u16>>>,
     #[cfg(feature = "heterogeneous-test-faults")]
     injected_fault: Option<ResultRelayInjectedFault>,
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -364,6 +366,7 @@ impl CudaResultRelay {
             poisoned: false,
             quarantined_reservation: None,
             quarantined_local_slots: Vec::with_capacity(GPT_OSS_TOP_K),
+            quarantined_oracle_outputs: None,
             #[cfg(feature = "heterogeneous-test-faults")]
             injected_fault: None,
             #[cfg(feature = "heterogeneous-test-faults")]
@@ -385,6 +388,16 @@ impl CudaResultRelay {
 
     pub(crate) const fn arena_generation(&self) -> u64 {
         self.arena_generation
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn published_arena_generation_for_test(&self) -> u64 {
+        self.arena_generation
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn has_active_generation_for_test(&self) -> bool {
+        self.active_bound_generation.is_some()
     }
 
     pub fn memory_info(&self) -> Result<(usize, usize)> {
@@ -543,6 +556,106 @@ impl CudaResultRelay {
             ));
         }
         Ok(())
+    }
+
+    /// H6a oracle-only control: place four already-computed CPU-authority
+    /// contributions into the canonical GPU0 arena. Production dispatch must
+    /// use the bound CPU/GPU1 upload plus local D2D APIs instead.
+    pub fn upload_cpu_authority_control(
+        &mut self,
+        transaction_generation: u64,
+        descriptors: &[ExpertResultDescriptor],
+        outputs_bf16_bits: Vec<Vec<u16>>,
+    ) -> Result<usize> {
+        if self.poisoned
+            || self.active_bound_generation != Some(transaction_generation)
+            || transaction_generation <= self.arena_generation
+            || descriptors.len() != GPT_OSS_TOP_K
+            || outputs_bf16_bits.len() != GPT_OSS_TOP_K
+        {
+            return Err(LLMError::GpuError(
+                "CPU-authority control does not match the active canonical generation".into(),
+            ));
+        }
+        let mut seen = [false; GPT_OSS_TOP_K];
+        for (descriptor, output) in descriptors.iter().zip(&outputs_bf16_bits) {
+            let slot = descriptor.result_slot as usize;
+            if slot >= GPT_OSS_TOP_K
+                || seen[slot]
+                || output.len() != GPT_OSS_HIDDEN_SIZE
+                || self.expected_decode_contracts[slot]
+                    .is_none_or(|contract| contract.validate_result(descriptor).is_err())
+            {
+                return Err(LLMError::GpuError(
+                    "CPU-authority control contribution identity/shape mismatch".into(),
+                ));
+            }
+            seen[slot] = true;
+        }
+        if seen.iter().any(|present| !present) {
+            return Err(LLMError::GpuError(
+                "CPU-authority control is missing a canonical route".into(),
+            ));
+        }
+        #[cfg(feature = "heterogeneous-test-faults")]
+        let injected_fault = self.injected_fault.take();
+        let submitted = (|| -> Result<()> {
+            self.stream
+                .memset_zeros(&mut self.contribution_arena)
+                .map_err(cuda_error("CPU-authority arena clear"))?;
+            for (_index, (descriptor, output)) in
+                descriptors.iter().zip(&outputs_bf16_bits).enumerate()
+            {
+                let start = descriptor.result_slot as usize * GPT_OSS_HIDDEN_SIZE;
+                self.stream
+                    .memcpy_htod(
+                        output,
+                        &mut self
+                            .contribution_arena
+                            .slice_mut(start..start + GPT_OSS_HIDDEN_SIZE),
+                    )
+                    .map_err(cuda_error("CPU-authority contribution H2D"))?;
+                #[cfg(feature = "heterogeneous-test-faults")]
+                if injected_fault == Some(ResultRelayInjectedFault::CpuAuthorityAfterFirstEnqueue)
+                    && _index == 0
+                {
+                    return Err(LLMError::GpuError(
+                        "injected CPU-authority post-enqueue failure".into(),
+                    ));
+                }
+            }
+            self.stream
+                .synchronize()
+                .map_err(cuda_error("CPU-authority contribution drain"))
+        })();
+        if let Err(primary) = submitted {
+            return match self.stream.synchronize() {
+                Ok(()) => {
+                    #[cfg(feature = "heterogeneous-test-faults")]
+                    if injected_fault
+                        == Some(ResultRelayInjectedFault::CpuAuthorityAfterFirstEnqueue)
+                    {
+                        self.last_fault_drained = true;
+                    }
+                    Err(primary)
+                }
+                Err(drain) => {
+                    self.poisoned = true;
+                    // At least one H2D may still reference these pageable host
+                    // vectors. Logical poisoning is insufficient: retain the
+                    // owned storage until process teardown, where Drop leaks it
+                    // if CUDA still cannot prove the stream terminal.
+                    self.quarantined_oracle_outputs = Some(outputs_bf16_bits);
+                    Err(LLMError::GpuError(format!(
+                        "CPU-authority upload failed ({primary}); mandatory drain failed ({drain}); relay poisoned and host authority storage quarantined"
+                    )))
+                }
+            };
+        }
+        self.arena_generation = transaction_generation;
+        self.remote_upload_complete = true;
+        self.populated_slots[..GPT_OSS_TOP_K].fill(true);
+        Ok(GPT_OSS_TOP_K * GPT_OSS_HIDDEN_SIZE * size_of::<u16>())
     }
 
     /// Copy one already-drained GPU0-local selected-expert result into its H4
@@ -896,6 +1009,9 @@ impl Drop for CudaResultRelay {
             }
             for slot in self.quarantined_local_slots.drain(..) {
                 std::mem::forget(slot);
+            }
+            if let Some(outputs) = self.quarantined_oracle_outputs.take() {
+                std::mem::forget(outputs);
             }
         }
     }

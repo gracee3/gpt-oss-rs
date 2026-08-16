@@ -8,6 +8,8 @@ pub mod contract;
 pub mod cpu_expert;
 #[cfg(feature = "cuda")]
 pub mod cuda_expert;
+#[cfg(feature = "cuda")]
+pub mod layer;
 pub mod packing;
 pub mod placement;
 #[cfg(feature = "cuda")]
@@ -35,6 +37,8 @@ pub use cuda_expert::{
     GPT_OSS_SELECTED_EXPERT_WORKSPACE_POOL_CLASS_BYTES, HIDDEN_SIZE, INPUT_BLOCKS,
     INTERMEDIATE_SIZE,
 };
+#[cfg(feature = "cuda")]
+pub use layer::{CudaLayerOwnerShell, LayerOwnerShellExecution, GPT_OSS_LAYER_OWNER_WORK_BYTES};
 #[cfg(feature = "cuda")]
 pub use reduction::{
     exact_rank_ordered_reduction_reference, CanonicalExpertContribution, CudaRankOrderedReducer,

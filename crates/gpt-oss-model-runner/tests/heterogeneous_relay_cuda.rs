@@ -9,9 +9,9 @@ use gpt_oss_model_runner::heterogeneous::{
     exact_selected_expert_reference, pack_remote_inputs, pack_routes_bounded,
     CpuX8SelectedExpertWorker, CudaExactRouter, CudaResultRelay, CudaSelectedExpertExecutor,
     ExactRouterWeightsView, GptOssExpertKey, GptOssExpertPlacementManifestV1, GptOssPhase,
-    NativeMxfp4ExpertView, RelayPinnedPools, ResultRelayInjectedFault, SelectedExpertCapture,
-    DOWN_BIAS_VALUES, DOWN_BLOCK_BYTES, DOWN_SCALE_BYTES, GATE_UP_BIAS_VALUES, GATE_UP_BLOCK_BYTES,
-    GATE_UP_SCALE_BYTES, HIDDEN_SIZE,
+    NativeMxfp4ExpertView, PreparedRankOrderedReduction, RelayPinnedPools,
+    ResultRelayInjectedFault, SelectedExpertCapture, DOWN_BIAS_VALUES, DOWN_BLOCK_BYTES,
+    DOWN_SCALE_BYTES, GATE_UP_BIAS_VALUES, GATE_UP_BLOCK_BYTES, GATE_UP_SCALE_BYTES, HIDDEN_SIZE,
 };
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
 use half::bf16;
@@ -66,6 +66,96 @@ struct TransferLegEvidence {
     begin_label: &'static str,
     end_label: &'static str,
     bytes: usize,
+}
+
+#[test]
+fn cpu_authority_post_enqueue_fault_drains_without_publication_and_retries() {
+    let devices = list_devices();
+    assert_eq!(
+        devices.len(),
+        2,
+        "CPU-authority relay fault gate requires both local GPUs"
+    );
+    let manifest: GptOssExpertPlacementManifestV1 =
+        serde_json::from_slice(&std::fs::read(repo_root().join(PLACEMENT)).unwrap()).unwrap();
+    let placement = manifest.validate(&devices).unwrap();
+    let router_weights = vec![bf16::from_f32(0.0).to_bits(); 32 * HIDDEN_SIZE];
+    let mut router_bias = vec![bf16::from_f32(0.0).to_bits(); 32];
+    for (expert, logit) in [(31, 4.0), (21, 3.0), (22, 2.0), (6, 1.0)] {
+        router_bias[expert] = bf16::from_f32(logit).to_bits();
+    }
+    let mut router = CudaExactRouter::new(
+        placement.layer_owner().stable_id.clone(),
+        1,
+        ExactRouterWeightsView {
+            experts: 32,
+            weight_bf16_bits: &router_weights,
+            bias_bf16_bits: &router_bias,
+        },
+    )
+    .unwrap();
+    let pools = RelayPinnedPools::warm_exact(&router, 1).unwrap();
+    const GENERATION: u64 = 58;
+    let mut reservation = pools.try_reserve_all(GENERATION).unwrap();
+    let activation = vec![bf16::from_f32(0.0).to_bits(); HIDDEN_SIZE];
+    let routed = router
+        .execute_and_download(
+            0,
+            GptOssPhase::Decode,
+            placement.placement_epoch(),
+            1,
+            &activation,
+            &mut reservation.source_activation,
+            &mut reservation.route_descriptors,
+            None,
+        )
+        .unwrap();
+    let plan = pack_routes_bounded(&routed.batch, &placement).unwrap();
+    let prepared =
+        PreparedRankOrderedReduction::prepare(&routed.batch, &placement, GENERATION).unwrap();
+    let descriptors = prepared.expected_results().to_vec();
+    let outputs = (0..4)
+        .map(|rank| vec![bf16::from_f32(rank as f32).to_bits(); HIDDEN_SIZE])
+        .collect::<Vec<_>>();
+    let mut relay = CudaResultRelay::new(&router, 1).unwrap();
+    relay.bind_decode_generation(GENERATION, &plan).unwrap();
+    relay
+        .inject_next_failure(ResultRelayInjectedFault::CpuAuthorityAfterFirstEnqueue)
+        .unwrap();
+    assert!(relay
+        .upload_cpu_authority_control(GENERATION, &descriptors, outputs.clone())
+        .is_err());
+    assert!(relay.last_fault_drained());
+    assert_eq!(relay.published_arena_generation_for_test(), 0);
+    assert!(relay.has_active_generation_for_test());
+
+    assert_eq!(
+        relay
+            .upload_cpu_authority_control(GENERATION, &descriptors, outputs)
+            .unwrap(),
+        4 * HIDDEN_SIZE * size_of::<u16>()
+    );
+    assert_eq!(relay.published_arena_generation_for_test(), GENERATION);
+    relay.abandon_decode_generation(GENERATION, true).unwrap();
+    assert!(!relay.has_active_generation_for_test());
+    relay.bind_decode_generation(GENERATION + 1, &plan).unwrap();
+    relay
+        .abandon_decode_generation(GENERATION + 1, true)
+        .unwrap();
+    assert!(!relay.has_active_generation_for_test());
+    reservation.release_drained().unwrap();
+    let stats = pools.stats();
+    for pool in [
+        stats.source_activation,
+        stats.route_descriptors,
+        stats.remote_gpu_input,
+        stats.remote_gpu_result,
+        stats.cpu_result,
+    ] {
+        assert_eq!(pool.available, 1);
+        assert_eq!(pool.checked_out, 0);
+        assert_eq!(pool.quarantined, 0);
+    }
 }
 
 #[test]
@@ -172,6 +262,7 @@ fn real_x8_three_owner_relay_is_bounded_correlated_and_drained() {
     assert_eq!(plan.local_route_count(), 2);
     assert_eq!(plan.cpu_route_count(), 1);
     assert_eq!(plan.remote_gpu_route_count(), 1);
+
     pack_remote_inputs(
         &plan,
         &reservation.source_activation,

@@ -186,6 +186,10 @@ impl LayerOwnerDenseTensor {
     pub fn device_bytes(&self) -> usize {
         self.allocation.len()
     }
+
+    pub(crate) fn allocation(&self) -> &CudaSlice<u8> {
+        &self.allocation
+    }
 }
 
 /// A fully materialized but execution-detached owner topology.

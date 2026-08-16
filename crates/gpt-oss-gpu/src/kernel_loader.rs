@@ -148,6 +148,18 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
         "gpt_oss_rank_reduction",
         &["gpt_oss_rank_order_reduce_bf16_kernel"],
     ),
+    (
+        "gpt_oss_layer_owner",
+        &[
+            "gpt_oss_layer_embedding_kernel",
+            "gpt_oss_layer_rms_norm_kernel",
+            "gpt_oss_layer_bf16_projection_kernel",
+            "gpt_oss_layer_rope_kernel",
+            "gpt_oss_layer_append_kv_kernel",
+            "gpt_oss_layer_attention_kernel",
+            "gpt_oss_layer_residual_kernel",
+        ],
+    ),
 ];
 
 /// Loads and manages CUDA PTX modules, providing kernel launch capabilities.

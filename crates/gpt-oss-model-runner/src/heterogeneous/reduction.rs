@@ -348,6 +348,10 @@ impl CudaRankOrderedReducer {
         &self.stable_device
     }
 
+    pub(crate) fn output_device(&self) -> &CudaSlice<u16> {
+        &self.output
+    }
+
     pub const fn owned_device_bytes(&self) -> usize {
         GPT_OSS_REDUCER_OWNED_DEVICE_BYTES
     }
