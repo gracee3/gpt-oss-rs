@@ -89,6 +89,9 @@ Evidence labels have the same meaning in every document:
 30. [H3 bounded shard catalog](31-h3-bounded-shard-catalog.md) — metadata-only
     index/header validation and capacity-one scoped mapping over tiny synthetic
     fixtures; not integrated into construction.
+31. [H3 native metadata plan](32-h3-native-metadata-plan.md) — payload-free
+    exact native/runtime mapping plus deterministic owner-specific per-shard
+    consumption over source-only synthetic fixtures.
 
 ## Current headline
 
@@ -162,3 +165,10 @@ index/header identity, tensor ranges, and deterministic ordering without
 reading payloads. Its scoped capacity-one mapping API is fixture-proven but
 deliberately disconnected from construction until native mapping, router
 lifetime, CPU publication, and CUDA terminal-drain ownership are resolved.
+
+**Native-plan follow-up:** caller-supplied config bytes and the bounded catalog
+can now produce the exact 363-to-459 or 543-to-687 native/runtime mapping and a
+fully covered, placement-bound per-shard consumer plan without payload mmap.
+Synthetic 20B/120B action counts and schema-framed plan identities are pinned.
+The production checkpoint view and owner-selective constructor remain
+unchanged; scoped mapping is still not integrated.

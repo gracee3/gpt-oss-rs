@@ -16,6 +16,7 @@ pub mod owner_selective;
 pub mod safetensors;
 pub mod shard;
 pub mod shard_catalog;
+pub mod shard_consumer_plan;
 pub mod weights;
 
 use std::path::Path;
