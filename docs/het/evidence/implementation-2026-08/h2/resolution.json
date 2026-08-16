@@ -1,0 +1,58 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h2-resolution/v1",
+  "captured_at": "2026-08-16T00:46:50-04:00",
+  "package": "H2",
+  "package_start_commit": "64c83e63421c0254bec7843787acf95257635cbf",
+  "branch": "agent/het-implementation",
+  "result": "passed",
+  "preserved_failed_attempt": "failure.json",
+  "failed_attempt_sha256": "0a3726ba9e125accece5997090ccb07bc6429c3333fc53469bbcd333b1053c8b",
+  "repair": {
+    "first_divergence": "E8M0 0xff gate/up NaN payload",
+    "rule": "bit-exact CPU half-2.7.1 BF16 NaN conversion and x86 invalid-operation propagation",
+    "bit_exactness_relaxed": false
+  },
+  "lifecycle": {
+    "post_enqueue_fault": "SubmitAfterInputEnqueue",
+    "mandatory_stream_drain_observed": true,
+    "resource_reuse_after_fault_exact": true,
+    "pending_borrows_retained_until_terminal_drain": [
+      "executor",
+      "weights",
+      "input",
+      "scratch",
+      "result_slot"
+    ]
+  },
+  "oracle": {
+    "record": "real-expert-oracle.json",
+    "exact": true,
+    "route_records": 8,
+    "experts": [31, 21, 22, 6],
+    "runtime_ordinals": [0, 1],
+    "logical_device_work_bytes": 51840,
+    "workspace_pool_class_bytes": 65536,
+    "resident_expert_payload_bytes": 13236480,
+    "observed_allocator_reservation_high_water_bytes": 33554432,
+    "no_execution_allocation_growth": true,
+    "all_teardowns_recovered": true,
+    "kernel_completion_ms_min": 3.897344,
+    "kernel_completion_ms_max": 4.704256,
+    "executable_sha256": "8f8ee94beddc77a626cd698f2b1ec0da5ab995c40c3372a54242676e511c80ef",
+    "ptx_sha256": "8bef561a19a8f8924c6d8d9799724007a27a554c5a0bfc73f8c9d61e45ca4e37"
+  },
+  "software": {
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "cuda": "13.3.73",
+    "cuda_target": "sm_86",
+    "nvidia_driver": "610.43.02"
+  },
+  "final_resource_state": {
+    "host_available_bytes": 95726755840,
+    "swap_used_bytes": 0,
+    "gpu_used_mib": [9, 1],
+    "protected_nvme_read_only": true,
+    "protected_nvme_mounted": false
+  }
+}

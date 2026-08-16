@@ -16,6 +16,7 @@ gpt-oss-tokenizer.workspace = true
 gpt-oss-model-runner.workspace = true
 gpt-oss-cpu-kernels.workspace = true
 gpt-oss-evidence.workspace = true
+gpt-oss-gpu.workspace = true
 gpt-oss-xe = { workspace = true, optional = true }
 sha2.workspace = true
 tokio.workspace = true
@@ -35,7 +36,7 @@ xe = [
     "dep:rand_chacha",
     "dep:safetensors",
 ]
-cuda = ["gpt-oss-engine/cuda"]
+cuda = ["gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "dep:half"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
 
 [dev-dependencies]
@@ -71,3 +72,8 @@ path = "src/bin/cpu_parity.rs"
 name = "xe_projection_gate"
 path = "src/bin/xe_projection_gate.rs"
 required-features = ["xe"]
+
+[[bin]]
+name = "heterogeneous_expert_oracle"
+path = "src/bin/heterogeneous_expert_oracle.rs"
+required-features = ["cuda"]

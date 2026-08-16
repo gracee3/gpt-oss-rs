@@ -179,6 +179,9 @@ fn main() {
         .and_then(|p| p.parent())
         .map(|p| p.join("kernels"))
         .unwrap_or_else(|| manifest_dir.join("kernels"));
+    // Track the directory as well as the files discovered during this run so
+    // adding a new kernel invalidates an existing Cargo build-script result.
+    println!("cargo:rerun-if-changed={}", kernel_dir.display());
 
     if env::var("CARGO_FEATURE_CUDA").is_err() {
         return;

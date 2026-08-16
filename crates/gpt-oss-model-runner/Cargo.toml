@@ -17,6 +17,9 @@ xe = ["dep:gpt-oss-xe"]
 cuda = ["gpt-oss-gpu/cuda", "dep:cudarc"]
 cublaslt = ["cuda", "gpt-oss-gpu/cublaslt"]
 amx-int8 = ["gpt-oss-cpu-kernels/amx-int8"]
+# Deterministic lifecycle fault hooks for bounded heterogeneous integration
+# tests. This feature is never enabled by a production/runtime feature.
+heterogeneous-test-faults = ["cuda"]
 
 [dependencies]
 gpt-oss-core.workspace = true

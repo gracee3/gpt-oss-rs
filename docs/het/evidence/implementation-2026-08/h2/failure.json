@@ -1,0 +1,22 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h2-failure/v1",
+  "captured_at": "2026-08-16T00:26:01-04:00",
+  "package": "H2",
+  "package_start_commit": "64c83e63421c0254bec7843787acf95257635cbf",
+  "branch": "agent/het-implementation",
+  "gate": "synthetic selected-expert BF16 bit exactness",
+  "command": "CUDA_ARCH=sm_86 cargo test -q -p gpt-oss-model-runner --features cuda,heterogeneous-test-faults --test selected_expert_cuda --release --locked -- --nocapture",
+  "result": "failed",
+  "first_divergence": {
+    "boundary": "gate_up",
+    "index": 4,
+    "expected_bf16_bits_decimal": 65472,
+    "expected_bf16_bits_hex": "0xffc0",
+    "actual_bf16_bits_decimal": 32767,
+    "actual_bf16_bits_hex": "0x7fff",
+    "expected_class": "NaN",
+    "actual_class": "NaN",
+    "fixture_condition": "E8M0 invalid scale 0xff"
+  },
+  "disposition": "campaign_stopped_before_h2_completion_or_h3"
+}
