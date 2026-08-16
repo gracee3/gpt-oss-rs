@@ -1,0 +1,69 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h5-reduction/v1",
+  "captured_unix_seconds": 1786869493,
+  "repository_head": "b610b968715a810d6c1191140c6cfb951dacc3eb",
+  "source_fingerprint_sha256": "0d5b19f1b5b92fe0a6689d029607febbabadab33236c882a60b0593c8dde6439",
+  "executable_sha256": "f28f30c9692f7d00b013fb91a13b3780e14a84c45005f25722c0c2b52d9704f2",
+  "reducer_ptx_sha256": "ce428af9a65a71b7148fbe63dac26a0c2f69b9212994d1ff9ff732c553535896",
+  "cargo_profile": "release",
+  "cuda_arch": "sm_86",
+  "model_mapping_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+  "placement_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+  "layer_owner_pci_bus_id": "0000:19:00.0",
+  "remote_worker_pci_bus_id": "0000:65:00.0",
+  "transaction_generation": 101,
+  "selected_ids": [
+    31,
+    21,
+    22,
+    6
+  ],
+  "expected_result_descriptors": 4,
+  "local_before_clear_rejected": true,
+  "stale_local_generation_rejected": true,
+  "stale_reducer_generation_rejected": true,
+  "premature_rebind_rejected": true,
+  "drained_abandon_then_higher_generation": true,
+  "successful_reduction_closed_generation": true,
+  "reduction_faults_drained": [
+    "after_weight_enqueue",
+    "after_kernel_launch",
+    "after_evidence_enqueue"
+  ],
+  "construction_faults_drained": [
+    "after_weights",
+    "after_output",
+    "after_weighted_trace",
+    "after_accumulator_trace"
+  ],
+  "identity_negatives": [
+    "missing",
+    "duplicate",
+    "wrong_expert",
+    "wrong_weight",
+    "wrong_owner",
+    "wrong_slot",
+    "wrong_plan",
+    "relabelled_local_slot",
+    "stale_generation"
+  ],
+  "contribution_arena_bytes": 23040,
+  "reducer_owned_device_bytes": 97928,
+  "measured_driver_free_delta_bytes": 0,
+  "driver_allocator_reuse_observed": true,
+  "reducer_drop_recovered_within_bytes": 0,
+  "pipeline_device_bytes": 120968,
+  "workspace_class_bytes": 131072,
+  "pinned_high_water": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "output_sha256": "e3275456e27b341c38b5c9146d1fb9843d2a03f0e016a3d90cfc9f433200edbd",
+  "weighted_trace_sha256": "03d9c3ae8827abb546193e7ef70fde8047dbfe14286f31a1e0fb7af5a14e0a6e",
+  "accumulator_trace_sha256": "e7f8224ab7585b43d883b0e16046b6e14175a6eab5ae79b2d10807128264f2b6",
+  "reducer_kernel_elapsed_ms": 0.009216,
+  "passed": true
+}

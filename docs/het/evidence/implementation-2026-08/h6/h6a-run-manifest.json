@@ -1,0 +1,117 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h6-run-manifest/v3",
+  "captured_unix_seconds": 1786881828,
+  "package_start_commit": "dff8b0916017cc736067f806f0a1e3464eb6cd70",
+  "source_fingerprint_sha256": "3635bcf9bcc46a50c480b99bb1c4f5601c1aca68420c8e054490811f52bd1183",
+  "source_fingerprint_rule": "SHA-256 over sorted tracked and untracked, non-ignored paths outside docs/, with each path and file SHA-256 separated by NUL bytes",
+  "cargo_profile": "release",
+  "cargo_features": ["heterogeneous-test-faults"],
+  "implied_cargo_features": ["cuda"],
+  "cuda_arch": "sm_86",
+  "rustc": "1.97.1",
+  "cuda_toolkit": "13.3",
+  "nvidia_driver": "610.43.02",
+  "executables": {
+    "heterogeneous_layer_oracle_sha256": "f8f46e2b3fc1dabff88e49452a2a39fb15436b3da8f8bfab226b8c112b72fb23",
+    "heterogeneous_construct_sha256": "674c849bebe3a620d9916c191f69b2d44ce4ebb1c5057c1912bcdf0dade2a4ca"
+  },
+  "ptx_sha256": {
+    "layer_owner": "968cd2849bd22929fd48ada6f25a754e3f891232536a5452c270c1b9bc59ba6c",
+    "router": "4dbd720e19616db6968bc9fec84b353bca0c8cdbe2a0ed56bb6f5458de3fd26b",
+    "rank_reduction": "ce428af9a65a71b7148fbe63dac26a0c2f69b9212994d1ff9ff732c553535896",
+    "selected_expert": "8bef561a19a8f8924c6d8d9799724007a27a554c5a0bfc73f8c9d61e45ca4e37"
+  },
+  "artifacts": {
+    "h6a_owner_shell_sha256": "d4527fd368f54291a030ff8ab3c5bc77a2f81749f118a1b0b7f165bb506f7ecd",
+    "h6b_three_owner_sha256": "e652acd25841b0a7477636332dc45340edd81390dd199e1ba9e165f9b3a07646",
+    "h6b_owned_d2d_unproven_sha256": "1ddbf3b7ac647e5a3f716709e6e92ba46bc01e40b7ebad1aacf618cf379194bd",
+    "h3_teardown_warm_sha256": "dcd50c1af1c202aa2af95a3f0d24c3dd5666198643469fbb2cecc6c5d3ecb084",
+    "h3_teardown_faults_sha256": "4f3d8c3b8738f211b89ce81d5b1af450e045f7b4f57027a71abdcc68853df7b7"
+  },
+  "h6a": {
+    "schema": "gpt-oss-rs.heterogeneous-layer-oracle-h6a/v4",
+    "twelve_bit_exact_boundaries": true,
+    "fault_feature_enabled": true,
+    "five_post_enqueue_faults_and_immediate_retries": true,
+    "host_staging_bytes": 309504,
+    "device_resident_router_and_reducer_handoffs": true
+  },
+  "h6b": {
+    "schema": "gpt-oss-rs.heterogeneous-layer-oracle-h6b/v4",
+    "selected_experts": [31, 21, 22, 6],
+    "selected_weight_bf16_bits": [16128, 15926, 15915, 15903],
+    "owner_counts_layer_owner_cpu_remote": [2, 1, 1],
+    "gpu_route_matched_oracle_admission": true,
+    "completion_contracts_exact": true,
+    "per_expert_boundaries_exact": true,
+    "rank_reduction_exact": true,
+    "layer_output_exact": true,
+    "strict_three_way_compute_intersection_all_cases": true,
+    "committed_case_passed": true,
+    "drained_discard_case_passed": true,
+    "clean_repeat_after_discard_passed": true,
+    "coordinator_shutdown_zero": true,
+    "pinned_pool_active_leases_after": 0,
+    "gpu_free_loss_bytes": [0, 0],
+    "process_swap_before_bytes": 0,
+    "process_swap_after_bytes": 0,
+    "global_swap_before_bytes": 28672,
+    "global_swap_after_bytes": 28672,
+    "global_swap_cached_before_bytes": 28672,
+    "global_swap_cached_after_bytes": 28672,
+    "global_swap_growth_bytes": 0,
+    "physical_kv_publication_claimed": false,
+    "transaction_scope": "generation-tied coordinator metadata commit/discard; layer-owner flat K/V shell remains private oracle storage"
+  },
+  "unproven_drain": {
+    "drain_proven": false,
+    "result_slot_returned": false,
+    "input_weights_trace_and_slot_retained": true,
+    "executor_model_and_shell_quarantined": true,
+    "retry_permitted": false
+  },
+  "h3_teardown_regression": {
+    "schema": "gpt-oss-rs.heterogeneous-construction/v2",
+    "warm_passed": true,
+    "eight_real_constructor_fault_stages_passed": true,
+    "clean_construction_after_faults_passed": true,
+    "cache_bytes_before_and_after": 26508424,
+    "process_swap_before_and_after_bytes": 0,
+    "global_swap_before_and_after_bytes": 28672,
+    "global_swap_cached_before_and_after_bytes": 28672,
+    "partial_artifacts_after": 0,
+    "pinned_current_bytes_after": 0,
+    "cuda_cleanup_within_tolerance": true
+  },
+  "regression_gates": {
+    "selected_expert_synthetic_both_gpus": "passed",
+    "selected_expert_real_four_experts_both_gpus": "passed",
+    "router_synthetic_native_and_destructive": "5-passed",
+    "relay_real_x8_and_faults": "3-passed",
+    "reduction_real_and_unproven_fault": "2-passed",
+    "bounded_pinned_pool_filter": "1-passed",
+    "workspace_check_locked": "passed",
+    "workspace_test_locked": "passed",
+    "configured_strict_clippy_lanes": "3-passed",
+    "fault_cfg_oracle_strict_clippy": "passed",
+    "fault_cfg_construction_strict_clippy": "passed",
+    "python_bench_tools": "35-passed",
+    "python_oracle": "10-passed"
+  },
+  "cleanup": {
+    "target_process_swap_bytes": 0,
+    "global_swap_cached_bytes": 28672,
+    "global_swap_growth_bytes": 0,
+    "layer_owner_gpu_used_mib": 9,
+    "remote_worker_gpu_used_mib": 1,
+    "model_processes_running": 0,
+    "protected_nvme_read_only": true,
+    "protected_nvme_mounted": false
+  },
+  "owner_cache": {
+    "root": "/home/emmy/workspace/gpt-oss-rs-het-cache",
+    "files": 2,
+    "bytes": 26508424
+  },
+  "gate_result": "passed"
+}

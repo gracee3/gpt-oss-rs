@@ -1,0 +1,116 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h7-run-manifest/v1",
+  "captured_unix_seconds": 1786888307,
+  "package_start_commit": "e63967abb60bc248cd006fa9d40a98f8de591a79",
+  "source_fingerprint_sha256": "a1f42c03cd1c2f46ea805d0623d4aa66247d05cf0eac0ea436adf40ad6422f10",
+  "source_fingerprint_rule": "SHA-256 over sorted tracked and untracked, non-ignored paths outside docs/, with each path and file SHA-256 separated by NUL bytes",
+  "cargo_profile": "release",
+  "cargo_features": ["heterogeneous-test-faults"],
+  "implied_cargo_features": ["cuda"],
+  "cuda_arch": "sm_86",
+  "rustc": "1.97.1",
+  "cuda_toolkit": "13.3",
+  "nvidia_driver": "610.43.02",
+  "executables": {
+    "heterogeneous_control_sha256": "c5852d6d2f3621f859aba72ad3e9fd5f7be5a7eb704f964c7188f6296d87e8e6",
+    "heterogeneous_control_fault_sha256": "9e72177b6de47f1b1f394935e2cadc2e377a41b2b7c61608db7b2f55d849c672",
+    "heterogeneous_layer_oracle_regression_sha256": "3f72068c859d700935665534c340b446066b0397672d5916db7c1ca244bae7f0"
+  },
+  "ptx_sha256": {
+    "layer_owner": "968cd2849bd22929fd48ada6f25a754e3f891232536a5452c270c1b9bc59ba6c",
+    "router": "4dbd720e19616db6968bc9fec84b353bca0c8cdbe2a0ed56bb6f5458de3fd26b",
+    "rank_reduction": "ce428af9a65a71b7148fbe63dac26a0c2f69b9212994d1ff9ff732c553535896",
+    "selected_expert": "8bef561a19a8f8924c6d8d9799724007a27a554c5a0bfc73f8c9d61e45ca4e37"
+  },
+  "artifacts": {
+    "retained_control_sha256": "436f25a554aef7152f16833c2c1bff1045a069833744d7e43478f2f73aa43559",
+    "recoverable_post_dispatch_sha256": "281f814c8bc1875092e7715a5cd13ef1985864c80916556bfc4b19c1347b3eb4",
+    "unproven_drain_quarantine_sha256": "a00891f25bf8ee097595c8cc48a100de43525d00ab6c95c11687e28a4f0d57ac"
+  },
+  "scratch_regression_artifacts_not_retained": {
+    "h6a_sha256": "18ab3525e9ad15057e471f9884b92b13633cb42d103ac3258beb1a75a1e29689",
+    "h6b_sha256": "9e13fdc8a144b996fbf0eed7961c76fafd4f988f58ebfc263e2a09b3e8a8d163"
+  },
+  "model_identity": {
+    "revision": "metadata:709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+    "config_sha256": "317522155fc243327ee341857d0c752d0094a0817e0e9aee2890d5ad8e009e04",
+    "index_sha256": "709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+    "mapping_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+    "placement_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+    "retained_trace_sha256": "1be8a61eeeec92e7af980a6f190788f0829048015c5f54fe7fa6ce334618db39"
+  },
+  "retained_control": {
+    "schema": "gpt-oss-rs.heterogeneous-control-h7/v2",
+    "repeat_count": 2,
+    "prompt_tokens": 63,
+    "generated_token_ids": [200005, 35644, 200008, 976, 1825, 5003, 25, 392],
+    "exact_both_runs": true,
+    "committed_length_both_runs": 70,
+    "request_revision_both_runs": 70,
+    "visibility_epoch_both_runs": 70,
+    "selected_experts": [31, 21, 22, 6],
+    "selected_weight_bf16_bits": [16128, 15926, 15915, 15903],
+    "owner_counts_layer_owner_cpu_remote": [2, 1, 1],
+    "completion_contracts_exact": true,
+    "per_expert_boundary_hashes_retained": true,
+    "strict_three_way_compute_intersection_both_runs": true,
+    "cuda_prefill_or_all_expert_fallback_used": false,
+    "tensor_parallel_or_nccl_used": false,
+    "peer_access_used": false,
+    "decode_expert_weight_transfer_bytes": 0,
+    "discard_then_clean_retry_both_runs": true
+  },
+  "failure_lifecycle": {
+    "recoverable_post_enqueue_drain_proven": true,
+    "recoverable_sibling_drained": true,
+    "recoverable_all_five_pinned_leases_returned": true,
+    "recoverable_immediate_retry_passed": true,
+    "unproven_post_enqueue_drain_proven": false,
+    "unproven_runtime_model_shell_poisoned": true,
+    "unproven_all_five_pinned_leases_retained": true,
+    "unproven_retry_rejected": true
+  },
+  "resources": {
+    "cold_peak_process_rss_bytes": 14120882176,
+    "warm_peak_process_rss_bytes": 14140567552,
+    "layer_owner_gpu_execution_used_bytes": 14050918400,
+    "remote_gpu_execution_used_bytes": 312475648,
+    "fixed_pinned_raw_capacity_bytes": 74944,
+    "pinned_hard_cap_bytes": 131072,
+    "cpu_worker_high_water_jobs": 1,
+    "process_swap_all_snapshots_bytes": 0,
+    "global_swap_before_and_after_bytes": 28672,
+    "global_swap_cached_before_and_after_bytes": 28672,
+    "global_swap_growth_bytes": 0,
+    "pinned_checked_out_after_each_run": 0,
+    "pinned_quarantined_after_each_run": 0,
+    "second_run_gpu_free_loss_bytes": [0, 0]
+  },
+  "regression_gates": {
+    "h6a_final_source_compatibility": "passed",
+    "h6b_final_source_compatibility": "passed",
+    "selected_expert_synthetic_both_gpus": "passed",
+    "selected_expert_real_four_experts_both_gpus": "passed",
+    "router_suite": "5-passed",
+    "relay_suite": "3-passed",
+    "reduction_suite": "2-passed",
+    "workspace_check_locked": "passed",
+    "workspace_test_locked": "passed",
+    "configured_strict_clippy_lanes": "3-passed",
+    "fault_cfg_h7_bench_strict_clippy": "passed",
+    "python_bench_tools": "35-passed",
+    "python_oracle": "10-passed"
+  },
+  "cleanup": {
+    "target_process_swap_bytes": 0,
+    "global_swap_cached_bytes": 28672,
+    "layer_owner_gpu_used_mib": 9,
+    "remote_worker_gpu_used_mib": 1,
+    "model_processes_running": 0,
+    "owner_cache_files": 2,
+    "owner_cache_bytes": 26508424,
+    "protected_nvme_read_only": true,
+    "protected_nvme_mounted": false
+  },
+  "gate_result": "passed"
+}

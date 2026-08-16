@@ -69,7 +69,7 @@ impl SwapManager {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mock-gpu", not(feature = "cuda")))]
 mod tests {
     use super::*;
     use gpt_oss_gpu::prelude::MockGpuAllocator;
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn swap_in_gpu_exhausted() {
-        let alloc = MockGpuAllocator::new(1 * 512 + 1024 * 1024);
+        let alloc = MockGpuAllocator::new(512 + 1024 * 1024);
         let gpu_pool = GpuMemoryPool::new(1, 512, &alloc).unwrap();
         let cpu_pool = CpuMemoryPool::new(8, 512).unwrap();
 

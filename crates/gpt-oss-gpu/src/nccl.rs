@@ -568,7 +568,7 @@ fn to_nccl_op(op: NcclReduceOp) -> i32 {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mock-gpu", not(feature = "cuda")))]
 mod tests {
     use super::*;
 

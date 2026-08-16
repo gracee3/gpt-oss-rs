@@ -1,0 +1,17 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h4-queues/v1",
+  "repository_head": "fa7750fc28e2db18ea48ec7f9f1cfa62de4afa21",
+  "source_fingerprint_sha256": "a3bc9b8221da7c1c6dc57b9ac51222a2cc1041f8fd27e59ec29e902832c8e563",
+  "executable_sha256": "bf5bcbe0116b570098b9704f9e7acfab8fe512eeca38a2601e7bcafc4cc9d6cf",
+  "capacity_per_queue": 1,
+  "cpu_high_water": 1,
+  "remote_gpu_high_water": 1,
+  "cpu_reservations": 2,
+  "remote_gpu_reservations": 2,
+  "cpu_exhaustions": 1,
+  "remote_gpu_exhaustions": 2,
+  "cpu_occupied_after_release": false,
+  "remote_gpu_occupied_after_release": false,
+  "partial_reservation_rolled_back": true,
+  "passed": true
+}

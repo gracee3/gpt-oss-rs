@@ -1,0 +1,80 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h8-failed-attempt/v2",
+  "captured_utc": "2026-08-16T14:30:05Z",
+  "package_start_commit": "a9ab97aef349e7f05b79dd6a1aa6eed1853dd7b4",
+  "attempt_source_fingerprint_sha256": "3b80197a32e18a0509df7661e965e6312fb5f8cb86cb4238f46896e8683cb00a",
+  "attempt_executable_sha256": "55c645b1637a3ac966871d013a07554112df00a063f929de98f3eff1d622600b",
+  "checkpoint_source_fingerprint_sha256": "bb1dea2c0fd34d1d4879447eda8ad9c4b4dff2b1e80ca66ed223d956d2c38035",
+  "checkpoint_executable_sha256": "cf1834e6c20f01a45b96d63f4a1fee634b0bda784877cda5f2161437d9d4bbd5",
+  "checkpoint_executable_was_run_for_h8": false,
+  "post_attempt_source_change": "cfg-gated H8-only imports, constants, and disk helper so both plain CUDA and heterogeneous-test-faults strict lanes compile without allowances; H8 runtime behavior was not changed",
+  "mode": "h8-construction-only",
+  "forward_execution_attempted": false,
+  "passed": false,
+  "retry_allowed": false,
+  "attribution": "read-only /proc status inspection showed swapped pages in non-target idle supervisor Codex, Docker daemon, and shell/session processes; heterogeneous_construct reported VmSwap=0 at every captured point",
+  "attempts": [
+    {
+      "kind": "initial",
+      "stop_action": "SIGINT",
+      "target_process_vm_swap_bytes": 0,
+      "global_swap_baseline_bytes": 28672,
+      "global_swap_at_stop_bytes": 7438336,
+      "global_swap_growth_bytes": 7409664,
+      "global_swap_cached_at_stop_bytes": 270336,
+      "target_process_vm_rss_bytes": 24851816448,
+      "target_process_vm_hwm_bytes": 24887070720,
+      "cache_changed": false,
+      "construction_result_present": false
+    },
+    {
+      "kind": "single_authorized_retry",
+      "started_utc": "2026-08-16T14:21:50Z",
+      "idle_stability_window_seconds": 138,
+      "stop_action": "internal resource guard at GpuExperts",
+      "target_process_vm_swap_bytes": 0,
+      "global_swap_baseline_bytes": 17981440,
+      "global_swap_at_stop_bytes": 18685952,
+      "global_swap_growth_bytes": 704512,
+      "global_swap_cached_at_stop_bytes": 327680,
+      "target_process_vm_rss_bytes": 41542029312,
+      "target_process_vm_hwm_bytes": 41570041856,
+      "cache_changed": false,
+      "construction_result_present": false
+    }
+  ],
+  "cleanup": {
+    "process_running": false,
+    "gpu_used_mib": [9, 1],
+    "cache_bytes": 26508424,
+    "cache_owner_x8_files": 2,
+    "cache_partial_artifacts": 0,
+    "cache_symlinks": 0,
+    "new_120b_owner_records": 0,
+    "construction_result_present": false,
+    "protected_nvme_read_only": true,
+    "protected_nvme_mounted": false
+  },
+  "post_attempt_gates": {
+    "format_check": "passed",
+    "workspace_all_targets_check_locked": "passed",
+    "fault_feature_check_locked": "passed",
+    "quota_balance_property_test": "1 passed",
+    "plain_cuda_strict_clippy": "passed",
+    "fault_feature_strict_clippy": "passed",
+    "h8_rerun": "deliberately omitted"
+  },
+  "manifest": {
+    "path": "placement-120b-h8.json",
+    "file_sha256": "a8207ef391a6dd0b5372cabbc46f6dda6e4598c9c99a49e0607752277a30b363",
+    "policy_seed": 5207661144444121154,
+    "assignment_algorithm": "sha256-quota-balanced-per-layer-v1",
+    "assignment_count": 4608,
+    "unique_expert_keys": 4608,
+    "owner_order": ["cpu", "layer_owner_gpu", "remote_gpu"],
+    "exact_global_quotas": [1820, 1233, 1555],
+    "layers_with_all_three_owners": 36,
+    "per_layer_owner_minimums": [50, 34, 43],
+    "per_layer_owner_maximums": [51, 35, 44]
+  }
+}

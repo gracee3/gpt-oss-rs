@@ -1,0 +1,8633 @@
+{
+  "schema": "gpt-oss-rs.native-checkpoint-map/v1",
+  "native_tensor_count": 363,
+  "runtime_tensor_count": 459,
+  "mapping_count": 459,
+  "config_sha256": "317522155fc243327ee341857d0c752d0094a0817e0e9aee2890d5ad8e009e04",
+  "metadata_sha256": "709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+  "mappings": [
+    {
+      "native": "unembedding.weight",
+      "runtime": "lm_head.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        1158266880
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        201088,
+        2880
+      ],
+      "runtime_shape": [
+        201088,
+        2880
+      ],
+      "bytes": 1158266880
+    },
+    {
+      "native": "embedding.weight",
+      "runtime": "model.embed_tokens.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        1158266880
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        201088,
+        2880
+      ],
+      "runtime_shape": [
+        201088,
+        2880
+      ],
+      "bytes": 1158266880
+    },
+    {
+      "native": "block.0.attn.norm.scale",
+      "runtime": "model.layers.0.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.0.mlp.mlp2_bias",
+      "runtime": "model.layers.0.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.0.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.0.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.0.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.0.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.0.mlp.mlp1_bias",
+      "runtime": "model.layers.0.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.0.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.0.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.0.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.0.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.0.mlp.gate.bias",
+      "runtime": "model.layers.0.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.0.mlp.gate.weight",
+      "runtime": "model.layers.0.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.0.mlp.norm.scale",
+      "runtime": "model.layers.0.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.0.attn.qkv.bias",
+      "runtime": "model.layers.0.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.0.attn.qkv.weight",
+      "runtime": "model.layers.0.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.0.attn.out.bias",
+      "runtime": "model.layers.0.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.0.attn.out.weight",
+      "runtime": "model.layers.0.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.0.attn.qkv.bias",
+      "runtime": "model.layers.0.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.0.attn.qkv.weight",
+      "runtime": "model.layers.0.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.0.attn.sinks",
+      "runtime": "model.layers.0.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.0.attn.qkv.bias",
+      "runtime": "model.layers.0.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.0.attn.qkv.weight",
+      "runtime": "model.layers.0.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.1.attn.norm.scale",
+      "runtime": "model.layers.1.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.1.mlp.mlp2_bias",
+      "runtime": "model.layers.1.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.1.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.1.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.1.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.1.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.1.mlp.mlp1_bias",
+      "runtime": "model.layers.1.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.1.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.1.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.1.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.1.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.1.mlp.gate.bias",
+      "runtime": "model.layers.1.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.1.mlp.gate.weight",
+      "runtime": "model.layers.1.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.1.mlp.norm.scale",
+      "runtime": "model.layers.1.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.1.attn.qkv.bias",
+      "runtime": "model.layers.1.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.1.attn.qkv.weight",
+      "runtime": "model.layers.1.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.1.attn.out.bias",
+      "runtime": "model.layers.1.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.1.attn.out.weight",
+      "runtime": "model.layers.1.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.1.attn.qkv.bias",
+      "runtime": "model.layers.1.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.1.attn.qkv.weight",
+      "runtime": "model.layers.1.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.1.attn.sinks",
+      "runtime": "model.layers.1.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.1.attn.qkv.bias",
+      "runtime": "model.layers.1.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.1.attn.qkv.weight",
+      "runtime": "model.layers.1.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.10.attn.norm.scale",
+      "runtime": "model.layers.10.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.10.mlp.mlp2_bias",
+      "runtime": "model.layers.10.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.10.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.10.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.10.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.10.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.10.mlp.mlp1_bias",
+      "runtime": "model.layers.10.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.10.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.10.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.10.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.10.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.10.mlp.gate.bias",
+      "runtime": "model.layers.10.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.10.mlp.gate.weight",
+      "runtime": "model.layers.10.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.10.mlp.norm.scale",
+      "runtime": "model.layers.10.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.10.attn.qkv.bias",
+      "runtime": "model.layers.10.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.10.attn.qkv.weight",
+      "runtime": "model.layers.10.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.10.attn.out.bias",
+      "runtime": "model.layers.10.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.10.attn.out.weight",
+      "runtime": "model.layers.10.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.10.attn.qkv.bias",
+      "runtime": "model.layers.10.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.10.attn.qkv.weight",
+      "runtime": "model.layers.10.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.10.attn.sinks",
+      "runtime": "model.layers.10.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.10.attn.qkv.bias",
+      "runtime": "model.layers.10.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.10.attn.qkv.weight",
+      "runtime": "model.layers.10.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.11.attn.norm.scale",
+      "runtime": "model.layers.11.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.11.mlp.mlp2_bias",
+      "runtime": "model.layers.11.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.11.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.11.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.11.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.11.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.11.mlp.mlp1_bias",
+      "runtime": "model.layers.11.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.11.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.11.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.11.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.11.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.11.mlp.gate.bias",
+      "runtime": "model.layers.11.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.11.mlp.gate.weight",
+      "runtime": "model.layers.11.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.11.mlp.norm.scale",
+      "runtime": "model.layers.11.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.11.attn.qkv.bias",
+      "runtime": "model.layers.11.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.11.attn.qkv.weight",
+      "runtime": "model.layers.11.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.11.attn.out.bias",
+      "runtime": "model.layers.11.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.11.attn.out.weight",
+      "runtime": "model.layers.11.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.11.attn.qkv.bias",
+      "runtime": "model.layers.11.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.11.attn.qkv.weight",
+      "runtime": "model.layers.11.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.11.attn.sinks",
+      "runtime": "model.layers.11.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.11.attn.qkv.bias",
+      "runtime": "model.layers.11.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.11.attn.qkv.weight",
+      "runtime": "model.layers.11.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.12.attn.norm.scale",
+      "runtime": "model.layers.12.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.12.mlp.mlp2_bias",
+      "runtime": "model.layers.12.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.12.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.12.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.12.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.12.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.12.mlp.mlp1_bias",
+      "runtime": "model.layers.12.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.12.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.12.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.12.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.12.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.12.mlp.gate.bias",
+      "runtime": "model.layers.12.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.12.mlp.gate.weight",
+      "runtime": "model.layers.12.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.12.mlp.norm.scale",
+      "runtime": "model.layers.12.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.12.attn.qkv.bias",
+      "runtime": "model.layers.12.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.12.attn.qkv.weight",
+      "runtime": "model.layers.12.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.12.attn.out.bias",
+      "runtime": "model.layers.12.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.12.attn.out.weight",
+      "runtime": "model.layers.12.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.12.attn.qkv.bias",
+      "runtime": "model.layers.12.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.12.attn.qkv.weight",
+      "runtime": "model.layers.12.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.12.attn.sinks",
+      "runtime": "model.layers.12.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.12.attn.qkv.bias",
+      "runtime": "model.layers.12.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.12.attn.qkv.weight",
+      "runtime": "model.layers.12.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.13.attn.norm.scale",
+      "runtime": "model.layers.13.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.13.mlp.mlp2_bias",
+      "runtime": "model.layers.13.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.13.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.13.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.13.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.13.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.13.mlp.mlp1_bias",
+      "runtime": "model.layers.13.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.13.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.13.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.13.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.13.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.13.mlp.gate.bias",
+      "runtime": "model.layers.13.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.13.mlp.gate.weight",
+      "runtime": "model.layers.13.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.13.mlp.norm.scale",
+      "runtime": "model.layers.13.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.13.attn.qkv.bias",
+      "runtime": "model.layers.13.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.13.attn.qkv.weight",
+      "runtime": "model.layers.13.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.13.attn.out.bias",
+      "runtime": "model.layers.13.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.13.attn.out.weight",
+      "runtime": "model.layers.13.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.13.attn.qkv.bias",
+      "runtime": "model.layers.13.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.13.attn.qkv.weight",
+      "runtime": "model.layers.13.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.13.attn.sinks",
+      "runtime": "model.layers.13.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.13.attn.qkv.bias",
+      "runtime": "model.layers.13.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.13.attn.qkv.weight",
+      "runtime": "model.layers.13.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.14.attn.norm.scale",
+      "runtime": "model.layers.14.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.14.mlp.mlp2_bias",
+      "runtime": "model.layers.14.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.14.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.14.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.14.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.14.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.14.mlp.mlp1_bias",
+      "runtime": "model.layers.14.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.14.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.14.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.14.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.14.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.14.mlp.gate.bias",
+      "runtime": "model.layers.14.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.14.mlp.gate.weight",
+      "runtime": "model.layers.14.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.14.mlp.norm.scale",
+      "runtime": "model.layers.14.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.14.attn.qkv.bias",
+      "runtime": "model.layers.14.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.14.attn.qkv.weight",
+      "runtime": "model.layers.14.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.14.attn.out.bias",
+      "runtime": "model.layers.14.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.14.attn.out.weight",
+      "runtime": "model.layers.14.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.14.attn.qkv.bias",
+      "runtime": "model.layers.14.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.14.attn.qkv.weight",
+      "runtime": "model.layers.14.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.14.attn.sinks",
+      "runtime": "model.layers.14.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.14.attn.qkv.bias",
+      "runtime": "model.layers.14.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.14.attn.qkv.weight",
+      "runtime": "model.layers.14.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.15.attn.norm.scale",
+      "runtime": "model.layers.15.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.15.mlp.mlp2_bias",
+      "runtime": "model.layers.15.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.15.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.15.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.15.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.15.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.15.mlp.mlp1_bias",
+      "runtime": "model.layers.15.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.15.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.15.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.15.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.15.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.15.mlp.gate.bias",
+      "runtime": "model.layers.15.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.15.mlp.gate.weight",
+      "runtime": "model.layers.15.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.15.mlp.norm.scale",
+      "runtime": "model.layers.15.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.15.attn.qkv.bias",
+      "runtime": "model.layers.15.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.15.attn.qkv.weight",
+      "runtime": "model.layers.15.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.15.attn.out.bias",
+      "runtime": "model.layers.15.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.15.attn.out.weight",
+      "runtime": "model.layers.15.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.15.attn.qkv.bias",
+      "runtime": "model.layers.15.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.15.attn.qkv.weight",
+      "runtime": "model.layers.15.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.15.attn.sinks",
+      "runtime": "model.layers.15.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.15.attn.qkv.bias",
+      "runtime": "model.layers.15.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.15.attn.qkv.weight",
+      "runtime": "model.layers.15.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.16.attn.norm.scale",
+      "runtime": "model.layers.16.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.16.mlp.mlp2_bias",
+      "runtime": "model.layers.16.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.16.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.16.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.16.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.16.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.16.mlp.mlp1_bias",
+      "runtime": "model.layers.16.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.16.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.16.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.16.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.16.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.16.mlp.gate.bias",
+      "runtime": "model.layers.16.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.16.mlp.gate.weight",
+      "runtime": "model.layers.16.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.16.mlp.norm.scale",
+      "runtime": "model.layers.16.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.16.attn.qkv.bias",
+      "runtime": "model.layers.16.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.16.attn.qkv.weight",
+      "runtime": "model.layers.16.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.16.attn.out.bias",
+      "runtime": "model.layers.16.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.16.attn.out.weight",
+      "runtime": "model.layers.16.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.16.attn.qkv.bias",
+      "runtime": "model.layers.16.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.16.attn.qkv.weight",
+      "runtime": "model.layers.16.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.16.attn.sinks",
+      "runtime": "model.layers.16.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.16.attn.qkv.bias",
+      "runtime": "model.layers.16.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.16.attn.qkv.weight",
+      "runtime": "model.layers.16.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.17.attn.norm.scale",
+      "runtime": "model.layers.17.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.17.mlp.mlp2_bias",
+      "runtime": "model.layers.17.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.17.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.17.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.17.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.17.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.17.mlp.mlp1_bias",
+      "runtime": "model.layers.17.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.17.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.17.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.17.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.17.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.17.mlp.gate.bias",
+      "runtime": "model.layers.17.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.17.mlp.gate.weight",
+      "runtime": "model.layers.17.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.17.mlp.norm.scale",
+      "runtime": "model.layers.17.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.17.attn.qkv.bias",
+      "runtime": "model.layers.17.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.17.attn.qkv.weight",
+      "runtime": "model.layers.17.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.17.attn.out.bias",
+      "runtime": "model.layers.17.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.17.attn.out.weight",
+      "runtime": "model.layers.17.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.17.attn.qkv.bias",
+      "runtime": "model.layers.17.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.17.attn.qkv.weight",
+      "runtime": "model.layers.17.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.17.attn.sinks",
+      "runtime": "model.layers.17.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.17.attn.qkv.bias",
+      "runtime": "model.layers.17.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.17.attn.qkv.weight",
+      "runtime": "model.layers.17.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.18.attn.norm.scale",
+      "runtime": "model.layers.18.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.18.mlp.mlp2_bias",
+      "runtime": "model.layers.18.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.18.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.18.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.18.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.18.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.18.mlp.mlp1_bias",
+      "runtime": "model.layers.18.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.18.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.18.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.18.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.18.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.18.mlp.gate.bias",
+      "runtime": "model.layers.18.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.18.mlp.gate.weight",
+      "runtime": "model.layers.18.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.18.mlp.norm.scale",
+      "runtime": "model.layers.18.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.18.attn.qkv.bias",
+      "runtime": "model.layers.18.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.18.attn.qkv.weight",
+      "runtime": "model.layers.18.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.18.attn.out.bias",
+      "runtime": "model.layers.18.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.18.attn.out.weight",
+      "runtime": "model.layers.18.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.18.attn.qkv.bias",
+      "runtime": "model.layers.18.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.18.attn.qkv.weight",
+      "runtime": "model.layers.18.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.18.attn.sinks",
+      "runtime": "model.layers.18.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.18.attn.qkv.bias",
+      "runtime": "model.layers.18.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.18.attn.qkv.weight",
+      "runtime": "model.layers.18.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.19.attn.norm.scale",
+      "runtime": "model.layers.19.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.19.mlp.mlp2_bias",
+      "runtime": "model.layers.19.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.19.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.19.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.19.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.19.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.19.mlp.mlp1_bias",
+      "runtime": "model.layers.19.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.19.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.19.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.19.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.19.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.19.mlp.gate.bias",
+      "runtime": "model.layers.19.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.19.mlp.gate.weight",
+      "runtime": "model.layers.19.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.19.mlp.norm.scale",
+      "runtime": "model.layers.19.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.19.attn.qkv.bias",
+      "runtime": "model.layers.19.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.19.attn.qkv.weight",
+      "runtime": "model.layers.19.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.19.attn.out.bias",
+      "runtime": "model.layers.19.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.19.attn.out.weight",
+      "runtime": "model.layers.19.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.19.attn.qkv.bias",
+      "runtime": "model.layers.19.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.19.attn.qkv.weight",
+      "runtime": "model.layers.19.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.19.attn.sinks",
+      "runtime": "model.layers.19.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.19.attn.qkv.bias",
+      "runtime": "model.layers.19.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.19.attn.qkv.weight",
+      "runtime": "model.layers.19.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.2.attn.norm.scale",
+      "runtime": "model.layers.2.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.2.mlp.mlp2_bias",
+      "runtime": "model.layers.2.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.2.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.2.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.2.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.2.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.2.mlp.mlp1_bias",
+      "runtime": "model.layers.2.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.2.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.2.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.2.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.2.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.2.mlp.gate.bias",
+      "runtime": "model.layers.2.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.2.mlp.gate.weight",
+      "runtime": "model.layers.2.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.2.mlp.norm.scale",
+      "runtime": "model.layers.2.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.2.attn.qkv.bias",
+      "runtime": "model.layers.2.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.2.attn.qkv.weight",
+      "runtime": "model.layers.2.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.2.attn.out.bias",
+      "runtime": "model.layers.2.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.2.attn.out.weight",
+      "runtime": "model.layers.2.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.2.attn.qkv.bias",
+      "runtime": "model.layers.2.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.2.attn.qkv.weight",
+      "runtime": "model.layers.2.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.2.attn.sinks",
+      "runtime": "model.layers.2.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.2.attn.qkv.bias",
+      "runtime": "model.layers.2.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.2.attn.qkv.weight",
+      "runtime": "model.layers.2.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.20.attn.norm.scale",
+      "runtime": "model.layers.20.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.20.mlp.mlp2_bias",
+      "runtime": "model.layers.20.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.20.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.20.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.20.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.20.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.20.mlp.mlp1_bias",
+      "runtime": "model.layers.20.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.20.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.20.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.20.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.20.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.20.mlp.gate.bias",
+      "runtime": "model.layers.20.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.20.mlp.gate.weight",
+      "runtime": "model.layers.20.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.20.mlp.norm.scale",
+      "runtime": "model.layers.20.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.20.attn.qkv.bias",
+      "runtime": "model.layers.20.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.20.attn.qkv.weight",
+      "runtime": "model.layers.20.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.20.attn.out.bias",
+      "runtime": "model.layers.20.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.20.attn.out.weight",
+      "runtime": "model.layers.20.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.20.attn.qkv.bias",
+      "runtime": "model.layers.20.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.20.attn.qkv.weight",
+      "runtime": "model.layers.20.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.20.attn.sinks",
+      "runtime": "model.layers.20.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.20.attn.qkv.bias",
+      "runtime": "model.layers.20.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.20.attn.qkv.weight",
+      "runtime": "model.layers.20.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.21.attn.norm.scale",
+      "runtime": "model.layers.21.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.21.mlp.mlp2_bias",
+      "runtime": "model.layers.21.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.21.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.21.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.21.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.21.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.21.mlp.mlp1_bias",
+      "runtime": "model.layers.21.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.21.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.21.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.21.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.21.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.21.mlp.gate.bias",
+      "runtime": "model.layers.21.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.21.mlp.gate.weight",
+      "runtime": "model.layers.21.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.21.mlp.norm.scale",
+      "runtime": "model.layers.21.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.21.attn.qkv.bias",
+      "runtime": "model.layers.21.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.21.attn.qkv.weight",
+      "runtime": "model.layers.21.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.21.attn.out.bias",
+      "runtime": "model.layers.21.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.21.attn.out.weight",
+      "runtime": "model.layers.21.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.21.attn.qkv.bias",
+      "runtime": "model.layers.21.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.21.attn.qkv.weight",
+      "runtime": "model.layers.21.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.21.attn.sinks",
+      "runtime": "model.layers.21.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.21.attn.qkv.bias",
+      "runtime": "model.layers.21.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.21.attn.qkv.weight",
+      "runtime": "model.layers.21.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.22.attn.norm.scale",
+      "runtime": "model.layers.22.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.22.mlp.mlp2_bias",
+      "runtime": "model.layers.22.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.22.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.22.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.22.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.22.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.22.mlp.mlp1_bias",
+      "runtime": "model.layers.22.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.22.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.22.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.22.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.22.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.22.mlp.gate.bias",
+      "runtime": "model.layers.22.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.22.mlp.gate.weight",
+      "runtime": "model.layers.22.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.22.mlp.norm.scale",
+      "runtime": "model.layers.22.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.22.attn.qkv.bias",
+      "runtime": "model.layers.22.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.22.attn.qkv.weight",
+      "runtime": "model.layers.22.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.22.attn.out.bias",
+      "runtime": "model.layers.22.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.22.attn.out.weight",
+      "runtime": "model.layers.22.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.22.attn.qkv.bias",
+      "runtime": "model.layers.22.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.22.attn.qkv.weight",
+      "runtime": "model.layers.22.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.22.attn.sinks",
+      "runtime": "model.layers.22.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.22.attn.qkv.bias",
+      "runtime": "model.layers.22.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.22.attn.qkv.weight",
+      "runtime": "model.layers.22.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.23.attn.norm.scale",
+      "runtime": "model.layers.23.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.23.mlp.mlp2_bias",
+      "runtime": "model.layers.23.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.23.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.23.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.23.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.23.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.23.mlp.mlp1_bias",
+      "runtime": "model.layers.23.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.23.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.23.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.23.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.23.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.23.mlp.gate.bias",
+      "runtime": "model.layers.23.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.23.mlp.gate.weight",
+      "runtime": "model.layers.23.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.23.mlp.norm.scale",
+      "runtime": "model.layers.23.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.23.attn.qkv.bias",
+      "runtime": "model.layers.23.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.23.attn.qkv.weight",
+      "runtime": "model.layers.23.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.23.attn.out.bias",
+      "runtime": "model.layers.23.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.23.attn.out.weight",
+      "runtime": "model.layers.23.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.23.attn.qkv.bias",
+      "runtime": "model.layers.23.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.23.attn.qkv.weight",
+      "runtime": "model.layers.23.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.23.attn.sinks",
+      "runtime": "model.layers.23.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.23.attn.qkv.bias",
+      "runtime": "model.layers.23.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.23.attn.qkv.weight",
+      "runtime": "model.layers.23.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.3.attn.norm.scale",
+      "runtime": "model.layers.3.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.3.mlp.mlp2_bias",
+      "runtime": "model.layers.3.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.3.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.3.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.3.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.3.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.3.mlp.mlp1_bias",
+      "runtime": "model.layers.3.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.3.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.3.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.3.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.3.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.3.mlp.gate.bias",
+      "runtime": "model.layers.3.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.3.mlp.gate.weight",
+      "runtime": "model.layers.3.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.3.mlp.norm.scale",
+      "runtime": "model.layers.3.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.3.attn.qkv.bias",
+      "runtime": "model.layers.3.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.3.attn.qkv.weight",
+      "runtime": "model.layers.3.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.3.attn.out.bias",
+      "runtime": "model.layers.3.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.3.attn.out.weight",
+      "runtime": "model.layers.3.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.3.attn.qkv.bias",
+      "runtime": "model.layers.3.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.3.attn.qkv.weight",
+      "runtime": "model.layers.3.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.3.attn.sinks",
+      "runtime": "model.layers.3.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.3.attn.qkv.bias",
+      "runtime": "model.layers.3.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.3.attn.qkv.weight",
+      "runtime": "model.layers.3.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.4.attn.norm.scale",
+      "runtime": "model.layers.4.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.4.mlp.mlp2_bias",
+      "runtime": "model.layers.4.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.4.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.4.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.4.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.4.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.4.mlp.mlp1_bias",
+      "runtime": "model.layers.4.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.4.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.4.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.4.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.4.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.4.mlp.gate.bias",
+      "runtime": "model.layers.4.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.4.mlp.gate.weight",
+      "runtime": "model.layers.4.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.4.mlp.norm.scale",
+      "runtime": "model.layers.4.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.4.attn.qkv.bias",
+      "runtime": "model.layers.4.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.4.attn.qkv.weight",
+      "runtime": "model.layers.4.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.4.attn.out.bias",
+      "runtime": "model.layers.4.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.4.attn.out.weight",
+      "runtime": "model.layers.4.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.4.attn.qkv.bias",
+      "runtime": "model.layers.4.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.4.attn.qkv.weight",
+      "runtime": "model.layers.4.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.4.attn.sinks",
+      "runtime": "model.layers.4.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.4.attn.qkv.bias",
+      "runtime": "model.layers.4.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.4.attn.qkv.weight",
+      "runtime": "model.layers.4.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.5.attn.norm.scale",
+      "runtime": "model.layers.5.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.5.mlp.mlp2_bias",
+      "runtime": "model.layers.5.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.5.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.5.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.5.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.5.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.5.mlp.mlp1_bias",
+      "runtime": "model.layers.5.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.5.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.5.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.5.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.5.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.5.mlp.gate.bias",
+      "runtime": "model.layers.5.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.5.mlp.gate.weight",
+      "runtime": "model.layers.5.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.5.mlp.norm.scale",
+      "runtime": "model.layers.5.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.5.attn.qkv.bias",
+      "runtime": "model.layers.5.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.5.attn.qkv.weight",
+      "runtime": "model.layers.5.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.5.attn.out.bias",
+      "runtime": "model.layers.5.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.5.attn.out.weight",
+      "runtime": "model.layers.5.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.5.attn.qkv.bias",
+      "runtime": "model.layers.5.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.5.attn.qkv.weight",
+      "runtime": "model.layers.5.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.5.attn.sinks",
+      "runtime": "model.layers.5.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.5.attn.qkv.bias",
+      "runtime": "model.layers.5.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.5.attn.qkv.weight",
+      "runtime": "model.layers.5.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.6.attn.norm.scale",
+      "runtime": "model.layers.6.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.6.mlp.mlp2_bias",
+      "runtime": "model.layers.6.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.6.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.6.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.6.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.6.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.6.mlp.mlp1_bias",
+      "runtime": "model.layers.6.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.6.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.6.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.6.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.6.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.6.mlp.gate.bias",
+      "runtime": "model.layers.6.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.6.mlp.gate.weight",
+      "runtime": "model.layers.6.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.6.mlp.norm.scale",
+      "runtime": "model.layers.6.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.6.attn.qkv.bias",
+      "runtime": "model.layers.6.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.6.attn.qkv.weight",
+      "runtime": "model.layers.6.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.6.attn.out.bias",
+      "runtime": "model.layers.6.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.6.attn.out.weight",
+      "runtime": "model.layers.6.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.6.attn.qkv.bias",
+      "runtime": "model.layers.6.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.6.attn.qkv.weight",
+      "runtime": "model.layers.6.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.6.attn.sinks",
+      "runtime": "model.layers.6.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.6.attn.qkv.bias",
+      "runtime": "model.layers.6.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.6.attn.qkv.weight",
+      "runtime": "model.layers.6.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.7.attn.norm.scale",
+      "runtime": "model.layers.7.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.7.mlp.mlp2_bias",
+      "runtime": "model.layers.7.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.7.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.7.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.7.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.7.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.7.mlp.mlp1_bias",
+      "runtime": "model.layers.7.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.7.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.7.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.7.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.7.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.7.mlp.gate.bias",
+      "runtime": "model.layers.7.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.7.mlp.gate.weight",
+      "runtime": "model.layers.7.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.7.mlp.norm.scale",
+      "runtime": "model.layers.7.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.7.attn.qkv.bias",
+      "runtime": "model.layers.7.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.7.attn.qkv.weight",
+      "runtime": "model.layers.7.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.7.attn.out.bias",
+      "runtime": "model.layers.7.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.7.attn.out.weight",
+      "runtime": "model.layers.7.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.7.attn.qkv.bias",
+      "runtime": "model.layers.7.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.7.attn.qkv.weight",
+      "runtime": "model.layers.7.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.7.attn.sinks",
+      "runtime": "model.layers.7.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.7.attn.qkv.bias",
+      "runtime": "model.layers.7.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.7.attn.qkv.weight",
+      "runtime": "model.layers.7.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.8.attn.norm.scale",
+      "runtime": "model.layers.8.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.8.mlp.mlp2_bias",
+      "runtime": "model.layers.8.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.8.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.8.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.8.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.8.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.8.mlp.mlp1_bias",
+      "runtime": "model.layers.8.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.8.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.8.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.8.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.8.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.8.mlp.gate.bias",
+      "runtime": "model.layers.8.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.8.mlp.gate.weight",
+      "runtime": "model.layers.8.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.8.mlp.norm.scale",
+      "runtime": "model.layers.8.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.8.attn.qkv.bias",
+      "runtime": "model.layers.8.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.8.attn.qkv.weight",
+      "runtime": "model.layers.8.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.8.attn.out.bias",
+      "runtime": "model.layers.8.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.8.attn.out.weight",
+      "runtime": "model.layers.8.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.8.attn.qkv.bias",
+      "runtime": "model.layers.8.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.8.attn.qkv.weight",
+      "runtime": "model.layers.8.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.8.attn.sinks",
+      "runtime": "model.layers.8.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.8.attn.qkv.bias",
+      "runtime": "model.layers.8.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.8.attn.qkv.weight",
+      "runtime": "model.layers.8.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.9.attn.norm.scale",
+      "runtime": "model.layers.9.input_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.9.mlp.mlp2_bias",
+      "runtime": "model.layers.9.mlp.experts.down_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.9.mlp.mlp2_weight.blocks",
+      "runtime": "model.layers.9.mlp.experts.down_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        132710400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90,
+        16
+      ],
+      "bytes": 132710400
+    },
+    {
+      "native": "block.9.mlp.mlp2_weight.scales",
+      "runtime": "model.layers.9.mlp.experts.down_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8294400
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        2880,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        2880,
+        90
+      ],
+      "bytes": 8294400
+    },
+    {
+      "native": "block.9.mlp.mlp1_bias",
+      "runtime": "model.layers.9.mlp.experts.gate_up_proj_bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        368640
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        5760
+      ],
+      "runtime_shape": [
+        32,
+        5760
+      ],
+      "bytes": 368640
+    },
+    {
+      "native": "block.9.mlp.mlp1_weight.blocks",
+      "runtime": "model.layers.9.mlp.experts.gate_up_proj_blocks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        265420800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90,
+        16
+      ],
+      "bytes": 265420800
+    },
+    {
+      "native": "block.9.mlp.mlp1_weight.scales",
+      "runtime": "model.layers.9.mlp.experts.gate_up_proj_scales",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        16588800
+      ],
+      "dtype": "U8",
+      "native_shape": [
+        32,
+        5760,
+        90
+      ],
+      "runtime_shape": [
+        32,
+        5760,
+        90
+      ],
+      "bytes": 16588800
+    },
+    {
+      "native": "block.9.mlp.gate.bias",
+      "runtime": "model.layers.9.mlp.router.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        64
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32
+      ],
+      "runtime_shape": [
+        32
+      ],
+      "bytes": 64
+    },
+    {
+      "native": "block.9.mlp.gate.weight",
+      "runtime": "model.layers.9.mlp.router.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        184320
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        32,
+        2880
+      ],
+      "runtime_shape": [
+        32,
+        2880
+      ],
+      "bytes": 184320
+    },
+    {
+      "native": "block.9.mlp.norm.scale",
+      "runtime": "model.layers.9.post_attention_layernorm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.9.attn.qkv.bias",
+      "runtime": "model.layers.9.self_attn.k_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        8192,
+        9216
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.9.attn.qkv.weight",
+      "runtime": "model.layers.9.self_attn.k_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        23592960,
+        26542080
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "block.9.attn.out.bias",
+      "runtime": "model.layers.9.self_attn.o_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    },
+    {
+      "native": "block.9.attn.out.weight",
+      "runtime": "model.layers.9.self_attn.o_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880,
+        4096
+      ],
+      "runtime_shape": [
+        2880,
+        4096
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.9.attn.qkv.bias",
+      "runtime": "model.layers.9.self_attn.q_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        8192
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        4096
+      ],
+      "bytes": 8192
+    },
+    {
+      "native": "block.9.attn.qkv.weight",
+      "runtime": "model.layers.9.self_attn.q_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        23592960
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        4096,
+        2880
+      ],
+      "bytes": 23592960
+    },
+    {
+      "native": "block.9.attn.sinks",
+      "runtime": "model.layers.9.self_attn.sinks",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        128
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        64
+      ],
+      "runtime_shape": [
+        64
+      ],
+      "bytes": 128
+    },
+    {
+      "native": "block.9.attn.qkv.bias",
+      "runtime": "model.layers.9.self_attn.v_proj.bias",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        9216,
+        10240
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120
+      ],
+      "runtime_shape": [
+        512
+      ],
+      "bytes": 1024
+    },
+    {
+      "native": "block.9.attn.qkv.weight",
+      "runtime": "model.layers.9.self_attn.v_proj.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        26542080,
+        29491200
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        5120,
+        2880
+      ],
+      "runtime_shape": [
+        512,
+        2880
+      ],
+      "bytes": 2949120
+    },
+    {
+      "native": "norm.scale",
+      "runtime": "model.norm.weight",
+      "native_shard": "model.safetensors",
+      "native_slice": [
+        0,
+        5760
+      ],
+      "dtype": "BF16",
+      "native_shape": [
+        2880
+      ],
+      "runtime_shape": [
+        2880
+      ],
+      "bytes": 5760
+    }
+  ]
+}

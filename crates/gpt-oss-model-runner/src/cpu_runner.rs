@@ -496,6 +496,7 @@ pub struct CpuLayerTrace {
     pub attention_context: Vec<f32>,
     pub attention_projection: Vec<f32>,
     pub post_attention_residual: Vec<f32>,
+    pub router_input: Vec<f32>,
     pub router_logits: Vec<f32>,
     pub selected_experts: Vec<usize>,
     pub routing_weights: Vec<f32>,
@@ -659,6 +660,21 @@ pub struct CpuKvCache {
     start_position: usize,
 }
 
+/// Bounded, owned BF16 cache image for offline first-divergence controls.
+///
+/// This is not a serving serialization format. It exists so the heterogeneous
+/// one-layer oracle can compare GPU0 attention against the committed CPU
+/// authority without borrowing or mutating the live CPU sequence state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CpuKvCacheSnapshot {
+    pub start_position: usize,
+    pub len: usize,
+    pub token_width: usize,
+    pub capacity: usize,
+    pub keys_bf16_bits: Vec<u16>,
+    pub values_bf16_bits: Vec<u16>,
+}
+
 impl CpuKvCache {
     pub fn new(token_width: usize, capacity: usize) -> Self {
         Self {
@@ -685,6 +701,18 @@ impl CpuKvCache {
 
     pub const fn token_width(&self) -> usize {
         self.token_width
+    }
+
+    /// Copy only the currently visible cache rows for an offline oracle.
+    pub fn oracle_snapshot(&self) -> CpuKvCacheSnapshot {
+        CpuKvCacheSnapshot {
+            start_position: self.start_position,
+            len: self.len,
+            token_width: self.token_width,
+            capacity: self.capacity,
+            keys_bf16_bits: self.keys.iter().map(|value| value.to_bits()).collect(),
+            values_bf16_bits: self.values.iter().map(|value| value.to_bits()).collect(),
+        }
     }
 
     fn clear(&mut self) {
@@ -2560,6 +2588,7 @@ impl CpuModel {
                 attention_context: std::mem::take(&mut attention_contexts[row_index]),
                 attention_projection: std::mem::take(&mut projected[row_index]),
                 post_attention_residual: bf16_slice_to_f32(&after_attention[row_index]),
+                router_input: bf16_slice_to_f32(&post_attention_normalized[row_index]),
                 router_logits: moe[row_index].router_logits.clone(),
                 selected_experts: moe[row_index].selected_experts.clone(),
                 routing_weights: moe[row_index].routing_weights.clone(),
@@ -2666,6 +2695,7 @@ impl CpuModel {
             attention_context,
             attention_projection: projected,
             post_attention_residual: bf16_slice_to_f32(&after_attention),
+            router_input: bf16_slice_to_f32(&post_attention_normalized),
             router_logits: moe.router_logits,
             selected_experts: moe.selected_experts,
             routing_weights: moe.routing_weights,

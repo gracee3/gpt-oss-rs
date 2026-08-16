@@ -4,6 +4,10 @@
 //! crates (like gpt-oss-model-runner, which `#![forbid(unsafe_code)]`) can use
 //! GPU linear algebra without unsafe blocks.
 
+// These safe wrappers intentionally mirror the dimensional and buffer
+// arguments of the underlying BLAS operations.
+#![allow(clippy::too_many_arguments)]
+
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{CudaSlice, CudaStream};

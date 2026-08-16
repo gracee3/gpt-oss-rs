@@ -31,6 +31,8 @@ pub mod gpu_layer;
 #[cfg(feature = "cuda")]
 pub mod gpu_runner;
 
+pub mod heterogeneous;
+
 /// Type alias for cublasLt handle. Compiles to a usable type with the
 /// `cublaslt` feature, or a zero-size dummy without it. This lets
 /// function signatures reference it unconditionally.
@@ -54,10 +56,11 @@ pub use cpu_profile::{
 };
 pub use cpu_runner::{
     CpuDenseBoundaryProbe, CpuDenseBoundaryTrace, CpuDensePrefixAccumulator, CpuExecutionContext,
-    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuLayerTrace, CpuMappedFile,
-    CpuMemoryDescriptor, CpuModel, CpuModelRunner, CpuModelRunnerOptions, CpuPrefillTrace,
-    CpuSequenceModelState, CpuStateRevision, CpuStepBatch, CpuStepPhase, CpuStepRow, CpuTopLogit,
-    CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow, PreparedCpuStep,
+    CpuExpertProjection, CpuExpertTrace, CpuGptOssConfig, CpuKvCache, CpuKvCacheSnapshot,
+    CpuLayerTrace, CpuMappedFile, CpuMemoryDescriptor, CpuModel, CpuModelRunner,
+    CpuModelRunnerOptions, CpuPrefillTrace, CpuSequenceModelState, CpuStateRevision, CpuStepBatch,
+    CpuStepPhase, CpuStepRow, CpuTopLogit, CpuXeAttachmentMode, CpuXeConfig, PreparedCpuRow,
+    PreparedCpuStep,
 };
 pub use cpu_tensor_store::CpuTensorStore;
 pub use input::ModelInput;

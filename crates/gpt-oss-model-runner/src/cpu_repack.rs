@@ -4,8 +4,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
@@ -15,14 +16,28 @@ use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_cpu_kernels::{
     mxfp4_adjacent_to_split, Mxfp4Block, Mxfp4MatrixView, Mxfp4WeightLayout,
 };
+use half::bf16;
 
 use crate::cpu_tensor_store::{CpuTensor, CpuTensorStore};
+use crate::model_loader::gpt_oss_native::GptOssCheckpointView;
 
 const MAGIC: &[u8; 8] = b"GOSSMX4\0";
 pub const REPACK_FORMAT_VERSION: u32 = 1;
 const RECORD_BYTES: usize = 17;
 const REPACK_BATCH_RECORDS: usize = 64 * 1024;
 const LOCK_WAIT: Duration = Duration::from_secs(120);
+
+const OWNER_MAGIC: &[u8; 8] = b"GOSSHX8\0";
+pub const OWNER_REPACK_FORMAT_VERSION: u32 = 2;
+pub const OWNER_REPACK_TEMP_BYTES_MAX: usize = REPACK_BATCH_RECORDS * RECORD_BYTES;
+pub const OWNER_GATE_UP_X8_BYTES: usize = 5_760 * 90 * RECORD_BYTES;
+pub const OWNER_DOWN_X8_BYTES: usize = 2_880 * 90 * RECORD_BYTES;
+pub const OWNER_GATE_UP_BIAS_F32_BYTES: usize = 5_760 * size_of::<f32>();
+pub const OWNER_DOWN_BIAS_F32_BYTES: usize = 2_880 * size_of::<f32>();
+pub const OWNER_EXPERT_BYTES: usize = OWNER_GATE_UP_X8_BYTES
+    + OWNER_DOWN_X8_BYTES
+    + OWNER_GATE_UP_BIAS_F32_BYTES
+    + OWNER_DOWN_BIAS_F32_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceIdentity {
@@ -323,6 +338,495 @@ impl RepackedMxfp4 {
             .block(output, block)
             .map_err(|error| LLMError::ModelError(error.to_string()))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CpuOwnerLayerHeader {
+    format_version: u32,
+    layout_version: u32,
+    layout_identifier: String,
+    source_revision: String,
+    source_mapping_sha256: String,
+    placement_sha256: String,
+    layer: u16,
+    expert_ids: Vec<u16>,
+    bytes_per_expert: u64,
+    payload_bytes: u64,
+}
+
+/// Project-scoped, owner-filtered CPU x8 cache.
+///
+/// A file is keyed by the immutable source map, placement manifest, layer, and
+/// exact sorted CPU owner set. Published files are never edited in place.
+pub struct CpuOwnerRepackCache {
+    root: PathBuf,
+    source_revision: String,
+    source_mapping_sha256: String,
+    placement_sha256: String,
+    max_total_bytes: u64,
+}
+
+impl CpuOwnerRepackCache {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        source_revision: impl Into<String>,
+        source_mapping_sha256: impl Into<String>,
+        placement_sha256: impl Into<String>,
+        max_total_bytes: u64,
+    ) -> Result<Self> {
+        let cache = Self {
+            root: root.into(),
+            source_revision: source_revision.into(),
+            source_mapping_sha256: source_mapping_sha256.into(),
+            placement_sha256: placement_sha256.into(),
+            max_total_bytes,
+        };
+        for (label, value) in [
+            ("source mapping", cache.source_mapping_sha256.as_str()),
+            ("placement", cache.placement_sha256.as_str()),
+        ] {
+            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(LLMError::ModelError(format!(
+                    "owner x8 {label} identity is not a SHA-256"
+                )));
+            }
+        }
+        if cache.source_revision.trim().is_empty() {
+            return Err(LLMError::ModelError(
+                "owner x8 source revision is empty".into(),
+            ));
+        }
+        if cache.max_total_bytes == 0 {
+            return Err(LLMError::ModelError(
+                "owner x8 cache byte limit must be nonzero".into(),
+            ));
+        }
+        Ok(cache)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn open_or_create_layer(
+        &self,
+        checkpoint: &GptOssCheckpointView,
+        layer: u16,
+        expert_ids: &[u16],
+    ) -> Result<CpuOwnerLayerRecord> {
+        ensure_owner_cache_capacity(&self.root, 0, self.max_total_bytes)?;
+        if checkpoint.revision() != self.source_revision
+            || checkpoint.mapping_sha256() != self.source_mapping_sha256
+        {
+            return Err(LLMError::ModelError(
+                "owner x8 cache/checkpoint identity mismatch".into(),
+            ));
+        }
+        if usize::from(layer) >= checkpoint.config().num_hidden_layers {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 layer {layer} is outside checkpoint"
+            )));
+        }
+        let mut sorted = expert_ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted != expert_ids
+            || sorted
+                .iter()
+                .any(|expert| usize::from(*expert) >= checkpoint.config().num_experts)
+        {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 expert set for layer {layer} must be sorted, unique, and in range"
+            )));
+        }
+        let payload_bytes = OWNER_EXPERT_BYTES
+            .checked_mul(sorted.len())
+            .ok_or_else(|| {
+                LLMError::ModelError("owner x8 layer payload byte count overflows".into())
+            })?;
+        let header = CpuOwnerLayerHeader {
+            format_version: OWNER_REPACK_FORMAT_VERSION,
+            layout_version: Mxfp4WeightLayout::InterleavedSplitX8V2.identifier(),
+            layout_identifier: Mxfp4WeightLayout::InterleavedSplitX8V2.as_str().to_owned(),
+            source_revision: self.source_revision.clone(),
+            source_mapping_sha256: self.source_mapping_sha256.clone(),
+            placement_sha256: self.placement_sha256.clone(),
+            layer,
+            expert_ids: sorted,
+            bytes_per_expert: OWNER_EXPERT_BYTES as u64,
+            payload_bytes: payload_bytes as u64,
+        };
+        let header_identity = hash_serialized(&header)?;
+        let directory = self
+            .root
+            .join("owner-x8-v2")
+            .join(&self.source_mapping_sha256)
+            .join(&self.placement_sha256);
+        let target = directory.join(format!("layer-{layer:05}-{header_identity}.owner-x8"));
+        if let Ok(record) = CpuOwnerLayerRecord::open(&target, &header) {
+            return Ok(record);
+        }
+        if target.exists() {
+            return Err(LLMError::ModelError(format!(
+                "published owner x8 cache is invalid: {}",
+                target.display()
+            )));
+        }
+        std::fs::create_dir_all(&directory)?;
+        let lock_path = directory.join(format!("layer-{layer:05}-{header_identity}.lock"));
+        let _lock = acquire_owner_lock(&lock_path, &target, &header)?;
+        if let Ok(record) = CpuOwnerLayerRecord::open(&target, &header) {
+            return Ok(record);
+        }
+        if target.exists() {
+            return Err(LLMError::ModelError(format!(
+                "published owner x8 cache is invalid: {}",
+                target.display()
+            )));
+        }
+        let header_bytes = serde_json::to_vec(&header)
+            .map_err(|error| LLMError::ModelError(format!("serialize owner x8 header: {error}")))?;
+        let expected_file_bytes = align_up(
+            OWNER_MAGIC.len() + 8 + header_bytes.len(),
+            align_of::<f32>(),
+        )?
+        .checked_add(payload_bytes)
+        .ok_or_else(|| LLMError::ModelError("owner x8 file byte count overflows".into()))?
+            as u64;
+        // This check is deliberately after exclusive-lock acquisition and
+        // before temporary-file creation. It charges the exact aligned header
+        // plus payload against every regular file already in the project root.
+        ensure_owner_cache_capacity(&self.root, expected_file_bytes, self.max_total_bytes)?;
+        let temporary = directory.join(format!(
+            ".layer-{layer:05}-{header_identity}.{}.{}.tmp",
+            std::process::id(),
+            unique_temp_nonce()
+        ));
+        let write_result = write_owner_layer(&temporary, &header, checkpoint);
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&temporary, &target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        if let Err(error) = sync_directory(&directory) {
+            // The rename may already be durable. Keep a valid published target
+            // immutable, but ensure no task-owned partial artifact survives.
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        let published_bytes = cache_regular_file_bytes(&self.root)?;
+        if published_bytes > self.max_total_bytes {
+            return Err(LLMError::ModelError(format!(
+                "published owner x8 cache exceeds byte limit: {published_bytes} > {}",
+                self.max_total_bytes
+            )));
+        }
+        CpuOwnerLayerRecord::open(&target, &header)
+    }
+}
+
+fn acquire_owner_lock(
+    path: &Path,
+    target: &Path,
+    expected: &CpuOwnerLayerHeader,
+) -> Result<LockGuard> {
+    let started = Instant::now();
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                writeln!(file, "pid={}", std::process::id())?;
+                file.sync_all()?;
+                return Ok(LockGuard {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_owner_is_gone(path) {
+                    std::fs::remove_file(path)?;
+                    continue;
+                }
+                if CpuOwnerLayerRecord::open(target, expected).is_ok() {
+                    while path.exists() && started.elapsed() < LOCK_WAIT {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    continue;
+                }
+                if started.elapsed() >= LOCK_WAIT {
+                    return Err(LLMError::ModelError(format!(
+                        "timed out waiting for owner x8 lock {}",
+                        path.display()
+                    )));
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn cache_regular_file_bytes(path: &Path) -> Result<u64> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(LLMError::ModelError(format!(
+            "owner x8 cache contains a symlink: {}",
+            path.display()
+        )));
+    }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Err(LLMError::ModelError(format!(
+            "owner x8 cache contains a non-file entry: {}",
+            path.display()
+        )));
+    }
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(path)? {
+        total = total
+            .checked_add(cache_regular_file_bytes(&entry?.path())?)
+            .ok_or_else(|| LLMError::ModelError("owner x8 cache size overflows".into()))?;
+    }
+    Ok(total)
+}
+
+fn ensure_owner_cache_capacity(root: &Path, upcoming: u64, limit: u64) -> Result<u64> {
+    let existing = cache_regular_file_bytes(root)?;
+    let projected = existing.checked_add(upcoming).ok_or_else(|| {
+        LLMError::ModelError("owner x8 projected cache byte count overflows".into())
+    })?;
+    if projected > limit {
+        return Err(LLMError::ModelError(format!(
+            "owner x8 cache byte limit exceeded: existing={existing} next={upcoming} projected={projected} limit={limit}"
+        )));
+    }
+    Ok(projected)
+}
+
+fn unique_temp_nonce() -> u128 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Read-only complete layer record. Every returned expert borrows this mapping.
+pub struct CpuOwnerLayerRecord {
+    path: PathBuf,
+    mapping: Mmap,
+    data_start: usize,
+    header: CpuOwnerLayerHeader,
+}
+
+impl CpuOwnerLayerRecord {
+    fn open(path: &Path, expected: &CpuOwnerLayerHeader) -> Result<Self> {
+        let file = File::open(path)?;
+        // SAFETY: owner records are atomically published, immutable, and held
+        // mapped for the lifetime of every expert view.
+        let mapping = unsafe { MmapOptions::new().map(&file) }.map_err(|error| {
+            LLMError::ModelError(format!(
+                "failed to mmap owner x8 {}: {error}",
+                path.display()
+            ))
+        })?;
+        if mapping.len() < OWNER_MAGIC.len() + 8 || &mapping[..OWNER_MAGIC.len()] != OWNER_MAGIC {
+            return Err(LLMError::ModelError(format!(
+                "invalid owner x8 magic in {}",
+                path.display()
+            )));
+        }
+        let header_end = OWNER_MAGIC.len() + 8;
+        let header_len = u64::from_le_bytes(
+            mapping[OWNER_MAGIC.len()..header_end]
+                .try_into()
+                .map_err(|_| LLMError::ModelError("invalid owner x8 header length".into()))?,
+        ) as usize;
+        let json_end = header_end
+            .checked_add(header_len)
+            .ok_or_else(|| LLMError::ModelError("owner x8 header length overflows".into()))?;
+        let data_start = align_up(json_end, align_of::<f32>())?;
+        if data_start > mapping.len() {
+            return Err(LLMError::ModelError("truncated owner x8 header".into()));
+        }
+        let actual: CpuOwnerLayerHeader = serde_json::from_slice(&mapping[header_end..json_end])
+            .map_err(|error| LLMError::ModelError(format!("invalid owner x8 header: {error}")))?;
+        if &actual != expected {
+            return Err(LLMError::ModelError(format!(
+                "stale owner x8 metadata in {}",
+                path.display()
+            )));
+        }
+        let expected_len = data_start
+            .checked_add(actual.payload_bytes as usize)
+            .ok_or_else(|| LLMError::ModelError("owner x8 file length overflows".into()))?;
+        if mapping.len() != expected_len {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 {} has {} bytes, expected {expected_len}",
+                path.display(),
+                mapping.len()
+            )));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            mapping,
+            data_start,
+            header: actual,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn expert_ids(&self) -> &[u16] {
+        &self.header.expert_ids
+    }
+
+    pub const fn payload_bytes(&self) -> u64 {
+        self.header.payload_bytes
+    }
+
+    pub fn expert_view(&self, expert_id: u16) -> Result<CpuOwnerExpertView<'_>> {
+        let position = self
+            .header
+            .expert_ids
+            .binary_search(&expert_id)
+            .map_err(|_| {
+                LLMError::ModelError(format!(
+                    "expert {expert_id} is not in owner x8 layer {}",
+                    self.header.layer
+                ))
+            })?;
+        let start = self.data_start + position * OWNER_EXPERT_BYTES;
+        let gate_end = start + OWNER_GATE_UP_X8_BYTES;
+        let down_end = gate_end + OWNER_DOWN_X8_BYTES;
+        let gate_bias_end = down_end + OWNER_GATE_UP_BIAS_F32_BYTES;
+        let end = gate_bias_end + OWNER_DOWN_BIAS_F32_BYTES;
+        let gate_up = Mxfp4MatrixView::new(
+            &self.mapping[start..gate_end],
+            5_760,
+            90,
+            Mxfp4WeightLayout::InterleavedSplitX8V2,
+        )
+        .map_err(|error| LLMError::ModelError(error.to_string()))?;
+        let down = Mxfp4MatrixView::new(
+            &self.mapping[gate_end..down_end],
+            2_880,
+            90,
+            Mxfp4WeightLayout::InterleavedSplitX8V2,
+        )
+        .map_err(|error| LLMError::ModelError(error.to_string()))?;
+        let gate_up_bias = bytemuck::try_cast_slice(&self.mapping[down_end..gate_bias_end])
+            .map_err(|error| LLMError::ModelError(format!("owner gate/up bias: {error}")))?;
+        let down_bias = bytemuck::try_cast_slice(&self.mapping[gate_bias_end..end])
+            .map_err(|error| LLMError::ModelError(format!("owner down bias: {error}")))?;
+        Ok(CpuOwnerExpertView {
+            layer: self.header.layer,
+            expert_id,
+            gate_up,
+            down,
+            gate_up_bias,
+            down_bias,
+        })
+    }
+}
+
+pub struct CpuOwnerExpertView<'a> {
+    pub layer: u16,
+    pub expert_id: u16,
+    pub gate_up: Mxfp4MatrixView<'a>,
+    pub down: Mxfp4MatrixView<'a>,
+    pub gate_up_bias: &'a [f32],
+    pub down_bias: &'a [f32],
+}
+
+fn write_owner_layer(
+    path: &Path,
+    header: &CpuOwnerLayerHeader,
+    checkpoint: &GptOssCheckpointView,
+) -> Result<()> {
+    let header_bytes = serde_json::to_vec(header)
+        .map_err(|error| LLMError::ModelError(format!("serialize owner x8 header: {error}")))?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(OWNER_MAGIC)?;
+    file.write_all(&(header_bytes.len() as u64).to_le_bytes())?;
+    file.write_all(&header_bytes)?;
+    let json_end = OWNER_MAGIC.len() + 8 + header_bytes.len();
+    let data_start = align_up(json_end, align_of::<f32>())?;
+    file.write_all(&vec![0_u8; data_start - json_end])?;
+
+    for &expert in &header.expert_ids {
+        let prefix = format!("model.layers.{}.mlp.experts", header.layer);
+        let gate_blocks = checkpoint.tensor(&format!("{prefix}.gate_up_proj_blocks"))?;
+        let gate_scales = checkpoint.tensor(&format!("{prefix}.gate_up_proj_scales"))?;
+        let gate_bias = checkpoint.tensor(&format!("{prefix}.gate_up_proj_bias"))?;
+        let down_blocks = checkpoint.tensor(&format!("{prefix}.down_proj_blocks"))?;
+        let down_scales = checkpoint.tensor(&format!("{prefix}.down_proj_scales"))?;
+        let down_bias = checkpoint.tensor(&format!("{prefix}.down_proj_bias"))?;
+        write_x8_payload(
+            &mut file,
+            expert_slice(gate_blocks.bytes(), expert, 8_294_400)?,
+            expert_slice(gate_scales.bytes(), expert, 518_400)?,
+            [1, 5_760, 90],
+        )?;
+        write_x8_payload(
+            &mut file,
+            expert_slice(down_blocks.bytes(), expert, 4_147_200)?,
+            expert_slice(down_scales.bytes(), expert, 259_200)?,
+            [1, 2_880, 90],
+        )?;
+        write_bias_f32(&mut file, expert_slice(gate_bias.bytes(), expert, 11_520)?)?;
+        write_bias_f32(&mut file, expert_slice(down_bias.bytes(), expert, 5_760)?)?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn expert_slice(bytes: &[u8], expert: u16, stride: usize) -> Result<&[u8]> {
+    let start = usize::from(expert)
+        .checked_mul(stride)
+        .ok_or_else(|| LLMError::ModelError("owner expert slice overflows".into()))?;
+    let end = start
+        .checked_add(stride)
+        .ok_or_else(|| LLMError::ModelError("owner expert slice overflows".into()))?;
+    bytes
+        .get(start..end)
+        .ok_or_else(|| LLMError::ModelError("owner expert slice exceeds source tensor".into()))
+}
+
+fn write_bias_f32(file: &mut File, bf16_bytes: &[u8]) -> Result<()> {
+    let values: &[u16] = bytemuck::try_cast_slice(bf16_bytes)
+        .map_err(|error| LLMError::ModelError(format!("owner BF16 bias: {error}")))?;
+    let mut output = Vec::with_capacity(values.len() * size_of::<f32>());
+    for bits in values {
+        output.extend_from_slice(&bf16::from_bits(*bits).to_f32().to_le_bytes());
+    }
+    file.write_all(&output)?;
+    Ok(())
+}
+
+fn align_up(value: usize, alignment: usize) -> Result<usize> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+        .ok_or_else(|| LLMError::ModelError("owner x8 alignment overflows".into()))
+}
+
+fn hash_serialized(value: &impl Serialize) -> Result<String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| LLMError::ModelError(format!("serialize owner x8 identity: {error}")))?;
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn expected_layout(header: &RepackHeader) -> Result<Mxfp4WeightLayout> {
@@ -677,6 +1181,27 @@ mod tests {
             records: 2,
         };
         assert!(RepackedMxfp4::open(repacked.path(), &stale).is_err());
+    }
+
+    #[test]
+    fn owner_cache_capacity_charges_existing_plus_exact_upcoming_bytes() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("existing.owner-x8"), [0_u8; 10]).unwrap();
+        assert_eq!(ensure_owner_cache_capacity(temp.path(), 5, 15).unwrap(), 15);
+        let error = ensure_owner_cache_capacity(temp.path(), 6, 15)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("existing=10 next=6 projected=16 limit=15"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_cache_size_walk_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        symlink(temp.path().join("missing"), temp.path().join("escape")).unwrap();
+        assert!(cache_regular_file_bytes(temp.path()).is_err());
     }
 
     #[test]

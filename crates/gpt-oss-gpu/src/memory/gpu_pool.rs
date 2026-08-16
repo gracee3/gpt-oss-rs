@@ -159,7 +159,7 @@ impl MemoryPool for GpuMemoryPool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mock-gpu", not(feature = "cuda")))]
 mod tests {
     use super::*;
     use gpt_oss_gpu::prelude::MockGpuAllocator;

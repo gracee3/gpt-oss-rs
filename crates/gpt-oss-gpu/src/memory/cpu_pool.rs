@@ -115,23 +115,21 @@ impl MemoryPool for CpuMemoryPool {
     }
 
     fn swap_out(&self, blocks: &[PhysicalBlock]) -> Result<Vec<CpuBlock>> {
-        let inner = self.inner.lock();
+        let _inner = self.inner.lock();
         let cpu_blocks: Vec<CpuBlock> = blocks
             .iter()
             .enumerate()
             .map(|(i, b)| CpuBlock::new(BlockId(i as u32), b.size_bytes()))
             .collect();
-        let _ = &inner; // hold lock during "transfer"
         Ok(cpu_blocks)
     }
 
     fn swap_in(&self, blocks: &[CpuBlock]) -> Result<Vec<PhysicalBlock>> {
-        let inner = self.inner.lock();
+        let _inner = self.inner.lock();
         let gpu_blocks: Vec<PhysicalBlock> = blocks
             .iter()
             .map(|b| PhysicalBlock::new(b.block_id(), b.size_bytes()))
             .collect();
-        let _ = &inner;
         Ok(gpu_blocks)
     }
 }

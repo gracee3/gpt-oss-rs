@@ -1,5 +1,7 @@
 # Documentation
 
+- [`het/`](het/README.md): active heterogeneous GPT-OSS pre-research baseline,
+  runtime map, host/model evidence, readiness matrix, and research backlog.
 - [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
 - [Bounded CPU execution profiling](CPU_EXECUTION_PROFILING.md)
 - [Tiger Lake MXFP4 matrix candidate](TIGER_LAKE_MXFP4_MATRIX.md)

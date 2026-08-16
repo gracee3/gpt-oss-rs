@@ -19,6 +19,14 @@ unsafe fn extract_cu_function(func: &CudaFunction) -> cudarc::driver::sys::CUfun
 
 use crate::Result;
 
+/// Directory containing PTX compiled for this crate invocation.
+///
+/// Downstream CUDA components use this instead of guessing a target-directory
+/// layout. The value is fixed by this crate's build script.
+pub fn compiled_ptx_dir() -> &'static Path {
+    Path::new(env!("GPT_OSS_RS_PTX_DIR"))
+}
+
 /// Known kernel -> function-name mappings for the gpt-oss-rs kernel set.
 /// These are the `extern "C" __global__` entry points in each .cu file.
 static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
@@ -120,6 +128,36 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
             "gpt_oss_select_expert_inputs_kernel",
             "gpt_oss_dequant_expert_f16_kernel",
             "gpt_oss_weighted_add_kernel",
+        ],
+    ),
+    (
+        "gpt_oss_selected_expert",
+        &[
+            "gpt_oss_selected_mxfp4_bf16_gemv_kernel",
+            "gpt_oss_selected_swiglu_bf16_kernel",
+        ],
+    ),
+    (
+        "gpt_oss_router",
+        &[
+            "gpt_oss_router_bf16_projection_kernel",
+            "gpt_oss_router_stable_top4_kernel",
+        ],
+    ),
+    (
+        "gpt_oss_rank_reduction",
+        &["gpt_oss_rank_order_reduce_bf16_kernel"],
+    ),
+    (
+        "gpt_oss_layer_owner",
+        &[
+            "gpt_oss_layer_embedding_kernel",
+            "gpt_oss_layer_rms_norm_kernel",
+            "gpt_oss_layer_bf16_projection_kernel",
+            "gpt_oss_layer_rope_kernel",
+            "gpt_oss_layer_append_kv_kernel",
+            "gpt_oss_layer_attention_kernel",
+            "gpt_oss_layer_residual_kernel",
         ],
     ),
 ];

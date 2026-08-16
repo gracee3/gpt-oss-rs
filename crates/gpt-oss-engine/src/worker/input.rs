@@ -4,6 +4,8 @@ use gpt_oss_core::prelude::{Result, TokenId};
 use gpt_oss_model_runner::bridge::AttentionMetadata;
 use gpt_oss_model_runner::input::ModelInput;
 
+use crate::heterogeneous_engine::ProvisionalKvView;
+
 pub use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 
 /// Prepare batched model input from a list of sequence group metadata.
@@ -43,6 +45,74 @@ pub fn prepare_input(metadata: &[SequenceGroupMetadata], block_size: usize) -> R
         // Both empty is unreachable since metadata is non-empty, but handle gracefully.
         (true, true) => unreachable!(),
     }
+}
+
+/// Build the decode-M=1 metadata visible only to one prepared heterogeneous
+/// transaction. This is the H5 replacement seam for deriving attention input
+/// from a globally published block table before launch.
+///
+/// The caller constructs this owned image before dispatch. Existing committed
+/// readers still use `prepare_input`; only the prepared owner shell receives
+/// this private table/length/append-slot image.
+pub fn prepare_private_decode_input(
+    token_id: TokenId,
+    view: &ProvisionalKvView<'_>,
+    block_size: usize,
+) -> Result<ModelInput> {
+    if view.transaction_generation == 0
+        || block_size == 0
+        || view.private_length == 0
+        || view.append_slot_mapping.len() != 1
+    {
+        return Err(gpt_oss_core::prelude::LLMError::ModelError(
+            "private decode metadata requires a nonzero generation, length, block size, and one append slot"
+                .into(),
+        ));
+    }
+    let block_size_u32 = u32::try_from(block_size).map_err(|_| {
+        gpt_oss_core::prelude::LLMError::ModelError("private decode block size exceeds u32".into())
+    })?;
+    let expected_blocks = (view.private_length as usize).div_ceil(block_size);
+    if view.private_block_table.len() != expected_blocks {
+        return Err(gpt_oss_core::prelude::LLMError::ModelError(format!(
+            "private decode block table has {} blocks, expected {expected_blocks}",
+            view.private_block_table.len()
+        )));
+    }
+    let position = view.private_length - 1;
+    let logical_block = position as usize / block_size;
+    let offset = position as usize % block_size;
+    let expected_slot = view.private_block_table[logical_block]
+        .block_id
+        .checked_mul(block_size_u32)
+        .and_then(|base| base.checked_add(offset as u32))
+        .ok_or_else(|| {
+            gpt_oss_core::prelude::LLMError::ModelError(
+                "private decode physical slot overflows u32".into(),
+            )
+        })?;
+    if view.append_slot_mapping[0] != expected_slot {
+        return Err(gpt_oss_core::prelude::LLMError::ModelError(format!(
+            "private decode append slot {} != expected {expected_slot}",
+            view.append_slot_mapping[0]
+        )));
+    }
+    Ok(ModelInput {
+        token_ids: vec![token_id],
+        position_ids: vec![position],
+        attention_metadata: AttentionMetadata {
+            slot_mapping: vec![expected_slot],
+            query_lens: vec![1],
+            context_lens: vec![view.private_length],
+            block_tables: vec![view
+                .private_block_table
+                .iter()
+                .map(|block| block.block_id)
+                .collect()],
+            max_context_len: view.private_length,
+        },
+        is_prefill: false,
+    })
 }
 
 /// Prepare input for the prefill (prompt processing) phase.
@@ -450,6 +520,27 @@ mod tests {
     use gpt_oss_core::prelude::{BlockId, SamplingParams, SequenceId};
 
     const TEST_BLOCK_SIZE: usize = 16;
+
+    #[test]
+    fn heterogeneous_private_decode_adapter_does_not_publish_provisional_metadata() {
+        let mut coordinator =
+            crate::heterogeneous_engine::HeterogeneousTransactionCoordinator::new(4, 8, false)
+                .unwrap();
+        coordinator
+            .register_sequence(9, 3, 17, vec![10, 20, 30])
+            .unwrap();
+        let committed_before = coordinator.committed_view(9).unwrap().clone();
+        let step = coordinator.reserve_step(9, 1, 17).unwrap();
+        let private = coordinator.private_kv_view(step).unwrap();
+        let input = prepare_private_decode_input(30, &private, 4).unwrap();
+        assert_eq!(private.transaction_generation, step);
+        assert_eq!(input.position_ids, [3]);
+        assert_eq!(input.attention_metadata.context_lens, [4]);
+        assert_eq!(input.attention_metadata.slot_mapping, [3]);
+        assert_eq!(input.attention_metadata.block_tables, vec![vec![0]]);
+        assert_eq!(coordinator.committed_view(9).unwrap(), &committed_before);
+        coordinator.cancel_step(step).unwrap().unwrap();
+    }
 
     fn make_seq_data(prompt: Vec<TokenId>, output: Vec<TokenId>) -> SequenceData {
         SequenceData {

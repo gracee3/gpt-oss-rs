@@ -1,0 +1,64 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h4-native-router/v1",
+  "captured_unix_seconds": 1786863849,
+  "repository_head": "fa7750fc28e2db18ea48ec7f9f1cfa62de4afa21",
+  "source_fingerprint_sha256": "a3bc9b8221da7c1c6dc57b9ac51222a2cc1041f8fd27e59ec29e902832c8e563",
+  "executable_sha256": "d3d4915aa11f440f54abba2d4fff6da03b72ba8021730f1e09c4af3777510fc7",
+  "router_ptx_sha256": "4dbd720e19616db6968bc9fec84b353bca0c8cdbe2a0ed56bb6f5458de3fd26b",
+  "cargo_profile": "release",
+  "cuda_arch": "sm_86",
+  "layer_owner_pci_bus_id": "0000:19:00.0",
+  "cases": [
+    {
+      "experts": 32,
+      "revision": "metadata:709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+      "mapping_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+      "router_weight_sha256": "eb3b90e7eaa1ba607de621b305ef90f86d263fc21071e6bf348f684301558ad5",
+      "router_bias_sha256": "56c76732af8493288d949d4e82c8ff956b5c7c8ca791abe7e1a9aba68108f4ed",
+      "input_sha256": "59871f9264334a83feede61ca4b486536bc64c3ab1a06f02b74c32947bceaccc",
+      "logits_sha256": "0116d999ac81cf327e92206225d69f3a561ecc02e9576dfdfc7013479c946b19",
+      "selected_ids": [
+        29,
+        31,
+        15,
+        0
+      ],
+      "selected_weights_bf16_bits": [
+        16020,
+        16000,
+        15986,
+        15974
+      ],
+      "source_d2h_bytes": 5760,
+      "descriptor_d2h_bytes": 64,
+      "fixed_pinned_bytes": 74944,
+      "router_elapsed_ms": 0.912384
+    },
+    {
+      "experts": 128,
+      "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+      "mapping_sha256": "6cf738409706faee51bbf7b77383e23393df6ff454fc1e906a234016ab29413c",
+      "router_weight_sha256": "55df404fa299c6f220322f4b89fbede72b9f00aab4300957353de74989631ae3",
+      "router_bias_sha256": "612c4cfac89b7d93790361921841aaeffc071f3ba1dc3f6bf64e708eeacc0c44",
+      "input_sha256": "b6977e190f6b10f9f0a8c427a68a2582237ee351b68b6b4df3ef635505347616",
+      "logits_sha256": "a6b8937b6cbf4181b483ca6a80fc9848e8c9368bf2a6515bc94a215fdabb9330",
+      "selected_ids": [
+        74,
+        73,
+        72,
+        87
+      ],
+      "selected_weights_bf16_bits": [
+        16052,
+        15977,
+        15968,
+        15951
+      ],
+      "source_d2h_bytes": 5760,
+      "descriptor_d2h_bytes": 64,
+      "fixed_pinned_bytes": 74944,
+      "router_elapsed_ms": 0.886784
+    }
+  ],
+  "passed": true
+}

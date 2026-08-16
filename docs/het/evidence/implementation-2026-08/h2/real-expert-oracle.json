@@ -1,0 +1,251 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-expert-oracle/v1",
+  "model_config_sha256": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+  "model_index_sha256": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+  "retained_trace_sha256": "1be8a61eeeec92e7af980a6f190788f0829048015c5f54fe7fa6ce334618db39",
+  "executable_sha256": "8f8ee94beddc77a626cd698f2b1ec0da5ab995c40c3372a54242676e511c80ef",
+  "ptx_sha256": "8bef561a19a8f8924c6d8d9799724007a27a554c5a0bfc73f8c9d61e45ca4e37",
+  "payload_bytes": 13236480,
+  "logical_input_bytes": 5760,
+  "logical_scratch_bytes": 17280,
+  "logical_output_bytes": 5760,
+  "logical_trace_bytes": 23040,
+  "logical_device_work_bytes": 51840,
+  "workspace_pool_class_bytes": 65536,
+  "observed_allocator_reservation_high_water_bytes": 33554432,
+  "routes": [
+    {
+      "device_pci_bus_id": "0000:19:00.0",
+      "runtime_ordinal": 0,
+      "route_rank": 0,
+      "expert_index": 31,
+      "expert_identity_sha256": "bb0fadb6de266c827afcbde5ec1d71ae15547b49531100c0f4eca351841a72e5",
+      "gate_up_sha256": "1a0f61e13479f07cbefa20593c5670e973bb7bcc783efa4d35cc54e5b52e1861",
+      "scaled_gate_sha256": "b18affdff42dd0cd500acf2e15a640e538e9cb457316f1aceecdf059b2f034b4",
+      "sigmoid_sha256": "8fdb1d73d5d357b8aa68c87cd5c6c2a87626e993a1a350eeebaa36d4c055e58a",
+      "glu_sha256": "c14059f6a13d7f475973e5e19d6371a22a06f7d6313a3b8c0e90cbe21d34cf70",
+      "linear_sha256": "ff17ee6f8c9f4472b5531563640a3652656f9bc475a6747e044dfbda56e26c35",
+      "swiglu_sha256": "101f3381c5acc9fa668b796c0462502f604016ce881701d5728fb18135454720",
+      "down_sha256": "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a",
+      "repeated_output_sha256": [
+        "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a",
+        "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a"
+      ],
+      "kernel_elapsed_ms": [
+        4.034528,
+        3.992576
+      ],
+      "free_bytes_before_executor": 25005785088,
+      "free_bytes_after_executor": 24972230656,
+      "free_bytes_after_result_slot": 24972230656,
+      "free_bytes_after_upload": 24972230656,
+      "free_bytes_after_first_execution": 24972230656,
+      "free_bytes_after_repeats": 24972230656,
+      "free_bytes_after_teardown": 25005785088
+    },
+    {
+      "device_pci_bus_id": "0000:65:00.0",
+      "runtime_ordinal": 1,
+      "route_rank": 0,
+      "expert_index": 31,
+      "expert_identity_sha256": "bb0fadb6de266c827afcbde5ec1d71ae15547b49531100c0f4eca351841a72e5",
+      "gate_up_sha256": "1a0f61e13479f07cbefa20593c5670e973bb7bcc783efa4d35cc54e5b52e1861",
+      "scaled_gate_sha256": "b18affdff42dd0cd500acf2e15a640e538e9cb457316f1aceecdf059b2f034b4",
+      "sigmoid_sha256": "8fdb1d73d5d357b8aa68c87cd5c6c2a87626e993a1a350eeebaa36d4c055e58a",
+      "glu_sha256": "c14059f6a13d7f475973e5e19d6371a22a06f7d6313a3b8c0e90cbe21d34cf70",
+      "linear_sha256": "ff17ee6f8c9f4472b5531563640a3652656f9bc475a6747e044dfbda56e26c35",
+      "swiglu_sha256": "101f3381c5acc9fa668b796c0462502f604016ce881701d5728fb18135454720",
+      "down_sha256": "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a",
+      "repeated_output_sha256": [
+        "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a",
+        "cc5f35c877a1051ce03fa4f0d05c8a7c3b6abc094fdb69f2d2a66a03c1f8e43a"
+      ],
+      "kernel_elapsed_ms": [
+        3.917824,
+        3.909632
+      ],
+      "free_bytes_before_executor": 25017319424,
+      "free_bytes_after_executor": 24983764992,
+      "free_bytes_after_result_slot": 24983764992,
+      "free_bytes_after_upload": 24983764992,
+      "free_bytes_after_first_execution": 24983764992,
+      "free_bytes_after_repeats": 24983764992,
+      "free_bytes_after_teardown": 25017319424
+    },
+    {
+      "device_pci_bus_id": "0000:19:00.0",
+      "runtime_ordinal": 0,
+      "route_rank": 1,
+      "expert_index": 21,
+      "expert_identity_sha256": "91e03b870089a620b99776382d729a20e9316053ac53e0fbf4ad7f5dc7b69aa6",
+      "gate_up_sha256": "8e3555af277ceea5da446af99348c83a3b9a173b880112346dd200432f2757b4",
+      "scaled_gate_sha256": "9bba8324f21d196e83a8715fba72f27af452ad34d8290a487cc619e691ebb4f8",
+      "sigmoid_sha256": "bf2b441396d1aa97a1a30c5b1bc814119ba0d38dad1266cdf242a47b5403b9b2",
+      "glu_sha256": "722fcf2e1d715c59a3ee96f18bd59d8d4b38319f0b48fc52c47c791306e5cc49",
+      "linear_sha256": "ed8a8aa2a8dc84178dd13ca56ba9d82bfc70a4bcdc679c801b5f8cf48e92f144",
+      "swiglu_sha256": "319ada77168286a6e1778ca8688c9eadb921f3c7cad7479abaacc31bcd039ff1",
+      "down_sha256": "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a",
+      "repeated_output_sha256": [
+        "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a",
+        "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a"
+      ],
+      "kernel_elapsed_ms": [
+        3.936256,
+        3.924992
+      ],
+      "free_bytes_before_executor": 25005785088,
+      "free_bytes_after_executor": 24972230656,
+      "free_bytes_after_result_slot": 24972230656,
+      "free_bytes_after_upload": 24972230656,
+      "free_bytes_after_first_execution": 24972230656,
+      "free_bytes_after_repeats": 24972230656,
+      "free_bytes_after_teardown": 25005785088
+    },
+    {
+      "device_pci_bus_id": "0000:65:00.0",
+      "runtime_ordinal": 1,
+      "route_rank": 1,
+      "expert_index": 21,
+      "expert_identity_sha256": "91e03b870089a620b99776382d729a20e9316053ac53e0fbf4ad7f5dc7b69aa6",
+      "gate_up_sha256": "8e3555af277ceea5da446af99348c83a3b9a173b880112346dd200432f2757b4",
+      "scaled_gate_sha256": "9bba8324f21d196e83a8715fba72f27af452ad34d8290a487cc619e691ebb4f8",
+      "sigmoid_sha256": "bf2b441396d1aa97a1a30c5b1bc814119ba0d38dad1266cdf242a47b5403b9b2",
+      "glu_sha256": "722fcf2e1d715c59a3ee96f18bd59d8d4b38319f0b48fc52c47c791306e5cc49",
+      "linear_sha256": "ed8a8aa2a8dc84178dd13ca56ba9d82bfc70a4bcdc679c801b5f8cf48e92f144",
+      "swiglu_sha256": "319ada77168286a6e1778ca8688c9eadb921f3c7cad7479abaacc31bcd039ff1",
+      "down_sha256": "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a",
+      "repeated_output_sha256": [
+        "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a",
+        "468195718315cc17f3b300f5966602563b60ce38c320487e0939e2f8cbb7b95a"
+      ],
+      "kernel_elapsed_ms": [
+        4.521984,
+        4.509696
+      ],
+      "free_bytes_before_executor": 25017319424,
+      "free_bytes_after_executor": 24983764992,
+      "free_bytes_after_result_slot": 24983764992,
+      "free_bytes_after_upload": 24983764992,
+      "free_bytes_after_first_execution": 24983764992,
+      "free_bytes_after_repeats": 24983764992,
+      "free_bytes_after_teardown": 25017319424
+    },
+    {
+      "device_pci_bus_id": "0000:19:00.0",
+      "runtime_ordinal": 0,
+      "route_rank": 2,
+      "expert_index": 22,
+      "expert_identity_sha256": "abd3e917bdd3cd320e6575f81439e42db5840c379bc751d6edcd7e674edb1f4a",
+      "gate_up_sha256": "975c1aa1d2607cc8cfc02966bffcd0d8868147caee56a55dd10ea31e6227afa6",
+      "scaled_gate_sha256": "e1f34b0965184ef93ffb5eff2264ee7269147e10def532033d33db2980d11594",
+      "sigmoid_sha256": "04e2a32cba0ece77f38c354adbf6228b1b0746a27d0cefcaf27bfaf283050d29",
+      "glu_sha256": "904eb05b85bbfb86a48c68523478a363ee44b7c9fa8ff0036e4ed70ed476ca2b",
+      "linear_sha256": "81b3b26dd14fc8a5a6c3faf5eced240fc88a77c7599268e57cee7641c28cc036",
+      "swiglu_sha256": "735dfa3059c787ee63b481665f64082bf62e2198dda4dbf4e05ad5c2f95a8d95",
+      "down_sha256": "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2",
+      "repeated_output_sha256": [
+        "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2",
+        "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2"
+      ],
+      "kernel_elapsed_ms": [
+        3.908544,
+        3.897344
+      ],
+      "free_bytes_before_executor": 25005785088,
+      "free_bytes_after_executor": 24972230656,
+      "free_bytes_after_result_slot": 24972230656,
+      "free_bytes_after_upload": 24972230656,
+      "free_bytes_after_first_execution": 24972230656,
+      "free_bytes_after_repeats": 24972230656,
+      "free_bytes_after_teardown": 25005785088
+    },
+    {
+      "device_pci_bus_id": "0000:65:00.0",
+      "runtime_ordinal": 1,
+      "route_rank": 2,
+      "expert_index": 22,
+      "expert_identity_sha256": "abd3e917bdd3cd320e6575f81439e42db5840c379bc751d6edcd7e674edb1f4a",
+      "gate_up_sha256": "975c1aa1d2607cc8cfc02966bffcd0d8868147caee56a55dd10ea31e6227afa6",
+      "scaled_gate_sha256": "e1f34b0965184ef93ffb5eff2264ee7269147e10def532033d33db2980d11594",
+      "sigmoid_sha256": "04e2a32cba0ece77f38c354adbf6228b1b0746a27d0cefcaf27bfaf283050d29",
+      "glu_sha256": "904eb05b85bbfb86a48c68523478a363ee44b7c9fa8ff0036e4ed70ed476ca2b",
+      "linear_sha256": "81b3b26dd14fc8a5a6c3faf5eced240fc88a77c7599268e57cee7641c28cc036",
+      "swiglu_sha256": "735dfa3059c787ee63b481665f64082bf62e2198dda4dbf4e05ad5c2f95a8d95",
+      "down_sha256": "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2",
+      "repeated_output_sha256": [
+        "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2",
+        "81c13ce215fcda447e4047ed7161a8390ec14bdbea959c8bfdafa8c13654b0e2"
+      ],
+      "kernel_elapsed_ms": [
+        3.936,
+        3.928064
+      ],
+      "free_bytes_before_executor": 25017319424,
+      "free_bytes_after_executor": 24983764992,
+      "free_bytes_after_result_slot": 24983764992,
+      "free_bytes_after_upload": 24983764992,
+      "free_bytes_after_first_execution": 24983764992,
+      "free_bytes_after_repeats": 24983764992,
+      "free_bytes_after_teardown": 25017319424
+    },
+    {
+      "device_pci_bus_id": "0000:19:00.0",
+      "runtime_ordinal": 0,
+      "route_rank": 3,
+      "expert_index": 6,
+      "expert_identity_sha256": "14d07ceccfca2fed1ed3d6d036dd7946f862a9b0f2e3bde4793c4ce55d7c0d2b",
+      "gate_up_sha256": "14bbf0e60097071197e7ddcc5b5eeec60780159045014db03afd3695685a6489",
+      "scaled_gate_sha256": "1de907ecb2a6a393d03b319cdec64c116f35159647511891d5723678bd9bf186",
+      "sigmoid_sha256": "21732af5647b4f88fc7cf5259000f6f67d4ce424bfc076c2a3d56a3ebfbb1988",
+      "glu_sha256": "2461964f5875d76c97d57f2c5b7661a261c6e6db7c8c7c6507381e9feec5636d",
+      "linear_sha256": "cf3cb49a66c360bd2fa358ac277183563a47f23661bd91390eac3ab9778b24f7",
+      "swiglu_sha256": "bc22f1e76dd43ee17e44c6e34450381254aeea20f14a7c9573418ec47439031d",
+      "down_sha256": "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8",
+      "repeated_output_sha256": [
+        "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8",
+        "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8"
+      ],
+      "kernel_elapsed_ms": [
+        4.699136,
+        4.68992
+      ],
+      "free_bytes_before_executor": 25005785088,
+      "free_bytes_after_executor": 24972230656,
+      "free_bytes_after_result_slot": 24972230656,
+      "free_bytes_after_upload": 24972230656,
+      "free_bytes_after_first_execution": 24972230656,
+      "free_bytes_after_repeats": 24972230656,
+      "free_bytes_after_teardown": 25005785088
+    },
+    {
+      "device_pci_bus_id": "0000:65:00.0",
+      "runtime_ordinal": 1,
+      "route_rank": 3,
+      "expert_index": 6,
+      "expert_identity_sha256": "14d07ceccfca2fed1ed3d6d036dd7946f862a9b0f2e3bde4793c4ce55d7c0d2b",
+      "gate_up_sha256": "14bbf0e60097071197e7ddcc5b5eeec60780159045014db03afd3695685a6489",
+      "scaled_gate_sha256": "1de907ecb2a6a393d03b319cdec64c116f35159647511891d5723678bd9bf186",
+      "sigmoid_sha256": "21732af5647b4f88fc7cf5259000f6f67d4ce424bfc076c2a3d56a3ebfbb1988",
+      "glu_sha256": "2461964f5875d76c97d57f2c5b7661a261c6e6db7c8c7c6507381e9feec5636d",
+      "linear_sha256": "cf3cb49a66c360bd2fa358ac277183563a47f23661bd91390eac3ab9778b24f7",
+      "swiglu_sha256": "bc22f1e76dd43ee17e44c6e34450381254aeea20f14a7c9573418ec47439031d",
+      "down_sha256": "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8",
+      "repeated_output_sha256": [
+        "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8",
+        "288f37c6b8370c9bcb9e5a92eeef8f5b190166d0f5d6cb3f1a73b2a811772ea8"
+      ],
+      "kernel_elapsed_ms": [
+        4.704256,
+        4.691968
+      ],
+      "free_bytes_before_executor": 25017319424,
+      "free_bytes_after_executor": 24983764992,
+      "free_bytes_after_result_slot": 24983764992,
+      "free_bytes_after_upload": 24983764992,
+      "free_bytes_after_first_execution": 24983764992,
+      "free_bytes_after_repeats": 24983764992,
+      "free_bytes_after_teardown": 25017319424
+    }
+  ],
+  "exact": true
+}

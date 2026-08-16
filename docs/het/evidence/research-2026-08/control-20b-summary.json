@@ -1,0 +1,103 @@
+{
+  "schema": "het-research-20b-control-summary-v1",
+  "common_identity": "common-identity.json",
+  "timestamp_local": {
+    "load_prefill": "2026-08-15T21:43:48-04:00",
+    "retained": "2026-08-15T21:46:12-04:00",
+    "profile": "2026-08-15T21:48:13-04:00"
+  },
+  "command_identity": {
+    "source_checkout_head": "0113e8214e765d168216bbee2120654555a4cfe4",
+    "source_checkout_dirty": false,
+    "build": "cargo build --locked --release -p gpt-oss-bench --bin cpu_parity with external target directory",
+    "binary_sha256": "cb1d151b72db3a42ed2732489ba9c7f53245ec95f061e6581057de497f1bfea4",
+    "monitor_sha256": "65679e7247493c7777cd0b85296c4c7813783e3e44e8ef492480e9c790a63a31"
+  },
+  "parameters": {
+    "model": "/data/models/openai/gpt-oss-20b",
+    "model_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "fixture": "crates/gpt-oss-bench/fixtures/cpu_harmony_parity.json",
+    "scenario": "harmony_63",
+    "kernel": "auto",
+    "cpu_matmul_backend": "auto",
+    "expert_projection": "residual-q8",
+    "threads": 8,
+    "limits": {
+      "rss_bytes": 85899345920,
+      "minimum_mem_available_bytes": 8589934592,
+      "maximum_swap_growth_bytes": 268435456
+    }
+  },
+  "raw_external_results": [
+    {
+      "name": "load-prefill-monitor.json",
+      "sha256": "e0d3b9435809db6430cf67a8034e0e16cd3e5c7769e09202a66335b7da13e388"
+    },
+    {
+      "name": "load-prefill-result.json",
+      "sha256": "655f791f8c3632309170429ddaa00d29c63b471607b81026e31184b9ff6c466d"
+    },
+    {
+      "name": "retained-monitor.json",
+      "sha256": "61e4c14520f231e52b28d354660cde39ae302a3f80d7675754cca75923026092"
+    },
+    {
+      "name": "retained-result.json",
+      "sha256": "1be8a61eeeec92e7af980a6f190788f0829048015c5f54fe7fa6ce334618db39"
+    },
+    {
+      "name": "retained-result.json.manifest.json",
+      "sha256": "2f7ce7d62f39db6f234f30aa7d423925bea4a93f247201f34fbe387fc23d256f"
+    },
+    {
+      "name": "profile-monitor.json",
+      "sha256": "14144a66b3d5e68dea67cf6fc8921b11040a2a2787ce1f45fa4293fa3f03618b"
+    },
+    {
+      "name": "profile-result.json",
+      "sha256": "337baf992409de4399207f590ec429c207b971cd84ee69a91a96baa40c710261"
+    },
+    {
+      "name": "profile.json",
+      "sha256": "6b236f22d1e947a680b2d00990abda82f7063dcd78874af80ccb099e42286d18"
+    }
+  ],
+  "results": {
+    "load_prefill": {
+      "returncode": 0,
+      "elapsed_seconds": 125.3199,
+      "max_rss_bytes": 20698779648,
+      "min_mem_available_bytes": 95688540160,
+      "swap_growth_bytes": 0,
+      "stop_reason": null
+    },
+    "retained": {
+      "returncode": 0,
+      "elapsed_seconds": 96.2853,
+      "max_rss_bytes": 10893111296,
+      "min_mem_available_bytes": 95945252864,
+      "swap_growth_bytes": 0,
+      "stop_reason": null,
+      "generated_token_ids": [200005, 35644, 200008, 976, 1825, 5003, 25, 392],
+      "matches_pinned_official_sequence": true,
+      "trace_layer": 0,
+      "selected_expert_ids_rank_order": [31, 21, 22, 6]
+    },
+    "profile": {
+      "returncode": 0,
+      "elapsed_seconds": 275.3463,
+      "max_rss_bytes": 9490948096,
+      "min_mem_available_bytes": 95798566912,
+      "swap_growth_bytes": 0,
+      "stop_reason": null,
+      "records": 3949,
+      "prefill_route_count": 6048,
+      "nonempty_prefill_buckets": 597,
+      "bucket_median_m": 7,
+      "bucket_p90_m": 24,
+      "bucket_p95_m": 33,
+      "bucket_max_m": 61
+    }
+  },
+  "interpretation": "The internal CPU path passes the pinned local retained continuation and emits the required one-layer trace. The generic manifest remains campaign-level insufficient_evidence; this summary makes no broader policy promotion."
+}

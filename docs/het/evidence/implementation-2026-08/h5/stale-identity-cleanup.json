@@ -1,0 +1,44 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h5-stale-identity/v1",
+  "captured_unix_seconds": 1786869507,
+  "repository_head": "b610b968715a810d6c1191140c6cfb951dacc3eb",
+  "source_fingerprint_sha256": "0d5b19f1b5b92fe0a6689d029607febbabadab33236c882a60b0593c8dde6439",
+  "cases": [
+    {
+      "name": "stale_request_revision",
+      "primary_error": "stale_revision",
+      "capacity_quarantined_until_repair": false,
+      "authoritative_state_unchanged_by_discard": true,
+      "clean_second_step_committed": true
+    },
+    {
+      "name": "stale_visibility_epoch",
+      "primary_error": "stale_revision",
+      "capacity_quarantined_until_repair": false,
+      "authoritative_state_unchanged_by_discard": true,
+      "clean_second_step_committed": true
+    },
+    {
+      "name": "stale_placement_epoch",
+      "primary_error": "stale_revision",
+      "capacity_quarantined_until_repair": false,
+      "authoritative_state_unchanged_by_discard": true,
+      "clean_second_step_committed": true
+    },
+    {
+      "name": "stale_block_generation",
+      "primary_error": "ownership",
+      "capacity_quarantined_until_repair": true,
+      "authoritative_state_unchanged_by_discard": true,
+      "clean_second_step_committed": true
+    },
+    {
+      "name": "cleanup_free_failure_retains_primary",
+      "primary_error": "cpu",
+      "capacity_quarantined_until_repair": true,
+      "authoritative_state_unchanged_by_discard": true,
+      "clean_second_step_committed": true
+    }
+  ],
+  "passed": true
+}

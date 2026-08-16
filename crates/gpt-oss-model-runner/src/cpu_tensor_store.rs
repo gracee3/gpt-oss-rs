@@ -127,6 +127,7 @@ impl CpuTensorStore {
             dtype: entry.dtype,
             shape: &entry.shape,
             bytes: &self.shards[entry.shard][entry.start..entry.end],
+            shard_path: &self.shard_paths[entry.shard],
         })
     }
 
@@ -140,6 +141,7 @@ pub struct CpuTensor<'a> {
     dtype: DType,
     shape: &'a [usize],
     bytes: &'a [u8],
+    shard_path: &'a Path,
 }
 
 impl<'a> CpuTensor<'a> {
@@ -151,12 +153,16 @@ impl<'a> CpuTensor<'a> {
         self.dtype
     }
 
-    pub fn shape(&self) -> &[usize] {
+    pub fn shape(&self) -> &'a [usize] {
         self.shape
     }
 
-    pub fn bytes(&self) -> &[u8] {
+    pub fn bytes(&self) -> &'a [u8] {
         self.bytes
+    }
+
+    pub fn shard_path(&self) -> &'a Path {
+        self.shard_path
     }
 
     pub fn bf16(&self) -> Result<&[bf16]> {

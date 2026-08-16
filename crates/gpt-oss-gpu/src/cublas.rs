@@ -1,5 +1,9 @@
 //! cuBLAS GEMM operations for linear algebra.
 
+// These safe wrappers intentionally mirror the dimensional and buffer
+// arguments of the underlying BLAS operations.
+#![allow(clippy::too_many_arguments)]
+
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm as _, GemmConfig, Gemv as _, GemvConfig};
 use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
@@ -727,7 +731,7 @@ mod tests {
         let c_host = stream.clone_dtoh(&c_gpu).unwrap();
 
         // CPU reference: C[i,j] = sum_k A[i,k] * B[j,k]
-        let mut expected = vec![0.0f32; 8];
+        let mut expected = [0.0f32; 8];
         for i in 0..2 {
             for j in 0..4 {
                 for kk in 0..3 {

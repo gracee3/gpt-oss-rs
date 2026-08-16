@@ -1,0 +1,44 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h8-watchdog-readiness/v1",
+  "status": "watchdog_validated_h8_unpassed",
+  "source_parent": "07cb220a243eee63dd0dbd71e302d50f7b1fba73",
+  "source_set_sha256": "c64f85e8324e56c3f87a172323bda40bece9436e8de1377e1d9fe3b508354a94",
+  "source_files": [
+    {"path": "crates/gpt-oss-bench/Cargo.toml", "sha256": "c35379c2e8e69f26c276433290c54aeb09eae0b0e49b04b431ef24a6f21f10bd"},
+    {"path": "crates/gpt-oss-bench/src/lib.rs", "sha256": "91e89c0e13760e2a58f90a9cb87cff6a7ff51fc412b8fb2431aa645d43a8ced9"},
+    {"path": "crates/gpt-oss-bench/src/h8_watchdog.rs", "sha256": "9ee073ccf043e0c19afc5e1711b4bca8d53d574f8a97d6b4004300c4bacf190a"},
+    {"path": "crates/gpt-oss-bench/src/bin/heterogeneous_h8_watchdog.rs", "sha256": "1e7161ccd91c82d675863d208d4d7575857da58bff14048cd42a2474e7195561"},
+    {"path": "crates/gpt-oss-bench/src/bin/heterogeneous_construct.rs", "sha256": "3784aac483f7e49f8aa3b7d6d1d219293848e3078363337d46e01ab2a405192e"},
+    {"path": "crates/gpt-oss-bench/tests/h8_watchdog_lifecycle.rs", "sha256": "2e57ebf48eaa9ab65a79a09887ecb2e9bfb8c5d1c6d83d419962dbf91036bada"}
+  ],
+  "release_binaries": {
+    "heterogeneous_h8_watchdog_sha256": "ec90806ded39a1de8ce9ffca9cdef3aca7df2682d2ea6b974b25295612258b7b",
+    "heterogeneous_construct_fault_enabled_sha256": "8798f8b1c4bd7dd355542ef5d0a414cd925a16b694a614ead1f03aad6fb6fd6d",
+    "construction_binary_executed": false
+  },
+  "preflight_records": [
+    {"path": "preflight-observation.json", "passed": false, "classification": "superseded_duration_anchor_diagnostic"},
+    {"path": "preflight-observation-v2.json", "passed": false, "classification": "strict_swap_release_and_obsolete_proc_scan_false_negative"},
+    {"path": "preflight-observation-v3.json", "passed": false, "classification": "final_source_proc_scan_verified_swap_release"}
+  ],
+  "tests": [
+    {"command": "cargo test --locked -p gpt-oss-bench --lib h8_watchdog -- --nocapture", "passed": true, "tests": 8},
+    {"command": "cargo test --locked -p gpt-oss-bench --bin heterogeneous_h8_watchdog -- --nocapture", "passed": true, "tests": 10},
+    {"command": "cargo test --locked -p gpt-oss-bench --test h8_watchdog_lifecycle -- --nocapture", "passed": true, "tests": 3},
+    {"command": "cargo test --locked -p gpt-oss-bench --bin heterogeneous_construct --features heterogeneous-test-faults h8_manifest_tests::h8_quota_balanced_hash_is_exact_and_deterministic -- --exact", "passed": true, "tests": 1},
+    {"command": "cargo fmt --all -- --check", "passed": true},
+    {"command": "cargo check --locked --workspace --all-targets", "passed": true},
+    {"command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_h8_watchdog --no-deps -- -D warnings", "passed": true},
+    {"command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features cuda --no-deps -- -D warnings", "passed": true},
+    {"command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features heterogeneous-test-faults --no-deps -- -D warnings", "passed": true}
+  ],
+  "prohibited_actions_observed": {
+    "h8_run": false,
+    "h9_run": false,
+    "h10_run": false,
+    "model_weights_loaded": false,
+    "host_controls_changed": false,
+    "protected_nvme_touched": false,
+    "network_or_ssh_changed": false
+  }
+}
