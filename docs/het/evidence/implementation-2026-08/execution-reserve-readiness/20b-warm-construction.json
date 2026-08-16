@@ -1,0 +1,762 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-construction/v4",
+  "mode": "warm",
+  "captured_unix_ms": 1786901592036,
+  "repository_head": "d575a7008a50b2f32ca93f807fae25010742bd10",
+  "executable_sha256": "1efc843d174196df9f264cba15020c077e60b0fb7ab683ac137d7545b22cbf3b",
+  "command": [
+    "target/release/heterogeneous_construct",
+    "--mode",
+    "warm",
+    "--model-20b",
+    "/data/models/openai/gpt-oss-20b/original",
+    "--model-120b",
+    "/data/models/openai/gpt-oss-120b/original",
+    "--mapping-20b",
+    "docs/het/evidence/research-2026-08/checkpoint-map-20b-full.json",
+    "--mapping-120b",
+    "docs/het/evidence/research-2026-08/checkpoint-map-120b-metadata.json",
+    "--cache-root",
+    "/home/emmy/workspace/gpt-oss-rs-het-cache",
+    "--output",
+    "docs/het/evidence/implementation-2026-08/execution-reserve-readiness/20b-warm-construction.json"
+  ],
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0",
+    "nvidia_driver": "610.43.02\n610.43.02"
+  },
+  "cache_root": "/home/emmy/workspace/gpt-oss-rs-het-cache",
+  "cache_bytes_before": 26508424,
+  "cache_bytes_after": 26508424,
+  "process_before": {
+    "vm_size_bytes": 5083136,
+    "vm_rss_bytes": 3653632,
+    "vm_hwm_bytes": 3653632,
+    "vm_swap_bytes": 0,
+    "rollup_rss_bytes": 3653632,
+    "rollup_pss_bytes": 1684480,
+    "rollup_pss_anon_bytes": 221184,
+    "rollup_pss_file_bytes": 1463296
+  },
+  "process_after": {
+    "vm_size_bytes": 111239688192,
+    "vm_rss_bytes": 84951040,
+    "vm_hwm_bytes": 13999116288,
+    "vm_swap_bytes": 0,
+    "rollup_rss_bytes": 84951040,
+    "rollup_pss_bytes": 82215936,
+    "rollup_pss_anon_bytes": 69451776,
+    "rollup_pss_file_bytes": 12764160
+  },
+  "system_before": {
+    "mem_available_bytes": 95332171776,
+    "swap_total_bytes": 107374178304,
+    "swap_free_bytes": 107352231936,
+    "swap_used_bytes": 21946368,
+    "swap_cached_bytes": 1716224
+  },
+  "system_after": {
+    "mem_available_bytes": 95225671680,
+    "swap_total_bytes": 107374178304,
+    "swap_free_bytes": 107352231936,
+    "swap_used_bytes": 21946368,
+    "swap_cached_bytes": 1716224
+  },
+  "checkpoint_20b": {
+    "source": "/data/models/openai/gpt-oss-20b/original",
+    "revision": "metadata:709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+    "config_sha256": "317522155fc243327ee341857d0c752d0094a0817e0e9aee2890d5ad8e009e04",
+    "metadata_sha256": "709bc943cfe8bb3375ae33ef882732bed2a381b9b5953dd03870630fd604cdd9",
+    "mapping_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+    "mapping_equivalence_sha256": "8a217680aa72d8e153d8e06fa9ce4e4dbfa53daa58c1ea951a0dee320203cc94",
+    "native_tensor_count": 363,
+    "runtime_tensor_count": 459,
+    "mapped_payload_bytes": 13761264768,
+    "expert_payload_bytes": 10165616640,
+    "non_expert_payload_bytes": 3595648128
+  },
+  "checkpoint_120b": {
+    "source": "/data/models/openai/gpt-oss-120b/original",
+    "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "config_sha256": "063aaa98e012cac330d58d18471700f0b0eb90bb15c58fb227809d45090f3e65",
+    "metadata_sha256": "53c172e3c4d092d07c139154ba59b866e94df162f97587ac6bb607b1fdfd6faa",
+    "mapping_sha256": "6cf738409706faee51bbf7b77383e23393df6ff454fc1e906a234016ab29413c",
+    "mapping_equivalence_sha256": "e17920b1967905ae09a4e86a2611fc9122e72baf3afbbf9a49276916060203f0",
+    "native_tensor_count": 543,
+    "runtime_tensor_count": 687,
+    "mapped_payload_bytes": 65248815744,
+    "expert_payload_bytes": 60993699840,
+    "non_expert_payload_bytes": 4255115904
+  },
+  "placement_20b": {
+    "manifest_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+    "policy": "proof",
+    "layer_owner_pci": "0000:19:00.0",
+    "remote_gpu_pci": "0000:65:00.0",
+    "cpu_experts": 1,
+    "layer_owner_experts": 766,
+    "remote_gpu_experts": 1
+  },
+  "placement_120b": {
+    "manifest_sha256": "ea7707d28965fdbc4215af1029c179788e6904af4271ef7367696a3721491b9e",
+    "policy": "proof",
+    "layer_owner_pci": "0000:19:00.0",
+    "remote_gpu_pci": "0000:65:00.0",
+    "cpu_experts": 1689,
+    "layer_owner_experts": 1299,
+    "remote_gpu_experts": 1620
+  },
+  "envelope_20b": {
+    "native_mapped_payload_bytes": 13761264768,
+    "non_expert_payload_bytes": 3595648128,
+    "checkpoint_expert_payload_bytes": 10165616640,
+    "layer_owner_experts": 766,
+    "remote_gpu_experts": 1,
+    "cpu_experts": 1,
+    "layer_owner_native_expert_bytes": 10139143680,
+    "remote_gpu_native_expert_bytes": 13236480,
+    "cpu_x8_record_bytes": 13253760,
+    "layer_owner_conservative_admission_bytes": 10152380160,
+    "remote_gpu_conservative_admission_bytes": 13253760,
+    "host_conservative_owner_bytes": 13253760,
+    "layer_owner_execution_reserve_bytes": 4294967296,
+    "remote_gpu_execution_reserve_bytes": 4294967296,
+    "pinned_upload_bytes": 16777216,
+    "construction_temporary_cap_bytes": 268435456,
+    "execution_reserve_plan": {
+      "disposition": "post_executor_admission_runtime_plan_reviewed",
+      "context_cap": 4096,
+      "max_dispatch_rows": 1,
+      "num_layers": 24,
+      "remote_result_layers": 1,
+      "layer_owner": {
+        "reserve_cap_bytes": 4294967296,
+        "kv_cache_bytes": 201326592,
+        "layer_owner_shell_fixed_bytes": 857472,
+        "router_bytes": 4566624,
+        "relay_result_arena_bytes": 552960,
+        "reduction_bytes": 2350272,
+        "selected_expert_executor_bytes": 46080,
+        "result_slot_bytes": 552960,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 210206880,
+        "planned_owned_bytes": 210252960,
+        "runtime_and_safety_remainder_bytes": 4084760416
+      },
+      "remote_gpu": {
+        "reserve_cap_bytes": 4294967296,
+        "kv_cache_bytes": 0,
+        "layer_owner_shell_fixed_bytes": 0,
+        "router_bytes": 0,
+        "relay_result_arena_bytes": 0,
+        "reduction_bytes": 0,
+        "selected_expert_executor_bytes": 46080,
+        "result_slot_bytes": 23040,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 23040,
+        "planned_owned_bytes": 69120,
+        "runtime_and_safety_remainder_bytes": 4294944256
+      },
+      "decode_pinned_relay_raw_capacity_bytes": 74944,
+      "decode_pinned_relay_cap_bytes": 131072,
+      "decode_pinned_relay_materialized_at_construction": false,
+      "prefill_pinned_relay_cap_bytes": 8388608,
+      "prefill_pinned_relay_materialized_at_construction": false
+    }
+  },
+  "envelope_120b": {
+    "native_mapped_payload_bytes": 65248815744,
+    "non_expert_payload_bytes": 4255115904,
+    "checkpoint_expert_payload_bytes": 60993699840,
+    "layer_owner_experts": 1299,
+    "remote_gpu_experts": 1620,
+    "cpu_experts": 1689,
+    "layer_owner_native_expert_bytes": 17194187520,
+    "remote_gpu_native_expert_bytes": 21443097600,
+    "cpu_x8_record_bytes": 22385600640,
+    "layer_owner_conservative_admission_bytes": 17216634240,
+    "remote_gpu_conservative_admission_bytes": 21471091200,
+    "host_conservative_owner_bytes": 22385600640,
+    "layer_owner_execution_reserve_bytes": 4294967296,
+    "remote_gpu_execution_reserve_bytes": 4294967296,
+    "pinned_upload_bytes": 16777216,
+    "construction_temporary_cap_bytes": 268435456,
+    "execution_reserve_plan": {
+      "disposition": "post_executor_admission_runtime_plan_reviewed",
+      "context_cap": 4096,
+      "max_dispatch_rows": 1,
+      "num_layers": 36,
+      "remote_result_layers": 13,
+      "layer_owner": {
+        "reserve_cap_bytes": 4294967296,
+        "kv_cache_bytes": 301989888,
+        "layer_owner_shell_fixed_bytes": 857472,
+        "router_bytes": 26770320,
+        "relay_result_arena_bytes": 829440,
+        "reduction_bytes": 3525408,
+        "selected_expert_executor_bytes": 46080,
+        "result_slot_bytes": 829440,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 334801968,
+        "planned_owned_bytes": 334848048,
+        "runtime_and_safety_remainder_bytes": 3960165328
+      },
+      "remote_gpu": {
+        "reserve_cap_bytes": 4294967296,
+        "kv_cache_bytes": 0,
+        "layer_owner_shell_fixed_bytes": 0,
+        "router_bytes": 0,
+        "relay_result_arena_bytes": 0,
+        "reduction_bytes": 0,
+        "selected_expert_executor_bytes": 46080,
+        "result_slot_bytes": 299520,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 299520,
+        "planned_owned_bytes": 345600,
+        "runtime_and_safety_remainder_bytes": 4294667776
+      },
+      "decode_pinned_relay_raw_capacity_bytes": 74944,
+      "decode_pinned_relay_cap_bytes": 131072,
+      "decode_pinned_relay_materialized_at_construction": false,
+      "prefill_pinned_relay_cap_bytes": 8388608,
+      "prefill_pinned_relay_materialized_at_construction": false
+    }
+  },
+  "construction": {
+    "elapsed_ms": 49009,
+    "snapshots": [
+      {
+        "elapsed_ms": 295,
+        "ledger": {
+          "stage": "identity",
+          "mapped_address_bytes": 0,
+          "layer_owner_dense_bytes": 0,
+          "layer_owner_expert_bytes": 0,
+          "remote_gpu_expert_bytes": 0,
+          "cpu_x8_bytes": 0,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 0,
+          "layer_owner_experts": 0,
+          "remote_gpu_experts": 0,
+          "cpu_experts": 0,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 22872588288,
+          "vm_rss_bytes": 36765696,
+          "vm_hwm_bytes": 111398912,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 36765696,
+          "rollup_pss_bytes": 34049024,
+          "rollup_pss_anon_bytes": 23662592,
+          "rollup_pss_file_bytes": 10386432
+        },
+        "system": {
+          "mem_available_bytes": 95278342144,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 12,
+            "free_mib": 24109
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 4,
+            "free_mib": 24120
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 981,
+        "ledger": {
+          "stage": "runtime_baseline",
+          "mapped_address_bytes": 0,
+          "layer_owner_dense_bytes": 0,
+          "layer_owner_expert_bytes": 0,
+          "remote_gpu_expert_bytes": 0,
+          "cpu_x8_bytes": 0,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 0,
+          "layer_owner_experts": 0,
+          "remote_gpu_experts": 0,
+          "cpu_experts": 0,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 125576851456,
+          "vm_rss_bytes": 222302208,
+          "vm_hwm_bytes": 222302208,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 222302208,
+          "rollup_pss_bytes": 219567104,
+          "rollup_pss_anon_bytes": 57421824,
+          "rollup_pss_file_bytes": 145368064
+        },
+        "system": {
+          "mem_available_bytes": 95232692224,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 306,
+            "free_mib": 23816
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 1032,
+        "ledger": {
+          "stage": "mappings",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 0,
+          "layer_owner_expert_bytes": 0,
+          "remote_gpu_expert_bytes": 0,
+          "cpu_x8_bytes": 0,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 0,
+          "layer_owner_experts": 0,
+          "remote_gpu_experts": 0,
+          "cpu_experts": 0,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 125576851456,
+          "vm_rss_bytes": 222302208,
+          "vm_hwm_bytes": 222302208,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 222302208,
+          "rollup_pss_bytes": 219567104,
+          "rollup_pss_anon_bytes": 57421824,
+          "rollup_pss_file_bytes": 145368064
+        },
+        "system": {
+          "mem_available_bytes": 95227277312,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 306,
+            "free_mib": 23816
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 2037,
+        "ledger": {
+          "stage": "layer_owner_dense",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 0,
+          "remote_gpu_expert_bytes": 0,
+          "cpu_x8_bytes": 0,
+          "pinned_bytes": 16777216,
+          "construction_temporary_high_water_bytes": 0,
+          "layer_owner_experts": 0,
+          "remote_gpu_experts": 0,
+          "cpu_experts": 0,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 125577392128,
+          "vm_rss_bytes": 3838767104,
+          "vm_hwm_bytes": 3838767104,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 3838771200,
+          "rollup_pss_bytes": 3836036096,
+          "rollup_pss_anon_bytes": 57942016,
+          "rollup_pss_file_bytes": 3761316864
+        },
+        "system": {
+          "mem_available_bytes": 95223488512,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 3730,
+            "free_mib": 20392
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 47001,
+        "ledger": {
+          "stage": "gpu_experts",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 10139143680,
+          "remote_gpu_expert_bytes": 13236480,
+          "cpu_x8_bytes": 0,
+          "pinned_bytes": 16777216,
+          "construction_temporary_high_water_bytes": 0,
+          "layer_owner_experts": 766,
+          "remote_gpu_experts": 1,
+          "cpu_experts": 0,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 125588467712,
+          "vm_rss_bytes": 13982650368,
+          "vm_hwm_bytes": 13999116288,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 13982650368,
+          "rollup_pss_bytes": 13979915264,
+          "rollup_pss_anon_bytes": 68984832,
+          "rollup_pss_file_bytes": 13894153216
+        },
+        "system": {
+          "mem_available_bytes": 95182860288,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 13394,
+            "free_mib": 10728
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 47132,
+        "ledger": {
+          "stage": "cpu_experts",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 10139143680,
+          "remote_gpu_expert_bytes": 13236480,
+          "cpu_x8_bytes": 13253760,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 1114112,
+          "layer_owner_experts": 766,
+          "remote_gpu_experts": 1,
+          "cpu_experts": 1,
+          "execution_reserve_reviewed": false,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 0,
+          "remote_gpu_execution_materialized_before_admission_bytes": 0,
+          "layer_owner_execution_planned_bytes": 0,
+          "remote_gpu_execution_planned_bytes": 0
+        },
+        "process": {
+          "vm_size_bytes": 125601722368,
+          "vm_rss_bytes": 13982732288,
+          "vm_hwm_bytes": 13999116288,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 13982732288,
+          "rollup_pss_bytes": 13979997184,
+          "rollup_pss_anon_bytes": 69001216,
+          "rollup_pss_file_bytes": 13894218752
+        },
+        "system": {
+          "mem_available_bytes": 95191879680,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 13394,
+            "free_mib": 10728
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 47265,
+        "ledger": {
+          "stage": "execution_reserve",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 10139143680,
+          "remote_gpu_expert_bytes": 13236480,
+          "cpu_x8_bytes": 13253760,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 1114112,
+          "layer_owner_experts": 766,
+          "remote_gpu_experts": 1,
+          "cpu_experts": 1,
+          "execution_reserve_reviewed": true,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 46080,
+          "remote_gpu_execution_materialized_before_admission_bytes": 46080,
+          "layer_owner_execution_planned_bytes": 210252960,
+          "remote_gpu_execution_planned_bytes": 69120
+        },
+        "process": {
+          "vm_size_bytes": 125601722368,
+          "vm_rss_bytes": 13982732288,
+          "vm_hwm_bytes": 13999116288,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 13982732288,
+          "rollup_pss_bytes": 13979997184,
+          "rollup_pss_anon_bytes": 69001216,
+          "rollup_pss_file_bytes": 13894218752
+        },
+        "system": {
+          "mem_available_bytes": 95182422016,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 13394,
+            "free_mib": 10728
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 47400,
+        "ledger": {
+          "stage": "publish",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 10139143680,
+          "remote_gpu_expert_bytes": 13236480,
+          "cpu_x8_bytes": 13253760,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 1114112,
+          "layer_owner_experts": 766,
+          "remote_gpu_experts": 1,
+          "cpu_experts": 1,
+          "execution_reserve_reviewed": true,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 46080,
+          "remote_gpu_execution_materialized_before_admission_bytes": 46080,
+          "layer_owner_execution_planned_bytes": 210252960,
+          "remote_gpu_execution_planned_bytes": 69120
+        },
+        "process": {
+          "vm_size_bytes": 125601722368,
+          "vm_rss_bytes": 13982732288,
+          "vm_hwm_bytes": 13999116288,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 13982732288,
+          "rollup_pss_bytes": 13979997184,
+          "rollup_pss_anon_bytes": 69001216,
+          "rollup_pss_file_bytes": 13894218752
+        },
+        "system": {
+          "mem_available_bytes": 95184101376,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 13394,
+            "free_mib": 10728
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 298,
+            "free_mib": 23827
+          }
+        ]
+      },
+      {
+        "elapsed_ms": 48966,
+        "ledger": {
+          "stage": "publish",
+          "mapped_address_bytes": 13761264768,
+          "layer_owner_dense_bytes": 3595648128,
+          "layer_owner_expert_bytes": 10139143680,
+          "remote_gpu_expert_bytes": 13236480,
+          "cpu_x8_bytes": 13253760,
+          "pinned_bytes": 0,
+          "construction_temporary_high_water_bytes": 1114112,
+          "layer_owner_experts": 766,
+          "remote_gpu_experts": 1,
+          "cpu_experts": 1,
+          "execution_reserve_reviewed": true,
+          "execution_runtime_resources_materialized_at_construction": false,
+          "layer_owner_execution_materialized_before_admission_bytes": 46080,
+          "remote_gpu_execution_materialized_before_admission_bytes": 46080,
+          "layer_owner_execution_planned_bytes": 210252960,
+          "remote_gpu_execution_planned_bytes": 69120
+        },
+        "process": {
+          "vm_size_bytes": 111239688192,
+          "vm_rss_bytes": 84951040,
+          "vm_hwm_bytes": 13999116288,
+          "vm_swap_bytes": 0,
+          "rollup_rss_bytes": 84951040,
+          "rollup_pss_bytes": 82215936,
+          "rollup_pss_anon_bytes": 69451776,
+          "rollup_pss_file_bytes": 12764160
+        },
+        "system": {
+          "mem_available_bytes": 95222251520,
+          "swap_total_bytes": 107374178304,
+          "swap_free_bytes": 107352231936,
+          "swap_used_bytes": 21946368,
+          "swap_cached_bytes": 1716224
+        },
+        "gpus": [
+          {
+            "pci_bus_id": "00000000:19:00.0",
+            "used_mib": 12,
+            "free_mib": 24109
+          },
+          {
+            "pci_bus_id": "00000000:65:00.0",
+            "used_mib": 4,
+            "free_mib": 24120
+          }
+        ]
+      }
+    ],
+    "final_ledger": {
+      "stage": "publish",
+      "mapped_address_bytes": 13761264768,
+      "layer_owner_dense_bytes": 3595648128,
+      "layer_owner_expert_bytes": 10139143680,
+      "remote_gpu_expert_bytes": 13236480,
+      "cpu_x8_bytes": 13253760,
+      "pinned_bytes": 0,
+      "construction_temporary_high_water_bytes": 1114112,
+      "layer_owner_experts": 766,
+      "remote_gpu_experts": 1,
+      "cpu_experts": 1,
+      "execution_reserve_reviewed": true,
+      "execution_runtime_resources_materialized_at_construction": false,
+      "layer_owner_execution_materialized_before_admission_bytes": 46080,
+      "remote_gpu_execution_materialized_before_admission_bytes": 46080,
+      "layer_owner_execution_planned_bytes": 210252960,
+      "remote_gpu_execution_planned_bytes": 69120
+    },
+    "dense_tensors": 315,
+    "dense_device_bytes": 3595648128,
+    "cpu_layer_files": [
+      {
+        "layer": 0,
+        "expert_ids": [
+          21
+        ],
+        "payload_bytes": 13253760,
+        "file_bytes": 13254212,
+        "relative_path": "owner-x8-v2/74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d/cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe/layer-00000-aa65aed58ed0504c85aed2d78bd9ecd7fd77baae3b19a38c73f95b123ed371ea.owner-x8"
+      }
+    ],
+    "cuda_memory_while_loaded": [
+      {
+        "free_bytes": 11248467968,
+        "total_bytes": 25292177408
+      },
+      {
+        "free_bytes": 24983764992,
+        "total_bytes": 25295323136
+      }
+    ],
+    "cuda_memory_before": [
+      {
+        "free_bytes": 25005785088,
+        "total_bytes": 25292177408
+      },
+      {
+        "free_bytes": 25017319424,
+        "total_bytes": 25295323136
+      }
+    ],
+    "cuda_memory_after": [
+      {
+        "free_bytes": 25005785088,
+        "total_bytes": 25292177408
+      },
+      {
+        "free_bytes": 25017319424,
+        "total_bytes": 25295323136
+      }
+    ],
+    "cleanup_within_tolerance": true,
+    "partial_artifacts_after": []
+  },
+  "fault_campaign": null,
+  "h8_campaign": null,
+  "protected_nvme": {
+    "read_only": true,
+    "mounted": false
+  },
+  "passed": true
+}

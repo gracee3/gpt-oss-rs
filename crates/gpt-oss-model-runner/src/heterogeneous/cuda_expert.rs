@@ -48,6 +48,12 @@ pub const GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES: usize =
     (GATE_UP_ROWS + INTERMEDIATE_SIZE) * size_of::<u16>();
 pub const GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES: usize = HIDDEN_SIZE * size_of::<u16>();
 pub const GPT_OSS_SELECTED_EXPERT_TRACE_BYTES: usize = INTERMEDIATE_SIZE * 4 * size_of::<u16>();
+/// Persistent executor-owned input, arithmetic scratch, and divergence trace.
+/// Result slots are caller-owned and accounted separately by the execution
+/// reserve plan.
+pub const GPT_OSS_SELECTED_EXPERT_EXECUTOR_BYTES: usize = GPT_OSS_SELECTED_EXPERT_INPUT_BYTES
+    + GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES
+    + GPT_OSS_SELECTED_EXPERT_TRACE_BYTES;
 pub const GPT_OSS_SELECTED_EXPERT_DEVICE_WORK_BYTES: usize = GPT_OSS_SELECTED_EXPERT_INPUT_BYTES
     + GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES
     + GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES

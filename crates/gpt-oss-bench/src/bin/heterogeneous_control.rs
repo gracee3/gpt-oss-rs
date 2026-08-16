@@ -290,7 +290,7 @@ fn main() -> Result<()> {
     }
     let all_runs_passed = runs.iter().all(|run| run.passed);
     let evidence = Evidence {
-        schema: "gpt-oss-rs.heterogeneous-control-h7/v2",
+        schema: "gpt-oss-rs.heterogeneous-control-h7/v3",
         execution_path: "serial_m1_exact_router_selected_expert_rank_reduction",
         cuda_prefill_or_all_expert_fallback_used: false,
         tensor_parallel_or_nccl_used: false,

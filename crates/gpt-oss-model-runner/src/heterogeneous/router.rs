@@ -23,6 +23,50 @@ pub const GPT_OSS_ROUTER_MAX_ROWS: usize = 64;
 pub const GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW: usize =
     GPT_OSS_TOP_K * GPT_OSS_ROUTE_WIRE_V1_BYTES;
 
+pub fn exact_router_owned_device_bytes(experts: usize, max_rows: usize) -> Result<usize> {
+    if !matches!(experts, 32 | 128) || max_rows == 0 || max_rows > GPT_OSS_ROUTER_MAX_ROWS {
+        return Err(LLMError::ModelError(
+            "router byte reporter received unsupported dimensions".into(),
+        ));
+    }
+    let bf16 = size_of::<u16>();
+    let activation = max_rows
+        .checked_mul(GPT_OSS_HIDDEN_SIZE)
+        .and_then(|values| values.checked_mul(bf16))
+        .ok_or_else(|| LLMError::ModelError("router activation bytes overflow".into()))?;
+    let weights = experts
+        .checked_mul(GPT_OSS_HIDDEN_SIZE)
+        .and_then(|values| values.checked_mul(bf16))
+        .ok_or_else(|| LLMError::ModelError("router weight bytes overflow".into()))?;
+    let bias = experts
+        .checked_mul(bf16)
+        .ok_or_else(|| LLMError::ModelError("router bias bytes overflow".into()))?;
+    let logits = max_rows
+        .checked_mul(experts)
+        .and_then(|values| values.checked_mul(bf16))
+        .ok_or_else(|| LLMError::ModelError("router logit bytes overflow".into()))?;
+    let descriptors = max_rows
+        .checked_mul(GPT_OSS_ROUTER_DESCRIPTOR_BYTES_PER_ROW)
+        .ok_or_else(|| LLMError::ModelError("router descriptor bytes overflow".into()))?;
+    let invalid_flags = max_rows
+        .checked_mul(size_of::<u32>())
+        .ok_or_else(|| LLMError::ModelError("router invalid-flag bytes overflow".into()))?;
+    [
+        activation,
+        weights,
+        bias,
+        logits,
+        descriptors,
+        invalid_flags,
+    ]
+    .into_iter()
+    .try_fold(0_usize, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| LLMError::ModelError("router device bytes overflow".into()))
+    })
+}
+
 const MODULE: &str = "gpt_oss_router";
 const PROJECTION: &str = "gpt_oss_router_bf16_projection_kernel";
 const TOP4: &str = "gpt_oss_router_stable_top4_kernel";
@@ -284,6 +328,10 @@ impl CudaExactRouter {
 
     pub const fn experts(&self) -> usize {
         self.experts
+    }
+
+    pub fn owned_device_bytes(&self) -> Result<usize> {
+        exact_router_owned_device_bytes(self.experts, self.max_rows)
     }
 
     pub const fn max_rows(&self) -> usize {

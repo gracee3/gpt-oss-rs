@@ -23,8 +23,8 @@ use gpt_oss_model_runner::model_loader::owner_selective::{
     OWNER_SELECTIVE_PINNED_UPLOAD_BYTES,
 };
 use gpt_oss_model_runner::model_loader::owner_selective::{
-    ConstructionLedger, ConstructionStage, OwnerSelectiveConstructor, OwnerSelectiveEnvelope,
-    OWNER_SELECTIVE_GPU_RESERVE_BYTES,
+    ConstructionLedger, ConstructionStage, ExecutionReserveDisposition, OwnerSelectiveConstructor,
+    OwnerSelectiveEnvelope, OWNER_SELECTIVE_GPU_RESERVE_BYTES, OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -416,6 +416,7 @@ fn main() -> Result<()> {
     let resolved_20b = manifest_20b.validate(&devices)?;
     let envelope_20b =
         OwnerSelectiveEnvelope::from_checkpoint_and_placement(&checkpoint_20b, &resolved_20b)?;
+    verify_execution_reserve_plan(&envelope_20b)?;
 
     let checkpoint_120b = GptOssCheckpointView::open(&cli.model_120b)?;
     let map_equivalence_120b = compare_research_mapping(&checkpoint_120b, &cli.mapping_120b)?;
@@ -437,6 +438,7 @@ fn main() -> Result<()> {
     let resolved_120b = manifest_120b.validate(&devices)?;
     let envelope_120b =
         OwnerSelectiveEnvelope::from_checkpoint_and_placement(&checkpoint_120b, &resolved_120b)?;
+    verify_execution_reserve_plan(&envelope_120b)?;
     #[cfg(feature = "heterogeneous-test-faults")]
     if let Some(admission) = &h8_admission {
         verify_h8_envelope(&envelope_120b, admission)?;
@@ -553,11 +555,7 @@ fn main() -> Result<()> {
     }
 
     let record = EvidenceRecord {
-        schema: if h8_campaign.is_some() {
-            "gpt-oss-rs.heterogeneous-construction/v3"
-        } else {
-            "gpt-oss-rs.heterogeneous-construction/v2"
-        },
+        schema: "gpt-oss-rs.heterogeneous-construction/v4",
         mode: cli.mode,
         captured_unix_ms: now_unix_ms(),
         repository_head: command_text("git", &["rev-parse", "HEAD"])?,
@@ -1724,6 +1722,42 @@ fn verify_120b_envelope(envelope: &OwnerSelectiveEnvelope) -> Result<()> {
         || envelope.remote_gpu_execution_reserve_bytes != OWNER_SELECTIVE_GPU_RESERVE_BYTES
     {
         bail!("120B existence envelope differs from the Phase 1/2 proof");
+    }
+    Ok(())
+}
+
+fn verify_execution_reserve_plan(envelope: &OwnerSelectiveEnvelope) -> Result<()> {
+    let plan = &envelope.execution_reserve_plan;
+    plan.validate().context("execution reserve plan")?;
+    if plan.disposition != ExecutionReserveDisposition::PostExecutorAdmissionRuntimePlanReviewed
+        || plan.context_cap as usize != OWNER_SELECTIVE_PROOF_CONTEXT_CAP
+        || plan.max_dispatch_rows != 1
+        || plan.decode_pinned_relay_raw_capacity_bytes != 74_944
+        || plan.decode_pinned_relay_cap_bytes != 128 * 1024
+        || plan.decode_pinned_relay_raw_capacity_bytes > plan.decode_pinned_relay_cap_bytes
+        || plan.decode_pinned_relay_materialized_at_construction
+        || plan.prefill_pinned_relay_cap_bytes != 8 * 1024 * 1024
+        || plan.prefill_pinned_relay_materialized_at_construction
+    {
+        bail!("execution reserve policy differs from the reviewed proof policy");
+    }
+    for (label, device) in [
+        ("layer owner", &plan.layer_owner),
+        ("remote GPU", &plan.remote_gpu),
+    ] {
+        if device.materialized_before_admission_bytes != device.selected_expert_executor_bytes
+            || device
+                .materialized_before_admission_bytes
+                .checked_add(device.reviewed_deferred_after_admission_bytes)
+                != Some(device.planned_owned_bytes)
+            || device
+                .reviewed_deferred_after_admission_bytes
+                .checked_add(device.runtime_and_safety_remainder_bytes)
+                != Some(device.reserve_cap_bytes)
+            || device.reserve_cap_bytes != OWNER_SELECTIVE_GPU_RESERVE_BYTES
+        {
+            bail!("{label} execution reserve measurement boundary is inconsistent");
+        }
     }
     Ok(())
 }

@@ -19,20 +19,29 @@ use sha2::{Digest, Sha256};
 use crate::cpu_repack::{
     CpuOwnerLayerRecord, CpuOwnerRepackCache, OWNER_EXPERT_BYTES, OWNER_REPACK_TEMP_BYTES_MAX,
 };
+use crate::heterogeneous::contract::{GptOssPhase, GPT_OSS_TOP_K};
+use crate::heterogeneous::control::heterogeneous_control_shell_device_bytes;
 use crate::heterogeneous::cuda_expert::{
     CudaSelectedExpertExecutor, CudaSelectedExpertWeights, NativeMxfp4ExpertView,
+    GPT_OSS_SELECTED_EXPERT_EXECUTOR_BYTES, GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
     GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES,
 };
+use crate::heterogeneous::packing::{relay_pinned_capacity_bytes, H4_PREFILL_PINNED_CAP_BYTES};
 use crate::heterogeneous::placement::{
     ExpertOwner, GptOssExpertKey, GptOssExpertPlacementManifestV1, ResolvedExpertPlacement,
     CONSERVATIVE_OWNER_EXPERT_BYTES,
 };
+use crate::heterogeneous::reduction::GPT_OSS_REDUCER_OWNED_DEVICE_BYTES;
+use crate::heterogeneous::relay::result_relay_owned_device_bytes;
+use crate::heterogeneous::router::exact_router_owned_device_bytes;
 
 use super::gpt_oss_native::GptOssCheckpointView;
 
 pub const OWNER_SELECTIVE_PINNED_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub const OWNER_SELECTIVE_TEMPORARY_CAP_BYTES: usize = 256 * 1024 * 1024;
 pub const OWNER_SELECTIVE_GPU_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const OWNER_SELECTIVE_PROOF_CONTEXT_CAP: usize = 4_096;
+pub const OWNER_SELECTIVE_DECODE_MAX_ROWS: usize = 1;
 
 static PINNED_CURRENT_BYTES: AtomicU64 = AtomicU64::new(0);
 static PINNED_HIGH_WATER_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -58,6 +67,353 @@ pub enum ConstructionStage {
     Publish,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionReserveDisposition {
+    /// H8 samples free VRAM after each selected-expert executor is created.
+    /// K/V, router, relay, reducer, result-slot, and pinned-relay resources
+    /// remain a reviewed deferred plan at that admission boundary.
+    PostExecutorAdmissionRuntimePlanReviewed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceExecutionReserveLedger {
+    /// Deferred-allocation admission cap. H8 samples free memory after the
+    /// selected-expert executor and its CUDA context/modules already exist.
+    pub reserve_cap_bytes: u64,
+    pub kv_cache_bytes: u64,
+    pub layer_owner_shell_fixed_bytes: u64,
+    pub router_bytes: u64,
+    pub relay_result_arena_bytes: u64,
+    pub reduction_bytes: u64,
+    pub selected_expert_executor_bytes: u64,
+    pub result_slot_bytes: u64,
+    /// Exact selected-expert executor buffers required to exist before the H8
+    /// free-memory admission sample. The plan itself does not allocate them.
+    pub materialized_before_admission_bytes: u64,
+    /// Exact runtime buffers reviewed here and deferred until the
+    /// heterogeneous execution runtime is constructed after admission.
+    pub reviewed_deferred_after_admission_bytes: u64,
+    pub planned_owned_bytes: u64,
+    /// Allocator retention/fragmentation, later modules/cuBLAS state and the
+    /// hard OOM safety remainder remain unmaterialized inside this term.
+    pub runtime_and_safety_remainder_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionReservePlan {
+    pub disposition: ExecutionReserveDisposition,
+    pub context_cap: u32,
+    pub max_dispatch_rows: u32,
+    pub num_layers: u32,
+    pub remote_result_layers: u32,
+    pub layer_owner: DeviceExecutionReserveLedger,
+    pub remote_gpu: DeviceExecutionReserveLedger,
+    pub decode_pinned_relay_raw_capacity_bytes: u64,
+    pub decode_pinned_relay_cap_bytes: u64,
+    pub decode_pinned_relay_materialized_at_construction: bool,
+    /// The first proof does not materialize prefill relay pools. This is the
+    /// reviewed hard policy cap, not an allocation or a raw-byte claim.
+    pub prefill_pinned_relay_cap_bytes: u64,
+    pub prefill_pinned_relay_materialized_at_construction: bool,
+}
+
+impl ExecutionReservePlan {
+    pub fn from_config(
+        config: &super::gpt_oss_native::GptOssNativeConfig,
+        remote_layers: usize,
+    ) -> Result<Self> {
+        Self::from_config_with_policy(
+            config,
+            remote_layers,
+            OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
+            OWNER_SELECTIVE_DECODE_MAX_ROWS,
+            OWNER_SELECTIVE_GPU_RESERVE_BYTES,
+        )
+    }
+
+    fn from_config_with_policy(
+        config: &super::gpt_oss_native::GptOssNativeConfig,
+        remote_layers: usize,
+        context_cap: usize,
+        max_dispatch_rows: usize,
+        gpu_reserve_bytes: u64,
+    ) -> Result<Self> {
+        config.validate()?;
+        if remote_layers > config.num_hidden_layers {
+            return Err(LLMError::ModelError(format!(
+                "remote execution-result layer count {remote_layers} exceeds model layers {}",
+                config.num_hidden_layers
+            )));
+        }
+        if config.num_hidden_layers == 0
+            || config.vocab_size == 0
+            || !matches!(config.num_experts, 32 | 128)
+            || config.experts_per_token != GPT_OSS_TOP_K
+            || config.hidden_size != crate::heterogeneous::contract::GPT_OSS_HIDDEN_SIZE
+            || config.intermediate_size != crate::heterogeneous::cuda_expert::INTERMEDIATE_SIZE
+            || config.head_dim != 64
+            || config.num_attention_heads != 64
+            || config.num_key_value_heads != 8
+        {
+            return Err(LLMError::ModelError(
+                "execution reserve dimensions do not match the fixed GPT-OSS runtime".into(),
+            ));
+        }
+        let u64_value = |value: usize, label: &str| {
+            u64::try_from(value)
+                .map_err(|_| LLMError::ModelError(format!("{label} does not fit u64")))
+        };
+        let product = |label: &str, factors: &[u64]| {
+            factors.iter().try_fold(1_u64, |value, factor| {
+                value.checked_mul(*factor).ok_or_else(|| {
+                    LLMError::ModelError(format!("{label} byte arithmetic overflows"))
+                })
+            })
+        };
+        let sum = |label: &str, values: &[u64]| {
+            values.iter().try_fold(0_u64, |value, term| {
+                value.checked_add(*term).ok_or_else(|| {
+                    LLMError::ModelError(format!("{label} byte arithmetic overflows"))
+                })
+            })
+        };
+
+        let layers = u64_value(config.num_hidden_layers, "layer count")?;
+        let remote_layers_u64 = u64_value(remote_layers, "remote layer count")?;
+        let head_dim = u64_value(config.head_dim, "head dimension")?;
+        let kv_width = product(
+            "K/V width",
+            &[
+                u64_value(config.num_key_value_heads, "K/V heads")?,
+                head_dim,
+            ],
+        )?;
+        let top_k = u64_value(GPT_OSS_TOP_K, "top-k")?;
+        let bf16_bytes = u64::try_from(size_of::<u16>()).expect("u16 size fits u64");
+
+        let kv_cache_bytes = product(
+            "K/V cache",
+            &[
+                layers,
+                u64_value(context_cap, "context cap")?,
+                kv_width,
+                2,
+                bf16_bytes,
+            ],
+        )?;
+        let shell_total = u64_value(
+            heterogeneous_control_shell_device_bytes(
+                config.num_hidden_layers,
+                config.vocab_size,
+                context_cap,
+            )?,
+            "control shell bytes",
+        )?;
+        let layer_owner_shell_fixed_bytes = shell_total
+            .checked_sub(kv_cache_bytes)
+            .ok_or_else(|| LLMError::ModelError("control shell K/V split underflows".into()))?;
+
+        let router_per_layer = u64_value(
+            exact_router_owned_device_bytes(config.num_experts, max_dispatch_rows)?,
+            "router bytes",
+        )?;
+        let router_bytes = product("all-layer router", &[layers, router_per_layer])?;
+        let relay_per_layer = u64_value(
+            result_relay_owned_device_bytes(max_dispatch_rows)?,
+            "relay arena bytes",
+        )?;
+        let relay_result_arena_bytes =
+            product("all-layer relay arena", &[layers, relay_per_layer])?;
+        let reduction_bytes = product(
+            "all-layer reducer",
+            &[
+                layers,
+                u64_value(GPT_OSS_REDUCER_OWNED_DEVICE_BYTES, "reducer bytes")?,
+            ],
+        )?;
+        let selected_expert_executor_bytes = u64_value(
+            GPT_OSS_SELECTED_EXPERT_EXECUTOR_BYTES,
+            "selected-expert executor bytes",
+        )?;
+        let one_layer_result_slots = product(
+            "result slots",
+            &[
+                top_k,
+                u64_value(GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES, "expert output bytes")?,
+            ],
+        )?;
+        let layer_owner_result_slot_bytes = product(
+            "layer-owner result slots",
+            &[layers, one_layer_result_slots],
+        )?;
+        let remote_result_slot_bytes = product(
+            "remote result slots",
+            &[remote_layers_u64, one_layer_result_slots],
+        )?;
+
+        let device = |label: &str,
+                      kv_cache_bytes: u64,
+                      layer_owner_shell_fixed_bytes: u64,
+                      router_bytes: u64,
+                      relay_result_arena_bytes: u64,
+                      reduction_bytes: u64,
+                      result_slot_bytes: u64|
+         -> Result<DeviceExecutionReserveLedger> {
+            let planned_owned_bytes = sum(
+                label,
+                &[
+                    kv_cache_bytes,
+                    layer_owner_shell_fixed_bytes,
+                    router_bytes,
+                    relay_result_arena_bytes,
+                    reduction_bytes,
+                    selected_expert_executor_bytes,
+                    result_slot_bytes,
+                ],
+            )?;
+            let materialized_before_admission_bytes = selected_expert_executor_bytes;
+            let reviewed_deferred_after_admission_bytes = planned_owned_bytes
+                .checked_sub(materialized_before_admission_bytes)
+                .ok_or_else(|| {
+                    LLMError::ModelError(format!(
+                        "{label} materialized execution bytes exceed planned bytes"
+                    ))
+                })?;
+            let runtime_and_safety_remainder_bytes = gpu_reserve_bytes
+                .checked_sub(reviewed_deferred_after_admission_bytes)
+                .ok_or_else(|| {
+                    LLMError::MemoryError(format!(
+                        "{label} deferred execution bytes {reviewed_deferred_after_admission_bytes} exceed reserve {}",
+                        gpu_reserve_bytes
+                    ))
+                })?;
+            Ok(DeviceExecutionReserveLedger {
+                reserve_cap_bytes: gpu_reserve_bytes,
+                kv_cache_bytes,
+                layer_owner_shell_fixed_bytes,
+                router_bytes,
+                relay_result_arena_bytes,
+                reduction_bytes,
+                selected_expert_executor_bytes,
+                result_slot_bytes,
+                materialized_before_admission_bytes,
+                reviewed_deferred_after_admission_bytes,
+                planned_owned_bytes,
+                runtime_and_safety_remainder_bytes,
+            })
+        };
+
+        let (decode_pinned_raw, decode_pinned_cap) =
+            relay_pinned_capacity_bytes(GptOssPhase::Decode, max_dispatch_rows)?;
+        if decode_pinned_raw > decode_pinned_cap {
+            return Err(LLMError::MemoryError(
+                "decode pinned relay raw capacity exceeds cap".into(),
+            ));
+        }
+
+        let plan = Self {
+            disposition: ExecutionReserveDisposition::PostExecutorAdmissionRuntimePlanReviewed,
+            context_cap: u32::try_from(context_cap)
+                .map_err(|_| LLMError::ModelError("proof context cap does not fit u32".into()))?,
+            max_dispatch_rows: u32::try_from(max_dispatch_rows)
+                .map_err(|_| LLMError::ModelError("decode row cap does not fit u32".into()))?,
+            num_layers: u32::try_from(config.num_hidden_layers)
+                .map_err(|_| LLMError::ModelError("layer count does not fit u32".into()))?,
+            remote_result_layers: u32::try_from(remote_layers)
+                .map_err(|_| LLMError::ModelError("remote layer count does not fit u32".into()))?,
+            layer_owner: device(
+                "layer-owner execution plan",
+                kv_cache_bytes,
+                layer_owner_shell_fixed_bytes,
+                router_bytes,
+                relay_result_arena_bytes,
+                reduction_bytes,
+                layer_owner_result_slot_bytes,
+            )?,
+            remote_gpu: device(
+                "remote-GPU execution plan",
+                0,
+                0,
+                0,
+                0,
+                0,
+                remote_result_slot_bytes,
+            )?,
+            decode_pinned_relay_raw_capacity_bytes: u64_value(
+                decode_pinned_raw,
+                "decode pinned relay raw capacity",
+            )?,
+            decode_pinned_relay_cap_bytes: u64_value(decode_pinned_cap, "decode pinned relay cap")?,
+            decode_pinned_relay_materialized_at_construction: false,
+            prefill_pinned_relay_cap_bytes: u64_value(
+                H4_PREFILL_PINNED_CAP_BYTES,
+                "prefill pinned relay bytes",
+            )?,
+            prefill_pinned_relay_materialized_at_construction: false,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.disposition != ExecutionReserveDisposition::PostExecutorAdmissionRuntimePlanReviewed
+            || self.context_cap == 0
+            || self.max_dispatch_rows == 0
+            || self.num_layers == 0
+            || self.remote_result_layers > self.num_layers
+            || self.decode_pinned_relay_materialized_at_construction
+            || self.prefill_pinned_relay_materialized_at_construction
+            || self.decode_pinned_relay_raw_capacity_bytes > self.decode_pinned_relay_cap_bytes
+        {
+            return Err(LLMError::ModelError(
+                "execution reserve plan has invalid policy or materialization state".into(),
+            ));
+        }
+        for (label, device) in [
+            ("layer owner", &self.layer_owner),
+            ("remote GPU", &self.remote_gpu),
+        ] {
+            let exact_categories = device
+                .kv_cache_bytes
+                .checked_add(device.layer_owner_shell_fixed_bytes)
+                .and_then(|bytes| bytes.checked_add(device.router_bytes))
+                .and_then(|bytes| bytes.checked_add(device.relay_result_arena_bytes))
+                .and_then(|bytes| bytes.checked_add(device.reduction_bytes))
+                .and_then(|bytes| bytes.checked_add(device.selected_expert_executor_bytes))
+                .and_then(|bytes| bytes.checked_add(device.result_slot_bytes))
+                .ok_or_else(|| {
+                    LLMError::ModelError(format!("{label} execution reserve validation overflows"))
+                })?;
+            let materialization_split = device
+                .materialized_before_admission_bytes
+                .checked_add(device.reviewed_deferred_after_admission_bytes)
+                .ok_or_else(|| {
+                    LLMError::ModelError(format!(
+                        "{label} execution materialization split overflows"
+                    ))
+                })?;
+            let inclusive_reserve = device
+                .reviewed_deferred_after_admission_bytes
+                .checked_add(device.runtime_and_safety_remainder_bytes)
+                .ok_or_else(|| {
+                    LLMError::ModelError(format!("{label} inclusive execution reserve overflows"))
+                })?;
+            if exact_categories != device.planned_owned_bytes
+                || materialization_split != device.planned_owned_bytes
+                || device.materialized_before_admission_bytes
+                    != device.selected_expert_executor_bytes
+                || inclusive_reserve != device.reserve_cap_bytes
+            {
+                return Err(LLMError::ModelError(format!(
+                    "{label} execution reserve ledger is inconsistent"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerSelectiveEnvelope {
     pub native_mapped_payload_bytes: u64,
@@ -76,6 +432,7 @@ pub struct OwnerSelectiveEnvelope {
     pub remote_gpu_execution_reserve_bytes: u64,
     pub pinned_upload_bytes: u64,
     pub construction_temporary_cap_bytes: u64,
+    pub execution_reserve_plan: ExecutionReservePlan,
 }
 
 impl OwnerSelectiveEnvelope {
@@ -89,6 +446,15 @@ impl OwnerSelectiveEnvelope {
                 .checked_mul(bytes)
                 .ok_or_else(|| LLMError::ModelError(format!("{label} owner byte count overflows")))
         };
+        let remote_layers = placement
+            .assignments()
+            .filter_map(|(key, owner)| {
+                matches!(owner, ExpertOwner::RemoteGpu { .. }).then_some(key.layer)
+            })
+            .collect::<BTreeSet<_>>()
+            .len();
+        let execution_reserve_plan =
+            ExecutionReservePlan::from_config(checkpoint.config(), remote_layers)?;
         Ok(Self {
             native_mapped_payload_bytes: checkpoint.mapped_payload_bytes(),
             non_expert_payload_bytes: checkpoint.non_expert_payload_bytes(),
@@ -126,6 +492,7 @@ impl OwnerSelectiveEnvelope {
             remote_gpu_execution_reserve_bytes: OWNER_SELECTIVE_GPU_RESERVE_BYTES,
             pinned_upload_bytes: OWNER_SELECTIVE_PINNED_UPLOAD_BYTES as u64,
             construction_temporary_cap_bytes: OWNER_SELECTIVE_TEMPORARY_CAP_BYTES as u64,
+            execution_reserve_plan,
         })
     }
 
@@ -156,6 +523,12 @@ pub struct ConstructionLedger {
     pub layer_owner_experts: u32,
     pub remote_gpu_experts: u32,
     pub cpu_experts: u32,
+    pub execution_reserve_reviewed: bool,
+    pub execution_runtime_resources_materialized_at_construction: bool,
+    pub layer_owner_execution_materialized_before_admission_bytes: u64,
+    pub remote_gpu_execution_materialized_before_admission_bytes: u64,
+    pub layer_owner_execution_planned_bytes: u64,
+    pub remote_gpu_execution_planned_bytes: u64,
 }
 
 impl ConstructionLedger {
@@ -172,6 +545,12 @@ impl ConstructionLedger {
             layer_owner_experts: 0,
             remote_gpu_experts: 0,
             cpu_experts: 0,
+            execution_reserve_reviewed: false,
+            execution_runtime_resources_materialized_at_construction: false,
+            layer_owner_execution_materialized_before_admission_bytes: 0,
+            remote_gpu_execution_materialized_before_admission_bytes: 0,
+            layer_owner_execution_planned_bytes: 0,
+            remote_gpu_execution_planned_bytes: 0,
         }
     }
 }
@@ -193,7 +572,9 @@ impl LayerOwnerDenseTensor {
     }
 }
 
-/// A fully materialized but execution-detached owner topology.
+/// A fully materialized owner-weight topology. Its selected-expert executor
+/// buffers also exist; the remaining execution resources are an explicitly
+/// reviewed, not-yet-materialized reserve plan.
 pub struct OwnerSelectiveModel {
     // Fields are declared in construction rollback order because Rust drops
     // struct fields in declaration order after `Drop::drop`: CPU records,
@@ -636,12 +1017,31 @@ impl OwnerSelectiveConstructor {
         observe(&ledger)?;
 
         ledger.stage = ConstructionStage::ExecutionReserve;
-        verify_materialized(
+        verify_materialized_expert_weights(
             &placement,
             &layer_owner_experts,
             &remote_gpu_experts,
             &cpu_layers,
         )?;
+        envelope.execution_reserve_plan.validate()?;
+        ledger.execution_reserve_reviewed = true;
+        ledger.execution_runtime_resources_materialized_at_construction = false;
+        ledger.layer_owner_execution_materialized_before_admission_bytes = envelope
+            .execution_reserve_plan
+            .layer_owner
+            .materialized_before_admission_bytes;
+        ledger.remote_gpu_execution_materialized_before_admission_bytes = envelope
+            .execution_reserve_plan
+            .remote_gpu
+            .materialized_before_admission_bytes;
+        ledger.layer_owner_execution_planned_bytes = envelope
+            .execution_reserve_plan
+            .layer_owner
+            .planned_owned_bytes;
+        ledger.remote_gpu_execution_planned_bytes = envelope
+            .execution_reserve_plan
+            .remote_gpu
+            .planned_owned_bytes;
         observe(&ledger)?;
         inject_construction_fault(injected_fault, ConstructionStage::ExecutionReserve)?;
 
@@ -855,7 +1255,7 @@ fn expert_components() -> [(&'static str, usize); 6] {
     ]
 }
 
-fn verify_materialized(
+fn verify_materialized_expert_weights(
     placement: &ResolvedExpertPlacement,
     layer_owner: &BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
     remote: &BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,

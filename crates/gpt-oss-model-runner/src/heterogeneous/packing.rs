@@ -65,6 +65,48 @@ pub struct PackedDispatchPlan {
     pub bytes: RelayBytePlan,
 }
 
+/// Fixed five-buffer pinned reservation for one bounded route batch. This is
+/// shared by admission planning and the production packer so the reviewed
+/// reserve cannot drift from the pools it describes.
+pub fn relay_pinned_capacity_bytes(phase: GptOssPhase, rows: usize) -> Result<(usize, usize)> {
+    if rows == 0 || rows > H4_PREFILL_MAX_ROWS {
+        return Err(LLMError::MemoryError(format!(
+            "relay rows {rows} outside 1..={H4_PREFILL_MAX_ROWS}"
+        )));
+    }
+    let row_bytes = GPT_OSS_HIDDEN_SIZE
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| LLMError::ModelError("relay row bytes overflow".into()))?;
+    let source = rows
+        .checked_mul(row_bytes)
+        .ok_or_else(|| LLMError::ModelError("relay source capacity overflows".into()))?;
+    let routes = rows
+        .checked_mul(GPT_OSS_TOP_K)
+        .ok_or_else(|| LLMError::ModelError("relay route capacity overflows".into()))?;
+    let descriptors = routes
+        .checked_mul(H4_ROUTE_DESCRIPTOR_MAX_BYTES)
+        .ok_or_else(|| LLMError::ModelError("relay descriptor capacity overflows".into()))?;
+    let one_result_arena = routes
+        .checked_mul(row_bytes)
+        .ok_or_else(|| LLMError::ModelError("relay result capacity overflows".into()))?;
+    let raw = source
+        .checked_add(descriptors)
+        .and_then(|bytes| bytes.checked_add(one_result_arena))
+        .and_then(|bytes| bytes.checked_add(one_result_arena))
+        .and_then(|bytes| bytes.checked_add(one_result_arena))
+        .ok_or_else(|| LLMError::ModelError("relay raw capacity overflows".into()))?;
+    let cap = match phase {
+        GptOssPhase::Decode => H4_DECODE_PINNED_CAP_BYTES,
+        GptOssPhase::Prefill => H4_PREFILL_PINNED_CAP_BYTES,
+    };
+    if raw > cap {
+        return Err(LLMError::MemoryError(format!(
+            "relay pinned requirement {raw} exceeds hard cap {cap}"
+        )));
+    }
+    Ok((raw, cap))
+}
+
 impl PackedDispatchPlan {
     pub fn all_routes(&self) -> impl Iterator<Item = &PackedDispatchRoute> {
         self.local_gpu
@@ -247,21 +289,7 @@ pub fn pack_routes_bounded(
     let remote_gpu_input_capacity = rows * GPT_OSS_TOP_K * row_bytes;
     let remote_gpu_result_capacity = rows * GPT_OSS_TOP_K * row_bytes;
     let cpu_result_capacity = rows * GPT_OSS_TOP_K * row_bytes;
-    let raw_pinned_bytes = source_activation_capacity
-        .checked_add(route_descriptor_capacity)
-        .and_then(|bytes| bytes.checked_add(remote_gpu_input_capacity))
-        .and_then(|bytes| bytes.checked_add(remote_gpu_result_capacity))
-        .and_then(|bytes| bytes.checked_add(cpu_result_capacity))
-        .ok_or_else(|| LLMError::ModelError("relay byte plan overflows".into()))?;
-    let hard_cap_bytes = match batch.phase {
-        GptOssPhase::Decode => H4_DECODE_PINNED_CAP_BYTES,
-        GptOssPhase::Prefill => H4_PREFILL_PINNED_CAP_BYTES,
-    };
-    if raw_pinned_bytes > hard_cap_bytes {
-        return Err(LLMError::MemoryError(format!(
-            "relay pinned requirement {raw_pinned_bytes} exceeds hard cap {hard_cap_bytes}"
-        )));
-    }
+    let (raw_pinned_bytes, hard_cap_bytes) = relay_pinned_capacity_bytes(batch.phase, rows)?;
     let plan = PackedDispatchPlan {
         layer: batch.layer,
         phase: batch.phase,

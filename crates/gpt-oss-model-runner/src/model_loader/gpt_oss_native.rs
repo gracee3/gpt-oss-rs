@@ -31,7 +31,7 @@ pub struct GptOssNativeConfig {
 }
 
 impl GptOssNativeConfig {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if !matches!(
             (self.num_hidden_layers, self.num_experts),
             (24, 32) | (36, 128)

@@ -16,8 +16,8 @@ use super::contract::{
 };
 use super::cuda_expert::CudaSelectedExpertResultSlot;
 use super::packing::{
-    PackedDispatchPlan, RelayBytePlan, H4_DECODE_PINNED_CAP_BYTES, H4_PREFILL_MAX_ROWS,
-    H4_PREFILL_PINNED_CAP_BYTES, H4_ROUTE_DESCRIPTOR_MAX_BYTES,
+    relay_pinned_capacity_bytes, PackedDispatchPlan, RelayBytePlan, H4_PREFILL_MAX_ROWS,
+    H4_ROUTE_DESCRIPTOR_MAX_BYTES,
 };
 use super::placement::ExpertOwner;
 use super::router::CudaExactRouter;
@@ -31,6 +31,14 @@ pub struct RelayPinnedPoolStats {
     pub cpu_result: BoundedPinnedPoolStats,
     pub raw_capacity_bytes: usize,
     pub hard_cap_bytes: usize,
+}
+
+pub fn result_relay_owned_device_bytes(max_rows: usize) -> Result<usize> {
+    max_rows
+        .checked_mul(GPT_OSS_TOP_K)
+        .and_then(|routes| routes.checked_mul(GPT_OSS_HIDDEN_SIZE))
+        .and_then(|values| values.checked_mul(size_of::<u16>()))
+        .ok_or_else(|| LLMError::ModelError("result-relay device bytes overflow".into()))
 }
 
 /// Exactly five capacity-one pools sized for one decode row or one bounded
@@ -129,11 +137,18 @@ impl RelayPinnedPools {
             + remote_gpu_input.bytes_per_buffer
             + remote_gpu_result.bytes_per_buffer
             + cpu_result.bytes_per_buffer;
-        let hard_cap_bytes = if self.max_rows == 1 {
-            H4_DECODE_PINNED_CAP_BYTES
+        let phase = if self.max_rows == 1 {
+            GptOssPhase::Decode
         } else {
-            H4_PREFILL_PINNED_CAP_BYTES
+            GptOssPhase::Prefill
         };
+        let (reported_raw_capacity_bytes, hard_cap_bytes) =
+            relay_pinned_capacity_bytes(phase, self.max_rows)
+                .expect("validated relay pool dimensions have a byte plan");
+        assert_eq!(
+            raw_capacity_bytes, reported_raw_capacity_bytes,
+            "relay pool allocations drifted from the reviewed byte reporter"
+        );
         RelayPinnedPoolStats {
             source_activation,
             route_descriptors,
@@ -392,6 +407,10 @@ impl CudaResultRelay {
             #[cfg(feature = "heterogeneous-test-faults")]
             last_fault_drained: false,
         })
+    }
+
+    pub fn owned_device_bytes(&self) -> Result<usize> {
+        result_relay_owned_device_bytes(self.max_routes / GPT_OSS_TOP_K)
     }
 
     pub(crate) fn stable_device(&self) -> &gpt_oss_gpu::device::StableCudaDeviceId {
@@ -1350,16 +1369,27 @@ pub fn fixed_relay_byte_plan(max_rows: usize) -> Result<RelayBytePlan> {
             "fixed relay byte plan rows outside 1..=64".into(),
         ));
     }
-    let row_bytes = GPT_OSS_HIDDEN_SIZE * size_of::<u16>();
-    let source_activation_capacity = max_rows * row_bytes;
-    let route_descriptor_capacity = max_rows * GPT_OSS_TOP_K * H4_ROUTE_DESCRIPTOR_MAX_BYTES;
-    let route_arena = max_rows * GPT_OSS_TOP_K * row_bytes;
-    let raw_pinned_bytes = source_activation_capacity + route_descriptor_capacity + route_arena * 3;
-    let hard_cap_bytes = if max_rows == 1 {
-        H4_DECODE_PINNED_CAP_BYTES
+    let phase = if max_rows == 1 {
+        GptOssPhase::Decode
     } else {
-        H4_PREFILL_PINNED_CAP_BYTES
+        GptOssPhase::Prefill
     };
+    let row_bytes = GPT_OSS_HIDDEN_SIZE
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| LLMError::ModelError("fixed relay row bytes overflow".into()))?;
+    let source_activation_capacity = max_rows
+        .checked_mul(row_bytes)
+        .ok_or_else(|| LLMError::ModelError("fixed relay source bytes overflow".into()))?;
+    let route_capacity = max_rows
+        .checked_mul(GPT_OSS_TOP_K)
+        .ok_or_else(|| LLMError::ModelError("fixed relay route count overflow".into()))?;
+    let route_descriptor_capacity = route_capacity
+        .checked_mul(H4_ROUTE_DESCRIPTOR_MAX_BYTES)
+        .ok_or_else(|| LLMError::ModelError("fixed relay descriptor bytes overflow".into()))?;
+    let route_arena = route_capacity
+        .checked_mul(row_bytes)
+        .ok_or_else(|| LLMError::ModelError("fixed relay route arena bytes overflow".into()))?;
+    let (raw_pinned_bytes, hard_cap_bytes) = relay_pinned_capacity_bytes(phase, max_rows)?;
     Ok(RelayBytePlan {
         source_activation_d2h: source_activation_capacity,
         route_descriptor_d2h: route_descriptor_capacity,

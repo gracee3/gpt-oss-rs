@@ -1,0 +1,159 @@
+{
+  "schema": "gpt-oss-rs.execution-reserve-readiness/v1",
+  "status": "passed",
+  "date": "2026-08-16",
+  "package_start_head": "d575a7008a50b2f32ca93f807fae25010742bd10",
+  "source_fingerprint_sha256": "b7c8fc6720c76dd347edd6b9e69896d758f9de007bfd91317f703978e415a944",
+  "source_fingerprint_rule": "SHA-256 over sorted tracked and untracked, non-ignored paths outside docs/, with each path and file SHA-256 separated by NUL bytes",
+  "binaries": {
+    "heterogeneous_construct_sha256": "1efc843d174196df9f264cba15020c077e60b0fb7ab683ac137d7545b22cbf3b",
+    "heterogeneous_control_sha256": "8257bd4130640df6aea7a823c599aa9f90be49e2fdc7bc6fdc466ba546160d37",
+    "heterogeneous_layer_oracle_sha256": "e5cc8093cccf0dc45f9bd93c3a2ebec28329d022238c5556026579fdb75df07e"
+  },
+  "inputs": {
+    "model_20b": "/data/models/openai/gpt-oss-20b",
+    "native_model_20b": "/data/models/openai/gpt-oss-20b/original",
+    "native_model_120b_metadata_only": "/data/models/openai/gpt-oss-120b/original",
+    "native_config_20b_sha256": "317522155fc243327ee341857d0c752d0094a0817e0e9aee2890d5ad8e009e04",
+    "native_config_120b_sha256": "063aaa98e012cac330d58d18471700f0b0eb90bb15c58fb227809d45090f3e65",
+    "runtime_mapping_20b_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+    "runtime_mapping_120b_sha256": "6cf738409706faee51bbf7b77383e23393df6ff454fc1e906a234016ab29413c",
+    "placement_20b_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+    "placement_120b_sha256": "ea7707d28965fdbc4215af1029c179788e6904af4271ef7367696a3721491b9e",
+    "retained_trace_sha256": "1be8a61eeeec92e7af980a6f190788f0829048015c5f54fe7fa6ce334618db39",
+    "owner_cache": "/home/emmy/workspace/gpt-oss-rs-het-cache",
+    "owner_cache_bytes": 26508424
+  },
+  "measurement_boundary": {
+    "h8_admission_sample": "after both selected-expert executors and their CUDA context/modules exist, before K/V, router, relay, reducer, canonical result slots, and pinned relay pools are materialized",
+    "materialized_before_admission_bytes_per_gpu": 46080,
+    "reserve_cap_bytes_per_gpu": 4294967296,
+    "reserve_equation": "reviewed_deferred_after_admission_bytes + runtime_and_safety_remainder_bytes == reserve_cap_bytes",
+    "eventual_owned_equation": "materialized_before_admission_bytes + reviewed_deferred_after_admission_bytes == planned_owned_bytes",
+    "dummy_reserve_allocation_bytes": 0
+  },
+  "plans": {
+    "20b_proof_placement": {
+      "context_cap": 4096,
+      "remote_result_layers": 1,
+      "layer_owner": {
+        "kv_cache_bytes": 201326592,
+        "shell_fixed_bytes": 857472,
+        "router_bytes": 4566624,
+        "relay_result_arena_bytes": 552960,
+        "reduction_bytes": 2350272,
+        "result_slot_bytes": 552960,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 210206880,
+        "planned_owned_bytes": 210252960,
+        "runtime_and_safety_remainder_bytes": 4084760416
+      },
+      "remote_gpu": {
+        "result_slot_bytes": 23040,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 23040,
+        "planned_owned_bytes": 69120,
+        "runtime_and_safety_remainder_bytes": 4294944256
+      }
+    },
+    "120b_proof_placement_metadata_only": {
+      "context_cap": 4096,
+      "remote_result_layers": 13,
+      "layer_owner": {
+        "kv_cache_bytes": 301989888,
+        "shell_fixed_bytes": 857472,
+        "router_bytes": 26770320,
+        "relay_result_arena_bytes": 829440,
+        "reduction_bytes": 3525408,
+        "result_slot_bytes": 829440,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 334801968,
+        "planned_owned_bytes": 334848048,
+        "runtime_and_safety_remainder_bytes": 3960165328
+      },
+      "remote_gpu": {
+        "result_slot_bytes": 299520,
+        "materialized_before_admission_bytes": 46080,
+        "reviewed_deferred_after_admission_bytes": 299520,
+        "planned_owned_bytes": 345600,
+        "runtime_and_safety_remainder_bytes": 4294667776
+      }
+    },
+    "pinned_relay": {
+      "decode_raw_capacity_bytes": 74944,
+      "decode_cap_bytes": 131072,
+      "decode_materialized_at_construction": false,
+      "prefill_policy_cap_bytes": 8388608,
+      "prefill_materialized_at_construction": false
+    }
+  },
+  "retained_artifacts": {
+    "20b_warm_construction": {
+      "path": "20b-warm-construction.json",
+      "sha256": "ecf10de46d3f3f3d280ae510563782747c5e66ac8ee29d197842521a8751f934",
+      "passed": true
+    },
+    "20b_construction_faults": {
+      "path": "20b-construction-faults.json",
+      "sha256": "55d71a8afe0ba5345168f4e3d36c54bc5d49b8a8fdae7c1ab8def8b584401f8c",
+      "passed": true,
+      "actual_constructor_stages": 8,
+      "all_cleanup_within_tolerance": true,
+      "subsequent_clean_construction": true
+    },
+    "20b_retained_control": {
+      "path": "20b-retained-control.json",
+      "sha256": "02baa5f10a69e1d6f96643247962f7c64b668b03ea682a258d9b2ba75353f299",
+      "passed": true,
+      "repeat_count": 2,
+      "exact_tokens": [200005, 35644, 200008, 976, 1825, 5003, 25, 392],
+      "strict_three_way_overlap_each_run": true,
+      "cleanup_each_run": true
+    }
+  },
+  "swap_watchdog": {
+    "stable_samples": [
+      "2026-08-16T13:30:03-04:00",
+      "2026-08-16T13:30:33-04:00",
+      "2026-08-16T13:31:03-04:00",
+      "2026-08-16T13:31:33-04:00",
+      "2026-08-16T13:32:03-04:00"
+    ],
+    "stable_swap_free_kib": 104836164,
+    "stable_swap_cached_kib": 1676,
+    "stable_memory_psi_some_avg10": 0.0,
+    "stable_dockerd_vm_swap_kib": 4208,
+    "warm_start_min_end_swap_free_kib": [104836164, 104836164, 104836164],
+    "fault_start_min_end_swap_free_kib": [104836164, 104836164, 104836164],
+    "retained_start_min_end_swap_free_kib": [104836164, 104836164, 104836220],
+    "h6_start_min_end_swap_free_kib": [104836220, 104836220, 104836220],
+    "h4_start_min_end_swap_free_kib": [104836220, 104836220, 104836220],
+    "h5_start_min_end_swap_free_kib": [104836220, 104836220, 104836220],
+    "target_process_max_vm_swap_kib": 0,
+    "new_global_swap_allocation_observed": false,
+    "interpretation": "The host had pre-existing swap allocated to dockerd. Final acceptance requires no decrease in SwapFree from each run baseline and zero target-process VmSwap; a 56 KiB increase in SwapFree during the retained run is release, not allocation."
+  },
+  "gates": {
+    "workspace_check": "passed",
+    "workspace_tests": "passed",
+    "configured_strict_clippy_lanes": 3,
+    "construction_and_control_strict_clippy_lanes": 3,
+    "owner_selective_contract_tests": 7,
+    "metadata_only_20b_120b_contract": "passed",
+    "bounded_pinned_pool": "passed",
+    "real_h4_relay": "passed",
+    "real_h5_reduction": "passed",
+    "real_h6a_h6b": "passed",
+    "real_h7_retained_control": "passed"
+  },
+  "safety": {
+    "h8_retried": false,
+    "h9_started": false,
+    "120b_weights_loaded_or_executed": false,
+    "four_gib_dummy_buffers_allocated": false,
+    "prior_h8_evidence_modified": false,
+    "model_copied_or_transformed": false,
+    "protected_nvme_touched": false,
+    "push_or_merge": false
+  }
+}

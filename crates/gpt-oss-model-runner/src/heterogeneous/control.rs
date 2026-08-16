@@ -47,6 +47,41 @@ use super::{CanonicalRouteContract, ExactRouterWeightsView, ExpertResultDescript
 
 const MAX_CONTROL_TOKENS: usize = 96;
 
+pub fn heterogeneous_control_shell_device_bytes(
+    num_layers: usize,
+    vocab_size: usize,
+    context_cap: usize,
+) -> Result<usize> {
+    let query_values = Q_WIDTH
+        .checked_mul(2)
+        .ok_or_else(|| LLMError::ModelError("control query bytes overflow".into()))?;
+    let kv_temporary_values = KV_WIDTH
+        .checked_mul(2)
+        .ok_or_else(|| LLMError::ModelError("control K/V temporary bytes overflow".into()))?;
+    let rope_values = ROPE_PAIRS
+        .checked_mul(2)
+        .ok_or_else(|| LLMError::ModelError("control RoPE bytes overflow".into()))?;
+    let vocabulary_values = vocab_size
+        .checked_mul(2)
+        .ok_or_else(|| LLMError::ModelError("control vocabulary bytes overflow".into()))?;
+    let fixed_values = GPT_OSS_HIDDEN_SIZE
+        .checked_mul(6)
+        .and_then(|values| values.checked_add(query_values))
+        .and_then(|values| values.checked_add(kv_temporary_values))
+        .and_then(|values| values.checked_add(rope_values))
+        .and_then(|values| values.checked_add(vocabulary_values))
+        .ok_or_else(|| LLMError::ModelError("control shell fixed bytes overflow".into()))?;
+    let kv_values = num_layers
+        .checked_mul(context_cap)
+        .and_then(|values| values.checked_mul(KV_WIDTH))
+        .and_then(|values| values.checked_mul(2))
+        .ok_or_else(|| LLMError::ModelError("control shell K/V bytes overflow".into()))?;
+    fixed_values
+        .checked_add(kv_values)
+        .and_then(|values| values.checked_mul(size_of::<u16>()))
+        .ok_or_else(|| LLMError::ModelError("control shell device bytes overflow".into()))
+}
+
 /// A routed layer owns all five pinned leases until it reaches an explicit
 /// proven-drained release. Any early return conservatively retains the whole
 /// reservation for process lifetime; this prevents Rust unwinding from
@@ -395,13 +430,12 @@ impl CudaHeterogeneousControlShell {
     }
 
     pub fn owned_device_bytes(&self) -> usize {
-        let fixed_values = GPT_OSS_HIDDEN_SIZE * 5
-            + Q_WIDTH * 2
-            + KV_WIDTH * 2
-            + self.num_layers * MAX_VISIBLE_TOKENS * KV_WIDTH * 2
-            + ROPE_PAIRS * 2
-            + self.vocab_size * 2;
-        fixed_values * size_of::<u16>()
+        heterogeneous_control_shell_device_bytes(
+            self.num_layers,
+            self.vocab_size,
+            MAX_VISIBLE_TOKENS,
+        )
+        .expect("validated GPT-OSS control dimensions fit usize")
     }
 
     pub fn owned_host_staging_bytes(&self) -> usize {
