@@ -1,6 +1,7 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** Phase 2 planning complete; awaiting review; **baseline captured:** 2026-08-15;
+**Stage:** implementation campaign; H0 passed and H1 at its completion gate;
+**baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
 Documents `00` through `05` are the unchanged pre-research baseline. Documents
@@ -8,7 +9,8 @@ Documents `00` through `05` are the unchanged pre-research baseline. Documents
 measurements. The research compares candidate architecture families and names
 a conditional finalist. Documents `20` through `29` select one architecture,
 one commit model, and bounded implementation/evidence packages. Implementation
-remains stopped pending review and H0 baseline authorization.
+was authorized after review and now advances only when each H0–H10 package
+gate passes.
 
 Evidence labels have the same meaning in every document:
 
@@ -79,6 +81,8 @@ Evidence labels have the same meaning in every document:
     dependency order, per-package gates/bypass, and risk register.
 27. [Implementation readiness](29-implementation-readiness.md) — verdict,
     fixed decisions, conditions, exit criterion, and the H0-only handoff.
+28. [Implementation evidence index](evidence/implementation-2026-08/README.md) —
+    bounded, sanitized H0–H10 gate records.
 
 ## Current headline
 
@@ -114,8 +118,9 @@ host commit advances one visibility epoch. Cancellation after enqueue suppresses
 publication and mandates drain before any buffer, slot, weight, stream, or
 context reclamation.
 
-**Conclusion:** Phase 2 is `conditionally_ready` for implementation. H0 is the
-only package permitted to begin after review; it must establish an attributable
-branch/commit boundary for the existing user-owned fixes and Phase 0–2 docs.
-H1–H9 then proceed only through their individual exactness, ownership, memory,
-lifecycle, and evidence gates. No implementation has begun.
+**Implementation status:** H0 established separate local attribution commits
+for the readiness patch and Phase 0–2 documents. H1 froze the stable-device,
+placement, rank-bearing expert, prepared-step, error, and terminal-evidence
+contracts without wiring them into execution. Later packages proceed only
+through their individual exactness, ownership, memory, lifecycle, and evidence
+gates.

@@ -25,4 +25,5 @@ bytemuck.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 half.workspace = true
+serde.workspace = true
 cudarc = { version = "0.19", features = ["driver", "cublas", "cublaslt", "f16", "cuda-version-from-build-system"], optional = true }

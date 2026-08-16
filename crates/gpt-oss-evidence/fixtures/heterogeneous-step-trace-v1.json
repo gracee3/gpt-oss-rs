@@ -1,0 +1,100 @@
+{
+  "build_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "chunk": 0,
+  "config_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "devices": [
+    {
+      "compute_capability": [
+        8,
+        6
+      ],
+      "expected_name": "NVIDIA GeForce RTX 3090",
+      "minimum_memory_bytes": 25769803776,
+      "pci_bus_id": "0000:19:00.0",
+      "role": "layer_owner_gpu",
+      "transient_ordinal": 0
+    },
+    {
+      "compute_capability": [
+        8,
+        6
+      ],
+      "expected_name": "NVIDIA GeForce RTX 3090",
+      "minimum_memory_bytes": 25769803776,
+      "pci_bus_id": "0000:65:00.0",
+      "role": "remote_gpu",
+      "transient_ordinal": 1
+    }
+  ],
+  "errors": [],
+  "expected_revision": 11,
+  "expected_visibility_epoch": 13,
+  "generation": 19,
+  "high_water_bytes": {
+    "pinned_relay": 23040
+  },
+  "index_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "intervals": [
+    {
+      "clock": "cpu_monotonic",
+      "end_ns": 101,
+      "name": "commit",
+      "owner": "coordinator",
+      "start_ns": 100
+    }
+  ],
+  "layer": 0,
+  "mapping_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "model_id": "gpt-oss-20b",
+  "model_revision": "fixture-revision",
+  "outcome": "committed",
+  "phase": "decode",
+  "placement_epoch": 17,
+  "placement_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "reserved_bytes": {
+    "pinned_relay": 23040
+  },
+  "routes": [
+    {
+      "activation_slot": 0,
+      "expert_id": 31,
+      "owner": "layer_owner_gpu",
+      "result_slot": 0,
+      "route_rank": 0,
+      "selected_weight_bf16_bits": 16000,
+      "source_row": 0
+    },
+    {
+      "activation_slot": 0,
+      "expert_id": 21,
+      "owner": "cpu",
+      "result_slot": 1,
+      "route_rank": 1,
+      "selected_weight_bf16_bits": 16000,
+      "source_row": 0
+    },
+    {
+      "activation_slot": 0,
+      "expert_id": 22,
+      "owner": "remote_gpu",
+      "result_slot": 2,
+      "route_rank": 2,
+      "selected_weight_bf16_bits": 16000,
+      "source_row": 0
+    },
+    {
+      "activation_slot": 0,
+      "expert_id": 6,
+      "owner": "layer_owner_gpu",
+      "result_slot": 3,
+      "route_rank": 3,
+      "selected_weight_bf16_bits": 16000,
+      "source_row": 0
+    }
+  ],
+  "rows": 1,
+  "schema": "gpt-oss-rs.heterogeneous-step-trace/v1",
+  "sequence_id": 7,
+  "terminal_visibility_epoch": 14,
+  "trace_id": "step-7"
+}

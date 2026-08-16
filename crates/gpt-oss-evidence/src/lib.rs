@@ -14,6 +14,7 @@ pub const EVIDENCE_SCHEMA_V1: &str = "gpt-oss-rs.cpu-evidence/v1";
 pub const RUNTIME_SNAPSHOT_SCHEMA_V1: &str = "gpt-oss-rs.cpu-runtime/v1";
 pub const DIAGNOSTIC_SCHEMA_V1: &str = "gpt-oss-rs.cpu-diagnostic/v1";
 pub const CAMPAIGN_INDEX_SCHEMA_V1: &str = "gpt-oss-rs.cpu-campaign-index/v1";
+pub const HETEROGENEOUS_STEP_TRACE_SCHEMA_V1: &str = "gpt-oss-rs.heterogeneous-step-trace/v1";
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -203,6 +204,233 @@ pub struct MeasuredResources {
     pub process_swap_bytes: u64,
     pub system_swap_used_bytes: u64,
     pub available_memory_bytes: u64,
+}
+
+/// Sanitized durable GPU identity. CUDA ordinals are retained only as the
+/// process-local resolution of the PCI identity, never as placement identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeterogeneousDeviceEvidenceV1 {
+    pub role: String,
+    pub pci_bus_id: String,
+    pub transient_ordinal: u32,
+    pub expected_name: String,
+    pub compute_capability: (u32, u32),
+    pub minimum_memory_bytes: u64,
+}
+
+/// One canonical row/rank route. BF16 selected weights remain serialized as
+/// bits so evidence cannot silently widen and reround them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeterogeneousRouteEvidenceV1 {
+    pub source_row: u32,
+    pub route_rank: u8,
+    pub expert_id: u16,
+    pub selected_weight_bf16_bits: u16,
+    pub activation_slot: u32,
+    pub owner: String,
+    pub result_slot: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeterogeneousIntervalEvidenceV1 {
+    pub name: String,
+    pub owner: String,
+    pub clock: String,
+    pub start_ns: u64,
+    pub end_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeterogeneousErrorEvidenceV1 {
+    pub precedence: u32,
+    pub kind: String,
+    pub owner: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_slot: Option<u32>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeterogeneousStepOutcomeV1 {
+    Committed,
+    Discarded,
+}
+
+/// Bounded terminal trace for one heterogeneous prepared step.
+///
+/// Active traces are deliberately not representable as terminal evidence.
+/// A caller may publish this record only after commit, or after mandatory
+/// drain and discard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeterogeneousStepTraceV1 {
+    pub schema: String,
+    pub trace_id: String,
+    pub model_id: String,
+    pub model_revision: String,
+    pub config_sha256: String,
+    pub index_sha256: String,
+    pub mapping_sha256: String,
+    pub placement_sha256: String,
+    pub build_sha256: String,
+    pub devices: Vec<HeterogeneousDeviceEvidenceV1>,
+    pub sequence_id: u64,
+    pub expected_revision: u64,
+    pub expected_visibility_epoch: u64,
+    pub terminal_visibility_epoch: u64,
+    pub placement_epoch: u64,
+    pub generation: u64,
+    pub layer: u16,
+    pub phase: String,
+    pub chunk: u32,
+    pub rows: u32,
+    pub routes: Vec<HeterogeneousRouteEvidenceV1>,
+    #[serde(default)]
+    pub reserved_bytes: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub high_water_bytes: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub intervals: Vec<HeterogeneousIntervalEvidenceV1>,
+    #[serde(default)]
+    pub errors: Vec<HeterogeneousErrorEvidenceV1>,
+    pub outcome: HeterogeneousStepOutcomeV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_divergence: Option<ArtifactRef>,
+}
+
+impl HeterogeneousStepTraceV1 {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != HETEROGENEOUS_STEP_TRACE_SCHEMA_V1 {
+            return Err(EvidenceError::Invalid(format!(
+                "unsupported heterogeneous trace schema '{}'",
+                self.schema
+            )));
+        }
+        for (name, value) in [
+            ("trace_id", self.trace_id.as_str()),
+            ("model_id", self.model_id.as_str()),
+            ("model_revision", self.model_revision.as_str()),
+            ("phase", self.phase.as_str()),
+        ] {
+            require_nonempty(value, name)?;
+        }
+        for (name, hash) in [
+            ("config_sha256", self.config_sha256.as_str()),
+            ("index_sha256", self.index_sha256.as_str()),
+            ("mapping_sha256", self.mapping_sha256.as_str()),
+            ("placement_sha256", self.placement_sha256.as_str()),
+            ("build_sha256", self.build_sha256.as_str()),
+        ] {
+            validate_sha256(hash, name)?;
+        }
+        if !matches!(self.phase.as_str(), "decode" | "prefill") || self.rows == 0 {
+            return Err(EvidenceError::Invalid(
+                "phase must be decode or prefill and rows must be positive".into(),
+            ));
+        }
+        if self.routes.len() != self.rows as usize * 4 {
+            return Err(EvidenceError::Invalid(format!(
+                "heterogeneous trace has {} routes, expected {}",
+                self.routes.len(),
+                self.rows as usize * 4
+            )));
+        }
+        let mut device_roles = BTreeSet::new();
+        let mut pci_identities = BTreeSet::new();
+        for device in &self.devices {
+            require_nonempty(&device.role, "device role")?;
+            require_nonempty(&device.pci_bus_id, "device PCI identity")?;
+            require_nonempty(&device.expected_name, "device name")?;
+            if !device_roles.insert(device.role.as_str()) {
+                return Err(EvidenceError::Invalid(format!(
+                    "duplicate device role '{}'",
+                    device.role
+                )));
+            }
+            if !pci_identities.insert(device.pci_bus_id.as_str()) {
+                return Err(EvidenceError::Invalid(format!(
+                    "duplicate device PCI identity '{}'",
+                    device.pci_bus_id
+                )));
+            }
+        }
+        if device_roles != BTreeSet::from(["layer_owner_gpu", "remote_gpu"]) {
+            return Err(EvidenceError::Invalid(
+                "heterogeneous trace requires exactly layer_owner_gpu and remote_gpu identities"
+                    .into(),
+            ));
+        }
+        for (slot, route) in self.routes.iter().enumerate() {
+            let expected_row = (slot / 4) as u32;
+            let expected_rank = (slot % 4) as u8;
+            if route.source_row != expected_row
+                || route.route_rank != expected_rank
+                || route.result_slot != slot as u32
+                || route.activation_slot >= self.rows
+            {
+                return Err(EvidenceError::Invalid(format!(
+                    "route slot {slot} does not preserve canonical row/rank/result identity"
+                )));
+            }
+            require_nonempty(&route.owner, "route owner")?;
+        }
+        for interval in &self.intervals {
+            require_nonempty(&interval.name, "interval name")?;
+            require_nonempty(&interval.owner, "interval owner")?;
+            require_nonempty(&interval.clock, "interval clock")?;
+            if interval.end_ns < interval.start_ns {
+                return Err(EvidenceError::Invalid(format!(
+                    "interval '{}' ends before it starts",
+                    interval.name
+                )));
+            }
+        }
+        if self
+            .errors
+            .windows(2)
+            .any(|pair| pair[0].precedence > pair[1].precedence)
+        {
+            return Err(EvidenceError::Invalid(
+                "heterogeneous errors are not in deterministic precedence order".into(),
+            ));
+        }
+        match self.outcome {
+            HeterogeneousStepOutcomeV1::Committed
+                if self.terminal_visibility_epoch
+                    != self.expected_visibility_epoch.saturating_add(1) =>
+            {
+                return Err(EvidenceError::Invalid(
+                    "committed trace must advance visibility epoch exactly once".into(),
+                ));
+            }
+            HeterogeneousStepOutcomeV1::Discarded
+                if self.terminal_visibility_epoch != self.expected_visibility_epoch =>
+            {
+                return Err(EvidenceError::Invalid(
+                    "discarded trace must not advance visibility epoch".into(),
+                ));
+            }
+            _ => {}
+        }
+        if self.outcome == HeterogeneousStepOutcomeV1::Committed && !self.errors.is_empty() {
+            return Err(EvidenceError::Invalid(
+                "committed heterogeneous trace must not contain terminal errors".into(),
+            ));
+        }
+        if let Some(divergence) = &self.first_divergence {
+            divergence.verify()?;
+        }
+        Ok(())
+    }
+
+    pub fn stable_json(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        stable_json(self)
+    }
+
+    pub fn write_atomic_new(&self, path: impl AsRef<Path>) -> Result<()> {
+        atomic_write_new(path.as_ref(), &self.stable_json()?)
+    }
 }
 
 /// Immutable CPU-oracle coordinates. All fields remain optional so evidence
@@ -1081,6 +1309,73 @@ fn redact_argument(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn heterogeneous_trace() -> HeterogeneousStepTraceV1 {
+        HeterogeneousStepTraceV1 {
+            schema: HETEROGENEOUS_STEP_TRACE_SCHEMA_V1.into(),
+            trace_id: "step-7".into(),
+            model_id: "gpt-oss-20b".into(),
+            model_revision: "fixture-revision".into(),
+            config_sha256: "1".repeat(64),
+            index_sha256: "2".repeat(64),
+            mapping_sha256: "3".repeat(64),
+            placement_sha256: "4".repeat(64),
+            build_sha256: "5".repeat(64),
+            devices: vec![
+                HeterogeneousDeviceEvidenceV1 {
+                    role: "layer_owner_gpu".into(),
+                    pci_bus_id: "0000:19:00.0".into(),
+                    transient_ordinal: 0,
+                    expected_name: "NVIDIA GeForce RTX 3090".into(),
+                    compute_capability: (8, 6),
+                    minimum_memory_bytes: 25_769_803_776,
+                },
+                HeterogeneousDeviceEvidenceV1 {
+                    role: "remote_gpu".into(),
+                    pci_bus_id: "0000:65:00.0".into(),
+                    transient_ordinal: 1,
+                    expected_name: "NVIDIA GeForce RTX 3090".into(),
+                    compute_capability: (8, 6),
+                    minimum_memory_bytes: 25_769_803_776,
+                },
+            ],
+            sequence_id: 7,
+            expected_revision: 11,
+            expected_visibility_epoch: 13,
+            terminal_visibility_epoch: 14,
+            placement_epoch: 17,
+            generation: 19,
+            layer: 0,
+            phase: "decode".into(),
+            chunk: 0,
+            rows: 1,
+            routes: [31_u16, 21, 22, 6]
+                .into_iter()
+                .enumerate()
+                .map(|(rank, expert_id)| HeterogeneousRouteEvidenceV1 {
+                    source_row: 0,
+                    route_rank: rank as u8,
+                    expert_id,
+                    selected_weight_bf16_bits: 0x3e80,
+                    activation_slot: 0,
+                    owner: ["layer_owner_gpu", "cpu", "remote_gpu", "layer_owner_gpu"][rank].into(),
+                    result_slot: rank as u32,
+                })
+                .collect(),
+            reserved_bytes: BTreeMap::from([("pinned_relay".into(), 23_040)]),
+            high_water_bytes: BTreeMap::from([("pinned_relay".into(), 23_040)]),
+            intervals: vec![HeterogeneousIntervalEvidenceV1 {
+                name: "commit".into(),
+                owner: "coordinator".into(),
+                clock: "cpu_monotonic".into(),
+                start_ns: 100,
+                end_ns: 101,
+            }],
+            errors: Vec::new(),
+            outcome: HeterogeneousStepOutcomeV1::Committed,
+            first_divergence: None,
+        }
+    }
+
     fn manifest(artifact: ArtifactRef) -> RunManifestV1 {
         let mut manifest = RunManifestV1::new("run-1", "probe", EvidenceStatus::Pass);
         manifest.workload.repetitions = 1;
@@ -1133,6 +1428,48 @@ mod tests {
         let output = temp.path().join("nested/manifest.json");
         manifest.write_atomic(&output).unwrap();
         assert_eq!(fs::read(output).unwrap(), manifest.stable_json().unwrap());
+    }
+
+    #[test]
+    fn heterogeneous_trace_schema_matches_golden_fixture() {
+        let trace = heterogeneous_trace();
+        trace.validate().unwrap();
+        assert_eq!(
+            String::from_utf8(trace.stable_json().unwrap()).unwrap(),
+            include_str!("../fixtures/heterogeneous-step-trace-v1.json")
+        );
+    }
+
+    #[test]
+    fn heterogeneous_trace_rejects_rank_loss_and_visibility_errors() {
+        let mut trace = heterogeneous_trace();
+        trace.routes.swap(0, 1);
+        assert!(trace.validate().is_err());
+
+        let mut trace = heterogeneous_trace();
+        trace.terminal_visibility_epoch = trace.expected_visibility_epoch;
+        assert!(trace.validate().is_err());
+
+        let mut trace = heterogeneous_trace();
+        trace.outcome = HeterogeneousStepOutcomeV1::Discarded;
+        trace.terminal_visibility_epoch = trace.expected_visibility_epoch;
+        trace.errors = vec![
+            HeterogeneousErrorEvidenceV1 {
+                precedence: 2,
+                kind: "cancelled".into(),
+                owner: "coordinator".into(),
+                route_slot: None,
+                message: "cancel".into(),
+            },
+            HeterogeneousErrorEvidenceV1 {
+                precedence: 1,
+                kind: "cuda_async".into(),
+                owner: "remote_gpu".into(),
+                route_slot: Some(2),
+                message: "worker".into(),
+            },
+        ];
+        assert!(trace.validate().is_err());
     }
 
     #[test]

@@ -1457,6 +1457,7 @@ dependencies = [
  "gpt-oss-core",
  "half",
  "parking_lot",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
 ]

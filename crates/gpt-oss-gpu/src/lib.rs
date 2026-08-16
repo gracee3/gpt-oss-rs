@@ -50,7 +50,10 @@ pub mod prelude {
     #[cfg(feature = "cuda")]
     pub use crate::cuda_allocator::CudaGpuAllocator;
     pub use crate::cuda_graph::{padded_batch_size, CudaGraph, CudaGraphPool, GRAPH_BATCH_SIZES};
-    pub use crate::device::{list_devices, GpuDevice, MemoryInfo};
+    pub use crate::device::{
+        list_devices, resolve_stable_device, GpuDevice, MemoryInfo, PciBusId, ResolvedCudaDevice,
+        StableCudaDeviceId, StableDeviceError,
+    };
     #[cfg(feature = "cuda")]
     pub use crate::kernel_loader::{launch_config, KernelLoader};
     pub use crate::memory::{
