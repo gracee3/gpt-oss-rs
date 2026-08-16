@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** H3 loading-research follow-up; H0 through H7 passed, H8 paused;
+**Stage:** H3 bounded-loading research; H0 through H7 passed, H8 paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -86,6 +86,9 @@ Evidence labels have the same meaning in every document:
 29. [H3 loading research follow-up](30-h3-loading-research.md) — bounded
     construction-peak instrumentation, current mmap-lifetime audit, and a
     concrete per-shard release candidate; no new H8 attempt.
+30. [H3 bounded shard catalog](31-h3-bounded-shard-catalog.md) — metadata-only
+    index/header validation and capacity-one scoped mapping over tiny synthetic
+    fixtures; not integrated into construction.
 
 ## Current headline
 
@@ -153,3 +156,9 @@ identity-bound before/after-checkpoint, per-stage, and post-drop memory events
 covering process RSS/PSS file/anon, global swap/vmstat/page cache, current
 cgroup memory, and per-GPU residency. This adds diagnostic evidence only. It
 does not pass H8 or relax its exact swap, memory, reserve, and watchdog gates.
+
+**Bounded-catalog follow-up:** a metadata-only SafeTensors catalog now validates
+index/header identity, tensor ranges, and deterministic ordering without
+reading payloads. Its scoped capacity-one mapping API is fixture-proven but
+deliberately disconnected from construction until native mapping, router
+lifetime, CPU publication, and CUDA terminal-drain ownership are resolved.
