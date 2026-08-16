@@ -752,12 +752,18 @@ fn run_construction(
         },
     ];
     let final_ledger = model.ledger().clone();
-    let dense_tensors = model.layer_owner_dense().len();
+    let dense_tensors = model
+        .layer_owner_dense()
+        .len()
+        .checked_add(model.resident_router_source_tensor_count()?)
+        .context("dense tensor count overflows")?;
     let dense_device_bytes = model
         .layer_owner_dense()
         .iter()
         .map(|tensor| tensor.device_bytes() as u64)
-        .sum();
+        .sum::<u64>()
+        .checked_add(u64::try_from(model.resident_router_source_device_bytes()?)?)
+        .context("dense device bytes overflow")?;
     let cpu_layer_files = model
         .cpu_layer_records()
         .map(|(layer, record)| {

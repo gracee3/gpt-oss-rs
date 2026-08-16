@@ -33,9 +33,11 @@ use crate::heterogeneous::placement::{
 };
 use crate::heterogeneous::reduction::GPT_OSS_REDUCER_OWNED_DEVICE_BYTES;
 use crate::heterogeneous::relay::result_relay_owned_device_bytes;
-use crate::heterogeneous::router::exact_router_owned_device_bytes;
+use crate::heterogeneous::router::{
+    exact_router_owned_device_bytes, exact_router_weight_surface_bytes, ResidentExactRouterWeights,
+};
 
-use super::gpt_oss_native::GptOssCheckpointView;
+use super::gpt_oss_native::{GptOssCheckpointView, GptOssNativeConfig};
 
 pub const OWNER_SELECTIVE_PINNED_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub const OWNER_SELECTIVE_TEMPORARY_CAP_BYTES: usize = 256 * 1024 * 1024;
@@ -555,6 +557,274 @@ impl ConstructionLedger {
     }
 }
 
+/// Payload-free native identity retained after construction drops the
+/// checkpoint mappings.
+#[derive(Debug, Clone)]
+pub struct OwnerSelectiveNativeMetadata {
+    config: GptOssNativeConfig,
+    revision: String,
+    config_sha256: String,
+    metadata_sha256: String,
+    mapping_sha256: String,
+}
+
+impl OwnerSelectiveNativeMetadata {
+    fn from_checkpoint(checkpoint: &GptOssCheckpointView) -> Result<Self> {
+        let metadata = Self {
+            config: checkpoint.config().clone(),
+            revision: checkpoint.revision().to_owned(),
+            config_sha256: checkpoint.config_sha256().to_owned(),
+            metadata_sha256: checkpoint.metadata_sha256().to_owned(),
+            mapping_sha256: checkpoint.mapping_sha256().to_owned(),
+        };
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.config.validate()?;
+        if self.revision.trim().is_empty()
+            || !is_sha256(&self.config_sha256)
+            || !is_sha256(&self.metadata_sha256)
+            || !is_sha256(&self.mapping_sha256)
+        {
+            return Err(LLMError::ModelError(
+                "owner-selective native identity metadata is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub const fn config(&self) -> &GptOssNativeConfig {
+        &self.config
+    }
+
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    pub fn config_sha256(&self) -> &str {
+        &self.config_sha256
+    }
+
+    pub fn metadata_sha256(&self) -> &str {
+        &self.metadata_sha256
+    }
+
+    pub fn mapping_sha256(&self) -> &str {
+        &self.mapping_sha256
+    }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouterDenseComponent {
+    Weight,
+    Bias,
+}
+
+fn classify_router_dense_tensor(
+    name: &str,
+    num_layers: usize,
+) -> Result<Option<(usize, RouterDenseComponent)>> {
+    if !name.contains(".mlp.router.") {
+        return Ok(None);
+    }
+    let rest = name
+        .strip_prefix("model.layers.")
+        .ok_or_else(|| LLMError::ModelError(format!("malformed router tensor name {name}")))?;
+    let (layer_text, suffix) = rest
+        .split_once('.')
+        .ok_or_else(|| LLMError::ModelError(format!("malformed router tensor name {name}")))?;
+    let layer = layer_text
+        .parse::<usize>()
+        .map_err(|_| LLMError::ModelError(format!("invalid router layer in {name}")))?;
+    if layer.to_string() != layer_text || layer >= num_layers {
+        return Err(LLMError::ModelError(format!(
+            "router tensor {name} identifies an invalid layer"
+        )));
+    }
+    let component = match suffix {
+        "mlp.router.weight" => RouterDenseComponent::Weight,
+        "mlp.router.bias" => RouterDenseComponent::Bias,
+        _ => {
+            return Err(LLMError::ModelError(format!(
+                "unsupported router tensor component {name}"
+            )))
+        }
+    };
+    Ok(Some((layer, component)))
+}
+
+struct RouterPairSlot<T> {
+    weight: Option<T>,
+    bias: Option<T>,
+}
+
+struct RouterPairAccumulator<T> {
+    slots: Vec<RouterPairSlot<T>>,
+}
+
+impl<T> RouterPairAccumulator<T> {
+    fn new(num_layers: usize) -> Result<Self> {
+        if num_layers == 0 || num_layers > usize::from(u16::MAX) {
+            return Err(LLMError::ModelError(
+                "router publication layer count is invalid".into(),
+            ));
+        }
+        Ok(Self {
+            slots: (0..num_layers)
+                .map(|_| RouterPairSlot {
+                    weight: None,
+                    bias: None,
+                })
+                .collect(),
+        })
+    }
+
+    fn insert(&mut self, layer: usize, component: RouterDenseComponent, value: T) -> Result<()> {
+        let slot = self.slots.get_mut(layer).ok_or_else(|| {
+            LLMError::ModelError(format!("router publication layer {layer} is out of range"))
+        })?;
+        let target = match component {
+            RouterDenseComponent::Weight => &mut slot.weight,
+            RouterDenseComponent::Bias => &mut slot.bias,
+        };
+        if target.replace(value).is_some() {
+            return Err(LLMError::ModelError(format!(
+                "duplicate router {component:?} for layer {layer}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<(usize, T, T)>> {
+        self.slots
+            .into_iter()
+            .enumerate()
+            .map(|(layer, slot)| {
+                let weight = slot.weight.ok_or_else(|| {
+                    LLMError::ModelError(format!("missing router weight for layer {layer}"))
+                })?;
+                let bias = slot.bias.ok_or_else(|| {
+                    LLMError::ModelError(format!("missing router bias for layer {layer}"))
+                })?;
+                Ok((layer, weight, bias))
+            })
+            .collect()
+    }
+}
+
+/// Deterministically ordered resident router sources. The owned allocations
+/// may be consumed exactly once by the heterogeneous runtime.
+pub struct ResidentExactRouterSources {
+    expected_layers: usize,
+    expected_experts: usize,
+    stable_device: gpt_oss_gpu::device::StableCudaDeviceId,
+    layers: Option<Vec<(usize, ResidentExactRouterWeights)>>,
+}
+
+impl ResidentExactRouterSources {
+    pub fn new(
+        expected_layers: usize,
+        expected_experts: usize,
+        stable_device: gpt_oss_gpu::device::StableCudaDeviceId,
+        layers: Vec<(usize, ResidentExactRouterWeights)>,
+    ) -> Result<Self> {
+        if expected_layers == 0 || expected_layers > usize::from(u16::MAX) {
+            return Err(LLMError::ModelError(
+                "resident router publication layer count is invalid".into(),
+            ));
+        }
+        validate_router_publication_order(expected_layers, layers.iter().map(|(layer, _)| *layer))?;
+        if !matches!(expected_experts, 32 | 128)
+            || layers.iter().any(|(_, source)| {
+                source.experts() != expected_experts || source.stable_device() != &stable_device
+            })
+        {
+            return Err(LLMError::ModelError(
+                "resident router publication identity or shape mismatch".into(),
+            ));
+        }
+        Ok(Self {
+            expected_layers,
+            expected_experts,
+            stable_device,
+            layers: Some(layers),
+        })
+    }
+
+    pub fn available_layers(&self) -> usize {
+        self.layers.as_ref().map_or(0, Vec::len)
+    }
+
+    pub fn source_tensor_count(&self) -> Result<usize> {
+        self.available_layers().checked_mul(2).ok_or_else(|| {
+            LLMError::ModelError("resident router source tensor count overflows".into())
+        })
+    }
+
+    pub fn device_bytes(&self) -> Result<usize> {
+        self.layers
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .try_fold(0_usize, |total, (_, source)| {
+                total.checked_add(source.device_bytes()?).ok_or_else(|| {
+                    LLMError::ModelError("resident router byte total overflows".into())
+                })
+            })
+    }
+
+    pub fn take_ordered(&mut self) -> Result<Vec<ResidentExactRouterWeights>> {
+        let layers = self.layers.take().ok_or_else(|| {
+            LLMError::ModelError("resident router sources were already consumed".into())
+        })?;
+        validate_router_publication_order(
+            self.expected_layers,
+            layers.iter().map(|(layer, _)| *layer),
+        )?;
+        if !matches!(self.expected_experts, 32 | 128)
+            || layers.iter().any(|(_, source)| {
+                source.experts() != self.expected_experts
+                    || source.stable_device() != &self.stable_device
+            })
+        {
+            return Err(LLMError::ModelError(
+                "resident router sources changed before consumption".into(),
+            ));
+        }
+        Ok(layers.into_iter().map(|(_, source)| source).collect())
+    }
+
+    fn quarantine_for_process_lifetime(&mut self) {
+        if let Some(layers) = self.layers.take() {
+            std::mem::forget(layers);
+        }
+    }
+}
+
+fn validate_router_publication_order(
+    expected_layers: usize,
+    observed_layers: impl IntoIterator<Item = usize>,
+) -> Result<()> {
+    let observed = observed_layers.into_iter().collect::<Vec<_>>();
+    if observed.len() != expected_layers
+        || observed
+            .iter()
+            .enumerate()
+            .any(|(expected, observed)| expected != *observed)
+    {
+        return Err(LLMError::ModelError(format!(
+            "resident router publication order mismatch: observed={observed:?} expected=0..{expected_layers}"
+        )));
+    }
+    Ok(())
+}
+
 /// Immutable GPU tensor retained by the layer owner.
 pub struct LayerOwnerDenseTensor {
     pub name: String,
@@ -582,11 +852,12 @@ pub struct OwnerSelectiveModel {
     cpu_layers: BTreeMap<u16, CpuOwnerLayerRecord>,
     remote_gpu_experts: BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
     layer_owner_experts: BTreeMap<GptOssExpertKey, Arc<CudaSelectedExpertWeights>>,
+    resident_router_sources: ResidentExactRouterSources,
     layer_owner_dense: Vec<LayerOwnerDenseTensor>,
     remote_executor: Option<CudaSelectedExpertExecutor>,
     layer_owner_executor: Option<CudaSelectedExpertExecutor>,
     execution_quarantined: bool,
-    checkpoint: GptOssCheckpointView,
+    native_metadata: OwnerSelectiveNativeMetadata,
     placement: ResolvedExpertPlacement,
     envelope: OwnerSelectiveEnvelope,
     ledger: ConstructionLedger,
@@ -601,8 +872,8 @@ pub(crate) struct OwnerSelectiveExecutionParts<'a> {
 }
 
 impl OwnerSelectiveModel {
-    pub fn checkpoint(&self) -> &GptOssCheckpointView {
-        &self.checkpoint
+    pub const fn native_metadata(&self) -> &OwnerSelectiveNativeMetadata {
+        &self.native_metadata
     }
 
     pub fn placement(&self) -> &ResolvedExpertPlacement {
@@ -619,6 +890,25 @@ impl OwnerSelectiveModel {
 
     pub fn layer_owner_dense(&self) -> &[LayerOwnerDenseTensor] {
         &self.layer_owner_dense
+    }
+
+    pub fn resident_router_source_layers(&self) -> usize {
+        self.resident_router_sources.available_layers()
+    }
+
+    pub fn resident_router_source_tensor_count(&self) -> Result<usize> {
+        self.resident_router_sources.source_tensor_count()
+    }
+
+    pub fn resident_router_source_device_bytes(&self) -> Result<usize> {
+        self.resident_router_sources.device_bytes()
+    }
+
+    /// Transfer every layer's router pair exactly once to the control runtime.
+    pub fn take_resident_exact_router_weights(
+        &mut self,
+    ) -> Result<Vec<ResidentExactRouterWeights>> {
+        self.resident_router_sources.take_ordered()
     }
 
     pub fn layer_owner_expert_count(&self) -> usize {
@@ -682,6 +972,8 @@ impl OwnerSelectiveModel {
         }
         std::mem::forget(std::mem::take(&mut self.layer_owner_experts));
         std::mem::forget(std::mem::take(&mut self.remote_gpu_experts));
+        self.resident_router_sources
+            .quarantine_for_process_lifetime();
         std::mem::forget(std::mem::take(&mut self.layer_owner_dense));
     }
 
@@ -845,6 +1137,7 @@ impl OwnerSelectiveConstructor {
     {
         let devices = list_devices();
         let (placement, envelope) = self.validate(&checkpoint, manifest, &devices)?;
+        let native_metadata = OwnerSelectiveNativeMetadata::from_checkpoint(&checkpoint)?;
         let mut ledger = ConstructionLedger::new();
         observe(&ledger)?;
         inject_construction_fault(injected_fault, ConstructionStage::Identity)?;
@@ -880,10 +1173,30 @@ impl OwnerSelectiveConstructor {
         let mut pinned = allocate_pinned(layer_owner_executor.stream())?;
         ledger.pinned_bytes = OWNER_SELECTIVE_PINNED_UPLOAD_BYTES as u64;
         let mut layer_owner_dense = Vec::new();
+        let mut router_pairs =
+            RouterPairAccumulator::<CudaSlice<u8>>::new(checkpoint.config().num_hidden_layers)?;
+        let (router_weight_bytes, router_bias_bytes) =
+            exact_router_weight_surface_bytes(checkpoint.config().num_experts)?;
         for mapping in checkpoint
             .mappings()
             .filter(|mapping| !mapping.runtime.contains(".mlp.experts."))
         {
+            let router_component = classify_router_dense_tensor(
+                &mapping.runtime,
+                checkpoint.config().num_hidden_layers,
+            )?;
+            if let Some((_, component)) = router_component {
+                let expected = match component {
+                    RouterDenseComponent::Weight => router_weight_bytes,
+                    RouterDenseComponent::Bias => router_bias_bytes,
+                };
+                if mapping.bytes != expected {
+                    return Err(LLMError::ModelError(format!(
+                        "router tensor {} has {} bytes, expected {expected}",
+                        mapping.runtime, mapping.bytes
+                    )));
+                }
+            }
             let source = checkpoint.tensor(&mapping.runtime)?;
             let allocation = upload_pinned_chunks(
                 layer_owner_executor.stream(),
@@ -895,17 +1208,42 @@ impl OwnerSelectiveConstructor {
                 .layer_owner_dense_bytes
                 .checked_add(mapping.bytes as u64)
                 .ok_or_else(|| LLMError::ModelError("dense ledger overflows".into()))?;
-            layer_owner_dense.push(LayerOwnerDenseTensor {
-                name: mapping.runtime.clone(),
-                logical_bytes: mapping.bytes as u64,
-                allocation,
-            });
+            if let Some((layer, component)) = router_component {
+                router_pairs.insert(layer, component, allocation)?;
+            } else {
+                layer_owner_dense.push(LayerOwnerDenseTensor {
+                    name: mapping.runtime.clone(),
+                    logical_bytes: mapping.bytes as u64,
+                    allocation,
+                });
+            }
             if injected_fault == Some(ConstructionStage::LayerOwnerDense) {
                 ledger.stage = ConstructionStage::LayerOwnerDense;
                 observe(&ledger)?;
                 inject_construction_fault(injected_fault, ConstructionStage::LayerOwnerDense)?;
             }
         }
+        let resident_router_layers = router_pairs
+            .finish()?
+            .into_iter()
+            .map(|(layer, weight, bias)| {
+                Ok((
+                    layer,
+                    ResidentExactRouterWeights::new(
+                        placement.layer_owner().stable_id.clone(),
+                        checkpoint.config().num_experts,
+                        weight,
+                        bias,
+                    )?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let resident_router_sources = ResidentExactRouterSources::new(
+            checkpoint.config().num_hidden_layers,
+            checkpoint.config().num_experts,
+            placement.layer_owner().stable_id.clone(),
+            resident_router_layers,
+        )?;
         ledger.stage = ConstructionStage::LayerOwnerDense;
         observe(&ledger)?;
 
@@ -1057,19 +1395,25 @@ impl OwnerSelectiveConstructor {
         ledger.stage = ConstructionStage::Publish;
         observe(&ledger)?;
         inject_construction_fault(injected_fault, ConstructionStage::Publish)?;
-        Ok(OwnerSelectiveModel {
+        let model = OwnerSelectiveModel {
             cpu_layers,
             remote_gpu_experts,
             layer_owner_experts,
+            resident_router_sources,
             layer_owner_dense,
             remote_executor: Some(remote_executor),
             layer_owner_executor: Some(layer_owner_executor),
             execution_quarantined: false,
-            checkpoint,
+            native_metadata,
             placement,
             envelope,
             ledger,
-        })
+        };
+        // The published model owns no checkpoint store or payload mapping.
+        // Construction still maps the complete checkpoint until this point;
+        // bounded one-shard integration remains a separate gate.
+        drop(checkpoint);
+        Ok(model)
     }
 }
 
@@ -1300,4 +1644,54 @@ fn verify_materialized_expert_weights(
 
 fn cuda_error(context: &'static str) -> impl Fn(cudarc::driver::DriverError) -> LLMError {
     move |error| LLMError::GpuError(format!("{context}: {error}"))
+}
+
+/// Synthetic-only probe for the production router classifier and pair
+/// accumulator. It is absent from normal runtime builds.
+#[cfg(feature = "heterogeneous-test-faults")]
+pub fn validate_router_publication_fixture_for_test(
+    num_layers: usize,
+    entries: &[(String, u8)],
+) -> Result<Vec<(usize, u8, u8)>> {
+    let mut pairs = RouterPairAccumulator::new(num_layers)?;
+    for (name, value) in entries {
+        let (layer, component) =
+            classify_router_dense_tensor(name, num_layers)?.ok_or_else(|| {
+                LLMError::ModelError(format!(
+                    "synthetic publication entry {name} is not a router"
+                ))
+            })?;
+        pairs.insert(layer, component, *value)?;
+    }
+    pairs.finish()
+}
+
+/// Synthetic-only probe for the payload-free metadata validator. It is absent
+/// from normal runtime builds.
+#[cfg(feature = "heterogeneous-test-faults")]
+pub fn validate_native_metadata_fixture_for_test(
+    config: GptOssNativeConfig,
+    revision: String,
+    config_sha256: String,
+    metadata_sha256: String,
+    mapping_sha256: String,
+) -> Result<()> {
+    OwnerSelectiveNativeMetadata {
+        config,
+        revision,
+        config_sha256,
+        metadata_sha256,
+        mapping_sha256,
+    }
+    .validate()
+}
+
+/// Synthetic-only order probe for publication validation. It is absent from
+/// normal runtime builds.
+#[cfg(feature = "heterogeneous-test-faults")]
+pub fn validate_router_publication_order_for_test(
+    expected_layers: usize,
+    observed_layers: &[usize],
+) -> Result<()> {
+    validate_router_publication_order(expected_layers, observed_layers.iter().copied())
 }

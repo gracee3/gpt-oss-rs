@@ -83,12 +83,12 @@ pub struct ExactRouterWeightsView<'a> {
 /// Owned, already-resident BF16 router surfaces for the narrow H3 handoff.
 ///
 /// The byte allocations deliberately match `LayerOwnerDenseTensor`'s
-/// storage representation without coupling this primitive to the production
-/// owner-selective model. Construction validates the durable device identity,
-/// exact CUDA context, expert count, and byte lengths before any handoff work
-/// is enqueued. The future production adapter must transfer ownership of the
-/// two dense allocations into this value; borrowing them would make an
-/// unproven CUDA drain impossible to quarantine safely.
+/// storage representation. Owner-selective construction transfers the two
+/// router allocations into this value instead of retaining them as generic
+/// dense tensors. Construction validates the durable device identity, exact
+/// CUDA context, expert count, and byte lengths before any handoff work is
+/// enqueued. Borrowing these allocations would make an unproven CUDA drain
+/// impossible to quarantine safely.
 pub struct ResidentExactRouterWeights {
     stable_device: StableCudaDeviceId,
     experts: usize,
@@ -150,6 +150,21 @@ impl ResidentExactRouterWeights {
             ));
         }
         Ok(())
+    }
+
+    pub const fn stable_device(&self) -> &StableCudaDeviceId {
+        &self.stable_device
+    }
+
+    pub const fn experts(&self) -> usize {
+        self.experts
+    }
+
+    pub fn device_bytes(&self) -> Result<usize> {
+        self.weight_bf16_bytes
+            .len()
+            .checked_add(self.bias_bf16_bytes.len())
+            .ok_or_else(|| LLMError::GpuError("resident router source bytes overflow".into()))
     }
 
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -1089,7 +1104,7 @@ fn validate_router_max_rows(max_rows: usize) -> Result<()> {
     Ok(())
 }
 
-fn exact_router_weight_surface_bytes(experts: usize) -> Result<(usize, usize)> {
+pub(crate) fn exact_router_weight_surface_bytes(experts: usize) -> Result<(usize, usize)> {
     if !matches!(experts, 32 | 128) {
         return Err(LLMError::GpuError(format!(
             "resident exact router supports E=32 or E=128, observed {experts}"

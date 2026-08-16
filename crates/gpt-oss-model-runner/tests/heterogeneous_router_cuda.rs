@@ -13,6 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
+use gpt_oss_model_runner::model_loader::owner_selective::ResidentExactRouterSources;
 
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_model_runner::heterogeneous::{
@@ -194,6 +195,37 @@ fn resident_router_handoff_rejects_wrong_device_context_and_shapes() {
         resident_source(stable0, 32, &weights, &bias),
     )
     .is_err());
+}
+
+#[test]
+fn resident_router_sources_are_ordered_and_single_consumer() {
+    let devices = list_devices();
+    assert!(!devices.is_empty(), "resident source gate requires one GPU");
+    let stable = StableCudaDeviceId::from_device(&devices[0]).unwrap();
+    let (_, weights, bias) = fixture(32, 1);
+
+    let reordered = vec![
+        (1, resident_source(stable.clone(), 32, &weights, &bias)),
+        (0, resident_source(stable.clone(), 32, &weights, &bias)),
+    ];
+    assert!(ResidentExactRouterSources::new(2, 32, stable.clone(), reordered).is_err());
+    assert!(ResidentExactRouterSources::new(0, 32, stable.clone(), Vec::new()).is_err());
+
+    let source = resident_source(stable.clone(), 32, &weights, &bias);
+    let expected_bytes = source.device_bytes().unwrap();
+    let mut sources = ResidentExactRouterSources::new(1, 32, stable, vec![(0, source)]).unwrap();
+    assert_eq!(sources.available_layers(), 1);
+    assert_eq!(sources.source_tensor_count().unwrap(), 2);
+    assert_eq!(sources.device_bytes().unwrap(), expected_bytes);
+    let mut taken = sources.take_ordered().unwrap();
+    assert_eq!(taken.len(), 1);
+    assert_eq!(sources.available_layers(), 0);
+    assert_eq!(sources.source_tensor_count().unwrap(), 0);
+    assert_eq!(sources.device_bytes().unwrap(), 0);
+    assert!(sources.take_ordered().is_err());
+
+    let mut router = CudaExactRouter::from_resident_weights(1, taken.pop().unwrap()).unwrap();
+    router.drain().unwrap();
 }
 
 #[cfg(feature = "heterogeneous-test-faults")]
