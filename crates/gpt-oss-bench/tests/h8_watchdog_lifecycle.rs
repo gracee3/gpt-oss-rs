@@ -3,16 +3,22 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpt_oss_bench::h8_watchdog::read_host_snapshot;
+use gpt_oss_bench::h8_watchdog::read_h8_process_scan;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn test_lock() -> MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn run_watchdog_death_case(signal: &str) {
-    let _lock = TEST_LOCK.lock().unwrap();
+    let _lock = test_lock();
     let ready = std::env::temp_dir().join(format!(
         "gpt-oss-h8-watchdog-{}-{signal}.ready",
         std::process::id()
@@ -85,6 +91,30 @@ fn wait_for_process_absent(pid: u32) {
     }
 }
 
+fn wait_for_stopped(child: &mut Child) {
+    let status_path = PathBuf::from(format!("/proc/{}/status", child.id()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(status) = std::fs::read_to_string(&status_path) {
+            if status
+                .lines()
+                .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
+            {
+                return;
+            }
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("fd-executed H8 probe exited before stopping: {status}");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("fd-executed H8 probe did not stop");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn termination_handler_kills_guarded_child() {
     run_watchdog_death_case("TERM");
@@ -97,8 +127,15 @@ fn parent_death_signal_kills_guarded_child_on_watchdog_sigkill() {
 
 #[test]
 fn fd_exec_h8_is_detected_by_running_executable_and_mode() {
-    let _lock = TEST_LOCK.lock().unwrap();
-    let root = std::env::temp_dir().join(format!("gpt-oss-h8-fd-detection-{}", std::process::id()));
+    let _lock = test_lock();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "gpt-oss-h8-fd-detection-{}-{unique}",
+        std::process::id()
+    ));
     let executable = root.join("heterogeneous_construct");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::copy("/bin/sh", &executable).unwrap();
@@ -112,10 +149,12 @@ fn fd_exec_h8_is_detected_by_running_executable_and_mode() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    thread::sleep(Duration::from_millis(50));
-    let snapshot = read_host_snapshot(None, 0).unwrap();
+    wait_for_stopped(&mut child);
+    let scan = read_h8_process_scan(None);
     let _ = child.kill();
     let _ = child.wait();
     std::fs::remove_dir_all(root).unwrap();
-    assert!(snapshot.active_h8_process_found);
+    let scan = scan.unwrap();
+    assert!(scan.proc_scan_complete);
+    assert!(scan.active_h8_process_found);
 }

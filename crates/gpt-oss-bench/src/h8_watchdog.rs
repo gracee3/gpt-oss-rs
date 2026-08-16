@@ -167,6 +167,34 @@ pub struct GuardViolation {
     pub reasons: Vec<String>,
 }
 
+/// The `/proc`-only portion of H8 process admission.
+///
+/// This is intentionally narrower than [`HostSnapshot`]: callers that only
+/// need to detect an existing H8 process must not depend on this workstation's
+/// protected-NVMe sysfs node. Production preflight and runtime admission still
+/// use [`read_host_snapshot`] and therefore fail closed when any host safety
+/// input, including the protected device, is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H8ProcessScan {
+    pub proc_scan_complete: bool,
+    pub active_h8_process_found: bool,
+}
+
+pub fn read_h8_process_scan(child_root_pid: Option<u32>) -> Result<H8ProcessScan> {
+    read_h8_process_scan_from(&SystemPaths::default(), child_root_pid)
+}
+
+pub fn read_h8_process_scan_from(
+    paths: &SystemPaths,
+    child_root_pid: Option<u32>,
+) -> Result<H8ProcessScan> {
+    let scan = scan_processes(&paths.proc_root, child_root_pid)?;
+    Ok(H8ProcessScan {
+        proc_scan_complete: scan.complete,
+        active_h8_process_found: scan.active_h8_process_found,
+    })
+}
+
 pub fn read_host_snapshot(child_root_pid: Option<u32>, elapsed_ms: u64) -> Result<HostSnapshot> {
     read_host_snapshot_from(&SystemPaths::default(), child_root_pid, elapsed_ms)
 }
@@ -863,6 +891,8 @@ fn read_numeric_fields_optional(path: &Path) -> Result<Option<BTreeMap<String, u
 mod tests {
     use super::*;
 
+    type SnapshotMutation = Box<dyn Fn(&mut HostSnapshot)>;
+
     fn process_status(name: &str, parent: u32) -> String {
         format!("Name:\t{name}\nPPid:\t{parent}\nVmSwap:\t0 kB\n")
     }
@@ -935,7 +965,7 @@ mod tests {
         };
         assert!(evaluate_runtime_guard(&snapshot(0), &limits).is_ok());
 
-        let mutations: Vec<Box<dyn Fn(&mut HostSnapshot)>> = vec![
+        let mutations: Vec<SnapshotMutation> = vec![
             Box::new(|sample| sample.swap_used_bytes = 101),
             Box::new(|sample| sample.target_tree_vm_swap_bytes = 1),
             Box::new(|sample| sample.mem_available_bytes = MIN_MEM_AVAILABLE_BYTES - 1),
@@ -1010,8 +1040,8 @@ mod tests {
         // its command line is not an exact H8 candidate.
         fs::write(ordinary.join("exe"), b"not a symlink").unwrap();
 
-        let scan = scan_processes(&paths.proc_root, None).unwrap();
-        assert!(scan.complete);
+        let scan = read_h8_process_scan_from(&paths, None).unwrap();
+        assert!(scan.proc_scan_complete);
         assert!(!scan.active_h8_process_found);
 
         let candidate = paths.proc_root.join("102");
@@ -1024,8 +1054,8 @@ mod tests {
         fs::write(candidate.join("cmdline"), b"/proc/self/fd/9\0--mode\0h8\0").unwrap();
         fs::write(candidate.join("exe"), b"not a symlink").unwrap();
 
-        let scan = scan_processes(&paths.proc_root, None).unwrap();
-        assert!(!scan.complete);
+        let scan = read_h8_process_scan_from(&paths, None).unwrap();
+        assert!(!scan.proc_scan_complete);
         assert!(scan.active_h8_process_found);
 
         fs::remove_file(candidate.join("exe")).unwrap();
@@ -1034,9 +1064,37 @@ mod tests {
             candidate.join("exe"),
         )
         .unwrap();
-        let scan = scan_processes(&paths.proc_root, None).unwrap();
-        assert!(scan.complete);
+        let scan = read_h8_process_scan_from(&paths, None).unwrap();
+        assert!(scan.proc_scan_complete);
         assert!(scan.active_h8_process_found);
+
+        fs::write(
+            paths.proc_root.join("meminfo"),
+            "MemAvailable: 16777216 kB\nSwapTotal: 100 kB\nSwapFree: 90 kB\nSwapCached: 1 kB\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.proc_root.join("pressure")).unwrap();
+        fs::write(
+            paths.proc_root.join("pressure/memory"),
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.proc_root.join("sys/vm")).unwrap();
+        fs::write(paths.proc_root.join("sys/vm/swappiness"), "60\n").unwrap();
+        fs::create_dir_all(paths.proc_root.join("self")).unwrap();
+        fs::write(paths.proc_root.join("self/cgroup"), "0::/fixture\n").unwrap();
+        fs::write(paths.proc_root.join("self/mountinfo"), "").unwrap();
+
+        // The process-only API is portable, but production admission remains
+        // fail-closed when the host-specific protected-device sysfs node is
+        // absent (as it is on a generic GitHub-hosted runner).
+        let error = read_host_snapshot_from(&paths, None, 0).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(2)
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
