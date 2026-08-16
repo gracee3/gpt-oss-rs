@@ -4,7 +4,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use gpt_oss_gpu::event::CorrelatedTimeline;
 use gpt_oss_model_runner::heterogeneous::{
-    HeterogeneousControlRuntime, RelayPinnedPoolStats, SelectedExpertInjectedFault,
+    ExpertOwner, GptOssExpertPlacementManifestV1, HeterogeneousControlRuntime,
+    RelayPinnedPoolStats, SelectedExpertInjectedFault, CONSERVATIVE_OWNER_EXPERT_BYTES,
 };
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
 use gpt_oss_model_runner::model_loader::owner_selective::OwnerSelectiveConstructor;
@@ -32,6 +33,10 @@ struct Cli {
     retained_trace: PathBuf,
     #[arg(long, value_enum)]
     mode: FaultMode,
+    #[arg(long, default_value_t = 0)]
+    successful_remote_submissions_before_fault: usize,
+    #[arg(long)]
+    force_all_remote_fixture: bool,
     #[arg(long)]
     output: Option<PathBuf>,
 }
@@ -47,8 +52,11 @@ struct FaultEvidence {
     mode: &'static str,
     binary_sha256: String,
     placement_sha256: String,
+    placement_mode: &'static str,
+    placement_owner_counts_cpu_gpu0_gpu1: [usize; 3],
     tokens_committed_before_fault: usize,
     fault_generation: u64,
+    successful_remote_submissions_before_fault: usize,
     first_error: String,
     first_drain_proven: bool,
     runtime_poisoned_after: bool,
@@ -73,13 +81,49 @@ fn main() -> Result<()> {
         bail!("retained control has no prompt token");
     }
     let config = CpuGptOssConfig::from_snapshot(&cli.model)?;
-    let placement_bytes = std::fs::read(&cli.placement)?;
-    let manifest = serde_json::from_slice(&placement_bytes)?;
+    let source_placement_bytes = std::fs::read(&cli.placement)?;
+    let mut manifest: GptOssExpertPlacementManifestV1 =
+        serde_json::from_slice(&source_placement_bytes)?;
+    if cli.force_all_remote_fixture {
+        let remote = manifest.remote_worker.clone();
+        for assignment in &mut manifest.assignments {
+            assignment.owner = ExpertOwner::RemoteGpu {
+                device: remote.clone(),
+            };
+        }
+        let expert_count = u32::try_from(manifest.assignments.len())?;
+        manifest.budgets.max_cpu_experts = 0;
+        manifest.budgets.max_layer_owner_experts = 0;
+        manifest.budgets.max_remote_gpu_experts = expert_count;
+        manifest.budgets.max_host_owner_bytes = 0;
+        manifest.budgets.max_layer_owner_bytes = 0;
+        manifest.budgets.max_remote_gpu_bytes = u64::from(expert_count)
+            .checked_mul(CONSERVATIVE_OWNER_EXPERT_BYTES)
+            .context("all-remote fixture byte budget overflow")?;
+        manifest.policy_seed = 0x4837_464f_4c4c_4f57;
+        manifest.placement_epoch = manifest
+            .placement_epoch
+            .checked_add(1)
+            .context("all-remote fixture placement epoch overflow")?;
+    }
+    let placement_owner_counts_cpu_gpu0_gpu1 =
+        manifest
+            .assignments
+            .iter()
+            .fold([0_usize; 3], |mut counts, assignment| {
+                counts[match &assignment.owner {
+                    ExpertOwner::Cpu { .. } => 0,
+                    ExpertOwner::LayerOwnerGpu { .. } => 1,
+                    ExpertOwner::RemoteGpu { .. } => 2,
+                }] += 1;
+                counts
+            });
+    let placement_bytes = serde_json::to_vec(&manifest)?;
     let checkpoint = GptOssCheckpointView::open(&cli.native_model)?;
     let constructor = OwnerSelectiveConstructor::new(&cli.owner_cache);
     let mut model = constructor.construct(checkpoint, &manifest, |_| Ok(()))?;
     let mut runtime = HeterogeneousControlRuntime::new(&mut model, &config)?;
-    runtime.inject_remote_expert_failure_for_test(
+    runtime.inject_remote_expert_failure_after_for_test(
         &mut model,
         match cli.mode {
             FaultMode::Recoverable => SelectedExpertInjectedFault::SubmitAfterInputEnqueue,
@@ -87,6 +131,7 @@ fn main() -> Result<()> {
                 SelectedExpertInjectedFault::SubmitAfterInputEnqueueAndFallbackDrainFailure
             }
         },
+        cli.successful_remote_submissions_before_fault,
     )?;
     let mut fault = None;
     for (index, &input) in retained.prompt_token_ids.iter().enumerate() {
@@ -176,15 +221,22 @@ fn main() -> Result<()> {
         }
     };
     let evidence = FaultEvidence {
-        schema: "gpt-oss-rs.heterogeneous-control-fault-h7/v1",
+        schema: "gpt-oss-rs.heterogeneous-control-fault-h7-followup/v2",
         mode: match cli.mode {
             FaultMode::Recoverable => "recoverable_remote_post_enqueue_and_clean_retry",
             FaultMode::Unproven => "unproven_remote_post_enqueue_quarantine",
         },
         binary_sha256: sha256_file(&std::env::current_exe()?)?,
         placement_sha256: hash_bytes(&placement_bytes),
+        placement_mode: if cli.force_all_remote_fixture {
+            "deterministic_all_remote_multi_result_fixture"
+        } else {
+            "supplied_manifest"
+        },
+        placement_owner_counts_cpu_gpu0_gpu1,
         tokens_committed_before_fault,
         fault_generation,
+        successful_remote_submissions_before_fault: cli.successful_remote_submissions_before_fault,
         first_error,
         first_drain_proven,
         runtime_poisoned_after,

@@ -455,6 +455,8 @@ pub struct CudaSelectedExpertExecutor {
     #[cfg(feature = "heterogeneous-test-faults")]
     injected_fault: Option<SelectedExpertInjectedFault>,
     #[cfg(feature = "heterogeneous-test-faults")]
+    injected_fault_delay: usize,
+    #[cfg(feature = "heterogeneous-test-faults")]
     last_post_enqueue_fault_drained: bool,
 }
 
@@ -512,6 +514,8 @@ impl CudaSelectedExpertExecutor {
             owned_drain_unproven: false,
             #[cfg(feature = "heterogeneous-test-faults")]
             injected_fault: None,
+            #[cfg(feature = "heterogeneous-test-faults")]
+            injected_fault_delay: 0,
             #[cfg(feature = "heterogeneous-test-faults")]
             last_post_enqueue_fault_drained: false,
         })
@@ -599,14 +603,37 @@ impl CudaSelectedExpertExecutor {
     /// Arm one deterministic fault for the next submitted job.
     #[cfg(feature = "heterogeneous-test-faults")]
     pub fn inject_next_failure(&mut self, fault: SelectedExpertInjectedFault) -> Result<()> {
+        self.inject_failure_after_successful_submissions(fault, 0)
+    }
+
+    /// Arm one deterministic fault after `successful_submissions_before_fault`
+    /// earlier jobs have consumed this capacity-one executor. This exists only
+    /// to exercise cleanup after a multi-result dispatch is partially complete.
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub fn inject_failure_after_successful_submissions(
+        &mut self,
+        fault: SelectedExpertInjectedFault,
+        successful_submissions_before_fault: usize,
+    ) -> Result<()> {
         if self.injected_fault.is_some() {
             return Err(LLMError::GpuError(
                 "selected expert already has an armed test fault".into(),
             ));
         }
         self.injected_fault = Some(fault);
+        self.injected_fault_delay = successful_submissions_before_fault;
         self.last_post_enqueue_fault_drained = false;
         Ok(())
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    fn take_injected_fault(&mut self) -> Option<SelectedExpertInjectedFault> {
+        if self.injected_fault.is_some() && self.injected_fault_delay > 0 {
+            self.injected_fault_delay -= 1;
+            None
+        } else {
+            self.injected_fault.take()
+        }
     }
 
     /// Whether the most recent injected post-enqueue submit failure completed
@@ -1084,7 +1111,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
         let input_h2d_bytes =
             usize::from(pinned_input.is_some()) * GPT_OSS_SELECTED_EXPERT_INPUT_BYTES;
         #[cfg(feature = "heterogeneous-test-faults")]
-        let injected_fault = executor.injected_fault.take();
+        let injected_fault = executor.take_injected_fault();
         #[cfg(feature = "heterogeneous-test-faults")]
         if injected_fault == Some(SelectedExpertInjectedFault::SubmitBeforeEnqueue) {
             return Err(OwnedSelectedExpertFailure {
@@ -1129,7 +1156,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
                     )
             ) {
                 return Err(LLMError::GpuError(
-                    "injected owned selected-expert post-D2D submit failure".into(),
+                    "injected owned selected-expert post-input-transfer submit failure".into(),
                 ));
             }
             let start = executor
@@ -1276,8 +1303,18 @@ pub(crate) struct PendingOwnedSelectedExpert<'a> {
 
 impl PendingOwnedSelectedExpert<'_> {
     pub(crate) fn drain_with_trace(
+        self,
+        pinned_output: Option<&mut BoundedPinnedLease<u16>>,
+        timeline: &CorrelatedTimeline,
+        actor: &str,
+    ) -> std::result::Result<OwnedSelectedExpertExecution, OwnedSelectedExpertFailure> {
+        self.drain_with_trace_at(pinned_output, 0, timeline, actor)
+    }
+
+    pub(crate) fn drain_with_trace_at(
         mut self,
         mut pinned_output: Option<&mut BoundedPinnedLease<u16>>,
+        pinned_output_slot: u32,
         timeline: &CorrelatedTimeline,
         actor: &str,
     ) -> std::result::Result<OwnedSelectedExpertExecution, OwnedSelectedExpertFailure> {
@@ -1299,9 +1336,11 @@ impl PendingOwnedSelectedExpert<'_> {
         // D2H failure cannot retain the source pinned relay row.
         self.pinned_input_may_be_referenced = false;
         self.pinned_input = None;
+        let output_start = pinned_output_slot as usize * HIDDEN_SIZE;
+        let output_end = output_start.saturating_add(HIDDEN_SIZE);
         if pinned_output
             .as_ref()
-            .is_some_and(|output| output.as_slice().len() < HIDDEN_SIZE)
+            .is_some_and(|output| output.as_slice().len() < output_end)
         {
             return Err(self.failure(
                 LLMError::MemoryError("owned selected expert pinned output is undersized".into()),
@@ -1372,7 +1411,7 @@ impl PendingOwnedSelectedExpert<'_> {
                     .stream
                     .memcpy_dtoh(
                         &result_slot.buffer,
-                        &mut output.as_mut_slice()[..HIDDEN_SIZE],
+                        &mut output.as_mut_slice()[output_start..output_end],
                     )
                     .map_err(cuda_error("owned selected expert pinned result D2H"))?;
                 pinned_enqueued = true;
@@ -1442,9 +1481,10 @@ impl PendingOwnedSelectedExpert<'_> {
     /// first-divergence traces. An optional pinned output is the only host
     /// evidence transfer; the CUDA result slot is always returned after its
     /// terminal event is proven complete.
-    pub(crate) fn drain_output_only(
+    pub(crate) fn drain_output_only_at(
         mut self,
         mut pinned_output: Option<&mut BoundedPinnedLease<u16>>,
+        pinned_output_slot: u32,
         timeline: &CorrelatedTimeline,
         actor: &str,
     ) -> std::result::Result<OwnedSelectedExpertOutput, OwnedSelectedExpertFailure> {
@@ -1473,9 +1513,11 @@ impl PendingOwnedSelectedExpert<'_> {
                 false,
             ));
         }
+        let output_start = pinned_output_slot as usize * HIDDEN_SIZE;
+        let output_end = output_start.saturating_add(HIDDEN_SIZE);
         if pinned_output
             .as_ref()
-            .is_some_and(|output| output.as_slice().len() < HIDDEN_SIZE)
+            .is_some_and(|output| output.as_slice().len() < output_end)
         {
             return Err(self.failure(
                 LLMError::MemoryError("owned selected expert pinned output is undersized".into()),
@@ -1513,7 +1555,7 @@ impl PendingOwnedSelectedExpert<'_> {
                     .stream
                     .memcpy_dtoh(
                         &result_slot.buffer,
-                        &mut output.as_mut_slice()[..HIDDEN_SIZE],
+                        &mut output.as_mut_slice()[output_start..output_end],
                     )
                     .map_err(cuda_error("owned selected expert pinned result D2H"))?;
                 output_enqueued = true;
@@ -1649,7 +1691,7 @@ impl<'a> PreparedSelectedExpert<'a> {
     ) -> Result<PendingSelectedExpert<'a>> {
         let executor = self.executor;
         #[cfg(feature = "heterogeneous-test-faults")]
-        let injected_fault = executor.injected_fault.take();
+        let injected_fault = executor.take_injected_fault();
         #[cfg(feature = "heterogeneous-test-faults")]
         if injected_fault == Some(SelectedExpertInjectedFault::SubmitBeforeEnqueue) {
             return Err(LLMError::GpuError(

@@ -134,7 +134,7 @@ impl Drop for FailClosedRelayReservation {
 struct ControlLayerResources {
     reservation: FailClosedRelayReservation,
     local_slots: [Option<CudaSelectedExpertResultSlot>; 4],
-    remote_slot: Option<CudaSelectedExpertResultSlot>,
+    remote_slots: [Option<CudaSelectedExpertResultSlot>; 4],
 }
 
 impl ControlLayerResources {
@@ -142,14 +142,14 @@ impl ControlLayerResources {
         Self {
             reservation: FailClosedRelayReservation::new(reservation),
             local_slots: std::array::from_fn(|_| None),
-            remote_slot: None,
+            remote_slots: std::array::from_fn(|_| None),
         }
     }
 
     fn restore_slots(
         &mut self,
         local_pool: &mut [Option<CudaSelectedExpertResultSlot>; 4],
-        remote_pool: &mut Option<CudaSelectedExpertResultSlot>,
+        remote_pool: &mut [Option<CudaSelectedExpertResultSlot>; 4],
     ) -> Result<()> {
         for (index, slot) in self.local_slots.iter_mut().enumerate() {
             if let Some(slot) = slot.take() {
@@ -160,11 +160,13 @@ impl ControlLayerResources {
                 }
             }
         }
-        if let Some(slot) = self.remote_slot.take() {
-            if remote_pool.replace(slot).is_some() {
-                return Err(LLMError::GpuError(
-                    "control remote result pool was already occupied during recovery".into(),
-                ));
+        for (index, slot) in self.remote_slots.iter_mut().enumerate() {
+            if let Some(slot) = slot.take() {
+                if remote_pool[index].replace(slot).is_some() {
+                    return Err(LLMError::GpuError(format!(
+                        "control remote result pool slot {index} was already occupied during recovery"
+                    )));
+                }
             }
         }
         Ok(())
@@ -184,8 +186,10 @@ impl Drop for ControlLayerResources {
                 std::mem::forget(slot);
             }
         }
-        if let Some(slot) = self.remote_slot.take() {
-            std::mem::forget(slot);
+        for slot in &mut self.remote_slots {
+            if let Some(slot) = slot.take() {
+                std::mem::forget(slot);
+            }
         }
         // `FailClosedRelayReservation::drop` retains its five pinned leases.
     }
@@ -1015,7 +1019,7 @@ pub struct HeterogeneousControlRuntime {
     reducers: Vec<CudaRankOrderedReducer>,
     pools: RelayPinnedPools,
     local_slots: Vec<[Option<CudaSelectedExpertResultSlot>; 4]>,
-    remote_slots: Vec<Option<CudaSelectedExpertResultSlot>>,
+    remote_slots: Vec<[Option<CudaSelectedExpertResultSlot>; 4]>,
     cpu_worker: CpuX8SelectedExpertWorker,
     poisoned: bool,
 }
@@ -1076,11 +1080,14 @@ impl HeterogeneousControlRuntime {
                     *slot = Some(parts.layer_owner_executor.allocate_result_slot()?);
                 }
                 local_slots.push(layer_slots);
-                remote_slots.push(if has_remote {
-                    Some(parts.remote_executor.allocate_result_slot()?)
-                } else {
-                    None
-                });
+                let mut layer_remote_slots: [Option<CudaSelectedExpertResultSlot>; 4] =
+                    std::array::from_fn(|_| None);
+                if has_remote {
+                    for slot in &mut layer_remote_slots {
+                        *slot = Some(parts.remote_executor.allocate_result_slot()?);
+                    }
+                }
+                remote_slots.push(layer_remote_slots);
             }
         }
         Ok(Self {
@@ -1127,6 +1134,24 @@ impl HeterogeneousControlRuntime {
             .execution_parts()
             .remote_executor
             .inject_next_failure(fault)
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub fn inject_remote_expert_failure_after_for_test(
+        &mut self,
+        model: &mut OwnerSelectiveModel,
+        fault: SelectedExpertInjectedFault,
+        successful_submissions_before_fault: usize,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Err(LLMError::GpuError(
+                "poisoned H7 runtime cannot arm a selected-expert fault".into(),
+            ));
+        }
+        model
+            .execution_parts()
+            .remote_executor
+            .inject_failure_after_successful_submissions(fault, successful_submissions_before_fault)
     }
 
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -1218,6 +1243,7 @@ impl HeterogeneousControlRuntime {
             std::array::from_fn(|_| capture.then(SelectedExpertTraceStorage::new));
         let mut expert_evidence: [Option<HeterogeneousControlExpertExecution>; 4] =
             std::array::from_fn(|_| None);
+        let mut completed_expert_evidence = Vec::with_capacity(4);
         let reservation = self
             .pools
             .try_reserve_all(transaction_generation)
@@ -1276,18 +1302,6 @@ impl HeterogeneousControlRuntime {
                 return Err(self.cleanup_control_layer(model, layer, resources, error, true));
             }
         };
-        if plan.cpu_route_count() > 1 || plan.remote_gpu_route_count() > 1 {
-            return Err(self.cleanup_control_layer(
-                model,
-                layer,
-                resources,
-                LLMError::ModelError(
-                    "20B proof placement permits at most one CPU and one remote route per layer"
-                        .into(),
-                ),
-                true,
-            ));
-        }
         let packed = {
             let (source_activation, remote_gpu_input) = resources.reservation.packing_leases();
             pack_remote_inputs(&plan, source_activation, remote_gpu_input)
@@ -1321,40 +1335,45 @@ impl HeterogeneousControlRuntime {
             .iter()
             .flat_map(|owner| owner.routes.iter().cloned())
             .collect::<Vec<_>>();
-        let cpu_route = plan
+        let cpu_routes = plan
             .cpu
             .iter()
-            .flat_map(|owner| owner.routes.iter())
-            .next()
-            .cloned();
-        let remote_route = plan
+            .flat_map(|owner| owner.routes.iter().cloned())
+            .collect::<Vec<_>>();
+        let remote_routes = plan
             .remote_gpu
             .iter()
-            .flat_map(|owner| owner.routes.iter())
-            .next()
-            .cloned();
-        if local_routes.is_empty() {
+            .flat_map(|owner| owner.routes.iter().cloned())
+            .collect::<Vec<_>>();
+        if local_routes.len() + cpu_routes.len() + remote_routes.len() != 4
+            || local_routes.len() > 4
+            || cpu_routes.len() > 4
+            || remote_routes.len() > 4
+        {
             return Err(self.cleanup_control_layer(
                 model,
                 layer,
                 resources,
                 LLMError::ModelError(
-                    "control proof placement unexpectedly has no layer-owner route".into(),
+                    "control decode dispatch must contain exactly four bounded owner routes".into(),
                 ),
                 true,
             ));
         }
-        let resident = match self.shell.resident_expert_input() {
-            Ok(resident) => resident,
-            Err(error) => {
-                return Err(self.cleanup_control_layer(model, layer, resources, error, true));
+        let resident = if local_routes.is_empty() {
+            None
+        } else {
+            match self.shell.resident_expert_input() {
+                Ok(resident) => Some(resident),
+                Err(error) => {
+                    return Err(self.cleanup_control_layer(model, layer, resources, error, true));
+                }
             }
         };
         for (pool_slot, route) in local_routes.iter().enumerate() {
             let slot = match self.local_slots[layer][pool_slot].take() {
                 Some(slot) => slot,
                 None => {
-                    drop(resident);
                     return Err(self.cleanup_control_layer(
                         model,
                         layer,
@@ -1368,7 +1387,6 @@ impl HeterogeneousControlRuntime {
                 Ok(slot) => resources.local_slots[pool_slot] = Some(slot),
                 Err(failure) => {
                     resources.local_slots[pool_slot] = Some(failure.result_slot);
-                    drop(resident);
                     return Err(self.cleanup_control_layer(
                         model,
                         layer,
@@ -1379,25 +1397,25 @@ impl HeterogeneousControlRuntime {
                 }
             }
         }
-        if let Some(route) = remote_route.as_ref() {
-            let slot = match self.remote_slots[layer].take() {
+        for (pool_slot, route) in remote_routes.iter().enumerate() {
+            let slot = match self.remote_slots[layer][pool_slot].take() {
                 Some(slot) => slot,
                 None => {
-                    drop(resident);
                     return Err(self.cleanup_control_layer(
                         model,
                         layer,
                         resources,
-                        LLMError::GpuError("control remote result slot is missing".into()),
+                        LLMError::GpuError(format!(
+                            "control remote result slot {pool_slot} is missing"
+                        )),
                         true,
                     ));
                 }
             };
             match slot.bind_drained_for_route_owned(transaction_generation, &route.descriptor) {
-                Ok(slot) => resources.remote_slot = Some(slot),
+                Ok(slot) => resources.remote_slots[pool_slot] = Some(slot),
                 Err(failure) => {
-                    resources.remote_slot = Some(failure.result_slot);
-                    drop(resident);
+                    resources.remote_slots[pool_slot] = Some(failure.result_slot);
                     return Err(self.cleanup_control_layer(
                         model,
                         layer,
@@ -1409,500 +1427,472 @@ impl HeterogeneousControlRuntime {
             }
         }
 
-        let mut nonlocal_completions = Vec::with_capacity(2);
+        let mut nonlocal_completions = Vec::with_capacity(4);
         let worker_result: std::result::Result<(), ControlLayerWorkFailure> = (|| {
             let (source_activation, remote_gpu_input, remote_gpu_result, cpu_result) =
                 resources.reservation.worker_leases();
             let parts = model.execution_parts();
 
-            // Resolve every owner handle and evidence buffer needed by the two
-            // overlapping jobs before the first enqueue.
-            let first_route = local_routes[0].clone();
-            let first_weights = match parts.layer_owner_experts.get(&GptOssExpertKey {
-                layer: layer_u16,
-                expert: first_route.descriptor.route.expert_id,
-            }) {
-                Some(weights) => Arc::clone(weights),
-                None => {
-                    return Err(ControlLayerWorkFailure {
+            // Every route identity, weight handle, trace buffer, result slot,
+            // and GPU0 input handle is resolved before the first enqueue.
+            let mut local_jobs = Vec::with_capacity(4);
+            for (pool_slot, route) in local_routes.iter().cloned().enumerate() {
+                let weights = parts
+                    .layer_owner_experts
+                    .get(&GptOssExpertKey {
+                        layer: layer_u16,
+                        expert: route.descriptor.route.expert_id,
+                    })
+                    .map(Arc::clone)
+                    .ok_or_else(|| ControlLayerWorkFailure {
                         error: LLMError::ModelError("control local expert weight missing".into()),
                         drain_proven: true,
-                    });
-                }
-            };
-            let first_trace = if capture {
-                match take_trace_storage(&mut trace_storage, &first_route) {
-                    Ok(trace) => Some(trace),
-                    Err(error) => {
-                        return Err(ControlLayerWorkFailure {
-                            error,
-                            drain_proven: true,
-                        });
-                    }
-                }
-            } else {
-                None
-            };
-            let remote_weights = match remote_route.as_ref() {
-                Some(route) => match parts.remote_gpu_experts.get(&GptOssExpertKey {
-                    layer: layer_u16,
-                    expert: route.descriptor.route.expert_id,
-                }) {
-                    Some(weights) => Some(Arc::clone(weights)),
-                    None => {
-                        return Err(ControlLayerWorkFailure {
-                            error: LLMError::ModelError(
-                                "control remote expert weight missing".into(),
-                            ),
-                            drain_proven: true,
-                        });
-                    }
-                },
-                None => None,
-            };
-            let remote_trace = if capture {
-                match remote_route.as_ref() {
-                    Some(route) => match take_trace_storage(&mut trace_storage, route) {
-                        Ok(trace) => Some(trace),
-                        Err(error) => {
-                            return Err(ControlLayerWorkFailure {
-                                error,
-                                drain_proven: true,
-                            });
-                        }
-                    },
-                    None => None,
-                }
-            } else {
-                None
-            };
-            let mut cpu_trace = if capture {
-                match cpu_route.as_ref() {
-                    Some(route) => match take_trace_storage(&mut trace_storage, route) {
-                        Ok(trace) => Some(trace),
-                        Err(error) => {
-                            return Err(ControlLayerWorkFailure {
-                                error,
-                                drain_proven: true,
-                            });
-                        }
-                    },
-                    None => None,
-                }
-            } else {
-                None
-            };
-
-            let first_slot = resources.local_slots[0]
-                .take()
-                .expect("prepared first local result slot");
-            let first_prepared = match first_trace {
-                Some(trace) => parts.layer_owner_executor.prepare_owned_device(
-                    GptOssPhase::Decode,
-                    first_route.descriptor.clone(),
-                    first_weights,
-                    Arc::clone(&resident.slice),
-                    &resident.stable_device,
-                    first_slot,
-                    trace,
-                ),
-                None => parts.layer_owner_executor.prepare_owned_device_output_only(
-                    GptOssPhase::Decode,
-                    first_route.descriptor.clone(),
-                    first_weights,
-                    Arc::clone(&resident.slice),
-                    &resident.stable_device,
-                    first_slot,
-                ),
-            };
-            let first_prepared = match first_prepared {
-                Ok(prepared) => prepared,
-                Err(failure) => {
-                    return Err(classify_control_owned_failure(
-                        failure,
-                        &mut resources.local_slots[0],
-                    ));
-                }
-            };
-            let first_pending =
-                match first_prepared.submit_with_timeline(timeline, "h7_gpu0_local_first") {
-                    Ok(pending) => pending,
-                    Err(failure) => {
-                        return Err(classify_control_owned_failure(
-                            failure,
-                            &mut resources.local_slots[0],
-                        ));
-                    }
-                };
-
-            // Once `first_pending` exists, every path below explicitly drains
-            // it and any sibling before returning.
-            let remote_pending = match (remote_route.as_ref(), remote_weights) {
-                (Some(route), Some(weights)) => {
-                    let slot = resources
-                        .remote_slot
-                        .take()
-                        .expect("prepared remote result slot");
-                    let input_start = route.owner_route_slot as usize * GPT_OSS_HIDDEN_SIZE;
-                    let prepared = match remote_trace {
-                        Some(trace) => parts.remote_executor.prepare_owned_pinned(
-                            GptOssPhase::Decode,
-                            route.descriptor.clone(),
-                            weights,
-                            &remote_gpu_input.as_slice()
-                                [input_start..input_start + GPT_OSS_HIDDEN_SIZE],
-                            slot,
-                            trace,
-                        ),
-                        None => parts.remote_executor.prepare_owned_pinned_output_only(
-                            GptOssPhase::Decode,
-                            route.descriptor.clone(),
-                            weights,
-                            &remote_gpu_input.as_slice()
-                                [input_start..input_start + GPT_OSS_HIDDEN_SIZE],
-                            slot,
-                        ),
-                    };
-                    let prepared = match prepared {
-                        Ok(prepared) => prepared,
-                        Err(failure) => {
-                            let mut primary =
-                                classify_control_owned_failure(failure, &mut resources.remote_slot);
-                            let drained = drain_control_pending(
-                                first_pending,
-                                capture,
-                                None,
-                                timeline,
-                                "h7_gpu0_local_first",
-                                first_route,
-                            );
-                            primary.drain_proven &=
-                                recover_control_pending(drained, &mut resources.local_slots[0]);
-                            return Err(primary);
-                        }
-                    };
-                    match prepared.submit_with_timeline(timeline, "h7_gpu1_remote") {
-                        Ok(pending) => Some((route.clone(), pending)),
-                        Err(failure) => {
-                            let mut primary =
-                                classify_control_owned_failure(failure, &mut resources.remote_slot);
-                            let drained = drain_control_pending(
-                                first_pending,
-                                capture,
-                                None,
-                                timeline,
-                                "h7_gpu0_local_first",
-                                first_route,
-                            );
-                            primary.drain_proven &=
-                                recover_control_pending(drained, &mut resources.local_slots[0]);
-                            return Err(primary);
-                        }
-                    }
-                }
-                _ => None,
-            };
-
-            let cpu_execution = match cpu_route.as_ref() {
-                Some(route) => {
-                    let record = match parts.cpu_layers.get(&layer_u16) {
-                        Some(record) => record,
-                        None => {
-                            let mut primary = ControlLayerWorkFailure {
-                                error: LLMError::ModelError(
-                                    "control CPU owner layer record missing".into(),
-                                ),
-                                drain_proven: true,
-                            };
-                            primary.drain_proven &= recover_control_pending(
-                                drain_control_pending(
-                                    first_pending,
-                                    capture,
-                                    None,
-                                    timeline,
-                                    "h7_gpu0_local_first",
-                                    first_route,
-                                ),
-                                &mut resources.local_slots[0],
-                            );
-                            if let Some((remote_route, pending)) = remote_pending {
-                                primary.drain_proven &= recover_control_pending(
-                                    drain_control_pending(
-                                        pending,
-                                        capture,
-                                        Some(remote_gpu_result),
-                                        timeline,
-                                        "h7_gpu1_remote",
-                                        remote_route,
-                                    ),
-                                    &mut resources.remote_slot,
-                                );
-                            }
-                            return Err(primary);
-                        }
-                    };
-                    let view = match record.expert_view(route.descriptor.route.expert_id) {
-                        Ok(view) => view,
-                        Err(error) => {
-                            let mut primary = ControlLayerWorkFailure {
-                                error,
-                                drain_proven: true,
-                            };
-                            primary.drain_proven &= recover_control_pending(
-                                drain_control_pending(
-                                    first_pending,
-                                    capture,
-                                    None,
-                                    timeline,
-                                    "h7_gpu0_local_first",
-                                    first_route,
-                                ),
-                                &mut resources.local_slots[0],
-                            );
-                            if let Some((remote_route, pending)) = remote_pending {
-                                primary.drain_proven &= recover_control_pending(
-                                    drain_control_pending(
-                                        pending,
-                                        capture,
-                                        Some(remote_gpu_result),
-                                        timeline,
-                                        "h7_gpu1_remote",
-                                        remote_route,
-                                    ),
-                                    &mut resources.remote_slot,
-                                );
-                            }
-                            return Err(primary);
-                        }
-                    };
-                    let execution = match cpu_trace.as_mut() {
-                        Some(trace) => self.cpu_worker.execute_into_pinned_with_trace(
-                            layer_u16,
-                            &route.descriptor,
-                            route.owner_route_slot,
-                            view,
-                            &source_activation.as_slice()[..GPT_OSS_HIDDEN_SIZE],
-                            cpu_result,
-                            trace,
-                            Some(timeline),
-                        ),
-                        None => self.cpu_worker.execute_into_pinned_device_only(
-                            layer_u16,
-                            &route.descriptor,
-                            route.owner_route_slot,
-                            view,
-                            &source_activation.as_slice()[..GPT_OSS_HIDDEN_SIZE],
-                            cpu_result,
-                            Some(timeline),
-                        ),
-                    };
-                    match execution {
-                        Ok(execution) => Some((route.clone(), execution)),
-                        Err(error) => {
-                            let mut primary = ControlLayerWorkFailure {
-                                error,
-                                drain_proven: true,
-                            };
-                            primary.drain_proven &= recover_control_pending(
-                                drain_control_pending(
-                                    first_pending,
-                                    capture,
-                                    None,
-                                    timeline,
-                                    "h7_gpu0_local_first",
-                                    first_route,
-                                ),
-                                &mut resources.local_slots[0],
-                            );
-                            if let Some((remote_route, pending)) = remote_pending {
-                                primary.drain_proven &= recover_control_pending(
-                                    drain_control_pending(
-                                        pending,
-                                        capture,
-                                        Some(remote_gpu_result),
-                                        timeline,
-                                        "h7_gpu1_remote",
-                                        remote_route,
-                                    ),
-                                    &mut resources.remote_slot,
-                                );
-                            }
-                            return Err(primary);
-                        }
-                    }
-                }
-                None => None,
-            };
-
-            // Drain both submitted owners regardless of which one reports the
-            // primary failure. This is the sibling-drain barrier.
-            let first_result = drain_control_pending(
-                first_pending,
-                capture,
-                None,
-                timeline,
-                "h7_gpu0_local_first",
-                first_route,
-            );
-            let remote_result = remote_pending.map(|(route, pending)| {
-                drain_control_pending(
-                    pending,
-                    capture,
-                    Some(remote_gpu_result),
-                    timeline,
-                    "h7_gpu1_remote",
-                    route,
-                )
-            });
-            let mut primary_failure = None;
-            match first_result {
-                Ok(completion) => {
-                    if let Err(error) = store_gpu_evidence(&mut expert_evidence, &completion) {
-                        primary_failure = Some(ControlLayerWorkFailure {
-                            error,
-                            drain_proven: true,
-                        });
-                    }
-                    resources.local_slots[0] = Some(completion.result_slot);
-                }
-                Err(failure) => {
-                    primary_failure = Some(classify_control_owned_failure(
-                        failure,
-                        &mut resources.local_slots[0],
-                    ));
-                }
-            }
-            if let Some(result) = remote_result {
-                match result {
-                    Ok(completion) => {
-                        nonlocal_completions.push(completion.route_contract);
-                        if let Err(error) = store_gpu_evidence(&mut expert_evidence, &completion) {
-                            let failure = ControlLayerWorkFailure {
-                                error,
-                                drain_proven: true,
-                            };
-                            merge_control_failure(&mut primary_failure, failure);
-                        }
-                        resources.remote_slot = Some(completion.result_slot);
-                    }
-                    Err(failure) => {
-                        let failure =
-                            classify_control_owned_failure(failure, &mut resources.remote_slot);
-                        merge_control_failure(&mut primary_failure, failure);
-                    }
-                }
-            }
-            if let Some(failure) = primary_failure {
-                return Err(failure);
-            }
-
-            if let Some((route, execution)) = cpu_execution {
-                expert_evidence[route.descriptor.canonical_result_slot as usize] =
-                    Some(HeterogeneousControlExpertExecution {
-                        descriptor: ExpertResultDescriptor::from_packed_route(&route.descriptor),
-                        kernel_elapsed_ms: 0.0,
-                        input_d2d_bytes: 0,
-                        input_h2d_bytes: 0,
-                        output_d2h_bytes: execution.output_bytes,
-                        cpu_elapsed_ns: Some(execution.elapsed_ns),
-                        trace: cpu_trace.take().map(SelectedExpertTraceStorage::into_trace),
-                    });
-                nonlocal_completions.push(execution.route_contract);
-            }
-
-            for (pool_slot, route) in local_routes.iter().enumerate().skip(1) {
-                let weights = match parts.layer_owner_experts.get(&GptOssExpertKey {
-                    layer: layer_u16,
-                    expert: route.descriptor.route.expert_id,
-                }) {
-                    Some(weights) => Arc::clone(weights),
-                    None => {
-                        return Err(ControlLayerWorkFailure {
-                            error: LLMError::ModelError(
-                                "control local expert weight missing".into(),
-                            ),
-                            drain_proven: true,
-                        });
-                    }
-                };
+                    })?;
                 let trace = if capture {
-                    match take_trace_storage(&mut trace_storage, route) {
-                        Ok(trace) => Some(trace),
-                        Err(error) => {
-                            return Err(ControlLayerWorkFailure {
+                    Some(
+                        take_trace_storage(&mut trace_storage, &route).map_err(|error| {
+                            ControlLayerWorkFailure {
                                 error,
                                 drain_proven: true,
-                            });
+                            }
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                local_jobs.push((
+                    pool_slot,
+                    route.descriptor.clone(),
+                    route,
+                    weights,
+                    Arc::clone(
+                        &resident
+                            .as_ref()
+                            .expect("local route has resident input")
+                            .slice,
+                    ),
+                    trace,
+                ));
+            }
+            let mut remote_jobs = Vec::with_capacity(4);
+            for (pool_slot, route) in remote_routes.iter().cloned().enumerate() {
+                let weights = parts
+                    .remote_gpu_experts
+                    .get(&GptOssExpertKey {
+                        layer: layer_u16,
+                        expert: route.descriptor.route.expert_id,
+                    })
+                    .map(Arc::clone)
+                    .ok_or_else(|| ControlLayerWorkFailure {
+                        error: LLMError::ModelError("control remote expert weight missing".into()),
+                        drain_proven: true,
+                    })?;
+                let trace = if capture {
+                    Some(
+                        take_trace_storage(&mut trace_storage, &route).map_err(|error| {
+                            ControlLayerWorkFailure {
+                                error,
+                                drain_proven: true,
+                            }
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                remote_jobs.push((pool_slot, route.descriptor.clone(), route, weights, trace));
+            }
+            let mut cpu_jobs = Vec::with_capacity(4);
+            for route in cpu_routes.iter().cloned() {
+                let record =
+                    parts
+                        .cpu_layers
+                        .get(&layer_u16)
+                        .ok_or_else(|| ControlLayerWorkFailure {
+                            error: LLMError::ModelError(
+                                "control CPU owner layer record missing".into(),
+                            ),
+                            drain_proven: true,
+                        })?;
+                let view = record
+                    .expert_view(route.descriptor.route.expert_id)
+                    .map_err(|error| ControlLayerWorkFailure {
+                        error,
+                        drain_proven: true,
+                    })?;
+                let trace = if capture {
+                    Some(
+                        take_trace_storage(&mut trace_storage, &route).map_err(|error| {
+                            ControlLayerWorkFailure {
+                                error,
+                                drain_proven: true,
+                            }
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                cpu_jobs.push((route, view, trace));
+            }
+
+            let stable_device = resident.as_ref().map(|resident| &resident.stable_device);
+            let mut local_jobs = local_jobs.into_iter();
+            let mut remote_jobs = remote_jobs.into_iter();
+            {
+                let mut primary_failure = None;
+
+                let local_pending = match local_jobs.next() {
+                    Some((pool_slot, descriptor, route, weights, input, trace)) => {
+                        let slot = resources.local_slots[pool_slot]
+                            .take()
+                            .expect("prepared first local result slot");
+                        let prepared = match trace {
+                            Some(trace) => parts.layer_owner_executor.prepare_owned_device(
+                                GptOssPhase::Decode,
+                                descriptor,
+                                weights,
+                                input,
+                                stable_device.expect("local route has stable device"),
+                                slot,
+                                trace,
+                            ),
+                            None => parts.layer_owner_executor.prepare_owned_device_output_only(
+                                GptOssPhase::Decode,
+                                descriptor,
+                                weights,
+                                input,
+                                stable_device.expect("local route has stable device"),
+                                slot,
+                            ),
+                        };
+                        match prepared.and_then(|prepared| {
+                            prepared.submit_with_timeline(timeline, "h7_gpu0_local_first")
+                        }) {
+                            Ok(pending) => Some((pool_slot, route, pending)),
+                            Err(failure) => {
+                                primary_failure = Some(classify_control_owned_failure(
+                                    failure,
+                                    &mut resources.local_slots[pool_slot],
+                                ));
+                                None
+                            }
                         }
+                    }
+                    None => None,
+                };
+
+                let remote_pending = if primary_failure.is_none() {
+                    match remote_jobs.next() {
+                        Some((pool_slot, descriptor, route, weights, trace)) => {
+                            let slot = resources.remote_slots[pool_slot]
+                                .take()
+                                .expect("prepared first remote result slot");
+                            let input_start = route.owner_route_slot as usize * GPT_OSS_HIDDEN_SIZE;
+                            let input = &remote_gpu_input.as_slice()
+                                [input_start..input_start + GPT_OSS_HIDDEN_SIZE];
+                            let prepared = match trace {
+                                Some(trace) => parts.remote_executor.prepare_owned_pinned(
+                                    GptOssPhase::Decode,
+                                    descriptor,
+                                    weights,
+                                    input,
+                                    slot,
+                                    trace,
+                                ),
+                                None => parts.remote_executor.prepare_owned_pinned_output_only(
+                                    GptOssPhase::Decode,
+                                    descriptor,
+                                    weights,
+                                    input,
+                                    slot,
+                                ),
+                            };
+                            match prepared.and_then(|prepared| {
+                                prepared.submit_with_timeline(timeline, "h7_gpu1_remote")
+                            }) {
+                                Ok(pending) => Some((pool_slot, route, pending)),
+                                Err(failure) => {
+                                    merge_control_failure(
+                                        &mut primary_failure,
+                                        classify_control_owned_failure(
+                                            failure,
+                                            &mut resources.remote_slots[pool_slot],
+                                        ),
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        None => None,
                     }
                 } else {
                     None
                 };
+
+                // The capacity-one CPU worker consumes every CPU-owned route while
+                // the first submitted job on each GPU is in flight. All output
+                // rows use their category-global packed slot.
+                if primary_failure.is_none() {
+                    for (route, view, mut trace) in cpu_jobs {
+                        let execution = match trace.as_mut() {
+                            Some(trace) => self.cpu_worker.execute_into_pinned_with_trace(
+                                layer_u16,
+                                &route.descriptor,
+                                route.owner_route_slot,
+                                view,
+                                &source_activation.as_slice()[..GPT_OSS_HIDDEN_SIZE],
+                                cpu_result,
+                                trace,
+                                Some(timeline),
+                            ),
+                            None => self.cpu_worker.execute_into_pinned_device_only(
+                                layer_u16,
+                                &route.descriptor,
+                                route.owner_route_slot,
+                                view,
+                                &source_activation.as_slice()[..GPT_OSS_HIDDEN_SIZE],
+                                cpu_result,
+                                Some(timeline),
+                            ),
+                        };
+                        match execution {
+                            Ok(execution) => {
+                                let slot = route.descriptor.canonical_result_slot as usize;
+                                if expert_evidence[slot].is_some() {
+                                    primary_failure = Some(ControlLayerWorkFailure {
+                                        error: LLMError::ModelError(
+                                            "duplicate CPU canonical result slot".into(),
+                                        ),
+                                        drain_proven: true,
+                                    });
+                                    break;
+                                }
+                                expert_evidence[slot] = Some(HeterogeneousControlExpertExecution {
+                                    descriptor: ExpertResultDescriptor::from_packed_route(
+                                        &route.descriptor,
+                                    ),
+                                    kernel_elapsed_ms: 0.0,
+                                    input_d2d_bytes: 0,
+                                    input_h2d_bytes: 0,
+                                    output_d2h_bytes: execution.output_bytes,
+                                    cpu_elapsed_ns: Some(execution.elapsed_ns),
+                                    trace: trace.map(SelectedExpertTraceStorage::into_trace),
+                                });
+                                nonlocal_completions.push(execution.route_contract);
+                            }
+                            Err(error) => {
+                                primary_failure = Some(ControlLayerWorkFailure {
+                                    error,
+                                    drain_proven: true,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Drain both initially submitted owners regardless of which owner
+                // failed. This is the all-sibling terminal barrier.
+                if let Some((pool_slot, route, pending)) = local_pending {
+                    match drain_control_pending(
+                        pending,
+                        capture,
+                        None,
+                        0,
+                        timeline,
+                        "h7_gpu0_local_first",
+                        route,
+                    ) {
+                        Ok(completion) => {
+                            match store_gpu_evidence(&mut expert_evidence, completion) {
+                                Ok(stored) => {
+                                    resources.local_slots[pool_slot] = Some(stored.result_slot);
+                                }
+                                Err((error, completion)) => {
+                                    resources.local_slots[pool_slot] = Some(completion.result_slot);
+                                    merge_control_failure(
+                                        &mut primary_failure,
+                                        ControlLayerWorkFailure {
+                                            error,
+                                            drain_proven: true,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Err(failure) => merge_control_failure(
+                            &mut primary_failure,
+                            classify_control_owned_failure(
+                                failure,
+                                &mut resources.local_slots[pool_slot],
+                            ),
+                        ),
+                    }
+                }
+                if let Some((pool_slot, route, pending)) = remote_pending {
+                    let output_slot = route.owner_route_slot;
+                    match drain_control_pending(
+                        pending,
+                        capture,
+                        Some(remote_gpu_result),
+                        output_slot,
+                        timeline,
+                        "h7_gpu1_remote",
+                        route,
+                    ) {
+                        Ok(completion) => {
+                            match store_gpu_evidence(&mut expert_evidence, completion) {
+                                Ok(stored) => {
+                                    nonlocal_completions.push(stored.route_contract);
+                                    resources.remote_slots[pool_slot] = Some(stored.result_slot);
+                                }
+                                Err((error, completion)) => {
+                                    resources.remote_slots[pool_slot] =
+                                        Some(completion.result_slot);
+                                    merge_control_failure(
+                                        &mut primary_failure,
+                                        ControlLayerWorkFailure {
+                                            error,
+                                            drain_proven: true,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Err(failure) => merge_control_failure(
+                            &mut primary_failure,
+                            classify_control_owned_failure(
+                                failure,
+                                &mut resources.remote_slots[pool_slot],
+                            ),
+                        ),
+                    }
+                }
+                if let Some(failure) = primary_failure {
+                    return Err(failure);
+                }
+            }
+
+            for (pool_slot, descriptor, route, weights, input, trace) in local_jobs {
                 let slot = resources.local_slots[pool_slot]
                     .take()
                     .expect("prepared serial local result slot");
                 let prepared = match trace {
                     Some(trace) => parts.layer_owner_executor.prepare_owned_device(
                         GptOssPhase::Decode,
-                        route.descriptor.clone(),
+                        descriptor,
                         weights,
-                        Arc::clone(&resident.slice),
-                        &resident.stable_device,
+                        input,
+                        stable_device.expect("local route has stable device"),
                         slot,
                         trace,
                     ),
                     None => parts.layer_owner_executor.prepare_owned_device_output_only(
                         GptOssPhase::Decode,
-                        route.descriptor.clone(),
+                        descriptor,
                         weights,
-                        Arc::clone(&resident.slice),
-                        &resident.stable_device,
+                        input,
+                        stable_device.expect("local route has stable device"),
                         slot,
                     ),
                 };
-                let prepared = match prepared {
-                    Ok(prepared) => prepared,
-                    Err(failure) => {
-                        return Err(classify_control_owned_failure(
+                let prepared = prepared.map_err(|failure| {
+                    classify_control_owned_failure(failure, &mut resources.local_slots[pool_slot])
+                })?;
+                let pending = prepared
+                    .submit_with_timeline(timeline, "h7_gpu0_local_serial")
+                    .map_err(|failure| {
+                        classify_control_owned_failure(
                             failure,
                             &mut resources.local_slots[pool_slot],
-                        ));
-                    }
-                };
-                let pending = match prepared.submit_with_timeline(timeline, "h7_gpu0_local_serial")
-                {
-                    Ok(pending) => pending,
-                    Err(failure) => {
-                        return Err(classify_control_owned_failure(
-                            failure,
-                            &mut resources.local_slots[pool_slot],
-                        ));
-                    }
-                };
-                let completion = match drain_control_pending(
+                        )
+                    })?;
+                let completion = drain_control_pending(
                     pending,
                     capture,
                     None,
+                    0,
                     timeline,
                     "h7_gpu0_local_serial",
-                    route.clone(),
-                ) {
-                    Ok(completion) => completion,
-                    Err(failure) => {
-                        return Err(classify_control_owned_failure(
-                            failure,
-                            &mut resources.local_slots[pool_slot],
-                        ));
+                    route,
+                )
+                .map_err(|failure| {
+                    classify_control_owned_failure(failure, &mut resources.local_slots[pool_slot])
+                })?;
+                match store_gpu_evidence(&mut expert_evidence, completion) {
+                    Ok(stored) => {
+                        resources.local_slots[pool_slot] = Some(stored.result_slot);
                     }
-                };
-                if let Err(error) = store_gpu_evidence(&mut expert_evidence, &completion) {
-                    resources.local_slots[pool_slot] = Some(completion.result_slot);
-                    return Err(ControlLayerWorkFailure {
-                        error,
-                        drain_proven: true,
-                    });
+                    Err((error, completion)) => {
+                        resources.local_slots[pool_slot] = Some(completion.result_slot);
+                        return Err(ControlLayerWorkFailure {
+                            error,
+                            drain_proven: true,
+                        });
+                    }
                 }
-                resources.local_slots[pool_slot] = Some(completion.result_slot);
+            }
+
+            for (pool_slot, descriptor, route, weights, trace) in remote_jobs {
+                let slot = resources.remote_slots[pool_slot]
+                    .take()
+                    .expect("prepared serial remote result slot");
+                let input_start = route.owner_route_slot as usize * GPT_OSS_HIDDEN_SIZE;
+                let input =
+                    &remote_gpu_input.as_slice()[input_start..input_start + GPT_OSS_HIDDEN_SIZE];
+                let prepared = match trace {
+                    Some(trace) => parts.remote_executor.prepare_owned_pinned(
+                        GptOssPhase::Decode,
+                        descriptor,
+                        weights,
+                        input,
+                        slot,
+                        trace,
+                    ),
+                    None => parts.remote_executor.prepare_owned_pinned_output_only(
+                        GptOssPhase::Decode,
+                        descriptor,
+                        weights,
+                        input,
+                        slot,
+                    ),
+                };
+                let prepared = prepared.map_err(|failure| {
+                    classify_control_owned_failure(failure, &mut resources.remote_slots[pool_slot])
+                })?;
+                let pending = prepared
+                    .submit_with_timeline(timeline, "h7_gpu1_remote_serial")
+                    .map_err(|failure| {
+                        classify_control_owned_failure(
+                            failure,
+                            &mut resources.remote_slots[pool_slot],
+                        )
+                    })?;
+                let output_slot = route.owner_route_slot;
+                let completion = drain_control_pending(
+                    pending,
+                    capture,
+                    Some(remote_gpu_result),
+                    output_slot,
+                    timeline,
+                    "h7_gpu1_remote_serial",
+                    route,
+                )
+                .map_err(|failure| {
+                    classify_control_owned_failure(failure, &mut resources.remote_slots[pool_slot])
+                })?;
+                match store_gpu_evidence(&mut expert_evidence, completion) {
+                    Ok(stored) => {
+                        nonlocal_completions.push(stored.route_contract);
+                        resources.remote_slots[pool_slot] = Some(stored.result_slot);
+                    }
+                    Err((error, completion)) => {
+                        resources.remote_slots[pool_slot] = Some(completion.result_slot);
+                        return Err(ControlLayerWorkFailure {
+                            error,
+                            drain_proven: true,
+                        });
+                    }
+                }
             }
             Ok(())
         })();
@@ -2028,9 +2018,8 @@ impl HeterogeneousControlRuntime {
             let drain_proven = !self.shell.is_poisoned();
             return Err(self.cleanup_control_layer(model, layer, resources, error, drain_proven));
         }
-        let experts = match expert_evidence.into_iter().collect::<Option<Vec<_>>>() {
-            Some(experts) => experts,
-            None => {
+        for evidence in expert_evidence {
+            let Some(evidence) = evidence else {
                 return Err(self.cleanup_control_layer(
                     model,
                     layer,
@@ -2040,8 +2029,9 @@ impl HeterogeneousControlRuntime {
                     ),
                     true,
                 ));
-            }
-        };
+            };
+            completed_expert_evidence.push(evidence);
+        }
         if let Err(error) =
             resources.restore_slots(&mut self.local_slots[layer], &mut self.remote_slots[layer])
         {
@@ -2062,7 +2052,7 @@ impl HeterogeneousControlRuntime {
             layer: layer_u16,
             plan,
             router: routed,
-            experts,
+            experts: completed_expert_evidence,
             reduction,
         })
     }
@@ -2174,9 +2164,11 @@ impl HeterogeneousControlRuntime {
                 }
             }
         }
-        for slot in &mut self.remote_slots {
-            if let Some(slot) = slot.take() {
-                std::mem::forget(slot);
+        for layer in &mut self.remote_slots {
+            for slot in layer {
+                if let Some(slot) = slot.take() {
+                    std::mem::forget(slot);
+                }
             }
         }
     }
@@ -2298,17 +2290,18 @@ fn drain_control_pending(
     pending: PendingOwnedSelectedExpert<'_>,
     capture: bool,
     pinned_output: Option<&mut BoundedPinnedLease<u16>>,
+    pinned_output_slot: u32,
     timeline: &CorrelatedTimeline,
     actor: &str,
     route: PackedDispatchRoute,
 ) -> std::result::Result<GpuCompletion, OwnedSelectedExpertFailure> {
     if capture {
         pending
-            .drain_with_trace(pinned_output, timeline, actor)
+            .drain_with_trace_at(pinned_output, pinned_output_slot, timeline, actor)
             .map(|execution| GpuCompletion::traced(route, execution))
     } else {
         pending
-            .drain_output_only(pinned_output, timeline, actor)
+            .drain_output_only_at(pinned_output, pinned_output_slot, timeline, actor)
             .map(|execution| GpuCompletion::output(route, execution))
     }
 }
@@ -2327,19 +2320,6 @@ fn classify_control_owned_failure(
     }
 }
 
-fn recover_control_pending(
-    result: std::result::Result<GpuCompletion, OwnedSelectedExpertFailure>,
-    slot: &mut Option<CudaSelectedExpertResultSlot>,
-) -> bool {
-    match result {
-        Ok(completion) => {
-            *slot = Some(completion.result_slot);
-            true
-        }
-        Err(failure) => classify_control_owned_failure(failure, slot).drain_proven,
-    }
-}
-
 fn merge_control_failure(
     primary: &mut Option<ControlLayerWorkFailure>,
     secondary: ControlLayerWorkFailure,
@@ -2351,26 +2331,47 @@ fn merge_control_failure(
     }
 }
 
+struct StoredGpuCompletion {
+    route_contract: CanonicalRouteContract,
+    result_slot: CudaSelectedExpertResultSlot,
+}
+
 fn store_gpu_evidence(
     evidence: &mut [Option<HeterogeneousControlExpertExecution>; 4],
-    completion: &GpuCompletion,
-) -> Result<()> {
+    completion: GpuCompletion,
+) -> std::result::Result<StoredGpuCompletion, (LLMError, GpuCompletion)> {
     let slot = completion.route_contract.result_slot as usize;
     if slot >= evidence.len() || evidence[slot].is_some() {
-        return Err(LLMError::ModelError(
-            "control GPU completion duplicated a canonical result slot".into(),
+        return Err((
+            LLMError::ModelError(
+                "control GPU completion duplicated a canonical result slot".into(),
+            ),
+            completion,
         ));
     }
+    let GpuCompletion {
+        descriptor,
+        route_contract,
+        result_slot,
+        kernel_elapsed_ms,
+        input_d2d_bytes,
+        input_h2d_bytes,
+        output_d2h_bytes,
+        trace,
+    } = completion;
     evidence[slot] = Some(HeterogeneousControlExpertExecution {
-        descriptor: completion.descriptor.clone(),
-        kernel_elapsed_ms: completion.kernel_elapsed_ms,
-        input_d2d_bytes: completion.input_d2d_bytes,
-        input_h2d_bytes: completion.input_h2d_bytes,
-        output_d2h_bytes: completion.output_d2h_bytes,
+        descriptor,
+        kernel_elapsed_ms,
+        input_d2d_bytes,
+        input_h2d_bytes,
+        output_d2h_bytes,
         cpu_elapsed_ns: None,
-        trace: completion.trace.clone(),
+        trace,
     });
-    Ok(())
+    Ok(StoredGpuCompletion {
+        route_contract,
+        result_slot,
+    })
 }
 
 fn take_trace_storage(

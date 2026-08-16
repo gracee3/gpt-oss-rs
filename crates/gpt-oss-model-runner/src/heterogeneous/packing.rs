@@ -324,6 +324,7 @@ mod tests {
     };
     use gpt_oss_gpu::device::{GpuDevice, StableCudaDeviceId};
     use half::bf16;
+    use std::collections::BTreeSet;
 
     fn stable(pci: &str) -> StableCudaDeviceId {
         StableCudaDeviceId {
@@ -413,6 +414,94 @@ mod tests {
         .unwrap()
     }
 
+    fn placement_for_top4_cardinality(
+        cpu: usize,
+        layer_owner_count: usize,
+        remote: usize,
+    ) -> ResolvedExpertPlacement {
+        assert_eq!(cpu + layer_owner_count + remote, GPT_OSS_TOP_K);
+        let layer_owner = stable("0000:19:00.0");
+        let remote_worker = stable("0000:65:00.0");
+        let devices = [
+            GpuDevice {
+                id: 0,
+                name: layer_owner.expected_name.clone(),
+                compute_capability: (8, 6),
+                total_memory: 24 * 1024 * 1024 * 1024,
+                pci_bus_id: Some(layer_owner.pci_bus_id),
+            },
+            GpuDevice {
+                id: 1,
+                name: remote_worker.expected_name.clone(),
+                compute_capability: (8, 6),
+                total_memory: 24 * 1024 * 1024 * 1024,
+                pci_bus_id: Some(remote_worker.pci_bus_id),
+            },
+        ];
+        let assignments = (0..24_u16)
+            .flat_map(|layer| {
+                let layer_owner = layer_owner.clone();
+                let remote_worker = remote_worker.clone();
+                (0..32_u16).map(move |expert| {
+                    let owner = if layer == 0 && usize::from(expert) < GPT_OSS_TOP_K {
+                        let rank = usize::from(expert);
+                        if rank < cpu {
+                            ExpertOwner::Cpu {
+                                pool: CpuPoolId((rank % 2) as u16),
+                            }
+                        } else if rank < cpu + layer_owner_count {
+                            ExpertOwner::LayerOwnerGpu {
+                                device: layer_owner.clone(),
+                            }
+                        } else {
+                            ExpertOwner::RemoteGpu {
+                                device: remote_worker.clone(),
+                            }
+                        }
+                    } else {
+                        ExpertOwner::LayerOwnerGpu {
+                            device: layer_owner.clone(),
+                        }
+                    };
+                    ExpertAssignment {
+                        key: GptOssExpertKey { layer, expert },
+                        owner,
+                    }
+                })
+            })
+            .collect();
+        GptOssExpertPlacementManifestV1 {
+            schema: HETEROGENEOUS_PLACEMENT_SCHEMA_V1.into(),
+            model: GptOssPlacementModel {
+                revision: "cardinality-fixture".into(),
+                config_sha256: "1".repeat(64),
+                index_sha256: "2".repeat(64),
+                mapping_sha256: "3".repeat(64),
+                num_layers: 24,
+                experts_per_layer: 32,
+                hidden_size: GPT_OSS_HIDDEN_SIZE as u16,
+                intermediate_size: GPT_OSS_HIDDEN_SIZE as u16,
+                top_k: GPT_OSS_TOP_K as u8,
+            },
+            layer_owner,
+            remote_worker,
+            policy: PlacementPolicyClass::Proof,
+            policy_seed: 0,
+            placement_epoch: 4,
+            budgets: PlacementBudgets {
+                max_cpu_experts: u32::MAX,
+                max_layer_owner_experts: u32::MAX,
+                max_remote_gpu_experts: u32::MAX,
+                max_host_owner_bytes: u64::MAX,
+                max_layer_owner_bytes: u64::MAX,
+                max_remote_gpu_bytes: u64::MAX,
+            },
+            assignments,
+        }
+        .validate(&devices)
+        .unwrap()
+    }
+
     fn batch(rows: usize, experts: u16, phase: GptOssPhase) -> GptOssRoutedBatchDescriptor {
         let routes = (0..rows)
             .flat_map(|row| {
@@ -457,6 +546,69 @@ mod tests {
             }
             assert!(plan.bytes.raw_pinned_bytes <= plan.bytes.hard_cap_bytes);
         }
+    }
+
+    #[test]
+    fn every_top4_owner_cardinality_preserves_canonical_identity_and_slots() {
+        let mut observed = BTreeSet::new();
+        for cpu in 0..=GPT_OSS_TOP_K {
+            for layer_owner_count in 0..=GPT_OSS_TOP_K - cpu {
+                let remote = GPT_OSS_TOP_K - cpu - layer_owner_count;
+                let placement = placement_for_top4_cardinality(cpu, layer_owner_count, remote);
+                let mut routed = batch(1, 32, GptOssPhase::Decode);
+                for (rank, route) in routed.routes.iter_mut().enumerate() {
+                    route.expert_id = rank as u16;
+                    route.weight_bf16_bits = 0x3f00_u16 + rank as u16;
+                }
+                let plan = pack_routes_bounded(&routed, &placement).unwrap();
+                plan.validate_round_trip().unwrap();
+                assert_eq!(plan.cpu_route_count(), cpu);
+                assert_eq!(plan.local_route_count(), layer_owner_count);
+                assert_eq!(plan.remote_gpu_route_count(), remote);
+                let mut canonical = plan
+                    .all_routes()
+                    .map(|route| {
+                        (
+                            route.descriptor.canonical_result_slot,
+                            route.descriptor.route.route_rank,
+                            route.descriptor.route.expert_id,
+                            route.descriptor.route.weight_bf16_bits,
+                            route.descriptor.owner.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                canonical.sort_by_key(|identity| identity.0);
+                for (rank, identity) in canonical.iter().enumerate() {
+                    assert_eq!(identity.0, rank as u32);
+                    assert_eq!(identity.1, rank as u8);
+                    assert_eq!(identity.2, rank as u16);
+                    assert_eq!(identity.3, 0x3f00_u16 + rank as u16);
+                    assert_eq!(
+                        identity.4,
+                        placement
+                            .owner(GptOssExpertKey {
+                                layer: 0,
+                                expert: rank as u16,
+                            })
+                            .unwrap()
+                            .clone()
+                    );
+                }
+                for routes in [&plan.cpu, &plan.remote_gpu] {
+                    let slots = routes
+                        .iter()
+                        .flat_map(|owner| owner.routes.iter())
+                        .map(|route| route.owner_route_slot)
+                        .collect::<Vec<_>>();
+                    assert_eq!(slots, (0..slots.len() as u32).collect::<Vec<_>>());
+                }
+                observed.insert((cpu, layer_owner_count, remote));
+            }
+        }
+        assert_eq!(observed.len(), 15);
+        assert!(observed.contains(&(4, 0, 0)));
+        assert!(observed.contains(&(0, 4, 0)));
+        assert!(observed.contains(&(0, 0, 4)));
     }
 
     #[test]

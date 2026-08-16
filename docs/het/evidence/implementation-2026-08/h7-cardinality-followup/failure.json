@@ -1,0 +1,33 @@
+{
+  "schema": "gpt-oss-rs.h7-cardinality-followup-failure/v1",
+  "status": "non_passing",
+  "repository_start_head": "7ee6f5d66a662601d6da35880cc4f87b73721977",
+  "source_fingerprint": "a9e732ddd81df04b3802800fc6767fb23af2fa0974208f7273c1e943e864a781",
+  "control_binary_sha256": "506ac6e18b0251dcc429ddb0fcf5545ecf1ff9953799e531e3056d5c3374999b",
+  "fault_binary_sha256": "0c8ba041bff8fbeb7ff5b6ed01919d4b71e9be7e72e58190ff316d3d088ca05f",
+  "attempts": [
+    {
+      "attempt": 1,
+      "result": "stopped_before_artifact",
+      "failure": "retained gate searched for h7_gpu1_remote while generalized dispatch emitted h7_gpu1_remote_first",
+      "repair": "restored the canonical actor identity and retained the strict interval test"
+    },
+    {
+      "attempt": 2,
+      "result": "numerical_and_lifecycle_pass_but_resource_gate_failed",
+      "artifact": "attempt-02-numerical-pass-global-swap-nonpassing.json",
+      "exact_tokens": true,
+      "strict_three_way_overlap": true,
+      "target_process_swap_bytes": 0,
+      "external_preflight_swap_free_kib": 104839880,
+      "observed_swap_free_kib": 104836504,
+      "global_swap_growth_kib": 3376,
+      "attribution": "outside target process; supervisor process was observed with nonzero VmSwap",
+      "promotion_allowed": false
+    }
+  ],
+  "later_packages_started": false,
+  "h8_retried": false,
+  "h9_started": false,
+  "commit_created": false
+}

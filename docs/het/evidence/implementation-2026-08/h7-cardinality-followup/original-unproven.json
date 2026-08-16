@@ -1,0 +1,27 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-control-fault-h7-followup/v2",
+  "mode": "unproven_remote_post_enqueue_quarantine",
+  "binary_sha256": "0c8ba041bff8fbeb7ff5b6ed01919d4b71e9be7e72e58190ff316d3d088ca05f",
+  "placement_sha256": "add5779a0878a552066c941d6602a0b54cdf3b8be75c259364873ac77fd9db49",
+  "placement_mode": "supplied_manifest",
+  "placement_owner_counts_cpu_gpu0_gpu1": [
+    1,
+    766,
+    1
+  ],
+  "tokens_committed_before_fault": 20,
+  "fault_generation": 21,
+  "successful_remote_submissions_before_fault": 0,
+  "first_error": "gpu error: owned selected expert submit failed (gpu error: injected owned selected-expert post-input-transfer submit failure); injected mandatory fallback drain failure",
+  "first_drain_proven": false,
+  "runtime_poisoned_after": true,
+  "model_quarantined_after": true,
+  "shell_poisoned_after": true,
+  "pinned_checked_out_after": 5,
+  "pinned_quarantined_after": 0,
+  "clean_retry_succeeded": false,
+  "retry_rejected_after_unproven": true,
+  "final_pinned_checked_out": 5,
+  "final_pinned_quarantined": 0,
+  "passed": true
+}

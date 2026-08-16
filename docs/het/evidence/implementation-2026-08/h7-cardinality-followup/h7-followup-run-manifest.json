@@ -1,0 +1,73 @@
+{
+  "schema": "gpt-oss-rs.h7-cardinality-followup-manifest/v1",
+  "status": "passed",
+  "date": "2026-08-16",
+  "package_start_head": "7ee6f5d66a662601d6da35880cc4f87b73721977",
+  "source_fingerprint": "a9e732ddd81df04b3802800fc6767fb23af2fa0974208f7273c1e943e864a781",
+  "binaries": {
+    "heterogeneous_control_sha256": "506ac6e18b0251dcc429ddb0fcf5545ecf1ff9953799e531e3056d5c3374999b",
+    "heterogeneous_control_fault_sha256": "0c8ba041bff8fbeb7ff5b6ed01919d4b71e9be7e72e58190ff316d3d088ca05f",
+    "heterogeneous_layer_oracle_sha256": "b1d1bf0f5dcc8b1422a99d16d7924bd90e6f066b71f000ebe996418447d23748"
+  },
+  "ptx": {
+    "selected_expert_sha256": "8bef561a19a8f8924c6d8d9799724007a27a554c5a0bfc73f8c9d61e45ca4e37",
+    "router_sha256": "4dbd720e19616db6968bc9fec84b353bca0c8cdbe2a0ed56bb6f5458de3fd26b",
+    "rank_reduction_sha256": "ce428af9a65a71b7148fbe63dac26a0c2f69b9212994d1ff9ff732c553535896"
+  },
+  "inputs": {
+    "model": "/data/models/openai/gpt-oss-20b",
+    "native_model": "/data/models/openai/gpt-oss-20b/original",
+    "config_sha256": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+    "index_sha256": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+    "placement_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+    "retained_trace_sha256": "1be8a61eeeec92e7af980a6f190788f0829048015c5f54fe7fa6ce334618db39"
+  },
+  "swap_stability": {
+    "sample_times": ["2026-08-16T12:12:39-04:00", "2026-08-16T12:13:20-04:00", "2026-08-16T12:14:01-04:00", "2026-08-16T12:14:42-04:00"],
+    "swap_free_kib_each_sample": 104836504,
+    "swap_cached_kib_each_sample": 1712,
+    "psi_memory_avg10_each_sample": 0.0,
+    "attempt03_external_start_swap_free_kib": 104836504,
+    "attempt03_external_end_swap_free_kib": 104836504,
+    "attempt03_target_process_swap_bytes": 0
+  },
+  "retained_gate": {
+    "artifact": "attempt-03-retained-control.json",
+    "repeat_count": 2,
+    "exact_tokens": [200005, 35644, 200008, 976, 1825, 5003, 25, 392],
+    "strict_three_way_overlap_each_run": true,
+    "cleanup_each_run": true,
+    "global_swap_growth_bytes": 0
+  },
+  "cardinality_gate": {
+    "triples_checked": 15,
+    "all_passed": true,
+    "includes": ["4/0/0", "0/4/0", "0/0/4", "multi-CPU", "multi-remote", "zero-GPU0"]
+  },
+  "fault_gate": {
+    "original_recoverable": true,
+    "original_unproven_quarantine": true,
+    "all_remote_partial_submit_recoverable": true,
+    "all_remote_partial_submit_unproven_quarantine": true,
+    "successful_remote_submissions_before_delayed_fault": 1
+  },
+  "regressions": {
+    "workspace_check": "passed",
+    "workspace_tests": "passed",
+    "strict_clippy_lanes": 5,
+    "h4_real_relay": "passed",
+    "h4_router_without_native_120b_case": "5 passed; native E=128 deliberately omitted",
+    "h5_real_reduction": "2 passed",
+    "h6a_20b_sha256": "5b29415974954df10647d264b7b4db2e7ef9bd2401f6d79ecedc31ae7283b721",
+    "h6b_20b_sha256": "0d232217481e0e2e7bfdbd0256006368617b195730b5455fcacfbb091c09a4c8",
+    "h6a_h6b_passed": true
+  },
+  "safety": {
+    "h8_retried": false,
+    "h9_started": false,
+    "model_copied_or_transformed": false,
+    "120b_weight_execution": false,
+    "protected_nvme_touched": false,
+    "push_or_merge": false
+  }
+}
