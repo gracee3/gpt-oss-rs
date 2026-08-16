@@ -17,6 +17,7 @@ pub mod safetensors;
 pub mod shard;
 pub mod shard_catalog;
 pub mod shard_consumer_plan;
+pub mod shard_transaction;
 pub mod weights;
 
 use std::path::Path;

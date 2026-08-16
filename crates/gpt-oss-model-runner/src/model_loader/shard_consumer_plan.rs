@@ -365,6 +365,62 @@ impl GptOssShardConsumerPlan {
     pub fn plan_sha256(&self) -> &str {
         &self.plan_sha256
     }
+
+    /// Recompute all framed plan totals and the v1 plan identity.
+    ///
+    /// Construction currently receives plans produced in-process, but the
+    /// scoped shard transaction revalidates this immutable authority before
+    /// it admits any payload mapping.
+    pub fn validate_identity(&self) -> Result<()> {
+        if self.schema != GPT_OSS_SHARD_CONSUMER_PLAN_SCHEMA_V1 {
+            return Err(model_error("shard consumer plan schema is unsupported"));
+        }
+        let mut total_actions = 0_usize;
+        let mut total_planned_payload_bytes = 0_u64;
+        for shard in &self.shards {
+            total_actions = total_actions
+                .checked_add(shard.actions.len())
+                .ok_or_else(|| model_error("shard consumer action total overflows"))?;
+            let mut shard_bytes = 0_u64;
+            for action in &shard.actions {
+                shard_bytes = shard_bytes
+                    .checked_add(action.byte_len()?)
+                    .ok_or_else(|| model_error("shard consumer byte total overflows"))?;
+            }
+            if shard_bytes != shard.planned_payload_bytes {
+                return Err(model_error(format!(
+                    "shard {} action bytes differ from the recorded plan",
+                    shard.shard.file_name
+                )));
+            }
+            total_planned_payload_bytes = total_planned_payload_bytes
+                .checked_add(shard_bytes)
+                .ok_or_else(|| model_error("shard consumer payload total overflows"))?;
+        }
+        if total_actions != self.total_actions
+            || total_planned_payload_bytes != self.total_planned_payload_bytes
+        {
+            return Err(model_error(
+                "shard consumer plan totals differ from their framed identity",
+            ));
+        }
+        let identity = plan_identity(
+            &self.catalog_sha256,
+            &self.compatibility_metadata_sha256,
+            &self.mapping_sha256,
+            &self.placement_sha256,
+            self.placement_epoch,
+            &self.shards,
+            self.total_actions,
+            self.total_planned_payload_bytes,
+        )?;
+        if identity != self.plan_sha256 {
+            return Err(model_error(
+                "shard consumer plan identity failed recomputation",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_manifest_identity(
@@ -908,12 +964,18 @@ mod tests {
             assert_eq!(first.plan_sha256(), reversed.plan_sha256());
             assert_eq!(first.placement_sha256(), reversed.placement_sha256());
             assert_eq!(first.plan_sha256(), expected_plan_identity);
+            first.validate_identity().unwrap();
+            reversed.validate_identity().unwrap();
             assert!(first
                 .shards()
                 .iter()
                 .all(|shard| shard.actions.windows(2).all(
                     |pair| pair[0].shard_absolute_range[1] == pair[1].shard_absolute_range[0]
                 )));
+
+            let mut tampered = first;
+            tampered.total_actions = tampered.total_actions.checked_add(1).unwrap();
+            assert!(tampered.validate_identity().is_err());
         }
     }
 
@@ -1111,5 +1173,65 @@ mod tests {
         assert_eq!(shards.len(), 1);
         assert_eq!(shards[0].0, "model.safetensors");
         assert_eq!(shards[0].1, 8 + u64::try_from(header.len()).unwrap() + 3);
+    }
+
+    #[test]
+    fn scoped_transaction_public_adapter_uses_a_real_tiny_catalog_and_plan() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("model.safetensors");
+        let header = br#"{"tiny":{"dtype":"U8","shape":[3],"data_offsets":[0,3]}}"#;
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&u64::try_from(header.len()).unwrap().to_le_bytes())
+            .unwrap();
+        file.write_all(header).unwrap();
+        file.write_all(&[7, 8, 9]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let catalog = SafeTensorShardCatalog::open(root.path()).unwrap();
+        let tensor = catalog.tensor("tiny").unwrap();
+        let shards = vec![GptOssShardConsumption {
+            shard: catalog.shards()[0].identity.clone(),
+            actions: vec![GptOssShardConsumerAction {
+                native_tensor: "tiny".into(),
+                native_tensor_range: [0, 3],
+                shard_absolute_range: tensor.absolute_range,
+                consumer: GptOssShardConsumer::LayerOwnerDense {
+                    runtime_tensor: "runtime.tiny".into(),
+                },
+            }],
+            planned_payload_bytes: 3,
+        }];
+        let plan_sha256 = plan_identity(
+            catalog.metadata_sha256(),
+            "synthetic-compatibility",
+            "synthetic-mapping",
+            "synthetic-placement",
+            1,
+            &shards,
+            1,
+            3,
+        )
+        .unwrap();
+        let plan = GptOssShardConsumerPlan {
+            schema: GPT_OSS_SHARD_CONSUMER_PLAN_SCHEMA_V1.into(),
+            catalog_sha256: catalog.metadata_sha256().into(),
+            compatibility_metadata_sha256: "synthetic-compatibility".into(),
+            mapping_sha256: "synthetic-mapping".into(),
+            placement_sha256: "synthetic-placement".into(),
+            placement_epoch: 1,
+            shards,
+            total_actions: 1,
+            total_planned_payload_bytes: 3,
+            plan_sha256,
+        };
+        let copied = catalog
+            .with_scoped_shard_transaction(&plan, 0, |transaction| {
+                transaction.with_synchronous_action(0, |action| Ok(action.bytes().to_vec()))
+            })
+            .unwrap();
+        assert_eq!(copied, [7, 8, 9]);
+        assert_eq!(catalog.mapping_activity().current, 0);
+        assert_eq!(catalog.mapping_activity().high_water, 1);
     }
 }

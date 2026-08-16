@@ -95,6 +95,10 @@ Evidence labels have the same meaning in every document:
 32. [H3 resident-router handoff](33-h3-resident-router-handoff.md) — bounded
     same-context D2D initialization of the exact router from owned resident
     dense surfaces, with terminal-drain release and fail-closed quarantine.
+33. [H3 scoped shard transaction](34-h3-scoped-shard-transaction.md) — joins
+    the bounded catalog and deterministic consumer plan through exact action
+    slices, capacity-one mapping, terminal proof, and irreversible quarantine;
+    not integrated into construction.
 
 ## Current headline
 
@@ -183,3 +187,11 @@ match the host-backed router bit-for-bit, and an unproven post-enqueue drain
 retains every source/destination/stream/context handle. Production model
 ownership and runtime wiring remain unchanged pending a separately reviewed
 real-20B gate.
+
+**Scoped-shard follow-up:** a detached transaction now revalidates the framed
+consumer-plan identity, catalog identity, shard identity, and exact action
+ranges before admitting one mapping. Pre-handoff failure releases normally;
+an external handoff must supply terminal proof or the mapping is retained for
+process life and that catalog instance is permanently quarantined. This is a
+source/synthetic lifetime prerequisite only: no CUDA upload, CPU publication,
+or owner-selective constructor path uses it yet.
