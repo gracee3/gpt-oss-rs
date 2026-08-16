@@ -316,6 +316,13 @@ impl CudaExactRouter {
         result
     }
 
+    /// An outer transaction observed an unproven CUDA lifetime. Make this
+    /// router permanently unusable so its `Drop` path retains every stream,
+    /// module and allocation that may still be referenced.
+    pub(crate) fn quarantine_unproven_device_work(&mut self) {
+        self.poisoned = true;
+    }
+
     #[cfg(feature = "heterogeneous-test-faults")]
     pub fn inject_next_failure(&mut self, fault: ExactRouterInjectedFault) -> Result<()> {
         if self.injected_fault.is_some() {

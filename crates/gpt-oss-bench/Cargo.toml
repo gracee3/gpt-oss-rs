@@ -89,3 +89,13 @@ required-features = ["cuda"]
 name = "heterogeneous_layer_oracle"
 path = "src/bin/heterogeneous_layer_oracle.rs"
 required-features = ["cuda"]
+
+[[bin]]
+name = "heterogeneous_control"
+path = "src/bin/heterogeneous_control.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "heterogeneous_control_fault"
+path = "src/bin/heterogeneous_control_fault.rs"
+required-features = ["heterogeneous-test-faults"]

@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** implementation campaign; H0 through H6 passed, H7 is next;
+**Stage:** implementation campaign; H0 through H7 passed, H8 is next;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -134,6 +134,10 @@ exact per-expert/reduction/residual boundaries, and full packed/completion
 identities. Its generation-tied transaction commits, drains and discards, then
 commits a clean repeat with zero active coordinator/pinned state. Public drains
 and every CUDA component fail closed by retaining complete device/host
-ownership after an unproven synchronization. The owner shell still uses private
-flat K/V oracle storage; H7 owns end-to-end integration and the exact retained-
-continuation gate.
+ownership after an unproven synchronization. H7 now passes the end-to-end 20B
+control twice: the exact retained continuation is produced through real
+single-owner CPU/GPU0/GPU1 selected work, the private shell token/K/V image is
+published inside the coordinator's exclusive visibility-last commit, fixed
+pools and memory remain bounded, and a real post-enqueue fault proves both
+recoverable clean retry and unproven-drain quarantine. H8 owner-selective 120B
+construction is the next gate; no 120B execution has begun.

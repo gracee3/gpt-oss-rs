@@ -5,6 +5,8 @@
 
 pub mod contract;
 #[cfg(feature = "cuda")]
+pub mod control;
+#[cfg(feature = "cuda")]
 pub mod cpu_expert;
 #[cfg(feature = "cuda")]
 pub mod cuda_expert;
@@ -22,9 +24,18 @@ pub mod router;
 pub mod three_owner;
 
 #[cfg(feature = "cuda")]
+pub use control::{
+    CudaHeterogeneousControlShell, HeterogeneousControlExpertExecution,
+    HeterogeneousControlLayerExecution, HeterogeneousControlRuntime,
+    HeterogeneousControlStepExecution, HeterogeneousControlStepFailure,
+    HeterogeneousControlTokenOutput,
+};
+#[cfg(feature = "cuda")]
 pub use cpu_expert::{
     CpuX8SelectedExpertDeviceExecution, CpuX8SelectedExpertExecution, CpuX8SelectedExpertWorker,
 };
+#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
+pub use cuda_expert::SelectedExpertInjectedFault;
 #[cfg(feature = "cuda")]
 pub use cuda_expert::{
     exact_selected_expert_reference, selected_expert_device_memory_info,
@@ -83,9 +94,6 @@ pub use three_owner::{
     quarantine_three_owner_after_unproven_drain, PreparedThreeOwnerDecode,
     ThreeOwnerDecodeExecution, ThreeOwnerDecodeFailure, ThreeOwnerTerminal,
 };
-
-#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
-pub use cuda_expert::SelectedExpertInjectedFault;
 
 pub use contract::{
     group_routes_stably, sort_errors_by_precedence, CanonicalCudaDevice, CanonicalExpertOwner,

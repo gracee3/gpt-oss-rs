@@ -62,6 +62,15 @@ pub struct RankOrderedReductionExecution {
     pub kernel_elapsed_ms: f32,
 }
 
+/// Typed H7 reduction failure. `drain_proven=false` means the reducer and
+/// shared relay have retained their CUDA/host state and the outer transaction
+/// must quarantine every sibling owner rather than reclaim any slot or lease.
+#[must_use = "rank-reduction failures must be classified before transaction cleanup"]
+pub(crate) struct RankOrderedReductionFailure {
+    pub(crate) error: LLMError,
+    pub(crate) drain_proven: bool,
+}
+
 /// Every fallible host allocation and route canonicalization happens here,
 /// before any H4 dispatch or CUDA enqueue. Submission only validates fixed
 /// descriptors and moves these pre-sized buffers into the result.
@@ -402,6 +411,22 @@ impl CudaRankOrderedReducer {
             return Err(cuda_error("rank reducer transaction drain")(error));
         }
         Ok(())
+    }
+
+    pub(crate) fn quarantine_unproven_device_work(&mut self) {
+        self.poisoned = true;
+    }
+
+    pub(crate) fn reduce_relay_classified(
+        &mut self,
+        relay: &mut CudaResultRelay,
+        prepared: PreparedRankOrderedReduction,
+    ) -> std::result::Result<RankOrderedReductionExecution, RankOrderedReductionFailure> {
+        self.reduce_relay(relay, prepared)
+            .map_err(|error| RankOrderedReductionFailure {
+                error,
+                drain_proven: !self.poisoned && !relay.drain_is_unproven(),
+            })
     }
 
     pub fn reduce_relay(

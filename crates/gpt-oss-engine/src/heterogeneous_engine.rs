@@ -875,6 +875,23 @@ impl HeterogeneousTransactionCoordinator {
     }
 
     pub fn commit(&mut self, step_id: HeterogeneousStepId) -> Result<TransactionTerminalRecord> {
+        self.commit_with_external_visibility(step_id, || Ok(()))
+    }
+
+    /// Commit one already-prepared external private state image inside the
+    /// same exclusive publication section. The callback must itself be
+    /// allocation-free and must expose no reader outside this coordinator's
+    /// visibility epoch. All coordinator validation runs first; after a
+    /// successful callback the remaining coordinator mutation is infallible
+    /// and the visibility epoch is still the final store.
+    pub fn commit_with_external_visibility<F>(
+        &mut self,
+        step_id: HeterogeneousStepId,
+        publish_external: F,
+    ) -> Result<TransactionTerminalRecord>
+    where
+        F: FnOnce() -> Result<()>,
+    {
         let next_visibility_epoch = match self.validate_commit(step_id) {
             Ok(epoch) => epoch,
             Err((kind, message)) => {
@@ -889,6 +906,8 @@ impl HeterogeneousTransactionCoordinator {
                 return self.finalize_discard(step_id);
             }
         };
+
+        publish_external()?;
 
         // From here to the epoch increment every operation is infallible and
         // allocation-free: remove, swaps, scalar stores, and validated state
@@ -1211,6 +1230,32 @@ mod tests {
         assert_eq!(committed.token_ids, [10, 20, 30, 40]);
         assert_eq!(committed.output_image, [1, 2, 3]);
         assert_eq!(committed.evidence_image, [4, 5, 6]);
+    }
+
+    #[test]
+    fn external_visibility_failure_leaves_ready_step_unpublished() {
+        let mut coordinator = coordinator();
+        let before = coordinator.committed_view(7).unwrap().clone();
+        let step = prepare_dispatched(&mut coordinator);
+        drain_all(&mut coordinator, step);
+        coordinator.mark_reduced(step, &[0; 2_880]).unwrap();
+        coordinator.prepare_commit(step, commit_image(1)).unwrap();
+        let error = coordinator
+            .commit_with_external_visibility(step, || {
+                Err(LLMError::ModelError(
+                    "injected external visibility failure".into(),
+                ))
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("external visibility"));
+        assert_eq!(coordinator.committed_view(7).unwrap(), &before);
+        assert_eq!(coordinator.active_step_count(), 1);
+
+        assert!(coordinator.cancel_step(step).unwrap().is_none());
+        let discarded = coordinator.finalize_discard(step).unwrap();
+        assert_eq!(discarded.outcome, TransactionOutcome::Discarded);
+        assert_eq!(coordinator.committed_view(7).unwrap(), &before);
+        assert!(clean_second_commit(&mut coordinator));
     }
 
     #[test]

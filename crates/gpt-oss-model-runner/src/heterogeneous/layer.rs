@@ -22,22 +22,22 @@ use super::contract::{GptOssPhase, GPT_OSS_HIDDEN_SIZE};
 use super::reduction::CudaRankOrderedReducer;
 use super::router::{CudaExactRouter, ExactRouterExecution};
 
-const MODULE: &str = "gpt_oss_layer_owner";
-const EMBEDDING: &str = "gpt_oss_layer_embedding_kernel";
-const RMS_NORM: &str = "gpt_oss_layer_rms_norm_kernel";
-const PROJECTION: &str = "gpt_oss_layer_bf16_projection_kernel";
-const ROPE: &str = "gpt_oss_layer_rope_kernel";
-const APPEND_KV: &str = "gpt_oss_layer_append_kv_kernel";
-const ATTENTION: &str = "gpt_oss_layer_attention_kernel";
-const RESIDUAL: &str = "gpt_oss_layer_residual_kernel";
+pub(crate) const MODULE: &str = "gpt_oss_layer_owner";
+pub(crate) const EMBEDDING: &str = "gpt_oss_layer_embedding_kernel";
+pub(crate) const RMS_NORM: &str = "gpt_oss_layer_rms_norm_kernel";
+pub(crate) const PROJECTION: &str = "gpt_oss_layer_bf16_projection_kernel";
+pub(crate) const ROPE: &str = "gpt_oss_layer_rope_kernel";
+pub(crate) const APPEND_KV: &str = "gpt_oss_layer_append_kv_kernel";
+pub(crate) const ATTENTION: &str = "gpt_oss_layer_attention_kernel";
+pub(crate) const RESIDUAL: &str = "gpt_oss_layer_residual_kernel";
+pub(crate) const NUM_HEADS: usize = 64;
+pub(crate) const NUM_KV_HEADS: usize = 8;
+pub(crate) const HEAD_DIM: usize = 64;
+pub(crate) const Q_WIDTH: usize = NUM_HEADS * HEAD_DIM;
+pub(crate) const KV_WIDTH: usize = NUM_KV_HEADS * HEAD_DIM;
+pub(crate) const MAX_VISIBLE_TOKENS: usize = 128;
+pub(crate) const ROPE_PAIRS: usize = HEAD_DIM / 2;
 const THREADS: u32 = 256;
-const NUM_HEADS: usize = 64;
-const NUM_KV_HEADS: usize = 8;
-const HEAD_DIM: usize = 64;
-const Q_WIDTH: usize = NUM_HEADS * HEAD_DIM;
-const KV_WIDTH: usize = NUM_KV_HEADS * HEAD_DIM;
-const MAX_VISIBLE_TOKENS: usize = 128;
-const ROPE_PAIRS: usize = HEAD_DIM / 2;
 
 pub const GPT_OSS_LAYER_OWNER_WORK_BYTES: usize = (GPT_OSS_HIDDEN_SIZE * 5
     + Q_WIDTH * 2
@@ -844,7 +844,7 @@ fn validate_config(model: &OwnerSelectiveModel, config: &CpuGptOssConfig) -> Res
     Ok(())
 }
 
-fn dense<'a>(
+pub(crate) fn dense<'a>(
     model: &'a OwnerSelectiveModel,
     name: &str,
     expected_bytes: usize,
@@ -864,7 +864,7 @@ fn dense<'a>(
     Ok(tensor)
 }
 
-fn rope_tables(
+pub(crate) fn rope_tables(
     config: &CpuGptOssConfig,
     position: usize,
 ) -> Result<([u16; ROPE_PAIRS], [u16; ROPE_PAIRS])> {
@@ -917,7 +917,7 @@ fn grid(values: usize) -> LaunchConfig {
     }
 }
 
-fn launch_embedding(
+pub(crate) fn launch_embedding(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     embeddings: &CudaSlice<u8>,
@@ -941,7 +941,7 @@ fn launch_embedding(
     Ok(())
 }
 
-fn launch_rms_norm(
+pub(crate) fn launch_rms_norm(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     input: &CudaSlice<u16>,
@@ -970,7 +970,7 @@ fn launch_rms_norm(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch_projection(
+pub(crate) fn launch_projection(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     input: &CudaSlice<u16>,
@@ -997,7 +997,7 @@ fn launch_projection(
     Ok(())
 }
 
-fn launch_rope(
+pub(crate) fn launch_rope(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     values: &mut CudaSlice<u16>,
@@ -1023,7 +1023,7 @@ fn launch_rope(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch_append_kv(
+pub(crate) fn launch_append_kv(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     key: &CudaSlice<u16>,
@@ -1051,7 +1051,7 @@ fn launch_append_kv(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch_attention(
+pub(crate) fn launch_attention(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     query: &CudaSlice<u16>,
@@ -1084,7 +1084,7 @@ fn launch_attention(
     Ok(())
 }
 
-fn launch_residual(
+pub(crate) fn launch_residual(
     stream: &Arc<CudaStream>,
     loader: &KernelLoader,
     residual: &CudaSlice<u16>,

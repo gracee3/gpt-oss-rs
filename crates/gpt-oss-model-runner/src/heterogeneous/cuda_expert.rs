@@ -154,6 +154,12 @@ pub struct CudaSelectedExpertResultSlot {
     buffer: CudaSlice<u16>,
 }
 
+#[must_use = "a failed result-slot rebind still owns the reusable CUDA slot"]
+pub(crate) struct ResultSlotBindFailure {
+    pub(crate) error: LLMError,
+    pub(crate) result_slot: CudaSelectedExpertResultSlot,
+}
+
 impl CudaSelectedExpertResultSlot {
     pub fn device(&self) -> &StableCudaDeviceId {
         &self.device
@@ -169,6 +175,52 @@ impl CudaSelectedExpertResultSlot {
 
     pub(crate) fn buffer(&self) -> &CudaSlice<u16> {
         &self.buffer
+    }
+
+    /// Rebind a caller-owned slot only after the previous job and canonical
+    /// relay copy have returned it through their terminal-owning values. The
+    /// consuming API makes the drained slot the ownership ticket; no CUDA
+    /// allocation occurs while a new route is being admitted.
+    /// H7 fail-closed variant: malformed route admission never destroys the
+    /// fixed result-slot pool merely because validation rejected a rebind.
+    pub(crate) fn bind_drained_for_route_owned(
+        mut self,
+        transaction_generation: u64,
+        route: &PackedRouteDescriptor,
+    ) -> std::result::Result<Self, ResultSlotBindFailure> {
+        if let Err(error) = self.validate_rebind(transaction_generation, route) {
+            return Err(ResultSlotBindFailure {
+                error,
+                result_slot: self,
+            });
+        }
+        self.transaction_generation = transaction_generation;
+        self.route_contract = Some(CanonicalRouteContract::from_packed_route(route));
+        Ok(self)
+    }
+
+    fn validate_rebind(
+        &self,
+        transaction_generation: u64,
+        route: &PackedRouteDescriptor,
+    ) -> Result<()> {
+        let route_device = match &route.owner {
+            ExpertOwner::LayerOwnerGpu { device } | ExpertOwner::RemoteGpu { device } => device,
+            ExpertOwner::Cpu { .. } => {
+                return Err(LLMError::GpuError(
+                    "selected-expert result slot route has no CUDA owner".into(),
+                ));
+            }
+        };
+        if transaction_generation == 0
+            || transaction_generation <= self.transaction_generation
+            || &self.device != route_device
+        {
+            return Err(LLMError::GpuError(
+                "drained result slot generation/device cannot be rebound".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -274,6 +326,18 @@ pub(crate) struct OwnedSelectedExpertExecution {
     pub route_contract: CanonicalRouteContract,
     pub result_slot: CudaSelectedExpertResultSlot,
     pub trace: SelectedExpertFirstDivergenceTrace,
+    pub kernel_elapsed_ms: f32,
+    pub input_d2d_bytes: usize,
+    pub input_h2d_bytes: usize,
+    pub output_d2h_bytes: usize,
+}
+
+/// Successful output-only owned execution used by the all-layer H7 control.
+/// The result slot returns only after the selected-expert terminal and any
+/// requested pinned result D2H are proven complete.
+pub(crate) struct OwnedSelectedExpertOutput {
+    pub route_contract: CanonicalRouteContract,
+    pub result_slot: CudaSelectedExpertResultSlot,
     pub kernel_elapsed_ms: f32,
     pub input_d2d_bytes: usize,
     pub input_h2d_bytes: usize,
@@ -736,6 +800,27 @@ impl CudaSelectedExpertExecutor {
         result_slot: CudaSelectedExpertResultSlot,
         trace: SelectedExpertTraceStorage,
     ) -> std::result::Result<PreparedOwnedSelectedExpert<'_>, OwnedSelectedExpertFailure> {
+        self.prepare_owned_device_inner(
+            phase,
+            route,
+            weights,
+            device_input,
+            stable_device,
+            result_slot,
+            Some(trace),
+        )
+    }
+
+    fn prepare_owned_device_inner(
+        &mut self,
+        phase: GptOssPhase,
+        route: PackedRouteDescriptor,
+        weights: Arc<CudaSelectedExpertWeights>,
+        device_input: Arc<CudaSlice<u16>>,
+        stable_device: &StableCudaDeviceId,
+        result_slot: CudaSelectedExpertResultSlot,
+        trace: Option<SelectedExpertTraceStorage>,
+    ) -> std::result::Result<PreparedOwnedSelectedExpert<'_>, OwnedSelectedExpertFailure> {
         let valid = phase == GptOssPhase::Decode
             && !self.owned_drain_unproven
             && device_input.len() == HIDDEN_SIZE
@@ -761,7 +846,7 @@ impl CudaSelectedExpertExecutor {
                 result_slot: Some(result_slot),
                 weights: Some(weights),
                 device_input: Some(device_input),
-                trace: Some(trace),
+                trace,
                 pinned_input_may_be_referenced: false,
                 pinned_output_may_be_referenced: false,
             });
@@ -776,6 +861,29 @@ impl CudaSelectedExpertExecutor {
         })
     }
 
+    /// Prepare a resident same-GPU job without host first-divergence traces.
+    /// Every CUDA-referenced object remains owned exactly as in the traced H6
+    /// path; only evidence D2H storage is absent.
+    pub(crate) fn prepare_owned_device_output_only(
+        &mut self,
+        phase: GptOssPhase,
+        route: PackedRouteDescriptor,
+        weights: Arc<CudaSelectedExpertWeights>,
+        device_input: Arc<CudaSlice<u16>>,
+        stable_device: &StableCudaDeviceId,
+        result_slot: CudaSelectedExpertResultSlot,
+    ) -> std::result::Result<PreparedOwnedSelectedExpert<'_>, OwnedSelectedExpertFailure> {
+        self.prepare_owned_device_inner(
+            phase,
+            route,
+            weights,
+            device_input,
+            stable_device,
+            result_slot,
+            None,
+        )
+    }
+
     /// Prepare the remote-GPU H6 worker from the single bounded pinned relay
     /// row. The result slot and resident weights are owned by the job; an
     /// uncertain H2D drain is reported so the caller can quarantine the whole
@@ -788,6 +896,25 @@ impl CudaSelectedExpertExecutor {
         input_bf16_bits: &'a [u16],
         result_slot: CudaSelectedExpertResultSlot,
         trace: SelectedExpertTraceStorage,
+    ) -> std::result::Result<PreparedOwnedSelectedExpert<'a>, OwnedSelectedExpertFailure> {
+        self.prepare_owned_pinned_inner(
+            phase,
+            route,
+            weights,
+            input_bf16_bits,
+            result_slot,
+            Some(trace),
+        )
+    }
+
+    fn prepare_owned_pinned_inner<'a>(
+        &'a mut self,
+        phase: GptOssPhase,
+        route: PackedRouteDescriptor,
+        weights: Arc<CudaSelectedExpertWeights>,
+        input_bf16_bits: &'a [u16],
+        result_slot: CudaSelectedExpertResultSlot,
+        trace: Option<SelectedExpertTraceStorage>,
     ) -> std::result::Result<PreparedOwnedSelectedExpert<'a>, OwnedSelectedExpertFailure> {
         let valid = phase == GptOssPhase::Decode
             && !self.owned_drain_unproven
@@ -817,7 +944,7 @@ impl CudaSelectedExpertExecutor {
                 result_slot: Some(result_slot),
                 weights: Some(weights),
                 device_input: None,
-                trace: Some(trace),
+                trace,
                 pinned_input_may_be_referenced: false,
                 pinned_output_may_be_referenced: false,
             });
@@ -830,6 +957,18 @@ impl CudaSelectedExpertExecutor {
             result_slot,
             trace,
         })
+    }
+
+    /// Prepare a pinned remote-GPU job without host first-divergence traces.
+    pub(crate) fn prepare_owned_pinned_output_only<'a>(
+        &'a mut self,
+        phase: GptOssPhase,
+        route: PackedRouteDescriptor,
+        weights: Arc<CudaSelectedExpertWeights>,
+        input_bf16_bits: &'a [u16],
+        result_slot: CudaSelectedExpertResultSlot,
+    ) -> std::result::Result<PreparedOwnedSelectedExpert<'a>, OwnedSelectedExpertFailure> {
+        self.prepare_owned_pinned_inner(phase, route, weights, input_bf16_bits, result_slot, None)
     }
 
     pub(crate) const fn owned_drain_unproven(&self) -> bool {
@@ -914,7 +1053,7 @@ pub(crate) struct PreparedOwnedSelectedExpert<'a> {
     weights: Arc<CudaSelectedExpertWeights>,
     input: OwnedSelectedExpertInput<'a>,
     result_slot: CudaSelectedExpertResultSlot,
-    trace: SelectedExpertTraceStorage,
+    trace: Option<SelectedExpertTraceStorage>,
 }
 
 enum OwnedSelectedExpertInput<'a> {
@@ -956,7 +1095,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
                 result_slot: Some(result_slot),
                 weights: Some(weights),
                 device_input,
-                trace: Some(trace),
+                trace,
                 pinned_input_may_be_referenced: false,
                 pinned_output_may_be_referenced: false,
             });
@@ -1055,7 +1194,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
                         result_slot: Some(result_slot),
                         weights: Some(weights),
                         device_input,
-                        trace: Some(trace),
+                        trace,
                         pinned_input_may_be_referenced: pinned_input.is_some(),
                         pinned_output_may_be_referenced: false,
                     });
@@ -1077,7 +1216,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
                         result_slot: Some(result_slot),
                         weights: Some(weights),
                         device_input,
-                        trace: Some(trace),
+                        trace,
                         pinned_input_may_be_referenced: pinned_input.is_some(),
                         pinned_output_may_be_referenced: false,
                     });
@@ -1088,7 +1227,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
                     result_slot: Some(result_slot),
                     weights: Some(weights),
                     device_input,
-                    trace: Some(trace),
+                    trace,
                     pinned_input_may_be_referenced: false,
                     pinned_output_may_be_referenced: false,
                 });
@@ -1102,7 +1241,7 @@ impl<'a> PreparedOwnedSelectedExpert<'a> {
             pinned_input,
             pinned_input_may_be_referenced: pinned_input.is_some(),
             result_slot: Some(result_slot),
-            trace: Some(trace),
+            trace,
             start,
             terminal: Some(terminal),
             drained: false,
@@ -1142,16 +1281,6 @@ impl PendingOwnedSelectedExpert<'_> {
         timeline: &CorrelatedTimeline,
         actor: &str,
     ) -> std::result::Result<OwnedSelectedExpertExecution, OwnedSelectedExpertFailure> {
-        if pinned_output
-            .as_ref()
-            .is_some_and(|output| output.as_slice().len() < HIDDEN_SIZE)
-        {
-            return Err(self.failure(
-                LLMError::MemoryError("owned selected expert pinned output is undersized".into()),
-                true,
-                false,
-            ));
-        }
         let terminal = self.terminal.as_ref().expect("owned terminal is present");
         if let Err(error) = terminal.synchronize() {
             let primary = cuda_error("owned selected expert terminal drain")(error);
@@ -1170,6 +1299,16 @@ impl PendingOwnedSelectedExpert<'_> {
         // D2H failure cannot retain the source pinned relay row.
         self.pinned_input_may_be_referenced = false;
         self.pinned_input = None;
+        if pinned_output
+            .as_ref()
+            .is_some_and(|output| output.as_slice().len() < HIDDEN_SIZE)
+        {
+            return Err(self.failure(
+                LLMError::MemoryError("owned selected expert pinned output is undersized".into()),
+                true,
+                false,
+            ));
+        }
         #[cfg(feature = "heterogeneous-test-faults")]
         if self.inject_drain_failure {
             return Err(self.failure(
@@ -1296,6 +1435,135 @@ impl PendingOwnedSelectedExpert<'_> {
             } else {
                 0
             },
+        })
+    }
+
+    /// Drain a selected-expert job without allocating or downloading
+    /// first-divergence traces. An optional pinned output is the only host
+    /// evidence transfer; the CUDA result slot is always returned after its
+    /// terminal event is proven complete.
+    pub(crate) fn drain_output_only(
+        mut self,
+        mut pinned_output: Option<&mut BoundedPinnedLease<u16>>,
+        timeline: &CorrelatedTimeline,
+        actor: &str,
+    ) -> std::result::Result<OwnedSelectedExpertOutput, OwnedSelectedExpertFailure> {
+        let terminal = self.terminal.as_ref().expect("owned terminal is present");
+        if let Err(error) = terminal.synchronize() {
+            let primary = cuda_error("owned selected expert terminal drain")(error);
+            return Err(match self.executor.stream.synchronize() {
+                Ok(()) => self.failure(primary, true, false),
+                Err(drain) => self.failure(
+                    LLMError::GpuError(format!(
+                        "owned selected expert terminal failed ({primary}); mandatory drain failed ({drain})"
+                    )),
+                    false,
+                    false,
+                ),
+            });
+        }
+        self.pinned_input_may_be_referenced = false;
+        self.pinned_input = None;
+        if self.trace.is_some() {
+            return Err(self.failure(
+                LLMError::GpuError(
+                    "traced selected-expert job cannot use output-only drain".into(),
+                ),
+                true,
+                false,
+            ));
+        }
+        if pinned_output
+            .as_ref()
+            .is_some_and(|output| output.as_slice().len() < HIDDEN_SIZE)
+        {
+            return Err(self.failure(
+                LLMError::MemoryError("owned selected expert pinned output is undersized".into()),
+                true,
+                false,
+            ));
+        }
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if self.inject_drain_failure {
+            return Err(self.failure(
+                LLMError::GpuError("injected owned selected-expert drain failure".into()),
+                true,
+                false,
+            ));
+        }
+        let kernel_elapsed_ms = match self.start.elapsed_ms(terminal) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(self.failure(
+                    cuda_error("owned selected expert event timing")(error),
+                    true,
+                    false,
+                ));
+            }
+        };
+        let mut output_enqueued = false;
+        if let Some(output) = pinned_output.as_deref_mut() {
+            let submitted = (|| -> Result<CudaEvent> {
+                timeline.enqueue_cuda_marker(&self.executor.stream, actor, "result_d2h_begin")?;
+                let result_slot = self
+                    .result_slot
+                    .as_ref()
+                    .expect("owned result slot is present");
+                self.executor
+                    .stream
+                    .memcpy_dtoh(
+                        &result_slot.buffer,
+                        &mut output.as_mut_slice()[..HIDDEN_SIZE],
+                    )
+                    .map_err(cuda_error("owned selected expert pinned result D2H"))?;
+                output_enqueued = true;
+                timeline.enqueue_cuda_marker(&self.executor.stream, actor, "result_d2h_end")?;
+                self.executor
+                    .stream
+                    .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                    .map_err(cuda_error("owned selected expert output terminal event"))
+            })();
+            let output_terminal = match submitted {
+                Ok(event) => event,
+                Err(primary) => {
+                    return Err(match self.executor.stream.synchronize() {
+                        Ok(()) => self.failure(primary, true, false),
+                        Err(drain) => self.failure(
+                            LLMError::GpuError(format!(
+                                "owned selected expert output submit failed ({primary}); mandatory drain failed ({drain})"
+                            )),
+                            false,
+                            output_enqueued,
+                        ),
+                    });
+                }
+            };
+            if let Err(error) = output_terminal.synchronize() {
+                let primary = cuda_error("owned selected expert output terminal drain")(error);
+                return Err(match self.executor.stream.synchronize() {
+                    Ok(()) => self.failure(primary, true, false),
+                    Err(drain) => self.failure(
+                        LLMError::GpuError(format!(
+                            "owned selected expert output terminal failed ({primary}); mandatory drain failed ({drain})"
+                        )),
+                        false,
+                        true,
+                    ),
+                });
+            }
+        }
+        self.drained = true;
+        Ok(OwnedSelectedExpertOutput {
+            route_contract: CanonicalRouteContract::from_packed_route(&self.route),
+            result_slot: self
+                .result_slot
+                .take()
+                .expect("owned result slot is present"),
+            kernel_elapsed_ms,
+            input_d2d_bytes: self.input_d2d_bytes,
+            input_h2d_bytes: self.input_h2d_bytes,
+            output_d2h_bytes: usize::from(pinned_output.is_some())
+                * GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
         })
     }
 

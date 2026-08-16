@@ -432,6 +432,10 @@ impl CudaResultRelay {
         self.poisoned = true;
     }
 
+    pub(crate) const fn drain_is_unproven(&self) -> bool {
+        self.poisoned
+    }
+
     pub fn memory_info(&self) -> Result<(usize, usize)> {
         self.stream
             .context()
@@ -459,6 +463,10 @@ impl CudaResultRelay {
     pub(crate) fn decode_contribution_arena(&self) -> &CudaSlice<u16> {
         debug_assert!(self.max_routes >= GPT_OSS_TOP_K);
         &self.contribution_arena
+    }
+
+    pub(crate) const fn active_decode_generation(&self) -> Option<u64> {
+        self.active_bound_generation
     }
 
     /// Bind the next decode arena generation to exactly four canonical route

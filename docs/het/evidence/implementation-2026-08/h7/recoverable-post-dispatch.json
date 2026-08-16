@@ -1,0 +1,20 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-control-fault-h7/v1",
+  "mode": "recoverable_remote_post_enqueue_and_clean_retry",
+  "binary_sha256": "9e72177b6de47f1b1f394935e2cadc2e377a41b2b7c61608db7b2f55d849c672",
+  "placement_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+  "tokens_committed_before_fault": 20,
+  "fault_generation": 21,
+  "first_error": "gpu error: injected owned selected-expert post-D2D submit failure",
+  "first_drain_proven": true,
+  "runtime_poisoned_after": false,
+  "model_quarantined_after": false,
+  "shell_poisoned_after": false,
+  "pinned_checked_out_after": 0,
+  "pinned_quarantined_after": 0,
+  "clean_retry_succeeded": true,
+  "retry_rejected_after_unproven": false,
+  "final_pinned_checked_out": 0,
+  "final_pinned_quarantined": 0,
+  "passed": true
+}
