@@ -1,0 +1,58 @@
+{
+  "schema": "het-research-checkpoint-summary-v1",
+  "common_identity": "common-identity.json",
+  "commands": [
+    "python3 checkpoint_map.py --native /data/models/openai/gpt-oss-20b/original --runtime /data/models/openai/gpt-oss-20b --full-compare",
+    "python3 checkpoint_index_map.py --native /data/models/openai/gpt-oss-120b/original --runtime-index <pinned-official-index> --model-config <pinned-official-config>"
+  ],
+  "harnesses": {
+    "checkpoint_map.py_sha256": "063d4eda1945ecf99329b88c0f3df2307601c04c7219d269c3d863dc2fd25b1b",
+    "checkpoint_index_map.py_sha256": "aabccb6092064928ac6908148eb2a83a148dff8207aa6b5880c063b60fff5688"
+  },
+  "timestamps_local": {
+    "20b_full_compare": "2026-08-15T21:22:27-04:00",
+    "120b_metadata_map": "2026-08-15T21:56:04-04:00"
+  },
+  "parameters": {
+    "stream_chunk_bytes": 8388608,
+    "20b_full_payload_compare": true,
+    "120b_full_payload_compare": false,
+    "120b_official_revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
+  },
+  "raw_evidence": {
+    "checkpoint-map-20b-full.json_sha256": "82e7f703954480b735795173f518723806cc8645056518fa252a352545d067f0",
+    "checkpoint-map-120b-metadata.json_sha256": "0c351ae31bf70f3b6a8901074061f4ec79b1548a3bb4a0df56f2f75438ce543e",
+    "120b-runtime-index.json_sha256": "ede2655fdc05008561983b6e0829c600727c28d591e071077377059f03a6c00e",
+    "120b-runtime-config.json_sha256": "933aeb666a3fd851133ddd7686414f369bc564c4185fb5704416550879f10566",
+    "hf-120b-api-metadata.json_sha256": "2a62fe665e49dae7bb19b117ee4b478c6f8d8ba7668f830f1aa416bcfc8ec19d",
+    "120b-asset-hash-comparison.txt_sha256": "f8626454a23294036d1f07da12118b61e7b3765dffeacad928fdc51ee0698161"
+  },
+  "results": {
+    "20b": {
+      "native_tensors": 363,
+      "runtime_tensors": 459,
+      "mapping_count": 459,
+      "payload_bytes_compared": 13761264768,
+      "metadata_equal": true,
+      "payload_bytes_equal": true,
+      "elapsed_seconds": 77.08,
+      "maximum_rss_kib": 37984
+    },
+    "120b": {
+      "native_tensors": 543,
+      "runtime_tensors": 687,
+      "mapping_count": 687,
+      "mapping_errors": 0,
+      "payload_compare": "not performed",
+      "native_payload_bytes": 65248815744,
+      "official_transformed_shard_file_bytes": 65248893184,
+      "official_root_file_bytes": 65276859410,
+      "expert_payload_bytes": 60993699840,
+      "nonexpert_payload_bytes": 4255115904
+    },
+    "per_expert_checkpoint_bytes": 13236480,
+    "per_expert_conservative_owner_bytes": 13253760,
+    "tokenizer_protocol_assets": "five inspected assets byte-identical between local 20B and pinned official 120B"
+  },
+  "interpretation": "The snapshot transform changes names and exposes contiguous Q/K/V slices; it does not transform expert payload bytes. Direct-native, offline snapshot, and hybrid loading families remain technically viable. Payload equality is proven only for 20B; the 120B conclusion is metadata-exact."
+}

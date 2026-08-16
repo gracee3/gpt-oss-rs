@@ -1,0 +1,37 @@
+{
+  "schema": "het-research-nccl-summary-v1",
+  "common_identity": "common-identity.json",
+  "timestamp_local": "2026-08-15T21:57:31-04:00",
+  "source": {
+    "repository": "https://github.com/NVIDIA/nccl.git",
+    "commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
+    "tag": "v2.31.2-1",
+    "build": "make -j8 src.build NVCC_GENCODE=-gencode=arch=compute_86,code=sm_86",
+    "installed": false
+  },
+  "command": "NCCL_NET_DISABLE=1 NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,GRAPH,P2P,SHM ./nccl_probe",
+  "harness": {
+    "source_sha256": "16b96a6e1adb5c64a133bfdc6696fefeb0955f0e1dc55123c83416d402591ecd",
+    "binary_sha256": "46bcb54bcfbb94b3f0ffe366e50b7b82d8d9e40050b0df593f2f402a95c9cadc",
+    "clean_result_sha256": "18029b59ae0e181f58d010c88886b4862591974d60338b6908136d720c923096"
+  },
+  "parameters": {
+    "ranks": 2,
+    "operation": "f32 sum all-reduce",
+    "warmups": 10,
+    "samples_small": 100,
+    "samples_largest": 40,
+    "bytes_per_rank": [5760, 23040, 184320, 737280, 2949120, 13236480],
+    "units": "completion microseconds"
+  },
+  "sanitized_transport_facts": {
+    "all_cuda_p2p": 0,
+    "channel_0": "SHM/direct",
+    "channel_1": "SHM/direct",
+    "nvlink_or_nvls_transport": false,
+    "raw_debug_retention": "not copied because NCCL prefixes include host/process identifiers"
+  },
+  "median_p95_us": [[5760, 53.331, 63.474], [23040, 60.279, 62.395], [184320, 109.401, 117.536], [737280, 186.176, 193.046], [2949120, 512.835, 519.917], [13236480, 2086.889, 2107.748]],
+  "validation": "rank0 and rank1 first/last values were exactly 3.0 for every payload",
+  "interpretation": "NCCL is operational through shared host memory, not direct GPU peer transport. Its whole-buffer all-reduce semantics and latency are a control, not the selected irregular expert communication mechanism."
+}

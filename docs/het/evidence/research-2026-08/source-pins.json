@@ -1,0 +1,96 @@
+{
+  "schema": "het-research-source-pins-v1",
+  "retrieval_date": "2026-08-15",
+  "model_sources": [
+    {
+      "name": "openai/gpt-oss-20b",
+      "url": "https://huggingface.co/openai/gpt-oss-20b",
+      "local_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "network_payload_downloaded": false
+    },
+    {
+      "name": "openai/gpt-oss-120b",
+      "url": "https://huggingface.co/openai/gpt-oss-120b",
+      "remote_revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+      "network_payload_downloaded": false,
+      "retrieved": "small config/index/assets metadata only"
+    }
+  ],
+  "checkouts": [
+    {
+      "name": "openai-gpt-oss",
+      "url": "https://github.com/openai/gpt-oss.git",
+      "commit": "599476783c6f88508dab8577808b5ead5cbee8d2",
+      "tag": "v0.0.9",
+      "license": "Apache-2.0",
+      "history": "shallow"
+    },
+    {
+      "name": "ktransformers",
+      "url": "https://github.com/kvcache-ai/ktransformers.git",
+      "commit": "eb9b70c4115cff151ace2cae5b0fc9db3690e31e",
+      "license": "Apache-2.0",
+      "history": "shallow; submodules not initialized"
+    },
+    {
+      "name": "fiddler",
+      "url": "https://github.com/efeslab/fiddler.git",
+      "commit": "227715bfd6e8c731b29548eab01d9919c4fe9564",
+      "license": "Apache-2.0",
+      "history": "shallow"
+    },
+    {
+      "name": "llama.cpp",
+      "url": "https://github.com/ggml-org/llama.cpp.git",
+      "commit": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",
+      "license": "MIT",
+      "history": "shallow detached"
+    },
+    {
+      "name": "nccl",
+      "url": "https://github.com/NVIDIA/nccl.git",
+      "commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
+      "tag": "v2.31.2-1",
+      "license": "Apache-2.0",
+      "history": "shallow"
+    },
+    {
+      "name": "mistral.rs",
+      "url": "https://github.com/EricLBuehler/mistral.rs.git",
+      "commit": "48257ce666cc9f6c7c6f24476b49f7d96ce9ed80",
+      "license": "MIT",
+      "history": "shallow"
+    },
+    {
+      "name": "gpt-oss-rs-clean",
+      "url": "local clone of the working repository",
+      "commit": "0113e8214e765d168216bbee2120654555a4cfe4",
+      "license": "repository license",
+      "history": "local clean detached control"
+    }
+  ],
+  "papers": [
+    {
+      "name": "Fiddler",
+      "url": "https://arxiv.org/abs/2402.07033",
+      "identity": "arXiv v3; ICLR 2025",
+      "pdf_sha256": "40c1502e197c29470a92566716fea8642b0eed38139da24e2c4ecfbdd32674c9"
+    },
+    {
+      "name": "KTransformers",
+      "url": "https://doi.org/10.1145/3731569.3764843",
+      "identity": "SOSP 2025",
+      "pdf_sha256": "d3c5af7a9e118aef23f0fc2b95a61bfe098979b56680a1291a7b41b848e328f3"
+    },
+    {
+      "name": "HybriMoE",
+      "url": "https://arxiv.org/abs/2504.05897",
+      "identity": "arXiv 2504.05897; 2025-04-08",
+      "pdf_sha256": "7e20287ba040cade80a3bd65f485a6400aea13665c9b5728ac36985d777dc6bd"
+    }
+  ],
+  "rejected_source": {
+    "identifier": "arXiv 2409.19934",
+    "reason": "unrelated kidney-stone paper; local retrieval removed and not cited"
+  }
+}

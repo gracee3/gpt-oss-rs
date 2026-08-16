@@ -1,0 +1,91 @@
+{
+  "schema": "het-research-cpu-expert-summary-v1",
+  "common_identity": "common-identity.json",
+  "timestamps_local": {
+    "real_weight_probe": "2026-08-15T21:35:52-04:00",
+    "matrix_gate_up": "2026-08-15T21:39:18-04:00",
+    "matrix_down": "2026-08-15T21:41:11-04:00",
+    "overlap_probe": "2026-08-15T21:41:32-04:00"
+  },
+  "real_weight_probe": {
+    "command": "cargo run --locked --release --manifest-path cpu-expert-probe/Cargo.toml -- /data/models/openai/gpt-oss-20b/original/model.safetensors",
+    "source_sha256": "8f16d252f63b005e628f741e5dafc0b6fb3e2acc4d96f1f6ce94fb9ba8ad8e1d",
+    "lock_sha256": "0f83ae4a0346ead69703400f6a9970db0b24d93d39d3c7cb9ba3823ecb95a084",
+    "binary_sha256": "1713b12f3cfd87286cb464a51292476fa83f50dcf2eb92beebee852ff2c6c33f",
+    "result_sha256": "2938c30a689b1887c3c66f2b9deb65e89cd7d8dd11ff46e501ca2cdf20dd5939",
+    "parameters": {
+      "layer": 0,
+      "expert": 0,
+      "hidden": 2880,
+      "intermediate": 2880,
+      "samples": 10,
+      "threads": [1, 4, 8, 16]
+    },
+    "repack_median_us": {
+      "gate_up": 3928.399,
+      "down": 1855.996
+    },
+    "exact_reference_median_us": {
+      "1": [51768.015, 25990.522],
+      "4": [16108.638, 7170.202],
+      "8": [7664.578, 3823.719],
+      "16": [8188.126, 3977.606]
+    },
+    "output_identity": "gate/up and down hashes were identical for every thread count"
+  },
+  "repository_matrix_probe": {
+    "source_checkout_head": "0113e8214e765d168216bbee2120654555a4cfe4",
+    "source_checkout_dirty": false,
+    "binary_sha256": "7ae74bbc6339f4261730a82e6bc6a686c1a8b2f6dd8f062a8612a18b5f8fab49",
+    "gate_result_sha256": "a93d56abeff75bd62d3272bebc19fe153bcb33c12f3dc1745b2e5250499e52ce",
+    "down_result_sha256": "33f2296e56eed6fd0355feade930db95832ccfe75d2fe052c7e22db7dce5e856",
+    "parameters": {
+      "m": [1, 4, 16, 64],
+      "k": 2880,
+      "gate_up_n": 5760,
+      "down_n": 2880,
+      "activation": "residual-q8",
+      "methods": ["scalar", "avx2", "avx512-vnni", "auto"],
+      "warmups": 3,
+      "trials": 7,
+      "samples_per_trial": 5,
+      "thread_policy": 8
+    },
+    "combined_gate_up_down_median_us": {
+      "m1": {"auto": 4569, "avx2": 4826, "avx512_vnni": 6358, "scalar": 35644},
+      "m4": {"auto": 141534, "avx2": 16583, "avx512_vnni": 16938, "scalar": 141353},
+      "m16": {"auto": 563141, "avx2": 64579, "avx512_vnni": 60582, "scalar": 564066},
+      "m64": {"auto": 2266729, "avx2": 258483, "avx512_vnni": 242581, "scalar": 2267554}
+    },
+    "output_identity": "all forced AVX2 and AVX-512 VNNI outputs matched scalar hashes",
+    "policy_note": "forced-kernel measurements do not reopen or promote the closed multirow fused-linear policy lane"
+  },
+  "overlap": {
+    "result_sha256": "095dea0b77ef017af735d648ac86e1ca40aad43c7337713fd06291d11c950ace",
+    "observation": "one bounded simultaneous run raised 8-thread gate/up about 30 percent and down about 16 percent; GPU copy medians were largely stable",
+    "uncertainty": "exploratory single overlap run; not a universal interference coefficient"
+  },
+  "affinity": {
+    "timestamp_local": "2026-08-15T22:21:11-04:00 through 2026-08-15T22:21:18-04:00",
+    "command": "taskset -c <mask> het-cpu-expert-probe <local-20b-native-safetensor>",
+    "masks": {
+      "physical_core_thread_only": "0-7",
+      "all_smt_threads": "0-15"
+    },
+    "raw_external_sha256": {
+      "physical_1": "57a2b747c63965bced8cc44c2a3572d1c157bd7d2b9003342d2f3338584255f5",
+      "physical_2": "75591a07a2fad14842b88c8c27cf124807766f7b88ecd8a4611c9ba701eb9f4c",
+      "all_1": "41239f40648de36ab27c279efda75802559eba4ceb54549d1bdf00f9f341e64d",
+      "all_2": "89872e303c91462477c4548c9c748d6f67f28acab11b05c6450cab86357ac87c"
+    },
+    "combined_gate_up_down_median_us": {
+      "physical_8_workers": [11886.648, 12208.965],
+      "physical_16_workers_oversubscribed": [11290.523, 11781.967],
+      "all_smt_8_workers": [12280.696, 11860.580],
+      "all_smt_16_workers": [12480.244, 12361.330]
+    },
+    "output_identity": "all projection hashes matched across masks, worker counts, and repeats",
+    "interpretation": "SMT availability did not help this probe and may add contention at 16 workers; variability is too large to select a persistent affinity policy."
+  },
+  "interpretation": "Eight threads were best for the standalone exact reference. Current approved auto decode is far faster than the scalar control, while current auto multirow prefill remains scalar by policy. Repack cost is separable and should occur once per owner."
+}

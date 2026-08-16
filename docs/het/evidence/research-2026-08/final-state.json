@@ -1,0 +1,63 @@
+{
+  "schema": "het-research-final-state-v1",
+  "captured_local": "2026-08-15T22:22:16-04:00",
+  "repository": {
+    "branch": "main",
+    "head": "0113e8214e765d168216bbee2120654555a4cfe4",
+    "upstream": "origin/main",
+    "ahead": 0,
+    "behind": 0,
+    "current_status_short_branch": [
+      "## main...origin/main",
+      " M Cargo.lock",
+      " M crates/gpt-oss-gpu/src/cublas.rs",
+      " M crates/gpt-oss-gpu/src/cublas_ops.rs",
+      " M crates/gpt-oss-gpu/src/device.rs",
+      " M crates/gpt-oss-gpu/src/memory/cpu_pool.rs",
+      " M crates/gpt-oss-gpu/src/memory/gpu_pool.rs",
+      " M crates/gpt-oss-gpu/src/memory/swap.rs",
+      " M crates/gpt-oss-gpu/src/nccl.rs",
+      " M crates/gpt-oss-gpu/src/pinned_memory.rs",
+      " M docs/README.md",
+      "?? docs/het/"
+    ],
+    "preexisting_code_lock_diff_sha256": "792b545405494ca2a5be543b24e29ee0f68420db0f3aa5ec59adf4ea114a374e",
+    "preexisting_code_lock_diff_stat": "9 files changed, 35 insertions(+), 13 deletions(-)",
+    "phase1_production_code_changes": false,
+    "phase1_delta": "docs/het/README.md updated; docs/het/10 through 19 and docs/het/evidence/research-2026-08 added",
+    "phase0_docs_00_through_05_rewritten": false
+  },
+  "external_area": {
+    "root": "~/src",
+    "reference_checkouts_clean": [
+      "openai-gpt-oss@599476783c6f",
+      "ktransformers@eb9b70c4115c",
+      "fiddler@227715bfd6e8",
+      "llama.cpp@030ebb558a58",
+      "nccl@7b83616df3ae",
+      "mistral.rs@48257ce666cc",
+      "gpt-oss-rs-clean@0113e8214e76"
+    ],
+    "research_harness": "~/src/het-research",
+    "reference_source_modified": false,
+    "ignored_build_products_present": true
+  },
+  "protected_device": {
+    "device": "/dev/nvme1n1",
+    "read_only_flag": 1,
+    "mounts_found": 0,
+    "mounted": false,
+    "content_opened": false,
+    "write_or_mutating_operation_attempted": false
+  },
+  "prohibited_or_deferred_actions": {
+    "committed": false,
+    "pushed": false,
+    "staged": false,
+    "model_payload_downloaded": false,
+    "model_duplicated_or_transformed": false,
+    "full_120b_load_or_generation": false,
+    "docker_image_built": false,
+    "production_implementation_or_plan_created": false
+  }
+}

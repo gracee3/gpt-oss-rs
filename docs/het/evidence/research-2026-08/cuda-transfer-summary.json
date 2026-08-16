@@ -1,0 +1,60 @@
+{
+  "schema": "het-research-cuda-transfer-summary-v1",
+  "common_identity": "common-identity.json",
+  "command": "nvcc -O3 -std=c++17 -lineinfo cuda_probe.cu -lcublas -o cuda_probe && ./cuda_probe",
+  "timestamps_utc": {
+    "repeatable_distribution_run": "2026-08-16T01:35:13Z",
+    "first_copy_control_run": "2026-08-16T02:05:25Z"
+  },
+  "harness": {
+    "distribution_source_sha256": "b6653358d8e5420f7444d95db8d8b304398abbfa429fb64bba4fa367e06d9571",
+    "distribution_binary_sha256": "78bcae1d0b591ba492ac3a247d41d6fd408b9005ed7720cc9850d9e8225847d0",
+    "final_source_sha256": "cfa0a584abe5eb0b137115cdbdd29e6f26f51faf65f048ff1ecd78cedc7ddc74",
+    "final_binary_sha256": "0b7565274eca71a5b9def7ccffb00149b1b07e9cbb0b1463441530e28771def7",
+    "repeatable_result_sha256": "ca4ab05858649a42d3b49c06e5e04904c86be068da04575049811e0ccb13c7c8",
+    "first_copy_and_repeat_result_sha256": "c5c155ac10109be8b1686a1aa4ea65f7088f8b16059f558fd20b5829d247a446"
+  },
+  "parameters": {
+    "warmups": 10,
+    "samples_small": 100,
+    "samples_largest": 40,
+    "bytes": [5760, 23040, 184320, 737280, 2949120, 13236480],
+    "units": "completion microseconds; GB/s is decimal",
+    "synchronization": "stream completion included",
+    "allocation": "measured separately"
+  },
+  "peer": [
+    {
+      "source": 0,
+      "destination": 1,
+      "can_access": 0,
+      "enable_code": 217,
+      "enable_name": "cudaErrorPeerAccessUnsupported"
+    },
+    {
+      "source": 1,
+      "destination": 0,
+      "can_access": 0,
+      "enable_code": 217,
+      "enable_name": "cudaErrorPeerAccessUnsupported"
+    }
+  ],
+  "pinned_steady_median_p95_us": {
+    "gpu0_h2d": [[5760, 6.870, 7.537], [23040, 11.900, 12.683], [184320, 24.458, 25.172], [737280, 98.935, 99.904], [2949120, 372.265, 382.882], [13236480, 1689.627, 1706.406]],
+    "gpu0_d2h": [[5760, 5.507, 5.864], [23040, 6.825, 7.195], [184320, 22.234, 22.746], [737280, 82.069, 82.813], [2949120, 311.828, 320.868], [13236480, 1522.200, 1534.402]],
+    "gpu1_h2d": [[5760, 6.113, 6.793], [23040, 10.972, 11.886], [184320, 21.250, 21.768], [737280, 95.444, 96.816], [2949120, 366.729, 376.715], [13236480, 1658.070, 1673.498]],
+    "gpu1_d2h": [[5760, 4.754, 5.009], [23040, 5.965, 6.271], [184320, 22.091, 22.728], [737280, 83.125, 83.749], [2949120, 304.911, 317.840], [13236480, 1516.527, 1522.046]]
+  },
+  "relay_median_p95_us": {
+    "gpu0_host_gpu1": [[5760, 11.803, 12.547], [23040, 18.395, 19.338], [184320, 40.123, 41.216], [737280, 154.047, 182.546], [2949120, 674.642, 678.691], [13236480, 3161.877, 3176.196]],
+    "gpu1_host_gpu0": [[5760, 11.944, 12.631], [23040, 18.503, 19.377], [184320, 39.740, 41.603], [737280, 154.891, 183.038], [2949120, 665.666, 677.548], [13236480, 3165.731, 3174.905]]
+  },
+  "first_pinned_copy_after_allocation_us": {
+    "note": "single observation per case after fresh allocation/stream; CUDA process context already initialized",
+    "gpu0_h2d": [[5760, 12.598], [737280, 105.133], [13236480, 1706.632]],
+    "gpu0_d2h": [[5760, 13.423], [737280, 89.241], [13236480, 1510.339]],
+    "gpu1_h2d": [[5760, 11.564], [737280, 99.274], [13236480, 1669.427]],
+    "gpu1_d2h": [[5760, 12.741], [737280, 87.630], [13236480, 1511.045]]
+  },
+  "interpretation": "P2P is unavailable. Pinned host relay and dual independent transfers are operational at model-sized payloads. Allocation must be pooled. cuBLAS overlap is capability evidence only because the control omits exact MXFP4/GPT expert semantics."
+}

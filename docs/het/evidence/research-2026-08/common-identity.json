@@ -1,0 +1,48 @@
+{
+  "schema": "het-research-common-identity-v1",
+  "capture_date_local": "2026-08-15",
+  "timezone": "America/New_York",
+  "repository_head": "0113e8214e765d168216bbee2120654555a4cfe4",
+  "branch": "main",
+  "upstream": "origin/main",
+  "initial_ahead": 0,
+  "initial_behind": 0,
+  "initial_phase1_status_short_branch": [
+    "## main...origin/main",
+    " M Cargo.lock",
+    " M crates/gpt-oss-gpu/src/cublas.rs",
+    " M crates/gpt-oss-gpu/src/cublas_ops.rs",
+    " M crates/gpt-oss-gpu/src/device.rs",
+    " M crates/gpt-oss-gpu/src/memory/cpu_pool.rs",
+    " M crates/gpt-oss-gpu/src/memory/gpu_pool.rs",
+    " M crates/gpt-oss-gpu/src/memory/swap.rs",
+    " M crates/gpt-oss-gpu/src/nccl.rs",
+    " M crates/gpt-oss-gpu/src/pinned_memory.rs",
+    " M docs/README.md",
+    "?? docs/het/"
+  ],
+  "preexisting_code_lock_diff_stat": "9 files changed, 35 insertions(+), 13 deletions(-)",
+  "preexisting_code_lock_diff_sha256": "792b545405494ca2a5be543b24e29ee0f68420db0f3aa5ec59adf4ea114a374e",
+  "cargo_lock_sha256": "b323945c5fa90bbd96285797cb4f427af615c6cc99a180d882cc3885b9ddc68e",
+  "host_sanitized": {
+    "os": "Ubuntu 26.04 LTS",
+    "kernel": "7.0.0-29-generic",
+    "cpu": "Intel Xeon Silver 4215R; 1 socket; 8 cores; 16 threads; AVX2 and AVX-512 VNNI; no AMX",
+    "memory_bytes": 99633586176,
+    "gpus": [
+      "NVIDIA GeForce RTX 3090; 24576 MiB; compute capability 8.6; PCI 0000:19:00.0",
+      "NVIDIA GeForce RTX 3090; 24576 MiB; compute capability 8.6; PCI 0000:65:00.0"
+    ]
+  },
+  "toolchain": {
+    "rustc": "1.97.1",
+    "cargo": "1.97.1",
+    "cuda_toolkit": "13.3.73",
+    "cuda_driver": "610.43.02",
+    "cuda_runtime_api": 13030,
+    "cuda_driver_api": 13030,
+    "gcc": "15.2.0",
+    "ld": "2.46"
+  },
+  "redaction": "Hostnames, process IDs, usernames in absolute home paths, IP/MAC addresses, UUIDs, serial numbers, filesystem UUIDs, and NCCL diagnostic prefixes are omitted."
+}
