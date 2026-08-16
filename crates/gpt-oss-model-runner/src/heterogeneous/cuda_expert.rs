@@ -16,7 +16,9 @@ use gpt_oss_cpu_kernels::{
     accumulate_mxfp4_bf16_block, Mxfp4Block, MXFP4_PACKED_BYTES, QUANT_BLOCK_SIZE,
 };
 use gpt_oss_gpu::device::{list_devices, resolve_stable_device, StableCudaDeviceId};
+use gpt_oss_gpu::event::CorrelatedTimeline;
 use gpt_oss_gpu::kernel_loader::{compiled_ptx_dir, KernelLoader};
+use gpt_oss_gpu::pinned_memory::BoundedPinnedLease;
 use half::bf16;
 
 use super::contract::{
@@ -191,6 +193,15 @@ pub struct SelectedExpertExecution {
     pub output_bf16_bits: Vec<u16>,
     pub trace: Option<SelectedExpertFirstDivergenceTrace>,
     pub kernel_elapsed_ms: f32,
+}
+
+/// H4 output descriptor for a result downloaded directly into a bounded
+/// pinned relay lease. No pageable result allocation is made by this path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedExpertPinnedExecution {
+    pub result: ExpertResultDescriptor,
+    pub kernel_elapsed_ms: f32,
+    pub output_bytes: usize,
 }
 
 /// Owns the one-stream, bounded scratch needed by a selected-expert decode.
@@ -569,6 +580,24 @@ impl<'a> PreparedSelectedExpert<'a> {
     /// Enqueue input upload and all three exact kernels, returning the terminal
     /// event owner that must be drained before any borrowed resource can move.
     pub fn submit(self) -> Result<PendingSelectedExpert<'a>> {
+        self.submit_inner(None)
+    }
+
+    /// Submit with GPU markers on the same process-monotonic timeline used by
+    /// CPU work and the layer-owner relay. The markers are evidence only; they
+    /// do not change stream dependencies.
+    pub fn submit_with_timeline(
+        self,
+        timeline: &CorrelatedTimeline,
+        actor: &str,
+    ) -> Result<PendingSelectedExpert<'a>> {
+        self.submit_inner(Some((timeline, actor)))
+    }
+
+    fn submit_inner(
+        self,
+        timeline: Option<(&CorrelatedTimeline, &str)>,
+    ) -> Result<PendingSelectedExpert<'a>> {
         let executor = self.executor;
         #[cfg(feature = "heterogeneous-test-faults")]
         let injected_fault = executor.injected_fault.take();
@@ -582,10 +611,16 @@ impl<'a> PreparedSelectedExpert<'a> {
         // this private stream before any executor, weights, scratch, or result
         // borrow can be released. This includes H2D, event, and launch errors.
         let submitted = (|| -> Result<(CudaEvent, CudaEvent)> {
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&executor.stream, actor, "input_h2d_begin")?;
+            }
             executor
                 .stream
                 .memcpy_htod(self.input_bf16_bits, &mut executor.input)
                 .map_err(cuda_error("selected expert input H2D"))?;
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&executor.stream, actor, "input_h2d_end")?;
+            }
             #[cfg(feature = "heterogeneous-test-faults")]
             if injected_fault == Some(SelectedExpertInjectedFault::SubmitAfterInputEnqueue) {
                 return Err(LLMError::GpuError(
@@ -596,6 +631,9 @@ impl<'a> PreparedSelectedExpert<'a> {
                 .stream
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(cuda_error("selected expert start event"))?;
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&executor.stream, actor, "compute_begin")?;
+            }
             launch_gemv(
                 &executor.stream,
                 &executor.loader,
@@ -628,6 +666,9 @@ impl<'a> PreparedSelectedExpert<'a> {
                 &mut self.result_slot.buffer,
                 HIDDEN_SIZE,
             )?;
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&executor.stream, actor, "compute_end")?;
+            }
             let terminal = executor
                 .stream
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
@@ -759,6 +800,88 @@ impl PendingSelectedExpert<'_> {
             output_bf16_bits,
             trace,
             kernel_elapsed_ms,
+        })
+    }
+
+    /// Download the selected result directly into one already-reserved pinned
+    /// slot. All CUDA work, the D2H, and timeline callbacks are terminal before
+    /// this function returns, so the caller may then return the lease.
+    pub fn drain_into_pinned(
+        mut self,
+        output: &mut BoundedPinnedLease<u16>,
+        timeline: Option<(&CorrelatedTimeline, &str)>,
+    ) -> Result<SelectedExpertPinnedExecution> {
+        if output.as_slice().len() < HIDDEN_SIZE {
+            return Err(LLMError::GpuError(format!(
+                "selected expert pinned output length {} < {HIDDEN_SIZE}",
+                output.as_slice().len()
+            )));
+        }
+        let terminal = self.terminal.as_ref().ok_or_else(|| {
+            LLMError::GpuError("selected expert terminal event was already consumed".into())
+        })?;
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if self.inject_drain_failure {
+            terminal
+                .synchronize()
+                .map_err(cuda_error("selected expert injected terminal drain"))?;
+            self.drained = true;
+            return Err(LLMError::GpuError(
+                "injected selected-expert asynchronous drain failure".into(),
+            ));
+        }
+        let submitted = (|| -> Result<_> {
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&self.executor.stream, actor, "result_d2h_begin")?;
+            }
+            self.executor
+                .stream
+                .memcpy_dtoh(
+                    &self.result_slot.buffer,
+                    &mut output.as_mut_slice()[..HIDDEN_SIZE],
+                )
+                .map_err(cuda_error("selected expert pinned output D2H"))?;
+            if let Some((timeline, actor)) = timeline {
+                timeline.enqueue_cuda_marker(&self.executor.stream, actor, "result_d2h_end")?;
+            }
+            self.executor
+                .stream
+                .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                .map_err(cuda_error("selected expert pinned-output terminal event"))
+        })();
+        let output_terminal = match submitted {
+            Ok(event) => event,
+            Err(primary) => {
+                let drained = self.executor.stream.synchronize();
+                if let Err(drain) = drained {
+                    return Err(LLMError::GpuError(format!(
+                        "selected expert pinned D2H submit failed ({primary}); mandatory drain failed ({drain})"
+                    )));
+                }
+                self.drained = true;
+                return Err(primary);
+            }
+        };
+        if let Err(error) = output_terminal.synchronize() {
+            let primary = cuda_error("selected expert pinned-output drain")(error);
+            let drained = self.executor.stream.synchronize();
+            if let Err(drain) = drained {
+                return Err(LLMError::GpuError(format!(
+                    "selected expert pinned-output drain failed ({primary}); mandatory stream drain failed ({drain})"
+                )));
+            }
+            self.drained = true;
+            return Err(primary);
+        }
+        let kernel_elapsed_ms = self
+            .start
+            .elapsed_ms(terminal)
+            .map_err(cuda_error("selected expert event timing"))?;
+        self.drained = true;
+        Ok(SelectedExpertPinnedExecution {
+            result: ExpertResultDescriptor::from_packed_route(self.route),
+            kernel_elapsed_ms,
+            output_bytes: GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
         })
     }
 

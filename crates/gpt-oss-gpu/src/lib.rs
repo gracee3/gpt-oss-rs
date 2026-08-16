@@ -19,6 +19,7 @@ pub mod cublaslt_ops;
 pub mod cuda_allocator;
 pub mod cuda_graph;
 pub mod device;
+pub mod event;
 mod ffi;
 #[cfg(feature = "cuda")]
 pub mod kernel_loader;
@@ -54,6 +55,7 @@ pub mod prelude {
         list_devices, resolve_stable_device, GpuDevice, MemoryInfo, PciBusId, ResolvedCudaDevice,
         StableCudaDeviceId, StableDeviceError,
     };
+    pub use crate::event::{CorrelatedTimeline, TimelinePoint};
     #[cfg(feature = "cuda")]
     pub use crate::kernel_loader::{launch_config, KernelLoader};
     pub use crate::memory::{
@@ -62,7 +64,9 @@ pub mod prelude {
     #[cfg(all(feature = "mock-gpu", not(feature = "cuda")))]
     pub use crate::mock::MockGpuAllocator;
     pub use crate::nccl::{NcclComm, NcclDataType, NcclGroup, NcclReduceOp, NcclUniqueId};
-    pub use crate::pinned_memory::{PinnedBuffer, PinnedPool};
+    pub use crate::pinned_memory::{
+        BoundedPinnedLease, BoundedPinnedPool, BoundedPinnedPoolStats, PinnedBuffer, PinnedPool,
+    };
     pub use crate::stream::GpuStream;
     #[cfg(feature = "cuda")]
     pub use crate::CudaContext;

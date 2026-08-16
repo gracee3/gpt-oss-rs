@@ -11,6 +11,7 @@ pub mod cpu_worker;
 #[cfg(feature = "cuda")]
 pub mod gpu_worker;
 pub mod graph_runner;
+pub mod heterogeneous_worker;
 pub mod input;
 pub mod metrics;
 pub mod worker;
@@ -19,5 +20,9 @@ pub use config::WorkerConfig;
 pub use cpu_worker::{CpuGenerationState, CpuWorker};
 pub use gpt_oss_engine::sequence::{SequenceData, SequenceGroupMetadata};
 pub use graph_runner::{GraphRunner, GraphRunnerConfig};
+pub use heterogeneous_worker::{
+    reserve_owner_queues_all_or_none, CapacityOneOwnerQueue, CapacityOneQueueStats,
+    HeterogeneousQueueRole, OwnerQueueTicket,
+};
 pub use input::prepare_input;
 pub use worker::{SamplerOutput, Worker, WorkerInput, WorkerOutput};

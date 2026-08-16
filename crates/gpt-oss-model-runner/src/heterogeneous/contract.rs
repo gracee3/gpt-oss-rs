@@ -9,6 +9,7 @@ use super::placement::{ExpertOwner, GptOssExpertKey, ResolvedExpertPlacement};
 
 pub const GPT_OSS_HIDDEN_SIZE: usize = 2_880;
 pub const GPT_OSS_TOP_K: usize = 4;
+pub const GPT_OSS_ROUTE_WIRE_V1_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +54,38 @@ impl GptOssRouteDescriptor {
         self.source_row * GPT_OSS_TOP_K as u32 + u32::from(self.route_rank)
     }
 }
+
+/// GPU-authored canonical route record transferred from the layer owner.
+///
+/// The explicit reserved bytes make this a stable 16-byte wire shape. A host
+/// consumer validates, but never reconstructs, row/rank/activation identity.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GptOssRouteWireV1 {
+    pub source_row: u32,
+    pub activation_slot: u32,
+    pub expert_id: u16,
+    pub weight_bf16_bits: u16,
+    pub route_rank: u8,
+    pub reserved: [u8; 3],
+}
+
+impl GptOssRouteWireV1 {
+    pub fn into_descriptor(self) -> Result<GptOssRouteDescriptor, ContractError> {
+        if self.reserved != [0; 3] {
+            return Err(ContractError::RouteWireReserved(self.reserved));
+        }
+        Ok(GptOssRouteDescriptor {
+            source_row: self.source_row,
+            route_rank: self.route_rank,
+            expert_id: self.expert_id,
+            weight_bf16_bits: self.weight_bf16_bits,
+            activation_slot: self.activation_slot,
+        })
+    }
+}
+
+const _: () = assert!(size_of::<GptOssRouteWireV1>() == GPT_OSS_ROUTE_WIRE_V1_BYTES);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GptOssRoutedBatchDescriptor {
@@ -385,6 +418,8 @@ pub enum ContractError {
     ExpertOutOfRange(u16),
     #[error("route slot {slot} has a non-finite BF16 selected weight")]
     NonFiniteWeight { slot: u32 },
+    #[error("GPU-authored route wire has nonzero reserved bytes {0:?}")]
+    RouteWireReserved([u8; 3]),
     #[error("placement epoch mismatch: expected {expected}, observed {observed}")]
     PlacementEpoch { expected: u64, observed: u64 },
     #[error("no owner for layer {layer} expert {expert}")]
@@ -509,6 +544,35 @@ mod tests {
         let json = serde_json::to_vec(&route).unwrap();
         let decoded: GptOssRouteDescriptor = serde_json::from_slice(&json).unwrap();
         assert_eq!(route, decoded);
+    }
+
+    #[test]
+    fn route_wire_v1_is_exactly_16_bytes_and_rejects_reserved_bits() {
+        assert_eq!(size_of::<GptOssRouteWireV1>(), 16);
+        let wire = GptOssRouteWireV1 {
+            source_row: 7,
+            activation_slot: 7,
+            expert_id: 23,
+            weight_bf16_bits: bf16::from_f32(0.375).to_bits(),
+            route_rank: 2,
+            reserved: [0; 3],
+        };
+        assert_eq!(
+            wire.into_descriptor(),
+            Ok(GptOssRouteDescriptor {
+                source_row: 7,
+                activation_slot: 7,
+                expert_id: 23,
+                weight_bf16_bits: bf16::from_f32(0.375).to_bits(),
+                route_rank: 2,
+            })
+        );
+        assert!(GptOssRouteWireV1 {
+            reserved: [0, 1, 0],
+            ..wire
+        }
+        .into_descriptor()
+        .is_err());
     }
 
     #[test]

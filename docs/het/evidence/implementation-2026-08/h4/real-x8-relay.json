@@ -1,0 +1,189 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h4-relay/v1",
+  "captured_unix_seconds": 1786863858,
+  "repository_head": "fa7750fc28e2db18ea48ec7f9f1cfa62de4afa21",
+  "source_fingerprint_sha256": "a3bc9b8221da7c1c6dc57b9ac51222a2cc1041f8fd27e59ec29e902832c8e563",
+  "executable_sha256": "2580625e3eeb85cc7756b0e3db907b04fe132d038573b7dcaec472492d49f963",
+  "cargo_profile": "release",
+  "cuda_arch": "sm_86",
+  "model_mapping_sha256": "74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d",
+  "placement_sha256": "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe",
+  "layer_owner_pci_bus_id": "0000:19:00.0",
+  "remote_worker_pci_bus_id": "0000:65:00.0",
+  "cpu_record": "/home/emmy/workspace/gpt-oss-rs-het-cache/owner-x8-v2/74e1c00fc197c39cbded90aa94e4c7fb360c15d8e36d0a8cbb3c7ebee5ae694d/cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe/layer-00000-aa65aed58ed0504c85aed2d78bd9ecd7fd77baae3b19a38c73f95b123ed371ea.owner-x8",
+  "selected_ids": [
+    31,
+    21,
+    22,
+    6
+  ],
+  "source_d2h_bytes": 5760,
+  "descriptor_d2h_bytes": 64,
+  "gpu1_h2d_bytes": 5760,
+  "gpu1_d2h_bytes": 5760,
+  "cpu_result_bytes": 5760,
+  "gpu0_result_h2d_bytes": 11520,
+  "fixed_pinned_bytes": 74944,
+  "fixed_pool_allocations": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "pool_high_water": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "pool_exhaustions": [
+    1,
+    1,
+    0,
+    0,
+    0
+  ],
+  "pool_quarantined": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "pool_available_after_release": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "cpu_x8_scratch_bytes": 17280,
+  "cpu_x8_high_water_jobs": 1,
+  "result_fault_drained": true,
+  "cpu_gpu_overlap": true,
+  "transfer_legs": [
+    {
+      "actor": "gpu0_relay",
+      "direction": "D2H",
+      "begin_label": "source_d2h_begin",
+      "end_label": "source_d2h_end",
+      "bytes": 5824
+    },
+    {
+      "actor": "gpu1_expert",
+      "direction": "H2D",
+      "begin_label": "input_h2d_begin",
+      "end_label": "input_h2d_end",
+      "bytes": 5760
+    },
+    {
+      "actor": "gpu1_expert",
+      "direction": "D2H",
+      "begin_label": "result_d2h_begin",
+      "end_label": "result_d2h_end",
+      "bytes": 5760
+    },
+    {
+      "actor": "gpu0_relay",
+      "direction": "H2D",
+      "begin_label": "result_h2d_begin",
+      "end_label": "result_h2d_end",
+      "bytes": 11520
+    }
+  ],
+  "points": [
+    {
+      "label": "router_begin",
+      "actor": "gpu0_router",
+      "monotonic_ns": 254799
+    },
+    {
+      "label": "router_end",
+      "actor": "gpu0_router",
+      "monotonic_ns": 1229302
+    },
+    {
+      "label": "source_d2h_begin",
+      "actor": "gpu0_relay",
+      "monotonic_ns": 1260942
+    },
+    {
+      "label": "source_d2h_end",
+      "actor": "gpu0_relay",
+      "monotonic_ns": 1291016
+    },
+    {
+      "label": "input_h2d_begin",
+      "actor": "gpu0_local_expert",
+      "monotonic_ns": 476508192
+    },
+    {
+      "label": "input_h2d_end",
+      "actor": "gpu0_local_expert",
+      "monotonic_ns": 476548356
+    },
+    {
+      "label": "compute_begin",
+      "actor": "gpu0_local_expert",
+      "monotonic_ns": 476588768
+    },
+    {
+      "label": "compute_begin",
+      "actor": "cpu_expert",
+      "monotonic_ns": 476599685
+    },
+    {
+      "label": "input_h2d_begin",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 476681728
+    },
+    {
+      "label": "input_h2d_end",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 476697883
+    },
+    {
+      "label": "compute_begin",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 476737093
+    },
+    {
+      "label": "compute_end",
+      "actor": "gpu0_local_expert",
+      "monotonic_ns": 481214432
+    },
+    {
+      "label": "compute_end",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 481284799
+    },
+    {
+      "label": "compute_end",
+      "actor": "cpu_expert",
+      "monotonic_ns": 565435478
+    },
+    {
+      "label": "result_d2h_begin",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 643736552
+    },
+    {
+      "label": "result_d2h_end",
+      "actor": "gpu1_expert",
+      "monotonic_ns": 643748183
+    },
+    {
+      "label": "result_h2d_begin",
+      "actor": "gpu0_relay",
+      "monotonic_ns": 722717863
+    },
+    {
+      "label": "result_h2d_end",
+      "actor": "gpu0_relay",
+      "monotonic_ns": 722769685
+    }
+  ],
+  "passed": true
+}

@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** implementation campaign; H0 passed and H1 at its completion gate;
+**Stage:** implementation campaign; H0 through H4 passed, H5 is next;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -99,11 +99,12 @@ without downloading payloads. Its tokenizer/protocol assets are byte-identical
 to the local 20B assets, but they are not colocated with the local 120B package.
 
 **Verified:** CUDA peer access is unsupported in both directions; the pinned
-NCCL build uses shared-memory host transport. Model-sized pinned relays are
-small compared with current exact CPU expert arithmetic, and independent
-host/GPU streams overlap, but an exact selected-expert CUDA kernel does not
-exist. Current CUDA MoE semantics and the tensor-parallel model path are not
-suitable correctness foundations.
+NCCL build uses shared-memory host transport. H2 now provides an exact
+native-packed selected-expert CUDA M=1 primitive on both GPUs. H4 adds an exact
+native BF16 GPU0 router, GPU-authored canonical route descriptors,
+collision-free bounded packing, and fixed pinned CPU/GPU0/GPU1 relay with
+timeline-proven overlap. Current CUDA all-expert MoE semantics and the
+tensor-parallel model path remain excluded.
 
 **Planning decision:** GPU0 is a stable-identity layer-owner role; GPU1 and CPU
 are expert workers. Experts have one static owner, native shards remain
@@ -118,9 +119,11 @@ host commit advances one visibility epoch. Cancellation after enqueue suppresses
 publication and mandates drain before any buffer, slot, weight, stream, or
 context reclamation.
 
-**Implementation status:** H0 established separate local attribution commits
-for the readiness patch and Phase 0–2 documents. H1 froze the stable-device,
-placement, rank-bearing expert, prepared-step, error, and terminal-evidence
-contracts without wiring them into execution. Later packages proceed only
-through their individual exactness, ownership, memory, lifecycle, and evidence
-gates.
+**Implementation status:** H0 established separate local attribution commits;
+H1 froze the narrow contracts; H2 passed exact selected-expert CUDA arithmetic
+and drain gates; H3 passed owner-selective 20B construction and 120B metadata
+envelope gates; and H4 passed exact routing, bounded packing, real three-owner
+selected-work relay, queue/pool exhaustion, and correlated-concurrency gates.
+H4 remains detached from reduction and K/V publication. H5 is the next package
+and must add deterministic owner reduction plus the selected private-slot/
+visibility-epoch transaction model before integration can proceed.

@@ -137,6 +137,13 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
             "gpt_oss_selected_swiglu_bf16_kernel",
         ],
     ),
+    (
+        "gpt_oss_router",
+        &[
+            "gpt_oss_router_bf16_projection_kernel",
+            "gpt_oss_router_stable_top4_kernel",
+        ],
+    ),
 ];
 
 /// Loads and manages CUDA PTX modules, providing kernel launch capabilities.
