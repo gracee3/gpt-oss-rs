@@ -33,6 +33,9 @@ unsafe impl<T: Pod + Send> Sync for PinnedBuffer<T> {}
 
 impl<T: Pod + Send> PinnedBuffer<T> {
     /// Allocate a pinned buffer of `count` elements, zeroed.
+    ///
+    /// CUDA builds require a live CUDA context to be bound to the calling
+    /// thread for the lifetime of the allocation.
     pub fn new(count: usize) -> Result<Self> {
         if count == 0 {
             #[cfg(feature = "cuda")]
@@ -50,7 +53,9 @@ impl<T: Pod + Send> PinnedBuffer<T> {
 
         #[cfg(feature = "cuda")]
         {
-            let bytes = count * std::mem::size_of::<T>();
+            let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
+                crate::LLMError::MemoryError("PinnedBuffer allocation size overflow".to_string())
+            })?;
             let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
 
             // SAFETY: cuMemAllocHost allocates page-locked memory on the host.
@@ -247,8 +252,15 @@ impl<T: Pod + Send> PinnedPool<T> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "cuda")]
+    fn cuda_context() -> std::sync::Arc<cudarc::driver::CudaContext> {
+        cudarc::driver::CudaContext::new(0).unwrap()
+    }
+
     #[test]
     fn pinned_buffer_basic() {
+        #[cfg(feature = "cuda")]
+        let _context = cuda_context();
         let mut buf = PinnedBuffer::<f32>::new(16).unwrap();
         assert_eq!(buf.len(), 16);
         assert_eq!(buf.size_bytes(), 64);
@@ -267,6 +279,8 @@ mod tests {
 
     #[test]
     fn pinned_pool_reuse() {
+        #[cfg(feature = "cuda")]
+        let _context = cuda_context();
         let pool = PinnedPool::<f32>::new(64);
         pool.warm(2).unwrap();
         assert_eq!(pool.available(), 2);
@@ -281,6 +295,8 @@ mod tests {
 
     #[test]
     fn pinned_buffer_size_mismatch() {
+        #[cfg(feature = "cuda")]
+        let _context = cuda_context();
         let mut buf = PinnedBuffer::<f32>::new(4).unwrap();
         assert!(buf.copy_from_slice(&[1.0, 2.0]).is_err());
     }

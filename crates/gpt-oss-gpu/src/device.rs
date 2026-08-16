@@ -85,7 +85,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "mock-gpu")]
+    #[cfg(all(feature = "mock-gpu", not(feature = "cuda")))]
     fn list_devices_returns_mock() {
         let devs = list_devices();
         assert_eq!(devs.len(), 1);
