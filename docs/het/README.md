@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** implementation campaign; H0 through H7 passed, H8 is next;
+**Stage:** H3 loading-research follow-up; H0 through H7 passed, H8 paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -83,6 +83,9 @@ Evidence labels have the same meaning in every document:
     fixed decisions, conditions, exit criterion, and the H0-only handoff.
 28. [Implementation evidence index](evidence/implementation-2026-08/README.md) —
     bounded, sanitized H0–H10 gate records.
+29. [H3 loading research follow-up](30-h3-loading-research.md) — bounded
+    construction-peak instrumentation, current mmap-lifetime audit, and a
+    concrete per-shard release candidate; no new H8 attempt.
 
 ## Current headline
 
@@ -144,3 +147,9 @@ construction remains unpassed: the final separately authorized launch was
 blocked before model load because its fresh 120-second watchdog preflight did
 not keep `SwapFree` and `SwapCached` byte-identical. No 120B execution has
 begun; H9/H10 remain stopped.
+
+**Loading-research follow-up:** future construction runs now require bounded,
+identity-bound before/after-checkpoint, per-stage, and post-drop memory events
+covering process RSS/PSS file/anon, global swap/vmstat/page cache, current
+cgroup memory, and per-GPU residency. This adds diagnostic evidence only. It
+does not pass H8 or relax its exact swap, memory, reserve, and watchdog gates.

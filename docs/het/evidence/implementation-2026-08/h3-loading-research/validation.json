@@ -1,0 +1,118 @@
+{
+  "schema": "gpt-oss-rs.h3-loading-research-validation/v1",
+  "captured_at_utc": "2026-08-16T19:56:41Z",
+  "base_head": "52acc5c245cc7bb1ae7b148fcaff18943263b5f1",
+  "branch": "agent/h3-loading-research",
+  "status": "source-and-fixture-validated-no-model-run",
+  "limits": {
+    "event_schema": "gpt-oss-rs.construction-memory-event/v1",
+    "construction_schema": "gpt-oss-rs.heterogeneous-construction/v5",
+    "maximum_events": 64,
+    "maximum_event_bytes": 65536,
+    "maximum_total_event_bytes": 4194304
+  },
+  "source_sha256": [
+    {
+      "path": "crates/gpt-oss-bench/src/construction_memory.rs",
+      "sha256": "a1eb0dfee0a1b09f2ecdfa23a23fc53c33a3fb18f12e1cadce423dc625b98ee1"
+    },
+    {
+      "path": "crates/gpt-oss-bench/src/construction_memory_policy.rs",
+      "sha256": "72169fb9664319df4ce1ed22691959097f31ef5b0e6dd50ea8d7a1fc27d7f08f"
+    },
+    {
+      "path": "crates/gpt-oss-bench/src/bin/heterogeneous_construct.rs",
+      "sha256": "1d101a5f5b14262b6a211efe1d2223ccad50d1081fae91220c30ddfe7a150041"
+    },
+    {
+      "path": "crates/gpt-oss-bench/src/bin/heterogeneous_h8_watchdog.rs",
+      "sha256": "42d08d97b3162d9a1a9e41fed8c3f2d08869b34309d8254f849d2dede92d37a0"
+    },
+    {
+      "path": "crates/gpt-oss-bench/src/lib.rs",
+      "sha256": "f220a5a65e18ece2ceaaea323a72f87aa9ab610df19592691e74194cb1d42e58"
+    }
+  ],
+  "checks": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test --locked -q -p gpt-oss-bench --lib --features cuda construction_memory::tests",
+      "result": "passed-6"
+    },
+    {
+      "command": "cargo test --locked -q -p gpt-oss-bench --bin heterogeneous_h8_watchdog",
+      "result": "passed-11"
+    },
+    {
+      "command": "cargo test --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features heterogeneous-test-faults h8_quota_balanced_hash_is_exact_and_deterministic",
+      "result": "passed-1"
+    },
+    {
+      "command": "cargo check --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features cuda",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features heterogeneous-test-faults",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy --locked -q -p gpt-oss-bench --lib --features cuda --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features cuda --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_construct --features heterogeneous-test-faults --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy --locked -q -p gpt-oss-bench --bin heterogeneous_h8_watchdog --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test --workspace --locked",
+      "result": "passed"
+    },
+    {
+      "command": "python3 -m unittest discover -s oracle/tests",
+      "result": "passed-10"
+    },
+    {
+      "command": "python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests",
+      "result": "passed-35"
+    },
+    {
+      "command": "python3 tools/check_markdown_links.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "model_execution": {
+    "heterogeneous_construct_modes_run": [],
+    "h8_started": false,
+    "h9_started": false,
+    "h10_started": false,
+    "20b_constructed": false,
+    "120b_checkpoint_accessed": false
+  },
+  "non_gate_diagnostics": [
+    {
+      "command": "python3 -m unittest discover -s python/tests",
+      "result": "not-run-test-suite-start-directory-does-not-exist",
+      "corrected_by": [
+        "python3 -m unittest discover -s oracle/tests",
+        "python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests"
+      ]
+    }
+  ],
+  "prior_h8_evidence_modified": false,
+  "acceptance_statement": "This record validates diagnostic source and fixtures only. It does not pass H8 or authorize H9/H10."
+}

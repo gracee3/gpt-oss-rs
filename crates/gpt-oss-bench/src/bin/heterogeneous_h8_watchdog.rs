@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
@@ -11,6 +11,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
+use gpt_oss_bench::construction_memory_policy::{
+    CONSTRUCTION_MEMORY_EVENT_SCHEMA, MAX_CONSTRUCTION_MEMORY_EVENTS,
+    MAX_CONSTRUCTION_MEMORY_EVENT_BYTES, MAX_CONSTRUCTION_MEMORY_JOURNAL_BYTES,
+};
 use gpt_oss_bench::h8_watchdog::{
     analyze_preflight, evaluate_runtime_guard, read_host_snapshot, sha256_bytes, sha256_file,
     GuardViolation, HostSnapshot, PreflightAnalysis, RuntimeGuardLimits, ENV_EXECUTABLE_SHA256,
@@ -492,6 +496,7 @@ fn run_supervised(args: RunArgs) -> Result<()> {
         match sha256_file(&child_spec.evidence_output) {
             Ok(hash) => match validate_child_evidence(
                 &child_spec.evidence_output,
+                &child_spec.memory_events,
                 &child_spec.executable_sha256,
                 &repository_head,
                 &run_id_sha256,
@@ -581,6 +586,7 @@ struct ChildSpec {
     executable_sha256: String,
     arguments: Vec<String>,
     evidence_output: PathBuf,
+    memory_events: PathBuf,
 }
 
 fn validate_child_command(
@@ -601,11 +607,22 @@ fn validate_child_command(
     }
     let evidence_output =
         argument_path(&arguments, "--output")?.context("guarded H8 child lacks --output")?;
+    let memory_events = argument_path(&arguments, "--memory-events")?
+        .context("guarded H8 child lacks --memory-events")?;
     if evidence_output.exists() {
         bail!("guarded H8 child output already exists");
     }
+    if memory_events.exists() {
+        bail!("guarded H8 child memory-event directory already exists");
+    }
+    if !memory_events.parent().is_some_and(Path::is_dir) {
+        bail!("guarded H8 child memory-event parent is not a directory");
+    }
     if paths_same_lexically(&evidence_output, preflight)
         || paths_same_lexically(&evidence_output, output)
+        || paths_same_lexically(&memory_events, &evidence_output)
+        || paths_same_lexically(&memory_events, preflight)
+        || paths_same_lexically(&memory_events, output)
         || paths_same_lexically(preflight, output)
     {
         bail!("watchdog, preflight, and child evidence paths must be distinct");
@@ -626,6 +643,7 @@ fn validate_child_command(
         executable_sha256,
         arguments,
         evidence_output,
+        memory_events,
     })
 }
 
@@ -757,6 +775,7 @@ fn validate_fresh_admission(baseline: &HostSnapshot, current: &HostSnapshot) -> 
 
 fn validate_child_evidence(
     path: &Path,
+    memory_events: &Path,
     executable_sha256: &str,
     repository_head: &str,
     run_id_sha256: &str,
@@ -769,7 +788,7 @@ fn validate_child_evidence(
             .and_then(serde_json::Value::as_str)
             .with_context(|| format!("child evidence lacks {pointer}"))
     };
-    if string("/schema")? != "gpt-oss-rs.heterogeneous-construction/v4"
+    if string("/schema")? != "gpt-oss-rs.heterogeneous-construction/v5"
         || string("/mode")? != "h8"
         || string("/repository_head")? != repository_head
         || string("/executable_sha256")? != executable_sha256
@@ -791,6 +810,187 @@ fn validate_child_evidence(
             != Some(true)
     {
         bail!("child evidence does not match the admitted H8 run identity");
+    }
+    validate_construction_memory_journal(
+        &value,
+        memory_events,
+        executable_sha256,
+        repository_head,
+    )?;
+    Ok(())
+}
+
+fn validate_construction_memory_journal(
+    evidence: &serde_json::Value,
+    root: &Path,
+    executable_sha256: &str,
+    repository_head: &str,
+) -> Result<()> {
+    let summary = evidence
+        .pointer("/construction_memory_events")
+        .context("child evidence lacks construction memory journal summary")?;
+    let number = |field: &str| {
+        summary
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .with_context(|| format!("construction memory summary lacks {field}"))
+    };
+    if summary.get("schema").and_then(serde_json::Value::as_str)
+        != Some(CONSTRUCTION_MEMORY_EVENT_SCHEMA)
+        || summary
+            .get("persisted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || number("max_events")? != MAX_CONSTRUCTION_MEMORY_EVENTS as u64
+        || number("max_event_bytes")? != MAX_CONSTRUCTION_MEMORY_EVENT_BYTES as u64
+        || number("max_total_bytes")? != MAX_CONSTRUCTION_MEMORY_JOURNAL_BYTES as u64
+    {
+        bail!("construction memory journal policy does not match the reviewed bounds");
+    }
+    let entries = summary
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .context("construction memory summary lacks entries")?;
+    let event_count = usize::try_from(number("event_count")?)?;
+    if event_count == 0
+        || event_count > MAX_CONSTRUCTION_MEMORY_EVENTS
+        || entries.len() != event_count
+    {
+        bail!("construction memory journal event count is invalid");
+    }
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        bail!("construction memory journal root is not a real directory");
+    }
+    let expected_checkpoint_revision = evidence
+        .pointer("/checkpoint_120b/revision")
+        .and_then(serde_json::Value::as_str)
+        .context("child evidence lacks the 120B revision")?;
+    let expected_checkpoint_metadata = evidence
+        .pointer("/checkpoint_120b/metadata_sha256")
+        .and_then(serde_json::Value::as_str)
+        .context("child evidence lacks the 120B metadata identity")?;
+    let expected_checkpoint_mapping = evidence
+        .pointer("/checkpoint_120b/mapping_sha256")
+        .and_then(serde_json::Value::as_str)
+        .context("child evidence lacks the 120B mapping identity")?;
+    let expected_placement = evidence
+        .pointer("/placement_120b/manifest_sha256")
+        .and_then(serde_json::Value::as_str)
+        .context("child evidence lacks the 120B placement identity")?;
+    let mut observed_total = 0_u64;
+    for (expected_sequence, entry) in entries.iter().enumerate() {
+        let sequence = entry
+            .get("sequence")
+            .and_then(serde_json::Value::as_u64)
+            .context("construction memory entry lacks sequence")?;
+        if sequence != expected_sequence as u64 {
+            bail!("construction memory event sequence is not contiguous");
+        }
+        let filename = entry
+            .get("filename")
+            .and_then(serde_json::Value::as_str)
+            .context("construction memory entry lacks filename")?;
+        let mut components = Path::new(filename).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            bail!("construction memory event filename is not a bounded leaf");
+        }
+        let event_path = root.join(filename);
+        let event_metadata = fs::symlink_metadata(&event_path)?;
+        if !event_metadata.is_file() || event_metadata.file_type().is_symlink() {
+            bail!("construction memory event is not a regular file");
+        }
+        let expected_bytes = entry
+            .get("bytes")
+            .and_then(serde_json::Value::as_u64)
+            .context("construction memory entry lacks byte count")?;
+        let expected_sha256 = entry
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            .context("construction memory entry lacks SHA-256")?;
+        let event_bytes = fs::read(&event_path)?;
+        if expected_bytes == 0
+            || expected_bytes > MAX_CONSTRUCTION_MEMORY_EVENT_BYTES as u64
+            || event_metadata.len() != expected_bytes
+            || event_bytes.len() as u64 != expected_bytes
+            || sha256_bytes(&event_bytes) != expected_sha256
+        {
+            bail!("construction memory event bytes or identity differ");
+        }
+        let event: serde_json::Value = serde_json::from_slice(&event_bytes)?;
+        let diagnostic_fields_present = [
+            "/captured_unix_ms",
+            "/elapsed_ms",
+            "/memory/process_status/vm_rss_bytes",
+            "/memory/process_status/vm_swap_bytes",
+            "/memory/smaps_rollup/pss_anon_bytes",
+            "/memory/smaps_rollup/pss_file_bytes",
+            "/memory/global_meminfo/swap_used_bytes",
+            "/memory/vmstat/pswpin_pages",
+            "/memory/vmstat/pswpout_pages",
+            "/memory/current_cgroup/memory_current_bytes",
+            "/memory/current_cgroup/memory_swap_current_bytes",
+            "/memory/residency/global_page_cache_estimate_bytes",
+        ]
+        .into_iter()
+        .all(|pointer| {
+            event
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        }) && matches!(
+            event.get("phase").and_then(serde_json::Value::as_str),
+            Some("before_checkpoint_open" | "after_checkpoint_open" | "stage" | "post_drop")
+        ) && event
+            .get("gpus")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|gpus| gpus.len() == 2);
+        if event.get("schema").and_then(serde_json::Value::as_str)
+            != Some(CONSTRUCTION_MEMORY_EVENT_SCHEMA)
+            || event.get("sequence").and_then(serde_json::Value::as_u64) != Some(sequence)
+            || event
+                .pointer("/identity/repository_head")
+                .and_then(serde_json::Value::as_str)
+                != Some(repository_head)
+            || event
+                .pointer("/identity/executable_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(executable_sha256)
+            || event
+                .pointer("/identity/checkpoint_class")
+                .and_then(serde_json::Value::as_str)
+                != Some("120b_h8")
+            || event
+                .pointer("/identity/checkpoint_revision")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_checkpoint_revision)
+            || event
+                .pointer("/identity/checkpoint_metadata_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_checkpoint_metadata)
+            || event
+                .pointer("/identity/checkpoint_mapping_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_checkpoint_mapping)
+            || event
+                .pointer("/identity/placement_manifest_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_placement)
+            || !diagnostic_fields_present
+        {
+            bail!("construction memory event identity differs from the child run");
+        }
+        observed_total = observed_total
+            .checked_add(expected_bytes)
+            .context("construction memory journal total overflows")?;
+    }
+    let directory_entries = fs::read_dir(root)?.collect::<std::io::Result<Vec<_>>>()?;
+    if directory_entries.len() != entries.len()
+        || observed_total != number("encoded_event_bytes")?
+        || observed_total != number("persisted_bytes")?
+        || observed_total > MAX_CONSTRUCTION_MEMORY_JOURNAL_BYTES as u64
+    {
+        bail!("construction memory journal summary differs from its immutable files");
     }
     Ok(())
 }
@@ -1264,6 +1464,40 @@ mod tests {
     }
 
     #[test]
+    fn guarded_h8_command_requires_a_new_memory_event_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "gpt-oss-h8-memory-command-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        fs::create_dir(&root).unwrap();
+        let executable = root.join("heterogeneous_construct");
+        fs::copy("/bin/true", &executable).unwrap();
+        let preflight = root.join("preflight.json");
+        let watchdog_output = root.join("watchdog.json");
+        let child_output = root.join("child.json");
+        let memory_events = root.join("memory-events");
+        let mut command = vec![
+            executable.to_string_lossy().into_owned(),
+            "--mode".into(),
+            "h8".into(),
+            "--output".into(),
+            child_output.to_string_lossy().into_owned(),
+        ];
+        assert!(validate_child_command(&command, &preflight, &watchdog_output).is_err());
+        command.extend([
+            "--memory-events".into(),
+            memory_events.to_string_lossy().into_owned(),
+        ]);
+        let spec = validate_child_command(&command, &preflight, &watchdog_output).unwrap();
+        assert_eq!(spec.memory_events, memory_events);
+        drop(spec);
+        fs::create_dir(&memory_events).unwrap();
+        assert!(validate_child_command(&command, &preflight, &watchdog_output).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn run_bounds_keep_polling_and_evidence_bounded() {
         let args = RunArgs {
             preflight: "preflight.json".into(),
@@ -1283,17 +1517,74 @@ mod tests {
 
     #[test]
     fn child_evidence_must_bind_executable_source_and_watchdog() {
-        let path = std::env::temp_dir().join(format!(
-            "gpt-oss-h8-child-evidence-{}.json",
-            std::process::id()
+        let root = std::env::temp_dir().join(format!(
+            "gpt-oss-h8-child-evidence-{}-{}",
+            std::process::id(),
+            now_unix_ms()
         ));
+        let events = root.join("memory-events");
+        fs::create_dir_all(&events).unwrap();
+        let path = root.join("child.json");
         let hash = "a".repeat(64);
+        let event = serde_json::json!({
+            "schema": CONSTRUCTION_MEMORY_EVENT_SCHEMA,
+            "sequence": 0,
+            "captured_unix_ms": 1,
+            "elapsed_ms": 0,
+            "phase": "before_checkpoint_open",
+            "memory": {
+                "process_status": {"vm_rss_bytes": 1, "vm_swap_bytes": 0},
+                "smaps_rollup": {"pss_anon_bytes": 1, "pss_file_bytes": 1},
+                "global_meminfo": {"swap_used_bytes": 0},
+                "vmstat": {"pswpin_pages": 0, "pswpout_pages": 0},
+                "current_cgroup": {"memory_current_bytes": 1, "memory_swap_current_bytes": 0},
+                "residency": {"global_page_cache_estimate_bytes": 1}
+            },
+            "gpus": [{}, {}],
+            "identity": {
+                "repository_head": "head",
+                "executable_sha256": hash,
+                "checkpoint_class": "120b_h8",
+                "checkpoint_revision": "revision",
+                "checkpoint_metadata_sha256": "metadata",
+                "checkpoint_mapping_sha256": "mapping",
+                "placement_manifest_sha256": "placement",
+            }
+        });
+        let mut event_bytes = serde_json::to_vec_pretty(&event).unwrap();
+        event_bytes.push(b'\n');
+        let event_filename = "000-h8_cold-identity.json";
+        fs::write(events.join(event_filename), &event_bytes).unwrap();
         let value = serde_json::json!({
-            "schema": "gpt-oss-rs.heterogeneous-construction/v4",
+            "schema": "gpt-oss-rs.heterogeneous-construction/v5",
             "mode": "h8",
             "repository_head": "head",
             "executable_sha256": hash,
             "passed": true,
+            "checkpoint_120b": {
+                "revision": "revision",
+                "metadata_sha256": "metadata",
+                "mapping_sha256": "mapping"
+            },
+            "placement_120b": {
+                "manifest_sha256": "placement"
+            },
+            "construction_memory_events": {
+                "schema": CONSTRUCTION_MEMORY_EVENT_SCHEMA,
+                "persisted": true,
+                "event_count": 1,
+                "encoded_event_bytes": event_bytes.len(),
+                "persisted_bytes": event_bytes.len(),
+                "max_events": MAX_CONSTRUCTION_MEMORY_EVENTS,
+                "max_event_bytes": MAX_CONSTRUCTION_MEMORY_EVENT_BYTES,
+                "max_total_bytes": MAX_CONSTRUCTION_MEMORY_JOURNAL_BYTES,
+                "entries": [{
+                    "sequence": 0,
+                    "filename": event_filename,
+                    "sha256": sha256_bytes(&event_bytes),
+                    "bytes": event_bytes.len()
+                }]
+            },
             "h8_campaign": {
                 "watchdog": {
                     "schema": WATCHDOG_SCHEMA,
@@ -1305,13 +1596,20 @@ mod tests {
             }
         });
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(validate_child_evidence(&path, &hash, "head", "run", "preflight").is_ok());
+        assert!(validate_child_evidence(&path, &events, &hash, "head", "run", "preflight").is_ok());
+        fs::write(events.join(event_filename), b"{}\n").unwrap();
+        assert!(
+            validate_child_evidence(&path, &events, &hash, "head", "run", "preflight").is_err()
+        );
+        fs::write(events.join(event_filename), &event_bytes).unwrap();
 
         let mut changed = value;
         changed["h8_campaign"]["watchdog"]["run_id_sha256"] = "wrong".into();
         fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
-        assert!(validate_child_evidence(&path, &hash, "head", "run", "preflight").is_err());
-        fs::remove_file(path).unwrap();
+        assert!(
+            validate_child_evidence(&path, &events, &hash, "head", "run", "preflight").is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
