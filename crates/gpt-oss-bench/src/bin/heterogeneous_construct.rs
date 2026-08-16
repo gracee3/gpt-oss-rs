@@ -7,6 +7,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use gpt_oss_bench::construction_memory::{
+    ConstructionMemoryEvent, ConstructionMemoryEventPhase, ConstructionMemoryIdentity,
+    ConstructionMemoryJournalSummary, ConstructionMemoryRecorder, ConstructionMemorySample,
+    GpuResidencySample,
+};
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_bench::h8_watchdog::require_h8_watchdog_binding;
 use gpt_oss_bench::h8_watchdog::H8WatchdogBinding;
@@ -71,6 +76,10 @@ struct Cli {
     cache_root: PathBuf,
     #[arg(long)]
     output: PathBuf,
+    /// Create-new directory for durable per-stage memory events.
+    /// Every construction mode requires it; metadata validation rejects it.
+    #[arg(long)]
+    memory_events: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +131,7 @@ struct EvidenceRecord {
     construction: Option<ConstructionRecord>,
     fault_campaign: Option<FaultCampaignRecord>,
     h8_campaign: Option<H8CampaignRecord>,
+    construction_memory_events: Option<ConstructionMemoryJournalSummary>,
     protected_nvme: ProtectedNvmeRecord,
     passed: bool,
 }
@@ -181,7 +191,8 @@ struct ResourceSnapshot {
     ledger: ConstructionLedger,
     process: ProcessMemory,
     system: SystemMemory,
-    gpus: Vec<GpuMemory>,
+    gpus: Vec<GpuResidencySample>,
+    memory_event: ConstructionMemoryEvent,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -203,13 +214,6 @@ struct SystemMemory {
     swap_free_bytes: u64,
     swap_used_bytes: u64,
     swap_cached_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GpuMemory {
-    pci_bus_id: String,
-    used_mib: u64,
-    free_mib: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -375,6 +379,20 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
+    if matches!(cli.mode, Mode::Validate) && cli.memory_events.is_some() {
+        bail!("metadata-only validation does not emit construction memory events");
+    }
+    if !matches!(cli.mode, Mode::Validate) && cli.memory_events.is_none() {
+        bail!("construction modes require a create-new --memory-events directory");
+    }
+    if let Some(root) = &cli.memory_events {
+        if root.exists() {
+            bail!("construction memory event directory already exists");
+        }
+        if !root.parent().is_some_and(std::path::Path::is_dir) {
+            bail!("construction memory event parent is not a directory");
+        }
+    }
     if !partial_artifacts(&cli.cache_root)?.is_empty() {
         bail!("owner cache contains a partial artifact before construction")
     }
@@ -494,58 +512,98 @@ fn main() -> Result<()> {
     let checkpoint_record_120b = checkpoint_record(&checkpoint_120b, map_equivalence_120b);
     let placement_record_20b = placement_record(&manifest_20b, &resolved_20b);
     let placement_record_120b = placement_record(&manifest_120b, &resolved_120b);
+    let repository_head = command_text("git", &["rev-parse", "HEAD"])?;
+    let executable_sha256 = hash_file(&std::env::current_exe()?)?;
+    let construction_memory_identity = match cli.mode {
+        Mode::Validate => None,
+        Mode::Cold | Mode::Warm => Some(construction_memory_identity(
+            "20b",
+            &checkpoint_20b,
+            &manifest_20b,
+            &repository_head,
+            &executable_sha256,
+        )?),
+        #[cfg(feature = "heterogeneous-test-faults")]
+        Mode::Faults => Some(construction_memory_identity(
+            "20b_faults",
+            &checkpoint_20b,
+            &manifest_20b,
+            &repository_head,
+            &executable_sha256,
+        )?),
+        #[cfg(feature = "heterogeneous-test-faults")]
+        Mode::H8 => Some(construction_memory_identity(
+            "120b_h8",
+            &checkpoint_120b,
+            &manifest_120b,
+            &repository_head,
+            &executable_sha256,
+        )?),
+    };
+    let mut construction_memory_recorder = construction_memory_identity
+        .map(|identity| ConstructionMemoryRecorder::new(identity, cli.memory_events.as_deref()))
+        .transpose()?;
     drop(checkpoint_120b);
+    drop(checkpoint_20b);
     let cache_bytes_before = cache_bytes(&cli.cache_root)?;
 
     let (construction, fault_campaign, h8_campaign) = match cli.mode {
         Mode::Validate => (None, None, None),
         Mode::Cold | Mode::Warm => (
             Some(run_construction(
-                checkpoint_20b,
+                &cli.model_20b,
                 &manifest_20b,
                 &cli.cache_root,
                 &stable,
                 system_before.swap_used_bytes,
+                construction_memory_recorder
+                    .as_mut()
+                    .context("construction memory recorder is missing")?,
+                if matches!(cli.mode, Mode::Cold) {
+                    "cold"
+                } else {
+                    "warm"
+                },
             )?),
             None,
             None,
         ),
         #[cfg(feature = "heterogeneous-test-faults")]
-        Mode::Faults => {
-            drop(checkpoint_20b);
-            (
-                None,
-                Some(run_fault_campaign(
-                    &cli.model_20b,
-                    &manifest_20b,
-                    &cli.cache_root,
-                    &stable,
-                    system_before.swap_used_bytes,
-                )?),
-                None,
-            )
-        }
+        Mode::Faults => (
+            None,
+            Some(run_fault_campaign(
+                &cli.model_20b,
+                &manifest_20b,
+                &cli.cache_root,
+                &stable,
+                system_before.swap_used_bytes,
+                construction_memory_recorder
+                    .as_mut()
+                    .context("construction memory recorder is missing")?,
+            )?),
+            None,
+        ),
         #[cfg(feature = "heterogeneous-test-faults")]
-        Mode::H8 => {
-            drop(checkpoint_20b);
-            (
-                None,
-                None,
-                Some(run_h8_campaign(
-                    &cli.model_120b,
-                    &manifest_120b,
-                    h8_watchdog.context("H8 watchdog binding is missing")?,
-                    h8_admission.context("H8 admission record is missing")?,
-                    &envelope_120b,
-                    &cli.cache_root,
-                    &stable,
-                    system_before.swap_used_bytes,
-                    h8_placement_path
-                        .as_deref()
-                        .context("H8 placement path is missing")?,
-                )?),
-            )
-        }
+        Mode::H8 => (
+            None,
+            None,
+            Some(run_h8_campaign(
+                &cli.model_120b,
+                &manifest_120b,
+                h8_watchdog.context("H8 watchdog binding is missing")?,
+                h8_admission.context("H8 admission record is missing")?,
+                &envelope_120b,
+                &cli.cache_root,
+                &stable,
+                system_before.swap_used_bytes,
+                h8_placement_path
+                    .as_deref()
+                    .context("H8 placement path is missing")?,
+                construction_memory_recorder
+                    .as_mut()
+                    .context("construction memory recorder is missing")?,
+            )?),
+        ),
     };
     let cache_bytes_after = cache_bytes(&cli.cache_root)?;
     if matches!(cli.mode, Mode::Warm) && cache_bytes_after != cache_bytes_before {
@@ -566,11 +624,11 @@ fn main() -> Result<()> {
     }
 
     let record = EvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-construction/v4",
+        schema: "gpt-oss-rs.heterogeneous-construction/v5",
         mode: cli.mode,
         captured_unix_ms: now_unix_ms(),
-        repository_head: command_text("git", &["rev-parse", "HEAD"])?,
-        executable_sha256: hash_file(&std::env::current_exe()?)?,
+        repository_head,
+        executable_sha256,
         command: std::env::args().collect(),
         toolchain: ToolchainRecord {
             rustc: command_text("rustc", &["--version"])?,
@@ -597,6 +655,10 @@ fn main() -> Result<()> {
         construction,
         fault_campaign,
         h8_campaign,
+        construction_memory_events: construction_memory_recorder
+            .as_ref()
+            .map(ConstructionMemoryRecorder::summary)
+            .transpose()?,
         protected_nvme,
         passed: true,
     };
@@ -606,20 +668,72 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn construction_memory_identity(
+    checkpoint_class: &str,
+    checkpoint: &GptOssCheckpointView,
+    manifest: &GptOssExpertPlacementManifestV1,
+    repository_head: &str,
+    executable_sha256: &str,
+) -> Result<ConstructionMemoryIdentity> {
+    Ok(ConstructionMemoryIdentity {
+        repository_head: repository_head.into(),
+        executable_sha256: executable_sha256.into(),
+        checkpoint_class: checkpoint_class.into(),
+        checkpoint_revision: checkpoint.revision().into(),
+        checkpoint_metadata_sha256: checkpoint.metadata_sha256().into(),
+        checkpoint_mapping_sha256: checkpoint.mapping_sha256().into(),
+        placement_manifest_sha256: manifest.sha256()?,
+    })
+}
+
+fn open_checkpoint_for_construction(
+    model_path: &Path,
+    memory_recorder: &mut ConstructionMemoryRecorder,
+    run_label: &str,
+    started: Instant,
+) -> Result<GptOssCheckpointView> {
+    memory_recorder.capture_checkpoint_boundary(
+        run_label,
+        ConstructionMemoryEventPhase::BeforeCheckpointOpen,
+        started.elapsed().as_millis(),
+        None,
+        gpu_memory()?,
+    )?;
+    let checkpoint = GptOssCheckpointView::open(model_path)?;
+    memory_recorder.capture_checkpoint_boundary(
+        run_label,
+        ConstructionMemoryEventPhase::AfterCheckpointOpen,
+        started.elapsed().as_millis(),
+        Some(checkpoint.mapped_payload_bytes()),
+        gpu_memory()?,
+    )?;
+    Ok(checkpoint)
+}
+
 fn run_construction(
-    checkpoint: GptOssCheckpointView,
+    model_path: &Path,
     manifest: &GptOssExpertPlacementManifestV1,
     cache_root: &Path,
     stable: &[StableCudaDeviceId; 2],
     swap_baseline: u64,
+    memory_recorder: &mut ConstructionMemoryRecorder,
+    run_label: &str,
 ) -> Result<ConstructionRecord> {
     let cuda_memory_before = cuda_memory(stable)?;
     let started = Instant::now();
+    let checkpoint =
+        open_checkpoint_for_construction(model_path, memory_recorder, run_label, started)?;
     let mut snapshots = Vec::new();
     let constructor = OwnerSelectiveConstructor::new(cache_root);
     let mut model = constructor.construct(checkpoint, manifest, |ledger| {
-        let snapshot = resource_snapshot(started, ledger.clone())
-            .map_err(|error| LLMError::ModelError(format!("H3 resource snapshot: {error:#}")))?;
+        let snapshot = resource_snapshot(
+            started,
+            ledger.clone(),
+            run_label,
+            ConstructionMemoryEventPhase::Stage,
+            memory_recorder,
+        )
+        .map_err(|error| LLMError::ModelError(format!("H3 resource snapshot: {error:#}")))?;
         enforce_resource_guards(&snapshot, swap_baseline)
             .map_err(|error| LLMError::ModelError(format!("H3 resource guard: {error:#}")))?;
         snapshots.push(snapshot);
@@ -671,7 +785,13 @@ fn run_construction(
     if !partial_artifacts_after.is_empty() {
         bail!("owner cache retained partial artifacts: {partial_artifacts_after:?}");
     }
-    let after = resource_snapshot(started, final_ledger.clone())?;
+    let after = resource_snapshot(
+        started,
+        final_ledger.clone(),
+        run_label,
+        ConstructionMemoryEventPhase::PostDrop,
+        memory_recorder,
+    )?;
     enforce_resource_guards(&after, swap_baseline)?;
     snapshots.push(after);
     Ok(ConstructionRecord {
@@ -696,6 +816,7 @@ fn run_fault_campaign(
     cache_root: &Path,
     stable: &[StableCudaDeviceId; 2],
     swap_baseline: u64,
+    memory_recorder: &mut ConstructionMemoryRecorder,
 ) -> Result<FaultCampaignRecord> {
     const STAGES: [ConstructionStage; 8] = [
         ConstructionStage::Identity,
@@ -717,14 +838,23 @@ fn run_fault_campaign(
     let mut records = Vec::with_capacity(STAGES.len());
     let mut cache_after_cpu_fault = None;
     for stage in STAGES {
-        let checkpoint = GptOssCheckpointView::open(model_path)?;
         let cuda_memory_before = cuda_memory(stable)?;
         let cache_bytes_before = cache_bytes(cache_root)?;
         let started = Instant::now();
         let mut observed_stages = Vec::new();
+        let stage_label = format!("{stage:?}").to_ascii_lowercase();
+        let run_label = format!("fault_{stage_label}");
+        let checkpoint =
+            open_checkpoint_for_construction(model_path, memory_recorder, &run_label, started)?;
         let result = constructor.construct_with_fault(checkpoint, manifest, stage, |ledger| {
-            let snapshot = resource_snapshot(started, ledger.clone())
-                .map_err(|error| LLMError::ModelError(format!("H3 fault snapshot: {error:#}")))?;
+            let snapshot = resource_snapshot(
+                started,
+                ledger.clone(),
+                &run_label,
+                ConstructionMemoryEventPhase::Stage,
+                memory_recorder,
+            )
+            .map_err(|error| LLMError::ModelError(format!("H3 fault snapshot: {error:#}")))?;
             enforce_resource_guards(&snapshot, swap_baseline)
                 .map_err(|error| LLMError::ModelError(format!("H3 fault guard: {error:#}")))?;
             observed_stages.push(ledger.stage);
@@ -812,13 +942,14 @@ fn run_fault_campaign(
     }
 
     let clean_cache_bytes_before = cache_bytes(cache_root)?;
-    let clean_checkpoint = GptOssCheckpointView::open(model_path)?;
     let clean_construction = run_construction(
-        clean_checkpoint,
+        model_path,
         manifest,
         cache_root,
         stable,
         swap_baseline,
+        memory_recorder,
+        "fault_clean",
     )?;
     let clean_cache_bytes_after = cache_bytes(cache_root)?;
     let clean_reused_published_record = clean_cache_bytes_after == clean_cache_bytes_before;
@@ -863,6 +994,7 @@ fn run_h8_campaign(
     stable: &[StableCudaDeviceId; 2],
     swap_baseline: u64,
     placement_path: &Path,
+    memory_recorder: &mut ConstructionMemoryRecorder,
 ) -> Result<H8CampaignRecord> {
     let placement_hash = manifest.sha256()?;
     let cache_files_before = owner_cache_files(cache_root)?;
@@ -894,11 +1026,13 @@ fn run_h8_campaign(
     }
 
     let cold = run_construction(
-        GptOssCheckpointView::open(model_path)?,
+        model_path,
         manifest,
         cache_root,
         stable,
         swap_baseline,
+        memory_recorder,
+        "h8_cold",
     )?;
     let cold_loaded_reserve = verify_h8_construction(
         &cold,
@@ -911,19 +1045,27 @@ fn run_h8_campaign(
         bail!("H8 cold construction did not publish owner-filtered CPU records");
     }
 
-    let publish_fault =
-        run_h8_publish_fault(model_path, manifest, cache_root, stable, swap_baseline)?;
+    let publish_fault = run_h8_publish_fault(
+        model_path,
+        manifest,
+        cache_root,
+        stable,
+        swap_baseline,
+        memory_recorder,
+    )?;
     let cache_bytes_after_fault = cache_bytes(cache_root)?;
     if cache_bytes_after_fault != cache_bytes_after_cold {
         bail!("H8 publish fault changed immutable CPU cache bytes");
     }
 
     let warm = run_construction(
-        GptOssCheckpointView::open(model_path)?,
+        model_path,
         manifest,
         cache_root,
         stable,
         swap_baseline,
+        memory_recorder,
+        "h8_warm",
     )?;
     let warm_loaded_reserve = verify_h8_construction(
         &warm,
@@ -995,6 +1137,7 @@ fn run_h8_publish_fault(
     cache_root: &Path,
     stable: &[StableCudaDeviceId; 2],
     swap_baseline: u64,
+    memory_recorder: &mut ConstructionMemoryRecorder,
 ) -> Result<H8PublishFaultRecord> {
     let stage = ConstructionStage::Publish;
     let cache_bytes_before = cache_bytes(cache_root)?;
@@ -1002,12 +1145,21 @@ fn run_h8_publish_fault(
     let started = Instant::now();
     let mut observed_stages = Vec::new();
     let mut loaded_reserve_at_publish = None;
+    let checkpoint =
+        open_checkpoint_for_construction(model_path, memory_recorder, "h8_publish_fault", started)?;
     let result = OwnerSelectiveConstructor::new(cache_root).construct_with_fault(
-        GptOssCheckpointView::open(model_path)?,
+        checkpoint,
         manifest,
         stage,
         |ledger| {
-            let snapshot = resource_snapshot(started, ledger.clone()).map_err(|error| {
+            let snapshot = resource_snapshot(
+                started,
+                ledger.clone(),
+                "h8_publish_fault",
+                ConstructionMemoryEventPhase::Stage,
+                memory_recorder,
+            )
+            .map_err(|error| {
                 LLMError::ModelError(format!("H8 publish-fault snapshot: {error:#}"))
             })?;
             enforce_resource_guards(&snapshot, swap_baseline).map_err(|error| {
@@ -1831,14 +1983,48 @@ fn placement_record(
     }
 }
 
-fn resource_snapshot(started: Instant, ledger: ConstructionLedger) -> Result<ResourceSnapshot> {
+fn resource_snapshot(
+    started: Instant,
+    ledger: ConstructionLedger,
+    run_label: &str,
+    phase: ConstructionMemoryEventPhase,
+    memory_recorder: &mut ConstructionMemoryRecorder,
+) -> Result<ResourceSnapshot> {
+    let elapsed_ms = started.elapsed().as_millis();
+    let gpus = gpu_memory()?;
+    let memory_event =
+        memory_recorder.capture(run_label, phase, elapsed_ms, ledger.clone(), gpus.clone())?;
     Ok(ResourceSnapshot {
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms,
         ledger,
-        process: process_memory()?,
-        system: system_memory()?,
-        gpus: gpu_memory()?,
+        process: process_memory_from_sample(&memory_event.memory),
+        system: system_memory_from_sample(&memory_event.memory),
+        gpus,
+        memory_event,
     })
+}
+
+fn process_memory_from_sample(sample: &ConstructionMemorySample) -> ProcessMemory {
+    ProcessMemory {
+        vm_size_bytes: sample.process_status.vm_size_bytes,
+        vm_rss_bytes: sample.process_status.vm_rss_bytes,
+        vm_hwm_bytes: sample.process_status.vm_hwm_bytes,
+        vm_swap_bytes: sample.process_status.vm_swap_bytes,
+        rollup_rss_bytes: sample.smaps_rollup.rss_bytes,
+        rollup_pss_bytes: sample.smaps_rollup.pss_bytes,
+        rollup_pss_anon_bytes: sample.smaps_rollup.pss_anon_bytes,
+        rollup_pss_file_bytes: sample.smaps_rollup.pss_file_bytes,
+    }
+}
+
+fn system_memory_from_sample(sample: &ConstructionMemorySample) -> SystemMemory {
+    SystemMemory {
+        mem_available_bytes: sample.global_meminfo.mem_available_bytes,
+        swap_total_bytes: sample.global_meminfo.swap_total_bytes,
+        swap_free_bytes: sample.global_meminfo.swap_free_bytes,
+        swap_used_bytes: sample.global_meminfo.swap_used_bytes,
+        swap_cached_bytes: sample.global_meminfo.swap_cached_bytes,
+    }
 }
 
 fn enforce_resource_guards(snapshot: &ResourceSnapshot, swap_baseline: u64) -> Result<()> {
@@ -1914,7 +2100,7 @@ fn value(values: &BTreeMap<String, u64>, key: &str) -> u64 {
     values.get(key).copied().unwrap_or(0)
 }
 
-fn gpu_memory() -> Result<Vec<GpuMemory>> {
+fn gpu_memory() -> Result<Vec<GpuResidencySample>> {
     let output = command_text(
         "nvidia-smi",
         &[
@@ -1929,7 +2115,7 @@ fn gpu_memory() -> Result<Vec<GpuMemory>> {
             if fields.len() != 3 {
                 bail!("unexpected nvidia-smi memory row");
             }
-            Ok(GpuMemory {
+            Ok(GpuResidencySample {
                 pci_bus_id: fields[0].to_ascii_lowercase(),
                 used_mib: fields[1].parse()?,
                 free_mib: fields[2].parse()?,
