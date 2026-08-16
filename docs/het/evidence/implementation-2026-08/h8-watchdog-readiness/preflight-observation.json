@@ -1,0 +1,552 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h8-preflight/v1",
+  "captured_start_unix_ms": 1786904037481,
+  "captured_end_unix_ms": 1786904157515,
+  "repository_head": "07cb220a243eee63dd0dbd71e302d50f7b1fba73",
+  "watchdog_executable_sha256": "d50f0da8c837e6836049eca15d578d53ea1cd1e459b2dc15ca454372ccd286b9",
+  "command": [
+    "target/release/heterogeneous_h8_watchdog",
+    "preflight",
+    "--output",
+    "docs/het/evidence/implementation-2026-08/h8-watchdog-readiness/preflight-observation.json",
+    "--duration-seconds",
+    "120",
+    "--sample-interval-seconds",
+    "30"
+  ],
+  "privileged_host_controls_changed": false,
+  "samples": [
+    {
+      "elapsed_ms": 49,
+      "mem_available_bytes": 95435567104,
+      "swap_total_bytes": 107374178304,
+      "swap_free_bytes": 107351629824,
+      "swap_used_bytes": 22548480,
+      "swap_cached_bytes": 1155072,
+      "pressure": {
+        "some_avg10_millionths": 0,
+        "some_avg60_millionths": 0,
+        "some_avg300_millionths": 0,
+        "full_avg10_millionths": 0,
+        "full_avg60_millionths": 0,
+        "full_avg300_millionths": 0
+      },
+      "target_tree_vm_swap_bytes": 0,
+      "attributed_process_vm_swap_bytes": 21803008,
+      "attribution": [
+        {
+          "category": "codex",
+          "process_count": 1,
+          "vm_swap_bytes": 10326016
+        },
+        {
+          "category": "container_runtime",
+          "process_count": 2,
+          "vm_swap_bytes": 5742592
+        },
+        {
+          "category": "shell_or_session",
+          "process_count": 3,
+          "vm_swap_bytes": 3235840
+        },
+        {
+          "category": "other",
+          "process_count": 6,
+          "vm_swap_bytes": 2498560
+        }
+      ],
+      "proc_scan_complete": true,
+      "active_h8_process_found": false,
+      "cgroups": [
+        {
+          "scope": "guard_scope",
+          "memory_current_bytes": 91163484160,
+          "swap_current_bytes": 0,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "user_slice",
+          "memory_current_bytes": 94876393472,
+          "swap_current_bytes": 16572416,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "system_slice",
+          "memory_current_bytes": 314163200,
+          "swap_current_bytes": 5976064,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "docker_service",
+          "memory_current_bytes": 35962880,
+          "swap_current_bytes": 4792320,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "containerd_service",
+          "memory_current_bytes": 18173952,
+          "swap_current_bytes": 1064960,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        }
+      ],
+      "swappiness": 60,
+      "protected_nvme_read_only": true,
+      "protected_nvme_mounted": false
+    },
+    {
+      "elapsed_ms": 30060,
+      "mem_available_bytes": 95470567424,
+      "swap_total_bytes": 107374178304,
+      "swap_free_bytes": 107351629824,
+      "swap_used_bytes": 22548480,
+      "swap_cached_bytes": 1155072,
+      "pressure": {
+        "some_avg10_millionths": 0,
+        "some_avg60_millionths": 0,
+        "some_avg300_millionths": 0,
+        "full_avg10_millionths": 0,
+        "full_avg60_millionths": 0,
+        "full_avg300_millionths": 0
+      },
+      "target_tree_vm_swap_bytes": 0,
+      "attributed_process_vm_swap_bytes": 21803008,
+      "attribution": [
+        {
+          "category": "codex",
+          "process_count": 1,
+          "vm_swap_bytes": 10326016
+        },
+        {
+          "category": "container_runtime",
+          "process_count": 2,
+          "vm_swap_bytes": 5742592
+        },
+        {
+          "category": "shell_or_session",
+          "process_count": 3,
+          "vm_swap_bytes": 3235840
+        },
+        {
+          "category": "other",
+          "process_count": 6,
+          "vm_swap_bytes": 2498560
+        }
+      ],
+      "proc_scan_complete": true,
+      "active_h8_process_found": false,
+      "cgroups": [
+        {
+          "scope": "guard_scope",
+          "memory_current_bytes": 91163807744,
+          "swap_current_bytes": 0,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "user_slice",
+          "memory_current_bytes": 94891753472,
+          "swap_current_bytes": 16572416,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "system_slice",
+          "memory_current_bytes": 314421248,
+          "swap_current_bytes": 5976064,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "docker_service",
+          "memory_current_bytes": 35962880,
+          "swap_current_bytes": 4792320,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "containerd_service",
+          "memory_current_bytes": 18436096,
+          "swap_current_bytes": 1064960,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        }
+      ],
+      "swappiness": 60,
+      "protected_nvme_read_only": true,
+      "protected_nvme_mounted": false
+    },
+    {
+      "elapsed_ms": 60072,
+      "mem_available_bytes": 95459356672,
+      "swap_total_bytes": 107374178304,
+      "swap_free_bytes": 107351629824,
+      "swap_used_bytes": 22548480,
+      "swap_cached_bytes": 1155072,
+      "pressure": {
+        "some_avg10_millionths": 0,
+        "some_avg60_millionths": 0,
+        "some_avg300_millionths": 0,
+        "full_avg10_millionths": 0,
+        "full_avg60_millionths": 0,
+        "full_avg300_millionths": 0
+      },
+      "target_tree_vm_swap_bytes": 0,
+      "attributed_process_vm_swap_bytes": 21803008,
+      "attribution": [
+        {
+          "category": "codex",
+          "process_count": 1,
+          "vm_swap_bytes": 10326016
+        },
+        {
+          "category": "container_runtime",
+          "process_count": 2,
+          "vm_swap_bytes": 5742592
+        },
+        {
+          "category": "shell_or_session",
+          "process_count": 3,
+          "vm_swap_bytes": 3235840
+        },
+        {
+          "category": "other",
+          "process_count": 6,
+          "vm_swap_bytes": 2498560
+        }
+      ],
+      "proc_scan_complete": true,
+      "active_h8_process_found": false,
+      "cgroups": [
+        {
+          "scope": "guard_scope",
+          "memory_current_bytes": 91162439680,
+          "swap_current_bytes": 0,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "user_slice",
+          "memory_current_bytes": 94909890560,
+          "swap_current_bytes": 16572416,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "system_slice",
+          "memory_current_bytes": 314687488,
+          "swap_current_bytes": 5976064,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "docker_service",
+          "memory_current_bytes": 35962880,
+          "swap_current_bytes": 4792320,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "containerd_service",
+          "memory_current_bytes": 18436096,
+          "swap_current_bytes": 1064960,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        }
+      ],
+      "swappiness": 60,
+      "protected_nvme_read_only": true,
+      "protected_nvme_mounted": false
+    },
+    {
+      "elapsed_ms": 90085,
+      "mem_available_bytes": 95480336384,
+      "swap_total_bytes": 107374178304,
+      "swap_free_bytes": 107351629824,
+      "swap_used_bytes": 22548480,
+      "swap_cached_bytes": 1155072,
+      "pressure": {
+        "some_avg10_millionths": 0,
+        "some_avg60_millionths": 0,
+        "some_avg300_millionths": 0,
+        "full_avg10_millionths": 0,
+        "full_avg60_millionths": 0,
+        "full_avg300_millionths": 0
+      },
+      "target_tree_vm_swap_bytes": 0,
+      "attributed_process_vm_swap_bytes": 21803008,
+      "attribution": [
+        {
+          "category": "codex",
+          "process_count": 1,
+          "vm_swap_bytes": 10326016
+        },
+        {
+          "category": "container_runtime",
+          "process_count": 2,
+          "vm_swap_bytes": 5742592
+        },
+        {
+          "category": "shell_or_session",
+          "process_count": 3,
+          "vm_swap_bytes": 3235840
+        },
+        {
+          "category": "other",
+          "process_count": 6,
+          "vm_swap_bytes": 2498560
+        }
+      ],
+      "proc_scan_complete": true,
+      "active_h8_process_found": false,
+      "cgroups": [
+        {
+          "scope": "guard_scope",
+          "memory_current_bytes": 91163942912,
+          "swap_current_bytes": 0,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "user_slice",
+          "memory_current_bytes": 94890196992,
+          "swap_current_bytes": 16572416,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "system_slice",
+          "memory_current_bytes": 313688064,
+          "swap_current_bytes": 5976064,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "docker_service",
+          "memory_current_bytes": 35958784,
+          "swap_current_bytes": 4792320,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "containerd_service",
+          "memory_current_bytes": 18436096,
+          "swap_current_bytes": 1064960,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        }
+      ],
+      "swappiness": 60,
+      "protected_nvme_read_only": true,
+      "protected_nvme_mounted": false
+    },
+    {
+      "elapsed_ms": 120016,
+      "mem_available_bytes": 95462486016,
+      "swap_total_bytes": 107374178304,
+      "swap_free_bytes": 107351629824,
+      "swap_used_bytes": 22548480,
+      "swap_cached_bytes": 1155072,
+      "pressure": {
+        "some_avg10_millionths": 0,
+        "some_avg60_millionths": 0,
+        "some_avg300_millionths": 0,
+        "full_avg10_millionths": 0,
+        "full_avg60_millionths": 0,
+        "full_avg300_millionths": 0
+      },
+      "target_tree_vm_swap_bytes": 0,
+      "attributed_process_vm_swap_bytes": 21803008,
+      "attribution": [
+        {
+          "category": "codex",
+          "process_count": 1,
+          "vm_swap_bytes": 10326016
+        },
+        {
+          "category": "container_runtime",
+          "process_count": 2,
+          "vm_swap_bytes": 5742592
+        },
+        {
+          "category": "shell_or_session",
+          "process_count": 3,
+          "vm_swap_bytes": 3235840
+        },
+        {
+          "category": "other",
+          "process_count": 6,
+          "vm_swap_bytes": 2498560
+        }
+      ],
+      "proc_scan_complete": true,
+      "active_h8_process_found": false,
+      "cgroups": [
+        {
+          "scope": "guard_scope",
+          "memory_current_bytes": 91164336128,
+          "swap_current_bytes": 0,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "user_slice",
+          "memory_current_bytes": 94904967168,
+          "swap_current_bytes": 16572416,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "system_slice",
+          "memory_current_bytes": 312266752,
+          "swap_current_bytes": 5976064,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "docker_service",
+          "memory_current_bytes": 35958784,
+          "swap_current_bytes": 4792320,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        },
+        {
+          "scope": "containerd_service",
+          "memory_current_bytes": 18173952,
+          "swap_current_bytes": 1064960,
+          "swap_max": "max",
+          "high_events": 0,
+          "max_events": 0,
+          "oom_events": 0,
+          "oom_kill_events": 0
+        }
+      ],
+      "swappiness": 60,
+      "protected_nvme_read_only": true,
+      "protected_nvme_mounted": false
+    }
+  ],
+  "sample_chain_sha256": "979f4868c34f78897615818010c47a259fde6b525c2da9b0b46915877c09ae06",
+  "gpus_before": [
+    {
+      "pci_bus_id": "00000000:19:00.0",
+      "memory_used_mib": 9,
+      "memory_free_mib": 24112
+    },
+    {
+      "pci_bus_id": "00000000:65:00.0",
+      "memory_used_mib": 1,
+      "memory_free_mib": 24123
+    }
+  ],
+  "gpus_after": [
+    {
+      "pci_bus_id": "00000000:19:00.0",
+      "memory_used_mib": 9,
+      "memory_free_mib": 24112
+    },
+    {
+      "pci_bus_id": "00000000:65:00.0",
+      "memory_used_mib": 1,
+      "memory_free_mib": 24123
+    }
+  ],
+  "observation_errors": [],
+  "analysis": {
+    "passed": false,
+    "required_duration_ms": 120000,
+    "observed_duration_ms": 119967,
+    "sample_count": 5,
+    "baseline_swap_used_bytes": 22548480,
+    "baseline_swap_free_bytes": 107351629824,
+    "baseline_swap_cached_bytes": 1155072,
+    "minimum_mem_available_bytes": 95435567104,
+    "swap_free_byte_stable": true,
+    "swap_cached_byte_stable": true,
+    "global_swap_growth_zero": true,
+    "target_tree_swap_zero": true,
+    "pressure_zero": true,
+    "proc_scan_complete": true,
+    "no_active_h8_process": true,
+    "protected_nvme_safe": true,
+    "failures": [
+      "preflight did not span its configured duration"
+    ]
+  }
+}

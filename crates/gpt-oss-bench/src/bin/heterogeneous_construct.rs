@@ -7,6 +7,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+#[cfg(feature = "heterogeneous-test-faults")]
+use gpt_oss_bench::h8_watchdog::require_h8_watchdog_binding;
+use gpt_oss_bench::h8_watchdog::H8WatchdogBinding;
 use gpt_oss_core::error::LLMError;
 use gpt_oss_gpu::device::{list_devices, GpuDevice, StableCudaDeviceId};
 #[cfg(feature = "heterogeneous-test-faults")]
@@ -308,6 +311,7 @@ struct H8PublishFaultRecord {
 
 #[derive(Debug, Serialize)]
 struct H8CampaignRecord {
+    watchdog: H8WatchdogBinding,
     admission: H8AdmissionRecord,
     placement_path: String,
     disk_available_before_bytes: u64,
@@ -387,6 +391,12 @@ fn main() -> Result<()> {
             "host preflight memory/swap guard failed: process={process_before:?} system={system_before:?}"
         );
     }
+    #[cfg(feature = "heterogeneous-test-faults")]
+    let h8_watchdog = if matches!(cli.mode, Mode::H8) {
+        Some(require_h8_watchdog_binding(system_before.swap_used_bytes)?)
+    } else {
+        None
+    };
 
     let devices = ordered_devices()?;
     let stable = [
@@ -524,6 +534,7 @@ fn main() -> Result<()> {
                 Some(run_h8_campaign(
                     &cli.model_120b,
                     &manifest_120b,
+                    h8_watchdog.context("H8 watchdog binding is missing")?,
                     h8_admission.context("H8 admission record is missing")?,
                     &envelope_120b,
                     &cli.cache_root,
@@ -845,6 +856,7 @@ fn run_fault_campaign(
 fn run_h8_campaign(
     model_path: &Path,
     manifest: &GptOssExpertPlacementManifestV1,
+    watchdog: H8WatchdogBinding,
     admission: H8AdmissionRecord,
     envelope: &OwnerSelectiveEnvelope,
     cache_root: &Path,
@@ -953,6 +965,7 @@ fn run_h8_campaign(
     enforce_process_system_guards(&process_after, &system_after, swap_baseline, "H8 final")?;
 
     Ok(H8CampaignRecord {
+        watchdog,
         admission,
         placement_path: placement_path.to_string_lossy().into_owned(),
         disk_available_before_bytes,
