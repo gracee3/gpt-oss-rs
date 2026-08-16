@@ -20,6 +20,9 @@ use half::bf16;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "heterogeneous-test-faults")]
+use gpt_oss_model_runner::heterogeneous::LayerOwnerInjectedFault;
+
 const EXPECTED_ROUTE: [usize; 4] = [31, 21, 22, 6];
 
 #[derive(Parser)]
@@ -38,6 +41,9 @@ struct Cli {
     retained_trace: PathBuf,
     #[arg(long)]
     output: PathBuf,
+    #[cfg(feature = "heterogeneous-test-faults")]
+    #[arg(long)]
+    exercise_shell_faults: bool,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +68,11 @@ struct H6aEvidence {
     prior_kv_rows: usize,
     prior_kv_bytes: usize,
     owner_shell_work_bytes: usize,
+    owner_shell_host_staging_bytes: usize,
+    fault_feature_enabled: bool,
+    fault_exercise_requested: bool,
+    shell_faults_drained: Vec<&'static str>,
+    shell_fault_retries_passed: bool,
     owner_shell_kernel_elapsed_ms: [f32; 2],
     selected_experts: Vec<usize>,
     routing_weights_bf16_bits: Vec<u16>,
@@ -166,6 +177,43 @@ fn main() -> Result<()> {
         .pci_bus_id
         .to_string();
     let mut shell = CudaLayerOwnerShell::new(&model, &config)?;
+    #[allow(unused_mut)]
+    let mut shell_faults_drained = Vec::with_capacity(5);
+    #[allow(unused_mut)]
+    let mut shell_fault_retries_passed = false;
+    #[cfg(feature = "heterogeneous-test-faults")]
+    let fault_exercise_requested = cli.exercise_shell_faults;
+    #[cfg(not(feature = "heterogeneous-test-faults"))]
+    let fault_exercise_requested = false;
+    #[cfg(feature = "heterogeneous-test-faults")]
+    if cli.exercise_shell_faults {
+        for (fault, label) in [
+            (
+                LayerOwnerInjectedFault::SubmitAfterPriorKeyEnqueue,
+                "submit_after_prior_key_enqueue",
+            ),
+            (
+                LayerOwnerInjectedFault::TerminalDrain,
+                "terminal_fallback_drain",
+            ),
+            (
+                LayerOwnerInjectedFault::BoundaryDownloadAfterFirstEnqueue,
+                "boundary_download_after_first_enqueue",
+            ),
+        ] {
+            shell.inject_next_failure(fault)?;
+            if shell
+                .execute_layer0_decode(&model, &config, token_id, 63, &cache)
+                .is_ok()
+                || !shell.last_fault_drained()
+                || shell.is_poisoned_for_test()
+            {
+                bail!("layer-owner fault {label} did not drain and remain safely reusable");
+            }
+            shell_faults_drained.push(label);
+            shell.execute_layer0_decode(&model, &config, token_id, 63, &cache)?;
+        }
+    }
     let first = shell.execute_layer0_decode(&model, &config, token_id, 63, &cache)?;
     let second = shell.execute_layer0_decode(&model, &config, token_id, 63, &cache)?;
 
@@ -293,6 +341,36 @@ fn main() -> Result<()> {
         &first.post_attention_residual_bf16_bits,
         &exact_reduction.output_bf16_bits,
     )?;
+    #[cfg(feature = "heterogeneous-test-faults")]
+    if cli.exercise_shell_faults {
+        for (fault, label) in [
+            (
+                LayerOwnerInjectedFault::FinalResidualAfterD2dEnqueue,
+                "final_residual_after_d2d_enqueue",
+            ),
+            (
+                LayerOwnerInjectedFault::FinalOutputAfterD2hEnqueue,
+                "final_output_after_d2h_enqueue",
+            ),
+        ] {
+            shell.inject_next_failure(fault)?;
+            if shell.finish_layer_residual_resident(&reducer).is_ok()
+                || !shell.last_fault_drained()
+                || shell.is_poisoned_for_test()
+            {
+                bail!(
+                    "layer-owner residual fault {label} did not drain and remain safely reusable"
+                );
+            }
+            shell_faults_drained.push(label);
+            let retry = shell.finish_layer_residual_resident(&reducer)?;
+            exact("layer_output_fault_retry", &expected_layer_output, &retry)?;
+        }
+        if shell_faults_drained.len() != 5 {
+            bail!("not all five layer-owner lifecycle faults were exercised");
+        }
+        shell_fault_retries_passed = true;
+    }
     let layer_output = shell.finish_layer_residual_resident(&reducer)?;
     exact("layer_output", &expected_layer_output, &layer_output)?;
     for (name, values) in [
@@ -310,7 +388,7 @@ fn main() -> Result<()> {
     reservation.release_drained()?;
 
     let evidence = H6aEvidence {
-        schema: "gpt-oss-rs.heterogeneous-layer-oracle-h6a/v2",
+        schema: "gpt-oss-rs.heterogeneous-layer-oracle-h6a/v3",
         pre_moe_authority: "retained-residual-q8-dense-kv-router-only",
         post_router_authority: "native-mxfp4-exact-selected-expert-reference",
         model_config_sha256: hash_file(&cli.model.join("config.json"))?,
@@ -324,6 +402,11 @@ fn main() -> Result<()> {
         prior_kv_rows: cache.len,
         prior_kv_bytes: (cache.keys_bf16_bits.len() + cache.values_bf16_bits.len()) * 2,
         owner_shell_work_bytes: shell.owned_device_bytes(),
+        owner_shell_host_staging_bytes: shell.owned_host_staging_bytes(),
+        fault_feature_enabled: cfg!(feature = "heterogeneous-test-faults"),
+        fault_exercise_requested,
+        shell_faults_drained,
+        shell_fault_retries_passed,
         owner_shell_kernel_elapsed_ms: [first.kernel_elapsed_ms, second.kernel_elapsed_ms],
         selected_experts: authority.selected_experts.clone(),
         routing_weights_bf16_bits: routed_weights,

@@ -1,5 +1,5 @@
 {
-  "schema": "gpt-oss-rs.heterogeneous-layer-oracle-h6a/v2",
+  "schema": "gpt-oss-rs.heterogeneous-layer-oracle-h6a/v3",
   "pre_moe_authority": "retained-residual-q8-dense-kv-router-only",
   "post_router_authority": "native-mxfp4-exact-selected-expert-reference",
   "model_config_sha256": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
@@ -13,7 +13,18 @@
   "prior_kv_rows": 63,
   "prior_kv_bytes": 129024,
   "owner_shell_work_bytes": 309504,
-  "owner_shell_kernel_elapsed_ms": [9.089024, 9.069568],
+  "owner_shell_host_staging_bytes": 309504,
+  "fault_feature_enabled": true,
+  "fault_exercise_requested": true,
+  "shell_faults_drained": [
+    "submit_after_prior_key_enqueue",
+    "terminal_fallback_drain",
+    "boundary_download_after_first_enqueue",
+    "final_residual_after_d2d_enqueue",
+    "final_output_after_d2h_enqueue"
+  ],
+  "shell_fault_retries_passed": true,
+  "owner_shell_kernel_elapsed_ms": [9.06752, 9.078784],
   "selected_experts": [31, 21, 22, 6],
   "routing_weights_bf16_bits": [16128, 15926, 15915, 15903],
   "router_logits_sha256": "d067efbbf856cb086f6cd5b9223859bd90aa15f9c470de0a2d9cf21f5e524f9a",
@@ -33,7 +44,7 @@
   "reducer_output_execution_host_bytes": 0,
   "reducer_evidence_d2h_bytes": 97920,
   "layer_output_sha256": "e309dffa3b3dbfb4cf158e1a7c351c577e48d122004733279b3a74504778c6b9",
-  "reduction_kernel_elapsed_ms": 0.01536,
+  "reduction_kernel_elapsed_ms": 0.014336,
   "boundaries": [
     {"name": "hidden", "values": 2880, "sha256": "0829e95e9aa6e3674b1de1c6f804c1147dc579d69d99aca3397213552fbf6041", "bit_exact": true},
     {"name": "input_norm", "values": 2880, "sha256": "dc380d56b8b5498f591edd30e0b8ed9d2f3a064fd864bba479e460da5a568b0e", "bit_exact": true},

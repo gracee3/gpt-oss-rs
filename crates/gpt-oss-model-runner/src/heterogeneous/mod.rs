@@ -37,8 +37,13 @@ pub use cuda_expert::{
     GPT_OSS_SELECTED_EXPERT_WORKSPACE_POOL_CLASS_BYTES, HIDDEN_SIZE, INPUT_BLOCKS,
     INTERMEDIATE_SIZE,
 };
+#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
+pub use layer::LayerOwnerInjectedFault;
 #[cfg(feature = "cuda")]
-pub use layer::{CudaLayerOwnerShell, LayerOwnerShellExecution, GPT_OSS_LAYER_OWNER_WORK_BYTES};
+pub use layer::{
+    CudaLayerOwnerShell, LayerOwnerShellExecution, GPT_OSS_LAYER_OWNER_HOST_STAGING_BYTES,
+    GPT_OSS_LAYER_OWNER_WORK_BYTES,
+};
 #[cfg(feature = "cuda")]
 pub use reduction::{
     exact_rank_ordered_reduction_reference, CanonicalExpertContribution, CudaRankOrderedReducer,

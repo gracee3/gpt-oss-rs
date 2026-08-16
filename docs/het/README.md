@@ -131,4 +131,7 @@ second-run gates. H6a now passes the real layer-0 GPU0 owner shell through the
 native-BF16 router, exact native-MXFP4 CPU-authority contributions, GPU0 rank
 reduction, and final residual with resident device handoffs. H6b must still
 replace the authority uploads with real concurrent CPU/GPU0/GPU1 expert work
-and wire the opt-in transaction before H6 is complete.
+and wire the opt-in transaction before H6 is complete. The H6a shell lifecycle
+is hardened with fixed owned host staging, terminal-drained boundary/output
+D2H, poison-and-retain behavior after an unproven fallback drain, and five
+fault-and-immediate-retry cases in the retained v3 record.

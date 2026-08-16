@@ -45,6 +45,12 @@ pub const GPT_OSS_LAYER_OWNER_WORK_BYTES: usize = (GPT_OSS_HIDDEN_SIZE * 5
     + MAX_VISIBLE_TOKENS * KV_WIDTH * 2
     + ROPE_PAIRS * 2)
     * size_of::<u16>();
+pub const GPT_OSS_LAYER_OWNER_HOST_STAGING_BYTES: usize = (MAX_VISIBLE_TOKENS * KV_WIDTH * 2
+    + ROPE_PAIRS * 2
+    + GPT_OSS_HIDDEN_SIZE * 5
+    + Q_WIDTH * 2
+    + KV_WIDTH * 2)
+    * size_of::<u16>();
 
 /// Exact BF16 boundaries downloaded only for the one-layer oracle.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +70,17 @@ pub struct LayerOwnerShellExecution {
 /// Fixed-allocation decode-M=1 GPU0 attention/dense owner shell.
 pub struct CudaLayerOwnerShell {
     stable_device: StableCudaDeviceId,
+    state: Option<LayerOwnerCudaState>,
+    host_staging: Option<LayerOwnerHostStaging>,
+    quarantined_host_staging: Option<LayerOwnerHostStaging>,
+    poisoned: bool,
+    #[cfg(feature = "heterogeneous-test-faults")]
+    injected_fault: Option<LayerOwnerInjectedFault>,
+    #[cfg(feature = "heterogeneous-test-faults")]
+    last_fault_drained: bool,
+}
+
+struct LayerOwnerCudaState {
     stream: Arc<CudaStream>,
     loader: KernelLoader,
     hidden: CudaSlice<u16>,
@@ -79,6 +96,67 @@ pub struct CudaLayerOwnerShell {
     attention_projection: CudaSlice<u16>,
     post_attention_residual: CudaSlice<u16>,
     router_input: CudaSlice<u16>,
+}
+
+struct LayerOwnerHostStaging {
+    keys_bf16_bits: Vec<u16>,
+    values_bf16_bits: Vec<u16>,
+    cosine_bf16_bits: [u16; ROPE_PAIRS],
+    sine_bf16_bits: [u16; ROPE_PAIRS],
+    hidden_bf16_bits: Vec<u16>,
+    input_norm_bf16_bits: Vec<u16>,
+    query_after_rope_bf16_bits: Vec<u16>,
+    key_after_rope_bf16_bits: Vec<u16>,
+    value_projection_bf16_bits: Vec<u16>,
+    attention_context_bf16_bits: Vec<u16>,
+    attention_projection_bf16_bits: Vec<u16>,
+    post_attention_residual_bf16_bits: Vec<u16>,
+    router_input_bf16_bits: Vec<u16>,
+}
+
+impl LayerOwnerHostStaging {
+    fn new() -> Self {
+        Self {
+            keys_bf16_bits: vec![0; MAX_VISIBLE_TOKENS * KV_WIDTH],
+            values_bf16_bits: vec![0; MAX_VISIBLE_TOKENS * KV_WIDTH],
+            cosine_bf16_bits: [0; ROPE_PAIRS],
+            sine_bf16_bits: [0; ROPE_PAIRS],
+            hidden_bf16_bits: vec![0; GPT_OSS_HIDDEN_SIZE],
+            input_norm_bf16_bits: vec![0; GPT_OSS_HIDDEN_SIZE],
+            query_after_rope_bf16_bits: vec![0; Q_WIDTH],
+            key_after_rope_bf16_bits: vec![0; KV_WIDTH],
+            value_projection_bf16_bits: vec![0; KV_WIDTH],
+            attention_context_bf16_bits: vec![0; Q_WIDTH],
+            attention_projection_bf16_bits: vec![0; GPT_OSS_HIDDEN_SIZE],
+            post_attention_residual_bf16_bits: vec![0; GPT_OSS_HIDDEN_SIZE],
+            router_input_bf16_bits: vec![0; GPT_OSS_HIDDEN_SIZE],
+        }
+    }
+
+    fn execution(&self, kernel_elapsed_ms: f32) -> LayerOwnerShellExecution {
+        LayerOwnerShellExecution {
+            hidden_bf16_bits: self.hidden_bf16_bits.clone(),
+            input_norm_bf16_bits: self.input_norm_bf16_bits.clone(),
+            query_after_rope_bf16_bits: self.query_after_rope_bf16_bits.clone(),
+            key_after_rope_bf16_bits: self.key_after_rope_bf16_bits.clone(),
+            value_projection_bf16_bits: self.value_projection_bf16_bits.clone(),
+            attention_context_bf16_bits: self.attention_context_bf16_bits.clone(),
+            attention_projection_bf16_bits: self.attention_projection_bf16_bits.clone(),
+            post_attention_residual_bf16_bits: self.post_attention_residual_bf16_bits.clone(),
+            router_input_bf16_bits: self.router_input_bf16_bits.clone(),
+            kernel_elapsed_ms,
+        }
+    }
+}
+
+#[cfg(feature = "heterogeneous-test-faults")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerOwnerInjectedFault {
+    SubmitAfterPriorKeyEnqueue,
+    TerminalDrain,
+    BoundaryDownloadAfterFirstEnqueue,
+    FinalResidualAfterD2dEnqueue,
+    FinalOutputAfterD2hEnqueue,
 }
 
 impl CudaLayerOwnerShell {
@@ -107,8 +185,7 @@ impl CudaLayerOwnerShell {
             }
         }
         let alloc = |values, label| stream.alloc_zeros::<u16>(values).map_err(cuda_error(label));
-        let shell = Self {
-            stable_device,
+        let state = LayerOwnerCudaState {
             hidden: alloc(GPT_OSS_HIDDEN_SIZE, "layer-owner hidden allocation")?,
             input_norm: alloc(GPT_OSS_HIDDEN_SIZE, "layer-owner input-norm allocation")?,
             query: alloc(Q_WIDTH, "layer-owner query allocation")?,
@@ -137,7 +214,21 @@ impl CudaLayerOwnerShell {
             stream,
             loader,
         };
+        let shell = Self {
+            stable_device,
+            state: Some(state),
+            host_staging: Some(LayerOwnerHostStaging::new()),
+            quarantined_host_staging: None,
+            poisoned: false,
+            #[cfg(feature = "heterogeneous-test-faults")]
+            injected_fault: None,
+            #[cfg(feature = "heterogeneous-test-faults")]
+            last_fault_drained: false,
+        };
         shell
+            .state
+            .as_ref()
+            .expect("constructed layer-owner state")
             .stream
             .synchronize()
             .map_err(cuda_error("layer-owner construction drain"))?;
@@ -152,10 +243,84 @@ impl CudaLayerOwnerShell {
         GPT_OSS_LAYER_OWNER_WORK_BYTES
     }
 
+    pub const fn owned_host_staging_bytes(&self) -> usize {
+        GPT_OSS_LAYER_OWNER_HOST_STAGING_BYTES
+    }
+
     pub fn drain(&self) -> Result<()> {
-        self.stream
+        if self.poisoned {
+            return Err(LLMError::GpuError(
+                "poisoned layer-owner shell cannot prove a later drain".into(),
+            ));
+        }
+        self.state
+            .as_ref()
+            .expect("active layer-owner state")
+            .stream
             .synchronize()
             .map_err(cuda_error("layer-owner drain"))
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub fn inject_next_failure(&mut self, fault: LayerOwnerInjectedFault) -> Result<()> {
+        if self.poisoned || self.injected_fault.is_some() {
+            return Err(LLMError::GpuError(
+                "layer-owner shell is poisoned or already has an armed fault".into(),
+            ));
+        }
+        self.injected_fault = Some(fault);
+        self.last_fault_drained = false;
+        Ok(())
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn last_fault_drained(&self) -> bool {
+        self.last_fault_drained
+    }
+
+    #[cfg(feature = "heterogeneous-test-faults")]
+    pub const fn is_poisoned_for_test(&self) -> bool {
+        self.poisoned
+    }
+
+    fn require_reusable(&self) -> Result<()> {
+        if self.poisoned || self.state.is_none() || self.host_staging.is_none() {
+            return Err(LLMError::GpuError(
+                "layer-owner shell is poisoned or lacks owned staging".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn fail_after_enqueue(
+        &mut self,
+        primary: LLMError,
+        host_staging_may_be_referenced: bool,
+    ) -> LLMError {
+        let drained = self
+            .state
+            .as_ref()
+            .expect("active layer-owner state")
+            .stream
+            .synchronize();
+        match drained {
+            Ok(()) => {
+                #[cfg(feature = "heterogeneous-test-faults")]
+                {
+                    self.last_fault_drained = true;
+                }
+                primary
+            }
+            Err(drain) => {
+                self.poisoned = true;
+                if host_staging_may_be_referenced {
+                    self.quarantined_host_staging = self.host_staging.take();
+                }
+                LLMError::GpuError(format!(
+                    "layer-owner work failed ({primary}); mandatory fallback drain failed ({drain}); shell poisoned and referenced storage quarantined"
+                ))
+            }
+        }
     }
 
     /// Execute the real layer-0 dense/attention prefix from H3 resident BF16
@@ -169,6 +334,7 @@ impl CudaLayerOwnerShell {
         position: usize,
         cache: &CpuKvCacheSnapshot,
     ) -> Result<LayerOwnerShellExecution> {
+        self.require_reusable()?;
         validate_config(model, config)?;
         if model.placement().layer_owner().stable_id != self.stable_device
             || usize::try_from(token_id).map_or(true, |token| token >= config.vocab_size)
@@ -228,134 +394,156 @@ impl CudaLayerOwnerShell {
             GPT_OSS_HIDDEN_SIZE * 2,
         )?;
         let (cosine, sine) = rope_tables(config, position)?;
+        let mut host_staging = self
+            .host_staging
+            .take()
+            .expect("reusable layer-owner staging");
+        let cache_values = cache.len * KV_WIDTH;
+        host_staging.keys_bf16_bits[..cache_values].copy_from_slice(&cache.keys_bf16_bits);
+        host_staging.values_bf16_bits[..cache_values].copy_from_slice(&cache.values_bf16_bits);
+        host_staging.cosine_bf16_bits.copy_from_slice(&cosine);
+        host_staging.sine_bf16_bits.copy_from_slice(&sine);
+        #[cfg(feature = "heterogeneous-test-faults")]
+        let injected_fault = self.injected_fault.take();
+        let state = self.state.as_mut().expect("active layer-owner state");
 
         let submitted = (|| -> Result<_> {
             if cache.len > 0 {
-                self.stream
+                state
+                    .stream
                     .memcpy_htod(
-                        &cache.keys_bf16_bits,
-                        &mut self.keys.slice_mut(..cache.len * KV_WIDTH),
+                        &host_staging.keys_bf16_bits[..cache_values],
+                        &mut state.keys.slice_mut(..cache.len * KV_WIDTH),
                     )
                     .map_err(cuda_error("layer-owner prior key H2D"))?;
-                self.stream
+                #[cfg(feature = "heterogeneous-test-faults")]
+                if injected_fault == Some(LayerOwnerInjectedFault::SubmitAfterPriorKeyEnqueue) {
+                    return Err(LLMError::GpuError(
+                        "injected layer-owner post-key-enqueue failure".into(),
+                    ));
+                }
+                state
+                    .stream
                     .memcpy_htod(
-                        &cache.values_bf16_bits,
-                        &mut self.values.slice_mut(..cache.len * KV_WIDTH),
+                        &host_staging.values_bf16_bits[..cache_values],
+                        &mut state.values.slice_mut(..cache.len * KV_WIDTH),
                     )
                     .map_err(cuda_error("layer-owner prior value H2D"))?;
             }
-            self.stream
-                .memcpy_htod(&cosine, &mut self.cosine)
+            state
+                .stream
+                .memcpy_htod(&host_staging.cosine_bf16_bits, &mut state.cosine)
                 .map_err(cuda_error("layer-owner cosine H2D"))?;
-            self.stream
-                .memcpy_htod(&sine, &mut self.sine)
+            state
+                .stream
+                .memcpy_htod(&host_staging.sine_bf16_bits, &mut state.sine)
                 .map_err(cuda_error("layer-owner sine H2D"))?;
-            let start = self
+            let start = state
                 .stream
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(cuda_error("layer-owner start event"))?;
             launch_embedding(
-                &self.stream,
-                &self.loader,
+                &state.stream,
+                &state.loader,
                 embeddings.allocation(),
-                &mut self.hidden,
+                &mut state.hidden,
                 token_id,
             )?;
             launch_rms_norm(
-                &self.stream,
-                &self.loader,
-                &self.hidden,
+                &state.stream,
+                &state.loader,
+                &state.hidden,
                 input_norm_weight.allocation(),
-                &mut self.input_norm,
+                &mut state.input_norm,
                 config.rms_norm_eps,
             )?;
             launch_projection(
-                &self.stream,
-                &self.loader,
-                &self.input_norm,
+                &state.stream,
+                &state.loader,
+                &state.input_norm,
                 q_weight.allocation(),
                 q_bias.allocation(),
-                &mut self.query,
+                &mut state.query,
                 Q_WIDTH,
             )?;
             launch_projection(
-                &self.stream,
-                &self.loader,
-                &self.input_norm,
+                &state.stream,
+                &state.loader,
+                &state.input_norm,
                 k_weight.allocation(),
                 k_bias.allocation(),
-                &mut self.key,
+                &mut state.key,
                 KV_WIDTH,
             )?;
             launch_projection(
-                &self.stream,
-                &self.loader,
-                &self.input_norm,
+                &state.stream,
+                &state.loader,
+                &state.input_norm,
                 v_weight.allocation(),
                 v_bias.allocation(),
-                &mut self.value,
+                &mut state.value,
                 KV_WIDTH,
             )?;
             launch_rope(
-                &self.stream,
-                &self.loader,
-                &mut self.query,
-                &self.cosine,
-                &self.sine,
+                &state.stream,
+                &state.loader,
+                &mut state.query,
+                &state.cosine,
+                &state.sine,
                 NUM_HEADS,
             )?;
             launch_rope(
-                &self.stream,
-                &self.loader,
-                &mut self.key,
-                &self.cosine,
-                &self.sine,
+                &state.stream,
+                &state.loader,
+                &mut state.key,
+                &state.cosine,
+                &state.sine,
                 NUM_KV_HEADS,
             )?;
             launch_append_kv(
-                &self.stream,
-                &self.loader,
-                &self.key,
-                &self.value,
-                &mut self.keys,
-                &mut self.values,
+                &state.stream,
+                &state.loader,
+                &state.key,
+                &state.value,
+                &mut state.keys,
+                &mut state.values,
                 cache.len,
             )?;
             launch_attention(
-                &self.stream,
-                &self.loader,
-                &self.query,
-                &self.keys,
-                &self.values,
+                &state.stream,
+                &state.loader,
+                &state.query,
+                &state.keys,
+                &state.values,
                 sinks.allocation(),
-                &mut self.attention,
+                &mut state.attention,
                 cache.len + 1,
             )?;
             launch_projection(
-                &self.stream,
-                &self.loader,
-                &self.attention,
+                &state.stream,
+                &state.loader,
+                &state.attention,
                 o_weight.allocation(),
                 o_bias.allocation(),
-                &mut self.attention_projection,
+                &mut state.attention_projection,
                 GPT_OSS_HIDDEN_SIZE,
             )?;
             launch_residual(
-                &self.stream,
-                &self.loader,
-                &self.hidden,
-                &self.attention_projection,
-                &mut self.post_attention_residual,
+                &state.stream,
+                &state.loader,
+                &state.hidden,
+                &state.attention_projection,
+                &mut state.post_attention_residual,
             )?;
             launch_rms_norm(
-                &self.stream,
-                &self.loader,
-                &self.post_attention_residual,
+                &state.stream,
+                &state.loader,
+                &state.post_attention_residual,
                 post_norm_weight.allocation(),
-                &mut self.router_input,
+                &mut state.router_input,
                 config.rms_norm_eps,
             )?;
-            let terminal = self
+            let terminal = state
                 .stream
                 .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(cuda_error("layer-owner terminal event"))?;
@@ -364,40 +552,108 @@ impl CudaLayerOwnerShell {
         let (start, terminal) = match submitted {
             Ok(events) => events,
             Err(primary) => {
-                return match self.stream.synchronize() {
-                    Ok(()) => Err(primary),
-                    Err(drain) => Err(LLMError::GpuError(format!(
-                        "layer-owner submit failed ({primary}); mandatory drain failed ({drain})"
-                    ))),
-                };
+                self.host_staging = Some(host_staging);
+                return Err(self.fail_after_enqueue(primary, true));
             }
         };
-        terminal
-            .synchronize()
-            .map_err(cuda_error("layer-owner terminal drain"))?;
-        let kernel_elapsed_ms = start
-            .elapsed_ms(&terminal)
-            .map_err(cuda_error("layer-owner event timing"))?;
-        Ok(LayerOwnerShellExecution {
-            hidden_bf16_bits: download(&self.stream, &self.hidden, "hidden")?,
-            input_norm_bf16_bits: download(&self.stream, &self.input_norm, "input norm")?,
-            query_after_rope_bf16_bits: download(&self.stream, &self.query, "query")?,
-            key_after_rope_bf16_bits: download(&self.stream, &self.key, "key")?,
-            value_projection_bf16_bits: download(&self.stream, &self.value, "value")?,
-            attention_context_bf16_bits: download(&self.stream, &self.attention, "attention")?,
-            attention_projection_bf16_bits: download(
-                &self.stream,
-                &self.attention_projection,
-                "attention projection",
-            )?,
-            post_attention_residual_bf16_bits: download(
-                &self.stream,
-                &self.post_attention_residual,
-                "post-attention residual",
-            )?,
-            router_input_bf16_bits: download(&self.stream, &self.router_input, "router input")?,
-            kernel_elapsed_ms,
-        })
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if injected_fault == Some(LayerOwnerInjectedFault::TerminalDrain) {
+            self.host_staging = Some(host_staging);
+            return Err(self.fail_after_enqueue(
+                LLMError::GpuError("injected layer-owner terminal drain failure".into()),
+                true,
+            ));
+        }
+        if let Err(error) = terminal.synchronize() {
+            self.host_staging = Some(host_staging);
+            return Err(
+                self.fail_after_enqueue(cuda_error("layer-owner terminal drain")(error), true)
+            );
+        }
+        let kernel_elapsed_ms = match start.elapsed_ms(&terminal) {
+            Ok(elapsed) => elapsed,
+            Err(error) => {
+                self.host_staging = Some(host_staging);
+                return Err(cuda_error("layer-owner event timing")(error));
+            }
+        };
+        let downloads = (|| -> Result<_> {
+            state
+                .stream
+                .memcpy_dtoh(&state.hidden, &mut host_staging.hidden_bf16_bits)
+                .map_err(cuda_error("layer-owner hidden D2H"))?;
+            #[cfg(feature = "heterogeneous-test-faults")]
+            if injected_fault == Some(LayerOwnerInjectedFault::BoundaryDownloadAfterFirstEnqueue) {
+                return Err(LLMError::GpuError(
+                    "injected layer-owner post-boundary-D2H failure".into(),
+                ));
+            }
+            state
+                .stream
+                .memcpy_dtoh(&state.input_norm, &mut host_staging.input_norm_bf16_bits)
+                .map_err(cuda_error("layer-owner input-norm D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(&state.query, &mut host_staging.query_after_rope_bf16_bits)
+                .map_err(cuda_error("layer-owner query D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(&state.key, &mut host_staging.key_after_rope_bf16_bits)
+                .map_err(cuda_error("layer-owner key D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(&state.value, &mut host_staging.value_projection_bf16_bits)
+                .map_err(cuda_error("layer-owner value D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(
+                    &state.attention,
+                    &mut host_staging.attention_context_bf16_bits,
+                )
+                .map_err(cuda_error("layer-owner attention D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(
+                    &state.attention_projection,
+                    &mut host_staging.attention_projection_bf16_bits,
+                )
+                .map_err(cuda_error("layer-owner attention-projection D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(
+                    &state.post_attention_residual,
+                    &mut host_staging.post_attention_residual_bf16_bits,
+                )
+                .map_err(cuda_error("layer-owner post-attention D2H"))?;
+            state
+                .stream
+                .memcpy_dtoh(
+                    &state.router_input,
+                    &mut host_staging.router_input_bf16_bits,
+                )
+                .map_err(cuda_error("layer-owner router-input D2H"))?;
+            state
+                .stream
+                .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                .map_err(cuda_error("layer-owner boundary-download terminal event"))
+        })();
+        let download_terminal = match downloads {
+            Ok(terminal) => terminal,
+            Err(primary) => {
+                self.host_staging = Some(host_staging);
+                return Err(self.fail_after_enqueue(primary, true));
+            }
+        };
+        if let Err(error) = download_terminal.synchronize() {
+            self.host_staging = Some(host_staging);
+            return Err(self.fail_after_enqueue(
+                cuda_error("layer-owner boundary-download terminal drain")(error),
+                true,
+            ));
+        }
+        let execution = host_staging.execution(kernel_elapsed_ms);
+        self.host_staging = Some(host_staging);
+        Ok(execution)
     }
 
     /// Hand the resident post-attention norm to the exact GPU0 router through
@@ -412,12 +668,17 @@ impl CudaLayerOwnerShell {
         route_records: &mut BoundedPinnedLease<u8>,
         timeline: Option<&CorrelatedTimeline>,
     ) -> Result<ExactRouterExecution> {
+        self.require_reusable()?;
         router.execute_device_and_download(
             layer,
             GptOssPhase::Decode,
             placement_epoch,
             1,
-            &self.router_input,
+            &self
+                .state
+                .as_ref()
+                .expect("active layer-owner state")
+                .router_input,
             &self.stable_device,
             source_activation,
             route_records,
@@ -431,35 +692,88 @@ impl CudaLayerOwnerShell {
         &mut self,
         reducer: &CudaRankOrderedReducer,
     ) -> Result<Vec<u16>> {
+        self.require_reusable()?;
         if reducer.stable_device() != &self.stable_device {
             return Err(LLMError::GpuError(
                 "resident reducer/layer-owner device mismatch".into(),
             ));
         }
-        let submitted = (|| -> Result<()> {
-            self.stream
-                .memcpy_dtod(reducer.output_device(), &mut self.attention_projection)
+        #[cfg(feature = "heterogeneous-test-faults")]
+        let injected_fault = self.injected_fault.take();
+        let mut host_staging = self
+            .host_staging
+            .take()
+            .expect("reusable layer-owner staging");
+        let state = self.state.as_mut().expect("active layer-owner state");
+        let submitted = (|| -> Result<_> {
+            state
+                .stream
+                .memcpy_dtod(reducer.output_device(), &mut state.attention_projection)
                 .map_err(cuda_error("layer-owner reduced update D2D"))?;
+            #[cfg(feature = "heterogeneous-test-faults")]
+            if injected_fault == Some(LayerOwnerInjectedFault::FinalResidualAfterD2dEnqueue) {
+                return Err(LLMError::GpuError(
+                    "injected layer-owner post-residual-D2D failure".into(),
+                ));
+            }
             launch_residual(
-                &self.stream,
-                &self.loader,
-                &self.post_attention_residual,
-                &self.attention_projection,
-                &mut self.router_input,
+                &state.stream,
+                &state.loader,
+                &state.post_attention_residual,
+                &state.attention_projection,
+                &mut state.router_input,
             )?;
-            self.stream
-                .synchronize()
-                .map_err(cuda_error("layer-owner resident final residual drain"))
+            state
+                .stream
+                .memcpy_dtoh(
+                    &state.router_input,
+                    &mut host_staging.router_input_bf16_bits,
+                )
+                .map_err(cuda_error("layer-owner final output D2H"))?;
+            #[cfg(feature = "heterogeneous-test-faults")]
+            if injected_fault == Some(LayerOwnerInjectedFault::FinalOutputAfterD2hEnqueue) {
+                return Err(LLMError::GpuError(
+                    "injected layer-owner post-final-output-D2H failure".into(),
+                ));
+            }
+            state
+                .stream
+                .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                .map_err(cuda_error("layer-owner resident residual terminal event"))
         })();
-        if let Err(primary) = submitted {
-            return match self.stream.synchronize() {
-                Ok(()) => Err(primary),
-                Err(drain) => Err(LLMError::GpuError(format!(
-                    "resident final residual failed ({primary}); mandatory drain failed ({drain})"
-                ))),
-            };
+        let terminal = match submitted {
+            Ok(terminal) => terminal,
+            Err(primary) => {
+                self.host_staging = Some(host_staging);
+                return Err(self.fail_after_enqueue(primary, true));
+            }
+        };
+        if let Err(error) = terminal.synchronize() {
+            self.host_staging = Some(host_staging);
+            return Err(self.fail_after_enqueue(
+                cuda_error("layer-owner resident final residual drain")(error),
+                true,
+            ));
         }
-        download(&self.stream, &self.router_input, "layer output")
+        let output = host_staging.router_input_bf16_bits.clone();
+        self.host_staging = Some(host_staging);
+        Ok(output)
+    }
+}
+
+impl Drop for CudaLayerOwnerShell {
+    fn drop(&mut self) {
+        if self.poisoned {
+            if let Some(state) = self.state.take() {
+                // An unproven CUDA drain means a stream may still reference
+                // every shell-owned device allocation and module/context.
+                // Retain the entire state for process lifetime.
+                std::mem::forget(state);
+            }
+            if let Some(staging) = self.quarantined_host_staging.take() {
+                std::mem::forget(staging);
+            }
+        }
     }
 }
 
@@ -545,14 +859,6 @@ fn rope_tables(
             .to_bits()
     });
     Ok((cosine, sine))
-}
-
-fn download(
-    stream: &Arc<CudaStream>,
-    source: &CudaSlice<u16>,
-    label: &'static str,
-) -> Result<Vec<u16>> {
-    stream.clone_dtoh(source).map_err(cuda_error(label))
 }
 
 fn grid(values: usize) -> LaunchConfig {
