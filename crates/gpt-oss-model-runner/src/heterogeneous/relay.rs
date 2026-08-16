@@ -8,11 +8,16 @@ use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_gpu::event::CorrelatedTimeline;
 use gpt_oss_gpu::pinned_memory::{BoundedPinnedLease, BoundedPinnedPool, BoundedPinnedPoolStats};
 
-use super::contract::{GPT_OSS_HIDDEN_SIZE, GPT_OSS_ROUTE_WIRE_V1_BYTES, GPT_OSS_TOP_K};
+use super::contract::{
+    CanonicalExpertOwner, CanonicalRouteContract, ExpertResultDescriptor, GptOssPhase,
+    GPT_OSS_HIDDEN_SIZE, GPT_OSS_ROUTE_WIRE_V1_BYTES, GPT_OSS_TOP_K,
+};
+use super::cuda_expert::CudaSelectedExpertResultSlot;
 use super::packing::{
     PackedDispatchPlan, RelayBytePlan, H4_DECODE_PINNED_CAP_BYTES, H4_PREFILL_MAX_ROWS,
     H4_PREFILL_PINNED_CAP_BYTES, H4_ROUTE_DESCRIPTOR_MAX_BYTES,
 };
+use super::placement::ExpertOwner;
 use super::router::CudaExactRouter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,14 +243,92 @@ pub struct ResultRelayExecution {
     pub cpu_h2d_bytes: usize,
     pub remote_gpu_h2d_bytes: usize,
     pub evidence_d2h_bytes: usize,
+    pub arena_generation: u64,
+}
+
+pub struct CompletedResultRelay {
+    pub execution: ResultRelayExecution,
+    pub reservation: RelayPinnedReservation,
+}
+
+pub struct ResultRelayFailure {
+    pub error: LLMError,
+    /// Present only when the stream was proven drained and the caller may
+    /// safely retry/release the reservation.
+    pub reservation: Option<RelayPinnedReservation>,
+}
+
+impl std::fmt::Debug for CompletedResultRelay {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompletedResultRelay")
+            .field("execution", &self.execution)
+            .field("reservation_generation", &self.reservation.generation())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ResultRelayFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResultRelayFailure")
+            .field("error", &self.error)
+            .field("reservation_recoverable", &self.reservation.is_some())
+            .finish()
+    }
+}
+
+pub struct CompletedLocalResultRelay {
+    pub bytes: usize,
+    pub arena_generation: u64,
+    pub result_slot: CudaSelectedExpertResultSlot,
+}
+
+pub struct LocalResultRelayFailure {
+    pub error: LLMError,
+    pub result_slot: Option<CudaSelectedExpertResultSlot>,
+}
+
+impl std::fmt::Debug for CompletedLocalResultRelay {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompletedLocalResultRelay")
+            .field("bytes", &self.bytes)
+            .field("arena_generation", &self.arena_generation)
+            .field(
+                "result_slot_generation",
+                &self.result_slot.transaction_generation(),
+            )
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for LocalResultRelayFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalResultRelayFailure")
+            .field("error", &self.error)
+            .field("result_slot_recoverable", &self.result_slot.is_some())
+            .finish()
+    }
 }
 
 /// Detached H4 result uploader. It places CPU and GPU1 outputs into canonical
 /// GPU0 route slots but deliberately performs no weighting or reduction.
 pub struct CudaResultRelay {
+    stable_device: gpt_oss_gpu::device::StableCudaDeviceId,
     stream: std::sync::Arc<CudaStream>,
     contribution_arena: CudaSlice<u16>,
     max_routes: usize,
+    active_bound_generation: Option<u64>,
+    last_bound_generation: u64,
+    expected_decode_contracts: [Option<CanonicalRouteContract>; GPT_OSS_TOP_K],
+    arena_generation: u64,
+    remote_upload_complete: bool,
+    populated_slots: Vec<bool>,
+    poisoned: bool,
+    quarantined_reservation: Option<RelayPinnedReservation>,
+    quarantined_local_slots: Vec<CudaSelectedExpertResultSlot>,
     #[cfg(feature = "heterogeneous-test-faults")]
     injected_fault: Option<ResultRelayInjectedFault>,
     #[cfg(feature = "heterogeneous-test-faults")]
@@ -268,13 +351,305 @@ impl CudaResultRelay {
             .synchronize()
             .map_err(cuda_error("result relay construction drain"))?;
         Ok(Self {
+            stable_device: router.stable_device().clone(),
             stream,
             contribution_arena,
             max_routes,
+            active_bound_generation: None,
+            last_bound_generation: 0,
+            expected_decode_contracts: [None; GPT_OSS_TOP_K],
+            arena_generation: 0,
+            remote_upload_complete: false,
+            populated_slots: vec![false; max_routes],
+            poisoned: false,
+            quarantined_reservation: None,
+            quarantined_local_slots: Vec::with_capacity(GPT_OSS_TOP_K),
             #[cfg(feature = "heterogeneous-test-faults")]
             injected_fault: None,
             #[cfg(feature = "heterogeneous-test-faults")]
             last_fault_drained: false,
+        })
+    }
+
+    pub(crate) fn stable_device(&self) -> &gpt_oss_gpu::device::StableCudaDeviceId {
+        &self.stable_device
+    }
+
+    pub(crate) fn stream(&self) -> &std::sync::Arc<CudaStream> {
+        &self.stream
+    }
+
+    pub(crate) const fn max_routes(&self) -> usize {
+        self.max_routes
+    }
+
+    pub(crate) const fn arena_generation(&self) -> u64 {
+        self.arena_generation
+    }
+
+    pub fn memory_info(&self) -> Result<(usize, usize)> {
+        self.stream
+            .context()
+            .bind_to_thread()
+            .map_err(cuda_error("result relay memory-info bind"))?;
+        cudarc::driver::result::mem_get_info().map_err(cuda_error("result relay memory-info query"))
+    }
+
+    pub(crate) fn decode_contribution_arena(&self) -> &CudaSlice<u16> {
+        debug_assert!(self.max_routes >= GPT_OSS_TOP_K);
+        &self.contribution_arena
+    }
+
+    /// Bind the next decode arena generation to exactly four canonical route
+    /// identities before any expert dispatch. The stored contract is fixed
+    /// size and every later upload/reduction must match it.
+    pub fn bind_decode_generation(
+        &mut self,
+        transaction_generation: u64,
+        plan: &PackedDispatchPlan,
+    ) -> Result<()> {
+        if self.poisoned
+            || transaction_generation == 0
+            || transaction_generation <= self.last_bound_generation.max(self.arena_generation)
+            || self.active_bound_generation.is_some()
+            || plan.phase != GptOssPhase::Decode
+            || plan.rows != 1
+        {
+            return Err(LLMError::GpuError(
+                "canonical relay generation cannot be rebound or is not decode M=1".into(),
+            ));
+        }
+        plan.validate_round_trip()?;
+        let contracts = contracts_from_plan(plan)?;
+        self.active_bound_generation = Some(transaction_generation);
+        self.last_bound_generation = transaction_generation;
+        self.expected_decode_contracts = contracts.map(Some);
+        self.remote_upload_complete = false;
+        self.populated_slots.fill(false);
+        Ok(())
+    }
+
+    /// Close a discarded bound generation only after the caller proves every
+    /// CPU/GPU owner terminal. This method additionally drains the shared GPU0
+    /// relay stream before route contracts or arena slots can be reused.
+    pub fn abandon_decode_generation(
+        &mut self,
+        transaction_generation: u64,
+        all_owners_proven_drained: bool,
+    ) -> Result<()> {
+        if self.active_bound_generation != Some(transaction_generation) {
+            return Err(LLMError::GpuError(
+                "cannot abandon a non-active canonical relay generation".into(),
+            ));
+        }
+        if !all_owners_proven_drained {
+            return Err(LLMError::GpuError(
+                "canonical relay generation cannot be abandoned before every owner drains".into(),
+            ));
+        }
+        if let Err(error) = self.stream.synchronize() {
+            self.poisoned = true;
+            return Err(cuda_error("canonical relay abandon drain")(error));
+        }
+        self.close_active_generation(transaction_generation)
+    }
+
+    pub(crate) fn finish_reduction_generation(
+        &mut self,
+        transaction_generation: u64,
+    ) -> Result<()> {
+        if self.arena_generation != transaction_generation
+            || !self.remote_upload_complete
+            || self.populated_slots[..GPT_OSS_TOP_K]
+                .iter()
+                .any(|populated| !populated)
+        {
+            return Err(LLMError::GpuError(
+                "successful reduction cannot close an incomplete canonical arena".into(),
+            ));
+        }
+        self.close_active_generation(transaction_generation)
+    }
+
+    fn close_active_generation(&mut self, transaction_generation: u64) -> Result<()> {
+        if self.active_bound_generation != Some(transaction_generation) {
+            return Err(LLMError::GpuError(
+                "canonical relay generation close does not match the active ticket".into(),
+            ));
+        }
+        self.active_bound_generation = None;
+        self.expected_decode_contracts = [None; GPT_OSS_TOP_K];
+        self.remote_upload_complete = false;
+        self.populated_slots.fill(false);
+        Ok(())
+    }
+
+    pub(crate) fn validate_reduction_contract(
+        &self,
+        transaction_generation: u64,
+        contracts: &[CanonicalRouteContract; GPT_OSS_TOP_K],
+    ) -> Result<()> {
+        if self.active_bound_generation != Some(transaction_generation)
+            || self.arena_generation != transaction_generation
+        {
+            return Err(LLMError::GpuError(
+                "rank reducer generation does not match the bound canonical arena".into(),
+            ));
+        }
+        for (slot, contract) in contracts.iter().enumerate() {
+            if self.expected_decode_contracts[slot] != Some(*contract) {
+                return Err(LLMError::GpuError(format!(
+                    "rank reducer route contract mismatch at slot {slot}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_complete_decode_results(
+        &self,
+        results: &[ExpertResultDescriptor],
+    ) -> Result<()> {
+        if self.poisoned || !self.remote_upload_complete || self.arena_generation == 0 {
+            return Err(LLMError::GpuError(
+                "canonical result arena is poisoned or lacks a completed clear/upload generation"
+                    .into(),
+            ));
+        }
+        if results.len() != GPT_OSS_TOP_K {
+            return Err(LLMError::GpuError(
+                "canonical result validation requires exactly four descriptors".into(),
+            ));
+        }
+        let mut seen = [false; GPT_OSS_TOP_K];
+        for result in results {
+            let slot = result.result_slot as usize;
+            let expected = self.expected_decode_contracts.get(slot).copied().flatten();
+            if slot >= GPT_OSS_TOP_K
+                || seen[slot]
+                || !self.populated_slots.get(slot).copied().unwrap_or(false)
+                || expected.is_none_or(|contract| contract.validate_result(result).is_err())
+            {
+                return Err(LLMError::GpuError(format!(
+                    "canonical result slot {} is missing, duplicated, or identity-mismatched in generation {}",
+                    result.result_slot, self.arena_generation
+                )));
+            }
+            seen[slot] = true;
+        }
+        if seen.iter().any(|present| !present) {
+            return Err(LLMError::GpuError(
+                "canonical result descriptors are missing a route slot".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Copy one already-drained GPU0-local selected-expert result into its H4
+    /// canonical slot without a host round trip. The relay stream owns the
+    /// terminal event, so neither slot nor arena can be reused early.
+    pub fn upload_local_device_result(
+        &mut self,
+        transaction_generation: u64,
+        descriptor: &ExpertResultDescriptor,
+        result_slot: CudaSelectedExpertResultSlot,
+    ) -> std::result::Result<CompletedLocalResultRelay, LocalResultRelayFailure> {
+        let expected = usize::try_from(descriptor.result_slot)
+            .ok()
+            .filter(|slot| *slot < GPT_OSS_TOP_K)
+            .and_then(|slot| self.expected_decode_contracts[slot]);
+        if self.poisoned
+            || !self.remote_upload_complete
+            || self.active_bound_generation != Some(transaction_generation)
+            || transaction_generation != self.arena_generation
+        {
+            return Err(LocalResultRelayFailure {
+                error: LLMError::GpuError(
+                    "local result D2D requires a completed arena clear and CPU/GPU1 upload".into(),
+                ),
+                result_slot: Some(result_slot),
+            });
+        }
+        if result_slot.device() != &self.stable_device
+            || result_slot.transaction_generation() != transaction_generation
+            || !matches!(descriptor.owner, ExpertOwner::LayerOwnerGpu { .. })
+            || descriptor.result_slot as usize >= self.max_routes
+            || self.populated_slots[descriptor.result_slot as usize]
+            || expected.is_none()
+            || result_slot.route_contract() != expected
+            || expected.is_some_and(|contract| contract.validate_result(descriptor).is_err())
+            || !matches!(
+                expected.map(|contract| contract.owner),
+                Some(CanonicalExpertOwner::LayerOwnerGpu { .. })
+            )
+        {
+            return Err(LocalResultRelayFailure {
+                error: LLMError::GpuError(
+                    "local result relay device/owner/slot identity mismatch or duplicate slot"
+                        .into(),
+                ),
+                result_slot: Some(result_slot),
+            });
+        }
+        let start = descriptor.result_slot as usize * GPT_OSS_HIDDEN_SIZE;
+        let submitted = (|| -> Result<cudarc::driver::CudaEvent> {
+            self.stream
+                .memcpy_dtod(
+                    result_slot.buffer(),
+                    &mut self
+                        .contribution_arena
+                        .slice_mut(start..start + GPT_OSS_HIDDEN_SIZE),
+                )
+                .map_err(cuda_error("local result relay D2D"))?;
+            self.stream
+                .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
+                .map_err(cuda_error("local result relay terminal event"))
+        })();
+        let terminal = match submitted {
+            Ok(terminal) => terminal,
+            Err(primary) => {
+                return match self.stream.synchronize() {
+                    Ok(()) => Err(LocalResultRelayFailure {
+                        error: primary,
+                        result_slot: Some(result_slot),
+                    }),
+                    Err(drain) => {
+                        self.poisoned = true;
+                        self.quarantined_local_slots.push(result_slot);
+                        Err(LocalResultRelayFailure {
+                            error: LLMError::GpuError(format!(
+                                "local result relay failed ({primary}); mandatory drain failed ({drain}); stream poisoned and result slot quarantined"
+                            )),
+                            result_slot: None,
+                        })
+                    }
+                }
+            }
+        };
+        if let Err(error) = terminal.synchronize() {
+            let primary = cuda_error("local result relay terminal drain")(error);
+            return match self.stream.synchronize() {
+                Ok(()) => Err(LocalResultRelayFailure {
+                    error: primary,
+                    result_slot: Some(result_slot),
+                }),
+                Err(drain) => {
+                    self.poisoned = true;
+                    self.quarantined_local_slots.push(result_slot);
+                    Err(LocalResultRelayFailure {
+                        error: LLMError::GpuError(format!(
+                            "local result relay terminal failed ({primary}); mandatory drain failed ({drain}); stream poisoned and result slot quarantined"
+                        )),
+                        result_slot: None,
+                    })
+                }
+            };
+        }
+        self.populated_slots[descriptor.result_slot as usize] = true;
+        Ok(CompletedLocalResultRelay {
+            bytes: GPT_OSS_HIDDEN_SIZE * size_of::<u16>(),
+            arena_generation: self.arena_generation,
+            result_slot,
         })
     }
 
@@ -300,17 +675,84 @@ impl CudaResultRelay {
     pub fn upload_results(
         &mut self,
         plan: &PackedDispatchPlan,
-        reservation: &mut RelayPinnedReservation,
+        reservation: RelayPinnedReservation,
         timeline: Option<&CorrelatedTimeline>,
-    ) -> Result<ResultRelayExecution> {
+    ) -> std::result::Result<CompletedResultRelay, ResultRelayFailure> {
+        self.upload_results_inner(plan, reservation, None, timeline)
+    }
+
+    /// Production H5 upload. Every CPU/GPU1 completion is a compact identity
+    /// emitted by the exact worker that filled the pinned result row.
+    pub fn upload_results_bound(
+        &mut self,
+        plan: &PackedDispatchPlan,
+        reservation: RelayPinnedReservation,
+        nonlocal_completions: &[CanonicalRouteContract],
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> std::result::Result<CompletedResultRelay, ResultRelayFailure> {
+        self.upload_results_inner(plan, reservation, Some(nonlocal_completions), timeline)
+    }
+
+    fn upload_results_inner(
+        &mut self,
+        plan: &PackedDispatchPlan,
+        mut reservation: RelayPinnedReservation,
+        nonlocal_completions: Option<&[CanonicalRouteContract]>,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> std::result::Result<CompletedResultRelay, ResultRelayFailure> {
+        if self.poisoned {
+            return Err(ResultRelayFailure {
+                error: LLMError::GpuError("result relay stream is poisoned".into()),
+                reservation: Some(reservation),
+            });
+        }
         let route_count = plan.rows as usize * GPT_OSS_TOP_K;
         if route_count > self.max_routes
             || reservation.remote_gpu_input.as_slice().len() < route_count * GPT_OSS_HIDDEN_SIZE
         {
-            return Err(LLMError::GpuError(
-                "result relay reservation is smaller than canonical arena".into(),
-            ));
+            return Err(ResultRelayFailure {
+                error: LLMError::GpuError(
+                    "result relay reservation is smaller than canonical arena".into(),
+                ),
+                reservation: Some(reservation),
+            });
         }
+        let next_generation = reservation.generation();
+        if let Some(bound_generation) = self.active_bound_generation {
+            if next_generation != bound_generation
+                || plan_contracts_match(plan, &self.expected_decode_contracts).is_err()
+                || nonlocal_completions.is_none_or(|completions| {
+                    validate_nonlocal_completions(&self.expected_decode_contracts, completions)
+                        .is_err()
+                })
+            {
+                return Err(ResultRelayFailure {
+                    error: LLMError::GpuError(
+                        "result relay plan/completion identity does not match the bound generation"
+                            .into(),
+                    ),
+                    reservation: Some(reservation),
+                });
+            }
+        } else if nonlocal_completions.is_some() {
+            return Err(ResultRelayFailure {
+                error: LLMError::GpuError(
+                    "bound result upload requires bind_decode_generation before dispatch".into(),
+                ),
+                reservation: Some(reservation),
+            });
+        }
+        if next_generation == 0 || next_generation <= self.arena_generation {
+            return Err(ResultRelayFailure {
+                error: LLMError::GpuError(format!(
+                    "result relay reservation generation {next_generation} is not newer than arena generation {}",
+                    self.arena_generation
+                )),
+                reservation: Some(reservation),
+            });
+        }
+        self.remote_upload_complete = false;
+        self.populated_slots.fill(false);
         #[cfg(feature = "heterogeneous-test-faults")]
         let injected_fault = self.injected_fault.take();
         let submitted = (|| -> Result<(usize, usize, cudarc::driver::CudaEvent)> {
@@ -390,28 +832,166 @@ impl CudaResultRelay {
                     self.last_fault_drained = true;
                 }
                 if let Err(drain) = drained {
-                    return Err(LLMError::GpuError(format!(
-                        "result relay submit failed ({primary}); mandatory drain failed ({drain})"
-                    )));
+                    self.poisoned = true;
+                    self.quarantined_reservation = Some(reservation);
+                    return Err(ResultRelayFailure {
+                        error: LLMError::GpuError(format!(
+                            "result relay submit failed ({primary}); mandatory drain failed ({drain}); stream poisoned and pinned reservation quarantined"
+                        )),
+                        reservation: None,
+                    });
                 }
-                return Err(primary);
+                return Err(ResultRelayFailure {
+                    error: primary,
+                    reservation: Some(reservation),
+                });
             }
         };
         if let Err(error) = terminal.synchronize() {
             let primary = cuda_error("result relay terminal drain")(error);
             return match self.stream.synchronize() {
-                Ok(()) => Err(primary),
-                Err(drain) => Err(LLMError::GpuError(format!(
-                    "result relay terminal failed ({primary}); mandatory drain failed ({drain})"
-                ))),
+                Ok(()) => Err(ResultRelayFailure {
+                    error: primary,
+                    reservation: Some(reservation),
+                }),
+                Err(drain) => {
+                    self.poisoned = true;
+                    self.quarantined_reservation = Some(reservation);
+                    Err(ResultRelayFailure {
+                        error: LLMError::GpuError(format!(
+                            "result relay terminal failed ({primary}); mandatory drain failed ({drain}); stream poisoned and pinned reservation quarantined"
+                        )),
+                        reservation: None,
+                    })
+                }
             };
         }
-        Ok(ResultRelayExecution {
-            cpu_h2d_bytes,
-            remote_gpu_h2d_bytes,
-            evidence_d2h_bytes: route_count * GPT_OSS_HIDDEN_SIZE * size_of::<u16>(),
+        for owner in plan.cpu.iter().chain(&plan.remote_gpu) {
+            for route in &owner.routes {
+                self.populated_slots[route.descriptor.canonical_result_slot as usize] = true;
+            }
+        }
+        self.arena_generation = next_generation;
+        self.remote_upload_complete = true;
+        Ok(CompletedResultRelay {
+            execution: ResultRelayExecution {
+                cpu_h2d_bytes,
+                remote_gpu_h2d_bytes,
+                evidence_d2h_bytes: route_count * GPT_OSS_HIDDEN_SIZE * size_of::<u16>(),
+                arena_generation: self.arena_generation,
+            },
+            reservation,
         })
     }
+}
+
+impl Drop for CudaResultRelay {
+    fn drop(&mut self) {
+        if self.poisoned {
+            if let Some(reservation) = self.quarantined_reservation.take() {
+                // A failed CUDA drain cannot prove that DMA released these
+                // pages. Retain them for process lifetime rather than free or
+                // return them to a pool.
+                std::mem::forget(reservation);
+            }
+            for slot in self.quarantined_local_slots.drain(..) {
+                std::mem::forget(slot);
+            }
+        }
+    }
+}
+
+fn contracts_from_plan(
+    plan: &PackedDispatchPlan,
+) -> Result<[CanonicalRouteContract; GPT_OSS_TOP_K]> {
+    let mut contracts = [None; GPT_OSS_TOP_K];
+    for route in plan.all_routes() {
+        let contract = CanonicalRouteContract::from_packed_route(&route.descriptor);
+        let slot = contract.result_slot as usize;
+        if slot >= GPT_OSS_TOP_K || contracts[slot].replace(contract).is_some() {
+            return Err(LLMError::ModelError(
+                "canonical decode plan has an out-of-range or duplicate result slot".into(),
+            ));
+        }
+    }
+    match contracts {
+        [Some(rank0), Some(rank1), Some(rank2), Some(rank3)] => Ok([rank0, rank1, rank2, rank3]),
+        _ => Err(LLMError::ModelError(
+            "canonical decode plan is missing a result contract".into(),
+        )),
+    }
+}
+
+fn plan_contracts_match(
+    plan: &PackedDispatchPlan,
+    expected: &[Option<CanonicalRouteContract>; GPT_OSS_TOP_K],
+) -> Result<()> {
+    let actual = contracts_from_plan(plan)?;
+    if actual
+        .iter()
+        .enumerate()
+        .all(|(slot, contract)| expected[slot] == Some(*contract))
+    {
+        Ok(())
+    } else {
+        Err(LLMError::ModelError(
+            "dispatch plan changed after canonical generation binding".into(),
+        ))
+    }
+}
+
+fn validate_nonlocal_completions(
+    expected: &[Option<CanonicalRouteContract>; GPT_OSS_TOP_K],
+    completions: &[CanonicalRouteContract],
+) -> Result<()> {
+    let expected_count = expected
+        .iter()
+        .flatten()
+        .filter(|contract| {
+            matches!(
+                contract.owner,
+                CanonicalExpertOwner::Cpu { .. } | CanonicalExpertOwner::RemoteGpu { .. }
+            )
+        })
+        .count();
+    if completions.len() != expected_count {
+        return Err(LLMError::ModelError(format!(
+            "nonlocal result completion count {} != expected {expected_count}",
+            completions.len()
+        )));
+    }
+    let mut seen = [false; GPT_OSS_TOP_K];
+    for completion in completions {
+        let slot = completion.result_slot as usize;
+        if slot >= GPT_OSS_TOP_K
+            || seen[slot]
+            || expected[slot] != Some(*completion)
+            || !matches!(
+                completion.owner,
+                CanonicalExpertOwner::Cpu { .. } | CanonicalExpertOwner::RemoteGpu { .. }
+            )
+        {
+            return Err(LLMError::ModelError(format!(
+                "nonlocal result completion identity is missing, duplicated, or mismatched at slot {}",
+                completion.result_slot
+            )));
+        }
+        seen[slot] = true;
+    }
+    for contract in expected.iter().flatten().filter(|contract| {
+        matches!(
+            contract.owner,
+            CanonicalExpertOwner::Cpu { .. } | CanonicalExpertOwner::RemoteGpu { .. }
+        )
+    }) {
+        if !seen[contract.result_slot as usize] {
+            return Err(LLMError::ModelError(format!(
+                "nonlocal result completion is missing slot {}",
+                contract.result_slot
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn fixed_relay_byte_plan(max_rows: usize) -> Result<RelayBytePlan> {

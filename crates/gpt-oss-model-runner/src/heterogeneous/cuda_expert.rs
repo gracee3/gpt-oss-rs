@@ -22,8 +22,8 @@ use gpt_oss_gpu::pinned_memory::BoundedPinnedLease;
 use half::bf16;
 
 use super::contract::{
-    ExpertRepresentationTag, ExpertResultDescriptor, ExpertWeightDescriptor, GptOssPhase,
-    PackedRouteDescriptor,
+    CanonicalRouteContract, ExpertRepresentationTag, ExpertResultDescriptor,
+    ExpertWeightDescriptor, GptOssPhase, PackedRouteDescriptor,
 };
 use super::placement::{ExpertOwner, GptOssExpertKey};
 
@@ -149,12 +149,26 @@ impl CudaSelectedExpertWeights {
 /// implicit publication or reuse boundary.
 pub struct CudaSelectedExpertResultSlot {
     device: StableCudaDeviceId,
+    transaction_generation: u64,
+    route_contract: Option<CanonicalRouteContract>,
     buffer: CudaSlice<u16>,
 }
 
 impl CudaSelectedExpertResultSlot {
     pub fn device(&self) -> &StableCudaDeviceId {
         &self.device
+    }
+
+    pub const fn transaction_generation(&self) -> u64 {
+        self.transaction_generation
+    }
+
+    pub(crate) const fn route_contract(&self) -> Option<CanonicalRouteContract> {
+        self.route_contract
+    }
+
+    pub(crate) fn buffer(&self) -> &CudaSlice<u16> {
+        &self.buffer
     }
 }
 
@@ -200,6 +214,15 @@ pub struct SelectedExpertExecution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedExpertPinnedExecution {
     pub result: ExpertResultDescriptor,
+    pub kernel_elapsed_ms: f32,
+    pub output_bytes: usize,
+}
+
+/// Allocation-free post-dispatch completion record. Route identity is owned
+/// by the prepared step and is not cloned or reconstructed here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectedExpertDeviceExecution {
+    pub route_contract: CanonicalRouteContract,
     pub kernel_elapsed_ms: f32,
     pub output_bytes: usize,
 }
@@ -311,12 +334,50 @@ impl CudaSelectedExpertExecutor {
     /// Allocate one bounded result slot for ownership by the caller's route
     /// result pool. Allocation is never performed during `prepare` or `submit`.
     pub fn allocate_result_slot(&self) -> Result<CudaSelectedExpertResultSlot> {
+        self.allocate_result_slot_for_generation(0)
+    }
+
+    /// Allocate a result slot bound to one prepared heterogeneous step. A
+    /// nonzero generation is required by the H5 canonical relay; generation
+    /// zero remains available only to detached H2/H4 primitive controls.
+    pub fn allocate_result_slot_for_generation(
+        &self,
+        transaction_generation: u64,
+    ) -> Result<CudaSelectedExpertResultSlot> {
+        self.allocate_result_slot_inner(transaction_generation, None)
+    }
+
+    /// Allocate a production H5 slot bound to the exact route identity that
+    /// will populate it. The relay rejects unbound or relabeled slots.
+    pub fn allocate_result_slot_for_route(
+        &self,
+        transaction_generation: u64,
+        route: &PackedRouteDescriptor,
+    ) -> Result<CudaSelectedExpertResultSlot> {
+        if transaction_generation == 0 {
+            return Err(LLMError::GpuError(
+                "route-bound result slot generation must be nonzero".into(),
+            ));
+        }
+        self.allocate_result_slot_inner(
+            transaction_generation,
+            Some(CanonicalRouteContract::from_packed_route(route)),
+        )
+    }
+
+    fn allocate_result_slot_inner(
+        &self,
+        transaction_generation: u64,
+        route_contract: Option<CanonicalRouteContract>,
+    ) -> Result<CudaSelectedExpertResultSlot> {
         let buffer = self
             .stream
             .alloc_zeros::<u16>(HIDDEN_SIZE)
             .map_err(cuda_error("selected expert result-slot allocation"))?;
         Ok(CudaSelectedExpertResultSlot {
             device: self.stable_device.clone(),
+            transaction_generation,
+            route_contract,
             buffer,
         })
     }
@@ -484,6 +545,9 @@ impl CudaSelectedExpertExecutor {
             || route.route.source_row != 0
             || route.source_activation_slot != 0
             || route.canonical_result_slot != route.route.canonical_result_slot()
+            || result_slot.route_contract.is_some_and(|contract| {
+                contract != CanonicalRouteContract::from_packed_route(route)
+            })
         {
             return Err(LLMError::GpuError(
                 "selected expert route/weight/device identity mismatch".into(),
@@ -803,14 +867,59 @@ impl PendingSelectedExpert<'_> {
         })
     }
 
+    /// Drain one GPU0-local result while leaving it resident in the caller's
+    /// generation-bound result slot. This path allocates no host output or
+    /// result descriptor after dispatch.
+    pub fn drain_device_only(mut self) -> Result<SelectedExpertDeviceExecution> {
+        let terminal = self.terminal.as_ref().ok_or_else(|| {
+            LLMError::GpuError("selected expert terminal event was already consumed".into())
+        })?;
+        terminal
+            .synchronize()
+            .map_err(cuda_error("selected expert terminal drain"))?;
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if self.inject_drain_failure {
+            self.drained = true;
+            return Err(LLMError::GpuError(
+                "injected selected-expert asynchronous drain failure".into(),
+            ));
+        }
+        let kernel_elapsed_ms = self
+            .start
+            .elapsed_ms(terminal)
+            .map_err(cuda_error("selected expert event timing"))?;
+        self.drained = true;
+        Ok(SelectedExpertDeviceExecution {
+            route_contract: CanonicalRouteContract::from_packed_route(self.route),
+            kernel_elapsed_ms,
+            output_bytes: GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
+        })
+    }
+
     /// Download the selected result directly into one already-reserved pinned
     /// slot. All CUDA work, the D2H, and timeline callbacks are terminal before
     /// this function returns, so the caller may then return the lease.
     pub fn drain_into_pinned(
-        mut self,
+        self,
         output: &mut BoundedPinnedLease<u16>,
         timeline: Option<(&CorrelatedTimeline, &str)>,
     ) -> Result<SelectedExpertPinnedExecution> {
+        let result = ExpertResultDescriptor::from_packed_route(self.route);
+        let execution = self.drain_into_pinned_device_only(output, timeline)?;
+        Ok(SelectedExpertPinnedExecution {
+            result,
+            kernel_elapsed_ms: execution.kernel_elapsed_ms,
+            output_bytes: execution.output_bytes,
+        })
+    }
+
+    /// Drain into a pre-reserved pinned destination without allocating or
+    /// cloning route identity after dispatch.
+    pub fn drain_into_pinned_device_only(
+        mut self,
+        output: &mut BoundedPinnedLease<u16>,
+        timeline: Option<(&CorrelatedTimeline, &str)>,
+    ) -> Result<SelectedExpertDeviceExecution> {
         if output.as_slice().len() < HIDDEN_SIZE {
             return Err(LLMError::GpuError(format!(
                 "selected expert pinned output length {} < {HIDDEN_SIZE}",
@@ -878,8 +987,8 @@ impl PendingSelectedExpert<'_> {
             .elapsed_ms(terminal)
             .map_err(cuda_error("selected expert event timing"))?;
         self.drained = true;
-        Ok(SelectedExpertPinnedExecution {
-            result: ExpertResultDescriptor::from_packed_route(self.route),
+        Ok(SelectedExpertDeviceExecution {
+            route_contract: CanonicalRouteContract::from_packed_route(self.route),
             kernel_elapsed_ms,
             output_bytes: GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
         })

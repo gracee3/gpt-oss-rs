@@ -11,31 +11,48 @@ pub mod cuda_expert;
 pub mod packing;
 pub mod placement;
 #[cfg(feature = "cuda")]
+pub mod reduction;
+#[cfg(feature = "cuda")]
 pub mod relay;
 #[cfg(feature = "cuda")]
 pub mod router;
 
 #[cfg(feature = "cuda")]
-pub use cpu_expert::{CpuX8SelectedExpertExecution, CpuX8SelectedExpertWorker};
+pub use cpu_expert::{
+    CpuX8SelectedExpertDeviceExecution, CpuX8SelectedExpertExecution, CpuX8SelectedExpertWorker,
+};
 #[cfg(feature = "cuda")]
 pub use cuda_expert::{
     exact_selected_expert_reference, selected_expert_device_memory_info,
     CudaSelectedExpertExecutor, CudaSelectedExpertResultSlot, CudaSelectedExpertWeights,
     NativeMxfp4ExpertView, PendingSelectedExpert, PreparedSelectedExpert, SelectedExpertCapture,
-    SelectedExpertExecution, SelectedExpertFirstDivergenceTrace, SelectedExpertPinnedExecution,
-    DOWN_BIAS_VALUES, DOWN_BLOCK_BYTES, DOWN_SCALE_BYTES, GATE_UP_BIAS_VALUES, GATE_UP_BLOCK_BYTES,
-    GATE_UP_SCALE_BYTES, GPT_OSS_SELECTED_EXPERT_DEVICE_WORK_BYTES,
-    GPT_OSS_SELECTED_EXPERT_INPUT_BYTES, GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES,
-    GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES, GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES,
-    GPT_OSS_SELECTED_EXPERT_TRACE_BYTES, GPT_OSS_SELECTED_EXPERT_WORKSPACE_POOL_CLASS_BYTES,
-    HIDDEN_SIZE, INPUT_BLOCKS, INTERMEDIATE_SIZE,
+    SelectedExpertDeviceExecution, SelectedExpertExecution, SelectedExpertFirstDivergenceTrace,
+    SelectedExpertPinnedExecution, DOWN_BIAS_VALUES, DOWN_BLOCK_BYTES, DOWN_SCALE_BYTES,
+    GATE_UP_BIAS_VALUES, GATE_UP_BLOCK_BYTES, GATE_UP_SCALE_BYTES,
+    GPT_OSS_SELECTED_EXPERT_DEVICE_WORK_BYTES, GPT_OSS_SELECTED_EXPERT_INPUT_BYTES,
+    GPT_OSS_SELECTED_EXPERT_OUTPUT_BYTES, GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES,
+    GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES, GPT_OSS_SELECTED_EXPERT_TRACE_BYTES,
+    GPT_OSS_SELECTED_EXPERT_WORKSPACE_POOL_CLASS_BYTES, HIDDEN_SIZE, INPUT_BLOCKS,
+    INTERMEDIATE_SIZE,
 };
+#[cfg(feature = "cuda")]
+pub use reduction::{
+    exact_rank_ordered_reduction_reference, CanonicalExpertContribution, CudaRankOrderedReducer,
+    PreparedRankOrderedReduction, RankOrderedReductionExecution, RankOrderedReductionTrace,
+    GPT_OSS_REDUCER_OWNED_DEVICE_BYTES, GPT_OSS_REDUCTION_CONTRIBUTION_BYTES,
+    GPT_OSS_REDUCTION_DEVICE_WORK_BYTES, GPT_OSS_REDUCTION_OUTPUT_BYTES,
+    GPT_OSS_REDUCTION_TRACE_BYTES, GPT_OSS_REDUCTION_WEIGHT_BYTES,
+    GPT_OSS_REDUCTION_WORKSPACE_CLASS_BYTES,
+};
+#[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
+pub use reduction::{RankReductionConstructionFault, RankReductionInjectedFault};
 #[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
 pub use relay::ResultRelayInjectedFault;
 #[cfg(feature = "cuda")]
 pub use relay::{
-    fixed_relay_byte_plan, pack_remote_inputs, CudaResultRelay, RelayPinnedPoolStats,
-    RelayPinnedPools, RelayPinnedReservation, ResultRelayExecution,
+    fixed_relay_byte_plan, pack_remote_inputs, CompletedLocalResultRelay, CompletedResultRelay,
+    CudaResultRelay, LocalResultRelayFailure, RelayPinnedPoolStats, RelayPinnedPools,
+    RelayPinnedReservation, ResultRelayExecution, ResultRelayFailure,
 };
 #[cfg(all(feature = "cuda", feature = "heterogeneous-test-faults"))]
 pub use router::ExactRouterInjectedFault;
@@ -49,11 +66,12 @@ pub use router::{
 pub use cuda_expert::SelectedExpertInjectedFault;
 
 pub use contract::{
-    group_routes_stably, sort_errors_by_precedence, CompletionDescriptor, ContractError,
-    ErrorOwner, ExpertRepresentationTag, ExpertResultDescriptor, ExpertWeightDescriptor,
-    GptOssPhase, GptOssRouteDescriptor, GptOssRouteWireV1, GptOssRoutedBatchDescriptor,
-    HeterogeneousErrorKind, HeterogeneousErrorRecord, PackedRouteDescriptor,
-    PreparedStepDescriptor, PreparedStepState, GPT_OSS_ROUTE_WIRE_V1_BYTES,
+    group_routes_stably, sort_errors_by_precedence, CanonicalCudaDevice, CanonicalExpertOwner,
+    CanonicalRouteContract, CompletionDescriptor, ContractError, ErrorOwner,
+    ExpertRepresentationTag, ExpertResultDescriptor, ExpertWeightDescriptor, GptOssPhase,
+    GptOssRouteDescriptor, GptOssRouteWireV1, GptOssRoutedBatchDescriptor, HeterogeneousErrorKind,
+    HeterogeneousErrorRecord, PackedRouteDescriptor, PreparedStepDescriptor, PreparedStepState,
+    GPT_OSS_ROUTE_WIRE_V1_BYTES,
 };
 pub use packing::{
     pack_routes_bounded, PackedDispatchPlan, PackedDispatchRoute, PackedOwnerDispatch,

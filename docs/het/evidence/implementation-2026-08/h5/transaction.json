@@ -1,0 +1,3883 @@
+{
+  "schema": "gpt-oss-rs.heterogeneous-h5-transaction/v3",
+  "captured_unix_seconds": 1786869507,
+  "repository_head": "b610b968715a810d6c1191140c6cfb951dacc3eb",
+  "source_fingerprint_sha256": "0d5b19f1b5b92fe0a6689d029607febbabadab33236c882a60b0593c8dde6439",
+  "commit_allocations": 0,
+  "visibility_epoch_before_commit": 0,
+  "visibility_epoch_after_commit": 1,
+  "named_matrix_cases": [
+    {
+      "name": "invalid_manifest_schema",
+      "boundary": "predispatch_validation",
+      "expected_kind": "manifest",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real placement/route validator; coordinator was never reserved"
+    },
+    {
+      "name": "stable_device_mismatch",
+      "boundary": "predispatch_validation",
+      "expected_kind": "stable_device",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real placement/route validator; coordinator was never reserved"
+    },
+    {
+      "name": "duplicate_expert_owner",
+      "boundary": "predispatch_validation",
+      "expected_kind": "ownership",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real placement/route validator; coordinator was never reserved"
+    },
+    {
+      "name": "route_bounds",
+      "boundary": "predispatch_validation",
+      "expected_kind": "bounds",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real placement/route validator; coordinator was never reserved"
+    },
+    {
+      "name": "route_canonical_order",
+      "boundary": "predispatch_validation",
+      "expected_kind": "route",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real placement/route validator; coordinator was never reserved"
+    },
+    {
+      "name": "kv_pool_reservation_exhausted",
+      "boundary": "predispatch_reservation",
+      "expected_kind": "reservation",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 0,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 0,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real generation-block allocator exhaustion; partial-lease rollback is also covered by the private unit probe"
+    },
+    {
+      "name": "capacity_one_queue_all_or_none",
+      "boundary": "predispatch_queue_reservation",
+      "expected_kind": "queue",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "real capacity-one owner queues and prepared-step discard"
+    },
+    {
+      "name": "cpu_execution",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "cpu",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "gpu0_launch",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "cuda_launch",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "gpu1_async",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "cuda_async",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "gpu1_h2d",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "h2d",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "gpu1_d2h",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "d2h",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "result_identity",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "result_identity",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "owner_reduction",
+      "boundary": "postdispatch_mandatory_drain",
+      "expected_kind": "reduction",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "coordinator lifecycle classification; concrete CUDA transfer/kernel/reduction behavior is in h5/reduction.json"
+    },
+    {
+      "name": "cancel_reserved",
+      "boundary": "reserved_predispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator"
+    },
+    {
+      "name": "cancel_prepared",
+      "boundary": "prepared_predispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator"
+    },
+    {
+      "name": "cancel_owner_order_0_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_0_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_1_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_2_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "layer_owner_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_3_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_4_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "layer_owner_expert",
+        "cpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_0",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_1",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_2",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_3",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_4",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_5",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_owner_order_5_after_6",
+      "boundary": "postdispatch_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator; all six CPU/GPU0/GPU1 completion orderings"
+    },
+    {
+      "name": "cancel_after_reduction",
+      "boundary": "reduced_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator"
+    },
+    {
+      "name": "cancel_ready_to_commit",
+      "boundary": "ready_to_commit_cancellation",
+      "expected_kind": "cancelled",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "transaction coordinator"
+    },
+    {
+      "name": "publication_image_preparation_failure",
+      "boundary": "reduced_publication_preparation",
+      "expected_kind": "publication",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "fallible commit-image validation before ReadyToCommit"
+    },
+    {
+      "name": "external_delivery_failure_after_commit",
+      "boundary": "postcommit_external_delivery",
+      "expected_kind": "publication",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 1,
+        "visibility_epoch": 1,
+        "placement_epoch": 11,
+        "committed_length": 4,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "output_image": [
+          5,
+          6
+        ],
+        "evidence_image": [
+          7,
+          8
+        ],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 1,
+        "visibility_epoch": 1,
+        "placement_epoch": 11,
+        "committed_length": 4,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "output_image": [
+          5,
+          6
+        ],
+        "evidence_image": [
+          7,
+          8
+        ],
+        "delivery_failure": "injected receiver close",
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": true,
+      "clean_second_step_committed": true,
+      "authority": "committed K/V, revision, epoch, tokens, output, and evidence are not rolled back; only delivery status changes"
+    },
+    {
+      "name": "simultaneous_cpu_then_gpu1",
+      "boundary": "postdispatch_simultaneous_owner_failure",
+      "expected_kind": "cpu",
+      "completion_order": [
+        "layer_owner_router",
+        "layer_owner_expert",
+        "cpu_expert",
+        "remote_gpu_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "deterministic error precedence under opposite observation and completion orders"
+    },
+    {
+      "name": "simultaneous_gpu1_then_cpu",
+      "boundary": "postdispatch_simultaneous_owner_failure",
+      "expected_kind": "cpu",
+      "completion_order": [
+        "layer_owner_router",
+        "remote_gpu_expert",
+        "cpu_expert",
+        "layer_owner_expert",
+        "layer_owner_relay",
+        "rank_reduction"
+      ],
+      "before_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "after_failure": {
+        "revision": 0,
+        "visibility_epoch": 0,
+        "placement_epoch": 11,
+        "committed_length": 3,
+        "block_table": [
+          [
+            0,
+            1
+          ]
+        ],
+        "token_ids": [
+          1,
+          2,
+          3
+        ],
+        "output_image": [],
+        "evidence_image": [],
+        "delivery_failure": null,
+        "free_blocks": 15,
+        "active_steps": 0
+      },
+      "authoritative_state_requirement_met": true,
+      "delivery_status_exception": false,
+      "clean_second_step_committed": true,
+      "authority": "deterministic error precedence under opposite observation and completion orders"
+    }
+  ],
+  "predispatch_cases": 9,
+  "postdispatch_lifecycle_cases": 55,
+  "cancellation_cases": 46,
+  "owner_completion_permutations": 6,
+  "adapter_first_adapter_active": 0,
+  "adapter_first_transaction_active": 1,
+  "coordinator_first_adapter_active": 1,
+  "coordinator_first_transaction_active": 0,
+  "abandoned_vector_count": 7,
+  "abandoned_capacity_bytes": 48,
+  "final_adapter_active": 0,
+  "final_transaction_active": 0,
+  "coordinator_lifecycle_scope": "named host state-machine injections prove reservation, publication, cancellation, drain accounting, error precedence, quarantine, and clean retry; they do not claim concrete CUDA leg injection",
+  "concrete_lower_layer_fault_authority": "H2 failure.json plus resolution.json prove selected-expert submit/kernel/D2H drain semantics; H4 real-x8-relay.json proves pinned GPU0/GPU1 relay legs and post-enqueue drain; H5 reduction.json proves canonical result identity, weight H2D, reduction kernel, trace D2H, terminal drain, and allocation faults; the H2 and H4 executable gates were rerun on the final H5 source",
+  "pinned_allocation_authority": "H4 bounded-pinned-pool exhaustion test plus h5/reduction.json fixed-pool high-water/release",
+  "device_scratch_allocation_authority": "h5/reduction.json four staged reducer-construction faults with stream drain and device-memory recovery",
+  "passed": true
+}

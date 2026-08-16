@@ -144,6 +144,10 @@ static KERNEL_FUNCTIONS: &[(&str, &[&str])] = &[
             "gpt_oss_router_stable_top4_kernel",
         ],
     ),
+    (
+        "gpt_oss_rank_reduction",
+        &["gpt_oss_rank_order_reduce_bf16_kernel"],
+    ),
 ];
 
 /// Loads and manages CUDA PTX modules, providing kernel launch capabilities.

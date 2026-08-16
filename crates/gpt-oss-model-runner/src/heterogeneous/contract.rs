@@ -2,6 +2,7 @@
 
 use half::bf16;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use gpt_oss_gpu::device::StableCudaDeviceId;
 
@@ -221,6 +222,96 @@ pub struct ExpertResultDescriptor {
     pub owner: ExpertOwner,
     pub placement_epoch: u64,
     pub result_slot: u32,
+}
+
+/// Allocation-free identity for one canonical route/result slot. Stable GPU
+/// ownership includes every admission field; the device name is represented
+/// by a fixed hash so the contract remains `Copy` and bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalRouteContract {
+    pub source_row: u32,
+    pub activation_slot: u32,
+    pub source_activation_slot: u32,
+    pub route_rank: u8,
+    pub expert_id: u16,
+    pub weight_bf16_bits: u16,
+    pub owner: CanonicalExpertOwner,
+    pub placement_epoch: u64,
+    pub result_slot: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalExpertOwner {
+    Cpu { pool: u16 },
+    LayerOwnerGpu { device: CanonicalCudaDevice },
+    RemoteGpu { device: CanonicalCudaDevice },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalCudaDevice {
+    pub pci_bus_id: gpt_oss_gpu::device::PciBusId,
+    pub expected_name_sha256: [u8; 32],
+    pub compute_capability: (u32, u32),
+    pub minimum_memory: u64,
+}
+
+impl CanonicalRouteContract {
+    pub fn from_packed_route(route: &PackedRouteDescriptor) -> Self {
+        Self {
+            source_row: route.route.source_row,
+            activation_slot: route.route.activation_slot,
+            source_activation_slot: route.source_activation_slot,
+            route_rank: route.route.route_rank,
+            expert_id: route.route.expert_id,
+            weight_bf16_bits: route.route.weight_bf16_bits,
+            owner: CanonicalExpertOwner::from_owner(&route.owner),
+            placement_epoch: route.placement_epoch,
+            result_slot: route.canonical_result_slot,
+        }
+    }
+
+    pub fn validate_result(&self, result: &ExpertResultDescriptor) -> Result<(), ContractError> {
+        if self.source_row == result.source_row
+            && self.route_rank == result.route_rank
+            && self.expert_id == result.expert_id
+            && self.weight_bf16_bits == result.weight_bf16_bits
+            && self.owner == CanonicalExpertOwner::from_owner(&result.owner)
+            && self.placement_epoch == result.placement_epoch
+            && self.result_slot == result.result_slot
+        {
+            Ok(())
+        } else {
+            Err(ContractError::ResultIdentity {
+                result_slot: result.result_slot,
+            })
+        }
+    }
+}
+
+impl CanonicalExpertOwner {
+    fn from_owner(owner: &ExpertOwner) -> Self {
+        match owner {
+            ExpertOwner::Cpu { pool } => Self::Cpu { pool: pool.0 },
+            ExpertOwner::LayerOwnerGpu { device } => Self::LayerOwnerGpu {
+                device: CanonicalCudaDevice::from_stable(device),
+            },
+            ExpertOwner::RemoteGpu { device } => Self::RemoteGpu {
+                device: CanonicalCudaDevice::from_stable(device),
+            },
+        }
+    }
+}
+
+impl CanonicalCudaDevice {
+    fn from_stable(device: &gpt_oss_gpu::device::StableCudaDeviceId) -> Self {
+        let expected_name_sha256: [u8; 32] = Sha256::digest(device.expected_name.as_bytes()).into();
+        Self {
+            pci_bus_id: device.pci_bus_id,
+            expected_name_sha256,
+            compute_capability: device.compute_capability,
+            minimum_memory: device.minimum_memory,
+        }
+    }
 }
 
 impl ExpertResultDescriptor {

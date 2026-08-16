@@ -282,11 +282,17 @@ fn real_x8_three_owner_relay_is_bounded_correlated_and_drained() {
     relay
         .inject_next_failure(ResultRelayInjectedFault::AfterFirstResultEnqueue)
         .unwrap();
-    assert!(relay.upload_results(&plan, &mut reservation, None).is_err());
+    reservation = relay
+        .upload_results(&plan, reservation, None)
+        .unwrap_err()
+        .reservation
+        .expect("injected relay fault drained, so reservation is recoverable");
     assert!(relay.last_fault_drained());
-    let relay_result = relay
-        .upload_results(&plan, &mut reservation, Some(&timeline))
+    let completed_relay = relay
+        .upload_results(&plan, reservation, Some(&timeline))
         .unwrap();
+    let relay_result = completed_relay.execution;
+    let reservation = completed_relay.reservation;
     assert_eq!(relay_result.cpu_h2d_bytes, plan.bytes.cpu_result_bytes);
     assert_eq!(relay_result.remote_gpu_h2d_bytes, plan.bytes.remote_gpu_d2h);
     assert_eq!(

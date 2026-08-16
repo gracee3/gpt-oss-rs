@@ -31,6 +31,7 @@ pub mod executor;
 #[cfg(feature = "cuda")]
 pub mod gpu_engine;
 pub mod gpu_metrics;
+pub mod heterogeneous_engine;
 #[cfg(any(feature = "cuda", test))]
 mod hf_snapshot;
 pub mod memory;
@@ -90,4 +91,12 @@ pub use worker::{
 #[cfg(feature = "cuda")]
 pub use async_gpu_engine::AsyncGpuLLMEngine;
 #[cfg(feature = "cuda")]
-pub use gpu_engine::GpuLLMEngine;
+pub use gpu_engine::{
+    GpuLLMEngine, HeterogeneousGpuMetadataAdapter, HeterogeneousGpuMetadataTicket,
+    HeterogeneousMetadataOwnedInput,
+};
+pub use heterogeneous_engine::{
+    DrainRole, GenerationBlockRef, GpuSequenceVisibility, HeterogeneousSequenceId,
+    HeterogeneousStepId, HeterogeneousTransactionCoordinator, ProvisionalKvView,
+    SequenceCommitImage, TransactionOutcome, TransactionTerminalRecord,
+};

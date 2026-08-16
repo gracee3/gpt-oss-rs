@@ -1,6 +1,6 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** implementation campaign; H0 through H4 passed, H5 is next;
+**Stage:** implementation campaign; H0 through H5 passed, H6 is next;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -122,8 +122,10 @@ context reclamation.
 **Implementation status:** H0 established separate local attribution commits;
 H1 froze the narrow contracts; H2 passed exact selected-expert CUDA arithmetic
 and drain gates; H3 passed owner-selective 20B construction and 120B metadata
-envelope gates; and H4 passed exact routing, bounded packing, real three-owner
-selected-work relay, queue/pool exhaustion, and correlated-concurrency gates.
-H4 remains detached from reduction and K/V publication. H5 is the next package
-and must add deterministic owner reduction plus the selected private-slot/
-visibility-epoch transaction model before integration can proceed.
+envelope gates; H4 passed exact routing, bounded packing, real three-owner
+selected-work relay, queue/pool exhaustion, and correlated-concurrency gates;
+and H5 passed exact GPU0 canonical-arena rank reduction, explicit active relay
+generation/drained reuse, generation-tagged private K/V metadata, allocation-
+free visibility-last commit, failure/cancellation/quarantine matrices, and clean
+second-run gates. The default GPU engine remains unchanged until H6 wires the
+opt-in owner shell and transaction together. H6 is the next package.

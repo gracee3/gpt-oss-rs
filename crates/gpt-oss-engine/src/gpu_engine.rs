@@ -26,7 +26,9 @@ mod inner {
     use gpt_oss_engine::worker::gpu_worker::{
         init_tensor_parallel_group, GpuWorker, GpuWorkerOutput,
     };
+    use gpt_oss_engine::worker::input::prepare_private_decode_input;
     use gpt_oss_engine::worker::WorkerConfig;
+    use gpt_oss_model_runner::input::ModelInput;
     use gpt_oss_tokenizer::Tokenizer;
 
     use crate::hf_snapshot;
@@ -555,6 +557,355 @@ mod inner {
         scheduled_groups: Vec<SequenceGroup>,
         metadata: Vec<SequenceGroupMetadata>,
         tp_pending: TensorParallelPending,
+    }
+
+    static NEXT_HETEROGENEOUS_METADATA_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
+
+    #[derive(Debug)]
+    struct ActiveHeterogeneousMetadataTicket {
+        sequence_id: u64,
+        generation: u64,
+        publication_forbidden: bool,
+        drained: bool,
+        dropped: bool,
+        quarantined_input: Option<ModelInput>,
+    }
+
+    #[derive(Debug)]
+    struct HeterogeneousMetadataAdapterState {
+        engine_instance_id: u64,
+        last_generation: u64,
+        admission_closed: bool,
+        active: Option<ActiveHeterogeneousMetadataTicket>,
+    }
+
+    /// Explicit H5 adapter for private decode metadata. The default GPU engine
+    /// remains unchanged; H6 must consume this ticket and the transaction
+    /// coordinator together so block tables, scheduler/request output,
+    /// evidence, and visibility epoch publish in one commit.
+    pub struct HeterogeneousGpuMetadataAdapter {
+        state: std::sync::Arc<parking_lot::Mutex<HeterogeneousMetadataAdapterState>>,
+    }
+
+    pub struct HeterogeneousGpuMetadataTicket {
+        engine_instance_id: u64,
+        sequence_id: u64,
+        generation: u64,
+        state: std::sync::Arc<parking_lot::Mutex<HeterogeneousMetadataAdapterState>>,
+        model_input: Option<ModelInput>,
+        released: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HeterogeneousMetadataOwnedInput {
+        pub vector_count: usize,
+        pub capacity_bytes: usize,
+    }
+
+    fn model_input_owned_capacity(input: &ModelInput) -> HeterogeneousMetadataOwnedInput {
+        let flat_u32_vectors = [
+            &input.token_ids,
+            &input.position_ids,
+            &input.attention_metadata.slot_mapping,
+            &input.attention_metadata.query_lens,
+            &input.attention_metadata.context_lens,
+        ];
+        let flat_bytes = flat_u32_vectors
+            .iter()
+            .map(|values| values.capacity() * std::mem::size_of::<u32>())
+            .sum::<usize>();
+        let block_table_bytes = input.attention_metadata.block_tables.capacity()
+            * std::mem::size_of::<Vec<u32>>()
+            + input
+                .attention_metadata
+                .block_tables
+                .iter()
+                .map(|table| table.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>();
+        HeterogeneousMetadataOwnedInput {
+            vector_count: flat_u32_vectors.len() + 1 + input.attention_metadata.block_tables.len(),
+            capacity_bytes: flat_bytes + block_table_bytes,
+        }
+    }
+
+    impl HeterogeneousGpuMetadataAdapter {
+        pub fn new() -> Result<Self> {
+            let engine_instance_id = NEXT_HETEROGENEOUS_METADATA_ENGINE_ID
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| {
+                    LLMError::GpuError("heterogeneous metadata engine identity exhausted".into())
+                })?;
+            if engine_instance_id == 0 {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata engine identity is zero".into(),
+                ));
+            }
+            Ok(Self {
+                state: std::sync::Arc::new(parking_lot::Mutex::new(
+                    HeterogeneousMetadataAdapterState {
+                        engine_instance_id,
+                        last_generation: 0,
+                        admission_closed: false,
+                        active: None,
+                    },
+                )),
+            })
+        }
+
+        pub fn prepare_private_decode(
+            &self,
+            token_id: TokenId,
+            private: &crate::heterogeneous_engine::ProvisionalKvView<'_>,
+            block_size: usize,
+        ) -> Result<HeterogeneousGpuMetadataTicket> {
+            // Construct every owned vector before taking the active ticket.
+            let model_input = prepare_private_decode_input(token_id, private, block_size)?;
+            let mut state = self.state.lock();
+            if state.admission_closed {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata admission is closed".into(),
+                ));
+            }
+            if state.active.is_some() {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata adapter already owns a ticket".into(),
+                ));
+            }
+            if private.transaction_generation <= state.last_generation {
+                return Err(LLMError::GpuError(format!(
+                    "heterogeneous metadata generation {} is not newer than {}",
+                    private.transaction_generation, state.last_generation
+                )));
+            }
+            let engine_instance_id = state.engine_instance_id;
+            state.last_generation = private.transaction_generation;
+            state.active = Some(ActiveHeterogeneousMetadataTicket {
+                sequence_id: private.sequence_id,
+                generation: private.transaction_generation,
+                publication_forbidden: false,
+                drained: false,
+                dropped: false,
+                quarantined_input: None,
+            });
+            Ok(HeterogeneousGpuMetadataTicket {
+                engine_instance_id,
+                sequence_id: private.sequence_id,
+                generation: private.transaction_generation,
+                state: std::sync::Arc::clone(&self.state),
+                model_input: Some(model_input),
+                released: false,
+            })
+        }
+
+        pub fn collect_none(&self) -> Result<()> {
+            if self.state.lock().active.is_some() {
+                return Err(LLMError::GpuError(
+                    "collect(None) is invalid while a heterogeneous metadata ticket is active"
+                        .into(),
+                ));
+            }
+            Ok(())
+        }
+
+        pub fn mark_collected_and_drained(
+            &self,
+            ticket: &HeterogeneousGpuMetadataTicket,
+        ) -> Result<()> {
+            let mut state = self.validate_ticket(ticket)?;
+            let active = state
+                .active
+                .as_mut()
+                .expect("ticket validation retained active");
+            if active.publication_forbidden {
+                return Err(LLMError::GpuError(
+                    "failed/cancelled metadata ticket cannot become committable".into(),
+                ));
+            }
+            active.drained = true;
+            Ok(())
+        }
+
+        pub fn record_collect_failure(
+            &self,
+            ticket: &HeterogeneousGpuMetadataTicket,
+            cuda_work_drained: bool,
+        ) -> Result<()> {
+            let mut state = self.validate_ticket(ticket)?;
+            let active = state
+                .active
+                .as_mut()
+                .expect("ticket validation retained active");
+            active.publication_forbidden = true;
+            active.drained |= cuda_work_drained;
+            Ok(())
+        }
+
+        pub fn cancel_ticket(
+            &self,
+            ticket: &mut HeterogeneousGpuMetadataTicket,
+            cuda_work_drained: bool,
+        ) -> Result<()> {
+            let mut state = self.validate_ticket(ticket)?;
+            let active = state
+                .active
+                .as_mut()
+                .expect("ticket validation retained active");
+            active.publication_forbidden = true;
+            active.drained |= cuda_work_drained;
+            if !active.drained {
+                return Err(LLMError::GpuError(
+                    "metadata ticket cancellation requires a proven CUDA drain".into(),
+                ));
+            }
+            state.active = None;
+            ticket.released = true;
+            ticket.model_input.take();
+            Ok(())
+        }
+
+        pub fn cancel_abandoned(&self, generation: u64, cuda_work_drained: bool) -> Result<()> {
+            let mut state = self.state.lock();
+            let active = state.active.as_mut().ok_or_else(|| {
+                LLMError::GpuError("no abandoned heterogeneous metadata ticket".into())
+            })?;
+            if active.generation != generation || !active.dropped {
+                return Err(LLMError::GpuError(
+                    "abandoned metadata generation/ownership mismatch".into(),
+                ));
+            }
+            active.drained |= cuda_work_drained;
+            if !active.drained {
+                return Err(LLMError::GpuError(
+                    "abandoned metadata ticket still owns undrained CUDA work".into(),
+                ));
+            }
+            state.active = None;
+            Ok(())
+        }
+
+        pub fn release_for_transaction_commit(
+            &self,
+            mut ticket: HeterogeneousGpuMetadataTicket,
+        ) -> Result<ModelInput> {
+            let mut state = self.validate_ticket(&ticket)?;
+            let active = state
+                .active
+                .as_ref()
+                .expect("ticket validation retained active");
+            if active.publication_forbidden || !active.drained || active.dropped {
+                return Err(LLMError::GpuError(
+                    "metadata ticket is not drained and committable".into(),
+                ));
+            }
+            let model_input = ticket.model_input.take().ok_or_else(|| {
+                LLMError::GpuError("metadata ticket input was already released".into())
+            })?;
+            state.active = None;
+            ticket.released = true;
+            Ok(model_input)
+        }
+
+        pub fn begin_shutdown(&self) {
+            let mut state = self.state.lock();
+            state.admission_closed = true;
+            if let Some(active) = state.active.as_mut() {
+                active.publication_forbidden = true;
+            }
+        }
+
+        pub fn finish_shutdown(&self) -> Result<()> {
+            let state = self.state.lock();
+            if state.active.is_some() {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata shutdown retained an owned reservation".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        pub fn active_ticket_count(&self) -> usize {
+            usize::from(self.state.lock().active.is_some())
+        }
+
+        pub fn quarantined_input_ownership(&self) -> HeterogeneousMetadataOwnedInput {
+            self.state
+                .lock()
+                .active
+                .as_ref()
+                .and_then(|active| active.quarantined_input.as_ref())
+                .map(model_input_owned_capacity)
+                .unwrap_or(HeterogeneousMetadataOwnedInput {
+                    vector_count: 0,
+                    capacity_bytes: 0,
+                })
+        }
+
+        fn validate_ticket<'a>(
+            &'a self,
+            ticket: &HeterogeneousGpuMetadataTicket,
+        ) -> Result<parking_lot::MutexGuard<'a, HeterogeneousMetadataAdapterState>> {
+            if !std::sync::Arc::ptr_eq(&self.state, &ticket.state) {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata ticket belongs to another engine instance".into(),
+                ));
+            }
+            let state = self.state.lock();
+            let active = state.active.as_ref().ok_or_else(|| {
+                LLMError::GpuError("heterogeneous metadata ticket is not active".into())
+            })?;
+            if state.engine_instance_id != ticket.engine_instance_id
+                || active.sequence_id != ticket.sequence_id
+                || active.generation != ticket.generation
+            {
+                return Err(LLMError::GpuError(
+                    "heterogeneous metadata engine/sequence/generation identity mismatch".into(),
+                ));
+            }
+            Ok(state)
+        }
+    }
+
+    impl HeterogeneousGpuMetadataTicket {
+        pub const fn engine_instance_id(&self) -> u64 {
+            self.engine_instance_id
+        }
+
+        pub const fn generation(&self) -> u64 {
+            self.generation
+        }
+
+        pub const fn sequence_id(&self) -> u64 {
+            self.sequence_id
+        }
+
+        pub fn model_input(&self) -> &ModelInput {
+            self.model_input
+                .as_ref()
+                .expect("active metadata ticket retains its model input")
+        }
+    }
+
+    impl Drop for HeterogeneousGpuMetadataTicket {
+        fn drop(&mut self) {
+            if self.released {
+                return;
+            }
+            let mut state = self.state.lock();
+            let same_engine = state.engine_instance_id == self.engine_instance_id;
+            if same_engine {
+                if let Some(active) = state.active.as_mut() {
+                    if active.sequence_id == self.sequence_id
+                        && active.generation == self.generation
+                    {
+                        active.publication_forbidden = true;
+                        active.dropped = true;
+                        active.quarantined_input = self.model_input.take();
+                    }
+                }
+            }
+        }
     }
 
     impl GpuLLMEngine {
@@ -1511,10 +1862,152 @@ mod inner {
             assert!(err.contains("tensor_parallel_size=4"));
             assert!(err.contains("only 2 available"));
         }
+
+        fn metadata_fixture() -> (
+            crate::heterogeneous_engine::HeterogeneousTransactionCoordinator,
+            u64,
+        ) {
+            let mut coordinator =
+                crate::heterogeneous_engine::HeterogeneousTransactionCoordinator::new(4, 8, false)
+                    .unwrap();
+            coordinator
+                .register_sequence(41, 3, 7, vec![1, 2, 3])
+                .unwrap();
+            let step = coordinator.reserve_step(41, 1, 7).unwrap();
+            (coordinator, step)
+        }
+
+        #[test]
+        fn heterogeneous_metadata_ticket_rejects_cross_engine_and_collect_none() {
+            let (coordinator, step) = metadata_fixture();
+            let view = coordinator.private_kv_view(step).unwrap();
+            let engine_a = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let engine_b = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let mut ticket = engine_a.prepare_private_decode(3, &view, 4).unwrap();
+            assert!(engine_a.collect_none().is_err());
+            assert!(engine_b.mark_collected_and_drained(&ticket).is_err());
+            assert_eq!(engine_a.active_ticket_count(), 1);
+            assert_eq!(engine_b.active_ticket_count(), 0);
+            assert!(engine_a.cancel_ticket(&mut ticket, false).is_err());
+            assert_eq!(engine_a.active_ticket_count(), 1);
+            engine_a.cancel_ticket(&mut ticket, true).unwrap();
+            assert_eq!(engine_a.active_ticket_count(), 0);
+            engine_a.collect_none().unwrap();
+        }
+
+        #[test]
+        fn heterogeneous_metadata_dropped_ticket_is_accounted_until_explicit_drain() {
+            let (coordinator, step) = metadata_fixture();
+            let view = coordinator.private_kv_view(step).unwrap();
+            let adapter = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let generation = view.transaction_generation;
+            let ticket = adapter.prepare_private_decode(3, &view, 4).unwrap();
+            assert_eq!(ticket.generation(), generation);
+            assert_eq!(ticket.sequence_id(), view.sequence_id);
+            let owned_before_drop = model_input_owned_capacity(ticket.model_input());
+            assert!(owned_before_drop.vector_count > 0);
+            assert!(owned_before_drop.capacity_bytes > 0);
+            drop(ticket);
+            assert_eq!(adapter.active_ticket_count(), 1);
+            assert_eq!(
+                adapter.quarantined_input_ownership(),
+                owned_before_drop,
+                "Drop must transfer physical ModelInput ownership into adapter quarantine"
+            );
+            assert!(adapter.cancel_abandoned(generation, false).is_err());
+            assert_eq!(adapter.quarantined_input_ownership(), owned_before_drop);
+            adapter.begin_shutdown();
+            assert!(adapter.finish_shutdown().is_err());
+            adapter.cancel_abandoned(generation, true).unwrap();
+            adapter.finish_shutdown().unwrap();
+            assert_eq!(adapter.active_ticket_count(), 0);
+            assert_eq!(
+                adapter.quarantined_input_ownership(),
+                HeterogeneousMetadataOwnedInput {
+                    vector_count: 0,
+                    capacity_bytes: 0,
+                }
+            );
+        }
+
+        #[test]
+        fn heterogeneous_shutdown_requires_adapter_and_transaction_zero_ownership() {
+            use crate::heterogeneous_engine::DrainRole;
+
+            let (mut coordinator, step) = metadata_fixture();
+            coordinator.mark_prepared(step).unwrap();
+            let roles = [DrainRole::LayerOwnerRelay, DrainRole::RankReduction];
+            coordinator.mark_dispatched(step, &roles).unwrap();
+            let view = coordinator.private_kv_view(step).unwrap();
+            let generation = view.transaction_generation;
+            let adapter = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let ticket = adapter.prepare_private_decode(3, &view, 4).unwrap();
+
+            adapter.begin_shutdown();
+            assert!(coordinator.begin_shutdown().unwrap().is_empty());
+            drop(ticket);
+            assert!(adapter.finish_shutdown().is_err());
+            assert!(coordinator.finish_shutdown().is_err());
+            assert_eq!(adapter.active_ticket_count(), 1);
+            assert_eq!(coordinator.active_step_count(), 1);
+
+            for role in roles {
+                coordinator.mark_terminal(step, role).unwrap();
+            }
+            let transaction_records = coordinator.finish_shutdown().unwrap();
+            assert_eq!(transaction_records.len(), 1);
+            assert_eq!(coordinator.active_step_count(), 0);
+            assert_eq!(
+                adapter.active_ticket_count(),
+                1,
+                "transaction zero alone is not coordinated shutdown"
+            );
+            assert!(adapter.quarantined_input_ownership().capacity_bytes > 0);
+
+            adapter.cancel_abandoned(generation, true).unwrap();
+            adapter.finish_shutdown().unwrap();
+            assert_eq!(adapter.active_ticket_count(), 0);
+            assert_eq!(coordinator.active_step_count(), 0);
+            assert_eq!(adapter.quarantined_input_ownership().capacity_bytes, 0);
+        }
+
+        #[test]
+        fn heterogeneous_metadata_collect_failure_requires_drain_and_same_generation_cannot_recur()
+        {
+            let (coordinator, step) = metadata_fixture();
+            let view = coordinator.private_kv_view(step).unwrap();
+            let adapter = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let mut ticket = adapter.prepare_private_decode(3, &view, 4).unwrap();
+            assert!(adapter.prepare_private_decode(3, &view, 4).is_err());
+            adapter.record_collect_failure(&ticket, false).unwrap();
+            assert!(adapter.mark_collected_and_drained(&ticket).is_err());
+            assert!(adapter.cancel_ticket(&mut ticket, false).is_err());
+            adapter.cancel_ticket(&mut ticket, true).unwrap();
+            assert!(adapter.prepare_private_decode(3, &view, 4).is_err());
+        }
+
+        #[test]
+        fn heterogeneous_metadata_success_releases_only_after_drain_without_publication() {
+            let (coordinator, step) = metadata_fixture();
+            let view = coordinator.private_kv_view(step).unwrap();
+            let adapter = HeterogeneousGpuMetadataAdapter::new().unwrap();
+            let ticket = adapter.prepare_private_decode(3, &view, 4).unwrap();
+            assert_eq!(ticket.model_input().attention_metadata.slot_mapping, [3]);
+            adapter.mark_collected_and_drained(&ticket).unwrap();
+            let input = adapter.release_for_transaction_commit(ticket).unwrap();
+            assert_eq!(input.attention_metadata.context_lens, [4]);
+            assert_eq!(adapter.active_ticket_count(), 0);
+            // Releasing metadata does not publish the coordinator's private
+            // table; only its later allocation-free commit can do that.
+            assert_eq!(coordinator.committed_view(41).unwrap().committed_length, 3);
+        }
     }
 
     unsafe impl Send for GpuLLMEngine {}
 }
 
 #[cfg(feature = "cuda")]
-pub use inner::{AbortQueue, GpuLLMEngine, PendingRequest, RequestQueue};
+pub use inner::{
+    AbortQueue, GpuLLMEngine, HeterogeneousGpuMetadataAdapter, HeterogeneousGpuMetadataTicket,
+    HeterogeneousMetadataOwnedInput, PendingRequest, RequestQueue,
+};

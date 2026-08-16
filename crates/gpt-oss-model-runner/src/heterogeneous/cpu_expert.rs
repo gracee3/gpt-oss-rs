@@ -10,7 +10,7 @@ use half::bf16;
 
 use crate::cpu_repack::CpuOwnerExpertView;
 
-use super::contract::{ExpertResultDescriptor, PackedRouteDescriptor};
+use super::contract::{CanonicalRouteContract, ExpertResultDescriptor, PackedRouteDescriptor};
 use super::placement::ExpertOwner;
 use super::{HIDDEN_SIZE, INPUT_BLOCKS, INTERMEDIATE_SIZE};
 
@@ -21,6 +21,15 @@ const GATE_UP_ROWS: usize = INTERMEDIATE_SIZE * 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuX8SelectedExpertExecution {
     pub result: ExpertResultDescriptor,
+    pub output_bytes: usize,
+    pub elapsed_ns: u64,
+}
+
+/// Allocation-free completion used by a prepared heterogeneous step. The
+/// step already owns the canonical result descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuX8SelectedExpertDeviceExecution {
+    pub route_contract: CanonicalRouteContract,
     pub output_bytes: usize,
     pub elapsed_ns: u64,
 }
@@ -61,6 +70,36 @@ impl CpuX8SelectedExpertWorker {
         output: &mut BoundedPinnedLease<u16>,
         timeline: Option<&CorrelatedTimeline>,
     ) -> Result<CpuX8SelectedExpertExecution> {
+        let result = ExpertResultDescriptor::from_packed_route(route);
+        let execution = self.execute_into_pinned_device_only(
+            layer,
+            route,
+            owner_route_slot,
+            expert,
+            input_bf16_bits,
+            output,
+            timeline,
+        )?;
+        Ok(CpuX8SelectedExpertExecution {
+            result,
+            output_bytes: execution.output_bytes,
+            elapsed_ns: execution.elapsed_ns,
+        })
+    }
+
+    /// Execute into a fixed pinned result arena without allocating or cloning
+    /// route identity after dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_into_pinned_device_only(
+        &mut self,
+        layer: u16,
+        route: &PackedRouteDescriptor,
+        owner_route_slot: u32,
+        expert: CpuOwnerExpertView<'_>,
+        input_bf16_bits: &[u16],
+        output: &mut BoundedPinnedLease<u16>,
+        timeline: Option<&CorrelatedTimeline>,
+    ) -> Result<CpuX8SelectedExpertDeviceExecution> {
         if !matches!(route.owner, ExpertOwner::Cpu { .. })
             || route.route.expert_id != expert.expert_id
             || route.canonical_result_slot != route.route.canonical_result_slot()
@@ -118,8 +157,8 @@ impl CpuX8SelectedExpertWorker {
         if let Some(timeline) = timeline {
             timeline.record_host("cpu_expert", "compute_end");
         }
-        Ok(CpuX8SelectedExpertExecution {
-            result: ExpertResultDescriptor::from_packed_route(route),
+        Ok(CpuX8SelectedExpertDeviceExecution {
+            route_contract: CanonicalRouteContract::from_packed_route(route),
             output_bytes: HIDDEN_SIZE * size_of::<u16>(),
             elapsed_ns,
         })
