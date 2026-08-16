@@ -140,4 +140,7 @@ single-owner CPU/GPU0/GPU1 selected work, the private shell token/K/V image is
 published inside the coordinator's exclusive visibility-last commit, fixed
 pools and memory remain bounded, and a real post-enqueue fault proves both
 recoverable clean retry and unproven-drain quarantine. H8 owner-selective 120B
-construction is the next gate; no 120B execution has begun.
+construction remains unpassed: the final separately authorized launch was
+blocked before model load because its fresh 120-second watchdog preflight did
+not keep `SwapFree` and `SwapCached` byte-identical. No 120B execution has
+begun; H9/H10 remain stopped.
