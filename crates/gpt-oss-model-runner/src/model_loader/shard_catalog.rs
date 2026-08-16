@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use memmap2::Mmap;
 use serde::de::{Error as DeError, MapAccess, Visitor};
@@ -83,6 +83,23 @@ impl SafeTensorShardDescriptor {
 pub struct ShardMappingActivity {
     pub current: usize,
     pub high_water: usize,
+    pub current_mapped_bytes: u64,
+    pub mapped_byte_high_water: u64,
+    pub quarantined: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MappingLifecycle {
+    Idle,
+    Active,
+    Quarantined,
+}
+
+struct MappingActivityState {
+    lifecycle: MappingLifecycle,
+    high_water: usize,
+    current_mapped_bytes: u64,
+    mapped_byte_high_water: u64,
 }
 
 /// Immutable metadata catalog. Payload bytes are not part of its identity.
@@ -96,8 +113,7 @@ pub struct SafeTensorShardCatalog {
     total_file_bytes: u64,
     total_payload_bytes: u64,
     total_header_bytes_read: u64,
-    active_mappings: AtomicUsize,
-    mapping_high_water: AtomicUsize,
+    mapping_activity: Mutex<MappingActivityState>,
 }
 
 impl SafeTensorShardCatalog {
@@ -165,8 +181,12 @@ impl SafeTensorShardCatalog {
             total_file_bytes,
             total_payload_bytes,
             total_header_bytes_read,
-            active_mappings: AtomicUsize::new(0),
-            mapping_high_water: AtomicUsize::new(0),
+            mapping_activity: Mutex::new(MappingActivityState {
+                lifecycle: MappingLifecycle::Idle,
+                high_water: 0,
+                current_mapped_bytes: 0,
+                mapped_byte_high_water: 0,
+            }),
         })
     }
 
@@ -213,9 +233,16 @@ impl SafeTensorShardCatalog {
     }
 
     pub fn mapping_activity(&self) -> ShardMappingActivity {
+        let state = self
+            .mapping_activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ShardMappingActivity {
-            current: self.active_mappings.load(Ordering::Acquire),
-            high_water: self.mapping_high_water.load(Ordering::Acquire),
+            current: usize::from(state.lifecycle != MappingLifecycle::Idle),
+            high_water: state.high_water,
+            current_mapped_bytes: state.current_mapped_bytes,
+            mapped_byte_high_water: state.mapped_byte_high_water,
+            quarantined: state.lifecycle == MappingLifecycle::Quarantined,
         }
     }
 
@@ -232,11 +259,26 @@ impl SafeTensorShardCatalog {
         shard_index: usize,
         use_mapping: impl FnOnce(&ScopedShardMapping<'_>) -> Result<R>,
     ) -> Result<R> {
+        let mapped = self.map_scoped_shard(shard_index)?;
+        let result = {
+            let scope = ScopedShardMapping {
+                shard_index,
+                descriptor: mapped.descriptor(),
+                tensors: &self.tensors,
+                mapping: mapped.mapping(),
+            };
+            use_mapping(&scope)
+        };
+        drop(mapped);
+        result
+    }
+
+    pub(crate) fn map_scoped_shard(&self, shard_index: usize) -> Result<CatalogMappedShard<'_>> {
         let descriptor = self
             .shards
             .get(shard_index)
             .ok_or_else(|| model_error("shard index is outside the catalog"))?;
-        let activity = ActiveMappingGuard::acquire(self)?;
+        let mut activity = ActiveMappingGuard::acquire(self)?;
         let mut file = open_validated_shard(descriptor)?;
         let observed_header = read_shard_header(&mut file, descriptor.identity.file_length)?;
         if observed_header.header_sha256 != descriptor.identity.header_sha256
@@ -254,18 +296,62 @@ impl SafeTensorShardCatalog {
             descriptor.identity.device,
             descriptor.identity.inode,
         )?;
-        let result = {
-            let scope = ScopedShardMapping {
-                shard_index,
-                descriptor,
-                tensors: &self.tensors,
-                mapping: &mapping,
-            };
-            use_mapping(&scope)
-        };
-        drop(mapping);
-        drop(activity);
-        result
+        activity.mark_mapped(descriptor.identity.file_length);
+        Ok(CatalogMappedShard {
+            descriptor,
+            mapping: Some(mapping),
+            activity: Some(activity),
+        })
+    }
+}
+
+/// One catalog-admitted mapping. Normal drop unmaps before releasing capacity;
+/// quarantine intentionally retains the mapping for process life and poisons
+/// this catalog instance permanently. The shard's external immutability
+/// obligation therefore also lasts until process exit: holding an open `File`
+/// would not prevent another actor from mutating the mapped inode.
+pub(crate) struct CatalogMappedShard<'a> {
+    descriptor: &'a SafeTensorShardDescriptor,
+    mapping: Option<Mmap>,
+    activity: Option<ActiveMappingGuard<'a>>,
+}
+
+impl CatalogMappedShard<'_> {
+    pub(crate) const fn descriptor(&self) -> &SafeTensorShardDescriptor {
+        self.descriptor
+    }
+
+    pub(crate) fn mapping(&self) -> &Mmap {
+        self.mapping
+            .as_ref()
+            .expect("catalog mapping is present until release or quarantine")
+    }
+
+    pub(crate) fn checked_bytes(&self, absolute_range: [u64; 2]) -> Result<&[u8]> {
+        let start = usize::try_from(absolute_range[0])
+            .map_err(|_| model_error("mapped action start exceeds usize"))?;
+        let end = usize::try_from(absolute_range[1])
+            .map_err(|_| model_error("mapped action end exceeds usize"))?;
+        self.mapping()
+            .get(start..end)
+            .ok_or_else(|| model_error("mapped action range is unavailable"))
+    }
+
+    pub(crate) fn quarantine_for_process_lifetime(&mut self) {
+        if let Some(activity) = self.activity.as_mut() {
+            activity.quarantine();
+        }
+        if let Some(mapping) = self.mapping.take() {
+            std::mem::forget(mapping);
+        }
+        drop(self.activity.take());
+    }
+}
+
+impl Drop for CatalogMappedShard<'_> {
+    fn drop(&mut self) {
+        drop(self.mapping.take());
+        drop(self.activity.take());
     }
 }
 
@@ -305,23 +391,76 @@ impl<'a> ScopedShardMapping<'a> {
 
 struct ActiveMappingGuard<'a> {
     catalog: &'a SafeTensorShardCatalog,
+    mapped_bytes: u64,
+    release_on_drop: bool,
 }
 
 impl<'a> ActiveMappingGuard<'a> {
     fn acquire(catalog: &'a SafeTensorShardCatalog) -> Result<Self> {
-        catalog
-            .active_mappings
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| model_error("a shard mapping is already active"))?;
-        catalog.mapping_high_water.fetch_max(1, Ordering::AcqRel);
-        Ok(Self { catalog })
+        let mut state = catalog
+            .mapping_activity
+            .lock()
+            .map_err(|_| model_error("shard mapping activity lock is poisoned"))?;
+        match state.lifecycle {
+            MappingLifecycle::Idle => state.lifecycle = MappingLifecycle::Active,
+            MappingLifecycle::Active => {
+                return Err(model_error("a shard mapping is already active"))
+            }
+            MappingLifecycle::Quarantined => {
+                return Err(model_error("shard catalog is permanently quarantined"))
+            }
+        }
+        state.high_water = state.high_water.max(1);
+        drop(state);
+        Ok(Self {
+            catalog,
+            mapped_bytes: 0,
+            release_on_drop: true,
+        })
+    }
+
+    fn mark_mapped(&mut self, mapped_bytes: u64) {
+        let mut state = self
+            .catalog
+            .mapping_activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(state.lifecycle, MappingLifecycle::Active);
+        debug_assert_eq!(state.current_mapped_bytes, 0);
+        state.current_mapped_bytes = mapped_bytes;
+        state.mapped_byte_high_water = state.mapped_byte_high_water.max(mapped_bytes);
+        self.mapped_bytes = mapped_bytes;
+    }
+
+    fn quarantine(&mut self) {
+        let mut state = self
+            .catalog
+            .mapping_activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(matches!(
+            state.lifecycle,
+            MappingLifecycle::Active | MappingLifecycle::Quarantined
+        ));
+        debug_assert_eq!(state.current_mapped_bytes, self.mapped_bytes);
+        state.lifecycle = MappingLifecycle::Quarantined;
+        self.release_on_drop = false;
     }
 }
 
 impl Drop for ActiveMappingGuard<'_> {
     fn drop(&mut self) {
-        let prior = self.catalog.active_mappings.swap(0, Ordering::AcqRel);
-        debug_assert_eq!(prior, 1);
+        if !self.release_on_drop {
+            return;
+        }
+        let mut state = self
+            .catalog
+            .mapping_activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(state.lifecycle, MappingLifecycle::Active);
+        state.current_mapped_bytes = 0;
+        state.lifecycle = MappingLifecycle::Idle;
     }
 }
 
@@ -1391,6 +1530,7 @@ mod tests {
             }],
         );
         let catalog = SafeTensorShardCatalog::open(root.path()).unwrap();
+        let file_length = catalog.shards()[0].identity.file_length;
         let copied = catalog
             .with_mapped_shard(0, |mapping| {
                 assert_eq!(catalog.mapping_activity().current, 1);
@@ -1403,7 +1543,10 @@ mod tests {
             catalog.mapping_activity(),
             ShardMappingActivity {
                 current: 0,
-                high_water: 1
+                high_water: 1,
+                current_mapped_bytes: 0,
+                mapped_byte_high_water: file_length,
+                quarantined: false,
             }
         );
 
