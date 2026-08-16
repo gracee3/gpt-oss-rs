@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use cudarc::driver::{
-    sys::CUevent_flags, CudaContext, CudaEvent, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+    sys::CUevent_flags, CudaContext, CudaEvent, CudaSlice, CudaStream, LaunchConfig,
+    PinnedHostSlice, PushKernelArg,
 };
 use gpt_oss_core::error::{LLMError, Result};
 use gpt_oss_cpu_kernels::{
@@ -272,6 +273,16 @@ impl CudaSelectedExpertExecutor {
         &self.stable_device
     }
 
+    /// Construction-only access to the executor's private stream.
+    ///
+    /// H3 uses this to materialize immutable weights into the same context as
+    /// the H2 executor. Execution modules outside this crate do not receive a
+    /// stream handle, so stream/event ownership remains behind the narrow
+    /// heterogeneous boundary.
+    pub(crate) fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
+    }
+
     pub const fn scratch_bytes(&self) -> usize {
         GPT_OSS_SELECTED_EXPERT_SCRATCH_BYTES
     }
@@ -365,6 +376,52 @@ impl CudaSelectedExpertExecutor {
         Ok(weights)
     }
 
+    /// Upload one immutable expert through a caller-owned bounded pinned lease.
+    ///
+    /// H3 uses this construction path so every blocks/scales/bias surface is
+    /// staged without creating a whole-expert host allocation. The lease is
+    /// reused only after a stream synchronization and never becomes part of
+    /// the resident weight handle.
+    pub(crate) fn upload_expert_staged(
+        &self,
+        owner: ExpertOwner,
+        source: NativeMxfp4ExpertView<'_>,
+        pinned: &mut PinnedHostSlice<u8>,
+    ) -> Result<CudaSelectedExpertWeights> {
+        source.validate()?;
+        match &owner {
+            ExpertOwner::LayerOwnerGpu { device } | ExpertOwner::RemoteGpu { device }
+                if device == &self.stable_device => {}
+            _ => {
+                return Err(LLMError::GpuError(
+                    "selected expert owner does not match executor device".into(),
+                ));
+            }
+        }
+        let gate_up_blocks = upload_pinned_u8(&self.stream, pinned, source.gate_up_blocks)?;
+        let gate_up_scales = upload_pinned_u8(&self.stream, pinned, source.gate_up_scales)?;
+        let gate_up_bias = upload_pinned_u16(&self.stream, pinned, source.gate_up_bias_bf16_bits)?;
+        let down_blocks = upload_pinned_u8(&self.stream, pinned, source.down_blocks)?;
+        let down_scales = upload_pinned_u8(&self.stream, pinned, source.down_scales)?;
+        let down_bias = upload_pinned_u16(&self.stream, pinned, source.down_bias_bf16_bits)?;
+        Ok(CudaSelectedExpertWeights {
+            descriptor: ExpertWeightDescriptor {
+                key: source.key,
+                owner,
+                representation: ExpertRepresentationTag::CudaNativeMxfp4BlocksScalesV1,
+                payload_bytes: GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES as u64,
+                identity_sha256: source.identity_sha256.to_ascii_lowercase(),
+            },
+            device: self.stable_device.clone(),
+            gate_up_blocks,
+            gate_up_scales,
+            gate_up_bias,
+            down_blocks,
+            down_scales,
+            down_bias,
+        })
+    }
+
     pub fn execute(
         &mut self,
         phase: GptOssPhase,
@@ -429,6 +486,74 @@ impl CudaSelectedExpertExecutor {
             result_slot,
         })
     }
+}
+
+fn upload_pinned_u8(
+    stream: &Arc<CudaStream>,
+    pinned: &mut PinnedHostSlice<u8>,
+    source: &[u8],
+) -> Result<CudaSlice<u8>> {
+    if source.len() > pinned.len() {
+        return Err(LLMError::GpuError(format!(
+            "selected expert surface {} exceeds pinned construction lease {}",
+            source.len(),
+            pinned.len()
+        )));
+    }
+    pinned
+        .as_mut_slice()
+        .map_err(cuda_error("selected expert pinned write access"))?[..source.len()]
+        .copy_from_slice(source);
+    // SAFETY: the full allocation is initialized by the immediately following
+    // copy and synchronized before the pinned lease can be reused.
+    let mut destination = unsafe { stream.alloc::<u8>(source.len()) }
+        .map_err(cuda_error("selected expert staged allocation"))?;
+    let staged = &pinned
+        .as_slice()
+        .map_err(cuda_error("selected expert pinned read access"))?[..source.len()];
+    stream
+        .memcpy_htod(staged, &mut destination)
+        .map_err(cuda_error("selected expert staged H2D"))?;
+    stream
+        .synchronize()
+        .map_err(cuda_error("selected expert staged H2D drain"))?;
+    Ok(destination)
+}
+
+fn upload_pinned_u16(
+    stream: &Arc<CudaStream>,
+    pinned: &mut PinnedHostSlice<u8>,
+    source: &[u16],
+) -> Result<CudaSlice<u16>> {
+    let source_bytes = bytemuck::cast_slice(source);
+    if source_bytes.len() > pinned.len() {
+        return Err(LLMError::GpuError(format!(
+            "selected expert bias surface {} exceeds pinned construction lease {}",
+            source_bytes.len(),
+            pinned.len()
+        )));
+    }
+    pinned
+        .as_mut_slice()
+        .map_err(cuda_error("selected expert pinned bias write access"))?[..source_bytes.len()]
+        .copy_from_slice(source_bytes);
+    // SAFETY: the full allocation is initialized by the immediately following
+    // exact-length copy and synchronized before lease reuse.
+    let mut destination = unsafe { stream.alloc::<u16>(source.len()) }
+        .map_err(cuda_error("selected expert staged bias allocation"))?;
+    let staged_bytes = &pinned
+        .as_slice()
+        .map_err(cuda_error("selected expert pinned bias read access"))?[..source_bytes.len()];
+    let staged: &[u16] = bytemuck::try_cast_slice(staged_bytes).map_err(|error| {
+        LLMError::GpuError(format!("selected expert pinned BF16 view: {error}"))
+    })?;
+    stream
+        .memcpy_htod(staged, &mut destination)
+        .map_err(cuda_error("selected expert staged bias H2D"))?;
+    stream
+        .synchronize()
+        .map_err(cuda_error("selected expert staged bias H2D drain"))?;
+    Ok(destination)
 }
 
 /// Validated but not yet enqueued selected-expert work.

@@ -38,6 +38,8 @@ xe = [
 ]
 cuda = ["gpt-oss-engine/cuda", "gpt-oss-gpu/cuda", "dep:half"]
 cublaslt = ["cuda", "gpt-oss-engine/cublaslt"]
+# Explicitly gated real-constructor lifecycle faults for the bounded H3 probe.
+heterogeneous-test-faults = ["cuda", "gpt-oss-model-runner/heterogeneous-test-faults"]
 
 [dev-dependencies]
 criterion.workspace = true
@@ -76,4 +78,9 @@ required-features = ["xe"]
 [[bin]]
 name = "heterogeneous_expert_oracle"
 path = "src/bin/heterogeneous_expert_oracle.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "heterogeneous_construct"
+path = "src/bin/heterogeneous_construct.rs"
 required-features = ["cuda"]

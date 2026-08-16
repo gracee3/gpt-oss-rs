@@ -34,5 +34,5 @@ pub use contract::{
 pub use placement::{
     CpuPoolId, ExpertOwner, GptOssExpertKey, GptOssExpertPlacementManifestV1, GptOssPlacementModel,
     PlacementBudgets, PlacementError, PlacementPolicyClass, ResolvedExpertPlacement,
-    HETEROGENEOUS_PLACEMENT_SCHEMA_V1,
+    CONSERVATIVE_OWNER_EXPERT_BYTES, HETEROGENEOUS_PLACEMENT_SCHEMA_V1,
 };

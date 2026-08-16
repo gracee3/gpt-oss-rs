@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const HETEROGENEOUS_PLACEMENT_SCHEMA_V1: &str = "gpt-oss-rs.heterogeneous-placement/v1";
+pub const CONSERVATIVE_OWNER_EXPERT_BYTES: u64 = 13_253_760;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GptOssExpertKey {
@@ -123,6 +124,10 @@ impl ResolvedExpertPlacement {
         self.assignments.get(&key)
     }
 
+    pub fn assignments(&self) -> impl Iterator<Item = (&GptOssExpertKey, &ExpertOwner)> {
+        self.assignments.iter()
+    }
+
     pub const fn counts(&self) -> &PlacementOwnerCounts {
         &self.counts
     }
@@ -169,6 +174,12 @@ pub enum PlacementError {
         cpu: u32,
         layer_owner: u32,
         remote: u32,
+    },
+    #[error("owner bytes exceed placement budgets: cpu={cpu}, layer_owner={layer_owner}, remote={remote}")]
+    ByteBudgetExceeded {
+        cpu: u64,
+        layer_owner: u64,
+        remote: u64,
     },
     #[error("placement serialization failed: {0}")]
     Serialization(String),
@@ -288,6 +299,19 @@ impl GptOssExpertPlacementManifestV1 {
                 cpu: counts.cpu,
                 layer_owner: counts.layer_owner_gpu,
                 remote: counts.remote_gpu,
+            });
+        }
+        let cpu_bytes = u64::from(counts.cpu) * CONSERVATIVE_OWNER_EXPERT_BYTES;
+        let layer_owner_bytes = u64::from(counts.layer_owner_gpu) * CONSERVATIVE_OWNER_EXPERT_BYTES;
+        let remote_bytes = u64::from(counts.remote_gpu) * CONSERVATIVE_OWNER_EXPERT_BYTES;
+        if cpu_bytes > self.budgets.max_host_owner_bytes
+            || layer_owner_bytes > self.budgets.max_layer_owner_bytes
+            || remote_bytes > self.budgets.max_remote_gpu_bytes
+        {
+            return Err(PlacementError::ByteBudgetExceeded {
+                cpu: cpu_bytes,
+                layer_owner: layer_owner_bytes,
+                remote: remote_bytes,
             });
         }
         Ok(ResolvedExpertPlacement {
@@ -462,5 +486,15 @@ mod tests {
         let decoded: GptOssExpertPlacementManifestV1 =
             serde_json::from_slice(&first.stable_json().unwrap()).unwrap();
         assert_eq!(decoded, first);
+    }
+
+    #[test]
+    fn rejects_a_byte_budget_that_count_budgets_would_accept() {
+        let mut manifest = manifest(24, 32);
+        manifest.budgets.max_host_owner_bytes = 0;
+        assert!(matches!(
+            manifest.validate(&devices(false)),
+            Err(PlacementError::ByteBudgetExceeded { .. })
+        ));
     }
 }

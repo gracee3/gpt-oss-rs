@@ -6,10 +6,13 @@
 
 pub mod dtype;
 pub mod gguf;
+pub mod gpt_oss_native;
 pub mod gpu_loader;
 #[cfg(feature = "cuda")]
 pub mod gpu_weights;
 pub mod mapper;
+#[cfg(feature = "cuda")]
+pub mod owner_selective;
 pub mod safetensors;
 pub mod shard;
 pub mod weights;
