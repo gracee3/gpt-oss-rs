@@ -72,7 +72,7 @@
       "result": "passed"
     },
     {
-      "command": "same model-path/run-gate environment unset; cargo test --workspace --locked -q",
+      "command": "env -u GPT_OSS_MODEL_PATH -u GPT_OSS_MODEL_20B_PATH -u GPT_OSS_MODEL_120B_PATH -u GPT_OSS_TEST_MODEL -u GPT_OSS_RS_CACHE -u GPT_OSS_RUN_LAYER_GATE -u GPT_OSS_RUN_EXECUTION_RESERVE_METADATA -u GPT_OSS_RUN_H4_REAL -u GPT_OSS_RUN_H4_NATIVE_ROUTER -u GPT_OSS_RUN_H5_REAL -u GPT_OSS_RUN_SELECTED_EXPERT_REAL -u GPT_OSS_XE_LIVE_TEST cargo test --workspace --locked -q",
       "result": "passed"
     },
     {
