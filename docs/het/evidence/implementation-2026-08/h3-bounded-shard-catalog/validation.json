@@ -1,0 +1,112 @@
+{
+  "schema": "gpt-oss-rs.h3-bounded-shard-catalog-validation/v1",
+  "captured_at_utc": "2026-08-16T20:40:18Z",
+  "base_head": "31d3cdf4495e51ff81d1934cdc6e3931a82b5881",
+  "branch": "agent/h3-bounded-shard-catalog",
+  "status": "source-and-synthetic-fixture-validated-no-model-access",
+  "catalog_contract": {
+    "schema": "gpt-oss-rs.safetensors-shard-catalog/v1",
+    "fixture_catalog_sha256": "08650b3d5ccf811e80d040b84b75c03a3c09ee364ce033a3054a95e6b5375e08",
+    "fixture_index_sha256": "fcd62bc8c750aa36660232e02d85d166f5fa56080d2c6b0161421c7984d1e89f",
+    "maximum_index_bytes": 16777216,
+    "maximum_header_bytes_per_shard": 16777216,
+    "maximum_total_header_bytes": 134217728,
+    "maximum_shards": 4096,
+    "maximum_tensors": 1000000,
+    "maximum_tensor_name_bytes": 4096,
+    "maximum_tensor_rank": 64,
+    "maximum_active_scoped_mappings": 1
+  },
+  "source_sha256": [
+    {
+      "path": "crates/gpt-oss-model-runner/src/cpu_tensor_store.rs",
+      "sha256": "f6610bc403cdf8ec99b9a312d420f2f1d023ad31cda9338dabf0d1afd9791e6b"
+    },
+    {
+      "path": "crates/gpt-oss-model-runner/src/model_loader/mod.rs",
+      "sha256": "5639ac46f7d43b3aecd7ebd5fba08f1143696902ad417446c49e9ae72536b69e"
+    },
+    {
+      "path": "crates/gpt-oss-model-runner/src/model_loader/shard_catalog.rs",
+      "sha256": "6aac7af608a0fa7ad07abf1186febcc81a67717128a1296e09bdb01d011d373e"
+    }
+  ],
+  "review_closure": [
+    "bounded metadata reads revalidate path, inode, and length and read only declared length plus at most one byte",
+    "duplicate shard-header and index weight_map JSON keys are rejected",
+    "non-UTF8 shard filenames are rejected without lossy conversion",
+    "catalog identity prefixes every tensor shape with a checked u64 rank",
+    "mmap is limited to documented immutable checkpoint boundaries; read-only descriptors alone are explicitly insufficient",
+    "serialized descriptors exclude device, inode, and internal path identity"
+  ],
+  "checks": [
+    {
+      "command": "cargo test --locked -p gpt-oss-model-runner --lib model_loader::shard_catalog::tests",
+      "result": "passed-10-visible-lib-tests"
+    },
+    {
+      "command": "cargo test --workspace --locked -q",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --workspace --locked",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --locked -q -p gpt-oss-model-runner --lib --features cuda",
+      "result": "passed-with-pre-existing-warning-inventory"
+    },
+    {
+      "command": "cargo clippy -p gpt-oss-evidence -p gpt-oss-bench --all-targets --no-deps --locked -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy --locked -p gpt-oss-model-runner --lib --no-deps --message-format=json -- -D warnings; primary-span audit",
+      "result": "touched-path-gate-passed-zero-diagnostics"
+    },
+    {
+      "command": "cargo clippy --locked -p gpt-oss-model-runner --lib --features cuda --no-deps --message-format=json -- -D warnings; primary-span audit",
+      "result": "touched-path-gate-passed-zero-diagnostics"
+    },
+    {
+      "command": "python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'",
+      "result": "passed-35"
+    },
+    {
+      "command": "python3 -m unittest discover -s oracle/tests -p 'test_*.py'",
+      "result": "passed-10"
+    },
+    {
+      "command": "python3 tools/check_markdown_links.py",
+      "result": "passed-127-markdown-files"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "non_gate_diagnostics": [
+    {
+      "command": "cargo clippy --locked -p gpt-oss-model-runner --lib --no-deps --message-format=json -- -D warnings",
+      "result": "exit-101-54-pre-existing-error-diagnostics-zero-in-touched-paths"
+    },
+    {
+      "command": "cargo clippy --locked -p gpt-oss-model-runner --lib --features cuda --no-deps --message-format=json -- -D warnings",
+      "result": "exit-101-54-pre-existing-error-diagnostics-zero-in-touched-paths"
+    }
+  ],
+  "prohibited_activity": {
+    "real_20b_tree_accessed": false,
+    "real_120b_tree_accessed": false,
+    "model_constructed_or_executed": false,
+    "h8_started": false,
+    "h9_started": false,
+    "h10_started": false,
+    "prior_h8_evidence_modified": false
+  },
+  "acceptance_statement": "This record validates a metadata-only source and synthetic-fixture milestone. It does not pass H8 or authorize H9/H10."
+}

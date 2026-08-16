@@ -34,7 +34,11 @@ struct HeaderTensor {
     data_offsets: [usize; 2],
 }
 
-/// Read-only, memory-mapped collection of SafeTensors shards.
+/// Read-only, memory-mapped collection of immutable SafeTensors shards.
+///
+/// The snapshot directory is an operational immutability boundary: no actor
+/// may replace or mutate a shard for the lifetime of this store. A descriptor
+/// opened read-only does not by itself make an externally mutable mmap safe.
 pub struct CpuTensorStore {
     snapshot_dir: PathBuf,
     shard_paths: Vec<PathBuf>,
@@ -72,9 +76,11 @@ impl CpuTensorStore {
         let mut tensors = HashMap::new();
         for (shard_index, path) in shard_paths.iter().enumerate() {
             let file = File::open(path)?;
-            // SAFETY: mappings are read-only and the store owns each mapping
-            // for every returned view's lifetime. Hugging Face snapshot blobs
-            // are content-addressed and treated as immutable while loaded.
+            // SAFETY: CpuTensorStore's operational contract requires the
+            // checkpoint snapshot to remain immutable for the store's entire
+            // lifetime. Opening the descriptor read-only is not sufficient by
+            // itself: callers must not replace or mutate these snapshot files
+            // through another descriptor while any returned mapping exists.
             let mapping = unsafe { MmapOptions::new().map(&file) }.map_err(|error| {
                 LLMError::ModelError(format!("failed to mmap {}: {error}", path.display()))
             })?;
@@ -134,6 +140,62 @@ impl CpuTensorStore {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tensors.keys().map(String::as_str)
     }
+}
+
+/// Map a cataloged immutable checkpoint shard after revalidating its identity.
+///
+/// This is deliberately not a generic read-only-file mapping wrapper. The
+/// catalog caller must enforce the stronger operational invariant that the
+/// checkpoint file cannot be mutated or replaced by any actor for the entire
+/// callback-scoped mapping lifetime. Read-only access through this descriptor
+/// alone does not satisfy `memmap2`'s external-mutation safety precondition.
+pub(crate) fn map_cataloged_immutable_shard(
+    file: &File,
+    path: &Path,
+    expected_length: u64,
+    expected_device: u64,
+    expected_inode: u64,
+) -> Result<Mmap> {
+    let metadata = file.metadata()?;
+    if metadata.len() != expected_length
+        || metadata_device(&metadata) != expected_device
+        || metadata_inode(&metadata) != expected_inode
+    {
+        return Err(LLMError::ModelError(format!(
+            "cataloged shard {} changed before mmap",
+            path.display()
+        )));
+    }
+    // SAFETY: In addition to the identity check above, this narrowly scoped
+    // caller requires the checkpoint shard to remain externally immutable for
+    // the returned mapping lifetime. The catalog prevents the mapping borrow
+    // from escaping its callback and revalidates path/header identity before
+    // reaching this function.
+    unsafe { MmapOptions::new().map(file) }.map_err(|error| {
+        LLMError::ModelError(format!("failed to mmap {}: {error}", path.display()))
+    })
+}
+
+#[cfg(unix)]
+fn metadata_device(metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.dev()
+}
+
+#[cfg(not(unix))]
+fn metadata_device(_metadata: &std::fs::Metadata) -> u64 {
+    0
+}
+
+#[cfg(unix)]
+fn metadata_inode(metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.ino()
+}
+
+#[cfg(not(unix))]
+fn metadata_inode(_metadata: &std::fs::Metadata) -> u64 {
+    0
 }
 
 pub struct CpuTensor<'a> {
