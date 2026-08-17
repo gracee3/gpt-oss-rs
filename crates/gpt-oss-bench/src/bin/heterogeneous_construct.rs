@@ -24,16 +24,20 @@ use gpt_oss_model_runner::heterogeneous::{
     GptOssExpertPlacementManifestV1, GptOssPlacementModel, PlacementBudgets, PlacementPolicyClass,
     CONSERVATIVE_OWNER_EXPERT_BYTES, HETEROGENEOUS_PLACEMENT_SCHEMA_V1,
 };
+use gpt_oss_model_runner::model_loader::capacity_one::CAPACITY_ONE_POLICY_SHA256;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
+use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssNativeCatalogMap;
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_model_runner::model_loader::owner_selective::{
     owner_selective_pinned_current_bytes, owner_selective_pinned_high_water_bytes,
     OWNER_SELECTIVE_PINNED_UPLOAD_BYTES,
 };
 use gpt_oss_model_runner::model_loader::owner_selective::{
-    ConstructionLedger, ConstructionStage, ExecutionReserveDisposition, OwnerSelectiveConstructor,
-    OwnerSelectiveEnvelope, OWNER_SELECTIVE_GPU_RESERVE_BYTES, OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
+    CapacityOneConstructionEvidence, ConstructionLedger, ConstructionStage,
+    ExecutionReserveDisposition, OwnerSelectiveConstructor, OwnerSelectiveEnvelope,
+    OWNER_SELECTIVE_GPU_RESERVE_BYTES, OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
 };
+use gpt_oss_model_runner::model_loader::shard_catalog::SafeTensorShardCatalog;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -60,10 +64,22 @@ enum Mode {
     H8,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ConstructorMode {
+    MonolithicControl,
+    CapacityOne,
+}
+
 #[derive(Parser)]
 struct Cli {
     #[arg(long, value_enum)]
     mode: Mode,
+    #[arg(long, value_enum, default_value = "monolithic-control")]
+    constructor: ConstructorMode,
+    /// Immutable placement manifest required by the capacity-one selector.
+    #[arg(long)]
+    capacity_one_placement: Option<PathBuf>,
     #[arg(long)]
     model_20b: PathBuf,
     #[arg(long)]
@@ -80,6 +96,34 @@ struct Cli {
     /// Every construction mode requires it; metadata validation rejects it.
     #[arg(long)]
     memory_events: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapacityOneEvidenceRecord {
+    schema: &'static str,
+    mode: Mode,
+    constructor: ConstructorMode,
+    r2_policy_sha256: &'static str,
+    captured_unix_ms: u128,
+    repository_head: String,
+    executable_sha256: String,
+    command: Vec<String>,
+    source_revision: String,
+    config_sha256: String,
+    metadata_sha256: String,
+    mapping_sha256: String,
+    placement_sha256: String,
+    cache_bytes_before: u64,
+    cache_bytes_after: u64,
+    process_before: ProcessMemory,
+    process_after: ProcessMemory,
+    system_before: SystemMemory,
+    system_after: SystemMemory,
+    construction: ConstructionRecord,
+    capacity_one: CapacityOneConstructionEvidence,
+    construction_memory_events: ConstructionMemoryJournalSummary,
+    protected_nvme: ProtectedNvmeRecord,
+    passed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -421,6 +465,12 @@ fn main() -> Result<()> {
         StableCudaDeviceId::from_device(&devices[0])?,
         StableCudaDeviceId::from_device(&devices[1])?,
     ];
+    if cli.constructor == ConstructorMode::CapacityOne {
+        return run_capacity_one_cli(&cli, &stable, process_before, system_before, protected_nvme);
+    }
+    if cli.capacity_one_placement.is_some() {
+        bail!("--capacity-one-placement is valid only with --constructor capacity-one");
+    }
     let checkpoint_20b = GptOssCheckpointView::open(&cli.model_20b)?;
     let map_equivalence_20b = compare_research_mapping(&checkpoint_20b, &cli.mapping_20b)?;
     assert_checkpoint_bytes(
@@ -666,6 +716,204 @@ fn main() -> Result<()> {
     bytes.push(b'\n');
     atomic_write(&cli.output, &bytes)?;
     Ok(())
+}
+
+fn run_capacity_one_cli(
+    cli: &Cli,
+    stable: &[StableCudaDeviceId; 2],
+    process_before: ProcessMemory,
+    system_before: SystemMemory,
+    protected_nvme: ProtectedNvmeRecord,
+) -> Result<()> {
+    if !matches!(cli.mode, Mode::Cold | Mode::Warm) {
+        bail!("capacity-one is available only for an explicitly authorized cold/warm comparison");
+    }
+    let placement_path = cli
+        .capacity_one_placement
+        .as_deref()
+        .context("capacity-one requires --capacity-one-placement")?;
+    let manifest: GptOssExpertPlacementManifestV1 =
+        serde_json::from_slice(&std::fs::read(placement_path)?)
+            .context("invalid capacity-one placement manifest")?;
+    let placement_sha256 = manifest.sha256()?;
+    let catalog = SafeTensorShardCatalog::open(&cli.model_20b)?;
+    let native = GptOssNativeCatalogMap::from_source_root(&cli.model_20b, &catalog)?;
+    let repository_head = command_text("git", &["rev-parse", "HEAD"])?;
+    let executable_sha256 = hash_file(&std::env::current_exe()?)?;
+    let identity = ConstructionMemoryIdentity {
+        repository_head: repository_head.clone(),
+        executable_sha256: executable_sha256.clone(),
+        checkpoint_class: "20b_capacity_one".into(),
+        checkpoint_revision: native.revision().into(),
+        checkpoint_metadata_sha256: native.metadata_sha256().into(),
+        checkpoint_mapping_sha256: native.mapping_sha256().into(),
+        placement_manifest_sha256: placement_sha256.clone(),
+    };
+    let source_revision = native.revision().to_owned();
+    let config_sha256 = native.config_sha256().to_owned();
+    let metadata_sha256 = native.metadata_sha256().to_owned();
+    let mapping_sha256 = native.mapping_sha256().to_owned();
+    drop(native);
+    drop(catalog);
+
+    let mut memory_recorder = ConstructionMemoryRecorder::new(
+        identity,
+        cli.memory_events
+            .as_deref()
+            .context("capacity-one requires --memory-events")?
+            .into(),
+    )?;
+    let cache_bytes_before = cache_bytes(&cli.cache_root)?;
+    let cuda_memory_before = cuda_memory(stable)?;
+    let started = Instant::now();
+    let run_label = if matches!(cli.mode, Mode::Cold) {
+        "capacity_one_cold"
+    } else {
+        "capacity_one_warm"
+    };
+    let mut snapshots = Vec::new();
+    let constructor = OwnerSelectiveConstructor::new(&cli.cache_root);
+    let mut model = constructor.construct_capacity_one(
+        &cli.model_20b,
+        &manifest,
+        CAPACITY_ONE_POLICY_SHA256,
+        |ledger| {
+            let snapshot = resource_snapshot(
+                started,
+                ledger.clone(),
+                run_label,
+                ConstructionMemoryEventPhase::Stage,
+                &mut memory_recorder,
+            )
+            .map_err(|error| {
+                LLMError::ModelError(format!("capacity-one resource snapshot: {error:#}"))
+            })?;
+            enforce_resource_guards(&snapshot, system_before.swap_used_bytes).map_err(|error| {
+                LLMError::ModelError(format!("capacity-one resource guard: {error:#}"))
+            })?;
+            snapshots.push(snapshot);
+            Ok(())
+        },
+    )?;
+    model.drain()?;
+    let capacity_one = model
+        .capacity_one_evidence()
+        .context("capacity-one model omitted its construction evidence")?
+        .clone();
+    let cuda_while = model.device_memory_info()?;
+    let cuda_memory_while_loaded = [
+        CudaMemoryRecord {
+            free_bytes: cuda_while[0].0,
+            total_bytes: cuda_while[0].1,
+        },
+        CudaMemoryRecord {
+            free_bytes: cuda_while[1].0,
+            total_bytes: cuda_while[1].1,
+        },
+    ];
+    let final_ledger = model.ledger().clone();
+    let dense_tensors = model
+        .layer_owner_dense()
+        .len()
+        .checked_add(model.resident_router_source_tensor_count()?)
+        .context("dense tensor count overflows")?;
+    let dense_device_bytes = model
+        .layer_owner_dense()
+        .iter()
+        .map(|tensor| tensor.device_bytes() as u64)
+        .sum::<u64>()
+        .checked_add(u64::try_from(model.resident_router_source_device_bytes()?)?)
+        .context("dense device bytes overflow")?;
+    let cpu_layer_files = model
+        .cpu_layer_records()
+        .map(|(layer, record)| {
+            Ok(CpuLayerFileRecord {
+                layer: *layer,
+                expert_ids: record.expert_ids().to_vec(),
+                payload_bytes: record.payload_bytes(),
+                file_bytes: std::fs::metadata(record.path())?.len(),
+                relative_path: record
+                    .path()
+                    .strip_prefix(&cli.cache_root)?
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    drop(model);
+    let cuda_memory_after = cuda_memory(stable)?;
+    let cleanup_within_tolerance =
+        cuda_cleanup_within_tolerance(&cuda_memory_before, &cuda_memory_after);
+    if !cleanup_within_tolerance {
+        bail!("capacity-one CUDA memory did not return to cleanup tolerance");
+    }
+    let partial_artifacts_after = partial_artifacts(&cli.cache_root)?;
+    if !partial_artifacts_after.is_empty() {
+        bail!("capacity-one retained partial artifacts: {partial_artifacts_after:?}");
+    }
+    let after = resource_snapshot(
+        started,
+        final_ledger.clone(),
+        run_label,
+        ConstructionMemoryEventPhase::PostDrop,
+        &mut memory_recorder,
+    )?;
+    enforce_resource_guards(&after, system_before.swap_used_bytes)?;
+    snapshots.push(after);
+    let construction = ConstructionRecord {
+        elapsed_ms: started.elapsed().as_millis(),
+        snapshots,
+        final_ledger,
+        dense_tensors,
+        dense_device_bytes,
+        cpu_layer_files,
+        cuda_memory_while_loaded,
+        cuda_memory_before,
+        cuda_memory_after,
+        cleanup_within_tolerance,
+        partial_artifacts_after,
+    };
+    let cache_bytes_after = cache_bytes(&cli.cache_root)?;
+    if matches!(cli.mode, Mode::Warm) && cache_bytes_after != cache_bytes_before {
+        bail!("capacity-one warm load changed immutable cache bytes");
+    }
+    let process_after = process_memory()?;
+    let system_after = system_memory()?;
+    if process_after.vm_swap_bytes != 0
+        || system_after.swap_used_bytes > system_before.swap_used_bytes
+        || system_after.mem_available_bytes < MIN_AVAILABLE_BYTES
+    {
+        bail!("capacity-one final memory/swap guard failed");
+    }
+    let record = CapacityOneEvidenceRecord {
+        schema: "gpt-oss-rs.heterogeneous-capacity-one-construction/v1",
+        mode: cli.mode,
+        constructor: cli.constructor,
+        r2_policy_sha256: CAPACITY_ONE_POLICY_SHA256,
+        captured_unix_ms: now_unix_ms(),
+        repository_head,
+        executable_sha256,
+        command: std::env::args().collect(),
+        source_revision,
+        config_sha256,
+        metadata_sha256,
+        mapping_sha256,
+        placement_sha256,
+        cache_bytes_before,
+        cache_bytes_after,
+        process_before,
+        process_after,
+        system_before,
+        system_after,
+        construction,
+        capacity_one,
+        construction_memory_events: memory_recorder.summary()?,
+        protected_nvme,
+        passed: true,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&record)?;
+    bytes.push(b'\n');
+    atomic_write(&cli.output, &bytes)
 }
 
 fn construction_memory_identity(

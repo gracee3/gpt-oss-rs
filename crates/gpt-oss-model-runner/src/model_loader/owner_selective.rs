@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cpu_repack::{
-    CpuOwnerLayerRecord, CpuOwnerRepackCache, OWNER_EXPERT_BYTES, OWNER_REPACK_TEMP_BYTES_MAX,
+    CpuOwnerExpertActionExpectation, CpuOwnerExpertSource, CpuOwnerLayerRecord,
+    CpuOwnerLayerRecordValidation, CpuOwnerRepackCache, OWNER_EXPERT_BYTES,
+    OWNER_REPACK_TEMP_BYTES_MAX,
 };
 use crate::heterogeneous::contract::{GptOssPhase, GPT_OSS_TOP_K};
 use crate::heterogeneous::control::heterogeneous_control_shell_device_bytes;
@@ -37,7 +39,20 @@ use crate::heterogeneous::router::{
     exact_router_owned_device_bytes, exact_router_weight_surface_bytes, ResidentExactRouterWeights,
 };
 
-use super::gpt_oss_native::{GptOssCheckpointView, GptOssNativeConfig};
+use super::capacity_one::{
+    all_surfaces, ExactActionCoverage, ExpertPartialKey, ExpertPartialPlan, ExpertPartialStore,
+    OwnerPartialHighWater, OwnerSelectivePublicationProof, WarmRecordElisionProof,
+    CAPACITY_ONE_POLICY_SHA256, R2_DISK_RESERVE_BYTES, RETAINED_120B_SPLIT_BOUND_BYTES,
+    RETAINED_MAX_DIRTY_CPU_OUTPUT_BYTES, RETAINED_MAX_PINNED_CONSTRUCTION_BYTES,
+    RETAINED_MAX_SOURCE_MAPPING_BYTES,
+};
+use super::gpt_oss_native::{GptOssCheckpointView, GptOssNativeCatalogMap, GptOssNativeConfig};
+use super::shard_catalog::SafeTensorShardCatalog;
+use super::shard_catalog::{ShardReleaseLogicalLedger, ShardReleaseTelemetry};
+use super::shard_consumer_plan::{
+    GptOssExpertSurface, GptOssShardConsumer, GptOssShardConsumerPlan,
+};
+use super::shard_transaction::ScopedShardAction;
 
 pub const OWNER_SELECTIVE_PINNED_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub const OWNER_SELECTIVE_TEMPORARY_CAP_BYTES: usize = 256 * 1024 * 1024;
@@ -47,6 +62,8 @@ pub const OWNER_SELECTIVE_DECODE_MAX_ROWS: usize = 1;
 
 static PINNED_CURRENT_BYTES: AtomicU64 = AtomicU64::new(0);
 static PINNED_HIGH_WATER_BYTES: AtomicU64 = AtomicU64::new(0);
+static CAPACITY_ONE_FATAL_QUARANTINE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub fn owner_selective_pinned_current_bytes() -> u64 {
     PINNED_CURRENT_BYTES.load(Ordering::Acquire)
@@ -442,6 +459,35 @@ impl OwnerSelectiveEnvelope {
         checkpoint: &GptOssCheckpointView,
         placement: &ResolvedExpertPlacement,
     ) -> Result<Self> {
+        Self::from_native_parts_and_placement(
+            checkpoint.config(),
+            checkpoint.mapped_payload_bytes(),
+            checkpoint.expert_payload_bytes(),
+            checkpoint.non_expert_payload_bytes(),
+            placement,
+        )
+    }
+
+    pub fn from_catalog_map_and_placement(
+        native: &GptOssNativeCatalogMap,
+        placement: &ResolvedExpertPlacement,
+    ) -> Result<Self> {
+        Self::from_native_parts_and_placement(
+            native.config(),
+            native.mapped_payload_bytes(),
+            native.expert_payload_bytes(),
+            native.non_expert_payload_bytes(),
+            placement,
+        )
+    }
+
+    fn from_native_parts_and_placement(
+        config: &GptOssNativeConfig,
+        mapped_payload_bytes: u64,
+        expert_payload_bytes: u64,
+        non_expert_payload_bytes: u64,
+        placement: &ResolvedExpertPlacement,
+    ) -> Result<Self> {
         let counts = placement.counts();
         let checked = |count: u32, bytes: u64, label: &str| {
             u64::from(count)
@@ -455,12 +501,11 @@ impl OwnerSelectiveEnvelope {
             })
             .collect::<BTreeSet<_>>()
             .len();
-        let execution_reserve_plan =
-            ExecutionReservePlan::from_config(checkpoint.config(), remote_layers)?;
+        let execution_reserve_plan = ExecutionReservePlan::from_config(config, remote_layers)?;
         Ok(Self {
-            native_mapped_payload_bytes: checkpoint.mapped_payload_bytes(),
-            non_expert_payload_bytes: checkpoint.non_expert_payload_bytes(),
-            checkpoint_expert_payload_bytes: checkpoint.expert_payload_bytes(),
+            native_mapped_payload_bytes: mapped_payload_bytes,
+            non_expert_payload_bytes,
+            checkpoint_expert_payload_bytes: expert_payload_bytes,
             layer_owner_experts: counts.layer_owner_gpu,
             remote_gpu_experts: counts.remote_gpu,
             cpu_experts: counts.cpu,
@@ -533,6 +578,23 @@ pub struct ConstructionLedger {
     pub remote_gpu_execution_planned_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CapacityOneConstructionEvidence {
+    pub policy_sha256: String,
+    pub catalog_sha256: String,
+    pub plan_sha256: String,
+    pub active_mapping_high_water: usize,
+    pub mapped_byte_high_water: u64,
+    pub plan_partial_high_water_count: usize,
+    pub plan_partial_high_water_bytes: u64,
+    pub plan_owner_partial_high_waters: Vec<OwnerPartialHighWater>,
+    pub partial_high_water_count: usize,
+    pub partial_high_water_bytes: u64,
+    pub warm_elision_proofs: Vec<WarmRecordElisionProof>,
+    pub shard_releases: Vec<ShardReleaseTelemetry>,
+    pub publication_proof: OwnerSelectivePublicationProof,
+}
+
 impl ConstructionLedger {
     fn new() -> Self {
         Self {
@@ -576,6 +638,18 @@ impl OwnerSelectiveNativeMetadata {
             config_sha256: checkpoint.config_sha256().to_owned(),
             metadata_sha256: checkpoint.metadata_sha256().to_owned(),
             mapping_sha256: checkpoint.mapping_sha256().to_owned(),
+        };
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
+    fn from_catalog_map(native: &GptOssNativeCatalogMap) -> Result<Self> {
+        let metadata = Self {
+            config: native.config().clone(),
+            revision: native.revision().to_owned(),
+            config_sha256: native.config_sha256().to_owned(),
+            metadata_sha256: native.metadata_sha256().to_owned(),
+            mapping_sha256: native.mapping_sha256().to_owned(),
         };
         metadata.validate()?;
         Ok(metadata)
@@ -861,6 +935,7 @@ pub struct OwnerSelectiveModel {
     placement: ResolvedExpertPlacement,
     envelope: OwnerSelectiveEnvelope,
     ledger: ConstructionLedger,
+    capacity_one_evidence: Option<CapacityOneConstructionEvidence>,
 }
 
 pub(crate) struct OwnerSelectiveExecutionParts<'a> {
@@ -886,6 +961,10 @@ impl OwnerSelectiveModel {
 
     pub const fn ledger(&self) -> &ConstructionLedger {
         &self.ledger
+    }
+
+    pub fn capacity_one_evidence(&self) -> Option<&CapacityOneConstructionEvidence> {
+        self.capacity_one_evidence.as_ref()
     }
 
     pub fn layer_owner_dense(&self) -> &[LayerOwnerDenseTensor] {
@@ -1064,6 +1143,246 @@ pub struct OwnerSelectiveConstructor {
     cache_root: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct PlanActionLocator {
+    shard_index: usize,
+    action_index: usize,
+    action_id_sha256: String,
+}
+
+struct StreamingPlanIndex {
+    dense_by_shard: Vec<Vec<usize>>,
+    expert_actions: BTreeMap<ExpertPartialKey, BTreeMap<GptOssExpertSurface, PlanActionLocator>>,
+    cpu_by_layer: BTreeMap<u16, Vec<ExpertPartialKey>>,
+    gpu_completion_by_shard: Vec<Vec<ExpertPartialKey>>,
+    cpu_layer_completion_shard: BTreeMap<u16, usize>,
+}
+
+impl StreamingPlanIndex {
+    fn build(plan: &GptOssShardConsumerPlan) -> Result<Self> {
+        plan.validate_identity()?;
+        let mut dense_by_shard = vec![Vec::new(); plan.shards().len()];
+        let mut expert_actions =
+            BTreeMap::<ExpertPartialKey, BTreeMap<GptOssExpertSurface, PlanActionLocator>>::new();
+        for (shard_index, shard) in plan.shards().iter().enumerate() {
+            for (action_index, action) in shard.actions.iter().enumerate() {
+                match &action.consumer {
+                    GptOssShardConsumer::LayerOwnerDense { .. } => {
+                        dense_by_shard[shard_index].push(action_index);
+                    }
+                    GptOssShardConsumer::OwnedExpert {
+                        key,
+                        owner,
+                        surface,
+                    } => {
+                        let identity = ExpertPartialKey {
+                            key: *key,
+                            owner: owner.clone(),
+                        };
+                        if expert_actions
+                            .entry(identity)
+                            .or_default()
+                            .insert(
+                                *surface,
+                                PlanActionLocator {
+                                    shard_index,
+                                    action_index,
+                                    action_id_sha256: action.action_id_sha256.clone(),
+                                },
+                            )
+                            .is_some()
+                        {
+                            return Err(LLMError::ModelError(
+                                "streaming plan contains a duplicate expert surface".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let expected = all_surfaces().into_iter().collect::<BTreeSet<_>>();
+        let mut cpu_by_layer = BTreeMap::<u16, Vec<ExpertPartialKey>>::new();
+        let mut gpu_completion_by_shard = vec![Vec::new(); plan.shards().len()];
+        for (identity, surfaces) in &expert_actions {
+            if surfaces.keys().copied().collect::<BTreeSet<_>>() != expected {
+                return Err(LLMError::ModelError(format!(
+                    "streaming expert ({},{}) lacks exact six-surface coverage",
+                    identity.key.layer, identity.key.expert
+                )));
+            }
+            let completion_shard = surfaces
+                .values()
+                .map(|locator| locator.shard_index)
+                .max()
+                .expect("six surfaces have a completion shard");
+            match identity.owner {
+                ExpertOwner::Cpu { .. } => {
+                    cpu_by_layer
+                        .entry(identity.key.layer)
+                        .or_default()
+                        .push(identity.clone());
+                }
+                ExpertOwner::LayerOwnerGpu { .. } | ExpertOwner::RemoteGpu { .. } => {
+                    gpu_completion_by_shard[completion_shard].push(identity.clone());
+                }
+            }
+        }
+        for experts in cpu_by_layer.values_mut() {
+            experts.sort_by_key(|identity| identity.key.expert);
+        }
+        for experts in &mut gpu_completion_by_shard {
+            experts.sort();
+        }
+        let mut cpu_layer_completion_shard = BTreeMap::new();
+        for (layer, identities) in &cpu_by_layer {
+            let completion = identities
+                .iter()
+                .flat_map(|identity| expert_actions[identity].values())
+                .map(|locator| locator.shard_index)
+                .max()
+                .ok_or_else(|| LLMError::ModelError("CPU layer has no actions".into()))?;
+            for identity in identities {
+                let surfaces = &expert_actions[identity];
+                let expert_completion = surfaces
+                    .values()
+                    .map(|locator| locator.shard_index)
+                    .max()
+                    .expect("six surfaces have a completion shard");
+                if expert_completion != completion {
+                    return Err(LLMError::ModelError(format!(
+                        "CPU layer {layer} cannot be completed in one mapped shard"
+                    )));
+                }
+                for (surface, locator) in surfaces {
+                    if locator.shard_index != completion
+                        && !(*surface == GptOssExpertSurface::GateUpBias
+                            && locator.shard_index.checked_add(1) == Some(completion))
+                    {
+                        return Err(LLMError::ModelError(format!(
+                            "CPU layer {layer} would retain a non-bias native surface"
+                        )));
+                    }
+                }
+            }
+            cpu_layer_completion_shard.insert(*layer, completion);
+        }
+        Ok(Self {
+            dense_by_shard,
+            expert_actions,
+            cpu_by_layer,
+            gpu_completion_by_shard,
+            cpu_layer_completion_shard,
+        })
+    }
+
+    fn action_ids(&self, identity: &ExpertPartialKey) -> [String; 6] {
+        let surfaces = &self.expert_actions[identity];
+        all_surfaces().map(|surface| surfaces[&surface].action_id_sha256.clone())
+    }
+
+    fn current_action_indices(
+        &self,
+        identity: &ExpertPartialKey,
+        shard_index: usize,
+    ) -> Vec<usize> {
+        let mut indices = self.expert_actions[identity]
+            .values()
+            .filter(|locator| locator.shard_index == shard_index)
+            .map(|locator| locator.action_index)
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices
+    }
+}
+
+struct ExpertSurfaceBytes<'a> {
+    gate_up_bias: &'a [u8],
+    gate_up_blocks: &'a [u8],
+    gate_up_scales: &'a [u8],
+    down_bias: &'a [u8],
+    down_blocks: &'a [u8],
+    down_scales: &'a [u8],
+}
+
+fn with_expert_surface_bytes<R>(
+    identity: &ExpertPartialKey,
+    actions: &[ScopedShardAction<'_>],
+    owned_split_bias: Option<&[u8]>,
+    use_surfaces: impl FnOnce(ExpertSurfaceBytes<'_>) -> Result<R>,
+) -> Result<R> {
+    let mut gate_up_bias = owned_split_bias;
+    let mut gate_up_blocks = None;
+    let mut gate_up_scales = None;
+    let mut down_bias = None;
+    let mut down_blocks = None;
+    let mut down_scales = None;
+    for scoped in actions {
+        let GptOssShardConsumer::OwnedExpert {
+            key,
+            owner,
+            surface,
+        } = &scoped.action().consumer
+        else {
+            return Err(LLMError::ModelError(
+                "expert assembly received a dense action".into(),
+            ));
+        };
+        if *key != identity.key || *owner != identity.owner {
+            return Err(LLMError::ModelError(
+                "expert assembly action key or owner mismatch".into(),
+            ));
+        }
+        let target = match surface {
+            GptOssExpertSurface::GateUpBias => &mut gate_up_bias,
+            GptOssExpertSurface::GateUpBlocks => &mut gate_up_blocks,
+            GptOssExpertSurface::GateUpScales => &mut gate_up_scales,
+            GptOssExpertSurface::DownBias => &mut down_bias,
+            GptOssExpertSurface::DownBlocks => &mut down_blocks,
+            GptOssExpertSurface::DownScales => &mut down_scales,
+        };
+        if target.replace(scoped.bytes()).is_some() {
+            return Err(LLMError::ModelError(
+                "expert assembly received a duplicate surface".into(),
+            ));
+        }
+    }
+    use_surfaces(ExpertSurfaceBytes {
+        gate_up_bias: gate_up_bias
+            .ok_or_else(|| LLMError::ModelError("expert gate/up bias is missing".into()))?,
+        gate_up_blocks: gate_up_blocks
+            .ok_or_else(|| LLMError::ModelError("expert gate/up blocks are missing".into()))?,
+        gate_up_scales: gate_up_scales
+            .ok_or_else(|| LLMError::ModelError("expert gate/up scales are missing".into()))?,
+        down_bias: down_bias
+            .ok_or_else(|| LLMError::ModelError("expert down bias is missing".into()))?,
+        down_blocks: down_blocks
+            .ok_or_else(|| LLMError::ModelError("expert down blocks are missing".into()))?,
+        down_scales: down_scales
+            .ok_or_else(|| LLMError::ModelError("expert down scales are missing".into()))?,
+    })
+}
+
+fn expert_identity_from_surfaces(
+    key: GptOssExpertKey,
+    surfaces: &ExpertSurfaceBytes<'_>,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"gpt-oss-rs-native-expert-v1");
+    digest.update(key.layer.to_le_bytes());
+    digest.update(key.expert.to_le_bytes());
+    for bytes in [
+        surfaces.gate_up_blocks,
+        surfaces.gate_up_scales,
+        surfaces.gate_up_bias,
+        surfaces.down_blocks,
+        surfaces.down_scales,
+        surfaces.down_bias,
+    ] {
+        digest.update(bytes);
+    }
+    format!("{:x}", digest.finalize())
+}
+
 impl OwnerSelectiveConstructor {
     pub fn new(cache_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -1094,6 +1413,778 @@ impl OwnerSelectiveConstructor {
             )));
         }
         Ok((placement, envelope))
+    }
+
+    /// Production capacity-one constructor. The source root is cataloged from
+    /// bounded headers and never opened through `GptOssCheckpointView`.
+    pub fn construct_capacity_one<F>(
+        &self,
+        source_root: &Path,
+        manifest: &GptOssExpertPlacementManifestV1,
+        policy_sha256: &str,
+        mut observe: F,
+    ) -> Result<OwnerSelectiveModel>
+    where
+        F: FnMut(&ConstructionLedger) -> Result<()>,
+    {
+        if policy_sha256 != CAPACITY_ONE_POLICY_SHA256 {
+            return Err(LLMError::ModelError(
+                "capacity-one construction policy identity is unsupported".into(),
+            ));
+        }
+        if CAPACITY_ONE_FATAL_QUARANTINE.load(Ordering::Acquire) {
+            return Err(LLMError::GpuError(
+                "this process is quarantined after an unproven capacity-one CUDA terminal state"
+                    .into(),
+            ));
+        }
+        let catalog = SafeTensorShardCatalog::open(source_root)?;
+        if catalog
+            .shards()
+            .iter()
+            .any(|shard| shard.identity.file_length > RETAINED_MAX_SOURCE_MAPPING_BYTES)
+        {
+            return Err(LLMError::MemoryError(
+                "capacity-one source shard exceeds the frozen mapping window".into(),
+            ));
+        }
+        let native = GptOssNativeCatalogMap::from_source_root(source_root, &catalog)?;
+        validate_manifest_identity_catalog(&native, manifest)?;
+        let devices = list_devices();
+        let placement = manifest
+            .validate(&devices)
+            .map_err(|error| LLMError::ModelError(format!("placement manifest: {error}")))?;
+        let envelope = OwnerSelectiveEnvelope::from_catalog_map_and_placement(&native, &placement)?;
+        if OWNER_REPACK_TEMP_BYTES_MAX > OWNER_SELECTIVE_TEMPORARY_CAP_BYTES {
+            return Err(LLMError::ModelError(
+                "owner x8 conversion scratch exceeds construction cap".into(),
+            ));
+        }
+        let plan = GptOssShardConsumerPlan::build(&catalog, &native, manifest)?;
+        let partial_plan = ExpertPartialPlan::derive(&plan, RETAINED_120B_SPLIT_BOUND_BYTES)?;
+        let plan_partial_high_water_count = partial_plan.derived_high_water_count();
+        let plan_partial_high_water_bytes = partial_plan.derived_high_water_bytes();
+        let plan_owner_partial_high_waters = partial_plan.derived_owner_high_waters().to_vec();
+        let split_entries = partial_plan
+            .entries()
+            .map(|entry| (entry.identity.clone(), entry.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let plan_index = StreamingPlanIndex::build(&plan)?;
+        let native_metadata = OwnerSelectiveNativeMetadata::from_catalog_map(&native)?;
+        let mut coverage = ExactActionCoverage::new(&plan)?;
+        let cache = CpuOwnerRepackCache::new(
+            &self.cache_root,
+            native.revision(),
+            native.mapping_sha256(),
+            placement.manifest_hash(),
+            envelope
+                .cpu_x8_record_bytes
+                .checked_add(native.config().num_hidden_layers as u64 * 1024 * 1024)
+                .ok_or_else(|| LLMError::ModelError("owner x8 cache cap overflows".into()))?,
+        )?;
+
+        let mut warm_validations = BTreeMap::<u16, CpuOwnerLayerRecordValidation>::new();
+        let mut cold_layers = BTreeSet::new();
+        let mut warm_elision_proofs = Vec::new();
+        let mut warm_cpu_layers = BTreeSet::new();
+        for (layer, identities) in &plan_index.cpu_by_layer {
+            let expert_ids = identities
+                .iter()
+                .map(|identity| identity.key.expert)
+                .collect::<Vec<_>>();
+            let layer_payload_bytes = u64::try_from(expert_ids.len())
+                .ok()
+                .and_then(|count| count.checked_mul(OWNER_EXPERT_BYTES as u64))
+                .ok_or_else(|| LLMError::ModelError("CPU layer output bytes overflow".into()))?;
+            if layer_payload_bytes > RETAINED_MAX_DIRTY_CPU_OUTPUT_BYTES {
+                return Err(LLMError::MemoryError(
+                    "capacity-one CPU layer output exceeds the frozen dirty bound".into(),
+                ));
+            }
+            match cache.validate_layer_without_mapping(
+                *layer,
+                &expert_ids,
+                native.config().num_hidden_layers,
+                native.config().num_experts,
+            )? {
+                Some(validation) => {
+                    let mut action_ids_sha256 = Vec::with_capacity(identities.len() * 6);
+                    let mut native_bytes = 0_u64;
+                    for identity in identities {
+                        for surface in all_surfaces() {
+                            let locator = &plan_index.expert_actions[identity][&surface];
+                            let action =
+                                &plan.shards()[locator.shard_index].actions[locator.action_index];
+                            coverage.elide(&locator.action_id_sha256, action.byte_len()?)?;
+                            native_bytes = native_bytes
+                                .checked_add(action.byte_len()?)
+                                .ok_or_else(|| {
+                                    LLMError::ModelError(
+                                        "warm elision native bytes overflow".into(),
+                                    )
+                                })?;
+                            action_ids_sha256.push(locator.action_id_sha256.clone());
+                        }
+                    }
+                    warm_elision_proofs.push(WarmRecordElisionProof {
+                        catalog_sha256: catalog.metadata_sha256().into(),
+                        source_revision: native.revision().into(),
+                        mapping_sha256: native.mapping_sha256().into(),
+                        placement_sha256: placement.manifest_hash().into(),
+                        placement_epoch: placement.placement_epoch(),
+                        format_version: crate::cpu_repack::OWNER_REPACK_FORMAT_VERSION,
+                        layer: *layer,
+                        ordered_expert_ids: expert_ids,
+                        record_identity_sha256: validation.record_identity_sha256.clone(),
+                        action_ids_sha256,
+                        native_bytes,
+                    });
+                    warm_cpu_layers.insert(*layer);
+                    warm_validations.insert(*layer, validation);
+                }
+                None => {
+                    cold_layers.insert(*layer);
+                }
+            }
+        }
+
+        let mut ledger = ConstructionLedger::new();
+        observe(&ledger)?;
+        let layer_owner_executor =
+            CudaSelectedExpertExecutor::new(placement.layer_owner().stable_id.clone())?;
+        let remote_executor =
+            CudaSelectedExpertExecutor::new(placement.remote_worker().stable_id.clone())?;
+        ledger.stage = ConstructionStage::RuntimeBaseline;
+        observe(&ledger)?;
+        let (layer_free, layer_total) = layer_owner_executor.memory_info()?;
+        let (remote_free, remote_total) = remote_executor.memory_info()?;
+        require_device_admission(
+            "layer-owner GPU",
+            layer_free as u64,
+            layer_total as u64,
+            envelope.layer_owner_required_free_bytes()?,
+        )?;
+        require_device_admission(
+            "remote GPU",
+            remote_free as u64,
+            remote_total as u64,
+            envelope.remote_gpu_required_free_bytes()?,
+        )?;
+
+        let mut layer_pinned = allocate_pinned(layer_owner_executor.stream())?;
+        let mut remote_pinned = allocate_pinned(remote_executor.stream())?;
+        ledger.pinned_bytes = (2 * OWNER_SELECTIVE_PINNED_UPLOAD_BYTES) as u64;
+        if ledger.pinned_bytes > RETAINED_MAX_PINNED_CONSTRUCTION_BYTES {
+            return Err(LLMError::MemoryError(
+                "capacity-one pinned construction bound exceeded".into(),
+            ));
+        }
+        let mut layer_owner_dense = Vec::new();
+        let mut router_pairs =
+            RouterPairAccumulator::<CudaSlice<u8>>::new(native.config().num_hidden_layers)?;
+        let (router_weight_bytes, router_bias_bytes) =
+            exact_router_weight_surface_bytes(native.config().num_experts)?;
+        let mut layer_owner_experts = BTreeMap::new();
+        let mut remote_gpu_experts = BTreeMap::new();
+        let mut cold_validations = BTreeMap::<u16, CpuOwnerLayerRecordValidation>::new();
+        let mut partial_store = ExpertPartialStore::new(partial_plan);
+        let mut remaining_cold_record_bytes =
+            cold_layers.iter().try_fold(0_u64, |total, layer| {
+                let expert_ids = plan_index.cpu_by_layer[layer]
+                    .iter()
+                    .map(|identity| identity.key.expert)
+                    .collect::<Vec<_>>();
+                total
+                    .checked_add(cache.expected_layer_file_bytes(
+                        *layer,
+                        &expert_ids,
+                        native.config().num_hidden_layers,
+                        native.config().num_experts,
+                    )?)
+                    .ok_or_else(|| LLMError::ModelError("cold record bytes overflow".into()))
+            })?;
+        let mut fatal_cuda = false;
+
+        for shard_index in 0..plan.shards().len() {
+            ledger.stage = ConstructionStage::Mappings;
+            let shard_result =
+                catalog.with_scoped_shard_transaction(&plan, shard_index, |transaction| {
+                    let warm_elided_indices = plan.shards()[shard_index]
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, action)| match &action.consumer {
+                            GptOssShardConsumer::OwnedExpert {
+                                key,
+                                owner: ExpertOwner::Cpu { .. },
+                                ..
+                            } if warm_cpu_layers.contains(&key.layer) => Some(index),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if !warm_elided_indices.is_empty() {
+                        transaction.record_warm_elisions(&warm_elided_indices)?;
+                    }
+                    for split in split_entries.values().filter(|entry| {
+                        entry.earlier_shard_index == shard_index
+                            && !(matches!(entry.identity.owner, ExpertOwner::Cpu { .. })
+                                && warm_cpu_layers.contains(&entry.identity.key.layer))
+                    }) {
+                        let locator = &plan_index.expert_actions[&split.identity]
+                            [&GptOssExpertSurface::GateUpBias];
+                        let action = &plan.shards()[shard_index].actions[locator.action_index];
+                        transaction.with_synchronous_action(locator.action_index, |scoped| {
+                            partial_store.insert_bias(shard_index, scoped.action(), scoped.bytes())
+                        })?;
+                        coverage.consume(action)?;
+                    }
+
+                    for action_index in &plan_index.dense_by_shard[shard_index] {
+                        let action = &plan.shards()[shard_index].actions[*action_index];
+                        let GptOssShardConsumer::LayerOwnerDense { runtime_tensor } =
+                            &action.consumer
+                        else {
+                            return Err(LLMError::ModelError(
+                                "dense action index identifies an expert".into(),
+                            ));
+                        };
+                        let mut upload_terminal_unproven = false;
+                        let uploaded =
+                            transaction.with_synchronous_action(*action_index, |scoped| {
+                                upload_pinned_chunks_classified(
+                                    layer_owner_executor.stream(),
+                                    &mut layer_pinned,
+                                    scoped.bytes(),
+                                    runtime_tensor,
+                                )
+                                .map_err(|failure| {
+                                    upload_terminal_unproven = failure.terminal_unproven;
+                                    failure.error
+                                })
+                            });
+                        let allocation = match uploaded {
+                            Ok(allocation) => allocation,
+                            Err(error) => {
+                                if upload_terminal_unproven {
+                                    fatal_cuda = true;
+                                    transaction.quarantine_unproven_terminal();
+                                }
+                                return Err(error);
+                            }
+                        };
+                        ledger.layer_owner_dense_bytes = ledger
+                            .layer_owner_dense_bytes
+                            .checked_add(action.byte_len()?)
+                            .ok_or_else(|| LLMError::ModelError("dense ledger overflows".into()))?;
+                        if let Some((layer, component)) = classify_router_dense_tensor(
+                            runtime_tensor,
+                            native.config().num_hidden_layers,
+                        )? {
+                            let expected = match component {
+                                RouterDenseComponent::Weight => router_weight_bytes,
+                                RouterDenseComponent::Bias => router_bias_bytes,
+                            };
+                            if action.byte_len()? != expected as u64 {
+                                return Err(LLMError::ModelError(format!(
+                                    "router tensor {runtime_tensor} byte length mismatch"
+                                )));
+                            }
+                            router_pairs.insert(layer, component, allocation)?;
+                        } else {
+                            layer_owner_dense.push(LayerOwnerDenseTensor {
+                                name: runtime_tensor.clone(),
+                                logical_bytes: action.byte_len()?,
+                                allocation,
+                            });
+                        }
+                        coverage.consume(action)?;
+                    }
+
+                    for identity in &plan_index.gpu_completion_by_shard[shard_index] {
+                        let split = split_entries.get(identity);
+                        let current_indices =
+                            plan_index.current_action_indices(identity, shard_index);
+                        let current_action_ids = current_indices
+                            .iter()
+                            .map(|index| {
+                                plan.shards()[shard_index].actions[*index]
+                                    .action_id_sha256
+                                    .clone()
+                            })
+                            .collect::<Vec<_>>();
+                        let completed_bias = split
+                            .map(|entry| {
+                                partial_store.take_for_completion(
+                                    identity,
+                                    shard_index,
+                                    &entry.later_action_ids_sha256,
+                                )
+                            })
+                            .transpose()?;
+                        let mut upload_terminal_unproven = false;
+                        let uploaded =
+                            transaction.with_synchronous_actions(&current_indices, |actions| {
+                                with_expert_surface_bytes(
+                                    identity,
+                                    actions,
+                                    completed_bias.as_ref().map(|bias| bias.bytes.as_slice()),
+                                    |surfaces| {
+                                        let expert_identity =
+                                            expert_identity_from_surfaces(identity.key, &surfaces);
+                                        let gate_up_bias_bf16_bits =
+                                            bytemuck::try_cast_slice(surfaces.gate_up_bias)
+                                                .map_err(|error| {
+                                                    LLMError::ModelError(format!(
+                                                        "gate/up BF16 bias: {error}"
+                                                    ))
+                                                })?;
+                                        let down_bias_bf16_bits = bytemuck::try_cast_slice(
+                                            surfaces.down_bias,
+                                        )
+                                        .map_err(|error| {
+                                            LLMError::ModelError(format!("down BF16 bias: {error}"))
+                                        })?;
+                                        let source = NativeMxfp4ExpertView {
+                                            key: identity.key,
+                                            gate_up_blocks: surfaces.gate_up_blocks,
+                                            gate_up_scales: surfaces.gate_up_scales,
+                                            gate_up_bias_bf16_bits,
+                                            down_blocks: surfaces.down_blocks,
+                                            down_scales: surfaces.down_scales,
+                                            down_bias_bf16_bits,
+                                            identity_sha256: &expert_identity,
+                                        };
+                                        match &identity.owner {
+                                            ExpertOwner::LayerOwnerGpu { .. } => {
+                                                layer_owner_executor
+                                                    .upload_expert_staged_classified(
+                                                        identity.owner.clone(),
+                                                        source,
+                                                        &mut layer_pinned.allocation,
+                                                    )
+                                                    .map_err(|failure| {
+                                                        upload_terminal_unproven =
+                                                            failure.terminal_unproven;
+                                                        failure.error
+                                                    })
+                                            }
+                                            ExpertOwner::RemoteGpu { .. } => remote_executor
+                                                .upload_expert_staged_classified(
+                                                    identity.owner.clone(),
+                                                    source,
+                                                    &mut remote_pinned.allocation,
+                                                )
+                                                .map_err(|failure| {
+                                                    upload_terminal_unproven =
+                                                        failure.terminal_unproven;
+                                                    failure.error
+                                                }),
+                                            ExpertOwner::Cpu { .. } => Err(LLMError::ModelError(
+                                                "CPU expert entered GPU completion".into(),
+                                            )),
+                                        }
+                                    },
+                                )
+                            });
+                        let weights = match uploaded {
+                            Ok(weights) => Arc::new(weights),
+                            Err(error) => {
+                                if upload_terminal_unproven {
+                                    fatal_cuda = true;
+                                    transaction.quarantine_unproven_terminal();
+                                }
+                                return Err(error);
+                            }
+                        };
+                        match &identity.owner {
+                            ExpertOwner::LayerOwnerGpu { .. } => {
+                                if layer_owner_experts.insert(identity.key, weights).is_some() {
+                                    return Err(LLMError::ModelError(
+                                        "duplicate layer-owner expert".into(),
+                                    ));
+                                }
+                                ledger.layer_owner_experts += 1;
+                                ledger.layer_owner_expert_bytes +=
+                                    GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES as u64;
+                            }
+                            ExpertOwner::RemoteGpu { .. } => {
+                                if remote_gpu_experts.insert(identity.key, weights).is_some() {
+                                    return Err(LLMError::ModelError(
+                                        "duplicate remote-GPU expert".into(),
+                                    ));
+                                }
+                                ledger.remote_gpu_experts += 1;
+                                ledger.remote_gpu_expert_bytes +=
+                                    GPT_OSS_SELECTED_EXPERT_PAYLOAD_BYTES as u64;
+                            }
+                            ExpertOwner::Cpu { .. } => unreachable!(),
+                        }
+                        for action_id in current_action_ids {
+                            let action = plan.shards()[shard_index]
+                                .actions
+                                .iter()
+                                .find(|action| action.action_id_sha256 == action_id)
+                                .expect("current action ID belongs to shard");
+                            coverage.consume(action)?;
+                        }
+                    }
+
+                    for (layer, completion_shard) in &plan_index.cpu_layer_completion_shard {
+                        if *completion_shard != shard_index || warm_cpu_layers.contains(layer) {
+                            continue;
+                        }
+                        let identities = &plan_index.cpu_by_layer[layer];
+                        let expectations = identities
+                            .iter()
+                            .map(|identity| {
+                                let ids = plan_index.action_ids(identity);
+                                CpuOwnerExpertActionExpectation {
+                                    expert_id: identity.key.expert,
+                                    gate_up_bias_action: ids[0].clone(),
+                                    gate_up_blocks_action: ids[1].clone(),
+                                    gate_up_scales_action: ids[2].clone(),
+                                    down_bias_action: ids[3].clone(),
+                                    down_blocks_action: ids[4].clone(),
+                                    down_scales_action: ids[5].clone(),
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let layer_payload_bytes = u64::try_from(identities.len())
+                            .ok()
+                            .and_then(|count| count.checked_mul(OWNER_EXPERT_BYTES as u64))
+                            .ok_or_else(|| {
+                                LLMError::ModelError("CPU layer output bytes overflow".into())
+                            })?;
+                        if layer_payload_bytes > RETAINED_MAX_DIRTY_CPU_OUTPUT_BYTES {
+                            return Err(LLMError::MemoryError(
+                                "capacity-one CPU layer output exceeds the frozen dirty bound"
+                                    .into(),
+                            ));
+                        }
+                        let mut record_transaction = cache.begin_layer_transaction(
+                            *layer,
+                            expectations,
+                            native.config().num_hidden_layers,
+                            native.config().num_experts,
+                            remaining_cold_record_bytes,
+                            R2_DISK_RESERVE_BYTES,
+                        )?;
+                        for identity in identities {
+                            let ids = plan_index.action_ids(identity);
+                            let id_refs = ids.each_ref().map(String::as_str);
+                            let current_indices =
+                                plan_index.current_action_indices(identity, shard_index);
+                            let split = split_entries.get(identity);
+                            let completed_bias = split
+                                .map(|entry| {
+                                    partial_store.take_for_completion(
+                                        identity,
+                                        shard_index,
+                                        &entry.later_action_ids_sha256,
+                                    )
+                                })
+                                .transpose()?;
+                            transaction.with_synchronous_actions(&current_indices, |actions| {
+                                with_expert_surface_bytes(
+                                    identity,
+                                    actions,
+                                    completed_bias.as_ref().map(|bias| bias.bytes.as_slice()),
+                                    |surfaces| {
+                                        record_transaction.accept_complete_expert(
+                                            identity.key.expert,
+                                            id_refs,
+                                            CpuOwnerExpertSource {
+                                                gate_up_bias: surfaces.gate_up_bias,
+                                                gate_up_blocks: surfaces.gate_up_blocks,
+                                                gate_up_scales: surfaces.gate_up_scales,
+                                                down_bias: surfaces.down_bias,
+                                                down_blocks: surfaces.down_blocks,
+                                                down_scales: surfaces.down_scales,
+                                            },
+                                        )
+                                    },
+                                )
+                            })?;
+                            for action_index in current_indices {
+                                coverage
+                                    .consume(&plan.shards()[shard_index].actions[action_index])?;
+                            }
+                        }
+                        let validation = record_transaction.finish(true)?;
+                        if validation.payload_bytes > RETAINED_MAX_DIRTY_CPU_OUTPUT_BYTES {
+                            return Err(LLMError::MemoryError(
+                                "capacity-one CPU layer output exceeds the frozen dirty bound"
+                                    .into(),
+                            ));
+                        }
+                        remaining_cold_record_bytes = remaining_cold_record_bytes
+                            .checked_sub(validation.file_bytes)
+                            .ok_or_else(|| {
+                                LLMError::ModelError("cold record bytes underflow".into())
+                            })?;
+                        ledger.cpu_experts += identities.len() as u32;
+                        ledger.cpu_x8_bytes = ledger
+                            .cpu_x8_bytes
+                            .checked_add(validation.payload_bytes)
+                            .ok_or_else(|| {
+                                LLMError::ModelError("CPU x8 ledger overflows".into())
+                            })?;
+                        ledger.construction_temporary_high_water_bytes = ledger
+                            .construction_temporary_high_water_bytes
+                            .max(OWNER_REPACK_TEMP_BYTES_MAX as u64);
+                        cold_validations.insert(*layer, validation);
+                    }
+                    let partial = partial_store.stats();
+                    transaction.record_terminal_audit(ShardReleaseLogicalLedger {
+                        partial_store_current_count: partial.current_count,
+                        partial_store_current_bytes: partial.current_bytes,
+                        partial_store_high_water_count: partial.high_water_count,
+                        partial_store_high_water_bytes: partial.high_water_bytes,
+                        pinned_construction_bytes: ledger.pinned_bytes,
+                        anonymous_temporary_high_water_bytes: ledger
+                            .construction_temporary_high_water_bytes,
+                        output_logical_bytes: ledger.cpu_x8_bytes,
+                        device_destination_logical_bytes: ledger
+                            .layer_owner_dense_bytes
+                            .checked_add(ledger.layer_owner_expert_bytes)
+                            .and_then(|bytes| bytes.checked_add(ledger.remote_gpu_expert_bytes))
+                            .ok_or_else(|| {
+                                LLMError::ModelError(
+                                    "device destination logical ledger overflows".into(),
+                                )
+                            })?,
+                    })?;
+                    Ok(())
+                });
+            if let Err(error) = shard_result {
+                if fatal_cuda {
+                    CAPACITY_ONE_FATAL_QUARANTINE.store(true, Ordering::Release);
+                    std::mem::forget(layer_pinned);
+                    std::mem::forget(remote_pinned);
+                    std::mem::forget(layer_owner_experts);
+                    std::mem::forget(remote_gpu_experts);
+                    std::mem::forget(layer_owner_dense);
+                    std::mem::forget(router_pairs);
+                    std::mem::forget(layer_owner_executor);
+                    std::mem::forget(remote_executor);
+                    return Err(LLMError::GpuError(format!(
+                        "capacity-one CUDA terminal ownership is unproven; process quarantined ({error})"
+                    )));
+                }
+                return Err(error);
+            }
+            ledger.mapped_address_bytes = catalog.mapping_activity().current_mapped_bytes;
+            observe(&ledger)?;
+        }
+
+        coverage.validate_complete()?;
+        partial_store.require_empty()?;
+        if remaining_cold_record_bytes != 0 {
+            return Err(LLMError::ModelError(
+                "cold CPU record byte ledger did not reach zero".into(),
+            ));
+        }
+        drop(layer_pinned);
+        drop(remote_pinned);
+        ledger.pinned_bytes = 0;
+
+        let resident_router_layers = router_pairs
+            .finish()?
+            .into_iter()
+            .map(|(layer, weight, bias)| {
+                Ok((
+                    layer,
+                    ResidentExactRouterWeights::new(
+                        placement.layer_owner().stable_id.clone(),
+                        native.config().num_experts,
+                        weight,
+                        bias,
+                    )?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let resident_router_sources = ResidentExactRouterSources::new(
+            native.config().num_hidden_layers,
+            native.config().num_experts,
+            placement.layer_owner().stable_id.clone(),
+            resident_router_layers,
+        )?;
+
+        if catalog.mapping_activity().current != 0 || catalog.active_source_payload_fds() != 0 {
+            return Err(LLMError::ModelError(
+                "source mappings or payload fds remain before CPU runtime mapping".into(),
+            ));
+        }
+        let mut all_validations = BTreeMap::new();
+        all_validations.extend(warm_validations);
+        all_validations.extend(cold_validations);
+        let mut cpu_layers = BTreeMap::new();
+        for (layer, identities) in &plan_index.cpu_by_layer {
+            let expert_ids = identities
+                .iter()
+                .map(|identity| identity.key.expert)
+                .collect::<Vec<_>>();
+            let fresh = cache
+                .validate_layer_without_mapping(
+                    *layer,
+                    &expert_ids,
+                    native.config().num_hidden_layers,
+                    native.config().num_experts,
+                )?
+                .ok_or_else(|| {
+                    LLMError::ModelError(format!(
+                        "owner x8 layer {layer} disappeared before runtime mapping"
+                    ))
+                })?;
+            if all_validations.get(layer) != Some(&fresh) {
+                return Err(LLMError::ModelError(format!(
+                    "owner x8 layer {layer} identity changed before runtime mapping"
+                )));
+            }
+            let record = cache.map_validated_layer(&fresh, catalog.mapping_activity().current)?;
+            for expert in &expert_ids {
+                let view = record.expert_view(*expert)?;
+                if view.gate_up.rows() != 5_760
+                    || view.gate_up.blocks() != 90
+                    || view.down.rows() != 2_880
+                    || view.down.blocks() != 90
+                {
+                    return Err(LLMError::ModelError(
+                        "owner x8 runtime record dimensions are invalid".into(),
+                    ));
+                }
+            }
+            if warm_cpu_layers.contains(layer) {
+                ledger.cpu_experts += identities.len() as u32;
+                ledger.cpu_x8_bytes = ledger
+                    .cpu_x8_bytes
+                    .checked_add(record.payload_bytes())
+                    .ok_or_else(|| LLMError::ModelError("CPU x8 ledger overflows".into()))?;
+            }
+            cpu_layers.insert(*layer, record);
+        }
+
+        ledger.stage = ConstructionStage::ExecutionReserve;
+        verify_materialized_expert_weights(
+            &placement,
+            &layer_owner_experts,
+            &remote_gpu_experts,
+            &cpu_layers,
+        )?;
+        envelope.execution_reserve_plan.validate()?;
+        ledger.execution_reserve_reviewed = true;
+        ledger.execution_runtime_resources_materialized_at_construction = false;
+        ledger.layer_owner_execution_materialized_before_admission_bytes = envelope
+            .execution_reserve_plan
+            .layer_owner
+            .materialized_before_admission_bytes;
+        ledger.remote_gpu_execution_materialized_before_admission_bytes = envelope
+            .execution_reserve_plan
+            .remote_gpu
+            .materialized_before_admission_bytes;
+        ledger.layer_owner_execution_planned_bytes = envelope
+            .execution_reserve_plan
+            .layer_owner
+            .planned_owned_bytes;
+        ledger.remote_gpu_execution_planned_bytes = envelope
+            .execution_reserve_plan
+            .remote_gpu
+            .planned_owned_bytes;
+        observe(&ledger)?;
+
+        if ledger.layer_owner_dense_bytes != envelope.non_expert_payload_bytes
+            || ledger.layer_owner_expert_bytes != envelope.layer_owner_native_expert_bytes
+            || ledger.remote_gpu_expert_bytes != envelope.remote_gpu_native_expert_bytes
+            || ledger.cpu_x8_bytes != envelope.cpu_x8_record_bytes
+        {
+            return Err(LLMError::ModelError(
+                "capacity-one owner-selective byte ledger mismatch".into(),
+            ));
+        }
+        let release_reports = catalog.release_reports();
+        let mapping = catalog.mapping_activity();
+        let partial_stats = partial_store.stats();
+        let expected_cpu_experts = plan_index
+            .cpu_by_layer
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        let publication_proof = OwnerSelectivePublicationProof {
+            catalog_identity_exact: plan.catalog_sha256() == catalog.metadata_sha256(),
+            action_coverage_complete: coverage.validate_complete().is_ok(),
+            warm_elision_complete: coverage.elided_count()
+                == warm_elision_proofs
+                    .iter()
+                    .map(|proof| proof.action_ids_sha256.len())
+                    .sum::<usize>(),
+            active_source_mappings: mapping.current,
+            active_source_payload_fds: catalog.active_source_payload_fds(),
+            source_payload_views: mapping.current,
+            borrowed_source_slices: 0,
+            source_inode_mappings: release_reports
+                .iter()
+                .map(|report| report.post_release.source_inode_mapping_count)
+                .sum(),
+            source_inode_pss_bytes: release_reports
+                .iter()
+                .map(|report| report.post_release.source_inode_pss_bytes)
+                .sum(),
+            partial_store_entries: partial_stats.current_count,
+            partial_store_bytes: partial_stats.current_bytes,
+            incomplete_cpu_experts: expected_cpu_experts
+                .saturating_sub(ledger.cpu_experts as usize),
+            task_temporaries: cache.capacity_one_temporary_count()?,
+            pending_cuda_receipts: 0,
+            quarantined_cuda_receipts: 0,
+            cold_records_directory_synced: all_validations.len() == plan_index.cpu_by_layer.len(),
+            records_freshly_validated: cpu_layers.len() == plan_index.cpu_by_layer.len(),
+            runtime_maps_after_source_release: mapping.current == 0,
+            stable_device_ownership_complete: true,
+            bounded_journal_complete: release_reports.len() == plan.shards().len()
+                && !catalog.release_report_overflowed()
+                && release_reports
+                    .iter()
+                    .all(|report| report.terminal_audit_complete),
+            visibility_contract_unchanged: true,
+        };
+        publication_proof.validate()?;
+        let capacity_one_evidence = CapacityOneConstructionEvidence {
+            policy_sha256: policy_sha256.into(),
+            catalog_sha256: catalog.metadata_sha256().into(),
+            plan_sha256: plan.plan_sha256().into(),
+            active_mapping_high_water: mapping.high_water,
+            mapped_byte_high_water: mapping.mapped_byte_high_water,
+            plan_partial_high_water_count,
+            plan_partial_high_water_bytes,
+            plan_owner_partial_high_waters,
+            partial_high_water_count: partial_stats.high_water_count,
+            partial_high_water_bytes: partial_stats.high_water_bytes,
+            warm_elision_proofs,
+            shard_releases: release_reports,
+            publication_proof,
+        };
+        if capacity_one_evidence.active_mapping_high_water != 1 {
+            return Err(LLMError::ModelError(
+                "capacity-one mapping high-water is not exactly one".into(),
+            ));
+        }
+        ledger.stage = ConstructionStage::Publish;
+        observe(&ledger)?;
+        Ok(OwnerSelectiveModel {
+            cpu_layers,
+            remote_gpu_experts,
+            layer_owner_experts,
+            resident_router_sources,
+            layer_owner_dense,
+            remote_executor: Some(remote_executor),
+            layer_owner_executor: Some(layer_owner_executor),
+            execution_quarantined: false,
+            native_metadata,
+            placement,
+            envelope,
+            ledger,
+            capacity_one_evidence: Some(capacity_one_evidence),
+        })
     }
 
     pub fn construct<F>(
@@ -1408,6 +2499,7 @@ impl OwnerSelectiveConstructor {
             placement,
             envelope,
             ledger,
+            capacity_one_evidence: None,
         };
         // The published model owns no checkpoint store or payload mapping.
         // Construction still maps the complete checkpoint until this point;
@@ -1446,6 +2538,28 @@ fn validate_manifest_identity(
     {
         return Err(LLMError::ModelError(
             "placement manifest does not identify the opened native checkpoint exactly".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_manifest_identity_catalog(
+    native: &GptOssNativeCatalogMap,
+    manifest: &GptOssExpertPlacementManifestV1,
+) -> Result<()> {
+    let config = native.config();
+    if manifest.model.revision != native.revision()
+        || manifest.model.config_sha256 != native.config_sha256()
+        || manifest.model.index_sha256 != native.metadata_sha256()
+        || manifest.model.mapping_sha256 != native.mapping_sha256()
+        || usize::from(manifest.model.num_layers) != config.num_hidden_layers
+        || usize::from(manifest.model.experts_per_layer) != config.num_experts
+        || usize::from(manifest.model.hidden_size) != config.hidden_size
+        || usize::from(manifest.model.intermediate_size) != config.intermediate_size
+        || usize::from(manifest.model.top_k) != config.experts_per_token
+    {
+        return Err(LLMError::ModelError(
+            "placement manifest does not identify the native shard catalog exactly".into(),
         ));
     }
     Ok(())
@@ -1492,23 +2606,56 @@ fn upload_pinned_chunks(
     source: &[u8],
     label: &str,
 ) -> Result<CudaSlice<u8>> {
+    upload_pinned_chunks_classified(stream, pinned, source, label).map_err(|failure| failure.error)
+}
+
+struct ConstructionUploadFailure {
+    error: LLMError,
+    terminal_unproven: bool,
+}
+
+impl ConstructionUploadFailure {
+    fn before_enqueue(error: LLMError) -> Self {
+        Self {
+            error,
+            terminal_unproven: false,
+        }
+    }
+
+    fn after_enqueue(error: LLMError) -> Self {
+        Self {
+            error,
+            terminal_unproven: true,
+        }
+    }
+}
+
+fn upload_pinned_chunks_classified(
+    stream: &std::sync::Arc<CudaStream>,
+    pinned: &mut TrackedPinnedHostSlice,
+    source: &[u8],
+    label: &str,
+) -> std::result::Result<CudaSlice<u8>, ConstructionUploadFailure> {
     // SAFETY: the uninitialized device allocation is written completely by
     // the chunk loop before it becomes part of a published model.
     let mut destination = unsafe { stream.alloc::<u8>(source.len()) }
-        .map_err(cuda_error("owner-selective dense allocation"))?;
+        .map_err(cuda_error("owner-selective dense allocation"))
+        .map_err(ConstructionUploadFailure::before_enqueue)?;
     for (chunk_index, source_chunk) in source.chunks(pinned.allocation.len()).enumerate() {
         let start = chunk_index * pinned.allocation.len();
         let end = start + source_chunk.len();
         pinned
             .allocation
             .as_mut_slice()
-            .map_err(cuda_error("owner-selective pinned write access"))?[..source_chunk.len()]
+            .map_err(cuda_error("owner-selective pinned write access"))
+            .map_err(ConstructionUploadFailure::before_enqueue)?[..source_chunk.len()]
             .copy_from_slice(source_chunk);
         let mut target = destination.slice_mut(start..end);
         if source_chunk.len() == pinned.allocation.len() {
             stream
                 .memcpy_htod(&pinned.allocation, &mut target)
-                .map_err(cuda_error("owner-selective pinned H2D"))?;
+                .map_err(cuda_error("owner-selective pinned H2D"))
+                .map_err(ConstructionUploadFailure::after_enqueue)?;
         } else {
             // The backing address remains page-locked. cudarc cannot express a
             // subview of PinnedHostSlice, so the bounded tail uses a borrowed
@@ -1516,19 +2663,22 @@ fn upload_pinned_chunks(
             let tail = &pinned
                 .allocation
                 .as_slice()
-                .map_err(cuda_error("owner-selective pinned tail access"))?[..source_chunk.len()];
+                .map_err(cuda_error("owner-selective pinned tail access"))
+                .map_err(ConstructionUploadFailure::before_enqueue)?[..source_chunk.len()];
             stream
                 .memcpy_htod(tail, &mut target)
-                .map_err(cuda_error("owner-selective pinned tail H2D"))?;
+                .map_err(cuda_error("owner-selective pinned tail H2D"))
+                .map_err(ConstructionUploadFailure::after_enqueue)?;
         }
         stream
             .synchronize()
-            .map_err(cuda_error("owner-selective dense upload drain"))?;
+            .map_err(cuda_error("owner-selective dense upload drain"))
+            .map_err(ConstructionUploadFailure::after_enqueue)?;
     }
     if destination.len() != source.len() {
-        return Err(LLMError::GpuError(format!(
-            "dense tensor {label} allocation length mismatch"
-        )));
+        return Err(ConstructionUploadFailure::before_enqueue(
+            LLMError::GpuError(format!("dense tensor {label} allocation length mismatch")),
+        ));
     }
     Ok(destination)
 }

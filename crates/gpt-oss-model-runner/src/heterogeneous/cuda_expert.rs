@@ -707,22 +707,43 @@ impl CudaSelectedExpertExecutor {
         source: NativeMxfp4ExpertView<'_>,
         pinned: &mut PinnedHostSlice<u8>,
     ) -> Result<CudaSelectedExpertWeights> {
-        source.validate()?;
+        self.upload_expert_staged_classified(owner, source, pinned)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Construction upload with the only error classification relevant to a
+    /// source-mapping lifetime: whether an H2D enqueue may have occurred
+    /// without a successful stream synchronization.
+    pub(crate) fn upload_expert_staged_classified(
+        &self,
+        owner: ExpertOwner,
+        source: NativeMxfp4ExpertView<'_>,
+        pinned: &mut PinnedHostSlice<u8>,
+    ) -> std::result::Result<CudaSelectedExpertWeights, StagedExpertUploadFailure> {
+        source
+            .validate()
+            .map_err(StagedExpertUploadFailure::before_enqueue)?;
         match &owner {
             ExpertOwner::LayerOwnerGpu { device } | ExpertOwner::RemoteGpu { device }
                 if device == &self.stable_device => {}
             _ => {
-                return Err(LLMError::GpuError(
-                    "selected expert owner does not match executor device".into(),
+                return Err(StagedExpertUploadFailure::before_enqueue(
+                    LLMError::GpuError(
+                        "selected expert owner does not match executor device".into(),
+                    ),
                 ));
             }
         }
-        let gate_up_blocks = upload_pinned_u8(&self.stream, pinned, source.gate_up_blocks)?;
-        let gate_up_scales = upload_pinned_u8(&self.stream, pinned, source.gate_up_scales)?;
-        let gate_up_bias = upload_pinned_u16(&self.stream, pinned, source.gate_up_bias_bf16_bits)?;
-        let down_blocks = upload_pinned_u8(&self.stream, pinned, source.down_blocks)?;
-        let down_scales = upload_pinned_u8(&self.stream, pinned, source.down_scales)?;
-        let down_bias = upload_pinned_u16(&self.stream, pinned, source.down_bias_bf16_bits)?;
+        let gate_up_blocks =
+            upload_pinned_u8_classified(&self.stream, pinned, source.gate_up_blocks)?;
+        let gate_up_scales =
+            upload_pinned_u8_classified(&self.stream, pinned, source.gate_up_scales)?;
+        let gate_up_bias =
+            upload_pinned_u16_classified(&self.stream, pinned, source.gate_up_bias_bf16_bits)?;
+        let down_blocks = upload_pinned_u8_classified(&self.stream, pinned, source.down_blocks)?;
+        let down_scales = upload_pinned_u8_classified(&self.stream, pinned, source.down_scales)?;
+        let down_bias =
+            upload_pinned_u16_classified(&self.stream, pinned, source.down_bias_bf16_bits)?;
         Ok(CudaSelectedExpertWeights {
             descriptor: ExpertWeightDescriptor {
                 key: source.key,
@@ -1009,71 +1030,106 @@ impl CudaSelectedExpertExecutor {
     }
 }
 
-fn upload_pinned_u8(
+pub(crate) struct StagedExpertUploadFailure {
+    pub(crate) error: LLMError,
+    pub(crate) terminal_unproven: bool,
+}
+
+impl StagedExpertUploadFailure {
+    fn before_enqueue(error: LLMError) -> Self {
+        Self {
+            error,
+            terminal_unproven: false,
+        }
+    }
+
+    fn after_enqueue(error: LLMError) -> Self {
+        Self {
+            error,
+            terminal_unproven: true,
+        }
+    }
+}
+
+fn upload_pinned_u8_classified(
     stream: &Arc<CudaStream>,
     pinned: &mut PinnedHostSlice<u8>,
     source: &[u8],
-) -> Result<CudaSlice<u8>> {
+) -> std::result::Result<CudaSlice<u8>, StagedExpertUploadFailure> {
     if source.len() > pinned.len() {
-        return Err(LLMError::GpuError(format!(
-            "selected expert surface {} exceeds pinned construction lease {}",
-            source.len(),
-            pinned.len()
-        )));
+        return Err(StagedExpertUploadFailure::before_enqueue(
+            LLMError::GpuError(format!(
+                "selected expert surface {} exceeds pinned construction lease {}",
+                source.len(),
+                pinned.len()
+            )),
+        ));
     }
     pinned
         .as_mut_slice()
-        .map_err(cuda_error("selected expert pinned write access"))?[..source.len()]
+        .map_err(cuda_error("selected expert pinned write access"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?[..source.len()]
         .copy_from_slice(source);
     // SAFETY: the full allocation is initialized by the immediately following
     // copy and synchronized before the pinned lease can be reused.
     let mut destination = unsafe { stream.alloc::<u8>(source.len()) }
-        .map_err(cuda_error("selected expert staged allocation"))?;
+        .map_err(cuda_error("selected expert staged allocation"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?;
     let staged = &pinned
         .as_slice()
-        .map_err(cuda_error("selected expert pinned read access"))?[..source.len()];
+        .map_err(cuda_error("selected expert pinned read access"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?[..source.len()];
     stream
         .memcpy_htod(staged, &mut destination)
-        .map_err(cuda_error("selected expert staged H2D"))?;
+        .map_err(cuda_error("selected expert staged H2D"))
+        .map_err(StagedExpertUploadFailure::after_enqueue)?;
     stream
         .synchronize()
-        .map_err(cuda_error("selected expert staged H2D drain"))?;
+        .map_err(cuda_error("selected expert staged H2D drain"))
+        .map_err(StagedExpertUploadFailure::after_enqueue)?;
     Ok(destination)
 }
 
-fn upload_pinned_u16(
+fn upload_pinned_u16_classified(
     stream: &Arc<CudaStream>,
     pinned: &mut PinnedHostSlice<u8>,
     source: &[u16],
-) -> Result<CudaSlice<u16>> {
+) -> std::result::Result<CudaSlice<u16>, StagedExpertUploadFailure> {
     let source_bytes = bytemuck::cast_slice(source);
     if source_bytes.len() > pinned.len() {
-        return Err(LLMError::GpuError(format!(
-            "selected expert bias surface {} exceeds pinned construction lease {}",
-            source_bytes.len(),
-            pinned.len()
-        )));
+        return Err(StagedExpertUploadFailure::before_enqueue(
+            LLMError::GpuError(format!(
+                "selected expert bias surface {} exceeds pinned construction lease {}",
+                source_bytes.len(),
+                pinned.len()
+            )),
+        ));
     }
     pinned
         .as_mut_slice()
-        .map_err(cuda_error("selected expert pinned bias write access"))?[..source_bytes.len()]
+        .map_err(cuda_error("selected expert pinned bias write access"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?[..source_bytes.len()]
         .copy_from_slice(source_bytes);
     // SAFETY: the full allocation is initialized by the immediately following
     // exact-length copy and synchronized before lease reuse.
     let mut destination = unsafe { stream.alloc::<u16>(source.len()) }
-        .map_err(cuda_error("selected expert staged bias allocation"))?;
+        .map_err(cuda_error("selected expert staged bias allocation"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?;
     let staged_bytes = &pinned
         .as_slice()
-        .map_err(cuda_error("selected expert pinned bias read access"))?[..source_bytes.len()];
-    let staged: &[u16] = bytemuck::try_cast_slice(staged_bytes).map_err(|error| {
-        LLMError::GpuError(format!("selected expert pinned BF16 view: {error}"))
-    })?;
+        .map_err(cuda_error("selected expert pinned bias read access"))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?[..source_bytes.len()];
+    let staged: &[u16] = bytemuck::try_cast_slice(staged_bytes)
+        .map_err(|error| LLMError::GpuError(format!("selected expert pinned BF16 view: {error}")))
+        .map_err(StagedExpertUploadFailure::before_enqueue)?;
     stream
         .memcpy_htod(staged, &mut destination)
-        .map_err(cuda_error("selected expert staged bias H2D"))?;
+        .map_err(cuda_error("selected expert staged bias H2D"))
+        .map_err(StagedExpertUploadFailure::after_enqueue)?;
     stream
         .synchronize()
-        .map_err(cuda_error("selected expert staged bias H2D drain"))?;
+        .map_err(cuda_error("selected expert staged bias H2D drain"))
+        .map_err(StagedExpertUploadFailure::after_enqueue)?;
     Ok(destination)
 }
 

@@ -122,22 +122,6 @@ pub struct CapacityOneSettleSample {
     pub cleanup_drift_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HeterogeneousConstructionMode {
-    MonolithicControl,
-    CapacityOne,
-}
-
-impl HeterogeneousConstructionMode {
-    pub const fn evidence_name(self) -> &'static str {
-        match self {
-            Self::MonolithicControl => "monolithic_control",
-            Self::CapacityOne => "capacity_one",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct ExpertPartialKey {
     pub key: GptOssExpertKey,
