@@ -5,12 +5,13 @@ Initial-attempt verdict: `blocked_pre_model`
 Authorized retry verdict: `failed_first_cell_clean_file_allowance`; see the
 [topology-guard correction and retry closure](retry-20260817-155545/README.md).
 
-Release-boundary correction status: source and offline validation complete;
-one fresh R4 attempt is authorized only after a clean correction commit is
-pushed and its three release binaries are rebuilt. The correction keeps the
-frozen R2 thresholds and fixed eight-cell matrix, moves the clean-file gate to
-the documented post-source-release settle boundary, and adds a fail-closed
-child/supervisor release handshake. H8 and 120B remain prohibited.
+Final authorized attempt verdict:
+`failed_second_cell_capacity_one_mapping_window`; see the
+[release-boundary correction and final retry closure](release-retry-20260817-165733/README.md).
+The corrected cold monolithic cell passed its source-release and cleanup gates.
+Cold capacity-one then rejected the single local 20B shard before mapping
+because it exceeds the unchanged mapping window. The attempt is consumed; R4
+is incomplete, and H8/120B remains prohibited.
 
 The initial evidence below remains unchanged historical evidence.
 

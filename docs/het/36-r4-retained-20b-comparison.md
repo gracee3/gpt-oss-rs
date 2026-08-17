@@ -98,9 +98,27 @@ records remain untouched. Synthetic release-proof, stale-marker, duplicate
 publication, exact-boundary, phase-order, output-schema, and fixed-matrix tests
 pass alongside the protected-NVMe topology fixtures.
 
+## Final authorized R4 attempt
+
+Commit `2e8820b` was pushed and the three release binaries were built from that
+clean identity. The fresh six-sample preflight passed every frozen R2 gate over
+120,019 ms. `cold-monolithic-control` then passed the corrected boundary: its
+advice calls succeeded, source mapping/PSS/descriptors reached zero, five
+clean-file samples passed over 34,503 ms, terminal v7 output validated, and
+post-exit memory/file drift was zero.
+
+The fixed matrix stopped in `cold-capacity-one` before source mapping. The
+local native 20B package is one 13,761,300,984-byte shard, which exceeds the
+unchanged 10,544,040,680-byte capacity-one source-mapping window by
+3,217,260,304 bytes. The constructor exited with code 1 without a release
+marker, terminal output, or capacity-one cache. No warm, repeat, H7, H8, or
+120B work followed. The
+[bounded final record](evidence/implementation-2026-08/r4-retained-20b/release-retry-20260817-165733/README.md)
+binds the raw external evidence and final cleanup audit.
+
 ## Next decision
 
-One fresh R4 attempt is authorized after this correction is committed, pushed,
-and rebuilt from a clean commit. It must stop at the first failed gate and may
-not be retried. The frozen preflight, runtime, and cleanup thresholds must not
-be changed to convert any result into a pass. H8, H9, and H10 remain stopped.
+R4 is not complete, so the phase is not ready for H8. The single authorized
+attempt has been consumed and may not be retried. Any change to the frozen
+source-mapping window, checkpoint layout, or R4 procedure requires a new,
+separate decision. H8, H9, and H10 remain stopped.

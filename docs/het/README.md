@@ -1,8 +1,8 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, an
-advised-release correction is validated for one final authorized R4 attempt,
-and H8 remains paused;
+**Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, the
+final authorized R4 attempt stopped in cold capacity-one after a passing cold
+monolithic control, and H8 remains paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -231,5 +231,8 @@ growth exceeded the frozen allowance by 22,124,440 bytes. No terminal
 construction output, comparison cache, later matrix cell, H7 repeat, H8, or
 120B access followed. The corrected constructors now advise, unmap, and close
 source mappings, publish a fail-closed release proof, and wait while the
-supervisor performs the unchanged clean-file settle gate. One fresh R4 attempt
-is authorized from a clean pushed correction commit; H8/H9/H10 remain stopped.
+supervisor performs the unchanged clean-file settle gate. The final authorized
+attempt proved that corrected cold-monolithic boundary, then failed closed
+because the single 13,761,300,984-byte native 20B shard exceeds the unchanged
+10,544,040,680-byte capacity-one mapping window. No later matrix or H7 cell ran;
+R4 is incomplete and H8/H9/H10 remain stopped.

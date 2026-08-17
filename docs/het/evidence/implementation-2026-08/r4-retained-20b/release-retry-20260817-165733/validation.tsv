@@ -1,0 +1,21 @@
+id	gate	result	evidence
+R4F-01	release-boundary correction commit	passed	2e8820b committed and pushed before release build
+R4F-02	source-release handshake tests	passed	proof boundaries, stale identity, hash binding, and duplicate publication passed
+R4F-03	protected-NVMe topology tests	passed	both enumeration orders, root-through-dm, RW, mounted, ambiguous, identity-change, and no-serial fixtures passed
+R4F-04	formatting and targeted watchdog/supervisor tests	passed	format, 14 bench library tests, 8 supervisor tests, 11 watchdog tests, and 3 lifecycle tests passed
+R4F-05	touched-binary Clippy	passed	bench library, comparison supervisor, H8 watchdog, constructor, and control passed no-deps -D warnings
+R4F-06	locked workspace suite	passed	workspace check and complete test/doc-test suite passed; model-runner reported 428 passed
+R4F-07	CUDA checks	passed	CUDA 13.3 sm_86 kernels compiled; both RTX 3090 PCI identities resolved; six non-model router tests passed
+R4F-08	release identity	passed	three binaries built from clean pushed commit 2e8820b
+R4F-09	fresh R2 preflight	passed	6 samples over 120019 ms; swap and PSI avg10 stayed zero
+R4F-10	cold monolithic cell	passed	advice succeeded; zero source mapping/PSS/fds; 5 release samples over 34503 ms; terminal v7 output validated
+R4F-11	cold capacity-one cell	failed_hard	13761300984-byte source shard exceeds unchanged 10544040680-byte mapping window by 3217260304 bytes
+R4F-12	remaining matrix	blocked_by_gate	warm, repeat, both H7 cells, and cache comparison did not start
+R4F-13	process-group cleanup	passed	failed child exited; no comparison process remained
+R4F-14	GPU cleanup	passed	both GPUs returned to 1 MiB used
+R4F-15	swap and pressure cleanup	passed	global and cgroup swap remained zero and PSI avg10 was zero
+R4F-16	protected NVMe cleanup	passed	nvme0n1 remained read-only and unmounted throughout retained evidence and final audit
+R4F-17	existing owner cache	passed	before/after payload inventory SHA-256 identical: c69bcdffe20ddff32ced3f6acc422a6c696d24b5e5f8888597b071d6cc57a09a
+R4F-18	new run caches	bounded	one 13254212-byte monolithic cache record retained; no capacity-one cache created
+R4F-19	network route invariants	passed	documented Wi-Fi default route and local-only direct-link route remained present
+R4F-20	H8/120B boundary	passed	no H8 or 120B process, input, or access began
