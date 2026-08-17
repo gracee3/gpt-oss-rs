@@ -1,12 +1,14 @@
 //! Capacity-one transaction joining a validated shard catalog to its consumer plan.
 //!
-//! This module deliberately stops before owner-selective construction. It
-//! provides the lifetime state needed by a future integration without claiming
-//! that CUDA copies or CPU records are currently published through this seam.
+//! The owner-selective constructor uses this lifetime boundary directly: a
+//! source action is terminal only after its synchronous callback succeeds or
+//! an exact warm-record elision is recorded.
+
+use std::collections::BTreeSet;
 
 use gpt_oss_core::error::{LLMError, Result};
 
-use super::shard_catalog::{CatalogMappedShard, SafeTensorShardCatalog};
+use super::shard_catalog::{CatalogMappedShard, SafeTensorShardCatalog, ShardReleaseLogicalLedger};
 use super::shard_consumer_plan::{
     GptOssShardConsumerAction, GptOssShardConsumerPlan, GptOssShardConsumption,
 };
@@ -84,6 +86,7 @@ fn with_plan_source<R>(
         planned_shard,
         shard_index,
         lifecycle: ShardTransactionLifecycle::PreHandoff,
+        terminal_action_indices: BTreeSet::new(),
     };
     let callback_result = use_transaction(&mut transaction);
     transaction.finish(callback_result)
@@ -175,6 +178,7 @@ pub struct ScopedShardConsumerTransaction<'catalog, 'plan> {
     planned_shard: &'plan GptOssShardConsumption,
     shard_index: usize,
     lifecycle: ShardTransactionLifecycle,
+    terminal_action_indices: BTreeSet<usize>,
 }
 
 impl<'catalog, 'plan> ScopedShardConsumerTransaction<'catalog, 'plan> {
@@ -194,6 +198,60 @@ impl<'catalog, 'plan> ScopedShardConsumerTransaction<'catalog, 'plan> {
         self.lifecycle
     }
 
+    pub fn record_terminal_audit(
+        &mut self,
+        logical_ledger: ShardReleaseLogicalLedger,
+    ) -> Result<()> {
+        if self.terminal_action_indices.len() != self.planned_shard.actions.len()
+            || self
+                .terminal_action_indices
+                .iter()
+                .copied()
+                .ne(0..self.planned_shard.actions.len())
+        {
+            return Err(model_error(
+                "shard terminal audit does not exactly cover the immutable plan",
+            ));
+        }
+        let covered_native_bytes =
+            self.terminal_action_indices
+                .iter()
+                .try_fold(0_u64, |total, index| {
+                    total
+                        .checked_add(self.planned_shard.actions[*index].byte_len()?)
+                        .ok_or_else(|| model_error("shard terminal audit bytes overflow"))
+                })?;
+        if covered_native_bytes != self.planned_shard.planned_payload_bytes {
+            return Err(model_error(
+                "shard terminal audit byte coverage differs from the immutable plan",
+            ));
+        }
+        self.mapped.record_terminal_audit(
+            self.terminal_action_indices.len(),
+            covered_native_bytes,
+            self.terminal_action_indices.len(),
+            self.terminal_action_indices
+                .iter()
+                .map(|index| self.planned_shard.actions[*index].action_id_sha256.clone())
+                .collect(),
+            logical_ledger,
+        )
+    }
+
+    /// Record payload actions removed by a freshly validated immutable warm
+    /// record. Elisions never borrow the mapping, but remain exact terminal
+    /// receipts for source-plan coverage.
+    pub fn record_warm_elisions(&mut self, action_indices: &[usize]) -> Result<()> {
+        self.require_sorted_unique_indices(action_indices)?;
+        for index in action_indices {
+            self.checked_action_metadata(*index)?;
+            if !self.terminal_action_indices.insert(*index) {
+                return Err(model_error("duplicate warm action elision"));
+            }
+        }
+        Ok(())
+    }
+
     /// Borrow one exact action range for wholly synchronous consumption.
     pub fn with_synchronous_action<R>(
         &mut self,
@@ -205,7 +263,52 @@ impl<'catalog, 'plan> ScopedShardConsumerTransaction<'catalog, 'plan> {
                 "synchronous shard action is unavailable after external handoff",
             ));
         }
-        use_action(self.checked_action(action_index)?)
+        let result = use_action(self.checked_action(action_index)?);
+        if result.is_ok() && !self.terminal_action_indices.insert(action_index) {
+            return Err(model_error("synchronous shard action completed twice"));
+        }
+        result
+    }
+
+    /// Borrow several exact action ranges for one wholly synchronous terminal
+    /// operation. The owned return value is independent of every source
+    /// lifetime, so none of the gathered slices can escape this callback.
+    pub fn with_synchronous_actions<R>(
+        &mut self,
+        action_indices: &[usize],
+        use_actions: impl FnOnce(&[ScopedShardAction<'_>]) -> Result<R>,
+    ) -> Result<R> {
+        if self.lifecycle != ShardTransactionLifecycle::PreHandoff {
+            return Err(model_error(
+                "synchronous shard actions are unavailable after external handoff",
+            ));
+        }
+        if action_indices.is_empty() {
+            return Err(model_error("synchronous shard action set is empty"));
+        }
+        self.require_sorted_unique_indices(action_indices)?;
+        if action_indices
+            .iter()
+            .any(|index| self.terminal_action_indices.contains(index))
+        {
+            return Err(model_error("synchronous shard action completed twice"));
+        }
+        let actions = action_indices
+            .iter()
+            .map(|index| self.checked_action(*index))
+            .collect::<Result<Vec<_>>>()?;
+        let result = use_actions(&actions);
+        if result.is_ok() {
+            self.terminal_action_indices
+                .extend(action_indices.iter().copied());
+        }
+        result
+    }
+
+    /// Fail closed when a consumer may still own a source borrow (for example,
+    /// after an H2D enqueue whose synchronization failed).
+    pub fn quarantine_unproven_terminal(&mut self) {
+        self.quarantine();
     }
 
     /// Enter the only state permitted to create an external lifetime.
@@ -227,13 +330,30 @@ impl<'catalog, 'plan> ScopedShardConsumerTransaction<'catalog, 'plan> {
     }
 
     fn checked_action(&self, action_index: usize) -> Result<ScopedShardAction<'_>> {
-        let action = self
-            .planned_shard
-            .actions
-            .get(action_index)
-            .ok_or_else(|| model_error("shard transaction action index is outside the plan"))?;
+        let action = self.checked_action_metadata(action_index)?;
         let bytes = self.mapped.checked_bytes(action.shard_absolute_range)?;
         Ok(ScopedShardAction { action, bytes })
+    }
+
+    fn checked_action_metadata(&self, action_index: usize) -> Result<&GptOssShardConsumerAction> {
+        self.planned_shard
+            .actions
+            .get(action_index)
+            .ok_or_else(|| model_error("shard transaction action index is outside the plan"))
+    }
+
+    fn require_sorted_unique_indices(&self, action_indices: &[usize]) -> Result<()> {
+        if action_indices.is_empty() {
+            return Err(model_error("synchronous shard action set is empty"));
+        }
+        let mut ordered = action_indices.to_vec();
+        ordered.sort_unstable();
+        if ordered != action_indices || ordered.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(model_error(
+                "synchronous shard action indices must be sorted and unique",
+            ));
+        }
+        Ok(())
     }
 
     fn quarantine(&mut self) {
@@ -410,9 +530,13 @@ mod tests {
         let catalog = SafeTensorShardCatalog::open(root.path()).unwrap();
         let shard = catalog.shards()[0].identity.clone();
         let mut actions = Vec::new();
-        for (name, runtime) in [("a", "runtime.a"), ("b", "runtime.b")] {
+        for (ordinal, (name, runtime)) in [("a", "runtime.a"), ("b", "runtime.b")]
+            .into_iter()
+            .enumerate()
+        {
             let tensor = catalog.tensor(name).unwrap();
             actions.push(GptOssShardConsumerAction {
+                action_id_sha256: format!("{:064x}", ordinal + 1),
                 native_tensor: name.into(),
                 native_tensor_range: [0, tensor.byte_len()],
                 shard_absolute_range: tensor.absolute_range,
@@ -482,6 +606,43 @@ mod tests {
         .unwrap();
         assert_eq!(copied, [1, 2, 3]);
         assert_released(fixture.catalog.mapping_activity(), fixture.file_length);
+    }
+
+    #[test]
+    fn multi_action_terminal_audit_records_ordered_release_and_zero_source_state() {
+        let fixture = tiny_fixture();
+        let copied = with_plan_source(&fixture.catalog, &fixture.plan, 0, |transaction| {
+            assert_eq!(fixture.catalog.active_source_payload_fds(), 1);
+            assert!(transaction
+                .with_synchronous_actions(&[1, 0], |_| Ok(()))
+                .is_err());
+            let copied = transaction.with_synchronous_actions(&[0, 1], |actions| {
+                assert_eq!(actions[0].action().native_tensor, "a");
+                assert_eq!(actions[1].action().native_tensor, "b");
+                Ok(actions
+                    .iter()
+                    .flat_map(|action| action.bytes().iter().copied())
+                    .collect::<Vec<_>>())
+            })?;
+            transaction.record_terminal_audit(ShardReleaseLogicalLedger::default())?;
+            Ok(copied)
+        })
+        .unwrap();
+        assert_eq!(copied, [1, 2, 3, 4, 5]);
+        assert_eq!(fixture.catalog.active_source_payload_fds(), 0);
+        let reports = fixture.catalog.release_reports();
+        assert_eq!(reports.len(), 1);
+        let report = &reports[0];
+        assert!(report.mapping_removed);
+        assert!(report.fd_closed);
+        assert!(report.terminal_audit_complete);
+        assert_eq!(report.covered_action_count, 2);
+        assert_eq!(report.covered_native_bytes, 5);
+        assert_eq!(report.terminal_receipts, 2);
+        assert_eq!(report.post_release.source_inode_mapping_count, 0);
+        assert_eq!(report.post_release.source_inode_pss_bytes, 0);
+        assert_eq!(report.file_advice.kind, "posix_fadv_dontneed");
+        assert!(!fixture.catalog.release_report_overflowed());
     }
 
     #[test]

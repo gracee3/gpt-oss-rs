@@ -85,6 +85,10 @@ pub enum GptOssShardConsumer {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GptOssShardConsumerAction {
+    /// Stable identity framed from the catalog/shard/range/consumer authority.
+    /// It deliberately excludes payload bytes.
+    #[serde(skip)]
+    pub action_id_sha256: String,
     pub native_tensor: String,
     pub native_tensor_range: [u64; 2],
     pub shard_absolute_range: [u64; 2],
@@ -260,7 +264,9 @@ impl GptOssShardConsumerPlan {
 
         let mut total_planned_payload_bytes = 0_u64;
         let mut shards = Vec::with_capacity(catalog_shards.len());
-        for (identity, mut shard_actions) in catalog_shards.into_iter().zip(actions) {
+        for (shard_index, (identity, mut shard_actions)) in
+            catalog_shards.into_iter().zip(actions).enumerate()
+        {
             shard_actions.sort_by(|left, right| {
                 left.shard_absolute_range
                     .cmp(&right.shard_absolute_range)
@@ -285,6 +291,10 @@ impl GptOssShardConsumerPlan {
                     "shard {} consumer plan does not cover its payload exactly",
                     identity.file_name
                 )));
+            }
+            for action in &mut shard_actions {
+                action.action_id_sha256 =
+                    action_identity(catalog.catalog_sha256(), shard_index, &identity, action)?;
             }
             total_planned_payload_bytes = total_planned_payload_bytes
                 .checked_add(planned_payload_bytes)
@@ -377,12 +387,20 @@ impl GptOssShardConsumerPlan {
         }
         let mut total_actions = 0_usize;
         let mut total_planned_payload_bytes = 0_u64;
-        for shard in &self.shards {
+        for (shard_index, shard) in self.shards.iter().enumerate() {
             total_actions = total_actions
                 .checked_add(shard.actions.len())
                 .ok_or_else(|| model_error("shard consumer action total overflows"))?;
             let mut shard_bytes = 0_u64;
             for action in &shard.actions {
+                if action.action_id_sha256
+                    != action_identity(&self.catalog_sha256, shard_index, &shard.shard, action)?
+                {
+                    return Err(model_error(format!(
+                        "shard {} action identity failed recomputation",
+                        shard.shard.file_name
+                    )));
+                }
                 shard_bytes = shard_bytes
                     .checked_add(action.byte_len()?)
                     .ok_or_else(|| model_error("shard consumer byte total overflows"))?;
@@ -420,6 +438,57 @@ impl GptOssShardConsumerPlan {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_capacity_one_test_shards(
+        catalog_sha256: String,
+        mut shards: Vec<GptOssShardConsumption>,
+    ) -> Self {
+        for (shard_index, shard) in shards.iter_mut().enumerate() {
+            for action in &mut shard.actions {
+                action.action_id_sha256 =
+                    action_identity(&catalog_sha256, shard_index, &shard.shard, action).unwrap();
+            }
+            shard.planned_payload_bytes = shard
+                .actions
+                .iter()
+                .map(GptOssShardConsumerAction::byte_len)
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .into_iter()
+                .sum();
+        }
+        let total_actions = shards.iter().map(|shard| shard.actions.len()).sum();
+        let total_planned_payload_bytes =
+            shards.iter().map(|shard| shard.planned_payload_bytes).sum();
+        let compatibility_metadata_sha256 = "d".repeat(64);
+        let mapping_sha256 = "e".repeat(64);
+        let placement_sha256 = "f".repeat(64);
+        let placement_epoch = 1;
+        let plan_sha256 = plan_identity(
+            &catalog_sha256,
+            &compatibility_metadata_sha256,
+            &mapping_sha256,
+            &placement_sha256,
+            placement_epoch,
+            &shards,
+            total_actions,
+            total_planned_payload_bytes,
+        )
+        .unwrap();
+        Self {
+            schema: GPT_OSS_SHARD_CONSUMER_PLAN_SCHEMA_V1.into(),
+            catalog_sha256,
+            compatibility_metadata_sha256,
+            mapping_sha256,
+            placement_sha256,
+            placement_epoch,
+            shards,
+            total_actions,
+            total_planned_payload_bytes,
+            plan_sha256,
+        }
     }
 }
 
@@ -490,6 +559,7 @@ fn action(
         )));
     }
     Ok(GptOssShardConsumerAction {
+        action_id_sha256: String::new(),
         native_tensor: mapping.native.clone(),
         native_tensor_range: [start, end],
         shard_absolute_range: [
@@ -502,6 +572,42 @@ fn action(
         ],
         consumer,
     })
+}
+
+#[derive(Serialize)]
+struct ActionIdentityFrame<'a> {
+    schema: &'static str,
+    catalog_sha256: &'a str,
+    shard_index: usize,
+    shard: &'a SafeTensorFileIdentity,
+    native_tensor: &'a str,
+    native_tensor_range: [u64; 2],
+    shard_absolute_range: [u64; 2],
+    consumer: &'a GptOssShardConsumer,
+}
+
+fn action_identity(
+    catalog_sha256: &str,
+    shard_index: usize,
+    shard: &SafeTensorFileIdentity,
+    action: &GptOssShardConsumerAction,
+) -> Result<String> {
+    let bytes = serde_json::to_vec(&ActionIdentityFrame {
+        schema: GPT_OSS_SHARD_CONSUMER_PLAN_SCHEMA_V1,
+        catalog_sha256,
+        shard_index,
+        shard,
+        native_tensor: &action.native_tensor,
+        native_tensor_range: action.native_tensor_range,
+        shard_absolute_range: action.shard_absolute_range,
+        consumer: &action.consumer,
+    })
+    .map_err(|error| model_error(format!("serialize action identity: {error}")))?;
+    let mut digest = Sha256::new();
+    digest.update(b"gpt-oss-rs-shard-consumer-action-v1\0");
+    digest.update((bytes.len() as u64).to_le_bytes());
+    digest.update(bytes);
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn push_action(
@@ -1190,16 +1296,21 @@ mod tests {
 
         let catalog = SafeTensorShardCatalog::open(root.path()).unwrap();
         let tensor = catalog.tensor("tiny").unwrap();
+        let shard_identity = catalog.shards()[0].identity.clone();
+        let mut action = GptOssShardConsumerAction {
+            action_id_sha256: String::new(),
+            native_tensor: "tiny".into(),
+            native_tensor_range: [0, 3],
+            shard_absolute_range: tensor.absolute_range,
+            consumer: GptOssShardConsumer::LayerOwnerDense {
+                runtime_tensor: "runtime.tiny".into(),
+            },
+        };
+        action.action_id_sha256 =
+            action_identity(catalog.metadata_sha256(), 0, &shard_identity, &action).unwrap();
         let shards = vec![GptOssShardConsumption {
-            shard: catalog.shards()[0].identity.clone(),
-            actions: vec![GptOssShardConsumerAction {
-                native_tensor: "tiny".into(),
-                native_tensor_range: [0, 3],
-                shard_absolute_range: tensor.absolute_range,
-                consumer: GptOssShardConsumer::LayerOwnerDense {
-                    runtime_tensor: "runtime.tiny".into(),
-                },
-            }],
+            shard: shard_identity,
+            actions: vec![action],
             planned_payload_bytes: 3,
         }];
         let plan_sha256 = plan_identity(

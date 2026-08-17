@@ -2,8 +2,8 @@
 //!
 //! Catalog construction reads the optional index and the eight-byte length plus
 //! JSON header of each shard. It never maps or reads tensor payload bytes. A
-//! separate callback-scoped API can map exactly one validated shard at a time;
-//! that API is intentionally not integrated into model construction yet.
+//! separate callback-scoped API maps exactly one validated shard at a time for
+//! the explicit capacity-one construction mode.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -11,8 +11,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use memmap2::Mmap;
+#[cfg(feature = "cuda")]
+use memmap2::UncheckedAdvice as MmapUncheckedAdvice;
 use serde::de::{Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,6 +34,76 @@ pub const MAX_SAFETENSORS_SHARDS: usize = 4_096;
 pub const MAX_SAFETENSORS_TENSORS: usize = 1_000_000;
 pub const MAX_SAFETENSORS_TENSOR_NAME_BYTES: usize = 4_096;
 pub const MAX_SAFETENSORS_TENSOR_RANK: usize = 64;
+pub const MAX_SHARD_RELEASE_REPORTS: usize = MAX_SAFETENSORS_SHARDS;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ProcessSourceMemorySample {
+    pub rss_bytes: u64,
+    pub pss_bytes: u64,
+    pub pss_file_bytes: u64,
+    pub vm_hwm_bytes: u64,
+    pub vm_swap_bytes: u64,
+    pub source_inode_mapping_count: usize,
+    pub source_inode_pss_bytes: u64,
+    pub mem_available_bytes: u64,
+    pub global_swap_used_bytes: u64,
+    pub global_swap_cached_bytes: u64,
+    pub cgroup_memory_current_bytes: u64,
+    pub cgroup_memory_file_bytes: u64,
+    pub cgroup_memory_anon_bytes: u64,
+    pub cgroup_swap_current_bytes: u64,
+    /// `memory.pressure` `some avg10`, scaled by one million.
+    pub memory_psi_some_avg10_micros: u64,
+    /// `memory.pressure` `full avg10`, scaled by one million.
+    pub memory_psi_full_avg10_micros: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdviceTelemetry {
+    pub kind: String,
+    pub offset: u64,
+    pub length: u64,
+    pub succeeded: bool,
+    pub errno: Option<i32>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ShardReleaseLogicalLedger {
+    pub partial_store_current_count: usize,
+    pub partial_store_current_bytes: u64,
+    pub partial_store_high_water_count: usize,
+    pub partial_store_high_water_bytes: u64,
+    pub pinned_construction_bytes: u64,
+    pub anonymous_temporary_high_water_bytes: u64,
+    pub output_logical_bytes: u64,
+    pub device_destination_logical_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShardReleaseTelemetry {
+    pub shard_index: usize,
+    pub source_file_name: String,
+    pub source_device: u64,
+    pub source_inode: u64,
+    pub source_file_bytes: u64,
+    pub mapping_address: usize,
+    pub mapping_bytes: u64,
+    pub covered_action_count: usize,
+    pub covered_native_bytes: u64,
+    pub terminal_receipts: usize,
+    pub terminal_action_ids_sha256: Vec<String>,
+    pub logical_ledger: ShardReleaseLogicalLedger,
+    pub terminal_audit_complete: bool,
+    pub pre_release: ProcessSourceMemorySample,
+    pub post_release: ProcessSourceMemorySample,
+    pub mmap_advice: AdviceTelemetry,
+    pub file_advice: AdviceTelemetry,
+    pub unmap_close_duration_micros: u128,
+    pub mapping_removed: bool,
+    pub fd_closed: bool,
+    pub cleanup_outcome: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SafeTensorFileIdentity {
@@ -114,6 +187,8 @@ pub struct SafeTensorShardCatalog {
     total_payload_bytes: u64,
     total_header_bytes_read: u64,
     mapping_activity: Mutex<MappingActivityState>,
+    release_reports: Mutex<Vec<ShardReleaseTelemetry>>,
+    release_report_overflow: Mutex<bool>,
 }
 
 impl SafeTensorShardCatalog {
@@ -171,6 +246,7 @@ impl SafeTensorShardCatalog {
         }
         validate_index_mapping(&tensors, &shards, index.weights.as_ref())?;
         let metadata_sha256 = catalog_identity(&shards, &tensors, index.sha256.as_deref())?;
+        let release_report_capacity = shards.len();
         Ok(Self {
             root: root.to_path_buf(),
             shards,
@@ -187,6 +263,8 @@ impl SafeTensorShardCatalog {
                 current_mapped_bytes: 0,
                 mapped_byte_high_water: 0,
             }),
+            release_reports: Mutex::new(Vec::with_capacity(release_report_capacity)),
+            release_report_overflow: Mutex::new(false),
         })
     }
 
@@ -246,6 +324,39 @@ impl SafeTensorShardCatalog {
         }
     }
 
+    pub fn active_source_payload_fds(&self) -> usize {
+        self.mapping_activity().current
+    }
+
+    pub fn release_reports(&self) -> Vec<ShardReleaseTelemetry> {
+        self.release_reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn release_report_overflowed(&self) -> bool {
+        *self
+            .release_report_overflow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record_release_report(&self, report: ShardReleaseTelemetry) {
+        let mut reports = self
+            .release_reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if reports.len() < MAX_SHARD_RELEASE_REPORTS {
+            reports.push(report);
+        } else {
+            *self
+                .release_report_overflow
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        }
+    }
+
     /// Map one shard for the duration of `use_mapping` only.
     ///
     /// The return type cannot borrow from `ScopedShardMapping`, so a tensor
@@ -298,9 +409,12 @@ impl SafeTensorShardCatalog {
         )?;
         activity.mark_mapped(descriptor.identity.file_length);
         Ok(CatalogMappedShard {
+            shard_index,
             descriptor,
             mapping: Some(mapping),
+            file: Some(file),
             activity: Some(activity),
+            terminal_audit: None,
         })
     }
 }
@@ -311,9 +425,21 @@ impl SafeTensorShardCatalog {
 /// obligation therefore also lasts until process exit: holding an open `File`
 /// would not prevent another actor from mutating the mapped inode.
 pub(crate) struct CatalogMappedShard<'a> {
+    shard_index: usize,
     descriptor: &'a SafeTensorShardDescriptor,
     mapping: Option<Mmap>,
+    file: Option<File>,
     activity: Option<ActiveMappingGuard<'a>>,
+    terminal_audit: Option<ShardTerminalAudit>,
+}
+
+#[derive(Debug, Clone)]
+struct ShardTerminalAudit {
+    covered_action_count: usize,
+    covered_native_bytes: u64,
+    terminal_receipts: usize,
+    terminal_action_ids_sha256: Vec<String>,
+    logical_ledger: ShardReleaseLogicalLedger,
 }
 
 impl CatalogMappedShard<'_> {
@@ -337,12 +463,89 @@ impl CatalogMappedShard<'_> {
             .ok_or_else(|| model_error("mapped action range is unavailable"))
     }
 
+    pub(crate) fn record_terminal_audit(
+        &mut self,
+        covered_action_count: usize,
+        covered_native_bytes: u64,
+        terminal_receipts: usize,
+        terminal_action_ids_sha256: Vec<String>,
+        logical_ledger: ShardReleaseLogicalLedger,
+    ) -> Result<()> {
+        if self.terminal_audit.is_some()
+            || covered_action_count == 0
+            || covered_native_bytes == 0
+            || covered_native_bytes != self.descriptor.identity.payload_length
+            || terminal_receipts > covered_action_count
+            || terminal_action_ids_sha256.len() != terminal_receipts
+            || terminal_action_ids_sha256.iter().any(|identity| {
+                identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err(model_error("invalid or duplicate shard terminal audit"));
+        }
+        self.terminal_audit = Some(ShardTerminalAudit {
+            covered_action_count,
+            covered_native_bytes,
+            terminal_receipts,
+            terminal_action_ids_sha256,
+            logical_ledger,
+        });
+        Ok(())
+    }
+
     pub(crate) fn quarantine_for_process_lifetime(&mut self) {
         if let Some(activity) = self.activity.as_mut() {
             activity.quarantine();
         }
+        if let Some(mapping) = self.mapping.as_ref() {
+            let pre_release = process_source_memory_sample(self.descriptor.identity.inode);
+            let terminal = self.terminal_audit.take().unwrap_or(ShardTerminalAudit {
+                covered_action_count: 0,
+                covered_native_bytes: 0,
+                terminal_receipts: 0,
+                terminal_action_ids_sha256: Vec::new(),
+                logical_ledger: ShardReleaseLogicalLedger::default(),
+            });
+            let not_attempted = AdviceTelemetry {
+                kind: "not_attempted_unproven_terminal".into(),
+                offset: 0,
+                length: mapping.len() as u64,
+                succeeded: false,
+                errno: None,
+                error: Some("source ownership terminality is unproven".into()),
+            };
+            let report = ShardReleaseTelemetry {
+                shard_index: self.shard_index,
+                source_file_name: self.descriptor.identity.file_name.clone(),
+                source_device: self.descriptor.identity.device,
+                source_inode: self.descriptor.identity.inode,
+                source_file_bytes: self.descriptor.identity.file_length,
+                mapping_address: mapping.as_ptr() as usize,
+                mapping_bytes: mapping.len() as u64,
+                covered_action_count: terminal.covered_action_count,
+                covered_native_bytes: terminal.covered_native_bytes,
+                terminal_receipts: terminal.terminal_receipts,
+                terminal_action_ids_sha256: terminal.terminal_action_ids_sha256,
+                logical_ledger: terminal.logical_ledger,
+                terminal_audit_complete: false,
+                pre_release: pre_release.clone(),
+                post_release: pre_release,
+                mmap_advice: not_attempted.clone(),
+                file_advice: not_attempted,
+                unmap_close_duration_micros: 0,
+                mapping_removed: false,
+                fd_closed: false,
+                cleanup_outcome: "quarantined_for_process_lifetime".into(),
+            };
+            if let Some(activity) = self.activity.as_ref() {
+                activity.catalog.record_release_report(report);
+            }
+        }
         if let Some(mapping) = self.mapping.take() {
             std::mem::forget(mapping);
+        }
+        if let Some(file) = self.file.take() {
+            std::mem::forget(file);
         }
         drop(self.activity.take());
     }
@@ -350,9 +553,223 @@ impl CatalogMappedShard<'_> {
 
 impl Drop for CatalogMappedShard<'_> {
     fn drop(&mut self) {
-        drop(self.mapping.take());
+        let Some(mapping) = self.mapping.take() else {
+            drop(self.file.take());
+            drop(self.activity.take());
+            return;
+        };
+        let mapping_address = mapping.as_ptr() as usize;
+        let mapping_bytes = mapping.len() as u64;
+        let pre_release = process_source_memory_sample(self.descriptor.identity.inode);
+        let started = Instant::now();
+        let mmap_advice_result = madvise_dontneed(&mapping);
+        let mmap_advice = advice_telemetry(
+            "madv_dontneed",
+            0,
+            mapping_bytes,
+            mmap_advice_result.as_ref().err(),
+        );
+        drop(mapping);
+        let mapping_removed = true;
+        let file_advice_result = self.file.as_ref().map_or(Ok(()), |file| {
+            gpt_oss_cpu_kernels::posix_fadvise_dontneed(file, 0, 0)
+        });
+        let file_advice = advice_telemetry(
+            "posix_fadv_dontneed",
+            0,
+            mapping_bytes,
+            file_advice_result.as_ref().err(),
+        );
+        drop(self.file.take());
+        let fd_closed = true;
+        let post_release = process_source_memory_sample(self.descriptor.identity.inode);
+        let terminal_audit_complete = self.terminal_audit.is_some();
+        let terminal = self.terminal_audit.take().unwrap_or(ShardTerminalAudit {
+            covered_action_count: 0,
+            covered_native_bytes: 0,
+            terminal_receipts: 0,
+            terminal_action_ids_sha256: Vec::new(),
+            logical_ledger: ShardReleaseLogicalLedger::default(),
+        });
+        let report = ShardReleaseTelemetry {
+            shard_index: self.shard_index,
+            source_file_name: self.descriptor.identity.file_name.clone(),
+            source_device: self.descriptor.identity.device,
+            source_inode: self.descriptor.identity.inode,
+            source_file_bytes: self.descriptor.identity.file_length,
+            mapping_address,
+            mapping_bytes,
+            covered_action_count: terminal.covered_action_count,
+            covered_native_bytes: terminal.covered_native_bytes,
+            terminal_receipts: terminal.terminal_receipts,
+            terminal_action_ids_sha256: terminal.terminal_action_ids_sha256,
+            logical_ledger: terminal.logical_ledger,
+            terminal_audit_complete,
+            pre_release,
+            post_release,
+            mmap_advice,
+            file_advice,
+            unmap_close_duration_micros: started.elapsed().as_micros(),
+            mapping_removed,
+            fd_closed,
+            cleanup_outcome: if terminal_audit_complete {
+                "released_after_terminal_audit"
+            } else {
+                "released_during_cancellation"
+            }
+            .into(),
+        };
+        if let Some(activity) = self.activity.as_ref() {
+            activity.catalog.record_release_report(report);
+        }
         drop(self.activity.take());
     }
+}
+
+#[cfg(feature = "cuda")]
+fn madvise_dontneed(mapping: &Mmap) -> std::io::Result<()> {
+    // SAFETY: this is called only from `CatalogMappedShard::drop` after the
+    // scoped consumer callback and every action borrow have ended. This drop
+    // owns the mapping exclusively and does not access it after advice.
+    unsafe { mapping.unchecked_advise(MmapUncheckedAdvice::DontNeed) }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn madvise_dontneed(_mapping: &Mmap) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "MADV_DONTNEED release advice is enabled on the CUDA construction build",
+    ))
+}
+
+fn advice_telemetry(
+    kind: &str,
+    offset: u64,
+    length: u64,
+    error: Option<&std::io::Error>,
+) -> AdviceTelemetry {
+    AdviceTelemetry {
+        kind: kind.into(),
+        offset,
+        length,
+        succeeded: error.is_none(),
+        errno: error.and_then(std::io::Error::raw_os_error),
+        error: error.map(ToString::to_string),
+    }
+}
+
+fn process_source_memory_sample(source_inode: u64) -> ProcessSourceMemorySample {
+    let mut sample = ProcessSourceMemorySample::default();
+    if let Ok(rollup) = std::fs::read_to_string("/proc/self/smaps_rollup") {
+        sample.rss_bytes = proc_kib_field(&rollup, "Rss:");
+        sample.pss_bytes = proc_kib_field(&rollup, "Pss:");
+        sample.pss_file_bytes = proc_kib_field(&rollup, "Pss_File:");
+    }
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        sample.vm_hwm_bytes = proc_kib_field(&status, "VmHWM:");
+        sample.vm_swap_bytes = proc_kib_field(&status, "VmSwap:");
+    }
+    if let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") {
+        let mut source_section = false;
+        for line in smaps.lines() {
+            if is_smaps_header(line) {
+                source_section = line
+                    .split_whitespace()
+                    .nth(4)
+                    .and_then(|inode| inode.parse::<u64>().ok())
+                    == Some(source_inode);
+                if source_section {
+                    sample.source_inode_mapping_count += 1;
+                }
+            } else if source_section && line.starts_with("Pss:") {
+                sample.source_inode_pss_bytes = sample
+                    .source_inode_pss_bytes
+                    .saturating_add(proc_kib_line(line));
+            }
+        }
+    }
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        sample.mem_available_bytes = proc_kib_field(&meminfo, "MemAvailable:");
+        let swap_total = proc_kib_field(&meminfo, "SwapTotal:");
+        let swap_free = proc_kib_field(&meminfo, "SwapFree:");
+        sample.global_swap_used_bytes = swap_total.saturating_sub(swap_free);
+        sample.global_swap_cached_bytes = proc_kib_field(&meminfo, "SwapCached:");
+    }
+    if let Some(cgroup) = current_cgroup_v2_path() {
+        sample.cgroup_memory_current_bytes = read_u64_file(&cgroup.join("memory.current"));
+        sample.cgroup_swap_current_bytes = read_u64_file(&cgroup.join("memory.swap.current"));
+        if let Ok(stat) = std::fs::read_to_string(cgroup.join("memory.stat")) {
+            sample.cgroup_memory_file_bytes = space_value(&stat, "file");
+            sample.cgroup_memory_anon_bytes = space_value(&stat, "anon");
+        }
+    }
+    if let Ok(pressure) = std::fs::read_to_string("/proc/pressure/memory") {
+        sample.memory_psi_some_avg10_micros = psi_avg10_micros(&pressure, "some");
+        sample.memory_psi_full_avg10_micros = psi_avg10_micros(&pressure, "full");
+    }
+    sample
+}
+
+fn current_cgroup_v2_path() -> Option<PathBuf> {
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let relative = cgroup.lines().find_map(|line| line.strip_prefix("0::"))?;
+    Some(Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/')))
+}
+
+fn read_u64_file(path: &Path) -> u64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn space_value(contents: &str, field: &str) -> u64 {
+    contents
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_ascii_whitespace();
+            (fields.next() == Some(field))
+                .then(|| fields.next()?.parse::<u64>().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
+}
+
+fn psi_avg10_micros(contents: &str, class: &str) -> u64 {
+    contents
+        .lines()
+        .find(|line| line.starts_with(class))
+        .and_then(|line| {
+            line.split_ascii_whitespace()
+                .find_map(|field| field.strip_prefix("avg10="))
+        })
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|value| (value * 1_000_000.0).round() as u64)
+        .unwrap_or(0)
+}
+
+fn is_smaps_header(line: &str) -> bool {
+    line.split_whitespace().next().is_some_and(|range| {
+        range.contains('-')
+            && range
+                .bytes()
+                .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
+    })
+}
+
+fn proc_kib_field(contents: &str, field: &str) -> u64 {
+    contents
+        .lines()
+        .find(|line| line.starts_with(field))
+        .map_or(0, proc_kib_line)
+}
+
+fn proc_kib_line(line: &str) -> u64 {
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|kib| kib.checked_mul(1024))
+        .unwrap_or(0)
 }
 
 /// Borrowed view valid only inside [`SafeTensorShardCatalog::with_mapped_shard`].

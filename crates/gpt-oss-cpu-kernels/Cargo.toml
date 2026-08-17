@@ -14,6 +14,7 @@ categories.workspace = true
 [features]
 default = []
 amx-int8 = ["dep:libc"]
+linux-fadvise = ["dep:libc"]
 
 [dependencies]
 half.workspace = true

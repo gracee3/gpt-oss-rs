@@ -4,6 +4,7 @@
 //! Supports safetensors and GGUF formats with memory-mapped I/O and
 //! tensor-parallel sharding while preserving raw HuggingFace tensor names.
 
+pub mod capacity_one;
 pub mod dtype;
 pub mod gguf;
 pub mod gpt_oss_native;

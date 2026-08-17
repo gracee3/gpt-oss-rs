@@ -33,6 +33,59 @@ pub use tiger_lake::{
 pub const QUANT_BLOCK_SIZE: usize = 32;
 pub const MXFP4_PACKED_BYTES: usize = QUANT_BLOCK_SIZE / 2;
 
+/// Safe, narrow wrapper for the post-unmap Linux source-cache hint used by
+/// capacity-one construction. A zero length means from `offset` to EOF.
+#[cfg(all(feature = "linux-fadvise", target_os = "linux"))]
+pub fn posix_fadvise_dontneed(
+    file: &std::fs::File,
+    offset: u64,
+    length: u64,
+) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let offset =
+        i64::try_from(offset).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    let length =
+        i64::try_from(length).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    // SAFETY: `file` owns a live fd for the duration of the call; the checked
+    // nonnegative offset/length are valid `off_t` values; POSIX fadvise does
+    // not dereference process memory or change file contents.
+    let result =
+        unsafe { libc::posix_fadvise(file.as_raw_fd(), offset, length, libc::POSIX_FADV_DONTNEED) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(result))
+    }
+}
+
+/// Return filesystem bytes available to an unprivileged process for the
+/// filesystem containing `path`.
+#[cfg(all(feature = "linux-fadvise", target_os = "linux"))]
+pub fn filesystem_available_bytes(path: &std::path::Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "filesystem path contains an interior NUL",
+        )
+    })?;
+    let mut observed = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a live NUL-terminated string and `observed` points to
+    // writable storage of the exact `statvfs` type.
+    let result = unsafe { libc::statvfs(path.as_ptr(), observed.as_mut_ptr()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful `statvfs` initializes the output structure.
+    let observed = unsafe { observed.assume_init() };
+    observed
+        .f_bavail
+        .checked_mul(observed.f_frsize)
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EOVERFLOW))
+}
+
 /// E2M1 values used by the official GPT-OSS SafeTensors representation.
 pub const MXFP4_VALUES: [f32; 16] = [
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,

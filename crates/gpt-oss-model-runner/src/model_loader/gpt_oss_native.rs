@@ -198,6 +198,32 @@ pub struct GptOssNativeCatalogMap {
 }
 
 impl GptOssNativeCatalogMap {
+    pub fn from_source_root(
+        source_root: impl AsRef<Path>,
+        catalog: &SafeTensorShardCatalog,
+    ) -> Result<Self> {
+        let source_root = source_root.as_ref();
+        if source_root != catalog.root() {
+            return Err(LLMError::ModelError(
+                "native catalog source root differs from shard catalog".into(),
+            ));
+        }
+        let config_path = source_root.join("config.json");
+        let config_bytes = std::fs::read(&config_path)?;
+        let explicit_revision = read_revision(source_root);
+        let mut mapped = Self::from_config_bytes(
+            &config_bytes,
+            explicit_revision
+                .clone()
+                .unwrap_or_else(|| "metadata-pending".into()),
+            catalog,
+        )?;
+        if explicit_revision.is_none() {
+            mapped.revision = format!("metadata:{}", mapped.metadata_sha256);
+        }
+        Ok(mapped)
+    }
+
     pub fn from_config_bytes(
         config_bytes: &[u8],
         revision: impl Into<String>,
@@ -276,6 +302,50 @@ impl GptOssNativeCatalogMap {
 
     pub fn mapping_sha256(&self) -> &str {
         &self.mapping_sha256
+    }
+
+    pub fn mapped_payload_bytes(&self) -> u64 {
+        self.mappings
+            .values()
+            .map(|mapping| mapping.bytes as u64)
+            .sum()
+    }
+
+    pub fn expert_payload_bytes(&self) -> u64 {
+        self.mappings
+            .values()
+            .filter(|mapping| mapping.runtime.contains(".mlp.experts."))
+            .map(|mapping| mapping.bytes as u64)
+            .sum()
+    }
+
+    pub fn non_expert_payload_bytes(&self) -> u64 {
+        self.mapped_payload_bytes() - self.expert_payload_bytes()
+    }
+
+    pub fn mapping_json(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct CatalogMappingDocument<'a> {
+            schema: &'static str,
+            native_tensor_count: usize,
+            runtime_tensor_count: usize,
+            mapping_count: usize,
+            config_sha256: &'a str,
+            metadata_sha256: &'a str,
+            mappings: Vec<&'a GptOssTensorViewSpec>,
+        }
+        let mut bytes = serde_json::to_vec_pretty(&CatalogMappingDocument {
+            schema: GPT_OSS_NATIVE_MAPPING_SCHEMA_V1,
+            native_tensor_count: self.config.native_tensor_count(),
+            runtime_tensor_count: self.mappings.len(),
+            mapping_count: self.mappings.len(),
+            config_sha256: &self.config_sha256,
+            metadata_sha256: &self.metadata_sha256,
+            mappings: self.mappings.values().collect(),
+        })
+        .map_err(|error| LLMError::ModelError(format!("serialize native mapping: {error}")))?;
+        bytes.push(b'\n');
+        Ok(bytes)
     }
 }
 
