@@ -1,0 +1,23 @@
+id	area	result	evidence_or_omission
+R2-01	architecture freeze	passed	15/16/17 record all ten decisions, exact lifetime graph, failure states, equations, policy canonical bytes, and approved_for_r3
+R2-02	comparison handoff	passed	18 is standalone and prominently not authorized; it was not executed
+R3-01	production seam	passed	Explicit non-default capacity-one selector reaches catalog-map-plan-stream constructor before monolithic open
+R3-02	metadata lifetime	passed	Header-only catalog closes discovery fds; source identity revalidated at scoped open
+R3-03	mapping capacity	passed	Synthetic success/error/panic high-water exactly one and terminal current zero
+R3-04	action coverage	passed	Stable action identities and exact range/byte once-only coverage; warm skips need exact proofs
+R3-05	split state	passed	Plan-derived 120B bound 1,474,560 B; fixture 23,040 B; wrong identity/hash/order rejected; empty at publication/cancel
+R3-06	dense/GPU terminality	passed	Synchronous uploader receipts; failure classification and fatal process quarantine; fake sink exhaustively covers ownership
+R3-07	CPU x8 parity	passed	Whole-expert new payload exactly equals existing converter bytes
+R3-08	CPU durability	passed	Exact state machine, positioned short-write loop, sync, no-overwrite publish, directory sync, fresh validation
+R3-09	warm records	passed	Bounded validation without mmap, exact elision, invalid record rejection, deferred fresh runtime map
+R3-10	release reporting	passed	MADV/unmap/FADV/close order plus bounded action/memory/advice/errno/cleanup telemetry
+R3-11	publication proof	passed	Every required zero/complete field independently faulted and rejected
+R3-12	cancellation	passed	All admitted pre-visible CPU states clean only owned temp; CUDA unproven state quarantines and cannot publish
+R3-13	deterministic fixture	passed	Dense, local GPU0/GPU1, split GPU/CPU, cold, valid warm, invalid warm, repeat, exact bytes
+R3-14	compatibility	passed	Plan golden identities, owner-selective contracts, full workspace, H0-H7 execution types and decode graph unchanged
+R3-15	locked build/tests	passed	Metadata, targeted CPU/CUDA checks, targeted tests, supported CUDA suites, full workspace, Python suites
+R3-16	Clippy	passed_with_baseline_exclusion	CPU -D warnings passes; task-file/changed-line gate has zero findings; whole CUDA crate has pre-existing unchanged findings
+R3-17	format/links/diff/source search	passed	Final format, Markdown links, whitespace, diff, and forbidden-new-path symbol searches pass
+R3-18	real-model execution	omitted_not_authorized	No 20B/120B construction, payload access, inference, H8, H9, or H10
+R3-19	system/remote mutation	omitted_not_authorized	No host/swap/cgroup/NVIDIA/storage change, Docker, fetch, pull, merge, reset, push, PR, or external checkout update
+R3-20	retained-20B admission	ready_next	Frozen numeric policy and comparison matrix complete; separate authorization required

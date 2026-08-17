@@ -1,0 +1,21 @@
+path	owner	reason
+crates/gpt-oss-bench/src/bin/heterogeneous_construct.rs	gpt-oss-bench	Explicit non-default production selector and capacity-one evidence output
+crates/gpt-oss-cpu-kernels/Cargo.toml	gpt-oss-cpu-kernels	Enable existing locked libc only for Linux advice/filesystem wrappers
+crates/gpt-oss-cpu-kernels/src/lib.rs	gpt-oss-cpu-kernels	Safe fadvise and filesystem-available-byte wrappers
+crates/gpt-oss-model-runner/Cargo.toml	gpt-oss-model-runner	Wire existing CPU-kernel Linux advice feature
+crates/gpt-oss-model-runner/src/cpu_repack.rs	gpt-oss-model-runner	Incremental durable CPU owner layer records and bounded warm validation
+crates/gpt-oss-model-runner/src/heterogeneous/cuda_expert.rs	gpt-oss-model-runner	Classified synchronous selected-expert construction receipt
+crates/gpt-oss-model-runner/src/model_loader/capacity_one.rs	gpt-oss-model-runner	Frozen policy, partial store, coverage/publication proofs, deterministic fixture
+crates/gpt-oss-model-runner/src/model_loader/gpt_oss_native.rs	gpt-oss-model-runner	Payload-free native catalog map support
+crates/gpt-oss-model-runner/src/model_loader/mod.rs	gpt-oss-model-runner	Capacity-one module registration
+crates/gpt-oss-model-runner/src/model_loader/owner_selective.rs	gpt-oss-model-runner	Production streaming constructor integration and CUDA quarantine
+crates/gpt-oss-model-runner/src/model_loader/shard_catalog.rs	gpt-oss-model-runner	Capacity-one mapping/release reporter and source telemetry
+crates/gpt-oss-model-runner/src/model_loader/shard_consumer_plan.rs	gpt-oss-model-runner	Stable action IDs and split-bound planning inputs
+crates/gpt-oss-model-runner/src/model_loader/shard_transaction.rs	gpt-oss-model-runner	Exact terminal action and warm-elision transaction audit
+docs/het/README.md	documentation	Current R3 status and evidence index
+docs/het/evidence/implementation-2026-08/README.md	documentation	R3 evidence package index entry
+docs/het/evidence/implementation-2026-08/r3-capacity-one/README.md	evidence	Architecture, lifetimes, validation, risks, omissions, verdict
+docs/het/evidence/implementation-2026-08/r3-capacity-one/commands.tsv	evidence	Bounded command ledger
+docs/het/evidence/implementation-2026-08/r3-capacity-one/validation.tsv	evidence	Machine-readable gate ledger
+docs/het/evidence/implementation-2026-08/r3-capacity-one/changed-files.tsv	evidence	Final task-file ownership
+docs/het/evidence/implementation-2026-08/r3-capacity-one/r2-policy.sha256	evidence	Canonical R2 policy identity

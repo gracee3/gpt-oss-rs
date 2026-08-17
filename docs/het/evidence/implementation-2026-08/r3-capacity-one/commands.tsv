@@ -1,0 +1,26 @@
+sequence	command	result	note
+1	git status --porcelain=v1; git rev-parse HEAD main origin/main; git rev-parse --git-path ...	passed	Clean accepted baseline and no in-progress Git operation before branch creation
+2	sha256sum /home/emmy/workspace/gpt-oss-het-120b-r0-2026-08-16/r2/16-memory-release-and-admission-policy.md	passed	f269a4c984bbfa0d2a18c037b42ded2c81330094b18c6fc8dc668b7ad81bb90f
+3	cargo metadata --no-deps --locked	passed	No dependency or lockfile update
+4	cargo check -p gpt-oss-cpu-kernels --features linux-fadvise --locked	passed	Existing locked libc feature only
+5	cargo test -p gpt-oss-model-runner --locked model_loader::shard_catalog::tests	passed	10 catalog/range/mapping tests
+6	cargo test -p gpt-oss-model-runner --locked model_loader::gpt_oss_native::tests	passed	2 payload-free native-map tests
+7	cargo test -p gpt-oss-model-runner --locked model_loader::shard_consumer_plan::tests	passed	7 plan tests including retained 20B/120B identities
+8	cargo test -p gpt-oss-model-runner --locked model_loader::shard_transaction::tests	passed	10 scoped-transaction tests
+9	cargo test -p gpt-oss-model-runner --locked model_loader::capacity_one::tests	passed	7 bounded-store/publication/policy/fixture tests
+10	cargo test -p gpt-oss-model-runner --locked cpu_repack::tests::capacity_one_owner_record	passed	5 durability/collision/cancellation/write tests
+11	cargo check -p gpt-oss-model-runner --features cuda --locked	passed	CUDA capacity-one production code compiled
+12	cargo check -p gpt-oss-bench --features cuda --bin heterogeneous_construct --locked	passed	Explicit constructor selector compiled
+13	env -u GPT_OSS_MODEL_20B -u GPT_OSS_MODEL_120B cargo test -p gpt-oss-model-runner --features cuda --test owner_selective_contract --locked	passed	10 source/synthetic ownership contract tests; real metadata opt-in skipped
+14	env -u GPT_OSS_RUN_H4_NATIVE_ROUTER cargo test -p gpt-oss-model-runner --features cuda --test heterogeneous_router_cuda --locked	passed	6 supported non-model CUDA tests; native real-model gate skipped
+15	cargo test -p gpt-oss-bench --lib h8_watchdog::tests --locked	passed	8 frozen admission/parser tests
+16	python3 -m unittest discover -s oracle/tests -p 'test_*.py'	passed	10 tests
+17	python3 -m unittest discover -s crates/gpt-oss-bench/tools/tests -p 'test_*.py'	passed	35 tests
+18	env -u GPT_OSS_MODEL_20B -u GPT_OSS_MODEL_120B -u GPT_OSS_RUN_H8_CONSTRUCT cargo test --workspace --locked	passed	Full workspace and doc tests; all model execution opt-ins unset
+19	cargo clippy -p gpt-oss-cpu-kernels --features linux-fadvise --locked --lib -- -D warnings	passed	Warnings denied
+20	cargo clippy --message-format=json with task-file and changed-line classifier	passed	Zero warnings on R3 paths/lines; unchanged baseline findings excluded explicitly
+21	cargo fmt --all -- --check	passed	Final Rust format gate
+22	python3 tools/check_markdown_links.py	passed	Repository Markdown links
+23	git diff --check; git diff 249abfbf5f21dddb434a7975c02df396e0608dc7..HEAD --check	passed	Whitespace and committed diff checks
+24	rg/sed source search over construct_capacity_one and selector branch	passed	No monolithic checkpoint/store/all-shard container in new constructor; capacity selector returns before control opens
+25	lsblk -no NAME,RO,MOUNTPOINTS /dev/nvme1n1; nvidia-smi --query-gpu=pci.bus_id,name,memory.used --format=csv,noheader	passed	Final read-only protected-device and non-model GPU health audit

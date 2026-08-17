@@ -1,6 +1,7 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** H3 bounded-loading research; H0 through H7 passed, H8 paused;
+**Stage:** R3 capacity-one construction implemented; H0 through H7 passed,
+H8 paused and retained-20B comparison not authorized;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -103,6 +104,10 @@ Evidence labels have the same meaning in every document:
     removes checkpoint payload ownership from the published model, extracts
     exact resident router pairs during dense upload, and single-consumes them
     in the production control runtime; source/synthetic validated only.
+35. [R3 capacity-one construction evidence](evidence/implementation-2026-08/r3-capacity-one/README.md) —
+    explicit non-default production constructor, one-source-mapping lifetime,
+    bounded split state, durable incremental CPU records, terminal publication
+    proof, and non-model validation; retained-20B comparison remains stopped.
 
 ## Current headline
 
@@ -171,18 +176,18 @@ covering process RSS/PSS file/anon, global swap/vmstat/page cache, current
 cgroup memory, and per-GPU residency. This adds diagnostic evidence only. It
 does not pass H8 or relax its exact swap, memory, reserve, and watchdog gates.
 
-**Bounded-catalog follow-up:** a metadata-only SafeTensors catalog now validates
+**Bounded-catalog follow-up:** a metadata-only SafeTensors catalog validates
 index/header identity, tensor ranges, and deterministic ordering without
-reading payloads. Its scoped capacity-one mapping API is fixture-proven but
-deliberately disconnected from construction until native mapping, router
-lifetime, CPU publication, and CUDA terminal-drain ownership are resolved.
+reading payloads. It was deliberately disconnected at that phase boundary;
+R3 now uses the same scoped capacity-one mapping API in the explicit new
+constructor.
 
 **Native-plan follow-up:** caller-supplied config bytes and the bounded catalog
-can now produce the exact 363-to-459 or 543-to-687 native/runtime mapping and a
+produce the exact 363-to-459 or 543-to-687 native/runtime mapping and a
 fully covered, placement-bound per-shard consumer plan without payload mmap.
 Synthetic 20B/120B action counts and schema-framed plan identities are pinned.
-The production checkpoint view and owner-selective constructor remain
-unchanged; scoped mapping is still not integrated.
+R3 integrates this plan into the explicit capacity-one constructor while the
+monolithic path remains the default comparison control.
 
 **Resident-router follow-up:** an isolated owned handoff can now initialize the
 exact GPU router from already-resident layer-owner BF16 byte allocations using
@@ -192,19 +197,21 @@ retains every source/destination/stream/context handle. Production model
 ownership and runtime wiring remain unchanged pending a separately reviewed
 real-20B gate.
 
-**Scoped-shard follow-up:** a detached transaction now revalidates the framed
+**Scoped-shard follow-up:** the transaction revalidates the framed
 consumer-plan identity, catalog identity, shard identity, and exact action
 ranges before admitting one mapping. Pre-handoff failure releases normally;
 an external handoff must supply terminal proof or the mapping is retained for
-process life and that catalog instance is permanently quarantined. This is a
-source/synthetic lifetime prerequisite only: no CUDA upload, CPU publication,
-or owner-selective constructor path uses it yet.
+process life and that catalog instance is permanently quarantined. R3 connects
+it to synchronous dense/GPU upload, incremental CPU publication, bounded
+release telemetry, and the final zero-source publication proof.
 
-**Runtime-checkpoint-retirement follow-up:** the production owner-selective
-model now publishes only payload-free native config/identity metadata plus its
-resident owner allocations. Exact router weight/bias allocations are paired
-once during the existing dense upload and single-consumed by the control
-runtime through same-context D2D; the former host checkpoint reread is gone.
-The constructor still holds the complete checkpoint view until publication,
-so no peak-memory relief or real-model gate is claimed. Per-shard GPU expert
-assembly and atomic incremental CPU x8 publication remain next.
+**R3 capacity-one follow-up:** `heterogeneous_construct --constructor
+capacity-one` now reaches a production owner-selective constructor without a
+whole-checkpoint payload view. It keeps the monolithic constructor as the
+default explicit control, maps exactly one native shard at a time, consumes
+the immutable owner plan, carries only checked split biases, publishes cold
+CPU x8 layer records through a durable no-overwrite state machine, releases
+all source mappings before fresh runtime record maps, and publishes only after
+the complete zero-source/terminal-device proof passes. Synthetic and non-model
+CUDA validation passed. The separately authored retained-20B comparison was
+not executed; no 120B/H8/H9/H10 action is authorized or claimed.
