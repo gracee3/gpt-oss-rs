@@ -1,8 +1,11 @@
 #![allow(unsafe_code)]
 //! Versioned, atomic MXFP4 repack cache for CPU expert projections.
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -29,6 +32,8 @@ const LOCK_WAIT: Duration = Duration::from_secs(120);
 
 const OWNER_MAGIC: &[u8; 8] = b"GOSSHX8\0";
 pub const OWNER_REPACK_FORMAT_VERSION: u32 = 2;
+pub const OWNER_MAX_HEADER_BYTES: usize = 1024 * 1024;
+pub const OWNER_NATIVE_EXPERT_BYTES: u64 = 13_236_480;
 pub const OWNER_REPACK_TEMP_BYTES_MAX: usize = REPACK_BATCH_RECORDS * RECORD_BYTES;
 pub const OWNER_GATE_UP_X8_BYTES: usize = 5_760 * 90 * RECORD_BYTES;
 pub const OWNER_DOWN_X8_BYTES: usize = 2_880 * 90 * RECORD_BYTES;
@@ -354,6 +359,131 @@ struct CpuOwnerLayerHeader {
     payload_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CpuOwnerLayerTransactionState {
+    Absent,
+    Temporary,
+    PartiallyFilled,
+    CompleteUnpublished,
+    Synced,
+    RenamedVisible,
+    DirectorySynced,
+    RuntimeMapped,
+    Cancelled,
+    Failed,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuOwnerFinishFault {
+    BeforeFileSync,
+    AfterFileSyncBeforePublish,
+    AfterPublishBeforeDirectorySync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuOwnerFinishFaultRuntime {
+    None,
+    #[cfg(test)]
+    Test(CpuOwnerFinishFault),
+}
+
+impl CpuOwnerFinishFaultRuntime {
+    fn is_before_file_sync(self) -> bool {
+        #[cfg(test)]
+        if self == Self::Test(CpuOwnerFinishFault::BeforeFileSync) {
+            return true;
+        }
+        false
+    }
+
+    fn is_after_file_sync_before_publish(self) -> bool {
+        #[cfg(test)]
+        if self == Self::Test(CpuOwnerFinishFault::AfterFileSyncBeforePublish) {
+            return true;
+        }
+        false
+    }
+
+    fn is_after_publish_before_directory_sync(self) -> bool {
+        #[cfg(test)]
+        if self == Self::Test(CpuOwnerFinishFault::AfterPublishBeforeDirectorySync) {
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CpuOwnerLayerRecordValidation {
+    pub path: PathBuf,
+    pub header_identity_sha256: String,
+    pub payload_sha256: String,
+    pub record_identity_sha256: String,
+    pub source_revision: String,
+    pub source_mapping_sha256: String,
+    pub placement_sha256: String,
+    pub layer: u16,
+    pub expert_ids: Vec<u16>,
+    pub payload_bytes: u64,
+    pub file_bytes: u64,
+    pub device: u64,
+    pub inode: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuOwnerExpertActionExpectation {
+    pub expert_id: u16,
+    pub gate_up_bias_action: String,
+    pub gate_up_blocks_action: String,
+    pub gate_up_scales_action: String,
+    pub down_bias_action: String,
+    pub down_blocks_action: String,
+    pub down_scales_action: String,
+}
+
+impl CpuOwnerExpertActionExpectation {
+    fn ordered_action_ids(&self) -> [&str; 6] {
+        [
+            &self.gate_up_bias_action,
+            &self.gate_up_blocks_action,
+            &self.gate_up_scales_action,
+            &self.down_bias_action,
+            &self.down_blocks_action,
+            &self.down_scales_action,
+        ]
+    }
+}
+
+pub struct CpuOwnerExpertSource<'a> {
+    pub gate_up_bias: &'a [u8],
+    pub gate_up_blocks: &'a [u8],
+    pub gate_up_scales: &'a [u8],
+    pub down_bias: &'a [u8],
+    pub down_blocks: &'a [u8],
+    pub down_scales: &'a [u8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CpuOwnerLayerTransactionEvidence {
+    pub state: CpuOwnerLayerTransactionState,
+    pub layer: u16,
+    pub header_identity_sha256: String,
+    pub expected_experts: usize,
+    pub output_complete_experts: usize,
+    pub expected_native_actions: usize,
+    pub accepted_native_actions: usize,
+    pub expected_native_bytes: u64,
+    pub accepted_native_bytes: u64,
+    pub expected_output_bytes: u64,
+    pub written_output_bytes: u64,
+    pub written_intervals: usize,
+    pub output_sha256: Option<String>,
+    pub collision_reused: bool,
+    pub temp_removed: bool,
+}
+
 /// Project-scoped, owner-filtered CPU x8 cache.
 ///
 /// A file is keyed by the immutable source map, placement manifest, layer, and
@@ -406,6 +536,210 @@ impl CpuOwnerRepackCache {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn expected_layer_file_bytes(
+        &self,
+        layer: u16,
+        expert_ids: &[u16],
+        num_hidden_layers: usize,
+        num_experts: usize,
+    ) -> Result<u64> {
+        Ok(self
+            .layer_layout(layer, expert_ids, num_hidden_layers, num_experts)?
+            .4)
+    }
+
+    pub fn capacity_one_temporary_count(&self) -> Result<usize> {
+        let directory = self
+            .root
+            .join("owner-x8-v2")
+            .join(&self.source_mapping_sha256)
+            .join(&self.placement_sha256);
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        let mut count = 0_usize;
+        for entry in entries {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".capacity-one.tmp"))
+            {
+                count = count.checked_add(1).ok_or_else(|| {
+                    LLMError::ModelError("owner x8 temporary count overflows".into())
+                })?;
+                if count > 4_096 {
+                    return Err(LLMError::ModelError(
+                        "owner x8 temporary count exceeds evidence bound".into(),
+                    ));
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Validate a warm immutable record with bounded reads and no mmap.
+    pub fn validate_layer_without_mapping(
+        &self,
+        layer: u16,
+        expert_ids: &[u16],
+        num_hidden_layers: usize,
+        num_experts: usize,
+    ) -> Result<Option<CpuOwnerLayerRecordValidation>> {
+        let (header, _, target, _, _) =
+            self.layer_layout(layer, expert_ids, num_hidden_layers, num_experts)?;
+        if !target.exists() {
+            return Ok(None);
+        }
+        bounded_validate_owner_record(&target, &header).map(Some)
+    }
+
+    /// Start one cold, unpublished layer transaction. Runtime mapping remains
+    /// a separate post-source operation.
+    pub fn begin_layer_transaction(
+        &self,
+        layer: u16,
+        expectations: Vec<CpuOwnerExpertActionExpectation>,
+        num_hidden_layers: usize,
+        num_experts: usize,
+        remaining_cold_record_bytes: u64,
+        disk_reserve_bytes: u64,
+    ) -> Result<CpuOwnerLayerTransaction> {
+        let expert_ids = expectations
+            .iter()
+            .map(|expected| expected.expert_id)
+            .collect::<Vec<_>>();
+        let (header, header_identity, target, directory, expected_file_bytes) =
+            self.layer_layout(layer, &expert_ids, num_hidden_layers, num_experts)?;
+        if target.exists() {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 cold transaction target already exists: {}",
+                target.display()
+            )));
+        }
+        std::fs::create_dir_all(&directory)?;
+        ensure_owner_cache_capacity(&self.root, expected_file_bytes, self.max_total_bytes)?;
+        let required_available = remaining_cold_record_bytes
+            .checked_add(disk_reserve_bytes)
+            .ok_or_else(|| LLMError::ModelError("owner x8 disk admission overflows".into()))?;
+        let available = gpt_oss_cpu_kernels::filesystem_available_bytes(&directory)?;
+        if available < required_available {
+            return Err(LLMError::MemoryError(format!(
+                "owner x8 disk admission requires {required_available} available bytes, observed {available}"
+            )));
+        }
+        CpuOwnerLayerTransaction::begin(
+            self.root.clone(),
+            header,
+            header_identity,
+            target,
+            directory,
+            expected_file_bytes,
+            expectations,
+        )
+    }
+
+    /// Freshly validate and map one record after source mapping count is zero.
+    pub fn map_validated_layer(
+        &self,
+        validation: &CpuOwnerLayerRecordValidation,
+        active_source_mappings: usize,
+    ) -> Result<CpuOwnerLayerRecord> {
+        if active_source_mappings != 0 {
+            return Err(LLMError::ModelError(
+                "owner x8 runtime mapping attempted before source release".into(),
+            ));
+        }
+        let header = CpuOwnerLayerHeader {
+            format_version: OWNER_REPACK_FORMAT_VERSION,
+            layout_version: Mxfp4WeightLayout::InterleavedSplitX8V2.identifier(),
+            layout_identifier: Mxfp4WeightLayout::InterleavedSplitX8V2.as_str().to_owned(),
+            source_revision: validation.source_revision.clone(),
+            source_mapping_sha256: validation.source_mapping_sha256.clone(),
+            placement_sha256: validation.placement_sha256.clone(),
+            layer: validation.layer,
+            expert_ids: validation.expert_ids.clone(),
+            bytes_per_expert: OWNER_EXPERT_BYTES as u64,
+            payload_bytes: validation.payload_bytes,
+        };
+        let fresh = bounded_validate_owner_record(&validation.path, &header)?;
+        if fresh != *validation {
+            return Err(LLMError::ModelError(
+                "owner x8 record identity changed before runtime mapping".into(),
+            ));
+        }
+        CpuOwnerLayerRecord::open(&validation.path, &header)
+    }
+
+    fn layer_layout(
+        &self,
+        layer: u16,
+        expert_ids: &[u16],
+        num_hidden_layers: usize,
+        num_experts: usize,
+    ) -> Result<(CpuOwnerLayerHeader, String, PathBuf, PathBuf, u64)> {
+        if usize::from(layer) >= num_hidden_layers {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 layer {layer} is outside checkpoint"
+            )));
+        }
+        let mut sorted = expert_ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.is_empty()
+            || sorted != expert_ids
+            || sorted
+                .iter()
+                .any(|expert| usize::from(*expert) >= num_experts)
+        {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 expert set for layer {layer} must be nonempty, sorted, unique, and in range"
+            )));
+        }
+        let payload_bytes = OWNER_EXPERT_BYTES
+            .checked_mul(sorted.len())
+            .ok_or_else(|| {
+                LLMError::ModelError("owner x8 layer payload byte count overflows".into())
+            })?;
+        let header = CpuOwnerLayerHeader {
+            format_version: OWNER_REPACK_FORMAT_VERSION,
+            layout_version: Mxfp4WeightLayout::InterleavedSplitX8V2.identifier(),
+            layout_identifier: Mxfp4WeightLayout::InterleavedSplitX8V2.as_str().to_owned(),
+            source_revision: self.source_revision.clone(),
+            source_mapping_sha256: self.source_mapping_sha256.clone(),
+            placement_sha256: self.placement_sha256.clone(),
+            layer,
+            expert_ids: sorted,
+            bytes_per_expert: OWNER_EXPERT_BYTES as u64,
+            payload_bytes: payload_bytes as u64,
+        };
+        let header_identity = hash_serialized(&header)?;
+        let directory = self
+            .root
+            .join("owner-x8-v2")
+            .join(&self.source_mapping_sha256)
+            .join(&self.placement_sha256);
+        let target = directory.join(format!("layer-{layer:05}-{header_identity}.owner-x8"));
+        let header_bytes = serde_json::to_vec(&header)
+            .map_err(|error| LLMError::ModelError(format!("serialize owner x8 header: {error}")))?;
+        let expected_file_bytes = align_up(
+            OWNER_MAGIC.len() + 8 + header_bytes.len(),
+            align_of::<f32>(),
+        )?
+        .checked_add(payload_bytes)
+        .ok_or_else(|| LLMError::ModelError("owner x8 file byte count overflows".into()))?
+            as u64;
+        Ok((
+            header,
+            header_identity,
+            target,
+            directory,
+            expected_file_bytes,
+        ))
     }
 
     pub fn open_or_create_layer(
@@ -528,6 +862,549 @@ impl CpuOwnerRepackCache {
     }
 }
 
+pub struct CpuOwnerLayerTransaction {
+    cache_root: PathBuf,
+    header: CpuOwnerLayerHeader,
+    header_identity_sha256: String,
+    target: PathBuf,
+    directory: PathBuf,
+    temporary: PathBuf,
+    temporary_device: u64,
+    temporary_inode: u64,
+    file: Option<File>,
+    data_start: u64,
+    expected_file_bytes: u64,
+    expectations: Vec<CpuOwnerExpertActionExpectation>,
+    accepted_action_ids: BTreeSet<String>,
+    output_complete: BTreeSet<u16>,
+    written_intervals: Vec<[u64; 2]>,
+    accepted_native_bytes: u64,
+    written_output_bytes: u64,
+    output_digest: Sha256,
+    output_sha256: Option<String>,
+    state: CpuOwnerLayerTransactionState,
+    collision_reused: bool,
+    temp_removed: bool,
+    positioned_write_limit: Option<usize>,
+    positioned_fail_at: Option<u64>,
+}
+
+impl CpuOwnerLayerTransaction {
+    fn begin(
+        cache_root: PathBuf,
+        header: CpuOwnerLayerHeader,
+        header_identity_sha256: String,
+        target: PathBuf,
+        directory: PathBuf,
+        expected_file_bytes: u64,
+        expectations: Vec<CpuOwnerExpertActionExpectation>,
+    ) -> Result<Self> {
+        if expectations.len() != header.expert_ids.len()
+            || expectations
+                .iter()
+                .map(|expected| expected.expert_id)
+                .collect::<Vec<_>>()
+                != header.expert_ids
+        {
+            return Err(LLMError::ModelError(
+                "owner x8 action expectations do not match ordered expert IDs".into(),
+            ));
+        }
+        let mut action_ids = BTreeSet::new();
+        for expected in &expectations {
+            for action_id in expected.ordered_action_ids() {
+                if action_id.len() != 64
+                    || !action_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || !action_ids.insert(action_id)
+                {
+                    return Err(LLMError::ModelError(
+                        "owner x8 action expectations contain an invalid or duplicate ID".into(),
+                    ));
+                }
+            }
+        }
+        let header_bytes = serde_json::to_vec(&header)
+            .map_err(|error| LLMError::ModelError(format!("serialize owner x8 header: {error}")))?;
+        if header_bytes.len() > OWNER_MAX_HEADER_BYTES {
+            return Err(LLMError::ModelError(
+                "owner x8 header exceeds bounded validation limit".into(),
+            ));
+        }
+        let data_start = u64::try_from(align_up(
+            OWNER_MAGIC.len() + 8 + header_bytes.len(),
+            align_of::<f32>(),
+        )?)
+        .map_err(|_| LLMError::ModelError("owner x8 data offset exceeds u64".into()))?;
+        if data_start
+            .checked_add(header.payload_bytes)
+            .is_none_or(|length| length != expected_file_bytes)
+        {
+            return Err(LLMError::ModelError(
+                "owner x8 deterministic file layout mismatch".into(),
+            ));
+        }
+        let temporary = directory.join(format!(
+            ".layer-{:05}-{}.{}.{}.capacity-one.tmp",
+            header.layer,
+            header_identity_sha256,
+            std::process::id(),
+            unique_temp_nonce()
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.set_len(expected_file_bytes)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        let (temporary_device, temporary_inode) = (metadata.dev(), metadata.ino());
+        #[cfg(not(unix))]
+        let (temporary_device, temporary_inode) = (0, 0);
+        Ok(Self {
+            cache_root,
+            header,
+            header_identity_sha256,
+            target,
+            directory,
+            temporary,
+            temporary_device,
+            temporary_inode,
+            file: Some(file),
+            data_start,
+            expected_file_bytes,
+            expectations,
+            accepted_action_ids: BTreeSet::new(),
+            output_complete: BTreeSet::new(),
+            written_intervals: Vec::new(),
+            accepted_native_bytes: 0,
+            written_output_bytes: 0,
+            output_digest: Sha256::new(),
+            output_sha256: None,
+            state: CpuOwnerLayerTransactionState::Temporary,
+            collision_reused: false,
+            temp_removed: false,
+            positioned_write_limit: None,
+            positioned_fail_at: None,
+        })
+    }
+
+    pub const fn state(&self) -> CpuOwnerLayerTransactionState {
+        self.state
+    }
+
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    pub fn temporary(&self) -> &Path {
+        &self.temporary
+    }
+
+    pub fn accept_complete_expert(
+        &mut self,
+        expert_id: u16,
+        action_ids: [&str; 6],
+        source: CpuOwnerExpertSource<'_>,
+    ) -> Result<()> {
+        if !matches!(
+            self.state,
+            CpuOwnerLayerTransactionState::Temporary
+                | CpuOwnerLayerTransactionState::PartiallyFilled
+        ) {
+            return Err(LLMError::ModelError(
+                "owner x8 transaction does not admit another expert".into(),
+            ));
+        }
+        let expected_index = self.output_complete.len();
+        let expected = self.expectations.get(expected_index).ok_or_else(|| {
+            LLMError::ModelError("owner x8 received more experts than expected".into())
+        })?;
+        if expected.expert_id != expert_id || expected.ordered_action_ids() != action_ids {
+            return Err(LLMError::ModelError(
+                "owner x8 expert or action order/identity mismatch".into(),
+            ));
+        }
+        let lengths = [
+            source.gate_up_bias.len(),
+            source.gate_up_blocks.len(),
+            source.gate_up_scales.len(),
+            source.down_bias.len(),
+            source.down_blocks.len(),
+            source.down_scales.len(),
+        ];
+        if lengths != [11_520, 8_294_400, 518_400, 5_760, 4_147_200, 259_200] {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 expert {expert_id} source surface lengths are invalid: {lengths:?}"
+            )));
+        }
+        if action_ids.iter().any(|action_id| {
+            self.accepted_action_ids.contains(*action_id)
+                || action_id.len() != 64
+                || !action_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(LLMError::ModelError(
+                "owner x8 duplicate or invalid source action".into(),
+            ));
+        }
+        let position = u64::try_from(expected_index)
+            .ok()
+            .and_then(|index| index.checked_mul(OWNER_EXPERT_BYTES as u64))
+            .and_then(|offset| self.data_start.checked_add(offset))
+            .ok_or_else(|| LLMError::ModelError("owner x8 expert offset overflows".into()))?;
+        let end = position
+            .checked_add(OWNER_EXPERT_BYTES as u64)
+            .ok_or_else(|| LLMError::ModelError("owner x8 expert end overflows".into()))?;
+        if self
+            .written_intervals
+            .iter()
+            .any(|range| position < range[1] && end > range[0])
+        {
+            return Err(LLMError::ModelError(
+                "owner x8 destination interval overlaps prior output".into(),
+            ));
+        }
+        let file = self
+            .file
+            .as_ref()
+            .ok_or_else(|| LLMError::ModelError("owner x8 transaction file is closed".into()))?;
+        let mut writer = PositionedDigestWriter::new(
+            file,
+            position,
+            &mut self.output_digest,
+            self.positioned_write_limit,
+            self.positioned_fail_at,
+        );
+        write_x8_payload(
+            &mut writer,
+            source.gate_up_blocks,
+            source.gate_up_scales,
+            [1, 5_760, 90],
+        )?;
+        write_x8_payload(
+            &mut writer,
+            source.down_blocks,
+            source.down_scales,
+            [1, 2_880, 90],
+        )?;
+        write_bias_f32(&mut writer, source.gate_up_bias)?;
+        write_bias_f32(&mut writer, source.down_bias)?;
+        if writer.position() != end {
+            return Err(LLMError::ModelError(format!(
+                "owner x8 expert {expert_id} wrote through {}, expected {end}",
+                writer.position()
+            )));
+        }
+        for action_id in action_ids {
+            self.accepted_action_ids.insert(action_id.to_owned());
+        }
+        self.accepted_native_bytes = self
+            .accepted_native_bytes
+            .checked_add(OWNER_NATIVE_EXPERT_BYTES)
+            .ok_or_else(|| LLMError::ModelError("owner x8 native byte count overflows".into()))?;
+        self.written_output_bytes = self
+            .written_output_bytes
+            .checked_add(OWNER_EXPERT_BYTES as u64)
+            .ok_or_else(|| LLMError::ModelError("owner x8 output byte count overflows".into()))?;
+        self.written_intervals.push([position, end]);
+        if !self.output_complete.insert(expert_id) {
+            return Err(LLMError::ModelError(
+                "owner x8 expert output completed twice".into(),
+            ));
+        }
+        self.state = CpuOwnerLayerTransactionState::PartiallyFilled;
+        Ok(())
+    }
+
+    pub fn finish(mut self, advise_output: bool) -> Result<CpuOwnerLayerRecordValidation> {
+        self.finish_inner(advise_output, CpuOwnerFinishFaultRuntime::None)
+    }
+
+    #[cfg(test)]
+    fn finish_with_fault(
+        mut self,
+        advise_output: bool,
+        fault: CpuOwnerFinishFault,
+    ) -> Result<CpuOwnerLayerRecordValidation> {
+        self.finish_inner(advise_output, CpuOwnerFinishFaultRuntime::Test(fault))
+    }
+
+    fn finish_inner(
+        &mut self,
+        advise_output: bool,
+        fault: CpuOwnerFinishFaultRuntime,
+    ) -> Result<CpuOwnerLayerRecordValidation> {
+        let expected_actions = self
+            .expectations
+            .len()
+            .checked_mul(6)
+            .ok_or_else(|| LLMError::ModelError("owner x8 action count overflows".into()))?;
+        let expected_native_bytes = u64::try_from(self.expectations.len())
+            .ok()
+            .and_then(|count| count.checked_mul(OWNER_NATIVE_EXPERT_BYTES))
+            .ok_or_else(|| LLMError::ModelError("owner x8 native total overflows".into()))?;
+        if self.output_complete.len() != self.expectations.len()
+            || self.accepted_action_ids.len() != expected_actions
+            || self.accepted_native_bytes != expected_native_bytes
+            || self.written_output_bytes != self.header.payload_bytes
+            || self.written_intervals.len() != self.expectations.len()
+        {
+            self.state = CpuOwnerLayerTransactionState::Failed;
+            return Err(LLMError::ModelError(
+                "owner x8 transaction coverage is incomplete".into(),
+            ));
+        }
+        let mut next = self.data_start;
+        for range in &self.written_intervals {
+            if range[0] != next || range[0] >= range[1] {
+                self.state = CpuOwnerLayerTransactionState::Failed;
+                return Err(LLMError::ModelError(
+                    "owner x8 destination coverage has a gap or overlap".into(),
+                ));
+            }
+            next = range[1];
+        }
+        if next != self.expected_file_bytes {
+            self.state = CpuOwnerLayerTransactionState::Failed;
+            return Err(LLMError::ModelError(
+                "owner x8 destination coverage does not reach file end".into(),
+            ));
+        }
+
+        let header_bytes = serde_json::to_vec(&self.header)
+            .map_err(|error| LLMError::ModelError(format!("serialize owner x8 header: {error}")))?;
+        let mut prefix = Vec::with_capacity(self.data_start as usize);
+        prefix.extend_from_slice(OWNER_MAGIC);
+        prefix.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        prefix.extend_from_slice(&header_bytes);
+        prefix.resize(self.data_start as usize, 0);
+        let file = self
+            .file
+            .as_ref()
+            .ok_or_else(|| LLMError::ModelError("owner x8 transaction file is closed".into()))?;
+        write_all_at(file, &prefix, 0)?;
+        self.output_sha256 = Some(format!("{:x}", self.output_digest.clone().finalize()));
+        self.state = CpuOwnerLayerTransactionState::CompleteUnpublished;
+        if fault.is_before_file_sync() {
+            return Err(LLMError::ModelError(
+                "injected failure before owner x8 file sync".into(),
+            ));
+        }
+        file.sync_all()?;
+        self.state = CpuOwnerLayerTransactionState::Synced;
+        if advise_output {
+            let _ = gpt_oss_cpu_kernels::posix_fadvise_dontneed(file, 0, 0);
+        }
+        drop(self.file.take());
+        if fault.is_after_file_sync_before_publish() {
+            return Err(LLMError::ModelError(
+                "injected failure after owner x8 file sync before publication".into(),
+            ));
+        }
+
+        match std::fs::hard_link(&self.temporary, &self.target) {
+            Ok(()) => {
+                self.state = CpuOwnerLayerTransactionState::RenamedVisible;
+                self.remove_verified_temporary()?;
+                if fault.is_after_publish_before_directory_sync() {
+                    bounded_validate_owner_record(&self.target, &self.header)?;
+                    return Err(LLMError::ModelError(
+                        "injected failure after owner x8 publication before directory sync".into(),
+                    ));
+                }
+                sync_directory(&self.directory)?;
+                self.state = CpuOwnerLayerTransactionState::DirectorySynced;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let validation = bounded_validate_owner_record(&self.target, &self.header)?;
+                if self.output_sha256.as_deref() != Some(validation.payload_sha256.as_str()) {
+                    return Err(LLMError::ModelError(
+                        "owner x8 no-replace collision payload differs".into(),
+                    ));
+                }
+                self.collision_reused = true;
+                self.remove_verified_temporary()?;
+                self.state = CpuOwnerLayerTransactionState::DirectorySynced;
+                if cache_regular_file_bytes(&self.cache_root)? == 0 {
+                    return Err(LLMError::ModelError(
+                        "owner x8 collision target vanished during validation".into(),
+                    ));
+                }
+                return Ok(validation);
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let validation = bounded_validate_owner_record(&self.target, &self.header)?;
+        if self.output_sha256.as_deref() != Some(validation.payload_sha256.as_str()) {
+            return Err(LLMError::ModelError(
+                "published owner x8 payload digest differs from completed output".into(),
+            ));
+        }
+        Ok(validation)
+    }
+
+    pub fn cancel(&mut self) -> Result<()> {
+        drop(self.file.take());
+        if matches!(
+            self.state,
+            CpuOwnerLayerTransactionState::RenamedVisible
+                | CpuOwnerLayerTransactionState::DirectorySynced
+                | CpuOwnerLayerTransactionState::RuntimeMapped
+        ) {
+            return Err(LLMError::ModelError(
+                "owner x8 visible record is preserved during cancellation".into(),
+            ));
+        }
+        self.remove_verified_temporary()?;
+        self.state = CpuOwnerLayerTransactionState::Cancelled;
+        Ok(())
+    }
+
+    pub fn evidence(&self) -> CpuOwnerLayerTransactionEvidence {
+        CpuOwnerLayerTransactionEvidence {
+            state: self.state,
+            layer: self.header.layer,
+            header_identity_sha256: self.header_identity_sha256.clone(),
+            expected_experts: self.expectations.len(),
+            output_complete_experts: self.output_complete.len(),
+            expected_native_actions: self.expectations.len() * 6,
+            accepted_native_actions: self.accepted_action_ids.len(),
+            expected_native_bytes: self.expectations.len() as u64 * OWNER_NATIVE_EXPERT_BYTES,
+            accepted_native_bytes: self.accepted_native_bytes,
+            expected_output_bytes: self.header.payload_bytes,
+            written_output_bytes: self.written_output_bytes,
+            written_intervals: self.written_intervals.len(),
+            output_sha256: self.output_sha256.clone(),
+            collision_reused: self.collision_reused,
+            temp_removed: self.temp_removed,
+        }
+    }
+
+    fn remove_verified_temporary(&mut self) -> Result<()> {
+        if self.temp_removed || !self.temporary.exists() {
+            return Ok(());
+        }
+        let metadata = std::fs::symlink_metadata(&self.temporary)?;
+        #[cfg(unix)]
+        if metadata.dev() != self.temporary_device || metadata.ino() != self.temporary_inode {
+            return Err(LLMError::ModelError(
+                "owner x8 task temporary identity changed; refusing removal".into(),
+            ));
+        }
+        std::fs::remove_file(&self.temporary)?;
+        self.temp_removed = true;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn inject_positioned_write_behavior(
+        &mut self,
+        maximum_write: Option<usize>,
+        fail_at_absolute_offset: Option<u64>,
+    ) {
+        self.positioned_write_limit = maximum_write;
+        self.positioned_fail_at = fail_at_absolute_offset;
+    }
+}
+
+impl Drop for CpuOwnerLayerTransaction {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if !matches!(
+            self.state,
+            CpuOwnerLayerTransactionState::RenamedVisible
+                | CpuOwnerLayerTransactionState::DirectorySynced
+                | CpuOwnerLayerTransactionState::RuntimeMapped
+        ) {
+            let _ = self.remove_verified_temporary();
+        }
+    }
+}
+
+struct PositionedDigestWriter<'a> {
+    file: &'a File,
+    position: u64,
+    digest: &'a mut Sha256,
+    maximum_write: Option<usize>,
+    fail_at_absolute_offset: Option<u64>,
+}
+
+impl<'a> PositionedDigestWriter<'a> {
+    fn new(
+        file: &'a File,
+        position: u64,
+        digest: &'a mut Sha256,
+        maximum_write: Option<usize>,
+        fail_at_absolute_offset: Option<u64>,
+    ) -> Self {
+        Self {
+            file,
+            position,
+            digest,
+            maximum_write,
+            fail_at_absolute_offset,
+        }
+    }
+
+    const fn position(&self) -> u64 {
+        self.position
+    }
+}
+
+impl Write for PositionedDigestWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self
+            .fail_at_absolute_offset
+            .is_some_and(|failure| self.position >= failure)
+        {
+            return Err(std::io::Error::from_raw_os_error(28));
+        }
+        let allowed = self.maximum_write.unwrap_or(buffer.len()).min(buffer.len());
+        #[cfg(unix)]
+        let written = self.file.write_at(&buffer[..allowed], self.position)?;
+        #[cfg(not(unix))]
+        let written = 0;
+        if written == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "owner x8 positioned write made no progress",
+            ));
+        }
+        self.digest.update(&buffer[..written]);
+        self.position = self
+            .position
+            .checked_add(written as u64)
+            .ok_or_else(|| std::io::Error::other("owner x8 positioned offset overflows"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn write_all_at(file: &File, mut buffer: &[u8], mut offset: u64) -> Result<()> {
+    while !buffer.is_empty() {
+        #[cfg(unix)]
+        let written = file.write_at(buffer, offset)?;
+        #[cfg(not(unix))]
+        let written = 0;
+        if written == 0 {
+            return Err(LLMError::ModelError(
+                "owner x8 positioned header write made no progress".into(),
+            ));
+        }
+        buffer = &buffer[written..];
+        offset = offset
+            .checked_add(written as u64)
+            .ok_or_else(|| LLMError::ModelError("owner x8 header offset overflows".into()))?;
+    }
+    Ok(())
+}
+
 fn acquire_owner_lock(
     path: &Path,
     target: &Path,
@@ -629,7 +1506,15 @@ pub struct CpuOwnerLayerRecord {
 
 impl CpuOwnerLayerRecord {
     fn open(path: &Path, expected: &CpuOwnerLayerHeader) -> Result<Self> {
+        let validation = bounded_validate_owner_record(path, expected)?;
         let file = File::open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        if metadata.dev() != validation.device || metadata.ino() != validation.inode {
+            return Err(LLMError::ModelError(
+                "owner x8 file identity changed before runtime mmap".into(),
+            ));
+        }
         // SAFETY: owner records are atomically published, immutable, and held
         // mapped for the lifetime of every expert view.
         let mapping = unsafe { MmapOptions::new().map(&file) }.map_err(|error| {
@@ -740,6 +1625,99 @@ impl CpuOwnerLayerRecord {
     }
 }
 
+fn bounded_validate_owner_record(
+    path: &Path,
+    expected: &CpuOwnerLayerHeader,
+) -> Result<CpuOwnerLayerRecordValidation> {
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(LLMError::ModelError(format!(
+            "owner x8 record is not a regular file: {}",
+            path.display()
+        )));
+    }
+    let mut prefix = [0_u8; 16];
+    file.read_exact(&mut prefix)?;
+    if &prefix[..OWNER_MAGIC.len()] != OWNER_MAGIC {
+        return Err(LLMError::ModelError(format!(
+            "invalid owner x8 magic in {}",
+            path.display()
+        )));
+    }
+    let header_len = u64::from_le_bytes(
+        prefix[OWNER_MAGIC.len()..]
+            .try_into()
+            .map_err(|_| LLMError::ModelError("invalid owner x8 header length".into()))?,
+    );
+    let header_len = usize::try_from(header_len)
+        .map_err(|_| LLMError::ModelError("owner x8 header length exceeds usize".into()))?;
+    if header_len == 0 || header_len > OWNER_MAX_HEADER_BYTES {
+        return Err(LLMError::ModelError(
+            "owner x8 header length exceeds bounded validation limit".into(),
+        ));
+    }
+    let mut header_bytes = vec![0_u8; header_len];
+    file.read_exact(&mut header_bytes)?;
+    let actual: CpuOwnerLayerHeader = serde_json::from_slice(&header_bytes)
+        .map_err(|error| LLMError::ModelError(format!("invalid owner x8 header: {error}")))?;
+    if &actual != expected {
+        return Err(LLMError::ModelError(format!(
+            "stale owner x8 metadata in {}",
+            path.display()
+        )));
+    }
+    let data_start = align_up(OWNER_MAGIC.len() + 8 + header_len, align_of::<f32>())?;
+    let expected_len = data_start
+        .checked_add(actual.payload_bytes as usize)
+        .ok_or_else(|| LLMError::ModelError("owner x8 file length overflows".into()))?;
+    if metadata.len() != expected_len as u64 {
+        return Err(LLMError::ModelError(format!(
+            "owner x8 {} has {} bytes, expected {expected_len}",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    file.seek(SeekFrom::Start(data_start as u64))?;
+    let mut remaining = actual.payload_bytes;
+    let mut payload_digest = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| LLMError::ModelError("owner x8 digest length exceeds usize".into()))?;
+        file.read_exact(&mut buffer[..wanted])?;
+        payload_digest.update(&buffer[..wanted]);
+        remaining -= wanted as u64;
+    }
+    let payload_sha256 = format!("{:x}", payload_digest.finalize());
+    let header_identity_sha256 = hash_serialized(&actual)?;
+    let mut record_digest = Sha256::new();
+    record_digest.update(b"gpt-oss-rs-owner-x8-record-v2\0");
+    record_digest.update(header_identity_sha256.as_bytes());
+    record_digest.update(payload_sha256.as_bytes());
+    record_digest.update(metadata.len().to_le_bytes());
+    let record_identity_sha256 = format!("{:x}", record_digest.finalize());
+    #[cfg(unix)]
+    let (device, inode) = (metadata.dev(), metadata.ino());
+    #[cfg(not(unix))]
+    let (device, inode) = (0, 0);
+    Ok(CpuOwnerLayerRecordValidation {
+        path: path.to_path_buf(),
+        header_identity_sha256,
+        payload_sha256,
+        record_identity_sha256,
+        source_revision: actual.source_revision.clone(),
+        source_mapping_sha256: actual.source_mapping_sha256.clone(),
+        placement_sha256: actual.placement_sha256.clone(),
+        layer: actual.layer,
+        expert_ids: actual.expert_ids.clone(),
+        payload_bytes: actual.payload_bytes,
+        file_bytes: metadata.len(),
+        device,
+        inode,
+    })
+}
+
 pub struct CpuOwnerExpertView<'a> {
     pub layer: u16,
     pub expert_id: u16,
@@ -803,7 +1781,7 @@ fn expert_slice(bytes: &[u8], expert: u16, stride: usize) -> Result<&[u8]> {
         .ok_or_else(|| LLMError::ModelError("owner expert slice exceeds source tensor".into()))
 }
 
-fn write_bias_f32(file: &mut File, bf16_bytes: &[u8]) -> Result<()> {
+fn write_bias_f32(file: &mut impl Write, bf16_bytes: &[u8]) -> Result<()> {
     let values: &[u16] = bytemuck::try_cast_slice(bf16_bytes)
         .map_err(|error| LLMError::ModelError(format!("owner BF16 bias: {error}")))?;
     let mut output = Vec::with_capacity(values.len() * size_of::<f32>());
@@ -939,7 +1917,7 @@ fn write_repack(
 }
 
 fn write_x8_payload(
-    file: &mut File,
+    file: &mut impl Write,
     blocks: &[u8],
     scales: &[u8],
     [experts, rows, blocks_per_row]: [usize; 3],
@@ -983,7 +1961,7 @@ fn write_x8_payload(
     Ok(())
 }
 
-fn flush_repack_batch(file: &mut File, output: &mut Vec<u8>) -> Result<()> {
+fn flush_repack_batch(file: &mut impl Write, output: &mut Vec<u8>) -> Result<()> {
     if output.len() >= REPACK_BATCH_RECORDS * RECORD_BYTES {
         file.write_all(output)?;
         output.clear();
@@ -1019,6 +1997,74 @@ mod tests {
     use super::*;
     use crate::cpu_tensor_store::CpuTensorStore;
 
+    fn owner_action_id(value: u8) -> String {
+        format!("{value:064x}")
+    }
+
+    fn owner_expectation(expert_id: u16) -> CpuOwnerExpertActionExpectation {
+        CpuOwnerExpertActionExpectation {
+            expert_id,
+            gate_up_bias_action: owner_action_id(1),
+            gate_up_blocks_action: owner_action_id(2),
+            gate_up_scales_action: owner_action_id(3),
+            down_bias_action: owner_action_id(4),
+            down_blocks_action: owner_action_id(5),
+            down_scales_action: owner_action_id(6),
+        }
+    }
+
+    struct OwnerSourceFixture {
+        gate_up_bias: Vec<u16>,
+        gate_up_blocks: Vec<u8>,
+        gate_up_scales: Vec<u8>,
+        down_bias: Vec<u16>,
+        down_blocks: Vec<u8>,
+        down_scales: Vec<u8>,
+    }
+
+    impl OwnerSourceFixture {
+        fn new() -> Self {
+            Self {
+                gate_up_bias: (0..5_760).map(|value| value as u16).collect(),
+                gate_up_blocks: vec![0x21; 8_294_400],
+                gate_up_scales: vec![126; 518_400],
+                down_bias: (0..2_880).map(|value| (value * 3) as u16).collect(),
+                down_blocks: vec![0x43; 4_147_200],
+                down_scales: vec![127; 259_200],
+            }
+        }
+
+        fn source(&self) -> CpuOwnerExpertSource<'_> {
+            CpuOwnerExpertSource {
+                gate_up_bias: bytemuck::cast_slice(&self.gate_up_bias),
+                gate_up_blocks: &self.gate_up_blocks,
+                gate_up_scales: &self.gate_up_scales,
+                down_bias: bytemuck::cast_slice(&self.down_bias),
+                down_blocks: &self.down_blocks,
+                down_scales: &self.down_scales,
+            }
+        }
+    }
+
+    fn streaming_owner_cache(root: &Path) -> CpuOwnerRepackCache {
+        CpuOwnerRepackCache::new(
+            root,
+            "fixture-revision",
+            "a".repeat(64),
+            "b".repeat(64),
+            512 * 1024 * 1024,
+        )
+        .unwrap()
+    }
+
+    fn accept_fixture_expert(
+        transaction: &mut CpuOwnerLayerTransaction,
+        source: &OwnerSourceFixture,
+    ) -> Result<()> {
+        let expected = owner_expectation(0);
+        transaction.accept_complete_expert(0, expected.ordered_action_ids(), source.source())
+    }
+
     fn write_shard(path: &Path) {
         let blocks = [0x21_u8; 32];
         let scales = [126_u8, 127_u8];
@@ -1033,6 +2079,212 @@ mod tests {
         file.write_all(&header).unwrap();
         file.write_all(&blocks).unwrap();
         file.write_all(&scales).unwrap();
+    }
+
+    #[test]
+    fn capacity_one_owner_record_short_writes_durable_validation_and_deferred_map() {
+        let root = tempdir().unwrap();
+        let cache = streaming_owner_cache(root.path());
+        let source = OwnerSourceFixture::new();
+        let expectation = owner_expectation(0);
+        let mut transaction = cache
+            .begin_layer_transaction(0, vec![expectation], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        transaction.inject_positioned_write_behavior(Some(4096), None);
+        accept_fixture_expert(&mut transaction, &source).unwrap();
+        let before = transaction.evidence();
+        assert_eq!(before.state, CpuOwnerLayerTransactionState::PartiallyFilled);
+        assert_eq!(before.accepted_native_actions, 6);
+        assert_eq!(before.accepted_native_bytes, OWNER_NATIVE_EXPERT_BYTES);
+        assert_eq!(before.written_output_bytes, OWNER_EXPERT_BYTES as u64);
+        let temporary = transaction.temporary().to_path_buf();
+        let validation = transaction.finish(false).unwrap();
+        assert!(!temporary.exists());
+        assert_eq!(validation.payload_bytes, OWNER_EXPERT_BYTES as u64);
+        assert!(cache.map_validated_layer(&validation, 1).is_err());
+        let record = cache.map_validated_layer(&validation, 0).unwrap();
+        assert_eq!(record.expert_ids(), [0]);
+
+        let bytes = std::fs::read(&validation.path).unwrap();
+        let header_len = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let data_start = align_up(16 + header_len, align_of::<f32>()).unwrap();
+        let mut expected = Vec::new();
+        write_x8_payload(
+            &mut expected,
+            &source.gate_up_blocks,
+            &source.gate_up_scales,
+            [1, 5_760, 90],
+        )
+        .unwrap();
+        write_x8_payload(
+            &mut expected,
+            &source.down_blocks,
+            &source.down_scales,
+            [1, 2_880, 90],
+        )
+        .unwrap();
+        write_bias_f32(&mut expected, bytemuck::cast_slice(&source.gate_up_bias)).unwrap();
+        write_bias_f32(&mut expected, bytemuck::cast_slice(&source.down_bias)).unwrap();
+        assert_eq!(&bytes[data_start..], expected);
+        assert_eq!(
+            cache
+                .validate_layer_without_mapping(0, &[0], 24, 32)
+                .unwrap()
+                .unwrap(),
+            validation
+        );
+    }
+
+    #[test]
+    fn capacity_one_owner_record_failure_removes_only_owned_temporary() {
+        let root = tempdir().unwrap();
+        let cache = streaming_owner_cache(root.path());
+        let source = OwnerSourceFixture::new();
+        let mut transaction = cache
+            .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        let temporary = transaction.temporary().to_path_buf();
+        transaction.inject_positioned_write_behavior(None, Some(transaction.data_start + 4096));
+        assert!(accept_fixture_expert(&mut transaction, &source).is_err());
+        assert!(temporary.exists());
+        drop(transaction);
+        assert!(!temporary.exists());
+        assert!(cache
+            .validate_layer_without_mapping(0, &[0], 24, 32)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn capacity_one_owner_record_atomic_equal_collision_and_invalid_warm_rejection() {
+        let root = tempdir().unwrap();
+        let cache = streaming_owner_cache(root.path());
+        let source = OwnerSourceFixture::new();
+        let begin = || {
+            cache
+                .begin_layer_transaction(
+                    0,
+                    vec![owner_expectation(0)],
+                    24,
+                    32,
+                    128 * 1024 * 1024,
+                    0,
+                )
+                .unwrap()
+        };
+        let mut first = begin();
+        let mut racing = begin();
+        let mut mismatched = begin();
+        accept_fixture_expert(&mut first, &source).unwrap();
+        accept_fixture_expert(&mut racing, &source).unwrap();
+        accept_fixture_expert(&mut mismatched, &source).unwrap();
+        let validation = first.finish(false).unwrap();
+        let racing_temp = racing.temporary().to_path_buf();
+        let equal = racing.finish(false).unwrap();
+        assert_eq!(equal, validation);
+        assert!(!racing_temp.exists());
+
+        let mut bytes = std::fs::read(&validation.path).unwrap();
+        let header_len = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let data_start = align_up(16 + header_len, align_of::<f32>()).unwrap();
+        bytes[data_start] ^= 0xff;
+        std::fs::write(&validation.path, &bytes).unwrap();
+        let mismatched_temp = mismatched.temporary().to_path_buf();
+        assert!(mismatched.finish(false).is_err());
+        assert!(!mismatched_temp.exists());
+        assert!(validation.path.exists());
+
+        bytes[0] ^= 0xff;
+        std::fs::write(&validation.path, bytes).unwrap();
+        assert!(cache
+            .validate_layer_without_mapping(0, &[0], 24, 32)
+            .is_err());
+        assert!(validation.path.exists());
+    }
+
+    #[test]
+    fn capacity_one_owner_record_finish_failures_preserve_only_valid_visible_records() {
+        let source = OwnerSourceFixture::new();
+        for fault in [
+            CpuOwnerFinishFault::BeforeFileSync,
+            CpuOwnerFinishFault::AfterFileSyncBeforePublish,
+        ] {
+            let root = tempdir().unwrap();
+            let cache = streaming_owner_cache(root.path());
+            let mut transaction = cache
+                .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+                .unwrap();
+            accept_fixture_expert(&mut transaction, &source).unwrap();
+            let temporary = transaction.temporary().to_path_buf();
+            let target = transaction.target().to_path_buf();
+            assert!(transaction.finish_with_fault(false, fault).is_err());
+            assert!(!temporary.exists());
+            assert!(!target.exists());
+        }
+
+        let root = tempdir().unwrap();
+        let cache = streaming_owner_cache(root.path());
+        let mut transaction = cache
+            .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        accept_fixture_expert(&mut transaction, &source).unwrap();
+        let temporary = transaction.temporary().to_path_buf();
+        let target = transaction.target().to_path_buf();
+        assert!(transaction
+            .finish_with_fault(false, CpuOwnerFinishFault::AfterPublishBeforeDirectorySync)
+            .is_err());
+        assert!(!temporary.exists());
+        assert!(target.exists());
+        assert!(cache
+            .validate_layer_without_mapping(0, &[0], 24, 32)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn capacity_one_owner_record_rejects_order_duplicates_gaps_and_cancels_all_previsible_states() {
+        let root = tempdir().unwrap();
+        let cache = streaming_owner_cache(root.path());
+        let source = OwnerSourceFixture::new();
+
+        let mut absent_output = cache
+            .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        let absent_temp = absent_output.temporary().to_path_buf();
+        absent_output.cancel().unwrap();
+        assert_eq!(
+            absent_output.state(),
+            CpuOwnerLayerTransactionState::Cancelled
+        );
+        assert!(!absent_temp.exists());
+
+        let mut transaction = cache
+            .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        let expected = owner_expectation(0);
+        let mut wrong_order = expected.ordered_action_ids();
+        wrong_order.swap(0, 1);
+        assert!(transaction
+            .accept_complete_expert(0, wrong_order, source.source())
+            .is_err());
+        accept_fixture_expert(&mut transaction, &source).unwrap();
+        assert!(accept_fixture_expert(&mut transaction, &source).is_err());
+        let partial_temp = transaction.temporary().to_path_buf();
+        transaction.cancel().unwrap();
+        assert!(!partial_temp.exists());
+
+        let mut gap = cache
+            .begin_layer_transaction(0, vec![owner_expectation(0)], 24, 32, 64 * 1024 * 1024, 0)
+            .unwrap();
+        accept_fixture_expert(&mut gap, &source).unwrap();
+        gap.written_intervals[0][0] += 1;
+        let gap_temp = gap.temporary().to_path_buf();
+        assert!(gap.finish(false).is_err());
+        assert!(!gap_temp.exists());
+        assert!(cache
+            .validate_layer_without_mapping(0, &[0], 24, 32)
+            .unwrap()
+            .is_none());
     }
 
     fn generated_block(record: usize) -> Mxfp4Block {
