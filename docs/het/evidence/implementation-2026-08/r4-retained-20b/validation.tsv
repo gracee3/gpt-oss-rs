@@ -1,0 +1,17 @@
+id	gate	result	detail
+R4-01	implementation commit	passed	eb1d816 committed and pushed before release build
+R4-02	locked full workspace tests	passed	workspace tests and doctests completed with zero failures
+R4-03	supervisor unit tests	passed	5 tests cover R2 semantics, retained authority, cgroup drift, and GPU admission
+R4-04	touched-binary Clippy	passed	heterogeneous_20b_comparison, heterogeneous_construct, and heterogeneous_control passed no-deps -D warnings
+R4-05	CUDA release build	passed	three R4 release binaries built from eb1d816; upstream baseline warnings retained
+R4-06	20B-only CLI boundary	passed	cold/warm does not require or receive 120B inputs; validate/H8 alone require them
+R4-07	R2 preflight duration	passed	6 samples retained across 120024 ms
+R4-08	R2 cgroup swap	failed_hard	memory.swap.current was 1146880 bytes; required exactly zero
+R4-09	R2 PSI avg10	failed_hard	some/full avg10 reached 70000 millionths at final two samples; required zero
+R4-10	global and target swap	passed	global used stayed 11460608 bytes and target tree stayed zero
+R4-11	memory reserve	passed	minimum MemAvailable was 96249933824 bytes
+R4-12	GPU admission	passed	PCI identities stable; used memory remained 9 MiB and 1 MiB
+R4-13	protected NVMe	passed	/dev/nvme1n1 remained read-only and unmounted
+R4-14	comparison matrix	blocked_pre_model	run subcommand was not invoked; zero cells started
+R4-15	H8/120B boundary	passed	no H8 or 120B process/input/access began
+R4-16	existing owner cache	passed	before/after inventory SHA-256 identical: 06cbcaf72a2986ad918c8b64ba818e718d292ac0b7f3b89ee9aa9ae5a43255d6

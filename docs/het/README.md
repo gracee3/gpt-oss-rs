@@ -1,7 +1,7 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** R3 capacity-one construction implemented; H0 through H7 passed,
-H8 paused and retained-20B comparison not authorized;
+**Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, the
+R4 matrix was blocked at pre-model admission, and H8 remains paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -108,6 +108,9 @@ Evidence labels have the same meaning in every document:
     explicit non-default production constructor, one-source-mapping lifetime,
     bounded split state, durable incremental CPU records, terminal publication
     proof, and non-model validation; retained-20B comparison remains stopped.
+36. [R4 retained-20B constructor comparison](36-r4-retained-20b-comparison.md) —
+    commit-bound supervisor and 20B-only constructor seams; the authorized
+    attempt failed exact cgroup-swap and PSI admission before model access.
 
 ## Current headline
 
@@ -213,5 +216,11 @@ the immutable owner plan, carries only checked split biases, publishes cold
 CPU x8 layer records through a durable no-overwrite state machine, releases
 all source mappings before fresh runtime record maps, and publishes only after
 the complete zero-source/terminal-device proof passes. Synthetic and non-model
-CUDA validation passed. The separately authored retained-20B comparison was
-not executed; no 120B/H8/H9/H10 action is authorized or claimed.
+CUDA validation passed.
+
+**R4 retained-20B follow-up:** the commit-bound comparison supervisor and the
+monolithic/capacity-one H7 selector are implemented. The authorized one-shot
+attempt stopped before model load because its fresh preflight observed
+1,146,880 bytes in the comparison cgroup's `memory.swap.current` and nonzero
+PSI avg10 at the final sample. No comparison cache, construction cell, H8, or
+120B access began; H8/H9/H10 remain stopped.
