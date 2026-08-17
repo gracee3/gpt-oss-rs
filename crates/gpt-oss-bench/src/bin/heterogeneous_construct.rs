@@ -14,7 +14,7 @@ use gpt_oss_bench::construction_memory::{
 };
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_bench::h8_watchdog::require_h8_watchdog_binding;
-use gpt_oss_bench::h8_watchdog::H8WatchdogBinding;
+use gpt_oss_bench::h8_watchdog::{protected_nvme_state, H8WatchdogBinding, ProtectedNvmeState};
 use gpt_oss_core::error::LLMError;
 use gpt_oss_gpu::device::{list_devices, GpuDevice, StableCudaDeviceId};
 #[cfg(feature = "heterogeneous-test-faults")]
@@ -402,11 +402,7 @@ struct H8LoadedReserveRecord {
     reserve_plus_margin_met: [bool; 2],
 }
 
-#[derive(Debug, Serialize)]
-struct ProtectedNvmeRecord {
-    read_only: bool,
-    mounted: bool,
-}
+type ProtectedNvmeRecord = ProtectedNvmeState;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -451,7 +447,10 @@ fn main() -> Result<()> {
 
     let protected_nvme = protected_nvme_state()?;
     if !protected_nvme.read_only || protected_nvme.mounted {
-        bail!("protected /dev/nvme1n1 is not read-only and unmounted");
+        bail!(
+            "protected /dev/{} is not read-only and unmounted",
+            protected_nvme.kernel_name
+        );
     }
     let system_before = system_memory()?;
     let process_before = process_memory()?;
@@ -746,7 +745,7 @@ fn main() -> Result<()> {
     }
 
     let record = EvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-construction/v5",
+        schema: "gpt-oss-rs.heterogeneous-construction/v6",
         mode: cli.mode,
         captured_unix_ms: now_unix_ms(),
         repository_head,
@@ -1002,7 +1001,7 @@ fn run_capacity_one_cli(
         bail!("capacity-one final memory/swap guard failed");
     }
     let record = CapacityOneEvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-capacity-one-construction/v1",
+        schema: "gpt-oss-rs.heterogeneous-capacity-one-construction/v2",
         mode: cli.mode,
         constructor: cli.constructor,
         r2_policy_sha256: CAPACITY_ONE_POLICY_SHA256,
@@ -2614,15 +2613,6 @@ fn collect_paths(root: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn protected_nvme_state() -> Result<ProtectedNvmeRecord> {
-    let output = command_text("lsblk", &["-dnro", "RO,MOUNTPOINTS", "/dev/nvme1n1"])?;
-    let read_only = output.split_whitespace().next() == Some("1");
-    let mounted = std::fs::read_to_string("/proc/self/mountinfo")?
-        .lines()
-        .any(|line| line.contains("nvme1n1"));
-    Ok(ProtectedNvmeRecord { read_only, mounted })
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {

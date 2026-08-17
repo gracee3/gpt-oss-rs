@@ -755,6 +755,11 @@ fn validate_preflight_evidence(evidence: &PreflightEvidence, max_age_seconds: u6
 }
 
 fn validate_fresh_admission(baseline: &HostSnapshot, current: &HostSnapshot) -> Result<()> {
+    if baseline.protected_nvme_kernel_name.is_empty()
+        || baseline.protected_nvme_kernel_name != current.protected_nvme_kernel_name
+    {
+        bail!("protected NVMe identity changed after the reviewed stability window");
+    }
     if baseline.swap_free_bytes != current.swap_free_bytes
         || baseline.swap_used_bytes != current.swap_used_bytes
         || baseline.swap_cached_bytes != current.swap_cached_bytes
@@ -788,7 +793,7 @@ fn validate_child_evidence(
             .and_then(serde_json::Value::as_str)
             .with_context(|| format!("child evidence lacks {pointer}"))
     };
-    if string("/schema")? != "gpt-oss-rs.heterogeneous-construction/v5"
+    if string("/schema")? != "gpt-oss-rs.heterogeneous-construction/v6"
         || string("/mode")? != "h8"
         || string("/repository_head")? != repository_head
         || string("/executable_sha256")? != executable_sha256
@@ -1388,6 +1393,7 @@ mod tests {
             active_h8_process_found: false,
             cgroups: Vec::new(),
             swappiness: 60,
+            protected_nvme_kernel_name: "nvme1n1".into(),
             protected_nvme_read_only: true,
             protected_nvme_mounted: false,
         };
@@ -1447,6 +1453,9 @@ mod tests {
         assert!(validate_fresh_admission(baseline, baseline).is_ok());
         let mut changed = baseline.clone();
         changed.swap_cached_bytes += 1;
+        assert!(validate_fresh_admission(baseline, &changed).is_err());
+        let mut changed = baseline.clone();
+        changed.protected_nvme_kernel_name = "nvme0n1".into();
         assert!(validate_fresh_admission(baseline, &changed).is_err());
     }
 
@@ -1556,7 +1565,7 @@ mod tests {
         let event_filename = "000-h8_cold-identity.json";
         fs::write(events.join(event_filename), &event_bytes).unwrap();
         let value = serde_json::json!({
-            "schema": "gpt-oss-rs.heterogeneous-construction/v5",
+            "schema": "gpt-oss-rs.heterogeneous-construction/v6",
             "mode": "h8",
             "repository_head": "head",
             "executable_sha256": hash,

@@ -19,8 +19,8 @@ use gpt_oss_bench::h8_watchdog::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const PREFLIGHT_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-preflight/v1";
-const RUN_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-run/v1";
+const PREFLIGHT_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-preflight/v2";
+const RUN_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-run/v2";
 const R2_POLICY_SHA256: &str = "f269a4c984bbfa0d2a18c037b42ded2c81330094b18c6fc8dc668b7ad81bb90f";
 const PLACEMENT_SHA256: &str = "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe";
 const MAPPING_FILE_SHA256: &str =
@@ -181,6 +181,7 @@ struct RunEvidence {
     placement_sha256: String,
     retained_trace_sha256: String,
     run_root: String,
+    protected_nvme_kernel_name: String,
     swap_baseline_bytes: u64,
     cgroup_baseline: CgroupSnapshot,
     cells: Vec<CellEvidence>,
@@ -369,6 +370,9 @@ fn run_matrix(args: RunArgs) -> Result<()> {
         .last()
         .context("preflight has no samples")?;
     let current = read_host_snapshot(None, 0)?;
+    if current.protected_nvme_kernel_name != baseline.protected_nvme_kernel_name {
+        bail!("protected NVMe identity changed after the R4 preflight");
+    }
     let limits = RuntimeGuardLimits {
         swap_baseline_bytes: baseline.swap_used_bytes,
         min_mem_available_bytes: MIN_MEM_AVAILABLE_BYTES,
@@ -400,6 +404,7 @@ fn run_matrix(args: RunArgs) -> Result<()> {
             &preflight.cgroup_baseline,
             args.poll_interval_ms,
             args.retain_interval_ms,
+            &baseline.protected_nvme_kernel_name,
         ) {
             Ok(cell) => {
                 let passed = cell.passed;
@@ -464,6 +469,7 @@ fn run_matrix(args: RunArgs) -> Result<()> {
         placement_sha256: sha256_file(&args.placement)?,
         retained_trace_sha256: sha256_file(&args.retained_trace)?,
         run_root: args.run_root.to_string_lossy().into_owned(),
+        protected_nvme_kernel_name: baseline.protected_nvme_kernel_name.clone(),
         swap_baseline_bytes: baseline.swap_used_bytes,
         cgroup_baseline: preflight.cgroup_baseline,
         cells,
@@ -575,6 +581,7 @@ fn run_cell(
     cgroup_baseline: &CgroupSnapshot,
     poll_interval_ms: u64,
     retain_interval_ms: u64,
+    protected_nvme_kernel_name: &str,
 ) -> Result<CellEvidence> {
     if spec.output.exists()
         || spec
@@ -659,6 +666,11 @@ fn run_cell(
         if let Err(guard) = evaluate_r2_runtime_guard(&sample, limits) {
             violation = Some(guard);
         }
+        if sample.protected_nvme_kernel_name != protected_nvme_kernel_name {
+            violation = Some(GuardViolation {
+                reasons: vec!["protected NVMe identity changed during comparison cell".into()],
+            });
+        }
         if elapsed > MAX_RUN_SECONDS * 1_000 {
             violation = Some(GuardViolation {
                 reasons: vec!["cell exceeded two-hour bound".into()],
@@ -690,6 +702,11 @@ fn run_cell(
         if let Err(guard) = evaluate_r2_runtime_guard(&sample, limits) {
             violation = Some(guard);
         }
+        if sample.protected_nvme_kernel_name != protected_nvme_kernel_name {
+            violation = Some(GuardViolation {
+                reasons: vec!["protected NVMe identity changed during post-exit settle".into()],
+            });
+        }
         let cgroup = cgroup_snapshot()?;
         maximum_post_exit_current_drift_bytes = maximum_post_exit_current_drift_bytes.max(
             cgroup
@@ -713,7 +730,7 @@ fn run_cell(
         .then(|| sha256_file(&spec.output))
         .transpose()?;
     let output_validated = if output_sha256.is_some() {
-        validate_cell_output(spec, &fs::read(&spec.output)?).is_ok()
+        validate_cell_output(spec, &fs::read(&spec.output)?, protected_nvme_kernel_name).is_ok()
     } else {
         false
     };
@@ -772,7 +789,11 @@ fn run_cell(
     })
 }
 
-fn validate_cell_output(spec: &CellSpec, bytes: &[u8]) -> Result<()> {
+fn validate_cell_output(
+    spec: &CellSpec,
+    bytes: &[u8],
+    protected_nvme_kernel_name: &str,
+) -> Result<()> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     if spec.load_class == "h7-repeat-two" {
         if value
@@ -823,14 +844,24 @@ fn validate_cell_output(spec: &CellSpec, bytes: &[u8]) -> Result<()> {
         }
     } else {
         let expected_constructor = spec.constructor.replace('-', "_");
-        if value
-            .pointer("/passed")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
+        let expected_schema = if spec.constructor == "capacity-one" {
+            "gpt-oss-rs.heterogeneous-capacity-one-construction/v2"
+        } else {
+            "gpt-oss-rs.heterogeneous-construction/v6"
+        };
+        if value.pointer("/schema").and_then(serde_json::Value::as_str) != Some(expected_schema)
+            || value
+                .pointer("/passed")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
             || value
                 .pointer("/constructor")
                 .and_then(serde_json::Value::as_str)
                 != Some(expected_constructor.as_str())
+            || value
+                .pointer("/protected_nvme/kernel_name")
+                .and_then(serde_json::Value::as_str)
+                != Some(protected_nvme_kernel_name)
         {
             bail!("construction cell identity or pass state is invalid");
         }
@@ -1347,6 +1378,7 @@ mod tests {
                 oom_kill_events: Some(0),
             }],
             swappiness: 60,
+            protected_nvme_kernel_name: "nvme1n1".into(),
             protected_nvme_read_only: true,
             protected_nvme_mounted: false,
         }
@@ -1394,6 +1426,48 @@ mod tests {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/retained_20b_authority.json");
         validate_retained_trace(&path).unwrap();
+    }
+
+    #[test]
+    fn construction_output_requires_current_schema_and_protected_identity() {
+        let spec = CellSpec {
+            name: "cold-monolithic-control".into(),
+            constructor: "monolithic-control",
+            load_class: "cold",
+            executable: PathBuf::from("/bin/true"),
+            arguments: Vec::new(),
+            output: PathBuf::from("/tmp/unused.json"),
+            memory_events: None,
+        };
+        let valid = serde_json::json!({
+            "schema": "gpt-oss-rs.heterogeneous-construction/v6",
+            "constructor": "monolithic_control",
+            "protected_nvme": {
+                "kernel_name": "nvme0n1",
+                "read_only": true,
+                "mounted": false
+            },
+            "passed": true
+        });
+        assert!(
+            validate_cell_output(&spec, &serde_json::to_vec(&valid).unwrap(), "nvme0n1").is_ok()
+        );
+
+        let mut old_schema = valid.clone();
+        old_schema["schema"] = "gpt-oss-rs.heterogeneous-construction/v5".into();
+        assert!(
+            validate_cell_output(&spec, &serde_json::to_vec(&old_schema).unwrap(), "nvme0n1")
+                .is_err()
+        );
+
+        let mut changed_identity = valid;
+        changed_identity["protected_nvme"]["kernel_name"] = "nvme1n1".into();
+        assert!(validate_cell_output(
+            &spec,
+            &serde_json::to_vec(&changed_identity).unwrap(),
+            "nvme0n1"
+        )
+        .is_err());
     }
 
     #[test]

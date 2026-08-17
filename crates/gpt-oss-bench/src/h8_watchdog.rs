@@ -19,6 +19,7 @@ pub const PREFLIGHT_SCHEMA: &str = "gpt-oss-rs.heterogeneous-h8-preflight/v1";
 pub const MIN_PREFLIGHT_DURATION_MS: u64 = 120_000;
 pub const MIN_PREFLIGHT_SAMPLES: usize = 4;
 pub const MIN_MEM_AVAILABLE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+const EXPECTED_PROTECTED_NVME_MODEL: &str = "Samsung SSD 990 PRO 2TB";
 
 pub const ENV_SCHEMA: &str = "GPT_OSS_H8_WATCHDOG_SCHEMA";
 pub const ENV_PARENT_PID: &str = "GPT_OSS_H8_WATCHDOG_PARENT_PID";
@@ -60,8 +61,17 @@ pub struct HostSnapshot {
     pub active_h8_process_found: bool,
     pub cgroups: Vec<CgroupMemory>,
     pub swappiness: u64,
+    #[serde(default)]
+    pub protected_nvme_kernel_name: String,
     pub protected_nvme_read_only: bool,
     pub protected_nvme_mounted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtectedNvmeState {
+    pub kernel_name: String,
+    pub read_only: bool,
+    pub mounted: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -199,6 +209,78 @@ pub fn read_host_snapshot(child_root_pid: Option<u32>, elapsed_ms: u64) -> Resul
     read_host_snapshot_from(&SystemPaths::default(), child_root_pid, elapsed_ms)
 }
 
+/// Resolve the protected Samsung namespace without opening a block device or
+/// consulting serial/UUID data. The system namespace is discovered by tracing
+/// the root mount's sysfs slave ancestry; the other expected namespace is the
+/// protected device regardless of kernel enumeration order.
+pub fn protected_nvme_state() -> Result<ProtectedNvmeState> {
+    protected_nvme_state_from(&SystemPaths::default())
+}
+
+pub fn protected_nvme_state_from(paths: &SystemPaths) -> Result<ProtectedNvmeState> {
+    let namespaces = expected_nvme_namespaces(paths)?;
+    if namespaces.len() != 2 {
+        bail!(
+            "expected exactly two {EXPECTED_PROTECTED_NVME_MODEL} namespaces, found {}",
+            namespaces.len()
+        );
+    }
+    let expected = namespaces.iter().cloned().collect::<BTreeSet<_>>();
+    let mountinfo = fs::read_to_string(paths.proc_root.join("self/mountinfo"))?;
+    let (root_devices, mounted_devices) = mount_major_minors(&mountinfo)?;
+    if root_devices.len() != 1 {
+        bail!(
+            "root mount resolves to {} distinct major:minor identities",
+            root_devices.len()
+        );
+    }
+    let root_major_minor = root_devices
+        .iter()
+        .next()
+        .context("root mount is missing")?;
+    let system_ancestors = block_namespace_ancestors(paths, root_major_minor, &expected)?;
+    if system_ancestors.len() != 1 {
+        bail!(
+            "root block ancestry resolves to {} expected NVMe namespaces",
+            system_ancestors.len()
+        );
+    }
+    let system = system_ancestors
+        .iter()
+        .next()
+        .context("system NVMe namespace is missing")?;
+    let protected = namespaces
+        .iter()
+        .find(|name| *name != system)
+        .context("protected NVMe namespace is ambiguous")?
+        .clone();
+
+    let mut mounted = false;
+    for major_minor in mounted_devices {
+        let ancestors = block_namespace_ancestors(paths, &major_minor, &expected)?;
+        if ancestors.contains(&protected) {
+            mounted = true;
+            break;
+        }
+    }
+    let ro = fs::read_to_string(paths.sys_root.join("block").join(&protected).join("ro"))?;
+    let read_only = match ro.trim() {
+        "0" => false,
+        "1" => true,
+        value => bail!("invalid read-only state for {protected}: {value}"),
+    };
+    if !read_only || mounted {
+        bail!(
+            "protected /dev/{protected} must be read-only and unmounted (read_only={read_only}, mounted={mounted})"
+        );
+    }
+    Ok(ProtectedNvmeState {
+        kernel_name: protected,
+        read_only,
+        mounted,
+    })
+}
+
 pub fn read_host_snapshot_from(
     paths: &SystemPaths,
     child_root_pid: Option<u32>,
@@ -216,12 +298,7 @@ pub fn read_host_snapshot_from(
         .trim()
         .parse()
         .context("invalid vm.swappiness")?;
-    let protected_nvme_read_only =
-        fs::read_to_string(paths.sys_root.join("block/nvme1n1/ro"))?.trim() == "1";
-    let mountinfo = fs::read_to_string(paths.proc_root.join("self/mountinfo"))?;
-    let protected_nvme_mounted = mountinfo
-        .lines()
-        .any(|line| line.contains("/dev/nvme1n1") || line.contains("nvme1n1"));
+    let protected_nvme = protected_nvme_state_from(paths)?;
 
     Ok(HostSnapshot {
         elapsed_ms,
@@ -238,9 +315,128 @@ pub fn read_host_snapshot_from(
         active_h8_process_found: scan.active_h8_process_found,
         cgroups,
         swappiness,
-        protected_nvme_read_only,
-        protected_nvme_mounted,
+        protected_nvme_kernel_name: protected_nvme.kernel_name,
+        protected_nvme_read_only: protected_nvme.read_only,
+        protected_nvme_mounted: protected_nvme.mounted,
     })
+}
+
+fn expected_nvme_namespaces(paths: &SystemPaths) -> Result<Vec<String>> {
+    let mut namespaces = Vec::new();
+    for entry in fs::read_dir(paths.sys_root.join("block"))? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_nvme_namespace_name(&name) {
+            continue;
+        }
+        let model_path = entry.path().join("device/model");
+        let model = match fs::read_to_string(&model_path) {
+            Ok(model) => model,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if model.trim() == EXPECTED_PROTECTED_NVME_MODEL {
+            namespaces.push(name);
+        }
+    }
+    namespaces.sort();
+    Ok(namespaces)
+}
+
+fn is_nvme_namespace_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("nvme") else {
+        return false;
+    };
+    let Some((controller, namespace)) = rest.split_once('n') else {
+        return false;
+    };
+    !controller.is_empty()
+        && controller.bytes().all(|byte| byte.is_ascii_digit())
+        && !namespace.is_empty()
+        && namespace.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn mount_major_minors(mountinfo: &str) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let mut roots = BTreeSet::new();
+    let mut mounted = BTreeSet::new();
+    for line in mountinfo.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 6 {
+            bail!("invalid mountinfo row");
+        }
+        let major_minor = fields[2];
+        validate_major_minor(major_minor)?;
+        mounted.insert(major_minor.to_owned());
+        if fields[4] == "/" {
+            roots.insert(major_minor.to_owned());
+        }
+    }
+    if roots.is_empty() {
+        bail!("root mount is absent from mountinfo");
+    }
+    Ok((roots, mounted))
+}
+
+fn validate_major_minor(value: &str) -> Result<()> {
+    let (major, minor) = value.split_once(':').context("invalid mount major:minor")?;
+    if major.is_empty()
+        || minor.is_empty()
+        || major.parse::<u32>().is_err()
+        || minor.parse::<u32>().is_err()
+    {
+        bail!("invalid mount major:minor");
+    }
+    Ok(())
+}
+
+fn block_namespace_ancestors(
+    paths: &SystemPaths,
+    major_minor: &str,
+    expected: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let path = paths.sys_root.join("dev/block").join(major_minor);
+    let path = match fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let sys_root = fs::canonicalize(&paths.sys_root)?;
+    let mut ancestors = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    collect_block_namespace_ancestors(&path, &sys_root, expected, &mut ancestors, &mut visited)?;
+    Ok(ancestors)
+}
+
+fn collect_block_namespace_ancestors(
+    path: &Path,
+    sys_root: &Path,
+    expected: &BTreeSet<String>,
+    ancestors: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let canonical = fs::canonicalize(path)?;
+    if !canonical.starts_with(sys_root) {
+        bail!("block-device sysfs path escapes the sysfs root");
+    }
+    if !visited.insert(canonical.clone()) {
+        return Ok(());
+    }
+    for component in canonical.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if expected.contains(name.as_ref()) {
+            ancestors.insert(name.into_owned());
+        }
+    }
+    let slaves = canonical.join("slaves");
+    let entries = match fs::read_dir(&slaves) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        collect_block_namespace_ancestors(&entry?.path(), sys_root, expected, ancestors, visited)?;
+    }
+    Ok(())
 }
 
 pub fn analyze_preflight(samples: &[HostSnapshot], required_duration_ms: u64) -> PreflightAnalysis {
@@ -289,7 +485,13 @@ pub fn analyze_preflight(samples: &[HostSnapshot], required_duration_ms: u64) ->
     let no_active_h8_process = samples.iter().all(|sample| !sample.active_h8_process_found);
     let protected_nvme_safe = samples
         .iter()
-        .all(|sample| sample.protected_nvme_read_only && !sample.protected_nvme_mounted);
+        .all(|sample| sample.protected_nvme_read_only && !sample.protected_nvme_mounted)
+        && first.is_some_and(|sample| !sample.protected_nvme_kernel_name.is_empty())
+        && samples.iter().all(|sample| {
+            first.is_some_and(|first| {
+                sample.protected_nvme_kernel_name == first.protected_nvme_kernel_name
+            })
+        });
 
     if !swap_free_byte_stable {
         failures.push("SwapFree changed during the stability window".into());
@@ -313,7 +515,9 @@ pub fn analyze_preflight(samples: &[HostSnapshot], required_duration_ms: u64) ->
         failures.push("an H8 construction process was already active".into());
     }
     if !protected_nvme_safe {
-        failures.push("the protected NVMe was not read-only and unmounted".into());
+        failures.push(
+            "the protected NVMe lacked one stable nonempty read-only unmounted identity".into(),
+        );
     }
     if minimum_mem_available_bytes < MIN_MEM_AVAILABLE_BYTES {
         failures.push("MemAvailable fell below the H8 minimum".into());
@@ -401,7 +605,10 @@ pub fn evaluate_runtime_guard(
     if !snapshot.proc_scan_complete {
         reasons.push("process swap attribution became incomplete".into());
     }
-    if !snapshot.protected_nvme_read_only || snapshot.protected_nvme_mounted {
+    if snapshot.protected_nvme_kernel_name.is_empty()
+        || !snapshot.protected_nvme_read_only
+        || snapshot.protected_nvme_mounted
+    {
         reasons.push("protected NVMe state changed".into());
     }
     if reasons.is_empty() {
@@ -446,7 +653,10 @@ pub fn evaluate_r2_runtime_guard(
     if !snapshot.proc_scan_complete {
         reasons.push("process swap attribution became incomplete".into());
     }
-    if !snapshot.protected_nvme_read_only || snapshot.protected_nvme_mounted {
+    if snapshot.protected_nvme_kernel_name.is_empty()
+        || !snapshot.protected_nvme_read_only
+        || snapshot.protected_nvme_mounted
+    {
         reasons.push("protected NVMe state changed".into());
     }
     if reasons.is_empty() {
@@ -982,6 +1192,8 @@ fn read_numeric_fields_optional(path: &Path) -> Result<Option<BTreeMap<String, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     type SnapshotMutation = Box<dyn Fn(&mut HostSnapshot)>;
 
@@ -1005,9 +1217,131 @@ mod tests {
             active_h8_process_found: false,
             cgroups: Vec::new(),
             swappiness: 60,
+            protected_nvme_kernel_name: "nvme1n1".into(),
             protected_nvme_read_only: true,
             protected_nvme_mounted: false,
         }
+    }
+
+    struct NvmeFixture {
+        root: PathBuf,
+        paths: SystemPaths,
+    }
+
+    impl Drop for NvmeFixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).unwrap();
+        }
+    }
+
+    fn nvme_fixture(
+        system: &str,
+        protected: &str,
+        protected_ro: bool,
+        protected_mounted: bool,
+        ambiguous_root: bool,
+    ) -> NvmeFixture {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "gpt-oss-protected-nvme-{}-{unique}",
+            std::process::id()
+        ));
+        let paths = SystemPaths {
+            proc_root: root.join("proc"),
+            sys_root: root.join("sys"),
+            cgroup_root: root.join("cgroup"),
+        };
+        fs::create_dir_all(paths.proc_root.join("self")).unwrap();
+        fs::create_dir_all(paths.sys_root.join("block")).unwrap();
+        fs::create_dir_all(paths.sys_root.join("dev/block")).unwrap();
+
+        for (name, ro) in [(system, false), (protected, protected_ro)] {
+            let disk = paths.sys_root.join("devices/block").join(name);
+            fs::create_dir_all(disk.join("device")).unwrap();
+            fs::write(
+                disk.join("device/model"),
+                format!("{EXPECTED_PROTECTED_NVME_MODEL}\n"),
+            )
+            .unwrap();
+            fs::write(disk.join("ro"), if ro { "1\n" } else { "0\n" }).unwrap();
+            symlink(
+                Path::new("../devices/block").join(name),
+                paths.sys_root.join("block").join(name),
+            )
+            .unwrap();
+        }
+
+        let system_partition_name = format!("{system}p3");
+        let system_partition = paths
+            .sys_root
+            .join("devices/block")
+            .join(system)
+            .join(&system_partition_name);
+        fs::create_dir_all(&system_partition).unwrap();
+        let dm = paths.sys_root.join("devices/virtual/block/dm-0");
+        fs::create_dir_all(dm.join("slaves")).unwrap();
+        symlink(
+            &system_partition,
+            dm.join("slaves").join(&system_partition_name),
+        )
+        .unwrap();
+        if ambiguous_root {
+            symlink(
+                paths.sys_root.join("devices/block").join(protected),
+                dm.join("slaves").join(protected),
+            )
+            .unwrap();
+        }
+        symlink(
+            Path::new("../../devices/virtual/block/dm-0"),
+            paths.sys_root.join("dev/block/252:0"),
+        )
+        .unwrap();
+
+        let mut mountinfo = "1 0 252:0 / / rw - ext4 /dev/dm-0 rw\n".to_owned();
+        if protected_mounted {
+            symlink(
+                Path::new("../../devices/block").join(protected),
+                paths.sys_root.join("dev/block/259:7"),
+            )
+            .unwrap();
+            mountinfo.push_str("2 1 259:7 / /mnt/protected ro - ext4 /dev/nvme ro\n");
+        }
+        fs::write(paths.proc_root.join("self/mountinfo"), mountinfo).unwrap();
+        NvmeFixture { root, paths }
+    }
+
+    #[test]
+    fn protected_nvme_resolves_both_enumeration_orders_without_serial_data() {
+        for (system, protected) in [("nvme0n1", "nvme1n1"), ("nvme1n1", "nvme0n1")] {
+            let fixture = nvme_fixture(system, protected, true, false, false);
+            let state = protected_nvme_state_from(&fixture.paths).unwrap();
+            assert_eq!(state.kernel_name, protected);
+            assert!(state.read_only);
+            assert!(!state.mounted);
+            assert!(!fixture
+                .paths
+                .sys_root
+                .join("devices/block")
+                .join(protected)
+                .join("device/serial")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn protected_nvme_fails_closed_for_rw_mounted_and_ambiguous_topology() {
+        let fixture = nvme_fixture("nvme0n1", "nvme1n1", false, false, false);
+        assert!(protected_nvme_state_from(&fixture.paths).is_err());
+
+        let fixture = nvme_fixture("nvme0n1", "nvme1n1", true, true, false);
+        assert!(protected_nvme_state_from(&fixture.paths).is_err());
+
+        let fixture = nvme_fixture("nvme0n1", "nvme1n1", true, false, true);
+        assert!(protected_nvme_state_from(&fixture.paths).is_err());
     }
 
     #[test]
@@ -1028,6 +1362,23 @@ mod tests {
         assert!(!result.passed);
         assert!(!result.swap_free_byte_stable);
         assert!(!result.global_swap_growth_zero);
+    }
+
+    #[test]
+    fn preflight_rejects_empty_or_changing_protected_nvme_identity() {
+        let samples = [
+            snapshot(0),
+            snapshot(40_000),
+            snapshot(80_000),
+            snapshot(120_000),
+        ];
+        let mut empty = samples.clone();
+        empty[0].protected_nvme_kernel_name.clear();
+        assert!(!analyze_preflight(&empty, MIN_PREFLIGHT_DURATION_MS).passed);
+
+        let mut changed = samples;
+        changed[2].protected_nvme_kernel_name = "nvme0n1".into();
+        assert!(!analyze_preflight(&changed, MIN_PREFLIGHT_DURATION_MS).passed);
     }
 
     #[test]
