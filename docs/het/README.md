@@ -1,7 +1,8 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
 **Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, the
-R4 matrix was blocked at pre-model admission, and H8 remains paused;
+authorized R4 retry failed closed in its first construction cell, and H8
+remains paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -219,8 +220,10 @@ the complete zero-source/terminal-device proof passes. Synthetic and non-model
 CUDA validation passed.
 
 **R4 retained-20B follow-up:** the commit-bound comparison supervisor and the
-monolithic/capacity-one H7 selector are implemented. The authorized one-shot
-attempt stopped before model load because its fresh preflight observed
-1,146,880 bytes in the comparison cgroup's `memory.swap.current` and nonzero
-PSI avg10 at the final sample. No comparison cache, construction cell, H8, or
-120B access began; H8/H9/H10 remain stopped.
+monolithic/capacity-one H7 selector are implemented. The initial attempt
+stopped before model load on cgroup swap and PSI. After a topology-based
+protected-NVMe correction, the authorized retry passed its full preflight and
+fresh admission, then stopped the first cold monolithic cell when clean-file
+growth exceeded the frozen allowance by 22,124,440 bytes. No terminal
+construction output, comparison cache, later matrix cell, H7 repeat, H8, or
+120B access followed; H8/H9/H10 remain stopped.

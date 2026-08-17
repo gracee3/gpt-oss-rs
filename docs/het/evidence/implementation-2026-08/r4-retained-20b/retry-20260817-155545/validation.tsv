@@ -1,0 +1,20 @@
+id	gate	result	evidence
+R4R-01	guard correction commit	passed	248c724 committed and pushed before the release build
+R4R-02	synthetic protected-NVMe topology	passed	both enumeration orders, root-through-dm, writable, mounted, ambiguous, identity-change, and no-serial fixtures passed
+R4R-03	formatting and targeted tests	passed	watchdog library, R4 supervisor, and H8 watchdog tests passed
+R4R-04	touched-binary Clippy	passed	bench library, comparison supervisor, H8 watchdog, constructor, and control passed no-deps -D warnings
+R4R-05	locked workspace suite	passed	workspace check, tests, and doctests completed with zero failures
+R4R-06	CUDA checks	passed	CUDA 13.3 sm_86 kernels compiled; both RTX 3090 PCI identities resolved; six non-model router tests passed
+R4R-07	release identity	passed	three release binaries built from clean pushed commit 248c724
+R4R-08	fresh R2 preflight	passed	6 samples over 120020 ms; cgroup/global/target swap and PSI avg10 stayed zero
+R4R-09	protected NVMe identity	passed	nvme0n1 was stable, read-only, and unmounted throughout preflight, admission, cell, settle, and final audit
+R4R-10	cold monolithic cell	failed_hard	clean-file delta 11510542336 exceeded allowance 11488417896 by 22124440 bytes
+R4R-11	process-group stop	passed	failed child received SIGINT; no target process remained
+R4R-12	remaining matrix	blocked_by_gate	capacity-one, warm, repeat, cache identity, and both H7 parity cells did not start
+R4R-13	GPU cleanup	passed	both GPUs returned to 1 MiB used
+R4R-14	swap and pressure cleanup	passed	global and cgroup swap remained zero and PSI avg10 was zero
+R4R-15	cgroup post-exit drift	failed_hard	maximum memory.current drift was 11515166720 bytes; no cache-clearing or threshold change was attempted
+R4R-16	existing owner cache	passed	before/after inventory SHA-256 identical: 06cbcaf72a2986ad918c8b64ba818e718d292ac0b7f3b89ee9aa9ae5a43255d6
+R4R-17	new comparison cache	passed	no monolithic-cache or capacity-one-cache directory became visible
+R4R-18	network route invariants	passed	documented Wi-Fi default route and local-only direct-link route remained present
+R4R-19	H8/120B boundary	passed	no H8 or 120B process, input, or access began

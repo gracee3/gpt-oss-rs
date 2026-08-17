@@ -1,6 +1,10 @@
 # R4 retained-20B comparison evidence
 
-Verdict: `blocked_pre_model`
+Initial-attempt verdict: `blocked_pre_model`
+
+Authorized retry verdict: `failed_first_cell_clean_file_allowance`; see the
+[topology-guard correction and retry closure](retry-20260817-155545/README.md).
+The initial evidence below remains unchanged historical evidence.
 
 The authorized R4 implementation is commit `eb1d816b8c4ea8be809d0f82bc5c6fa897c7322c`
 on branch `agent/r4-retained-20b-comparison`. That commit was pushed before the
