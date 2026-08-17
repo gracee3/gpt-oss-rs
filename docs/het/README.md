@@ -103,6 +103,10 @@ Evidence labels have the same meaning in every document:
     removes checkpoint payload ownership from the published model, extracts
     exact resident router pairs during dense upload, and single-consumes them
     in the production control runtime; source/synthetic validated only.
+35. [Multi-GPU layer-sharding salvage assessment](36-multi-gpu-layer-sharding-salvage-assessment.md) —
+    classifies the historical two-GPU layer-sharding work against current
+    ownership and loading contracts and records a documentation-only future
+    boundary.
 
 ## Current headline
 
