@@ -11,7 +11,7 @@ use gpt_oss_core::error::{LLMError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::cpu_tensor_store::CpuTensorStore;
+use crate::cpu_tensor_store::{CpuTensorMappingReleaseTelemetry, CpuTensorStore};
 
 use super::dtype::DType;
 use super::shard_catalog::SafeTensorShardCatalog;
@@ -181,6 +181,16 @@ pub struct GptOssCheckpointView {
     mapped_payload_bytes: u64,
     expert_payload_bytes: u64,
     non_expert_payload_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GptOssCheckpointReleaseEvidence {
+    pub source_root: String,
+    pub shard_releases: Vec<CpuTensorMappingReleaseTelemetry>,
+    pub source_mapping_count_after_release: usize,
+    pub source_mapping_pss_bytes_after_release: u64,
+    pub mappings_removed: bool,
+    pub descriptors_closed: bool,
 }
 
 /// Payload-free native GPT-OSS mapping validated from a shard catalog.
@@ -429,6 +439,40 @@ impl GptOssCheckpointView {
 
     pub const fn mapped_payload_bytes(&self) -> u64 {
         self.mapped_payload_bytes
+    }
+
+    /// Consume the checkpoint and retain the ordered R2 source-release proof.
+    pub fn release_with_advice(self) -> Result<GptOssCheckpointReleaseEvidence> {
+        let source_root = self.source_root.to_string_lossy().into_owned();
+        let shard_releases = self.store.release_with_advice();
+        let source_mapping_count_after_release = shard_releases
+            .iter()
+            .map(|release| release.post_release.source_inode_mapping_count)
+            .sum();
+        let source_mapping_pss_bytes_after_release = shard_releases
+            .iter()
+            .map(|release| release.post_release.source_inode_pss_bytes)
+            .sum();
+        let mappings_removed = shard_releases.iter().all(|release| release.mapping_removed);
+        let descriptors_closed = shard_releases.iter().all(|release| release.fd_closed);
+        if shard_releases.is_empty()
+            || source_mapping_count_after_release != 0
+            || source_mapping_pss_bytes_after_release != 0
+            || !mappings_removed
+            || !descriptors_closed
+        {
+            return Err(LLMError::ModelError(
+                "monolithic checkpoint release proof is incomplete".into(),
+            ));
+        }
+        Ok(GptOssCheckpointReleaseEvidence {
+            source_root,
+            shard_releases,
+            source_mapping_count_after_release,
+            source_mapping_pss_bytes_after_release,
+            mappings_removed,
+            descriptors_closed,
+        })
     }
 
     pub const fn expert_payload_bytes(&self) -> u64 {
@@ -917,6 +961,11 @@ mod tests {
         assert_eq!(
             metadata_hash(&store).unwrap(),
             legacy_metadata_hash(&store).unwrap()
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            store.release_with_advice()[0].source_file_name_bytes,
+            b"native-\xff.safetensors"
         );
     }
 }

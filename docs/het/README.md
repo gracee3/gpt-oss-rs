@@ -1,8 +1,8 @@
 # Heterogeneous GPT-OSS phase (`het`)
 
-**Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, the
-authorized R4 retry failed closed in its first construction cell, and H8
-remains paused;
+**Stage:** R4 retained-20B supervisor implemented; H0 through H7 passed, an
+advised-release correction is validated for one final authorized R4 attempt,
+and H8 remains paused;
 **baseline captured:** 2026-08-15;
 **scope:** exact GPT-OSS heterogeneous inference on this workstation.
 
@@ -110,8 +110,11 @@ Evidence labels have the same meaning in every document:
     bounded split state, durable incremental CPU records, terminal publication
     proof, and non-model validation; retained-20B comparison remains stopped.
 36. [R4 retained-20B constructor comparison](36-r4-retained-20b-comparison.md) —
-    commit-bound supervisor and 20B-only constructor seams; the authorized
-    attempt failed exact cgroup-swap and PSI admission before model access.
+    commit-bound supervisor and 20B-only constructor seams; the first attempt
+    failed admission and the topology-corrected retry exposed a premature
+    clean-file check. An advised source-release handshake now places that
+    unchanged gate at its frozen post-source-release boundary; one final R4
+    attempt is authorized, while H8/120B remains stopped.
 
 ## Current headline
 
@@ -226,4 +229,7 @@ protected-NVMe correction, the authorized retry passed its full preflight and
 fresh admission, then stopped the first cold monolithic cell when clean-file
 growth exceeded the frozen allowance by 22,124,440 bytes. No terminal
 construction output, comparison cache, later matrix cell, H7 repeat, H8, or
-120B access followed; H8/H9/H10 remain stopped.
+120B access followed. The corrected constructors now advise, unmap, and close
+source mappings, publish a fail-closed release proof, and wait while the
+supervisor performs the unchanged clean-file settle gate. One fresh R4 attempt
+is authorized from a clean pushed correction commit; H8/H9/H10 remain stopped.

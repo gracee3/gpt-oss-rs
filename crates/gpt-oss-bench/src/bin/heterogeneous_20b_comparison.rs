@@ -16,11 +16,14 @@ use gpt_oss_bench::h8_watchdog::{
     GuardViolation, HostSnapshot, PreflightAnalysis, RuntimeGuardLimits, MIN_MEM_AVAILABLE_BYTES,
     MIN_PREFLIGHT_DURATION_MS,
 };
+use gpt_oss_bench::r2_release_handshake::{
+    read_ready_marker, ready_path, validate_ready_marker, write_continue_marker, ReleaseReadyMarker,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const PREFLIGHT_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-preflight/v2";
-const RUN_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-run/v2";
+const RUN_SCHEMA: &str = "gpt-oss-rs.retained-20b-comparison-run/v3";
 const R2_POLICY_SHA256: &str = "f269a4c984bbfa0d2a18c037b42ded2c81330094b18c6fc8dc668b7ad81bb90f";
 const PLACEMENT_SHA256: &str = "cd72f92fb9d72be23efae72053db5c166108d853cf4cdddfa4f5dc688904a0fe";
 const MAPPING_FILE_SHA256: &str =
@@ -209,6 +212,7 @@ struct CellEvidence {
     child_status: Option<ChildStatus>,
     samples_observed: u64,
     retained_samples: Vec<RetainedObservation>,
+    release_settles: Vec<ReleaseSettleEvidence>,
     settle_samples: Vec<RetainedObservation>,
     minimum_mem_available_bytes: u64,
     maximum_swap_used_bytes: u64,
@@ -216,11 +220,24 @@ struct CellEvidence {
     maximum_clean_file_delta_bytes: u64,
     maximum_dirty_writeback_delta_bytes: u64,
     maximum_post_exit_current_drift_bytes: u64,
+    maximum_post_exit_file_drift_bytes: u64,
     swap_free_byte_stable: bool,
     swap_cached_byte_stable: bool,
     violation: Option<GuardViolation>,
     observation_error: Option<String>,
     output_validated: bool,
+    passed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ReleaseSettleEvidence {
+    ordinal: usize,
+    ready_marker: ReleaseReadyMarker,
+    ready_sha256: String,
+    detected_elapsed_ms: u64,
+    observed_duration_ms: u64,
+    samples: Vec<RetainedObservation>,
+    failures: Vec<String>,
     passed: bool,
 }
 
@@ -247,6 +264,19 @@ struct CellSpec {
     arguments: Vec<String>,
     output: PathBuf,
     memory_events: Option<PathBuf>,
+    release_handshake_root: PathBuf,
+    release_handshake_nonce: String,
+    expected_releases: usize,
+}
+
+struct ActiveReleaseSettle {
+    marker: ReleaseReadyMarker,
+    ready_bytes: Vec<u8>,
+    started: Instant,
+    detected_elapsed_ms: u64,
+    next_sample: Instant,
+    samples: Vec<RetainedObservation>,
+    failures: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -504,6 +534,8 @@ fn cell_specs(args: &RunArgs) -> Result<Vec<CellSpec>> {
             let name = format!("{load_class}-{constructor}");
             let output = args.run_root.join(format!("{name}.json"));
             let memory_events = args.run_root.join(format!("{name}-memory"));
+            let release_handshake_root = args.run_root.join(format!("{name}-release"));
+            let release_handshake_nonce = release_nonce(&args.run_root, &name);
             let mut arguments = vec![
                 "--mode".into(),
                 mode.into(),
@@ -519,6 +551,12 @@ fn cell_specs(args: &RunArgs) -> Result<Vec<CellSpec>> {
                 output.to_string_lossy().into_owned(),
                 "--memory-events".into(),
                 memory_events.to_string_lossy().into_owned(),
+                "--release-handshake-root".into(),
+                release_handshake_root.to_string_lossy().into_owned(),
+                "--release-handshake-nonce".into(),
+                release_handshake_nonce.clone(),
+                "--release-handshake-cell".into(),
+                name.clone(),
             ];
             if constructor == "capacity-one" {
                 arguments.extend([
@@ -527,13 +565,16 @@ fn cell_specs(args: &RunArgs) -> Result<Vec<CellSpec>> {
                 ]);
             }
             specs.push(CellSpec {
-                name,
+                name: name.clone(),
                 constructor,
                 load_class,
                 executable: args.construct_executable.clone(),
                 arguments,
                 output,
                 memory_events: Some(memory_events),
+                release_handshake_root,
+                release_handshake_nonce,
+                expected_releases: 1,
             });
         }
     }
@@ -543,8 +584,10 @@ fn cell_specs(args: &RunArgs) -> Result<Vec<CellSpec>> {
     ] {
         let name = format!("h7-{constructor}");
         let output = args.run_root.join(format!("{name}.json"));
+        let release_handshake_root = args.run_root.join(format!("{name}-release"));
+        let release_handshake_nonce = release_nonce(&args.run_root, &name);
         specs.push(CellSpec {
-            name,
+            name: name.clone(),
             constructor,
             load_class: "h7-repeat-two",
             executable: args.control_executable.clone(),
@@ -567,12 +610,25 @@ fn cell_specs(args: &RunArgs) -> Result<Vec<CellSpec>> {
                 "8".into(),
                 "--repeat".into(),
                 "2".into(),
+                "--release-handshake-root".into(),
+                release_handshake_root.to_string_lossy().into_owned(),
+                "--release-handshake-nonce".into(),
+                release_handshake_nonce.clone(),
+                "--release-handshake-cell".into(),
+                name.clone(),
             ],
             output,
             memory_events: None,
+            release_handshake_root,
+            release_handshake_nonce,
+            expected_releases: 2,
         });
     }
     Ok(specs)
+}
+
+fn release_nonce(run_root: &Path, cell: &str) -> String {
+    sha256_bytes(format!("gpt-oss-rs-r2-release-v1\0{}\0{cell}", run_root.display()).as_bytes())
 }
 
 fn run_cell(
@@ -588,9 +644,11 @@ fn run_cell(
             .memory_events
             .as_ref()
             .is_some_and(|path| path.exists())
+        || spec.release_handshake_root.exists()
     {
         bail!("cell output already exists: {}", spec.name);
     }
+    fs::create_dir(&spec.release_handshake_root)?;
     let command_record = std::iter::once(spec.executable.to_string_lossy().into_owned())
         .chain(spec.arguments.iter().cloned())
         .collect::<Vec<_>>();
@@ -621,6 +679,9 @@ fn run_cell(
     let mut violation = None;
     let mut observation_error = None;
     let mut status = None;
+    let mut release_settles = Vec::with_capacity(spec.expected_releases);
+    let mut next_release_ordinal = 0_usize;
+    let mut active_release = None::<ActiveReleaseSettle>;
 
     loop {
         let elapsed = elapsed_ms(started)?;
@@ -651,36 +712,145 @@ fn run_cell(
             &mut maximum_clean_file_delta_bytes,
             &mut maximum_dirty_writeback_delta_bytes,
         );
-        if let Err(error) = enforce_cgroup(&cgroup, cgroup_baseline, false) {
-            violation = Some(GuardViolation {
-                reasons: vec![error.to_string()],
-            });
-        }
+        record_failures(
+            &mut violation,
+            continuous_cgroup_failures(&cgroup, cgroup_baseline),
+        );
         if elapsed >= next_retain_ms {
             retained_samples.push(RetainedObservation {
                 host: sample.clone(),
-                cgroup,
+                cgroup: cgroup.clone(),
             });
             next_retain_ms = next_retain_ms.saturating_add(retain_interval_ms);
         }
         if let Err(guard) = evaluate_r2_runtime_guard(&sample, limits) {
-            violation = Some(guard);
+            record_failures(&mut violation, guard.reasons);
         }
         if sample.protected_nvme_kernel_name != protected_nvme_kernel_name {
-            violation = Some(GuardViolation {
-                reasons: vec!["protected NVMe identity changed during comparison cell".into()],
-            });
+            record_failures(
+                &mut violation,
+                vec!["protected NVMe identity changed during comparison cell".into()],
+            );
         }
         if elapsed > MAX_RUN_SECONDS * 1_000 {
-            violation = Some(GuardViolation {
-                reasons: vec!["cell exceeded two-hour bound".into()],
+            record_failures(&mut violation, vec!["cell exceeded two-hour bound".into()]);
+        }
+        if violation.is_some() || observation_error.is_some() {
+            break;
+        }
+
+        if active_release.is_none() && next_release_ordinal < spec.expected_releases {
+            let path = ready_path(&spec.release_handshake_root, next_release_ordinal);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => match read_ready_marker(&path) {
+                    Ok((marker, bytes)) => {
+                        if let Err(error) = validate_ready_marker(
+                            &marker,
+                            &spec.release_handshake_nonce,
+                            &spec.name,
+                            spec.constructor,
+                            next_release_ordinal,
+                            spec.expected_releases,
+                            R2_POLICY_SHA256,
+                        ) {
+                            record_failures(
+                                &mut violation,
+                                vec![format!("release-ready validation failed: {error:#}")],
+                            );
+                        } else {
+                            let now = Instant::now();
+                            active_release = Some(ActiveReleaseSettle {
+                                marker,
+                                ready_bytes: bytes,
+                                started: now,
+                                detected_elapsed_ms: elapsed,
+                                next_sample: now + Duration::from_secs(SETTLE_SECONDS),
+                                samples: Vec::with_capacity(SETTLE_SAMPLES),
+                                failures: Vec::new(),
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        observation_error =
+                            Some(format!("release-ready observation failed: {error:#}"));
+                    }
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    observation_error = Some(format!("release-ready stat failed: {error:#}"));
+                }
+            }
+        }
+
+        let release_sample_due = active_release
+            .as_ref()
+            .is_some_and(|active| Instant::now() >= active.next_sample);
+        if release_sample_due {
+            let active = active_release
+                .as_mut()
+                .expect("release settle exists when its sample is due");
+            active
+                .failures
+                .extend(release_cgroup_failures(&cgroup, cgroup_baseline));
+            active.samples.push(RetainedObservation {
+                host: sample.clone(),
+                cgroup: cgroup.clone(),
             });
+            active.next_sample = Instant::now() + Duration::from_secs(1);
+            if !active.failures.is_empty() || active.samples.len() == SETTLE_SAMPLES {
+                let active = active_release
+                    .take()
+                    .expect("completed release settle exists");
+                let observed_duration_ms = u64::try_from(active.started.elapsed().as_millis())
+                    .context("release settle duration overflows")?;
+                let passed =
+                    active.failures.is_empty() && observed_duration_ms >= SETTLE_SECONDS * 1_000;
+                let ready_sha256 = sha256_bytes(&active.ready_bytes);
+                if passed {
+                    if let Err(error) = write_continue_marker(
+                        &spec.release_handshake_root,
+                        &active.marker,
+                        &active.ready_bytes,
+                    ) {
+                        observation_error =
+                            Some(format!("release continuation write failed: {error:#}"));
+                    }
+                } else {
+                    record_failures(
+                        &mut violation,
+                        if active.failures.is_empty() {
+                            vec!["post-source-release settle duration is incomplete".into()]
+                        } else {
+                            active.failures.clone()
+                        },
+                    );
+                }
+                release_settles.push(ReleaseSettleEvidence {
+                    ordinal: next_release_ordinal,
+                    ready_marker: active.marker,
+                    ready_sha256,
+                    detected_elapsed_ms: active.detected_elapsed_ms,
+                    observed_duration_ms,
+                    samples: active.samples,
+                    failures: active.failures,
+                    passed,
+                });
+                if passed {
+                    next_release_ordinal += 1;
+                }
+            }
         }
         if violation.is_some() || observation_error.is_some() {
             break;
         }
         if let Some(exit) = child.try_wait()? {
             status = Some(exit);
+            if next_release_ordinal != spec.expected_releases || active_release.is_some() {
+                record_failures(
+                    &mut violation,
+                    vec!["child exited before every source-release settle completed".into()],
+                );
+            }
             break;
         }
         thread::sleep(Duration::from_millis(poll_interval_ms));
@@ -694,18 +864,20 @@ fn run_cell(
     let mut settle_samples = Vec::with_capacity(SETTLE_SAMPLES);
     thread::sleep(Duration::from_secs(SETTLE_SECONDS));
     let mut maximum_post_exit_current_drift_bytes = 0_u64;
+    let mut maximum_post_exit_file_drift_bytes = 0_u64;
     for index in 0..SETTLE_SAMPLES {
         if index != 0 {
             thread::sleep(Duration::from_secs(1));
         }
         let sample = read_host_snapshot(None, elapsed_ms(started)?)?;
         if let Err(guard) = evaluate_r2_runtime_guard(&sample, limits) {
-            violation = Some(guard);
+            record_failures(&mut violation, guard.reasons);
         }
         if sample.protected_nvme_kernel_name != protected_nvme_kernel_name {
-            violation = Some(GuardViolation {
-                reasons: vec!["protected NVMe identity changed during post-exit settle".into()],
-            });
+            record_failures(
+                &mut violation,
+                vec!["protected NVMe identity changed during post-exit settle".into()],
+            );
         }
         let cgroup = cgroup_snapshot()?;
         maximum_post_exit_current_drift_bytes = maximum_post_exit_current_drift_bytes.max(
@@ -713,11 +885,12 @@ fn run_cell(
                 .memory_current_bytes
                 .saturating_sub(cgroup_baseline.memory_current_bytes),
         );
-        if let Err(error) = enforce_cgroup(&cgroup, cgroup_baseline, true) {
-            violation = Some(GuardViolation {
-                reasons: vec![error.to_string()],
-            });
-        }
+        maximum_post_exit_file_drift_bytes = maximum_post_exit_file_drift_bytes
+            .max(cgroup.file_bytes.saturating_sub(cgroup_baseline.file_bytes));
+        record_failures(
+            &mut violation,
+            post_exit_cgroup_failures(&cgroup, cgroup_baseline),
+        );
         settle_samples.push(RetainedObservation {
             host: sample,
             cgroup,
@@ -730,8 +903,21 @@ fn run_cell(
         .then(|| sha256_file(&spec.output))
         .transpose()?;
     let output_validated = if output_sha256.is_some() {
-        validate_cell_output(spec, &fs::read(&spec.output)?, protected_nvme_kernel_name).is_ok()
+        match validate_cell_output(spec, &fs::read(&spec.output)?, protected_nvme_kernel_name) {
+            Ok(()) => true,
+            Err(error) => {
+                record_failures(
+                    &mut violation,
+                    vec![format!("cell output validation failed: {error:#}")],
+                );
+                false
+            }
+        }
     } else {
+        record_failures(
+            &mut violation,
+            vec!["cell did not publish terminal output".into()],
+        );
         false
     };
     let status_record = status.map(status_record);
@@ -755,6 +941,8 @@ fn run_cell(
         && output_validated
         && violation.is_none()
         && observation_error.is_none()
+        && release_settles.len() == spec.expected_releases
+        && release_settles.iter().all(|settle| settle.passed)
         && maximum_swap_used_bytes <= limits.swap_baseline_bytes
         && maximum_target_tree_swap_bytes == 0;
     Ok(CellEvidence {
@@ -773,6 +961,7 @@ fn run_cell(
         child_status: status_record,
         samples_observed,
         retained_samples,
+        release_settles,
         settle_samples,
         minimum_mem_available_bytes,
         maximum_swap_used_bytes,
@@ -780,6 +969,7 @@ fn run_cell(
         maximum_clean_file_delta_bytes,
         maximum_dirty_writeback_delta_bytes,
         maximum_post_exit_current_drift_bytes,
+        maximum_post_exit_file_drift_bytes,
         swap_free_byte_stable,
         swap_cached_byte_stable,
         violation,
@@ -796,10 +986,12 @@ fn validate_cell_output(
 ) -> Result<()> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     if spec.load_class == "h7-repeat-two" {
-        if value
-            .pointer("/constructor")
-            .and_then(serde_json::Value::as_str)
-            != Some(&spec.constructor.replace('-', "_")[..])
+        if value.pointer("/schema").and_then(serde_json::Value::as_str)
+            != Some("gpt-oss-rs.heterogeneous-control-h7/v4")
+            || value
+                .pointer("/constructor")
+                .and_then(serde_json::Value::as_str)
+                != Some(&spec.constructor.replace('-', "_")[..])
             || value
                 .pointer("/all_runs_passed")
                 .and_then(serde_json::Value::as_bool)
@@ -828,7 +1020,7 @@ fn validate_cell_output(
         if runs.len() != 2 {
             bail!("H7 output does not contain exactly two runs");
         }
-        for run in runs {
+        for (ordinal, run) in runs.iter().enumerate() {
             let generated = run
                 .get("generated_token_ids")
                 .and_then(serde_json::Value::as_array)
@@ -841,13 +1033,14 @@ fn validate_cell_output(
             {
                 bail!("H7 run did not retain the exact continuation");
             }
+            validate_release_output(run, spec, ordinal)?;
         }
     } else {
         let expected_constructor = spec.constructor.replace('-', "_");
         let expected_schema = if spec.constructor == "capacity-one" {
-            "gpt-oss-rs.heterogeneous-capacity-one-construction/v2"
+            "gpt-oss-rs.heterogeneous-capacity-one-construction/v3"
         } else {
-            "gpt-oss-rs.heterogeneous-construction/v6"
+            "gpt-oss-rs.heterogeneous-construction/v7"
         };
         if value.pointer("/schema").and_then(serde_json::Value::as_str) != Some(expected_schema)
             || value
@@ -889,8 +1082,141 @@ fn validate_cell_output(
         {
             bail!("capacity-one construction proof is incomplete");
         }
+        if spec.constructor == "capacity-one"
+            && !release_entries_are_complete(
+                value
+                    .pointer("/capacity_one/shard_releases")
+                    .and_then(serde_json::Value::as_array)
+                    .context("capacity-one output omitted shard release telemetry")?,
+            )
+        {
+            bail!("capacity-one shard release telemetry is incomplete");
+        }
+        validate_release_output(
+            value
+                .pointer("/construction")
+                .context("construction output omitted its construction record")?,
+            spec,
+            0,
+        )?;
     }
     Ok(())
+}
+
+fn validate_release_output(
+    value: &serde_json::Value,
+    spec: &CellSpec,
+    ordinal: usize,
+) -> Result<()> {
+    let marker = value
+        .get("source_release_handshake")
+        .context("cell output omitted its source-release handshake")?;
+    if marker.get("schema").and_then(serde_json::Value::as_str)
+        != Some("gpt-oss-rs.r2-release-ready/v1")
+        || marker
+            .get("constructor")
+            .and_then(serde_json::Value::as_str)
+            != Some(spec.constructor)
+        || marker.get("nonce").and_then(serde_json::Value::as_str)
+            != Some(spec.release_handshake_nonce.as_str())
+        || marker.get("cell").and_then(serde_json::Value::as_str) != Some(spec.name.as_str())
+        || marker.get("ordinal").and_then(serde_json::Value::as_u64) != Some(ordinal as u64)
+        || marker
+            .get("expected_releases")
+            .and_then(serde_json::Value::as_u64)
+            != Some(spec.expected_releases as u64)
+        || marker
+            .get("r2_policy_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(R2_POLICY_SHA256)
+        || marker
+            .pointer("/proof/source_mapping_count_after_release")
+            .and_then(serde_json::Value::as_u64)
+            != Some(0)
+        || marker
+            .pointer("/proof/source_mapping_pss_bytes_after_release")
+            .and_then(serde_json::Value::as_u64)
+            != Some(0)
+        || marker
+            .pointer("/proof/source_payload_fds_after_release")
+            .and_then(serde_json::Value::as_u64)
+            != Some(0)
+        || marker
+            .pointer("/proof/mappings_removed")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || marker
+            .pointer("/proof/descriptors_closed")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        bail!("cell source-release output is invalid");
+    }
+    if spec.constructor == "capacity-one"
+        && marker
+            .pointer("/proof/capacity_one_mapping_high_water")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+    {
+        bail!("capacity-one release marker changed its mapping high-water");
+    }
+    if spec.constructor == "capacity-one"
+        && !release_entries_are_complete(
+            value
+                .pointer("/capacity_one/shard_releases")
+                .and_then(serde_json::Value::as_array)
+                .context("capacity-one output omitted shard release telemetry")?,
+        )
+    {
+        bail!("capacity-one shard release telemetry is incomplete");
+    }
+    if spec.constructor == "monolithic-control" {
+        let source_releases = value
+            .pointer("/checkpoint_release/shard_releases")
+            .and_then(serde_json::Value::as_array)
+            .context("monolithic output omitted checkpoint release telemetry")?;
+        if !release_entries_are_complete(source_releases) {
+            bail!("monolithic checkpoint release telemetry is incomplete");
+        }
+    }
+    let runtime_releases = value
+        .get("cpu_record_releases")
+        .and_then(serde_json::Value::as_array)
+        .context("cell output omitted CPU record release telemetry")?;
+    if !release_entries_are_complete(runtime_releases) {
+        bail!("CPU record release telemetry is incomplete");
+    }
+    Ok(())
+}
+
+fn release_entries_are_complete(entries: &[serde_json::Value]) -> bool {
+    !entries.is_empty()
+        && entries.iter().all(|release| {
+            release
+                .pointer("/post_release/source_inode_mapping_count")
+                .and_then(serde_json::Value::as_u64)
+                == Some(0)
+                && release
+                    .pointer("/post_release/source_inode_pss_bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(0)
+                && release
+                    .get("mapping_removed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && release
+                    .get("fd_closed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && release
+                    .pointer("/mmap_advice/kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("madv_dontneed")
+                && release
+                    .pointer("/file_advice/kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("posix_fadv_dontneed")
+        })
 }
 
 fn validate_run_args(args: &RunArgs) -> Result<()> {
@@ -1090,16 +1416,10 @@ fn update_cgroup_extrema(
     );
 }
 
-fn enforce_cgroup(
-    current: &CgroupSnapshot,
-    baseline: &CgroupSnapshot,
-    post_exit: bool,
-) -> Result<()> {
+fn continuous_cgroup_failures(current: &CgroupSnapshot, baseline: &CgroupSnapshot) -> Vec<String> {
+    let mut failures = Vec::new();
     if current.swap_current_bytes != 0 {
-        bail!("comparison cgroup used swap");
-    }
-    if current.file_bytes.saturating_sub(baseline.file_bytes) > CLEAN_FILE_ALLOWANCE_BYTES {
-        bail!("comparison cgroup clean-file allowance exceeded");
+        failures.push("comparison cgroup used swap".into());
     }
     if current
         .file_dirty_bytes
@@ -1111,20 +1431,48 @@ fn enforce_cgroup(
         )
         > DIRTY_WRITEBACK_ALLOWANCE_BYTES
     {
-        bail!("comparison cgroup dirty/writeback allowance exceeded");
+        failures.push("comparison cgroup dirty/writeback allowance exceeded".into());
     }
-    if post_exit
-        && current
-            .memory_current_bytes
-            .saturating_sub(baseline.memory_current_bytes)
-            > POST_EXIT_DRIFT_BYTES
+    failures
+}
+
+fn release_cgroup_failures(current: &CgroupSnapshot, baseline: &CgroupSnapshot) -> Vec<String> {
+    let mut failures = continuous_cgroup_failures(current, baseline);
+    if current.file_bytes.saturating_sub(baseline.file_bytes) > CLEAN_FILE_ALLOWANCE_BYTES {
+        failures.push("comparison cgroup post-release clean-file allowance exceeded".into());
+    }
+    failures
+}
+
+fn post_exit_cgroup_failures(current: &CgroupSnapshot, baseline: &CgroupSnapshot) -> Vec<String> {
+    let mut failures = continuous_cgroup_failures(current, baseline);
+    if current
+        .memory_current_bytes
+        .saturating_sub(baseline.memory_current_bytes)
+        > POST_EXIT_DRIFT_BYTES
     {
-        bail!("comparison cgroup post-exit drift exceeded 64 MiB");
+        failures.push("comparison cgroup post-exit drift exceeded 64 MiB".into());
     }
-    if post_exit && current.file_bytes.saturating_sub(baseline.file_bytes) > POST_EXIT_DRIFT_BYTES {
-        bail!("comparison cgroup post-exit file drift exceeded 64 MiB");
+    if current.file_bytes.saturating_sub(baseline.file_bytes) > POST_EXIT_DRIFT_BYTES {
+        failures.push("comparison cgroup post-exit file drift exceeded 64 MiB".into());
     }
-    Ok(())
+    failures
+}
+
+fn record_failures(violation: &mut Option<GuardViolation>, failures: Vec<String>) {
+    if failures.is_empty() {
+        return;
+    }
+    let reasons = &mut violation
+        .get_or_insert_with(|| GuardViolation {
+            reasons: Vec::new(),
+        })
+        .reasons;
+    for failure in failures {
+        if !reasons.contains(&failure) {
+            reasons.push(failure);
+        }
+    }
 }
 
 fn cgroup_snapshot() -> Result<CgroupSnapshot> {
@@ -1429,6 +1777,53 @@ mod tests {
     }
 
     #[test]
+    fn matrix_is_fixed_and_every_construction_has_a_release_handshake() {
+        let run_root = PathBuf::from("/home/emmy/workspace/gpt-oss-rs-het-r4-fixture");
+        let args = RunArgs {
+            preflight: run_root.join("preflight.json"),
+            output: run_root.join("run.json"),
+            run_root,
+            construct_executable: PathBuf::from("/tmp/heterogeneous_construct"),
+            control_executable: PathBuf::from("/tmp/heterogeneous_control"),
+            model: PathBuf::from("/data/models/openai/gpt-oss-20b"),
+            native_model: PathBuf::from("/data/models/openai/gpt-oss-20b/original"),
+            mapping: PathBuf::from("/tmp/mapping.json"),
+            placement: PathBuf::from("/tmp/placement.json"),
+            retained_trace: PathBuf::from("/tmp/trace.json"),
+            poll_interval_ms: 250,
+            retain_interval_ms: 10_000,
+            max_preflight_age_seconds: 900,
+        };
+        let specs = cell_specs(&args).unwrap();
+        assert_eq!(
+            specs
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "cold-monolithic-control",
+                "cold-capacity-one",
+                "warm-monolithic-control",
+                "warm-capacity-one",
+                "repeat-monolithic-control",
+                "repeat-capacity-one",
+                "h7-monolithic-control",
+                "h7-capacity-one",
+            ]
+        );
+        assert!(specs[..6].iter().all(|spec| spec.expected_releases == 1));
+        assert!(specs[6..].iter().all(|spec| spec.expected_releases == 2));
+        assert!(specs.iter().all(|spec| {
+            spec.arguments
+                .iter()
+                .any(|argument| argument == "--release-handshake-root")
+                && !spec.arguments.iter().any(|argument| {
+                    argument.eq_ignore_ascii_case("h8") || argument.contains("120b")
+                })
+        }));
+    }
+
+    #[test]
     fn construction_output_requires_current_schema_and_protected_identity() {
         let spec = CellSpec {
             name: "cold-monolithic-control".into(),
@@ -1438,14 +1833,57 @@ mod tests {
             arguments: Vec::new(),
             output: PathBuf::from("/tmp/unused.json"),
             memory_events: None,
+            release_handshake_root: PathBuf::from("/tmp/unused-release"),
+            release_handshake_nonce: "a".repeat(64),
+            expected_releases: 1,
         };
         let valid = serde_json::json!({
-            "schema": "gpt-oss-rs.heterogeneous-construction/v6",
+            "schema": "gpt-oss-rs.heterogeneous-construction/v7",
             "constructor": "monolithic_control",
             "protected_nvme": {
                 "kernel_name": "nvme0n1",
                 "read_only": true,
                 "mounted": false
+            },
+            "construction": {
+                "source_release_handshake": {
+                    "schema": "gpt-oss-rs.r2-release-ready/v1",
+                    "nonce": "a".repeat(64),
+                    "cell": "cold-monolithic-control",
+                    "constructor": "monolithic-control",
+                    "ordinal": 0,
+                    "expected_releases": 1,
+                    "r2_policy_sha256": R2_POLICY_SHA256,
+                    "proof": {
+                        "source_mapping_count_after_release": 0,
+                        "source_mapping_pss_bytes_after_release": 0,
+                        "source_payload_fds_after_release": 0,
+                        "mappings_removed": true,
+                        "descriptors_closed": true
+                    }
+                },
+                "checkpoint_release": {
+                    "shard_releases": [{
+                        "post_release": {
+                            "source_inode_mapping_count": 0,
+                            "source_inode_pss_bytes": 0
+                        },
+                        "mapping_removed": true,
+                        "fd_closed": true,
+                        "mmap_advice": {"kind": "madv_dontneed"},
+                        "file_advice": {"kind": "posix_fadv_dontneed"}
+                    }]
+                },
+                "cpu_record_releases": [{
+                    "post_release": {
+                        "source_inode_mapping_count": 0,
+                        "source_inode_pss_bytes": 0
+                    },
+                    "mapping_removed": true,
+                    "fd_closed": true,
+                    "mmap_advice": {"kind": "madv_dontneed"},
+                    "file_advice": {"kind": "posix_fadv_dontneed"}
+                }]
             },
             "passed": true
         });
@@ -1454,7 +1892,7 @@ mod tests {
         );
 
         let mut old_schema = valid.clone();
-        old_schema["schema"] = "gpt-oss-rs.heterogeneous-construction/v5".into();
+        old_schema["schema"] = "gpt-oss-rs.heterogeneous-construction/v6".into();
         assert!(
             validate_cell_output(&spec, &serde_json::to_vec(&old_schema).unwrap(), "nvme0n1")
                 .is_err()
@@ -1473,16 +1911,37 @@ mod tests {
     #[test]
     fn cgroup_allowances_and_post_exit_drift_are_fail_closed() {
         let baseline = CgroupSnapshot::default();
-        assert!(enforce_cgroup(&baseline, &baseline, true).is_ok());
+        assert!(continuous_cgroup_failures(&baseline, &baseline).is_empty());
+        assert!(release_cgroup_failures(&baseline, &baseline).is_empty());
+        assert!(post_exit_cgroup_failures(&baseline, &baseline).is_empty());
         let mut current = baseline.clone();
         current.file_bytes = CLEAN_FILE_ALLOWANCE_BYTES + 1;
-        assert!(enforce_cgroup(&current, &baseline, false).is_err());
+        assert!(continuous_cgroup_failures(&current, &baseline).is_empty());
+        assert_eq!(release_cgroup_failures(&current, &baseline).len(), 1);
         current = baseline.clone();
         current.memory_current_bytes = POST_EXIT_DRIFT_BYTES + 1;
-        assert!(enforce_cgroup(&current, &baseline, true).is_err());
+        assert_eq!(post_exit_cgroup_failures(&current, &baseline).len(), 1);
         current = baseline.clone();
         current.file_bytes = POST_EXIT_DRIFT_BYTES + 1;
-        assert!(enforce_cgroup(&current, &baseline, true).is_err());
+        assert_eq!(post_exit_cgroup_failures(&current, &baseline).len(), 1);
+
+        current = baseline.clone();
+        current.swap_current_bytes = 1;
+        current.file_dirty_bytes = DIRTY_WRITEBACK_ALLOWANCE_BYTES + 1;
+        current.memory_current_bytes = POST_EXIT_DRIFT_BYTES + 1;
+        current.file_bytes = CLEAN_FILE_ALLOWANCE_BYTES + 1;
+        assert_eq!(post_exit_cgroup_failures(&current, &baseline).len(), 4);
+    }
+
+    #[test]
+    fn failure_recording_preserves_distinct_gate_reasons() {
+        let mut violation = None;
+        record_failures(&mut violation, vec!["one".into(), "two".into()]);
+        record_failures(&mut violation, vec!["two".into(), "three".into()]);
+        assert_eq!(
+            violation.unwrap().reasons,
+            vec!["one".to_string(), "two".to_string(), "three".to_string()]
+        );
     }
 
     #[test]

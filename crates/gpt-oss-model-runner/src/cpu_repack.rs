@@ -23,6 +23,10 @@ use half::bf16;
 
 use crate::cpu_tensor_store::{CpuTensor, CpuTensorStore};
 use crate::model_loader::gpt_oss_native::GptOssCheckpointView;
+use crate::model_loader::shard_catalog::{
+    advice_telemetry, madvise_dontneed, process_source_memory_sample, AdviceTelemetry,
+    ProcessSourceMemorySample,
+};
 
 const MAGIC: &[u8; 8] = b"GOSSMX4\0";
 pub const REPACK_FORMAT_VERSION: u32 = 1;
@@ -1499,9 +1503,30 @@ fn unique_temp_nonce() -> u128 {
 /// Read-only complete layer record. Every returned expert borrows this mapping.
 pub struct CpuOwnerLayerRecord {
     path: PathBuf,
+    file: File,
     mapping: Mmap,
+    device: u64,
+    inode: u64,
     data_start: usize,
     header: CpuOwnerLayerHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CpuOwnerRecordReleaseTelemetry {
+    pub layer: u16,
+    pub source_file_name: String,
+    pub source_device: u64,
+    pub source_inode: u64,
+    pub source_file_bytes: u64,
+    pub mapping_address: usize,
+    pub mapping_bytes: u64,
+    pub pre_release: ProcessSourceMemorySample,
+    pub post_release: ProcessSourceMemorySample,
+    pub mmap_advice: AdviceTelemetry,
+    pub file_advice: AdviceTelemetry,
+    pub unmap_close_duration_micros: u128,
+    pub mapping_removed: bool,
+    pub fd_closed: bool,
 }
 
 impl CpuOwnerLayerRecord {
@@ -1562,7 +1587,10 @@ impl CpuOwnerLayerRecord {
         }
         Ok(Self {
             path: path.to_path_buf(),
+            file,
             mapping,
+            device: metadata.dev(),
+            inode: metadata.ino(),
             data_start,
             header: actual,
         })
@@ -1622,6 +1650,62 @@ impl CpuOwnerLayerRecord {
             gate_up_bias,
             down_bias,
         })
+    }
+
+    pub fn release_with_advice(self) -> CpuOwnerRecordReleaseTelemetry {
+        let Self {
+            path,
+            file,
+            mapping,
+            device,
+            inode,
+            header,
+            ..
+        } = self;
+        let mapping_address = mapping.as_ptr() as usize;
+        let mapping_bytes = mapping.len() as u64;
+        let source_file_bytes = file
+            .metadata()
+            .map_or(mapping_bytes, |metadata| metadata.len());
+        let source_file_name = path.file_name().map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let pre_release = process_source_memory_sample(inode);
+        let started = Instant::now();
+        let mmap_advice_result = madvise_dontneed(&mapping);
+        let mmap_advice = advice_telemetry(
+            "madv_dontneed",
+            0,
+            mapping_bytes,
+            mmap_advice_result.as_ref().err(),
+        );
+        drop(mapping);
+        let file_advice_result = gpt_oss_cpu_kernels::posix_fadvise_dontneed(&file, 0, 0);
+        let file_advice = advice_telemetry(
+            "posix_fadv_dontneed",
+            0,
+            source_file_bytes,
+            file_advice_result.as_ref().err(),
+        );
+        drop(file);
+        let post_release = process_source_memory_sample(inode);
+        CpuOwnerRecordReleaseTelemetry {
+            layer: header.layer,
+            source_file_name,
+            source_device: device,
+            source_inode: inode,
+            source_file_bytes,
+            mapping_address,
+            mapping_bytes,
+            pre_release,
+            post_release,
+            mmap_advice,
+            file_advice,
+            unmap_close_duration_micros: started.elapsed().as_micros(),
+            mapping_removed: true,
+            fd_closed: true,
+        }
     }
 }
 
@@ -2126,6 +2210,13 @@ mod tests {
         write_bias_f32(&mut expected, bytemuck::cast_slice(&source.gate_up_bias)).unwrap();
         write_bias_f32(&mut expected, bytemuck::cast_slice(&source.down_bias)).unwrap();
         assert_eq!(&bytes[data_start..], expected);
+        let release = record.release_with_advice();
+        assert!(release.mapping_removed);
+        assert!(release.fd_closed);
+        assert_eq!(release.post_release.source_inode_mapping_count, 0);
+        assert_eq!(release.post_release.source_inode_pss_bytes, 0);
+        assert_eq!(release.mmap_advice.kind, "madv_dontneed");
+        assert_eq!(release.file_advice.kind, "posix_fadv_dontneed");
         assert_eq!(
             cache
                 .validate_layer_without_mapping(0, &[0], 24, 32)

@@ -4,6 +4,14 @@ Initial-attempt verdict: `blocked_pre_model`
 
 Authorized retry verdict: `failed_first_cell_clean_file_allowance`; see the
 [topology-guard correction and retry closure](retry-20260817-155545/README.md).
+
+Release-boundary correction status: source and offline validation complete;
+one fresh R4 attempt is authorized only after a clean correction commit is
+pushed and its three release binaries are rebuilt. The correction keeps the
+frozen R2 thresholds and fixed eight-cell matrix, moves the clean-file gate to
+the documented post-source-release settle boundary, and adds a fail-closed
+child/supervisor release handshake. H8 and 120B remain prohibited.
+
 The initial evidence below remains unchanged historical evidence.
 
 The authorized R4 implementation is commit `eb1d816b8c4ea8be809d0f82bc5c6fa897c7322c`

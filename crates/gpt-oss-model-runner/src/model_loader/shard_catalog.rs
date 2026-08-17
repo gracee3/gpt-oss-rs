@@ -627,7 +627,7 @@ impl Drop for CatalogMappedShard<'_> {
 }
 
 #[cfg(feature = "cuda")]
-fn madvise_dontneed(mapping: &Mmap) -> std::io::Result<()> {
+pub(crate) fn madvise_dontneed(mapping: &Mmap) -> std::io::Result<()> {
     // SAFETY: this is called only from `CatalogMappedShard::drop` after the
     // scoped consumer callback and every action borrow have ended. This drop
     // owns the mapping exclusively and does not access it after advice.
@@ -635,14 +635,14 @@ fn madvise_dontneed(mapping: &Mmap) -> std::io::Result<()> {
 }
 
 #[cfg(not(feature = "cuda"))]
-fn madvise_dontneed(_mapping: &Mmap) -> std::io::Result<()> {
+pub(crate) fn madvise_dontneed(_mapping: &Mmap) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "MADV_DONTNEED release advice is enabled on the CUDA construction build",
     ))
 }
 
-fn advice_telemetry(
+pub(crate) fn advice_telemetry(
     kind: &str,
     offset: u64,
     length: u64,
@@ -658,7 +658,7 @@ fn advice_telemetry(
     }
 }
 
-fn process_source_memory_sample(source_inode: u64) -> ProcessSourceMemorySample {
+pub(crate) fn process_source_memory_sample(source_inode: u64) -> ProcessSourceMemorySample {
     let mut sample = ProcessSourceMemorySample::default();
     if let Ok(rollup) = std::fs::read_to_string("/proc/self/smaps_rollup") {
         sample.rss_bytes = proc_kib_field(&rollup, "Rss:");

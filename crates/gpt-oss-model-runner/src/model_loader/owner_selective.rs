@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cpu_repack::{
     CpuOwnerExpertActionExpectation, CpuOwnerExpertSource, CpuOwnerLayerRecord,
-    CpuOwnerLayerRecordValidation, CpuOwnerRepackCache, OWNER_EXPERT_BYTES,
-    OWNER_REPACK_TEMP_BYTES_MAX,
+    CpuOwnerLayerRecordValidation, CpuOwnerRecordReleaseTelemetry, CpuOwnerRepackCache,
+    OWNER_EXPERT_BYTES, OWNER_REPACK_TEMP_BYTES_MAX,
 };
 use crate::heterogeneous::contract::{GptOssPhase, GPT_OSS_TOP_K};
 use crate::heterogeneous::control::heterogeneous_control_shell_device_bytes;
@@ -46,7 +46,10 @@ use super::capacity_one::{
     RETAINED_MAX_DIRTY_CPU_OUTPUT_BYTES, RETAINED_MAX_PINNED_CONSTRUCTION_BYTES,
     RETAINED_MAX_SOURCE_MAPPING_BYTES,
 };
-use super::gpt_oss_native::{GptOssCheckpointView, GptOssNativeCatalogMap, GptOssNativeConfig};
+use super::gpt_oss_native::{
+    GptOssCheckpointReleaseEvidence, GptOssCheckpointView, GptOssNativeCatalogMap,
+    GptOssNativeConfig,
+};
 use super::shard_catalog::SafeTensorShardCatalog;
 use super::shard_catalog::{ShardReleaseLogicalLedger, ShardReleaseTelemetry};
 use super::shard_consumer_plan::{
@@ -936,6 +939,7 @@ pub struct OwnerSelectiveModel {
     envelope: OwnerSelectiveEnvelope,
     ledger: ConstructionLedger,
     capacity_one_evidence: Option<CapacityOneConstructionEvidence>,
+    checkpoint_release_evidence: Option<GptOssCheckpointReleaseEvidence>,
 }
 
 pub(crate) struct OwnerSelectiveExecutionParts<'a> {
@@ -965,6 +969,10 @@ impl OwnerSelectiveModel {
 
     pub fn capacity_one_evidence(&self) -> Option<&CapacityOneConstructionEvidence> {
         self.capacity_one_evidence.as_ref()
+    }
+
+    pub fn checkpoint_release_evidence(&self) -> Option<&GptOssCheckpointReleaseEvidence> {
+        self.checkpoint_release_evidence.as_ref()
     }
 
     pub fn layer_owner_dense(&self) -> &[LayerOwnerDenseTensor] {
@@ -1000,6 +1008,29 @@ impl OwnerSelectiveModel {
 
     pub fn cpu_layer_records(&self) -> impl Iterator<Item = (&u16, &CpuOwnerLayerRecord)> {
         self.cpu_layers.iter()
+    }
+
+    /// Release every runtime CPU-record mapping after the caller has drained
+    /// and stopped all execution consumers.
+    pub fn release_cpu_record_mappings_with_advice(
+        &mut self,
+    ) -> Result<Vec<CpuOwnerRecordReleaseTelemetry>> {
+        self.drain()?;
+        let releases = std::mem::take(&mut self.cpu_layers)
+            .into_values()
+            .map(CpuOwnerLayerRecord::release_with_advice)
+            .collect::<Vec<_>>();
+        if releases.iter().any(|release| {
+            !release.mapping_removed
+                || !release.fd_closed
+                || release.post_release.source_inode_mapping_count != 0
+                || release.post_release.source_inode_pss_bytes != 0
+        }) {
+            return Err(LLMError::ModelError(
+                "CPU owner-record release proof is incomplete".into(),
+            ));
+        }
+        Ok(releases)
     }
 
     pub fn device_memory_info(&self) -> Result<[(usize, usize); 2]> {
@@ -2184,6 +2215,7 @@ impl OwnerSelectiveConstructor {
             envelope,
             ledger,
             capacity_one_evidence: Some(capacity_one_evidence),
+            checkpoint_release_evidence: None,
         })
     }
 
@@ -2486,6 +2518,7 @@ impl OwnerSelectiveConstructor {
         ledger.stage = ConstructionStage::Publish;
         observe(&ledger)?;
         inject_construction_fault(injected_fault, ConstructionStage::Publish)?;
+        let checkpoint_release_evidence = checkpoint.release_with_advice()?;
         let model = OwnerSelectiveModel {
             cpu_layers,
             remote_gpu_experts,
@@ -2500,11 +2533,12 @@ impl OwnerSelectiveConstructor {
             envelope,
             ledger,
             capacity_one_evidence: None,
+            checkpoint_release_evidence: Some(checkpoint_release_evidence),
         };
         // The published model owns no checkpoint store or payload mapping.
-        // Construction still maps the complete checkpoint until this point;
-        // bounded one-shard integration remains a separate gate.
-        drop(checkpoint);
+        // The monolithic control retains the complete address window through
+        // construction, then performs the same ordered release contract used
+        // by the bounded-shard path.
         Ok(model)
     }
 }

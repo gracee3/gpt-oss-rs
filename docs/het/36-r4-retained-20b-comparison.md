@@ -72,8 +72,35 @@ gate also remained failed; no cache-clearing or threshold change was made. The
 [bounded retry record](evidence/implementation-2026-08/r4-retained-20b/retry-20260817-155545/README.md)
 binds the raw external evidence.
 
+## Authorized release-boundary correction
+
+The failed first cell exposed a supervisor phase error rather than a reason to
+change the frozen allowance. Clean file cache was being compared with the
+allowance while checkpoint-backed source mappings were still intentionally
+live. The corrected construction paths now retain the original read-only file
+descriptors, apply `MADV_DONTNEED`, unmap the source, apply
+`POSIX_FADV_DONTNEED`, close the descriptor, and prove zero source mappings,
+PSS, and descriptors before publishing a task-unique release-ready marker.
+Filenames in this telemetry preserve their raw Unix bytes and do not add serial,
+UUID, or block-payload reads.
+
+The supervisor validates the nonce-, cell-, constructor-, ordinal-, and
+R2-policy-bound release proof, then performs the unchanged 30-second plus five
+one-second-sample clean-file gate. Only a passing, hash-bound continuation
+marker lets the child proceed. H7 performs that handshake twice. Cgroup swap,
+dirty, and writeback remain continuous stop gates; the exact 64-MiB
+`memory.current` and file-drift checks remain post-exit gates. No threshold,
+matrix cell, cache rule, process-group rule, or cleanup rule changed.
+
+Current construction evidence is schema v7 for monolithic, v3 for
+capacity-one, and v4 for H7; the comparison run record is v3. Historical
+records remain untouched. Synthetic release-proof, stale-marker, duplicate
+publication, exact-boundary, phase-order, output-schema, and fixed-matrix tests
+pass alongside the protected-NVMe topology fixtures.
+
 ## Next decision
 
-A future comparison attempt requires separate authorization. The frozen
-preflight, runtime, and cleanup thresholds must not be changed to convert either
-result into a pass. H8, H9, and H10 remain stopped.
+One fresh R4 attempt is authorized after this correction is committed, pushed,
+and rebuilt from a clean commit. It must stop at the first failed gate and may
+not be retried. The frozen preflight, runtime, and cleanup thresholds must not
+be changed to convert any result into a pass. H8, H9, and H10 remain stopped.

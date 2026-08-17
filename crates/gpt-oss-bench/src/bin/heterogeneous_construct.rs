@@ -15,8 +15,12 @@ use gpt_oss_bench::construction_memory::{
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_bench::h8_watchdog::require_h8_watchdog_binding;
 use gpt_oss_bench::h8_watchdog::{protected_nvme_state, H8WatchdogBinding, ProtectedNvmeState};
+use gpt_oss_bench::r2_release_handshake::{
+    child_release_handshake, ChildReleaseHandshake, ReleaseProof, ReleaseReadyMarker,
+};
 use gpt_oss_core::error::LLMError;
 use gpt_oss_gpu::device::{list_devices, GpuDevice, StableCudaDeviceId};
+use gpt_oss_model_runner::cpu_repack::CpuOwnerRecordReleaseTelemetry;
 #[cfg(feature = "heterogeneous-test-faults")]
 use gpt_oss_model_runner::heterogeneous::CudaSelectedExpertExecutor;
 use gpt_oss_model_runner::heterogeneous::{
@@ -25,6 +29,7 @@ use gpt_oss_model_runner::heterogeneous::{
     CONSERVATIVE_OWNER_EXPERT_BYTES, HETEROGENEOUS_PLACEMENT_SCHEMA_V1,
 };
 use gpt_oss_model_runner::model_loader::capacity_one::CAPACITY_ONE_POLICY_SHA256;
+use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointReleaseEvidence;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssNativeCatalogMap;
 #[cfg(feature = "heterogeneous-test-faults")]
@@ -35,7 +40,7 @@ use gpt_oss_model_runner::model_loader::owner_selective::{
 use gpt_oss_model_runner::model_loader::owner_selective::{
     CapacityOneConstructionEvidence, ConstructionLedger, ConstructionStage,
     ExecutionReserveDisposition, OwnerSelectiveConstructor, OwnerSelectiveEnvelope,
-    OWNER_SELECTIVE_GPU_RESERVE_BYTES, OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
+    OwnerSelectiveModel, OWNER_SELECTIVE_GPU_RESERVE_BYTES, OWNER_SELECTIVE_PROOF_CONTEXT_CAP,
 };
 use gpt_oss_model_runner::model_loader::shard_catalog::SafeTensorShardCatalog;
 use serde::{Deserialize, Serialize};
@@ -82,6 +87,15 @@ enum ConstructorMode {
     CapacityOne,
 }
 
+impl ConstructorMode {
+    const fn release_name(self) -> &'static str {
+        match self {
+            Self::MonolithicControl => "monolithic-control",
+            Self::CapacityOne => "capacity-one",
+        }
+    }
+}
+
 #[derive(Parser)]
 struct Cli {
     #[arg(long, value_enum)]
@@ -107,6 +121,13 @@ struct Cli {
     /// Every construction mode requires it; metadata validation rejects it.
     #[arg(long)]
     memory_events: Option<PathBuf>,
+    /// Existing task-unique directory used for the R2 release handshake.
+    #[arg(long)]
+    release_handshake_root: Option<PathBuf>,
+    #[arg(long)]
+    release_handshake_nonce: Option<String>,
+    #[arg(long)]
+    release_handshake_cell: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,6 +186,7 @@ struct ResearchMapping {
 struct EvidenceRecord {
     schema: &'static str,
     mode: Mode,
+    constructor: ConstructorMode,
     captured_unix_ms: u128,
     repository_head: String,
     executable_sha256: String,
@@ -238,6 +260,9 @@ struct ConstructionRecord {
     cuda_memory_after: [CudaMemoryRecord; 2],
     cleanup_within_tolerance: bool,
     partial_artifacts_after: Vec<String>,
+    source_release_handshake: Option<ReleaseReadyMarker>,
+    checkpoint_release: Option<GptOssCheckpointReleaseEvidence>,
+    cpu_record_releases: Vec<CpuOwnerRecordReleaseTelemetry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -472,8 +497,16 @@ fn main() -> Result<()> {
         StableCudaDeviceId::from_device(&devices[0])?,
         StableCudaDeviceId::from_device(&devices[1])?,
     ];
+    let release_handshake = release_handshake_config(&cli, 1)?;
     if cli.constructor == ConstructorMode::CapacityOne {
-        return run_capacity_one_cli(&cli, &stable, process_before, system_before, protected_nvme);
+        return run_capacity_one_cli(
+            &cli,
+            &stable,
+            process_before,
+            system_before,
+            protected_nvme,
+            release_handshake.as_ref(),
+        );
     }
     if cli.capacity_one_placement.is_some() {
         bail!("--capacity-one-placement is valid only with --constructor capacity-one");
@@ -683,6 +716,7 @@ fn main() -> Result<()> {
                 } else {
                     "warm"
                 },
+                release_handshake.as_ref(),
             )?),
             None,
             None,
@@ -745,8 +779,9 @@ fn main() -> Result<()> {
     }
 
     let record = EvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-construction/v6",
+        schema: "gpt-oss-rs.heterogeneous-construction/v7",
         mode: cli.mode,
+        constructor: cli.constructor,
         captured_unix_ms: now_unix_ms(),
         repository_head,
         executable_sha256,
@@ -839,6 +874,7 @@ fn run_capacity_one_cli(
     process_before: ProcessMemory,
     system_before: SystemMemory,
     protected_nvme: ProtectedNvmeRecord,
+    release_handshake: Option<&ChildReleaseHandshake>,
 ) -> Result<()> {
     if !matches!(cli.mode, Mode::Cold | Mode::Warm) {
         bail!("capacity-one is available only for an explicitly authorized cold/warm comparison");
@@ -915,6 +951,8 @@ fn run_capacity_one_cli(
         .capacity_one_evidence()
         .context("capacity-one model omitted its construction evidence")?
         .clone();
+    let source_release_handshake =
+        perform_release_handshake(&model, ConstructorMode::CapacityOne, release_handshake, 0)?;
     let cuda_while = model.device_memory_info()?;
     let cuda_memory_while_loaded = [
         CudaMemoryRecord {
@@ -955,6 +993,7 @@ fn run_capacity_one_cli(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let cpu_record_releases = model.release_cpu_record_mappings_with_advice()?;
     drop(model);
     let cuda_memory_after = cuda_memory(stable)?;
     let cleanup_within_tolerance =
@@ -987,6 +1026,9 @@ fn run_capacity_one_cli(
         cuda_memory_after,
         cleanup_within_tolerance,
         partial_artifacts_after,
+        source_release_handshake,
+        checkpoint_release: None,
+        cpu_record_releases,
     };
     let cache_bytes_after = cache_bytes(&cli.cache_root)?;
     if matches!(cli.mode, Mode::Warm) && cache_bytes_after != cache_bytes_before {
@@ -1001,7 +1043,7 @@ fn run_capacity_one_cli(
         bail!("capacity-one final memory/swap guard failed");
     }
     let record = CapacityOneEvidenceRecord {
-        schema: "gpt-oss-rs.heterogeneous-capacity-one-construction/v2",
+        schema: "gpt-oss-rs.heterogeneous-capacity-one-construction/v3",
         mode: cli.mode,
         constructor: cli.constructor,
         r2_policy_sha256: CAPACITY_ONE_POLICY_SHA256,
@@ -1029,6 +1071,93 @@ fn run_capacity_one_cli(
     let mut bytes = serde_json::to_vec_pretty(&record)?;
     bytes.push(b'\n');
     atomic_write(&cli.output, &bytes)
+}
+
+fn release_handshake_config(
+    cli: &Cli,
+    expected_releases: usize,
+) -> Result<Option<ChildReleaseHandshake>> {
+    let configured = match (
+        cli.release_handshake_root.as_ref(),
+        cli.release_handshake_nonce.as_ref(),
+        cli.release_handshake_cell.as_ref(),
+    ) {
+        (None, None, None) => None,
+        (Some(root), Some(nonce), Some(cell)) => Some(ChildReleaseHandshake {
+            root: root.clone(),
+            nonce: nonce.clone(),
+            cell: cell.clone(),
+            constructor: cli.constructor.release_name().into(),
+            expected_releases,
+        }),
+        _ => bail!("R2 release handshake arguments must be supplied together"),
+    };
+    if matches!(cli.mode, Mode::Cold | Mode::Warm)
+        && cli.cache_root != Path::new(LEGACY_CACHE_ROOT)
+        && configured.is_none()
+    {
+        bail!("R4 construction requires the R2 release handshake");
+    }
+    Ok(configured)
+}
+
+fn perform_release_handshake(
+    model: &OwnerSelectiveModel,
+    constructor: ConstructorMode,
+    handshake: Option<&ChildReleaseHandshake>,
+    ordinal: usize,
+) -> Result<Option<ReleaseReadyMarker>> {
+    let proof = match constructor {
+        ConstructorMode::MonolithicControl => {
+            let release = model
+                .checkpoint_release_evidence()
+                .context("monolithic model omitted checkpoint release evidence")?;
+            ReleaseProof {
+                release_report_count: release.shard_releases.len(),
+                source_mapping_count_after_release: release.source_mapping_count_after_release,
+                source_mapping_pss_bytes_after_release: release
+                    .source_mapping_pss_bytes_after_release,
+                source_payload_fds_after_release: if release.descriptors_closed { 0 } else { 1 },
+                mappings_removed: release.mappings_removed,
+                descriptors_closed: release.descriptors_closed,
+                capacity_one_mapping_high_water: None,
+            }
+        }
+        ConstructorMode::CapacityOne => {
+            let evidence = model
+                .capacity_one_evidence()
+                .context("capacity-one model omitted source release evidence")?;
+            ReleaseProof {
+                release_report_count: evidence.shard_releases.len(),
+                source_mapping_count_after_release: evidence
+                    .shard_releases
+                    .iter()
+                    .map(|release| release.post_release.source_inode_mapping_count)
+                    .sum(),
+                source_mapping_pss_bytes_after_release: evidence
+                    .shard_releases
+                    .iter()
+                    .map(|release| release.post_release.source_inode_pss_bytes)
+                    .sum(),
+                source_payload_fds_after_release: evidence
+                    .publication_proof
+                    .active_source_payload_fds,
+                mappings_removed: evidence
+                    .shard_releases
+                    .iter()
+                    .all(|release| release.mapping_removed),
+                descriptors_closed: evidence
+                    .shard_releases
+                    .iter()
+                    .all(|release| release.fd_closed),
+                capacity_one_mapping_high_water: Some(evidence.active_mapping_high_water),
+            }
+        }
+    };
+    proof.validate(constructor.release_name())?;
+    handshake
+        .map(|config| child_release_handshake(config, ordinal, CAPACITY_ONE_POLICY_SHA256, proof))
+        .transpose()
 }
 
 fn construction_memory_identity(
@@ -1073,6 +1202,7 @@ fn open_checkpoint_for_construction(
     Ok(checkpoint)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_construction(
     model_path: &Path,
     manifest: &GptOssExpertPlacementManifestV1,
@@ -1081,6 +1211,7 @@ fn run_construction(
     swap_baseline: u64,
     memory_recorder: &mut ConstructionMemoryRecorder,
     run_label: &str,
+    release_handshake: Option<&ChildReleaseHandshake>,
 ) -> Result<ConstructionRecord> {
     let cuda_memory_before = cuda_memory(stable)?;
     let started = Instant::now();
@@ -1103,6 +1234,13 @@ fn run_construction(
         Ok(())
     })?;
     model.drain()?;
+    let checkpoint_release = model.checkpoint_release_evidence().cloned();
+    let source_release_handshake = perform_release_handshake(
+        &model,
+        ConstructorMode::MonolithicControl,
+        release_handshake,
+        0,
+    )?;
     let cuda_while = model.device_memory_info()?;
     let cuda_memory_while_loaded = [
         CudaMemoryRecord {
@@ -1143,6 +1281,7 @@ fn run_construction(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let cpu_record_releases = model.release_cpu_record_mappings_with_advice()?;
     drop(model);
     let cuda_memory_after = cuda_memory(stable)?;
     let cleanup_within_tolerance =
@@ -1175,6 +1314,9 @@ fn run_construction(
         cuda_memory_after,
         cleanup_within_tolerance,
         partial_artifacts_after,
+        source_release_handshake,
+        checkpoint_release,
+        cpu_record_releases,
     })
 }
 

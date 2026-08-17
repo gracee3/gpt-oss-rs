@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use gpt_oss_bench::r2_release_handshake::{
+    child_release_handshake, ChildReleaseHandshake, ReleaseProof, ReleaseReadyMarker,
+};
 use gpt_oss_core::error::LLMError;
 use gpt_oss_engine::{
     DrainRole, HeterogeneousTransactionCoordinator, SequenceCommitImage, TransactionOutcome,
@@ -17,14 +20,15 @@ use gpt_oss_model_runner::heterogeneous::{
     HeterogeneousControlRuntime, PackedRouteDescriptor, RelayPinnedPoolStats,
 };
 use gpt_oss_model_runner::model_loader::capacity_one::CAPACITY_ONE_POLICY_SHA256;
+use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointReleaseEvidence;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssNativeCatalogMap;
 use gpt_oss_model_runner::model_loader::owner_selective::{
     CapacityOneConstructionEvidence, ConstructionLedger, OwnerSelectiveConstructor,
-    OwnerSelectiveEnvelope,
+    OwnerSelectiveEnvelope, OwnerSelectiveModel,
 };
 use gpt_oss_model_runner::model_loader::shard_catalog::SafeTensorShardCatalog;
-use gpt_oss_model_runner::CpuGptOssConfig;
+use gpt_oss_model_runner::{cpu_repack::CpuOwnerRecordReleaseTelemetry, CpuGptOssConfig};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -43,6 +47,15 @@ const ROLES: [DrainRole; 6] = [
 enum ConstructorMode {
     MonolithicControl,
     CapacityOne,
+}
+
+impl ConstructorMode {
+    const fn release_name(self) -> &'static str {
+        match self {
+            Self::MonolithicControl => "monolithic-control",
+            Self::CapacityOne => "capacity-one",
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -67,6 +80,12 @@ struct Cli {
     max_input_tokens: Option<usize>,
     #[arg(long, default_value_t = 1)]
     repeat: usize,
+    #[arg(long)]
+    release_handshake_root: Option<PathBuf>,
+    #[arg(long)]
+    release_handshake_nonce: Option<String>,
+    #[arg(long)]
+    release_handshake_cell: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +123,9 @@ struct RunEvidence {
     envelope: OwnerSelectiveEnvelope,
     final_ledger: ConstructionLedger,
     capacity_one: Option<CapacityOneConstructionEvidence>,
+    checkpoint_release: Option<GptOssCheckpointReleaseEvidence>,
+    source_release_handshake: Option<ReleaseReadyMarker>,
+    cpu_record_releases: Vec<CpuOwnerRecordReleaseTelemetry>,
     construction_stages: Vec<ConstructionStageEvidence>,
     resources_before: ResourceSnapshot,
     resources_after_construct: ResourceSnapshot,
@@ -284,6 +306,7 @@ fn main() -> Result<()> {
     if cli.repeat == 0 || cli.repeat > 2 {
         bail!("H7 repeat count must be one or two");
     }
+    let release_handshake = release_handshake_config(&cli)?;
 
     let config = CpuGptOssConfig::from_snapshot(&cli.model)?;
     let manifest_bytes = std::fs::read(&cli.placement)?;
@@ -300,11 +323,12 @@ fn main() -> Result<()> {
             prompt_limit,
             &config,
             &manifest,
+            release_handshake.as_ref(),
         )?);
     }
     let all_runs_passed = runs.iter().all(|run| run.passed);
     let evidence = Evidence {
-        schema: "gpt-oss-rs.heterogeneous-control-h7/v3",
+        schema: "gpt-oss-rs.heterogeneous-control-h7/v4",
         execution_path: "serial_m1_exact_router_selected_expert_rank_reduction",
         cuda_prefill_or_all_expert_fallback_used: false,
         tensor_parallel_or_nccl_used: false,
@@ -375,6 +399,89 @@ fn validate_owner_cache(path: &Path, constructor: ConstructorMode) -> Result<()>
     Ok(())
 }
 
+fn release_handshake_config(cli: &Cli) -> Result<Option<ChildReleaseHandshake>> {
+    let configured = match (
+        cli.release_handshake_root.as_ref(),
+        cli.release_handshake_nonce.as_ref(),
+        cli.release_handshake_cell.as_ref(),
+    ) {
+        (None, None, None) => None,
+        (Some(root), Some(nonce), Some(cell)) => Some(ChildReleaseHandshake {
+            root: root.clone(),
+            nonce: nonce.clone(),
+            cell: cell.clone(),
+            constructor: cli.constructor.release_name().into(),
+            expected_releases: cli.repeat,
+        }),
+        _ => bail!("R2 release handshake arguments must be supplied together"),
+    };
+    if cli.owner_cache != Path::new("/home/emmy/workspace/gpt-oss-rs-het-cache")
+        && configured.is_none()
+    {
+        bail!("R4 H7 control requires the R2 release handshake");
+    }
+    Ok(configured)
+}
+
+fn perform_release_handshake(
+    model: &OwnerSelectiveModel,
+    constructor: ConstructorMode,
+    handshake: Option<&ChildReleaseHandshake>,
+    ordinal: usize,
+) -> Result<Option<ReleaseReadyMarker>> {
+    let proof = match constructor {
+        ConstructorMode::MonolithicControl => {
+            let release = model
+                .checkpoint_release_evidence()
+                .context("monolithic model omitted checkpoint release evidence")?;
+            ReleaseProof {
+                release_report_count: release.shard_releases.len(),
+                source_mapping_count_after_release: release.source_mapping_count_after_release,
+                source_mapping_pss_bytes_after_release: release
+                    .source_mapping_pss_bytes_after_release,
+                source_payload_fds_after_release: if release.descriptors_closed { 0 } else { 1 },
+                mappings_removed: release.mappings_removed,
+                descriptors_closed: release.descriptors_closed,
+                capacity_one_mapping_high_water: None,
+            }
+        }
+        ConstructorMode::CapacityOne => {
+            let evidence = model
+                .capacity_one_evidence()
+                .context("capacity-one model omitted source release evidence")?;
+            ReleaseProof {
+                release_report_count: evidence.shard_releases.len(),
+                source_mapping_count_after_release: evidence
+                    .shard_releases
+                    .iter()
+                    .map(|release| release.post_release.source_inode_mapping_count)
+                    .sum(),
+                source_mapping_pss_bytes_after_release: evidence
+                    .shard_releases
+                    .iter()
+                    .map(|release| release.post_release.source_inode_pss_bytes)
+                    .sum(),
+                source_payload_fds_after_release: evidence
+                    .publication_proof
+                    .active_source_payload_fds,
+                mappings_removed: evidence
+                    .shard_releases
+                    .iter()
+                    .all(|release| release.mapping_removed),
+                descriptors_closed: evidence
+                    .shard_releases
+                    .iter()
+                    .all(|release| release.fd_closed),
+                capacity_one_mapping_high_water: Some(evidence.active_mapping_high_water),
+            }
+        }
+    };
+    proof.validate(constructor.release_name())?;
+    handshake
+        .map(|config| child_release_handshake(config, ordinal, CAPACITY_ONE_POLICY_SHA256, proof))
+        .transpose()
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_once(
     run_index: usize,
@@ -383,6 +490,7 @@ fn run_once(
     prompt_limit: usize,
     config: &CpuGptOssConfig,
     manifest: &gpt_oss_model_runner::heterogeneous::GptOssExpertPlacementManifestV1,
+    release_handshake: Option<&ChildReleaseHandshake>,
 ) -> Result<RunEvidence> {
     let resources_before = resource_snapshot()?;
     let constructor = OwnerSelectiveConstructor::new(&cli.owner_cache);
@@ -433,6 +541,10 @@ fn run_once(
         }
     };
     let capacity_one = model.capacity_one_evidence().cloned();
+    let checkpoint_release = model.checkpoint_release_evidence().cloned();
+    model.drain()?;
+    let source_release_handshake =
+        perform_release_handshake(&model, cli.constructor, release_handshake, run_index)?;
     let resources_after_construct = resource_snapshot()?;
     let placement = {
         let resolved = model.placement();
@@ -552,6 +664,7 @@ fn run_once(
             snapshot.global_swap_used_bytes <= resources_before.global_swap_used_bytes
         });
     drop(runtime);
+    let cpu_record_releases = model.release_cpu_record_mappings_with_advice()?;
     drop(model);
     drop(coordinator);
     let resources_after_drop = resource_snapshot()?;
@@ -588,6 +701,9 @@ fn run_once(
         envelope,
         final_ledger,
         capacity_one,
+        checkpoint_release,
+        source_release_handshake,
+        cpu_record_releases,
         construction_stages,
         resources_before,
         resources_after_construct,

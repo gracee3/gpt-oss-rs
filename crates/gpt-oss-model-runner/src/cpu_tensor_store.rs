@@ -7,16 +7,23 @@
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use bytemuck::try_cast_slice;
 use half::{bf16, f16};
 use memmap2::{Mmap, MmapOptions};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use gpt_oss_core::error::{LLMError, Result};
 
 use crate::model_loader::dtype::DType;
+use crate::model_loader::shard_catalog::{
+    advice_telemetry, madvise_dontneed, process_source_memory_sample, AdviceTelemetry,
+    ProcessSourceMemorySample,
+};
 
 #[derive(Debug, Clone)]
 struct TensorEntry {
@@ -42,8 +49,36 @@ struct HeaderTensor {
 pub struct CpuTensorStore {
     snapshot_dir: PathBuf,
     shard_paths: Vec<PathBuf>,
+    shard_files: Vec<File>,
+    shard_identities: Vec<CpuTensorFileIdentity>,
     shards: Vec<Mmap>,
     tensors: HashMap<String, TensorEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct CpuTensorFileIdentity {
+    file_name_bytes: Vec<u8>,
+    device: u64,
+    inode: u64,
+    file_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CpuTensorMappingReleaseTelemetry {
+    pub shard_index: usize,
+    pub source_file_name_bytes: Vec<u8>,
+    pub source_device: u64,
+    pub source_inode: u64,
+    pub source_file_bytes: u64,
+    pub mapping_address: usize,
+    pub mapping_bytes: u64,
+    pub pre_release: ProcessSourceMemorySample,
+    pub post_release: ProcessSourceMemorySample,
+    pub mmap_advice: AdviceTelemetry,
+    pub file_advice: AdviceTelemetry,
+    pub unmap_close_duration_micros: u128,
+    pub mapping_removed: bool,
+    pub fd_closed: bool,
 }
 
 impl CpuTensorStore {
@@ -73,9 +108,17 @@ impl CpuTensorStore {
         }
 
         let mut shards = Vec::with_capacity(shard_paths.len());
+        let mut shard_files = Vec::with_capacity(shard_paths.len());
+        let mut shard_identities = Vec::with_capacity(shard_paths.len());
         let mut tensors = HashMap::new();
         for (shard_index, path) in shard_paths.iter().enumerate() {
             let file = File::open(path)?;
+            let metadata = file.metadata()?;
+            let file_name_bytes = path
+                .file_name()
+                .map(OsStrExt::as_bytes)
+                .unwrap_or_default()
+                .to_vec();
             // SAFETY: CpuTensorStore's operational contract requires the
             // checkpoint snapshot to remain immutable for the store's entire
             // lifetime. Opening the descriptor read-only is not sufficient by
@@ -92,12 +135,21 @@ impl CpuTensorStore {
                     )));
                 }
             }
+            shard_identities.push(CpuTensorFileIdentity {
+                file_name_bytes,
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                file_bytes: metadata.len(),
+            });
+            shard_files.push(file);
             shards.push(mapping);
         }
 
         Ok(Self {
             snapshot_dir: snapshot_dir.to_path_buf(),
             shard_paths,
+            shard_files,
+            shard_identities,
             shards,
             tensors,
         })
@@ -139,6 +191,66 @@ impl CpuTensorStore {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tensors.keys().map(String::as_str)
+    }
+
+    /// Release every immutable checkpoint mapping in the frozen R2 order.
+    ///
+    /// The original read-only descriptor remains open until after its mapping
+    /// is advised and unmapped. Advice failure is retained as telemetry; the
+    /// mapping and descriptor are still released deterministically.
+    pub fn release_with_advice(self) -> Vec<CpuTensorMappingReleaseTelemetry> {
+        let Self {
+            shard_paths: _,
+            shard_files,
+            shard_identities,
+            shards,
+            ..
+        } = self;
+        shard_identities
+            .into_iter()
+            .zip(shards)
+            .zip(shard_files)
+            .enumerate()
+            .map(|(shard_index, ((identity, mapping), file))| {
+                let mapping_address = mapping.as_ptr() as usize;
+                let mapping_bytes = mapping.len() as u64;
+                let pre_release = process_source_memory_sample(identity.inode);
+                let started = Instant::now();
+                let mmap_advice_result = madvise_dontneed(&mapping);
+                let mmap_advice = advice_telemetry(
+                    "madv_dontneed",
+                    0,
+                    mapping_bytes,
+                    mmap_advice_result.as_ref().err(),
+                );
+                drop(mapping);
+                let file_advice_result = gpt_oss_cpu_kernels::posix_fadvise_dontneed(&file, 0, 0);
+                let file_advice = advice_telemetry(
+                    "posix_fadv_dontneed",
+                    0,
+                    identity.file_bytes,
+                    file_advice_result.as_ref().err(),
+                );
+                drop(file);
+                let post_release = process_source_memory_sample(identity.inode);
+                CpuTensorMappingReleaseTelemetry {
+                    shard_index,
+                    source_file_name_bytes: identity.file_name_bytes,
+                    source_device: identity.device,
+                    source_inode: identity.inode,
+                    source_file_bytes: identity.file_bytes,
+                    mapping_address,
+                    mapping_bytes,
+                    pre_release,
+                    post_release,
+                    mmap_advice,
+                    file_advice,
+                    unmap_close_duration_micros: started.elapsed().as_micros(),
+                    mapping_removed: true,
+                    fd_closed: true,
+                }
+            })
+            .collect()
     }
 }
 
@@ -396,6 +508,14 @@ mod tests {
         let tensor = store.tensor("weight").unwrap();
         assert_eq!(tensor.shape(), &[2]);
         assert_eq!(tensor.bf16().unwrap(), values);
+        let releases = store.release_with_advice();
+        assert_eq!(releases.len(), 1);
+        assert!(releases[0].mapping_removed);
+        assert!(releases[0].fd_closed);
+        assert_eq!(releases[0].post_release.source_inode_mapping_count, 0);
+        assert_eq!(releases[0].post_release.source_inode_pss_bytes, 0);
+        assert_eq!(releases[0].mmap_advice.kind, "madv_dontneed");
+        assert_eq!(releases[0].file_advice.kind, "posix_fadv_dontneed");
     }
 
     #[test]

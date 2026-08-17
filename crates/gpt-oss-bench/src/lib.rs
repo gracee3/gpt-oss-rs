@@ -4,3 +4,4 @@
 pub mod construction_memory;
 pub mod construction_memory_policy;
 pub mod h8_watchdog;
+pub mod r2_release_handshake;
