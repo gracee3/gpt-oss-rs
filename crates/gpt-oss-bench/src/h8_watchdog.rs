@@ -340,6 +340,38 @@ pub fn analyze_preflight(samples: &[HostSnapshot], required_duration_ms: u64) ->
     }
 }
 
+/// Analyze the R2 retained-20B admission policy.
+///
+/// Unlike the older H8 policy, `SwapFree` and `SwapCached` movement is retained
+/// as diagnostic evidence and is not itself a rejection.  The hard pressure
+/// boundary is limited to the two `avg10` values frozen by R2; longer-window
+/// values remain diagnostic.
+pub fn analyze_r2_preflight(
+    samples: &[HostSnapshot],
+    required_duration_ms: u64,
+) -> PreflightAnalysis {
+    let mut analysis = analyze_preflight(samples, required_duration_ms);
+    let pressure_avg10_zero = samples.iter().all(|sample| {
+        sample.pressure.some_avg10_millionths == 0 && sample.pressure.full_avg10_millionths == 0
+    });
+    let guard_cgroup_swap_zero = samples.iter().all(guard_cgroup_swap_is_exact_zero);
+
+    analysis.failures.retain(|failure| {
+        failure != "SwapFree changed during the stability window"
+            && failure != "SwapCached changed during the stability window"
+            && (!pressure_avg10_zero
+                || failure != "memory PSI was nonzero during the stability window")
+    });
+    analysis.pressure_zero = pressure_avg10_zero;
+    if !guard_cgroup_swap_zero {
+        analysis
+            .failures
+            .push("the comparison cgroup used swap".into());
+    }
+    analysis.passed = analysis.failures.is_empty();
+    analysis
+}
+
 pub fn evaluate_runtime_guard(
     snapshot: &HostSnapshot,
     limits: &RuntimeGuardLimits,
@@ -377,6 +409,62 @@ pub fn evaluate_runtime_guard(
     } else {
         Err(GuardViolation { reasons })
     }
+}
+
+/// Evaluate the live R2 retained-20B boundary without imposing the obsolete
+/// exact `SwapFree`/`SwapCached` or long-window PSI requirements.
+pub fn evaluate_r2_runtime_guard(
+    snapshot: &HostSnapshot,
+    limits: &RuntimeGuardLimits,
+) -> std::result::Result<(), GuardViolation> {
+    let mut reasons = Vec::new();
+    if snapshot.swap_used_bytes > limits.swap_baseline_bytes {
+        reasons.push(format!(
+            "global swap grew above baseline: baseline={} observed={}",
+            limits.swap_baseline_bytes, snapshot.swap_used_bytes
+        ));
+    }
+    if snapshot.target_tree_vm_swap_bytes != 0 {
+        reasons.push(format!(
+            "guarded child tree used {} swap bytes",
+            snapshot.target_tree_vm_swap_bytes
+        ));
+    }
+    if !guard_cgroup_swap_is_exact_zero(snapshot) {
+        reasons.push("comparison cgroup swap is nonzero or unreadable".into());
+    }
+    if snapshot.mem_available_bytes < limits.min_mem_available_bytes {
+        reasons.push(format!(
+            "MemAvailable fell below minimum: minimum={} observed={}",
+            limits.min_mem_available_bytes, snapshot.mem_available_bytes
+        ));
+    }
+    if snapshot.pressure.some_avg10_millionths != 0 || snapshot.pressure.full_avg10_millionths != 0
+    {
+        reasons.push("memory PSI avg10 became nonzero".into());
+    }
+    if !snapshot.proc_scan_complete {
+        reasons.push("process swap attribution became incomplete".into());
+    }
+    if !snapshot.protected_nvme_read_only || snapshot.protected_nvme_mounted {
+        reasons.push("protected NVMe state changed".into());
+    }
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(GuardViolation { reasons })
+    }
+}
+
+fn guard_cgroup_swap_is_exact_zero(snapshot: &HostSnapshot) -> bool {
+    let mut guard = snapshot
+        .cgroups
+        .iter()
+        .filter(|cgroup| cgroup.scope == CgroupScope::GuardScope);
+    guard
+        .next()
+        .is_some_and(|cgroup| cgroup.swap_current_bytes == Some(0))
+        && guard.next().is_none()
 }
 
 pub fn require_h8_watchdog_binding(current_swap_used_bytes: u64) -> Result<H8WatchdogBinding> {

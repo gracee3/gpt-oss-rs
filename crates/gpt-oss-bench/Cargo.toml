@@ -90,6 +90,10 @@ name = "heterogeneous_h8_watchdog"
 path = "src/bin/heterogeneous_h8_watchdog.rs"
 
 [[bin]]
+name = "heterogeneous_20b_comparison"
+path = "src/bin/heterogeneous_20b_comparison.rs"
+
+[[bin]]
 name = "heterogeneous_layer_oracle"
 path = "src/bin/heterogeneous_layer_oracle.rs"
 required-features = ["cuda"]

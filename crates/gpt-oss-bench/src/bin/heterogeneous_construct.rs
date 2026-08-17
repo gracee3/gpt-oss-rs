@@ -41,7 +41,8 @@ use gpt_oss_model_runner::model_loader::shard_catalog::SafeTensorShardCatalog;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const CACHE_ROOT: &str = "/home/emmy/workspace/gpt-oss-rs-het-cache";
+const LEGACY_CACHE_ROOT: &str = "/home/emmy/workspace/gpt-oss-rs-het-cache";
+const R4_RUN_PREFIX: &str = "gpt-oss-rs-het-r4-";
 const MIN_AVAILABLE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 const MAX_PROCESS_RSS_BYTES: u64 = 72 * 1024 * 1024 * 1024;
 const GPU_CLEANUP_TOLERANCE_BYTES: usize = 16 * 1024 * 1024;
@@ -64,6 +65,16 @@ enum Mode {
     H8,
 }
 
+#[cfg(feature = "heterogeneous-test-faults")]
+fn mode_is_h8(mode: Mode) -> bool {
+    matches!(mode, Mode::H8)
+}
+
+#[cfg(not(feature = "heterogeneous-test-faults"))]
+fn mode_is_h8(_mode: Mode) -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ConstructorMode {
@@ -83,11 +94,11 @@ struct Cli {
     #[arg(long)]
     model_20b: PathBuf,
     #[arg(long)]
-    model_120b: PathBuf,
+    model_120b: Option<PathBuf>,
     #[arg(long)]
     mapping_20b: PathBuf,
     #[arg(long)]
-    mapping_120b: PathBuf,
+    mapping_120b: Option<PathBuf>,
     #[arg(long)]
     cache_root: PathBuf,
     #[arg(long)]
@@ -167,11 +178,11 @@ struct EvidenceRecord {
     system_before: SystemMemory,
     system_after: SystemMemory,
     checkpoint_20b: CheckpointRecord,
-    checkpoint_120b: CheckpointRecord,
+    checkpoint_120b: Option<CheckpointRecord>,
     placement_20b: PlacementRecord,
-    placement_120b: PlacementRecord,
+    placement_120b: Option<PlacementRecord>,
     envelope_20b: OwnerSelectiveEnvelope,
-    envelope_120b: OwnerSelectiveEnvelope,
+    envelope_120b: Option<OwnerSelectiveEnvelope>,
     construction: Option<ConstructionRecord>,
     fault_campaign: Option<FaultCampaignRecord>,
     h8_campaign: Option<H8CampaignRecord>,
@@ -399,10 +410,7 @@ struct ProtectedNvmeRecord {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cache_root = PathBuf::from(CACHE_ROOT);
-    if cli.cache_root != cache_root || !cli.cache_root.is_absolute() {
-        bail!("H3 probe cache root must be exactly {CACHE_ROOT}");
-    }
+    validate_cache_root(&cli.cache_root)?;
     if std::fs::canonicalize("/home/emmy/workspace")? != Path::new("/home/emmy/workspace") {
         bail!("authorized workspace root resolves through an unexpected path");
     }
@@ -496,35 +504,77 @@ fn main() -> Result<()> {
         OwnerSelectiveEnvelope::from_checkpoint_and_placement(&checkpoint_20b, &resolved_20b)?;
     verify_execution_reserve_plan(&envelope_20b)?;
 
-    let checkpoint_120b = GptOssCheckpointView::open(&cli.model_120b)?;
-    let map_equivalence_120b = compare_research_mapping(&checkpoint_120b, &cli.mapping_120b)?;
-    assert_checkpoint_bytes(
-        &checkpoint_120b,
-        65_248_815_744,
-        60_993_699_840,
-        4_255_115_904,
-    )?;
+    let requires_120b = matches!(cli.mode, Mode::Validate)
+        || cfg!(feature = "heterogeneous-test-faults") && mode_is_h8(cli.mode);
+    if requires_120b != (cli.model_120b.is_some() && cli.mapping_120b.is_some()) {
+        bail!("--model-120b and --mapping-120b are required together only for validate/H8");
+    }
+    let checkpoint_120b = cli
+        .model_120b
+        .as_deref()
+        .map(GptOssCheckpointView::open)
+        .transpose()?;
+    let map_equivalence_120b = checkpoint_120b
+        .as_ref()
+        .zip(cli.mapping_120b.as_deref())
+        .map(|(checkpoint, mapping)| compare_research_mapping(checkpoint, mapping))
+        .transpose()?;
+    if let Some(checkpoint) = &checkpoint_120b {
+        assert_checkpoint_bytes(checkpoint, 65_248_815_744, 60_993_699_840, 4_255_115_904)?;
+    }
     #[cfg(feature = "heterogeneous-test-faults")]
     let (manifest_120b, h8_admission) = if matches!(cli.mode, Mode::H8) {
-        let (manifest, admission) = admitted_manifest_120b(&checkpoint_120b, &stable)?;
-        (manifest, Some(admission))
+        let checkpoint = checkpoint_120b
+            .as_ref()
+            .context("H8 checkpoint is missing")?;
+        let (manifest, admission) = admitted_manifest_120b(checkpoint, &stable)?;
+        (Some(manifest), Some(admission))
+    } else if matches!(cli.mode, Mode::Validate) {
+        (
+            Some(existence_manifest_120b(
+                checkpoint_120b
+                    .as_ref()
+                    .context("validation checkpoint is missing")?,
+                &stable,
+            )?),
+            None,
+        )
     } else {
-        (existence_manifest_120b(&checkpoint_120b, &stable)?, None)
+        (None, None)
     };
     #[cfg(not(feature = "heterogeneous-test-faults"))]
-    let manifest_120b = existence_manifest_120b(&checkpoint_120b, &stable)?;
-    let resolved_120b = manifest_120b.validate(&devices)?;
-    let envelope_120b =
-        OwnerSelectiveEnvelope::from_checkpoint_and_placement(&checkpoint_120b, &resolved_120b)?;
-    verify_execution_reserve_plan(&envelope_120b)?;
-    #[cfg(feature = "heterogeneous-test-faults")]
-    if let Some(admission) = &h8_admission {
-        verify_h8_envelope(&envelope_120b, admission)?;
+    let manifest_120b = if matches!(cli.mode, Mode::Validate) {
+        Some(existence_manifest_120b(
+            checkpoint_120b
+                .as_ref()
+                .context("validation checkpoint is missing")?,
+            &stable,
+        )?)
     } else {
-        verify_120b_envelope(&envelope_120b)?;
+        None
+    };
+    let resolved_120b = manifest_120b
+        .as_ref()
+        .map(|manifest| manifest.validate(&devices))
+        .transpose()?;
+    let envelope_120b = checkpoint_120b
+        .as_ref()
+        .zip(resolved_120b.as_ref())
+        .map(|(checkpoint, resolved)| {
+            OwnerSelectiveEnvelope::from_checkpoint_and_placement(checkpoint, resolved)
+        })
+        .transpose()?;
+    if let Some(envelope) = &envelope_120b {
+        verify_execution_reserve_plan(envelope)?;
+        #[cfg(feature = "heterogeneous-test-faults")]
+        if let Some(admission) = &h8_admission {
+            verify_h8_envelope(envelope, admission)?;
+        } else {
+            verify_120b_envelope(envelope)?;
+        }
+        #[cfg(not(feature = "heterogeneous-test-faults"))]
+        verify_120b_envelope(envelope)?;
     }
-    #[cfg(not(feature = "heterogeneous-test-faults"))]
-    verify_120b_envelope(&envelope_120b)?;
 
     if matches!(cli.mode, Mode::Validate) {
         let parent = cli.output.parent().context("output has no parent")?;
@@ -535,7 +585,10 @@ fn main() -> Result<()> {
         )?;
         atomic_write(
             &parent.join("mapping-120b.generated.json"),
-            &checkpoint_120b.mapping_json()?,
+            &checkpoint_120b
+                .as_ref()
+                .context("validation checkpoint is missing")?
+                .mapping_json()?,
         )?;
         atomic_write(
             &parent.join("placement-20b.json"),
@@ -543,7 +596,10 @@ fn main() -> Result<()> {
         )?;
         atomic_write(
             &parent.join("placement-120b-existence.json"),
-            &manifest_120b.stable_json()?,
+            &manifest_120b
+                .as_ref()
+                .context("validation placement is missing")?
+                .stable_json()?,
         )?;
     }
 
@@ -552,16 +608,28 @@ fn main() -> Result<()> {
         let parent = cli.output.parent().context("output has no parent")?;
         std::fs::create_dir_all(parent)?;
         let path = parent.join("placement-120b-h8.json");
-        atomic_write(&path, &manifest_120b.stable_json()?)?;
+        atomic_write(
+            &path,
+            &manifest_120b
+                .as_ref()
+                .context("H8 placement is missing")?
+                .stable_json()?,
+        )?;
         Some(path)
     } else {
         None
     };
 
     let checkpoint_record_20b = checkpoint_record(&checkpoint_20b, map_equivalence_20b);
-    let checkpoint_record_120b = checkpoint_record(&checkpoint_120b, map_equivalence_120b);
+    let checkpoint_record_120b = checkpoint_120b
+        .as_ref()
+        .zip(map_equivalence_120b)
+        .map(|(checkpoint, equivalence)| checkpoint_record(checkpoint, equivalence));
     let placement_record_20b = placement_record(&manifest_20b, &resolved_20b);
-    let placement_record_120b = placement_record(&manifest_120b, &resolved_120b);
+    let placement_record_120b = manifest_120b
+        .as_ref()
+        .zip(resolved_120b.as_ref())
+        .map(|(manifest, resolved)| placement_record(manifest, resolved));
     let repository_head = command_text("git", &["rev-parse", "HEAD"])?;
     let executable_sha256 = hash_file(&std::env::current_exe()?)?;
     let construction_memory_identity = match cli.mode {
@@ -584,8 +652,10 @@ fn main() -> Result<()> {
         #[cfg(feature = "heterogeneous-test-faults")]
         Mode::H8 => Some(construction_memory_identity(
             "120b_h8",
-            &checkpoint_120b,
-            &manifest_120b,
+            checkpoint_120b
+                .as_ref()
+                .context("H8 checkpoint is missing")?,
+            manifest_120b.as_ref().context("H8 placement is missing")?,
             &repository_head,
             &executable_sha256,
         )?),
@@ -638,11 +708,13 @@ fn main() -> Result<()> {
             None,
             None,
             Some(run_h8_campaign(
-                &cli.model_120b,
-                &manifest_120b,
+                cli.model_120b
+                    .as_deref()
+                    .context("H8 model path is missing")?,
+                manifest_120b.as_ref().context("H8 placement is missing")?,
                 h8_watchdog.context("H8 watchdog binding is missing")?,
                 h8_admission.context("H8 admission record is missing")?,
-                &envelope_120b,
+                envelope_120b.as_ref().context("H8 envelope is missing")?,
                 &cli.cache_root,
                 &stable,
                 system_before.swap_used_bytes,
@@ -689,7 +761,7 @@ fn main() -> Result<()> {
                 &["--query-gpu=driver_version", "--format=csv,noheader"],
             )?,
         },
-        cache_root: CACHE_ROOT.into(),
+        cache_root: cli.cache_root.to_string_lossy().into_owned(),
         cache_bytes_before,
         cache_bytes_after,
         process_before,
@@ -715,6 +787,50 @@ fn main() -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(&record)?;
     bytes.push(b'\n');
     atomic_write(&cli.output, &bytes)?;
+    Ok(())
+}
+
+fn validate_cache_root(path: &Path) -> Result<()> {
+    if path == Path::new(LEGACY_CACHE_ROOT) {
+        return Ok(());
+    }
+    if !path.is_absolute() {
+        bail!("comparison cache root must be absolute");
+    }
+    let workspace = Path::new("/home/emmy/workspace");
+    if std::fs::canonicalize(workspace)? != workspace {
+        bail!("authorized workspace root resolves through an unexpected path");
+    }
+    let relative = path
+        .strip_prefix(workspace)
+        .context("comparison cache root is outside the authorized workspace")?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.len() != 2 {
+        bail!("comparison cache root must be an immediate cache child of one R4 run root");
+    }
+    let run_name = match components[0] {
+        std::path::Component::Normal(name) => name.to_string_lossy(),
+        _ => bail!("comparison run root contains a non-normal component"),
+    };
+    let cache_name = match components[1] {
+        std::path::Component::Normal(name) => name.to_string_lossy(),
+        _ => bail!("comparison cache root contains a non-normal component"),
+    };
+    if !run_name.starts_with(R4_RUN_PREFIX)
+        || !matches!(
+            cache_name.as_ref(),
+            "monolithic-cache" | "capacity-one-cache"
+        )
+    {
+        bail!("comparison cache root does not match the frozen R4 namespace");
+    }
+    let run_root = workspace.join(run_name.as_ref());
+    if run_root.is_symlink() || !run_root.is_dir() {
+        bail!("comparison run root must be an existing non-symlink directory");
+    }
+    if path.exists() && path.is_symlink() {
+        bail!("comparison cache root must not be a symlink");
+    }
     Ok(())
 }
 

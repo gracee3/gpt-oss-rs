@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use gpt_oss_core::error::LLMError;
 use gpt_oss_engine::{
     DrainRole, HeterogeneousTransactionCoordinator, SequenceCommitImage, TransactionOutcome,
@@ -16,10 +16,14 @@ use gpt_oss_model_runner::heterogeneous::{
     ExpertOwner, ExpertResultDescriptor, HeterogeneousControlLayerExecution,
     HeterogeneousControlRuntime, PackedRouteDescriptor, RelayPinnedPoolStats,
 };
+use gpt_oss_model_runner::model_loader::capacity_one::CAPACITY_ONE_POLICY_SHA256;
 use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssCheckpointView;
+use gpt_oss_model_runner::model_loader::gpt_oss_native::GptOssNativeCatalogMap;
 use gpt_oss_model_runner::model_loader::owner_selective::{
-    ConstructionLedger, OwnerSelectiveConstructor, OwnerSelectiveEnvelope,
+    CapacityOneConstructionEvidence, ConstructionLedger, OwnerSelectiveConstructor,
+    OwnerSelectiveEnvelope,
 };
+use gpt_oss_model_runner::model_loader::shard_catalog::SafeTensorShardCatalog;
 use gpt_oss_model_runner::CpuGptOssConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,8 +38,17 @@ const ROLES: [DrainRole; 6] = [
     DrainRole::RankReduction,
 ];
 
+#[derive(Debug, Clone, Copy, ValueEnum, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ConstructorMode {
+    MonolithicControl,
+    CapacityOne,
+}
+
 #[derive(Parser)]
 struct Cli {
+    #[arg(long, value_enum, default_value = "monolithic-control")]
+    constructor: ConstructorMode,
     #[arg(long)]
     model: PathBuf,
     #[arg(long)]
@@ -70,6 +83,8 @@ struct Evidence {
     tensor_parallel_or_nccl_used: bool,
     peer_access_used: bool,
     decode_expert_weight_transfer_bytes: u64,
+    constructor: ConstructorMode,
+    r2_policy_sha256: &'static str,
     binary_sha256: String,
     placement_file_sha256: String,
     retained_trace_sha256: String,
@@ -88,6 +103,7 @@ struct RunEvidence {
     placement: PlacementEvidence,
     envelope: OwnerSelectiveEnvelope,
     final_ledger: ConstructionLedger,
+    capacity_one: Option<CapacityOneConstructionEvidence>,
     construction_stages: Vec<ConstructionStageEvidence>,
     resources_before: ResourceSnapshot,
     resources_after_construct: ResourceSnapshot,
@@ -251,9 +267,7 @@ struct ExpertBoundaryHashes {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.owner_cache.as_path() != Path::new("/home/emmy/workspace/gpt-oss-rs-het-cache") {
-        bail!("H7 owner cache must use the authorized project-scoped root");
-    }
+    validate_owner_cache(&cli.owner_cache, cli.constructor)?;
     let retained: RetainedControl = serde_json::from_slice(&std::fs::read(&cli.retained_trace)?)?;
     if retained.generated_token_ids.get(..EXPECTED.len()) != Some(EXPECTED.as_slice()) {
         bail!("retained CPU control identity does not contain the required continuation");
@@ -296,6 +310,8 @@ fn main() -> Result<()> {
         tensor_parallel_or_nccl_used: false,
         peer_access_used: false,
         decode_expert_weight_transfer_bytes: 0,
+        constructor: cli.constructor,
+        r2_policy_sha256: CAPACITY_ONE_POLICY_SHA256,
         binary_sha256,
         placement_file_sha256,
         retained_trace_sha256,
@@ -318,6 +334,47 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn validate_owner_cache(path: &Path, constructor: ConstructorMode) -> Result<()> {
+    let legacy = Path::new("/home/emmy/workspace/gpt-oss-rs-het-cache");
+    if path == legacy && constructor == ConstructorMode::MonolithicControl {
+        return Ok(());
+    }
+    if !path.is_absolute() {
+        bail!("comparison owner cache must be absolute");
+    }
+    let workspace = Path::new("/home/emmy/workspace");
+    let relative = path
+        .strip_prefix(workspace)
+        .context("comparison owner cache is outside the authorized workspace")?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.len() != 2 {
+        bail!("comparison owner cache must be an immediate child of one R4 run root");
+    }
+    let run_name = match components[0] {
+        std::path::Component::Normal(name) => name.to_string_lossy(),
+        _ => bail!("comparison run root contains a non-normal component"),
+    };
+    let expected_cache = match constructor {
+        ConstructorMode::MonolithicControl => "monolithic-cache",
+        ConstructorMode::CapacityOne => "capacity-one-cache",
+    };
+    let cache_name = match components[1] {
+        std::path::Component::Normal(name) => name.to_string_lossy(),
+        _ => bail!("comparison cache root contains a non-normal component"),
+    };
+    if !run_name.starts_with("gpt-oss-rs-het-r4-") || cache_name != expected_cache {
+        bail!("comparison owner cache does not match its constructor-bound R4 namespace");
+    }
+    let run_root = workspace.join(run_name.as_ref());
+    if run_root.is_symlink() || !run_root.is_dir() {
+        bail!("comparison run root must be an existing non-symlink directory");
+    }
+    if path.is_symlink() {
+        bail!("comparison owner cache must not be a symlink");
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_once(
     run_index: usize,
@@ -328,16 +385,9 @@ fn run_once(
     manifest: &gpt_oss_model_runner::heterogeneous::GptOssExpertPlacementManifestV1,
 ) -> Result<RunEvidence> {
     let resources_before = resource_snapshot()?;
-    let checkpoint = GptOssCheckpointView::open(&cli.native_model)?;
-    let model_identity = ModelIdentityEvidence {
-        revision: checkpoint.revision().to_owned(),
-        config_sha256: checkpoint.config_sha256().to_owned(),
-        index_sha256: checkpoint.metadata_sha256().to_owned(),
-        mapping_sha256: checkpoint.mapping_sha256().to_owned(),
-    };
     let constructor = OwnerSelectiveConstructor::new(&cli.owner_cache);
     let mut construction_stages = Vec::with_capacity(8);
-    let mut model = constructor.construct(checkpoint, manifest, |ledger| {
+    let mut observer = |ledger: &ConstructionLedger| {
         let resources = resource_snapshot()
             .map_err(|error| LLMError::MemoryError(format!("H7 stage snapshot: {error:#}")))?;
         construction_stages.push(ConstructionStageEvidence {
@@ -345,7 +395,44 @@ fn run_once(
             resources,
         });
         Ok(())
-    })?;
+    };
+    let (mut model, model_identity) = match cli.constructor {
+        ConstructorMode::MonolithicControl => {
+            let checkpoint = GptOssCheckpointView::open(&cli.native_model)?;
+            let identity = ModelIdentityEvidence {
+                revision: checkpoint.revision().to_owned(),
+                config_sha256: checkpoint.config_sha256().to_owned(),
+                index_sha256: checkpoint.metadata_sha256().to_owned(),
+                mapping_sha256: checkpoint.mapping_sha256().to_owned(),
+            };
+            (
+                constructor.construct(checkpoint, manifest, &mut observer)?,
+                identity,
+            )
+        }
+        ConstructorMode::CapacityOne => {
+            let catalog = SafeTensorShardCatalog::open(&cli.native_model)?;
+            let native = GptOssNativeCatalogMap::from_source_root(&cli.native_model, &catalog)?;
+            let identity = ModelIdentityEvidence {
+                revision: native.revision().to_owned(),
+                config_sha256: native.config_sha256().to_owned(),
+                index_sha256: native.metadata_sha256().to_owned(),
+                mapping_sha256: native.mapping_sha256().to_owned(),
+            };
+            drop(native);
+            drop(catalog);
+            (
+                constructor.construct_capacity_one(
+                    &cli.native_model,
+                    manifest,
+                    CAPACITY_ONE_POLICY_SHA256,
+                    &mut observer,
+                )?,
+                identity,
+            )
+        }
+    };
+    let capacity_one = model.capacity_one_evidence().cloned();
     let resources_after_construct = resource_snapshot()?;
     let placement = {
         let resolved = model.placement();
@@ -500,6 +587,7 @@ fn run_once(
         placement,
         envelope,
         final_ledger,
+        capacity_one,
         construction_stages,
         resources_before,
         resources_after_construct,
