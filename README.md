@@ -42,12 +42,22 @@ The results table is populated only from the checked-in v0.1.0 evidence bundle.
 
 | Lane | Startup median (s) | Prompt / TTFT median (s) | Full request median (s) | Decode median (tok/s) | Peak RSS median (KiB) | Token result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Pending final controlled capture | — | — | — | — | — | — |
+| gpt-oss-rs Auto | 59.379 | 220.206 / 220.206 | 224.473 | 1.880 | 10,659,476 | exact 8/8 |
+| gpt-oss-rs scalar | 59.191 | 183.865 / 183.865 | 210.067 | 0.310 | 10,659,520 | exact 8/8 |
+| llama.cpp normal CPU | 6.040 | 1.375 / 1.375 | 1.897 | 15.429 | 23,509,208 | exact 8/8 |
+| llama.cpp `ubatch=1` | 6.039 | 3.486 / 3.486 | 3.998 | 15.646 | 23,509,112 | exact 8/8 |
 
 Internal speedups are reported only when the paired 10,000-iteration bootstrap
 interval supports them. llama.cpp is retained as same-host context, not as a
 universal ranking. If output tokens diverge, decode and full-request ratios are
 omitted and the divergence remains a result.
+
+All four measured lanes produced the pinned official token sequence in every
+trial. Auto's decode throughput was a supported 6.05x over scalar (95% paired
+bootstrap interval 5.59x-6.23x), but Auto had slower prompt and full-request
+medians and earned no latency-speedup claim. The locally converted GGUF hash
+also differed from the historical fixture hash; both identities are retained
+in the evidence instead of substituting a downloaded file.
 
 See the [benchmark protocol](docs/research/BENCHMARK_PROTOCOL.md), [final
 report](docs/research/FINAL_REPORT.md), and [versioned evidence

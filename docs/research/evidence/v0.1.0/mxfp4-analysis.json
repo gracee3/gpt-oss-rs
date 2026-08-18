@@ -1,0 +1,496 @@
+{
+  "analysis_sha256": "4f23c934775ad22dd6b711da439e768c96f38a1c4ac04583c9b6ecd63db402a4",
+  "bootstrap_iterations": 10000,
+  "candidate_regions": [
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "k": 2880,
+      "m_end": 1,
+      "m_start": 1,
+      "n": 2880
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "k": 2880,
+      "m_end": 3,
+      "m_start": 3,
+      "n": 2880
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "k": 2880,
+      "m_end": 8,
+      "m_start": 8,
+      "n": 2880
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "k": 2880,
+      "m_end": 1,
+      "m_start": 1,
+      "n": 5760
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "k": 2880,
+      "m_end": 3,
+      "m_start": 3,
+      "n": 5760
+    }
+  ],
+  "comparisons": [
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 1595866,
+          "comparator": "scalar",
+          "comparator_median_ns": 13068965,
+          "median_ratio": 0.1221111235664033,
+          "paired_95ci_ns": [
+            -11510861,
+            -11396151
+          ],
+          "paired_median_difference_ns": -11465047,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 1595866,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 2872135,
+          "median_ratio": 0.5556375309656405,
+          "paired_95ci_ns": [
+            -1280049,
+            -888262
+          ],
+          "paired_median_difference_ns": -1210525,
+          "proven_lower_latency": true
+        }
+      ],
+      "k": 2880,
+      "m": 1,
+      "n": 2880,
+      "qualifies": true,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 2872135,
+          "comparator": "scalar",
+          "comparator_median_ns": 13068965,
+          "median_ratio": 0.2197675944499048,
+          "paired_95ci_ns": [
+            -10387164,
+            -10113223
+          ],
+          "paired_median_difference_ns": -10188498,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 2872135,
+          "comparator": "avx2",
+          "comparator_median_ns": 1595866,
+          "median_ratio": 1.7997344388563952,
+          "paired_95ci_ns": [
+            888262,
+            1280049
+          ],
+          "paired_median_difference_ns": 1210525,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 1,
+      "n": 2880,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 4312677,
+          "comparator": "scalar",
+          "comparator_median_ns": 36096928,
+          "median_ratio": 0.11947490379236704,
+          "paired_95ci_ns": [
+            -31999672,
+            -31555913
+          ],
+          "paired_median_difference_ns": -31658566,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 4312677,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 4654611,
+          "median_ratio": 0.9265386516725028,
+          "paired_95ci_ns": [
+            -589713,
+            -187021
+          ],
+          "paired_median_difference_ns": -281462,
+          "proven_lower_latency": true
+        }
+      ],
+      "k": 2880,
+      "m": 3,
+      "n": 2880,
+      "qualifies": true,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 4654611,
+          "comparator": "scalar",
+          "comparator_median_ns": 36096928,
+          "median_ratio": 0.12894756584272213,
+          "paired_95ci_ns": [
+            -31657042,
+            -31291449
+          ],
+          "paired_median_difference_ns": -31446230,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 4654611,
+          "comparator": "avx2",
+          "comparator_median_ns": 4312677,
+          "median_ratio": 1.0792857893136907,
+          "paired_95ci_ns": [
+            187021,
+            589713
+          ],
+          "paired_median_difference_ns": 281462,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 3,
+      "n": 2880,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 11374181,
+          "comparator": "scalar",
+          "comparator_median_ns": 96637074,
+          "median_ratio": 0.11769997299380153,
+          "paired_95ci_ns": [
+            -85706768,
+            -84538229
+          ],
+          "paired_median_difference_ns": -84912890,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 11374181,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 10719343,
+          "median_ratio": 1.0610893783322355,
+          "paired_95ci_ns": [
+            31592,
+            917187
+          ],
+          "paired_median_difference_ns": 578127,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 8,
+      "n": 2880,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 10719343,
+          "comparator": "scalar",
+          "comparator_median_ns": 96637074,
+          "median_ratio": 0.11092371236322822,
+          "paired_95ci_ns": [
+            -86283161,
+            -85438721
+          ],
+          "paired_median_difference_ns": -85836780,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 10719343,
+          "comparator": "avx2",
+          "comparator_median_ns": 11374181,
+          "median_ratio": 0.9424276789687099,
+          "paired_95ci_ns": [
+            -917187,
+            -234704
+          ],
+          "paired_median_difference_ns": -578127,
+          "proven_lower_latency": true
+        }
+      ],
+      "k": 2880,
+      "m": 8,
+      "n": 2880,
+      "qualifies": true,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 3019582,
+          "comparator": "scalar",
+          "comparator_median_ns": 24065234,
+          "median_ratio": 0.1254748655259284,
+          "paired_95ci_ns": [
+            -21248358,
+            -20884226
+          ],
+          "paired_median_difference_ns": -21059241,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 3019582,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 4264628,
+          "median_ratio": 0.7080528477513162,
+          "paired_95ci_ns": [
+            -1491017,
+            -921635
+          ],
+          "paired_median_difference_ns": -1173629,
+          "proven_lower_latency": true
+        }
+      ],
+      "k": 2880,
+      "m": 1,
+      "n": 5760,
+      "qualifies": true,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 4264628,
+          "comparator": "scalar",
+          "comparator_median_ns": 24065234,
+          "median_ratio": 0.17721115863656262,
+          "paired_95ci_ns": [
+            -20278906,
+            -19397719
+          ],
+          "paired_median_difference_ns": -19871287,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 4264628,
+          "comparator": "avx2",
+          "comparator_median_ns": 3019582,
+          "median_ratio": 1.4123239574219213,
+          "paired_95ci_ns": [
+            921635,
+            1491017
+          ],
+          "paired_median_difference_ns": 1173629,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 1,
+      "n": 5760,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 8333145,
+          "comparator": "scalar",
+          "comparator_median_ns": 73360640,
+          "median_ratio": 0.11359149811124876,
+          "paired_95ci_ns": [
+            -65767891,
+            -63916051
+          ],
+          "paired_median_difference_ns": -64551617,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 8333145,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 9285336,
+          "median_ratio": 0.8974521762055784,
+          "paired_95ci_ns": [
+            -1656603,
+            -956232
+          ],
+          "paired_median_difference_ns": -1229158,
+          "proven_lower_latency": true
+        }
+      ],
+      "k": 2880,
+      "m": 3,
+      "n": 5760,
+      "qualifies": true,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 9285336,
+          "comparator": "scalar",
+          "comparator_median_ns": 73360640,
+          "median_ratio": 0.12657108771133949,
+          "paired_95ci_ns": [
+            -64075304,
+            -62369988
+          ],
+          "paired_median_difference_ns": -63449766,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 9285336,
+          "comparator": "avx2",
+          "comparator_median_ns": 8333145,
+          "median_ratio": 1.1142655024003543,
+          "paired_95ci_ns": [
+            956232,
+            1656603
+          ],
+          "paired_median_difference_ns": 1229158,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 3,
+      "n": 5760,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx2",
+      "comparisons": [
+        {
+          "candidate_median_ns": 21028025,
+          "comparator": "scalar",
+          "comparator_median_ns": 192943720,
+          "median_ratio": 0.1089852781940765,
+          "paired_95ci_ns": [
+            -173439102,
+            -170505288
+          ],
+          "paired_median_difference_ns": -171354741,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 21028025,
+          "comparator": "avx512-vnni",
+          "comparator_median_ns": 21081614,
+          "median_ratio": 0.9974580219522091,
+          "paired_95ci_ns": [
+            -1308990,
+            616403
+          ],
+          "paired_median_difference_ns": -145612,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 8,
+      "n": 5760,
+      "qualifies": false,
+      "thermally_clean": true
+    },
+    {
+      "activation": "residual-q8",
+      "candidate": "avx512-vnni",
+      "comparisons": [
+        {
+          "candidate_median_ns": 21081614,
+          "comparator": "scalar",
+          "comparator_median_ns": 192943720,
+          "median_ratio": 0.10926302239844862,
+          "paired_95ci_ns": [
+            -172531542,
+            -169945984
+          ],
+          "paired_median_difference_ns": -171059553,
+          "proven_lower_latency": true
+        },
+        {
+          "candidate_median_ns": 21081614,
+          "comparator": "avx2",
+          "comparator_median_ns": 21028025,
+          "median_ratio": 1.0025484561674243,
+          "paired_95ci_ns": [
+            -616403,
+            1308990
+          ],
+          "paired_median_difference_ns": 145612,
+          "proven_lower_latency": false
+        }
+      ],
+      "k": 2880,
+      "m": 8,
+      "n": 5760,
+      "qualifies": false,
+      "thermally_clean": true
+    }
+  ],
+  "cpu_identity": {
+    "family": 6,
+    "logical_cpus": 16,
+    "microcode": "0x5003901",
+    "model": 85,
+    "osxsave": true,
+    "physical_cores": 8,
+    "profile_key": "GenuineIntel-family6-model85-stepping7-cores8-logical16-microcode5003901-xcr02ff",
+    "stepping": 7,
+    "vendor": "GenuineIntel",
+    "xcr0": 767
+  },
+  "executable_sha256": "f3e2908834ea47c8f1fadcd05261b3b33ee503d6b8d8cc0c344575164ebfb49c",
+  "fallback": "scalar for ties, uncertain intervals, gaps, unobserved shapes, or profile mismatch",
+  "inputs": [
+    {
+      "path": "mxfp4-gate-up.json",
+      "sha256": "6ee279282c40c39cb266f8b703452bcaeacd4a6feb547ec3cbdc610836f340ee"
+    },
+    {
+      "path": "mxfp4-down.json",
+      "sha256": "19d2cecda39eaf94dd9f588daa60c27b601409af78d372a4aa06a5be4fa31d41"
+    }
+  ],
+  "promotion_status": "positive",
+  "repository_commit": "49101d5a92041f4dd53e3ecedb6bd7facbb84adf",
+  "schema": "gpt-oss-rs.mxfp4-matrix-promotion-analysis/v1",
+  "selection_rule": "paired bootstrap 95% CI upper bound for median latency difference is below zero against scalar and every other legal explicit candidate"
+}

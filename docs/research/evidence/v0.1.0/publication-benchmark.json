@@ -1,0 +1,2586 @@
+{
+  "analysis": {
+    "internal_comparison": {
+      "candidate": "gpt-oss-rs-auto",
+      "comparator": "gpt-oss-rs-scalar",
+      "decode_throughput": {
+        "95ci": [
+          5.587304150001382,
+          6.229977178165235
+        ],
+        "estimate": 6.054754089097236,
+        "iterations": 10000,
+        "reported_speedup": 6.054754089097236,
+        "supported": true
+      },
+      "full_request_latency": {
+        "95ci": [
+          0.9323130624233724,
+          0.9459377921976782
+        ],
+        "estimate": 0.9358224095157384,
+        "iterations": 10000,
+        "reported_speedup": null,
+        "supported": false
+      },
+      "prompt_latency": {
+        "95ci": [
+          0.8316324422526801,
+          0.8503485973435659
+        ],
+        "estimate": 0.8349691620655352,
+        "iterations": 10000,
+        "reported_speedup": null,
+        "supported": false
+      }
+    },
+    "llama_context_policy": "same-host context only; no universal or cross-project speedup claim",
+    "ratio_policy": "only paired internal gpt-oss-rs Auto-versus-scalar speedups with 95% CI above 1 are reportable",
+    "summaries": {
+      "gpt-oss-rs-auto": {
+        "median_decode_tokens_per_second": 1.8799463540442085,
+        "median_full_request_seconds": 224.473497202,
+        "median_peak_rss_kib": 10659476,
+        "median_prompt_seconds": 220.205564765,
+        "median_startup_seconds": 59.378842992,
+        "median_ttft_seconds": 220.205798688,
+        "samples": 5
+      },
+      "gpt-oss-rs-scalar": {
+        "median_decode_tokens_per_second": 0.3104909508099459,
+        "median_full_request_seconds": 210.067329024,
+        "median_peak_rss_kib": 10659520,
+        "median_prompt_seconds": 183.864855894,
+        "median_startup_seconds": 59.190507156,
+        "median_ttft_seconds": 183.865082757,
+        "samples": 5
+      },
+      "llama.cpp-normal": {
+        "median_decode_tokens_per_second": 15.42927125623198,
+        "median_full_request_seconds": 1.8971079739967536,
+        "median_peak_rss_kib": 23509208,
+        "median_prompt_seconds": 1.374574,
+        "median_startup_seconds": 6.039517312998214,
+        "median_ttft_seconds": 1.374574,
+        "samples": 5
+      },
+      "llama.cpp-ubatch-1": {
+        "median_decode_tokens_per_second": 15.646391550948563,
+        "median_full_request_seconds": 3.998079542998312,
+        "median_peak_rss_kib": 23509112,
+        "median_prompt_seconds": 3.485627,
+        "median_startup_seconds": 6.03895594399728,
+        "median_ttft_seconds": 3.485627,
+        "samples": 5
+      }
+    },
+    "token_divergence": false,
+    "token_identity": {
+      "gpt-oss-rs-auto": {
+        "matches_official": true,
+        "sequences": [
+          [
+            200005,
+            35644,
+            200008,
+            976,
+            1825,
+            5003,
+            25,
+            392
+          ]
+        ],
+        "stable": true
+      },
+      "gpt-oss-rs-scalar": {
+        "matches_official": true,
+        "sequences": [
+          [
+            200005,
+            35644,
+            200008,
+            976,
+            1825,
+            5003,
+            25,
+            392
+          ]
+        ],
+        "stable": true
+      },
+      "llama.cpp-normal": {
+        "matches_official": true,
+        "sequences": [
+          [
+            200005,
+            35644,
+            200008,
+            976,
+            1825,
+            5003,
+            25,
+            392
+          ]
+        ],
+        "stable": true
+      },
+      "llama.cpp-ubatch-1": {
+        "matches_official": true,
+        "sequences": [
+          [
+            200005,
+            35644,
+            200008,
+            976,
+            1825,
+            5003,
+            25,
+            392
+          ]
+        ],
+        "stable": true
+      }
+    }
+  },
+  "content_sha256": "a5fc04807931770e1910ab015e73f8df5f22850e76b0376ee26a41670a3e8487",
+  "host": {
+    "captured_unix_seconds": 1787015985,
+    "cpu": {
+      "cpu_family": "6",
+      "logical_cpus": "16",
+      "microcode": "0x5003901",
+      "model": "85",
+      "model_name": "Intel(R) Xeon(R) Silver 4215R CPU @ 3.20GHz",
+      "stepping": "7",
+      "vendor_id": "GenuineIntel"
+    },
+    "governors": [
+      "schedutil"
+    ],
+    "kernel_release": "7.0.0-29-generic",
+    "machine": "x86_64",
+    "operating_system": "Linux",
+    "selected_physical_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  "matrix": {
+    "analysis_artifact": "mxfp4-analysis.json",
+    "bootstrap_iterations": 10000,
+    "promotion_status": "positive",
+    "raw_artifacts": [
+      "mxfp4-gate-up.json",
+      "mxfp4-down.json"
+    ]
+  },
+  "model": {
+    "gguf_sha256": "aab205256a9b6361e410c24de3086e30f907092ca6f9ba8cd4b22c8a2b025778",
+    "historical_gguf_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+    "id": "openai/gpt-oss-20b",
+    "matches_historical_gguf": false,
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "source_hashes": {
+      "config.json": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+      "model.safetensors.index.json": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+      "tokenizer.json": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3"
+    }
+  },
+  "prompt": {
+    "expected_output_token_ids": [
+      200005,
+      35644,
+      200008,
+      976,
+      1825,
+      5003,
+      25,
+      392
+    ],
+    "scenario": "harmony_63",
+    "token_ids": [
+      200006,
+      17360,
+      200008,
+      3575,
+      553,
+      17554,
+      162016,
+      11,
+      261,
+      4410,
+      6439,
+      2359,
+      22203,
+      656,
+      7788,
+      17527,
+      558,
+      87447,
+      100594,
+      25,
+      220,
+      1323,
+      19,
+      12,
+      3218,
+      279,
+      30377,
+      289,
+      25,
+      14093,
+      279,
+      2,
+      13888,
+      18403,
+      25,
+      8450,
+      11,
+      49159,
+      11,
+      1721,
+      13,
+      21030,
+      2804,
+      413,
+      7360,
+      395,
+      1753,
+      3176,
+      13,
+      200007,
+      200006,
+      1428,
+      200008,
+      25968,
+      483,
+      9707,
+      1001,
+      4022,
+      64790,
+      13,
+      200007,
+      200006,
+      173781
+    ],
+    "token_ids_sha256": "ff9e5194630553a210511cf07197796dc07f8756b095b042580282261820cab3"
+  },
+  "protocol": {
+    "cpus": "0-7",
+    "fresh_processes": true,
+    "gpu_backends": "disabled",
+    "greedy_output_tokens": 8,
+    "measured_trials_per_lane": 5,
+    "page_cache": "warm; no privileged cache dropping",
+    "prompt_cache_reuse": false,
+    "prompt_tokens": 63,
+    "reject_thermal_throttling": true,
+    "run_order": [
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 0,
+        "phase": "warmup",
+        "round": 0
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 1,
+        "phase": "warmup",
+        "round": 0
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 2,
+        "phase": "warmup",
+        "round": 0
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 3,
+        "phase": "warmup",
+        "round": 0
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 0,
+        "phase": "measured",
+        "round": 1
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 1,
+        "phase": "measured",
+        "round": 1
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 2,
+        "phase": "measured",
+        "round": 1
+      },
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 3,
+        "phase": "measured",
+        "round": 1
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 0,
+        "phase": "measured",
+        "round": 2
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 1,
+        "phase": "measured",
+        "round": 2
+      },
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 2,
+        "phase": "measured",
+        "round": 2
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 3,
+        "phase": "measured",
+        "round": 2
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 0,
+        "phase": "measured",
+        "round": 3
+      },
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 1,
+        "phase": "measured",
+        "round": 3
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 2,
+        "phase": "measured",
+        "round": 3
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 3,
+        "phase": "measured",
+        "round": 3
+      },
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 0,
+        "phase": "measured",
+        "round": 4
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 1,
+        "phase": "measured",
+        "round": 4
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 2,
+        "phase": "measured",
+        "round": 4
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 3,
+        "phase": "measured",
+        "round": 4
+      },
+      {
+        "lane": "gpt-oss-rs-scalar",
+        "order": 0,
+        "phase": "measured",
+        "round": 5
+      },
+      {
+        "lane": "llama.cpp-normal",
+        "order": 1,
+        "phase": "measured",
+        "round": 5
+      },
+      {
+        "lane": "llama.cpp-ubatch-1",
+        "order": 2,
+        "phase": "measured",
+        "round": 5
+      },
+      {
+        "lane": "gpt-oss-rs-auto",
+        "order": 3,
+        "phase": "measured",
+        "round": 5
+      }
+    ],
+    "scenario": "harmony_63",
+    "thermal_end_ceiling_c": 95.0,
+    "thermal_start_gate_c": 65.0,
+    "threads": 8,
+    "warmups_per_lane": 1
+  },
+  "runs": [
+    {
+      "decode_tokens_per_second": 1.901319501909018,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        46.0,
+        39.0,
+        40.0,
+        42.0,
+        44.0,
+        41.0,
+        41.0,
+        40.0,
+        40.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 223.843033523,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 0,
+      "peak_rss_kib": 20573588,
+      "phase": "warmup",
+      "prompt_seconds": 219.635587471,
+      "round": 0,
+      "startup_seconds": 84.081724893,
+      "thermal_gate": {
+        "maximum_c": 56.0,
+        "temperatures_c": [
+          56.0,
+          56.0,
+          41.0,
+          42.0,
+          41.0,
+          41.0,
+          41.0,
+          39.0,
+          40.0
+        ],
+        "wait_seconds": 0.0020376840002427343
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 219.635802649
+    },
+    {
+      "decode_tokens_per_second": 0.29125232688328384,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        42.0,
+        42.0,
+        43.0,
+        41.0,
+        46.0,
+        43.0,
+        41.0,
+        42.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 214.10462239,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 1,
+      "peak_rss_kib": 20573652,
+      "phase": "warmup",
+      "prompt_seconds": 186.735582773,
+      "round": 0,
+      "startup_seconds": 86.78147444,
+      "thermal_gate": {
+        "maximum_c": 46.0,
+        "temperatures_c": [
+          46.0,
+          39.0,
+          40.0,
+          42.0,
+          44.0,
+          41.0,
+          41.0,
+          40.0,
+          40.0
+        ],
+        "wait_seconds": 0.0005215829987719189
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 186.735816083
+    },
+    {
+      "decode_tokens_per_second": 15.522406593918321,
+      "end_temperatures_c": [
+        48.0,
+        42.0,
+        43.0,
+        46.0,
+        42.0,
+        43.0,
+        44.0,
+        42.0,
+        43.0
+      ],
+      "full_request_seconds": 2.015273483997589,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 2,
+      "peak_rss_kib": 23509064,
+      "phase": "warmup",
+      "prompt_seconds": 1.497883,
+      "round": 0,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 515.384,
+        "predicted_n": 8,
+        "predicted_per_second": 15.522406593918321,
+        "prompt_ms": 1497.883,
+        "prompt_n": 63,
+        "prompt_per_second": 42.05935977643113
+      },
+      "startup_seconds": 6.055251293997571,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          42.0,
+          42.0,
+          43.0,
+          41.0,
+          46.0,
+          43.0,
+          41.0,
+          42.0
+        ],
+        "wait_seconds": 0.0017262540022784378
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.497883
+    },
+    {
+      "decode_tokens_per_second": 15.804685694191186,
+      "end_temperatures_c": [
+        49.0,
+        47.0,
+        43.0,
+        44.0,
+        43.0,
+        44.0,
+        44.0,
+        42.0,
+        44.0
+      ],
+      "full_request_seconds": 4.02120246299819,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 3,
+      "peak_rss_kib": 23509244,
+      "phase": "warmup",
+      "prompt_seconds": 3.5131509999999997,
+      "round": 0,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 506.179,
+        "predicted_n": 8,
+        "predicted_per_second": 15.804685694191186,
+        "prompt_ms": 3513.151,
+        "prompt_n": 63,
+        "prompt_per_second": 17.93261946326816
+      },
+      "startup_seconds": 6.288745722002204,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          42.0,
+          43.0,
+          46.0,
+          42.0,
+          43.0,
+          44.0,
+          42.0,
+          43.0
+        ],
+        "wait_seconds": 0.0005270000001473818
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.5131509999999997
+    },
+    {
+      "decode_tokens_per_second": 0.3104909508099459,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        41.0,
+        43.0,
+        45.0,
+        42.0,
+        43.0,
+        40.0,
+        41.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 214.63468713,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 0,
+      "peak_rss_kib": 10659472,
+      "phase": "measured",
+      "prompt_seconds": 188.842680563,
+      "round": 1,
+      "startup_seconds": 60.073804434,
+      "thermal_gate": {
+        "maximum_c": 49.0,
+        "temperatures_c": [
+          49.0,
+          47.0,
+          43.0,
+          44.0,
+          43.0,
+          44.0,
+          44.0,
+          42.0,
+          44.0
+        ],
+        "wait_seconds": 0.00187664099939866
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 188.84290646
+    },
+    {
+      "decode_tokens_per_second": 15.128078091139107,
+      "end_temperatures_c": [
+        48.0,
+        40.0,
+        41.0,
+        44.0,
+        41.0,
+        44.0,
+        43.0,
+        41.0,
+        42.0
+      ],
+      "full_request_seconds": 1.9062061680015177,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 1,
+      "peak_rss_kib": 23509112,
+      "phase": "measured",
+      "prompt_seconds": 1.375525,
+      "round": 1,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 528.818,
+        "predicted_n": 8,
+        "predicted_per_second": 15.128078091139107,
+        "prompt_ms": 1375.525,
+        "prompt_n": 63,
+        "prompt_per_second": 45.800694280365676
+      },
+      "startup_seconds": 6.028986106000957,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          41.0,
+          43.0,
+          45.0,
+          42.0,
+          43.0,
+          40.0,
+          41.0
+        ],
+        "wait_seconds": 0.0017474800006311852
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.375525
+    },
+    {
+      "decode_tokens_per_second": 15.643852063912957,
+      "end_temperatures_c": [
+        48.0,
+        48.0,
+        43.0,
+        44.0,
+        43.0,
+        44.0,
+        44.0,
+        43.0,
+        43.0
+      ],
+      "full_request_seconds": 4.218978318000154,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 2,
+      "peak_rss_kib": 23509268,
+      "phase": "measured",
+      "prompt_seconds": 3.705658,
+      "round": 1,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 511.383,
+        "predicted_n": 8,
+        "predicted_per_second": 15.643852063912957,
+        "prompt_ms": 3705.658,
+        "prompt_n": 63,
+        "prompt_per_second": 17.00102923691285
+      },
+      "startup_seconds": 6.037489023998205,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          40.0,
+          41.0,
+          44.0,
+          41.0,
+          44.0,
+          43.0,
+          41.0,
+          42.0
+        ],
+        "wait_seconds": 0.0007396330001938622
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.705658
+    },
+    {
+      "decode_tokens_per_second": 1.8799463540442085,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        42.0,
+        43.0,
+        43.0,
+        42.0,
+        42.0,
+        43.0,
+        41.0,
+        42.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 226.901482212,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 3,
+      "peak_rss_kib": 10659336,
+      "phase": "measured",
+      "prompt_seconds": 222.652229184,
+      "round": 1,
+      "startup_seconds": 60.0431067,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          48.0,
+          43.0,
+          44.0,
+          43.0,
+          44.0,
+          44.0,
+          43.0,
+          43.0
+        ],
+        "wait_seconds": 0.0005634009976347443
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 222.652455258
+    },
+    {
+      "decode_tokens_per_second": 15.598160197004765,
+      "end_temperatures_c": [
+        48.0,
+        43.0,
+        43.0,
+        44.0,
+        43.0,
+        44.0,
+        45.0,
+        44.0,
+        44.0
+      ],
+      "full_request_seconds": 1.94914351099942,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 0,
+      "peak_rss_kib": 23509276,
+      "phase": "measured",
+      "prompt_seconds": 1.4345,
+      "round": 2,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 512.881,
+        "predicted_n": 8,
+        "predicted_per_second": 15.598160197004765,
+        "prompt_ms": 1434.5,
+        "prompt_n": 63,
+        "prompt_per_second": 43.9177413733008
+      },
+      "startup_seconds": 6.039517312998214,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          42.0,
+          43.0,
+          43.0,
+          42.0,
+          42.0,
+          43.0,
+          41.0,
+          42.0
+        ],
+        "wait_seconds": 0.0007093870008247904
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.4345
+    },
+    {
+      "decode_tokens_per_second": 15.646391550948563,
+      "end_temperatures_c": [
+        48.0,
+        47.0,
+        43.0,
+        44.0,
+        43.0,
+        43.0,
+        44.0,
+        42.0,
+        43.0
+      ],
+      "full_request_seconds": 3.998665813000116,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 1,
+      "peak_rss_kib": 23509076,
+      "phase": "measured",
+      "prompt_seconds": 3.4853449999999997,
+      "round": 2,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 511.3,
+        "predicted_n": 8,
+        "predicted_per_second": 15.646391550948563,
+        "prompt_ms": 3485.345,
+        "prompt_n": 63,
+        "prompt_per_second": 18.075685477334385
+      },
+      "startup_seconds": 6.041365164001036,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          43.0,
+          43.0,
+          44.0,
+          43.0,
+          44.0,
+          45.0,
+          44.0,
+          44.0
+        ],
+        "wait_seconds": 0.0005147160009073559
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.4853449999999997
+    },
+    {
+      "decode_tokens_per_second": 1.8822757778661963,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        46.0,
+        40.0,
+        39.0,
+        42.0,
+        40.0,
+        41.0,
+        41.0,
+        40.0,
+        42.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 224.473497202,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 2,
+      "peak_rss_kib": 10659420,
+      "phase": "measured",
+      "prompt_seconds": 220.205564765,
+      "round": 2,
+      "startup_seconds": 59.771789696,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          47.0,
+          43.0,
+          44.0,
+          43.0,
+          43.0,
+          44.0,
+          42.0,
+          43.0
+        ],
+        "wait_seconds": 0.0007288749984581955
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 220.205798688
+    },
+    {
+      "decode_tokens_per_second": 0.30602662581991164,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        46.0,
+        41.0,
+        40.0,
+        42.0,
+        40.0,
+        41.0,
+        43.0,
+        45.0,
+        40.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 210.067329024,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 3,
+      "peak_rss_kib": 10659444,
+      "phase": "measured",
+      "prompt_seconds": 183.864855894,
+      "round": 2,
+      "startup_seconds": 59.405339471,
+      "thermal_gate": {
+        "maximum_c": 46.0,
+        "temperatures_c": [
+          46.0,
+          40.0,
+          39.0,
+          42.0,
+          40.0,
+          41.0,
+          41.0,
+          40.0,
+          42.0
+        ],
+        "wait_seconds": 0.0017913240008056164
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 183.865082757
+    },
+    {
+      "decode_tokens_per_second": 15.771253735815728,
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        41.0,
+        43.0,
+        41.0,
+        43.0,
+        43.0,
+        42.0,
+        42.0
+      ],
+      "full_request_seconds": 3.998079542998312,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 0,
+      "peak_rss_kib": 23509124,
+      "phase": "measured",
+      "prompt_seconds": 3.488705,
+      "round": 3,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 507.252,
+        "predicted_n": 8,
+        "predicted_per_second": 15.771253735815728,
+        "prompt_ms": 3488.705,
+        "prompt_n": 63,
+        "prompt_per_second": 18.058276638466136
+      },
+      "startup_seconds": 6.03895594399728,
+      "thermal_gate": {
+        "maximum_c": 46.0,
+        "temperatures_c": [
+          46.0,
+          41.0,
+          40.0,
+          42.0,
+          40.0,
+          41.0,
+          43.0,
+          45.0,
+          40.0
+        ],
+        "wait_seconds": 0.0006535120010084938
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.488705
+    },
+    {
+      "decode_tokens_per_second": 1.9169571343267104,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        44.0,
+        42.0,
+        41.0,
+        43.0,
+        43.0,
+        40.0,
+        41.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 224.048244476,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 1,
+      "peak_rss_kib": 10659504,
+      "phase": "measured",
+      "prompt_seconds": 219.901147456,
+      "round": 3,
+      "startup_seconds": 59.022694433,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          41.0,
+          43.0,
+          41.0,
+          43.0,
+          43.0,
+          42.0,
+          42.0
+        ],
+        "wait_seconds": 0.0007445060000463855
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 219.901373973
+    },
+    {
+      "decode_tokens_per_second": 0.3076989015377526,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        41.0,
+        42.0,
+        47.0,
+        41.0,
+        42.0,
+        40.0,
+        40.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 208.883104938,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 2,
+      "peak_rss_kib": 10659652,
+      "phase": "measured",
+      "prompt_seconds": 182.876928313,
+      "round": 3,
+      "startup_seconds": 59.091173082,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          44.0,
+          42.0,
+          41.0,
+          43.0,
+          43.0,
+          40.0,
+          41.0
+        ],
+        "wait_seconds": 0.0006042860004527029
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 182.877154269
+    },
+    {
+      "decode_tokens_per_second": 15.50435672423951,
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        41.0,
+        44.0,
+        41.0,
+        43.0,
+        43.0,
+        41.0,
+        41.0
+      ],
+      "full_request_seconds": 1.8782263770008285,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 3,
+      "peak_rss_kib": 23509208,
+      "phase": "measured",
+      "prompt_seconds": 1.360147,
+      "round": 3,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 515.984,
+        "predicted_n": 8,
+        "predicted_per_second": 15.50435672423951,
+        "prompt_ms": 1360.147,
+        "prompt_n": 63,
+        "prompt_per_second": 46.31852292436039
+      },
+      "startup_seconds": 6.0399263449980936,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          41.0,
+          42.0,
+          47.0,
+          41.0,
+          42.0,
+          40.0,
+          40.0
+        ],
+        "wait_seconds": 0.0018053280000458471
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.360147
+    },
+    {
+      "decode_tokens_per_second": 1.856871470110051,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        40.0,
+        45.0,
+        41.0,
+        42.0,
+        42.0,
+        40.0,
+        41.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 223.493011197,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 0,
+      "peak_rss_kib": 10659476,
+      "phase": "measured",
+      "prompt_seconds": 219.221594318,
+      "round": 4,
+      "startup_seconds": 59.103589174,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          41.0,
+          44.0,
+          41.0,
+          43.0,
+          43.0,
+          41.0,
+          41.0
+        ],
+        "wait_seconds": 0.002016341000853572
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 219.221820567
+    },
+    {
+      "decode_tokens_per_second": 0.31315516663121773,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        51.0,
+        39.0,
+        41.0,
+        42.0,
+        51.0,
+        41.0,
+        41.0,
+        39.0,
+        40.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 208.498741123,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 1,
+      "peak_rss_kib": 10659520,
+      "phase": "measured",
+      "prompt_seconds": 182.991035748,
+      "round": 4,
+      "startup_seconds": 59.190507156,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          40.0,
+          45.0,
+          41.0,
+          42.0,
+          42.0,
+          40.0,
+          41.0
+        ],
+        "wait_seconds": 0.0006795809968025424
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 182.991257285
+    },
+    {
+      "decode_tokens_per_second": 15.42927125623198,
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        41.0,
+        43.0,
+        41.0,
+        42.0,
+        42.0,
+        40.0,
+        41.0
+      ],
+      "full_request_seconds": 1.8951109250010632,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 2,
+      "peak_rss_kib": 23509208,
+      "phase": "measured",
+      "prompt_seconds": 1.374574,
+      "round": 4,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 518.495,
+        "predicted_n": 8,
+        "predicted_per_second": 15.42927125623198,
+        "prompt_ms": 1374.574,
+        "prompt_n": 63,
+        "prompt_per_second": 45.83238152329376
+      },
+      "startup_seconds": 6.039802994000638,
+      "thermal_gate": {
+        "maximum_c": 51.0,
+        "temperatures_c": [
+          51.0,
+          39.0,
+          41.0,
+          42.0,
+          51.0,
+          41.0,
+          41.0,
+          39.0,
+          40.0
+        ],
+        "wait_seconds": 0.0016361320012947544
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.374574
+    },
+    {
+      "decode_tokens_per_second": 15.026437137839388,
+      "end_temperatures_c": [
+        48.0,
+        40.0,
+        41.0,
+        43.0,
+        41.0,
+        43.0,
+        43.0,
+        42.0,
+        42.0
+      ],
+      "full_request_seconds": 3.9829005079991475,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 3,
+      "peak_rss_kib": 23509112,
+      "phase": "measured",
+      "prompt_seconds": 3.4490790000000002,
+      "round": 4,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 532.395,
+        "predicted_n": 8,
+        "predicted_per_second": 15.026437137839388,
+        "prompt_ms": 3449.079,
+        "prompt_n": 63,
+        "prompt_per_second": 18.265745725163153
+      },
+      "startup_seconds": 6.036015165998833,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          41.0,
+          43.0,
+          41.0,
+          42.0,
+          42.0,
+          40.0,
+          41.0
+        ],
+        "wait_seconds": 0.0019733109984372277
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.4490790000000002
+    },
+    {
+      "decode_tokens_per_second": 0.3151171556237262,
+      "effective_cpu_kernel": "scalar",
+      "effective_dispatch_plan": "bf16_matvec=scalar, quantize_q8=scalar, mxfp4_q8_dot=scalar, mxfp4_gemv=scalar-row, mxfp4_layout=CanonicalAdjacentV1, rms_norm=scalar",
+      "effective_m1_matrix_backend": "scalar",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        40.0,
+        42.0,
+        43.0,
+        41.0,
+        42.0,
+        44.0,
+        41.0,
+        42.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 213.227124918,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-scalar",
+      "layer_major_prefill": true,
+      "order": 0,
+      "peak_rss_kib": 10659524,
+      "phase": "measured",
+      "prompt_seconds": 187.812483504,
+      "round": 5,
+      "startup_seconds": 58.984353288,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          40.0,
+          41.0,
+          43.0,
+          41.0,
+          43.0,
+          43.0,
+          42.0,
+          42.0
+        ],
+        "wait_seconds": 0.0006602139983442612
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 187.812716503
+    },
+    {
+      "decode_tokens_per_second": 15.308631580558803,
+      "end_temperatures_c": [
+        49.0,
+        48.0,
+        46.0,
+        47.0,
+        46.0,
+        48.0,
+        48.0,
+        47.0,
+        49.0
+      ],
+      "full_request_seconds": 1.8971079739967536,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-normal",
+      "order": 1,
+      "peak_rss_kib": 23509188,
+      "phase": "measured",
+      "prompt_seconds": 1.372812,
+      "round": 5,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 522.581,
+        "predicted_n": 8,
+        "predicted_per_second": 15.308631580558803,
+        "prompt_ms": 1372.812,
+        "prompt_n": 63,
+        "prompt_per_second": 45.89120724469192
+      },
+      "startup_seconds": 6.03820954999901,
+      "thermal_gate": {
+        "maximum_c": 47.0,
+        "temperatures_c": [
+          47.0,
+          40.0,
+          42.0,
+          43.0,
+          41.0,
+          42.0,
+          44.0,
+          41.0,
+          42.0
+        ],
+        "wait_seconds": 0.00059101100123371
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 1.372812
+    },
+    {
+      "decode_tokens_per_second": 15.754016781966376,
+      "end_temperatures_c": [
+        48.0,
+        41.0,
+        42.0,
+        45.0,
+        42.0,
+        43.0,
+        43.0,
+        42.0,
+        42.0
+      ],
+      "full_request_seconds": 3.9954102970004897,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "llama.cpp-ubatch-1",
+      "order": 2,
+      "peak_rss_kib": 23509084,
+      "phase": "measured",
+      "prompt_seconds": 3.485627,
+      "round": 5,
+      "server_timings": {
+        "cache_n": 0,
+        "predicted_ms": 507.807,
+        "predicted_n": 8,
+        "predicted_per_second": 15.754016781966376,
+        "prompt_ms": 3485.627,
+        "prompt_n": 63,
+        "prompt_per_second": 18.07422308812733
+      },
+      "startup_seconds": 6.040156659000786,
+      "thermal_gate": {
+        "maximum_c": 49.0,
+        "temperatures_c": [
+          49.0,
+          48.0,
+          46.0,
+          47.0,
+          46.0,
+          48.0,
+          48.0,
+          47.0,
+          49.0
+        ],
+        "wait_seconds": 0.001957805001438828
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 3.485627
+    },
+    {
+      "decode_tokens_per_second": 1.7606553913530767,
+      "effective_cpu_kernel": "avx512-vnni",
+      "effective_dispatch_plan": "bf16_matvec=avx512-vnni, quantize_q8=avx512-vnni, mxfp4_q8_dot=avx2, mxfp4_gemv=avx2-x8, mxfp4_layout=InterleavedSplitX8V2, rms_norm=avx512-vnni",
+      "effective_m1_matrix_backend": "auto",
+      "effective_multirow_matrix_backend": "scalar",
+      "end_temperatures_c": [
+        47.0,
+        42.0,
+        42.0,
+        44.0,
+        42.0,
+        43.0,
+        44.0,
+        43.0,
+        42.0
+      ],
+      "executable_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+      "expert_projection": "residual-q8",
+      "full_request_seconds": 225.480204196,
+      "generated_token_ids": [
+        200005,
+        35644,
+        200008,
+        976,
+        1825,
+        5003,
+        25,
+        392
+      ],
+      "lane": "gpt-oss-rs-auto",
+      "layer_major_prefill": true,
+      "order": 3,
+      "peak_rss_kib": 10659576,
+      "phase": "measured",
+      "prompt_seconds": 220.865282886,
+      "round": 5,
+      "startup_seconds": 59.378842992,
+      "thermal_gate": {
+        "maximum_c": 48.0,
+        "temperatures_c": [
+          48.0,
+          41.0,
+          42.0,
+          45.0,
+          42.0,
+          43.0,
+          43.0,
+          42.0,
+          42.0
+        ],
+        "wait_seconds": 0.0006044180008757394
+      },
+      "throttle_after": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_before": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "throttle_delta_ms": {
+        "cpu0_core_total_time_ms": 0,
+        "cpu1_core_total_time_ms": 0,
+        "cpu2_core_total_time_ms": 0,
+        "cpu3_core_total_time_ms": 0,
+        "cpu4_core_total_time_ms": 0,
+        "cpu5_core_total_time_ms": 0,
+        "cpu6_core_total_time_ms": 0,
+        "cpu7_core_total_time_ms": 0,
+        "package_total_time_ms": 0
+      },
+      "ttft_seconds": 220.86550911
+    }
+  ],
+  "schema": "gpt-oss-rs.publication-benchmark/v1",
+  "source": {
+    "commit": "49101d5a92041f4dd53e3ecedb6bd7facbb84adf",
+    "llama_cpp_commit": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",
+    "llama_cpp_repository": "https://github.com/ggml-org/llama.cpp",
+    "llama_server_sha256": "aaf105d9d1e5e0914adbb616f5acef629a5d2bc95bcee807ee0b5e8d8e819504",
+    "matrix_binary_sha256": "f3e2908834ea47c8f1fadcd05261b3b33ee503d6b8d8cc0c344575164ebfb49c",
+    "native_binary_sha256": "b42b5634c00961c8581bdcc6d268681a60529a4f62ebe1743a538e432ed9ae55",
+    "repository": "https://github.com/gracee3/gpt-oss-rs",
+    "repository_dirty": false
+  },
+  "status": "complete"
+}

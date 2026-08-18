@@ -1,0 +1,56 @@
+{
+  "schema": "gpt-oss-rs.release-environment/v1",
+  "captured_date": "2026-08-17",
+  "operating_system": "Ubuntu 26.04 LTS",
+  "kernel": "7.0.0-29-generic",
+  "architecture": "x86_64",
+  "cpu": {
+    "model": "Intel Xeon Silver 4215R",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "benchmark_cpu_set": "0-7",
+    "frequency_driver": "intel_cpufreq",
+    "frequency_governor": "schedutil"
+  },
+  "memory": {
+    "visible_bytes": 99633532928,
+    "swap_configured_bytes": 107374178304,
+    "swap_used_bytes_at_release_check": 0
+  },
+  "toolchain": {
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "llvm": "22.1.6",
+    "gcc": "15.2.0",
+    "gxx": "15.2.0",
+    "cmake": "4.2.3",
+    "python": "3.12.12"
+  },
+  "accelerators": {
+    "benchmark_backends": "disabled",
+    "gpus": [
+      {
+        "model": "NVIDIA GeForce RTX 3090",
+        "memory_mib": 24576
+      },
+      {
+        "model": "NVIDIA GeForce RTX 3090",
+        "memory_mib": 24576
+      }
+    ],
+    "driver": "610.43.02",
+    "cuda_toolkit": "13.3",
+    "release_check": "healthy and idle"
+  },
+  "storage_guard": {
+    "protected_secondary_device": "read-only and unmounted",
+    "device_names_omitted": true,
+    "serials_omitted": true
+  },
+  "privacy": {
+    "hostname_omitted": true,
+    "personal_paths_omitted": true,
+    "network_identifiers_omitted": true,
+    "hardware_serials_omitted": true
+  }
+}

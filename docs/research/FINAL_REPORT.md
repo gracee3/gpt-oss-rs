@@ -76,19 +76,52 @@ with the historical GGUF hash are retained in the evidence bundle.
 
 ### MXFP4 kernels
 
-Final controlled-capture results will be inserted here from the versioned
-evidence bundle. Candidate promotion is permitted only by the paired rule; a
-negative result leaves scalar fallback intact.
+All 12 optimized candidate/shape comparisons were scalar-bit-exact and all
+matrix trials were thermally clean. The paired 10,000-iteration analysis
+selected five bounded regions:
+
+- AVX2 for the down projection (`N=2880`, `K=2880`) at `M=1` and `M=3`;
+- AVX-512/VNNI for the down projection at `M=8`; and
+- AVX2 for gate/up (`N=5760`, `K=2880`) at `M=1` and `M=3`.
+
+Gate/up at `M=8` retained scalar fallback. AVX2 and AVX-512/VNNI were both much
+faster than scalar there, but their paired interval against one another crossed
+zero, so neither candidate met the unique-winner rule. The other seven
+candidate/shape rows likewise remained non-qualifying rather than being hidden
+or promoted from point estimates.
 
 ### Full-model CPU context
 
 | Lane | Startup median (s) | Prompt / TTFT median (s) | Full request median (s) | Decode median (tok/s) | Peak RSS median (KiB) | Tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Pending final controlled capture | — | — | — | — | — | — |
+| gpt-oss-rs Auto | 59.379 | 220.206 / 220.206 | 224.473 | 1.880 | 10,659,476 | exact 8/8 |
+| gpt-oss-rs scalar | 59.191 | 183.865 / 183.865 | 210.067 | 0.310 | 10,659,520 | exact 8/8 |
+| llama.cpp normal CPU | 6.040 | 1.375 / 1.375 | 1.897 | 15.429 | 23,509,208 | exact 8/8 |
+| llama.cpp `ubatch=1` | 6.039 | 3.486 / 3.486 | 3.998 | 15.646 | 23,509,112 | exact 8/8 |
 
-Only supported internal Auto-versus-scalar speedups will be stated. llama.cpp
-is same-host context, not a universal ranking. Token divergence, if observed,
-will remain in the table and suppress decode/full-request ratios.
+Every warmup and measured lane emitted the official eight-token sequence
+`[200005, 35644, 200008, 976, 1825, 5003, 25, 392]`; no divergence suppression
+was required. Auto's decode throughput was a supported 6.05x over scalar (95%
+paired bootstrap interval 5.59x-6.23x). Auto did not earn a prompt or
+full-request latency claim: the favorable-direction estimates were 0.835
+(95% interval 0.832-0.850) and 0.936 (0.932-0.946), respectively, and the Auto
+medians were slower. Startup was effectively equal by median.
+
+The llama.cpp lanes are same-host context only. Their timing and memory
+surfaces are retained without a cross-project ratio or universal ranking.
+Fresh-process startup is separate from the request-time columns for every
+lane.
+
+### GGUF conversion identity
+
+Pinned llama.cpp at `030ebb558a5820b444a8f836ed5cdd46c9b4bd7a`
+converted the locally present SafeTensors to a 13,792,638,656-byte, 459-tensor
+GGUF in 44.05 seconds with zero swap operations. Its SHA-256 is
+`aab205256a9b6361e410c24de3086e30f907092ca6f9ba8cd4b22c8a2b025778`.
+That differs from the historical fixture hash
+`27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901`.
+The difference is published as an identity result; no replacement GGUF was
+downloaded and no historical hash is claimed for the converted file.
 
 ### Tested-model boundary
 
@@ -105,6 +138,12 @@ claim is made.
   automatic-promotion gate; Auto remained CPU.
 - Automatic multi-row MXFP4 selection retained scalar wherever the measured
   profile did not establish a qualifying optimized region.
+- In particular, gate/up at `M=8` retained scalar because the two optimized
+  candidates did not establish a unique winner against one another.
+- Auto substantially improved short-decode throughput over scalar on the final
+  workload, but increased prompt and full-request latency; only the supported
+  decode result is reported as a speedup.
+- The locally converted GGUF did not reproduce the historical fixture hash.
 - The HET archive passed substantial selected-expert, relay, ownership, and
   transactional sub-gates, but 120B construction/execution never began. The
   final retained-20B capacity-one comparison stopped because one native shard

@@ -1,0 +1,106 @@
+{
+  "schema": "gpt-oss-rs.gguf-conversion/v1",
+  "status": "complete",
+  "captured_date": "2026-08-17",
+  "input": {
+    "model": "openai/gpt-oss-20b",
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "format": "SafeTensors",
+    "already_present_locally": true,
+    "replacement_gguf_downloaded": false,
+    "source_hashes": {
+      "model-00000-of-00002.safetensors": "16d0f997dcfc4462089d536bffe51b4bcea2f872f5c430be09ef8ed392312427",
+      "model-00001-of-00002.safetensors": "4fbe328ab445455d6f58dc73852b85873bd626986310abd91cd4d2ce3245eaea",
+      "model-00002-of-00002.safetensors": "a18106b209e9ab35c3406db4f6f12a927364a058b21e9d1373d682e20674b303",
+      "config.json": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+      "model.safetensors.index.json": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+      "tokenizer.json": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3"
+    }
+  },
+  "converter": {
+    "repository": "https://github.com/ggml-org/llama.cpp",
+    "commit": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a",
+    "source_tree_clean": true,
+    "python": "3.12.12",
+    "command": "python <llama.cpp>/convert_hf_to_gguf.py --outtype auto --outfile <output>/gpt-oss-20b-mxfp4.gguf <model>/gpt-oss-20b",
+    "llama_requirements_sha256": "08e67179ad6863e26c8c763822b53f1080f4d4251cc2ad48c10418be9ee38f7f",
+    "dependency_freeze_sha256": "ab5bf2fd1df6b6fe707318e2c9f68618eea9b6e96f84bee8022e050ca816d91d",
+    "dependencies": [
+      "Jinja2==3.1.6",
+      "MarkupSafe==3.0.3",
+      "PyYAML==6.0.3",
+      "attrs==26.1.0",
+      "certifi==2026.7.22",
+      "cffconvert==2.0.0",
+      "charset-normalizer==3.5.1",
+      "click==8.4.2",
+      "docopt==0.6.2",
+      "filelock==3.32.3",
+      "fsspec==2026.7.0",
+      "gguf==0.19.0",
+      "hf-xet==1.6.0",
+      "huggingface_hub==0.36.2",
+      "idna==3.18",
+      "jsonschema==3.2.0",
+      "mpmath==1.3.0",
+      "networkx==3.6.1",
+      "numpy==1.26.4",
+      "packaging==26.3",
+      "protobuf==4.25.9",
+      "pykwalify==1.8.0",
+      "pyrsistent==0.20.0",
+      "python-dateutil==2.9.0.post0",
+      "regex==2026.7.19",
+      "requests==2.34.2",
+      "ruamel.yaml==0.19.1",
+      "safetensors==0.8.0",
+      "sentencepiece==0.2.2",
+      "setuptools==81.0.0",
+      "six==1.17.0",
+      "sympy==1.14.0",
+      "tokenizers==0.22.2",
+      "torch==2.11.0+cpu",
+      "tqdm==4.70.0",
+      "transformers==4.57.6",
+      "typing_extensions==4.16.0",
+      "urllib3==2.7.0"
+    ]
+  },
+  "execution": {
+    "exit_status": 0,
+    "elapsed_seconds": 44.05,
+    "user_cpu_seconds": 101.72,
+    "system_cpu_seconds": 74.42,
+    "maximum_resident_set_kib": 5012788,
+    "swap_operations": 0
+  },
+  "output": {
+    "format": "GGUF",
+    "endianness": "little",
+    "tensor_count": 459,
+    "size_bytes": 13792638656,
+    "sha256": "aab205256a9b6361e410c24de3086e30f907092ca6f9ba8cd4b22c8a2b025778",
+    "historical_gguf_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+    "matches_historical_gguf": false,
+    "difference_policy": "The locally converted artifact is used and its differing hash is retained as a result; the historical GGUF is not substituted."
+  },
+  "llama_cpu_build": {
+    "configuration": {
+      "build_type": "Release",
+      "ggml_cuda": false,
+      "ggml_vulkan": false,
+      "ggml_opencl": false,
+      "llama_curl": false,
+      "ggml_native": true
+    },
+    "compiler": "GNU 15.2.0",
+    "smoke_load": "passed",
+    "binary_hashes": {
+      "libggml.so": "8e26fe480a6b8a1b2a616b391d19cd71eb7bdb5b4a43e24b5dc78494664b3fad",
+      "libggml-base.so": "fd08107a75373f29a2ad396f9fb61ae12576a560fe1ba2db577522721045e177",
+      "libggml-cpu.so": "89ca74d9966cd0bdddec077493a2a7955c144686e1726ddf80f08ad7291a2e09",
+      "libllama.so": "d3a8f03f9b119513f6a2b40be0a8fbfd7c3eefd07c62d7b4750cc7078f66e412",
+      "llama-server": "aaf105d9d1e5e0914adbb616f5acef629a5d2bc95bcee807ee0b5e8d8e819504"
+    }
+  }
+}
