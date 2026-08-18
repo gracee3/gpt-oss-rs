@@ -1,11 +1,14 @@
 # Contributing to gpt-oss-rs
 
-Keep changes aligned with the current repository scope: GPT-OSS serving in Rust, not general multi-model experimentation or Python-side tooling.
+The v0.1.0 research program is complete and the repository is in maintenance
+mode. Keep changes aligned with CPU-first GPT-OSS correctness,
+reproducibility, security, documentation, or bounded evidence repair. A new
+runtime research program requires an explicit scope before implementation.
 
 ## Setup
 
 ```bash
-git clone https://github.com/m0at/gpt-oss-rs.git
+git clone https://github.com/gracee3/gpt-oss-rs.git
 cd gpt-oss-rs
 cargo check --workspace
 cargo test --workspace
@@ -16,7 +19,10 @@ Use the mock backend for everyday development. CUDA is optional unless your chan
 ## Expectations
 
 - Keep PRs focused and small enough to review.
-- Do not reintroduce Python packaging, bindings, or comparison harnesses unless there is a concrete runtime requirement.
+- State whether a change repairs the v0.1.0 artifact or proposes a separately
+  scoped post-release research program.
+- Keep Python to standard-library evidence tooling unless a reviewed,
+  reproducibility-critical dependency is recorded.
 - Preserve the GPT-OSS-only scope unless the project direction changes explicitly.
 - Update root docs when user-facing behavior, commands, or repository layout changes.
 

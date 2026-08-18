@@ -23,12 +23,12 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "GPT-OSS inference in Rust"
+description = "CPU-first GPT-OSS inference research in Rust"
 repository = "https://github.com/gracee3/gpt-oss-rs"
 homepage = "https://github.com/gracee3/gpt-oss-rs"
-authors = ["m0at"]
+authors = ["m0at", "gracee3"]
 readme = "README.md"
-keywords = ["gpt-oss", "llm", "inference", "gpu", "transformer"]
+keywords = ["gpt-oss", "llm", "inference", "cpu", "mxfp4"]
 categories = ["science", "concurrency", "hardware-support"]
 
 [workspace.dependencies]

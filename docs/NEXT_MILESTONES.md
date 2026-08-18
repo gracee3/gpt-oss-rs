@@ -1,177 +1,71 @@
-# Next Milestones
+# Milestones and maintenance state
 
-The native GPT-OSS CPU serving path is the CPU-first experimental default.
-Capability-oriented dispatch, the size-neutral x8 MXFP4 layout, transactional
-layer-major prefill, and opt-in multi-request scheduling are implemented. CPU
-trusted mode remains blocked, and CUDA remains an explicit experimental
-opt-in.
+## Current state
 
-## Development gate policy
+The planned CPU-first research program is complete at v0.1.0. This file is no
+longer an automatic implementation queue. The default state is maintenance:
 
-The M1-M5 experimental CPU architecture program is feature-complete and
-integrated. Its relaxed development gates and final verification remain a
-historical record of that program; they are not standing authorization for the
-next phase. The documentation-only next-phase research is complete in
-[`CPU_RUNTIME_NEXT_PHASE_RESEARCH.md`](CPU_RUNTIME_NEXT_PHASE_RESEARCH.md).
-Its authorized E1/C1/C2 service foundation has now been implemented under the
-bounded plan in
-[`cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md`](cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md).
-C3-C7, trusted-mode policy, paging, kernel/dispatch tuning, and CUDA behavior
-remain outside that implementation and require separate authorization.
+- repair correctness, reproducibility, attribution, documentation, security,
+  or evidence defects;
+- keep dependencies and CI narrowly supportable;
+- preserve the scalar oracle, exact fixtures, archive reachability, and
+  release checksums; and
+- avoid production-readiness, 120B execution, heterogeneous, or multi-GPU
+  claims not supported by new controlled evidence.
 
-Each feature slice must still pass the checks that directly protect its
-correctness and safety:
+The [final report](research/FINAL_REPORT.md) and [benchmark
+protocol](research/BENCHMARK_PROTOCOL.md) define the closed publication
+boundary.
 
-- scalar/reference equivalence for every optimized kernel and packed layout;
-- focused shape, tail, extrema, and invalid-input tests;
-- targeted full-checkpoint parity covering the changed execution path;
-- atomic cache creation/reopen checks when storage changes;
-- relevant streaming/non-streaming API smoke tests when engine behavior changes;
-- formatting, locked workspace tests, and warnings-denied kernel linting.
+## Completed CPU program
 
-The completed program deferred the following certification and tuning work:
+The following historical milestones are implemented and retained:
 
-- the exhaustive 28-run official-oracle matrix;
-- repeated Criterion suites, percentage performance thresholds, and cross-host
-  dispatch tuning;
-- fresh llama.cpp advisory captures;
-- the complete API permutation matrix;
-- trusted-mode certification review.
+| Milestone | Closed result | Detailed record |
+| --- | --- | --- |
+| M1: AVX-512/VNNI x8 MXFP4 | Forced exact-bit implementation; promotion remains evidence-gated | [`cpu-runtime-plans/M1_AVX512_VNNI_X8.md`](cpu-runtime-plans/M1_AVX512_VNNI_X8.md) |
+| M2: matrix contract and prefill | Typed scalar/SIMD matrix paths and transactional layer-major prefill | [`cpu-runtime-plans/M2_MATRIX_PREFILL.md`](cpu-runtime-plans/M2_MATRIX_PREFILL.md) |
+| M3: model/sequence ownership | Immutable shared model and transactional per-sequence state | [`cpu-runtime-plans/M3_MODEL_SEQUENCE_STATE.md`](cpu-runtime-plans/M3_MODEL_SEQUENCE_STATE.md) |
+| M4: CPU scheduling | Bounded reserve/execute/commit scheduling and cancellation seams | [`cpu-runtime-plans/M4_CPU_SCHEDULING.md`](cpu-runtime-plans/M4_CPU_SCHEDULING.md) |
+| M5: AMX prototype | Forced-only portable packing/emulation; no local AMX performance claim | [`cpu-runtime-plans/M5_AMX_INT8.md`](cpu-runtime-plans/M5_AMX_INT8.md) |
+| E1/C1/C2 foundation | Versioned evidence, lifecycle/delivery, and logical memory reservations | [`cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md`](cpu-runtime-plans/CPU_SERVICE_FOUNDATION.md) |
+| Iris Xe program | Explicit experimental path; full-model automatic promotion failed | [`xe-research/README.md`](xe-research/README.md) |
 
-Semantic failures, cache corruption, memory-safety defects, and broken APIs
-were never relaxed. Existing new kernels remain forced or experimental where
-documented, and automatic dispatch stays on the validated baseline until later
-evidence supports a separately reviewed promotion.
+The implementation-era research questions, alternatives, gates, and deferred
+certification remain available in [`cpu-runtime-research/`](cpu-runtime-research/README.md),
+[`cpu-runtime-next-phase-research/`](cpu-runtime-next-phase-research/README.md),
+and [`MXFP4_CPU_BACKEND_HANDOFF.md`](MXFP4_CPU_BACKEND_HANDOFF.md). Their
+unchecked items are historical context, not standing authorization.
 
-## Iris Xe research and production integration
+## Archived non-completions
 
-Status: X0-X8 research preserved; X9 explicit CPU+Xe production path complete;
-automatic promotion failed and remains disabled.
+Heterogeneous expert placement and multi-GPU layer sharding are preserved on
+the immutable archive commits linked from the root README. They do not become
+v0.1.0 milestones by inference.
 
-The T14 OpenCL and Level Zero paths pass provenance, exact artifact, memory,
-real-checkpoint, MXFP4 correctness, and current-native DP4A code-generation
-gates on Compute Runtime 26.05/Level Zero 1.28.2. X7's canonical paths failed
-the original end-to-end useful-win gate; that `fail` remains an immutable
-promotion result rather than an overall research failure. X8's versioned
-layout and multi-row OpenCL kernels now beat canonical Xe conservatively and
-beat AVX2 at the selected decode/prefill shapes. The evidence and decisions are
-published in [`xe-research/`](xe-research/README.md).
+- No GPT-OSS 120B end-to-end execution, parity, or performance result exists.
+- The retained-20B capacity-one HET comparison did not complete its fixed
+  matrix.
+- The 58-commit layer-sharding branch did not execute activation handoff or
+  reach parity.
 
-The separately authorized X9 milestone integrated the exact X8 OpenCL source
-behind runtime loading and explicit `--device xe`. CPU remains the numerical
-oracle and owns all model state; only bounded M>=4 prefill expert projections
-are offloaded. Full-model correctness passed, but paired `harmony_122`
-performance did not establish a lower confidence bound above CPU parity and
-its p95 inter-token upper bound narrowly exceeded the 2% limit. Accordingly,
-`--device auto` remains CPU and the production record cannot enable itself.
-See
-[`xe-research/09-production-integration-and-auto-promotion.md`](xe-research/09-production-integration-and-auto-promotion.md).
+The [multi-GPU retrospective](research/MULTI_GPU_RETROSPECTIVE.md) records the
+reusable planner and ownership ideas without restoring old code.
 
-Decode expert caching, background migration, CPU/GPU overlap, split-K serving,
-Level Zero, model-scale Xe residency, and full-GPU inference remain outside
-this milestone. Any later automatic-promotion attempt requires a fresh exact
-stack record and must rerun the full correctness, lifecycle, memory, soak, and
-paired-performance gates rather than changing the current result in place.
+## Gate for any post-v0.1.0 program
 
-## Completed foundation
+Before implementation, a proposed program must state:
 
-- once-detected CPU capabilities and precise per-operation requirements;
-- immutable dispatch diagnostics that name the MXFP4 kernel and layout;
-- canonical scalar/AVX-512 references plus `InterleavedSplitX8V2` AVX2 GEMV;
-- layout-specific, source-hash-keyed, atomic memory-mapped repack caches;
-- projection APIs, scalar equivalence tests, tail-row tests, packing/GEMV
-  benchmarks, and exact-BF16 diagnostics;
-- targeted full-model promotion on `harmony_122` and `harmony_262`, with peak
-  RSS, startup, generation, and API evidence recorded outside Git.
-- versioned E1 evidence manifests, artifact hashes/redaction, effective runtime
-  snapshots, and bounded diagnostics;
-- C2 checked logical reservations and a CPU memory descriptor that keeps
-  mapped files, resident observations, logical grants, disk cache bytes, and
-  allocator omissions distinct;
-- C1 managed native-CPU admission, lifecycle/readiness, suffix-only committed
-  delivery, typed failures, deterministic drain/join, and bounded terminal
-  response storage.
+1. one bounded research question and explicit exclusions;
+2. responsible maintainer and available hardware;
+3. semantic authority, provenance, and licensing;
+4. the smallest source/API surface to change;
+5. correctness, lifecycle, memory, thermal, and failure gates;
+6. raw and normalized evidence schemas, including negative-result handling;
+7. cleanup and maintenance obligations; and
+8. why the work belongs here rather than in an upstream project or separate
+   repository.
 
-The source-grounded research, implementation plans, and execution for M1-M5
-are complete. Their contracts, evidence, alternatives, and gates remain in
-[`cpu-runtime-research/`](cpu-runtime-research/README.md) and
-[`cpu-runtime-plans/`](cpu-runtime-plans/README.md). New CPU work must pass the
-separate research-planning and implementation-planning gates in the next-phase
-intake ledger.
-
-## M1. Build a real eight-output AVX-512 MXFP4 GEMV
-
-Status: implemented behind explicit AVX-512/VNNI selection.
-
-- prototype AVX-512 decode around relevant byte-manipulation subsets rather
-  than mechanically widening AVX2;
-- preserve exact E2M1/E8M0 behavior and residual-Q8 weight reuse;
-- reuse `InterleavedSplitX8V2`; its 64-byte eight-row chunks directly support
-  the researched ZMM/VNNI dataflow;
-- cover real gate/up and down shapes, tails, extrema, and scalar equivalence;
-- integrate the kernel behind a forced/experimental selection while leaving
-  automatic dispatch on the validated AVX2 x8 baseline until later tuning.
-
-## M2. Add a matrix contract and true GEMM-like prefill
-
-Status: implemented with scalar automatic and explicit AVX2 matrix backends.
-
-- keep separate model-step and matrix-problem descriptors so scheduling and
-  attention metadata do not leak into microkernels;
-- retain canonical checkpoints and use the x8 persistent layout initially;
-- pack multi-row Q8/residual-Q8 activations into bounded caller-owned scratch;
-- implement a scalar/reference MXFP4 GEMM API before optimized backends;
-- implement and integrate a SIMD packed-GEMM path for multi-token prefill;
-- keep layout choice explicit during development rather than embedding an
-  unmeasured automatic threshold.
-
-## M3. Separate immutable model and per-sequence state
-
-Status: implemented with transactional prepared steps and a batch-one facade.
-
-- separate immutable mapped weights, repack caches, model metadata, and shared
-  execution resources from mutable token, attention/KV, sampler, and generation
-  state;
-- define ownership and lifetime boundaries that let several sequences share one
-  model without cloning model-scale data;
-- make cancellation, reset, cleanup, and sequence destruction explicit;
-- preserve batch-one behavior while creating the seam required by scheduling.
-
-## M4. Develop engine-level CPU scheduling seams
-
-Status: implemented with one canonical table and opt-in CPU batching.
-
-- generalize the CPU worker and scheduler beyond a single active sequence
-  behind an experimental configuration;
-- connect scheduler batches to the GEMM/prefill workload descriptors;
-- preserve cancellation, token budgets, output ordering, and KV-cache isolation;
-- implement stable prefill/decode rows and MoE route/group/unroute ordering;
-- add NUMA/topology descriptors and ownership seams now, while deferring policy
-  tuning until representative multi-socket hardware is available.
-
-## M5. Prototype AMX outside automatic serving
-
-Status: implemented behind the optional forced-only `amx-int8` feature, with
-portable emulation but no local AMX-hardware execution.
-
-- use signed doubled-E2M1 and signed Q8 with AMX-INT8 `TDPBSSD`;
-- preserve 32-element E8M0 scale boundaries through INT32 accumulation;
-- isolate tile configuration, OS permission handling, and fallback behavior;
-- implement a scalar-cross-checked AMX-INT8 experiment behind an explicit
-  experimental interface; retain BF16 as a later alternative;
-- compile- and unit-test portable code without requiring local AMX hardware;
-- do not select AMX automatically before the later AMX-host benchmark phase.
-
-## Deferred certification and tuning
-
-The deferred exhaustive oracle/API matrix, repeated microbenchmarks, cross-host
-measurements, and advisory comparisons remain evidence inputs rather than an
-automatic next implementation milestone. When available, register them under
-the E1 manifest and artifact rules before using them to tune packing or
-dispatch thresholds, promote kernels, or review trusted-mode eligibility.
-
-The detailed handoff and guiding constraints are in
-[`MXFP4_CPU_BACKEND_HANDOFF.md`](MXFP4_CPU_BACKEND_HANDOFF.md). The living
-source-research framework, stable five-step scope, and pre-planning ledgers are
-in
-[`CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md`](CPU_RUNTIME_RESEARCH_AND_PREPLANNING.md).
+A failed core gate blocks promotion. Slower or negative measurements remain
+publishable and must not be hidden or converted into a looser threshold after
+the fact.

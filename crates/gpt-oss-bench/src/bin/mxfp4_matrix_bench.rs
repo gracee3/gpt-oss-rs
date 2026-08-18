@@ -270,7 +270,7 @@ fn main() -> Result<()> {
                     let index = (start + order) % method_state.len();
                     let (method, output, scratch) = &mut method_state[index];
                     let start_temperature_c = wait_for_thermal_gate(&cli)?;
-                    let throttle_before = throttle_time_ms()?;
+                    let throttle_before = throttle_time_ms(cli.thread_policy)?;
                     let timer = Instant::now();
                     execute(
                         kernels,
@@ -282,7 +282,7 @@ fn main() -> Result<()> {
                         black_box(scratch.bytes()),
                     )?;
                     let duration_ns = timer.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    let throttle_after = throttle_time_ms()?;
+                    let throttle_after = throttle_time_ms(cli.thread_policy)?;
                     let end_temperature_c = core_temperature_c()?;
                     let package_throttle_time_delta_ms =
                         throttle_after.0.saturating_sub(throttle_before.0);
@@ -456,7 +456,7 @@ fn wait_for_thermal_gate(cli: &Cli) -> Result<f64> {
     }
 }
 
-fn throttle_time_ms() -> Result<(u64, u64)> {
+fn throttle_time_ms(cpu_count: usize) -> Result<(u64, u64)> {
     let package = fs::read_to_string(
         "/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms",
     )
@@ -465,7 +465,7 @@ fn throttle_time_ms() -> Result<(u64, u64)> {
     .parse::<u64>()
     .context("parse package throttle time")?;
     let mut core = 0_u64;
-    for cpu in 0..4 {
+    for cpu in 0..cpu_count {
         let path = format!(
             "/sys/devices/system/cpu/cpu{cpu}/thermal_throttle/core_throttle_total_time_ms"
         );

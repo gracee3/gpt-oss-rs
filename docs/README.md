@@ -1,5 +1,22 @@
 # Documentation
 
+## v0.1.0 research closeout
+
+- [`research/FINAL_REPORT.md`](research/FINAL_REPORT.md): paper-like final
+  report, methods, results, limitations, negative findings, and reuse guidance.
+- [`research/BENCHMARK_PROTOCOL.md`](research/BENCHMARK_PROTOCOL.md): controlled
+  MXFP4 and full-model measurement contract.
+- [`research/MULTI_GPU_RETROSPECTIVE.md`](research/MULTI_GPU_RETROSPECTIVE.md):
+  reusable layer-sharding invariants and the historical non-execution boundary.
+- [`research/RESEARCH_ETHICS.md`](research/RESEARCH_ETHICS.md): authorship,
+  lineage, AI assistance, funding, interests, and evidence authority.
+- [`research/evidence/v0.1.0/`](research/evidence/v0.1.0/README.md): versioned
+  release artifacts and checksums.
+
+The v0.1.0 program is research-complete and in maintenance. The material below
+is the implementation and research record that led to the closeout; it is not
+an open-ended roadmap.
+
 - [Tiger Lake optimization baseline](TIGER_LAKE_BASELINE.md)
 - [Bounded CPU execution profiling](CPU_EXECUTION_PROFILING.md)
 - [Tiger Lake MXFP4 matrix candidate](TIGER_LAKE_MXFP4_MATRIX.md)

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gracee3/gpt-oss-rs/blob/v0.1.0/docs/research/evidence/v0.1.0/schema/publication-benchmark-v1.schema.json",
+  "title": "gpt-oss-rs v0.1.0 publication benchmark",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "source",
+    "model",
+    "host",
+    "protocol",
+    "prompt",
+    "matrix",
+    "runs",
+    "analysis",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "gpt-oss-rs.publication-benchmark/v1"},
+    "status": {"const": "complete"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "required": ["commit", "repository_dirty", "llama_cpp_commit"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "repository_dirty": {"const": false},
+        "llama_cpp_commit": {"const": "030ebb558a5820b444a8f836ed5cdd46c9b4bd7a"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["id", "revision", "source_hashes", "gguf_sha256"],
+      "properties": {
+        "id": {"const": "openai/gpt-oss-20b"},
+        "revision": {"const": "6cee5e81ee83917806bbde320786a8fb61efebee"},
+        "gguf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "host": {"type": "object"},
+    "protocol": {
+      "type": "object",
+      "required": ["scenario", "prompt_tokens", "greedy_output_tokens", "cpus", "threads"],
+      "properties": {
+        "scenario": {"const": "harmony_63"},
+        "prompt_tokens": {"const": 63},
+        "greedy_output_tokens": {"const": 8},
+        "cpus": {"const": "0-7"},
+        "threads": {"const": 8}
+      }
+    },
+    "prompt": {"type": "object"},
+    "matrix": {"type": "object"},
+    "runs": {
+      "type": "array",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "required": [
+          "round",
+          "phase",
+          "order",
+          "lane",
+          "generated_token_ids",
+          "startup_seconds",
+          "prompt_seconds",
+          "ttft_seconds",
+          "full_request_seconds",
+          "decode_tokens_per_second",
+          "peak_rss_kib",
+          "throttle_delta_ms"
+        ],
+        "properties": {
+          "round": {"type": "integer", "minimum": 0, "maximum": 5},
+          "phase": {"enum": ["warmup", "measured"]},
+          "order": {"type": "integer", "minimum": 0, "maximum": 3},
+          "lane": {
+            "enum": [
+              "gpt-oss-rs-auto",
+              "gpt-oss-rs-scalar",
+              "llama.cpp-normal",
+              "llama.cpp-ubatch-1"
+            ]
+          },
+          "generated_token_ids": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "items": {"type": "integer", "minimum": 0}
+          },
+          "startup_seconds": {"type": "number", "minimum": 0},
+          "prompt_seconds": {"type": "number", "minimum": 0},
+          "ttft_seconds": {"type": "number", "minimum": 0},
+          "full_request_seconds": {"type": "number", "minimum": 0},
+          "decode_tokens_per_second": {"type": "number", "minimum": 0},
+          "peak_rss_kib": {"type": "number", "minimum": 1}
+        }
+      }
+    },
+    "analysis": {"type": "object"}
+  },
+  "additionalProperties": true
+}

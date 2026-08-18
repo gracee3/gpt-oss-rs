@@ -7,6 +7,11 @@ code, research, measurements, and failures that may help other people. It is
 not an attempt to maximize framework compatibility, model coverage, or
 datacenter-scale feature breadth.
 
+The planned program closed with v0.1.0 on 2026-08-17. The repository is now in
+maintenance: correctness, reproducibility, security, attribution, and evidence
+repairs remain in scope. New runtime programs require a separately stated
+question, authority, validation boundary, and maintenance commitment.
+
 ## Current motivation
 
 CPU inference is the present priority. Capable Intel laptop and desktop CPUs
@@ -26,27 +31,21 @@ The constraints are part of the project rather than an inconvenience to hide.
 They create concrete engineering problems that can be studied, measured, and
 explained.
 
-## Present hardware envelope
+## Publication hardware envelope
 
-Development and validation should prioritize hardware that is actually
-available:
+The historical work used hardware that was actually available at each phase:
 
 - an Intel Tiger Lake laptop for scalar, AVX2, and available AVX-512/VNNI CPU
   work;
 - DDR4 systems where memory capacity and bandwidth are first-class limits;
-- a second-generation Intel Xeon Scalable system when it is available again;
-- RTX 3090 systems when they are available again for deliberate CUDA work.
+- a second-generation Intel Xeon Scalable system for the final v0.1.0 CPU
+  capture; and
+- two RTX 3090 cards for bounded archived CUDA and heterogeneous work.
 
-The current absence of the Xeon server and RTX 3090 systems is a reason to
-focus on CPU work that can be executed and measured now. Documentation may
-prepare future experiments, and portable code may be compile-tested, but a
-backend must not be presented as tuned or validated on hardware the project
-does not possess or otherwise have responsible access to.
-
-AMX is the clearest current example. It is worthwhile to research its numerical
-mapping, operating-system lifecycle, API seam, portable packing, and scalar
-emulation. Performance tuning and automatic selection should wait for an
-AMX-capable host. The same rule applies to future hardware targets.
+The release claims remain bound to the named evidence, not to every machine
+with similar parts. AMX portable emulation was studied, but no local AMX
+hardware performance claim was made. Heterogeneous and multi-GPU work is
+archived with its incomplete gates and is absent from the publication runtime.
 
 ## Scope discipline
 
@@ -61,7 +60,8 @@ consumers. In particular:
   evidence.
 - Canonical checkpoints remain unchanged; generated packed caches are
   disposable, versioned derivatives.
-- CUDA remains an explicit path to revisit on the available NVIDIA systems.
+- CUDA, heterogeneous expert placement, and multi-GPU layer sharding remain
+  archived research rather than v0.1.0 runtime commitments.
 - OpenCL/Level Zero on available Intel integrated graphics and Apple Silicon
   are interesting later investigations, not current implementation
   commitments. Vulkan is not an active research target.
@@ -131,6 +131,6 @@ becomes an active target, record:
    claims;
 6. the effect on build complexity and maintenance.
 
-For now, the answer is CPU first: make GPT-OSS understandable, correct, and
-useful on the Intel systems at hand, and let that constrained work produce the
-knowledge needed for later choices.
+For v0.1.0, the answer is CPU first: retain an understandable, evidence-backed
+artifact and its negative results. A future target is not implied by available
+hardware; it begins only through a new, explicit research scope.

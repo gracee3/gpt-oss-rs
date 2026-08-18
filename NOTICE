@@ -1,12 +1,19 @@
-This repository is a narrowed fork of https://github.com/m0at/rvllm.
+gpt-oss-rs
+Copyright 2025-2026 the gpt-oss-rs contributors
 
-The project was later renamed and refocused as gpt-oss-rs, a GPT-OSS inference engine.
+This repository began as a narrowed fork of https://github.com/m0at/rvllm and
+was later renamed and refocused as a CPU-first GPT-OSS research project.
 
-Credit for the original upstream foundation goes to m0at and the other upstream
-contributors whose authorship remains preserved in the git history.
+Credit for the inherited foundation belongs to m0at and the other upstream
+contributors. Their authorship remains preserved in Git history. Inherited
+code continues to carry the Apache License 2.0 obligations in LICENSE.
 
-Inherited upstream code in this repository continues to carry Apache-2.0 obligations.
+gracee3 is the v0.1.0 release author and responsible maintainer. OpenAI Codex
+agents assisted with research, drafting, implementation, command execution,
+and validation; they are not authors or evidence authorities.
 
-Focused CPU algorithms are informed by mistral.rs, llama.cpp, and ik_llama.cpp
-under the MIT License. See THIRD_PARTY_NOTICES.md and LICENSES/ for pinned
-revisions and full license texts.
+Focused CPU algorithms were informed by mistral.rs, llama.cpp, and
+ik_llama.cpp under the MIT License. Additional research influences and
+archived heterogeneous sources are identified in THIRD_PARTY_NOTICES.md,
+docs/UPSTREAM_PROVENANCE.md, docs/BORROWED_CONCEPTS.md, and the archived HET
+source ledger. Required license texts are retained under LICENSES/.

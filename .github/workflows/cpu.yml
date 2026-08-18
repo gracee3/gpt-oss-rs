@@ -28,7 +28,13 @@ jobs:
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
       - name: Warnings-denied affected validation crates
-        run: cargo clippy -p gpt-oss-evidence -p gpt-oss-bench --all-targets --no-deps --locked -- -D warnings
+        run: cargo clippy -p gpt-oss-cpu-kernels -p gpt-oss-evidence -p gpt-oss-bench --all-targets --no-deps --locked -- -D warnings
+      - name: CPU-only release server
+        run: cargo build --release -p gpt-oss-server --no-default-features --locked
+      - name: Validate Citation File Format 1.2.0
+        uses: citation-file-format/cffconvert-github-action@4cf11baa70a673bfdf9dad0acc7ee33b3f4b6084 # 2.0.0
+        with:
+          args: "--validate"
 
   kernel-dispatch:
     runs-on: ubuntu-latest
