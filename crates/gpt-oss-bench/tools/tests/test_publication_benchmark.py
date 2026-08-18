@@ -78,6 +78,17 @@ class PublicationBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(publication_benchmark.BenchmarkError, "checksum"):
                 publication_benchmark.validate_checksums(root)
 
+    def test_matrix_analysis_paths_are_sanitized_and_rehashed(self):
+        value = {
+            "schema": publication_benchmark.MATRIX_ANALYSIS_SCHEMA,
+            "inputs": [{"path": "/private/work/matrix.json", "sha256": "a" * 64}],
+            "analysis_sha256": "b" * 64,
+        }
+        result = publication_benchmark.sanitize_matrix_analysis(value)
+        self.assertEqual(result["inputs"][0]["path"], "matrix.json")
+        self.assertNotEqual(result["analysis_sha256"], value["analysis_sha256"])
+        self.assertNotIn("/private", json.dumps(result))
+
 
 if __name__ == "__main__":
     unittest.main()

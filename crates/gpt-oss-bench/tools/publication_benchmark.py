@@ -686,7 +686,23 @@ def run_matrix_analysis(args: argparse.Namespace, inputs: list[Path], output: Pa
     value = json.loads(output.read_text())
     if value.get("schema") != MATRIX_ANALYSIS_SCHEMA or value.get("bootstrap_iterations") != 10_000:
         raise BenchmarkError("MXFP4 paired analysis did not publish the required v1 result")
+    value = sanitize_matrix_analysis(value)
+    write_json(output, value)
     return value
+
+
+def sanitize_matrix_analysis(value: dict) -> dict:
+    sanitized = json.loads(json.dumps(value))
+    inputs = sanitized.get("inputs")
+    if not isinstance(inputs, list):
+        raise BenchmarkError("MXFP4 analysis has no input identities")
+    for item in inputs:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise BenchmarkError("MXFP4 analysis input identity is invalid")
+        item["path"] = Path(item["path"]).name
+    sanitized.pop("analysis_sha256", None)
+    sanitized["analysis_sha256"] = sha256_json(sanitized)
+    return sanitized
 
 
 def write_checksums(root: Path) -> None:
