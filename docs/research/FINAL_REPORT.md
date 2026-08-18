@@ -5,11 +5,12 @@
 This report closes a CPU-first Rust investigation of OpenAI GPT-OSS. The work
 implemented native GPT-OSS 20B execution, compact MXFP4 expert kernels and
 layouts, transactional model and scheduling ownership, versioned evidence
-surfaces, and bounded experimental service paths. It also studied—and retained
-as archives—heterogeneous expert placement and two-GPU layer sharding that did
-not reach their final execution claims. Version 0.1.0 publishes source,
-methods, same-host measurements, attribution, negative results, and explicit
-limitations as a research artifact rather than a production-readiness claim.
+surfaces, and bounded experimental service paths. Archived heterogeneous work
+also passed an exact three-owner 20B execution target, while its later 120B
+construction extension and the separate two-GPU layer-sharding line remained
+incomplete. Version 0.1.0 publishes source, methods, same-host measurements,
+attribution, negative results, and explicit limitations as a research artifact
+rather than a production-readiness claim.
 
 ## Research questions
 
@@ -19,8 +20,9 @@ limitations as a research artifact rather than a production-readiness claim.
    cancellation, and scheduling inspectable and fail-closed?
 3. Can benchmarks preserve identity, thermals, run order, exact tokens, and
    negative results well enough to support bounded optimization claims?
-4. Which concepts from incomplete heterogeneous and multi-GPU research are
-   reusable without presenting those archived runtimes as complete?
+4. Which results and concepts from bounded heterogeneous and incomplete
+   multi-GPU research are reusable without overstating their archived runtime
+   boundaries?
 
 ## Contributions
 
@@ -34,8 +36,9 @@ limitations as a research artifact rather than a production-readiness claim.
 - A fixed workload corpus and publication driver with exact source/model/binary
   identity, physical-core pinning, thermal rejection, raw samples, paired
   bootstrap analysis, and tamper-evident artifact publication.
-- Archived negative and incomplete work with a standalone layer-sharding
-  retrospective and explicit research-ethics disclosure.
+- Archived bounded accelerator successes, negative gates, and incomplete
+  extensions with standalone HET and layer-sharding retrospectives and an
+  explicit research-ethics disclosure.
 
 ## Methods
 
@@ -125,17 +128,36 @@ downloaded and no historical hash is claimed for the converted file.
 
 ### Tested-model boundary
 
-GPT-OSS 20B has end-to-end CPU execution and bounded measurement. GPT-OSS
-120B received metadata, tensor-mapping, placement, and capacity study only on
-the archived HET line. No 120B end-to-end execution, parity, or performance
-claim is made.
+GPT-OSS 20B has end-to-end CPU execution and bounded measurement. The archived
+HET line also passed exact end-to-end 20B execution across CPU, GPU0, and GPU1.
+GPT-OSS 120B received metadata, tensor-mapping, placement, capacity study, and
+an incomplete construction attempt on that archive. No 120B end-to-end
+execution, parity, or performance claim is made.
 
-## Negative and incomplete results
+### Accelerator research boundary
+
+Iris Xe X9 passed explicit `cpu_xe` integration, correctness, lifecycle, and
+CPU fallback gates. Its automatic performance-promotion gate failed, so Auto
+remained CPU and the publication makes no automatic Xe performance claim.
+
+HET H7 passed its bounded correctness and lifecycle target. The exact retained
+20B eight-token continuation was produced twice while real selected experts
+ran under static CPU/GPU0/GPU1 ownership. The path used fixed relay and result
+pools, a visibility-last transactional commit, recoverable drain-and-retry,
+and fail-closed quarantine after an unproven drain. This was an end-to-end
+architecture proof, not a controlled performance comparison.
+
+The later HET extension added bounded loader, resident-router, scoped-shard,
+checkpoint-retirement, and capacity-one work. It did not pass 120B
+construction, and no 120B execution began. The exact distinction is retained
+in the [HET retrospective](HETEROGENEOUS_RETROSPECTIVE.md).
+
+## Bounded, negative, and incomplete results
 
 - A small full-model BF16 reduction-order trace difference was observed before
   expert kernels, although it did not change the maintained greedy sequences.
-- Iris Xe experiments produced isolated kernel wins but failed the full-model
-  automatic-promotion gate; Auto remained CPU.
+- Iris Xe X9 passed its explicit integration and safety gates but failed the
+  automatic performance-promotion gate; Auto remained CPU.
 - Automatic multi-row MXFP4 selection retained scalar wherever the measured
   profile did not establish a qualifying optimized region.
 - In particular, gate/up at `M=8` retained scalar because the two optimized
@@ -144,10 +166,12 @@ claim is made.
   workload, but increased prompt and full-request latency; only the supported
   decode result is reported as a speedup.
 - The locally converted GGUF did not reproduce the historical fixture hash.
-- The HET archive passed substantial selected-expert, relay, ownership, and
-  transactional sub-gates, but 120B construction/execution never began. The
-  final retained-20B capacity-one comparison stopped because one native shard
-  exceeded its frozen mapping window.
+- HET H7 successfully executed the exact end-to-end 20B retained continuation
+  twice; this result carries no controlled HET performance claim.
+- The later HET 120B extension remained incomplete: construction attempts did
+  not pass, execution never began, and the final retained-20B capacity-one
+  comparison stopped because one native shard exceeded its frozen mapping
+  window.
 - The historical two-GPU layer-sharding branch never executed activation
   handoff or demonstrated end-to-end parity.
 
@@ -169,8 +193,9 @@ and [layer-sharding archive](https://github.com/gracee3/gpt-oss-rs/tree/166c0573
   results even when source and model hashes match.
 - Greedy token equality is a strong regression signal but not proof of equal
   logits, equal probabilities, model quality, or service safety.
-- Archived HET synthetic and subcomponent evidence cannot establish the
-  deferred 120B or multi-GPU end-to-end claims.
+- The archived HET 20B result cannot establish a controlled performance claim
+  or the deferred 120B boundary; synthetic and subcomponent evidence cannot
+  substitute for either.
 
 ## Reuse guidance
 
@@ -216,6 +241,8 @@ can support exact kernel contracts, native model execution, transactional
 ownership, and evidence-driven dispatch research in Rust. Its strongest result
 is not a production or ranking claim; it is a set of reusable implementations
 and methods whose successes, uncertainty, and failures remain auditable. The
-v0.1.0 program is research-complete and moves to maintenance. Any renewed HET,
-120B, multi-GPU, or broad service program should begin with a separately
-bounded question and evidence gate.
+archived H7 result additionally demonstrates exact bounded 20B execution under
+three-owner heterogeneous placement without establishing a performance or
+120B claim. The v0.1.0 program is research-complete and moves to maintenance.
+Any renewed HET, 120B, multi-GPU, or broad service program should begin with a
+separately bounded question and evidence gate.

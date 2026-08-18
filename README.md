@@ -72,6 +72,27 @@ bundle](docs/research/evidence/v0.1.0/README.md).
 
 No 120B payload is required by the v0.1.0 publication workflow.
 
+## Accelerator research results
+
+Accelerator work is preserved as bounded research, not enabled by the v0.1.0
+automatic runtime path.
+
+- Iris Xe X9 at
+  [`6caf274`](https://github.com/gracee3/gpt-oss-rs/commit/6caf27423744148dafb1fb2670a03f29452311f3)
+  passed its explicit `cpu_xe` integration, correctness, lifecycle, and CPU
+  fallback gates. Only the automatic performance-promotion gate failed, so
+  automatic Xe selection remains disabled.
+- HET H7 at
+  [`a9ab97a`](https://github.com/gracee3/gpt-oss-rs/commit/a9ab97aef349e7f05b79dd6a1aa6eed1853dd7b4)
+  passed exact end-to-end GPT-OSS 20B execution twice with real selected work
+  assigned across CPU, GPU0, and GPU1. The later 120B construction extension
+  remained unpassed, and no 120B execution or controlled HET performance claim
+  is made.
+
+The [HET retrospective](docs/research/HETEROGENEOUS_RETROSPECTIVE.md) separates
+the successful H7 boundary from the later loader, capacity-one, and 120B stop
+records.
+
 ## Reusable research outputs
 
 - `gpt-oss-cpu-kernels`: explicit MXFP4 layouts, scalar semantics, x86
@@ -129,19 +150,21 @@ evidence bundle against `SHA256SUMS`.
 
 ## Archived research
 
-The archives are intentionally non-production and incomplete. They remain
-browsable so useful designs and failed gates are not erased when `main` returns
-to the CPU-first line.
+The archives are intentionally non-production. They remain browsable so
+bounded successes, reusable designs, incomplete extensions, and failed gates
+are not erased when `main` returns to the CPU-first runtime tree.
 
 | Archive | Exact tip | Preserved boundary |
 | --- | --- | --- |
-| [Heterogeneous research](https://github.com/gracee3/gpt-oss-rs/tree/7bb459361c68b00eed45f56a622c061bb4b135ff) | `7bb4593` | Static CPU/GPU0/GPU1 expert ownership, bounded relay, transaction and evidence work; no successful 120B execution |
+| [HET H7 20B success](https://github.com/gracee3/gpt-oss-rs/tree/a9ab97aef349e7f05b79dd6a1aa6eed1853dd7b4) | `a9ab97a` (`research/het-h7-20b`) | Exact retained 20B continuation twice through real CPU/GPU0/GPU1 selected work, bounded resources, commit, retry, and quarantine gates |
+| [Complete HET archive](https://github.com/gracee3/gpt-oss-rs/tree/7bb459361c68b00eed45f56a622c061bb4b135ff) | `7bb4593` (`archive/het-2026-08`) | H7 plus later loader and capacity-one work; 120B construction remained unpassed and 120B execution never began |
 | [Former HET-era main](https://github.com/gracee3/gpt-oss-rs/tree/249abfbf5f21dddb434a7975c02df396e0608dc7) | `249abfb` | Last merged HET runtime state before publication-line rebuild |
 | [Layer-sharding assessment](https://github.com/gracee3/gpt-oss-rs/tree/bc8cf36f7ba79d318c9264e0f9f4198ac4135c60) | `bc8cf36` | Documentation-only salvage assessment |
 | [Historical 58-commit layer-sharding branch](https://github.com/gracee3/gpt-oss-rs/tree/166c0573c970334333f3fed567e1c88bf00bfe4f) | `166c057` | Planning and allocation scaffolding; no executable activation handoff or parity proof |
 
-The standalone [multi-GPU retrospective](docs/research/MULTI_GPU_RETROSPECTIVE.md)
-states what is reusable and what was never proven.
+The standalone [HET retrospective](docs/research/HETEROGENEOUS_RETROSPECTIVE.md)
+and [multi-GPU retrospective](docs/research/MULTI_GPU_RETROSPECTIVE.md) state
+what passed, what is reusable, and what was never proven.
 
 ## Sources, influence, and attribution
 
